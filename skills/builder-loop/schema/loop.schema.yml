@@ -1,0 +1,167 @@
+# builder-loop 项目层配置 schema
+# 业务项目接入自闭环时，在项目根放 .claude/loop.yml，字段以本文件为准。
+# 注释里的 "default:" 表示该字段的默认值。
+
+# ============================================================
+# 必填段
+# ============================================================
+
+pass_cmd:
+  # 通过条件命令数组，按顺序执行，任一阶段非 0 退出即视为失败。
+  # 至少 1 个阶段。
+  # cmd 字段会通过 `bash -c "$CMD"` 执行：内层引号需用单引号包外双引号，
+  # 例如 `pytest -k 'test_foo'` 而不是 `pytest -k "test_foo"`（避免 yaml 解析后双引号被吞）。
+  type: array
+  required: true
+  min_items: 1
+  item_schema:
+    stage: { type: string, required: true, examples: [lint, typecheck, test, build] }
+    cmd:   { type: string, required: true }
+    timeout: { type: integer, default: 300, unit: seconds }
+
+# ============================================================
+# 上限与早停
+# ============================================================
+
+max_iterations:
+  type: integer
+  default: 5
+  description: 硬上限。达到则触发 AskUserQuestion 询问用户。
+
+early_stop:
+  no_progress_rounds:
+    type: integer
+    default: 2
+    description: 连续 N 轮错误摘要 hash 不变 → 早停（反复改同一个点）
+  error_growth:
+    type: boolean
+    default: true
+    description: 错误数相比上轮增加 ≥ 50% → 早停（改坏了）
+  protected_path_changes:
+    type: integer
+    default: 3
+    description: 一轮内对 layout.test_dirs 修改 ≥ N 个文件 → 早停 + suspected_test_tampering
+
+# ============================================================
+# Worktree 隔离
+# ============================================================
+
+worktree:
+  enabled:
+    type: boolean
+    default: false
+    description: |
+      是否在 git worktree 里跑自闭环。PASS 才 fast-forward / rebase 合回主分支；
+      FAIL 保留 worktree 供用户调查。V1.1 默认关（需显式打开），向后兼容 V1 boolean 写法。
+  base_dir:
+    type: string
+    default: ".claude/worktrees"
+    description: worktree 根目录（相对项目根）。建议加入 .gitignore。
+  branch_prefix:
+    type: string
+    default: "loop/"
+    description: worktree 自动分支名前缀，完整名 = `<prefix><task_id>`。
+  cleanup_on_fail:
+    type: boolean
+    default: false
+    description: FAIL 时是否自动删 worktree（默认保留供回溯）。
+
+# ============================================================
+# 仲裁（worktree rebase 冲突时自动调 arbiter subagent）
+# ============================================================
+
+arbitration:
+  enabled:
+    type: boolean
+    default: true
+    description: worktree rebase 主干发生冲突时是否 spawn arbiter 自动仲裁。
+  agent_model:
+    type: string
+    default: "opus"
+    description: arbiter subagent 使用的模型。方案 T4 规定默认 opus。
+  max_attempts:
+    type: integer
+    default: 2
+    description: 单次冲突 arbiter 重试上限，仍失败则回退用户决策。
+  auto_apply_confidence:
+    type: enum
+    values: [high, medium, low]
+    default: medium
+    description: |
+      自动 apply arbiter patch 的最低信心阈值。
+      信心 < 该阈值 → 不自动 apply，输出到用户决策。
+      设为 low 则无条件 apply（不推荐）；high 则仅 high 信心自动 apply。
+
+# ============================================================
+# 项目目录布局（用于隔离与保护）
+# 全部留空 → setup-builder-loop.sh 自动探测常见模式
+# ============================================================
+
+layout:
+  source_dirs:
+    type: array
+    default: []
+    examples: [src, lib, app, pkg]
+    description: 实现源码目录。tester subagent 禁读。
+  test_dirs:
+    type: array
+    default: []
+    examples: [tests, test, spec, __tests__]
+    description: 测试目录。builder 修改这些路径下文件 ≥ early_stop.protected_path_changes 个 → 早停。
+  interface_dirs:
+    type: array
+    default: []
+    examples: [api, include, interfaces]
+    description: 接口/契约目录。tester 与 builder 均可读。
+
+# ============================================================
+# 错误反馈（V1 = full 模式 + 精确脱敏）
+# ============================================================
+
+error_feedback:
+  mode:
+    type: enum
+    values: [full, raw, smart]
+    default: full
+    description: |
+      full = 完整原始日志 + 精确脱敏（推荐，适配 1M opus 上下文）
+      raw  = 直接传 tail N 行，不脱敏（最朴素）
+      smart = 智能提取 + fallback（复杂，V2 引入）
+  max_chars:
+    type: integer
+    default: 500000
+    description: 反馈总长度上限，超出从中间截断（保留头部错误概览 + 尾部最近失败）
+  desensitize:
+    pytest_assertion_values: { type: boolean, default: true }
+    pytest_test_names:       { type: boolean, default: true,  description: 用例名脱敏（防泄露场景） }
+    keep_error_type:         { type: boolean, default: true }
+    keep_traceback:          { type: boolean, default: true }
+    keep_file_line:          { type: boolean, default: true }
+  summary_prefix:
+    type: boolean
+    default: true
+    description: 在完整日志前附 ≤500 字快速摘要
+  attach_full_log_path:
+    type: boolean
+    default: true
+    description: 末尾附 .claude/loop-runs/iter-N.log 路径作为兜底，builder 可自行 Read
+
+# ============================================================
+# 日志归档
+# ============================================================
+
+log_dir:
+  type: string
+  default: ".claude/loop-runs"
+  description: 每轮日志和 metrics.jsonl 落地目录（建议 .gitignore）
+
+# ============================================================
+# 示例（最小可用配置）
+# ============================================================
+
+# pass_cmd:
+#   - { stage: test, cmd: "pytest -x", timeout: 300 }
+#
+# layout:
+#   source_dirs: [src]
+#   test_dirs: [tests]

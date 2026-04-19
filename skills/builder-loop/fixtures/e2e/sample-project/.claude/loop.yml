@@ -1,0 +1,10 @@
+pass_cmd:
+  - stage: test
+    cmd: "python3 -m pytest tests/ -v -p no:html"
+    timeout: 60
+
+layout:
+  source_dirs: ["src"]
+  test_dirs: ["tests"]
+
+max_iterations: 3

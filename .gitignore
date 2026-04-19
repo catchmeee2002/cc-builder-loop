@@ -1,0 +1,5 @@
+# cc-builder-loop
+*.local.md
+loop-runs/
+worktrees/
+*.log
