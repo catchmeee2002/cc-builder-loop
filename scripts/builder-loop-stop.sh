@@ -12,7 +12,7 @@
 #   2. 检测 cwd/.claude/builder-loop.local.md 是否存在且 active=true
 #      - 不存在或 active=false → exit 0 立即放行
 #   3. 跑 run-pass-cmd.sh
-#      - PASS → 删状态文件、原 builder 流程接力，exit 0
+#      - PASS → 删状态文件、输出 block JSON 让 CC 继续执行 reviewer/commit pipeline
 #      - FAIL → 调 extract-error.sh + early-stop-check.sh
 #        - early-stop → 写 stopped_reason、删状态、exit 0（让 CC 停下，builder 自行 AskUserQuestion）
 #        - 否则 → 更新 iter / hash / count，输出 block JSON 让 CC 继续
@@ -88,6 +88,7 @@ ITER=${ITER:-0}
 NEXT_ITER=$(( ITER + 1 ))
 
 # ---- 3. 跑 PASS_CMD ----
+echo "[builder-loop] 🔄 iter ${NEXT_ITER}: 正在跑 PASS_CMD..." >&2
 RESULT="$(bash "${SKILL_DIR}/run-pass-cmd.sh" "$PROJECT_ROOT" "$NEXT_ITER" || true)"
 LAST_LINE="$(echo "$RESULT" | tail -1)"
 
@@ -100,7 +101,13 @@ if [ "$LAST_LINE" = "PASS" ]; then
   case "$MERGE_ACTION" in
     MERGED|NOOP)
       rm -f "$STATE_FILE"
-      echo "[builder-loop] ✅ PASS at iter ${NEXT_ITER} (${MERGE_ACTION}), exit loop, builder pipeline continues" >&2
+      echo "[builder-loop] ✅ PASS at iter ${NEXT_ITER} (${MERGE_ACTION})" >&2
+      # 输出 block JSON 让 CC 继续执行 reviewer/commit pipeline，而不是停下来等用户输入
+      python3 <<PY
+import json
+msg = "[builder-loop] ✅ PASS_CMD 全部阶段通过（iter ${NEXT_ITER}）。状态文件已清理，循环结束。请继续执行 Builder 后续流程：触发 Reviewer Subagent → 文档更新评估 → 自动 commit → 改动汇总。"
+print(json.dumps({"decision": "block", "reason": msg}))
+PY
       exit 0
       ;;
     NEED_ARBITRATION)
@@ -126,6 +133,7 @@ PY
 fi
 
 # ---- 3b. FAIL → 处理反馈 ----
+echo "[builder-loop] ❌ iter ${NEXT_ITER}: PASS_CMD 在 stage=$(echo "$LAST_LINE" | awk '{print $2}') 失败，分析中..." >&2
 STAGE="$(echo "$LAST_LINE" | awk '{print $2}')"
 LOG_PATH="$(echo "$LAST_LINE" | awk '{print $3}')"
 

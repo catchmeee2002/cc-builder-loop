@@ -76,6 +76,34 @@ for d in src lib app pkg internal cmd; do has_dir "$d" && SOURCE_DIRS+=("$d"); d
 TEST_DIRS=()
 for d in tests test spec __tests__ t; do has_dir "$d" && TEST_DIRS+=("$d"); done
 
+# ---- pytest 命令验证（自动排除问题插件）----
+# 用 --co (collect-only) 快速验证 pytest 能否启动，不实际执行测试
+# 常见问题：pytest-html 依赖废弃的 py.xml 模块导致启动崩溃
+KNOWN_BAD_PYTEST_PLUGINS="html sugar"
+
+validate_pytest() {
+  local base="pytest -x"
+  # pytest 不在 PATH 则跳过验证
+  command -v pytest >/dev/null 2>&1 || { echo "$base"; return; }
+  # 快速验证：--co 会加载全部插件，能暴露插件兼容性问题
+  if timeout 10s pytest --co -q >/dev/null 2>&1; then
+    echo "$base"
+    return
+  fi
+  # 逐个累加排除已知问题插件
+  local flags=""
+  for p in $KNOWN_BAD_PYTEST_PLUGINS; do
+    flags="$flags -p no:$p"
+    if timeout 10s pytest --co -q $flags >/dev/null 2>&1; then
+      echo "[probe] auto-excluded pytest plugins:$flags" >&2
+      echo "pytest -x$flags"
+      return
+    fi
+  done
+  # 全部排除仍失败，返回基础命令（交给 smoke test 暴露）
+  echo "$base"
+}
+
 # ---- 推荐 pass_cmd ----
 build_recommended() {
   local items=()
@@ -90,7 +118,9 @@ build_recommended() {
     esac
   done
   case "$TEST_FW" in
-    pytest)  items+=('{"stage":"test","cmd":"pytest -x","timeout":300}') ;;
+    pytest)  local pcmd; pcmd="$(validate_pytest)"
+             local item; item="$(PCMD="$pcmd" python3 -c "import os,json; print(json.dumps({'stage':'test','cmd':os.environ['PCMD'],'timeout':300}))")"
+             items+=("$item") ;;
     jest)    items+=('{"stage":"test","cmd":"npx jest","timeout":300}') ;;
     vitest)  items+=('{"stage":"test","cmd":"npx vitest run","timeout":300}') ;;
     gotest)  items+=('{"stage":"test","cmd":"go test ./...","timeout":300}') ;;
