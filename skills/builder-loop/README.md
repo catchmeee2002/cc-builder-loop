@@ -44,7 +44,8 @@
 │   ├── extract-error.sh        # 错误反馈处理器（V1=full+脱敏）
 │   ├── early-stop-check.sh     # 早停判据（无进展/反增长/保护路径）
 │   ├── split-plan-by-role.sh   # 方案文件按 <!-- role:xxx --> 区块过滤
-│   └── merge-worktree-back.sh  # V1.1 worktree 合回主干（fast-forward/rebase/仲裁标记）
+│   ├── merge-worktree-back.sh  # V1.1 worktree 合回主干（fast-forward/rebase/仲裁标记）
+│   └── run-apply-arbitration.sh # V1.1 仲裁 patch 应用（解析 arbiter 输出/apply/retry merge）
 └── schema/
     └── loop.schema.yml         # 项目层 .claude/loop.yml 字段规范
 ```
@@ -134,6 +135,7 @@ done
 | `run-fixture.sh` | T6.1-T6.2: 完整循环（setup→FAIL→fix→PASS） | python3 + pytest |
 | `test-isolation.sh` | T6.3: tester 隔离 hook 拦截 source_dirs | tester-lock-check.sh 软链 |
 | `test-conflict.sh` | T6.4: rebase 冲突 → 仲裁标记 → mock 修复 → 合回 | merge-worktree-back.sh |
+| `test-arbitration-apply.sh` | V1.1: run-apply-arbitration.sh 三场景（high→APPLIED / low→LOW_CONFIDENCE / bad patch→APPLY_FAILED） | run-apply-arbitration.sh + merge-worktree-back.sh |
 
 ## 6. 设计原则（修改时遵守）
 

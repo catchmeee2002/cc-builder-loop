@@ -100,12 +100,13 @@ worktree:
 
 ## V1.1 仲裁路径（P3）
 
-rebase 冲突时自动 spawn `arbiter` subagent（model=opus）解冲突：
+rebase 冲突时 Stop hook 预填参数 + 后处理脚本化：
 
 1. `merge-worktree-back.sh` 检测冲突 → 写 `need_arbitration: true` 到状态文件
-2. Stop hook 通过 `additionalContext` 通知 builder
-3. builder spawn arbiter → 输出 `ARBITER_PATCH_BEGIN/END` + 信心度（high/medium/low）
-4. `auto_apply_confidence` 控制自动应用门槛（默认 high）
+2. Stop hook 预读 state 提取 worktree_path / conflict_files / task_context / main_branch，从 loop.yml 读 max_attempts，输出结构化 block JSON（含 arbiter spawn 预填参数 + `run-apply-arbitration.sh` 路径）
+3. CC spawn arbiter → 保存输出到文件 → 调 `run-apply-arbitration.sh`
+4. `run-apply-arbitration.sh` 解析信心度 vs `auto_apply_confidence` 阈值，提取 patch，重新 rebase + apply + continue，清 state 标记，调 `merge-worktree-back.sh` 重试合回
+5. 退出码决策：`APPLIED`(0) / `LOW_CONFIDENCE`(1) / `APPLY_FAILED`(2) / `MERGE_FAILED`(3)
 
 ```yaml
 arbitration:
@@ -146,7 +147,7 @@ PROBE_JSON="$(bash ~/.claude/skills/builder-loop/scripts/probe-project-stack.sh 
 
 输出含：language / test_framework / lint_tools / source_dirs / test_dirs / recommended_pass_cmd。
 
-### Step 2: AskUserQuestion ×4 收集决策
+### Step 2: AskUserQuestion ×5 收集决策
 
 每个问题给「探测出的推荐默认 + 备选 + Other」选项卡：
 
@@ -154,6 +155,10 @@ PROBE_JSON="$(bash ~/.claude/skills/builder-loop/scripts/probe-project-stack.sh 
 2. **测试目录**：show 探测到的 test_dirs 给用户确认 / Other
 3. **上限轮数**：3 / **5 (推荐)** / 10 / Other
 4. **是否立即跑 smoke test 验证**：是 (推荐) / 否
+5. **是否启用 worktree 隔离**：
+   - **否（推荐，简单项目）** → choice JSON 不含 worktree 段（schema 默认 enabled=false）
+   - **是（复杂/多人项目）** → choice JSON 加 `"worktree": {"enabled": true, "base_dir": ".claude/worktrees", "branch_prefix": "loop/"}`
+   - 提示语：worktree 隔离会在独立分支跑自闭环，PASS 后 fast-forward/rebase 合回主干；适合多人协作或 diff 大的场景
 
 ### Step 3: 调底层脚本写 loop.yml
 
@@ -167,7 +172,8 @@ choice JSON 结构示例：
   "pass_cmd": [{"stage":"test","cmd":"pytest -x","timeout":300}],
   "max_iterations": 5,
   "layout": {"source_dirs": ["src"], "test_dirs": ["tests"]},
-  "task_description": "由 init 向导生成于 YYYY-MM-DD"
+  "task_description": "由 init 向导生成于 YYYY-MM-DD",
+  "worktree": {"enabled": true, "base_dir": ".claude/worktrees", "branch_prefix": "loop/"}
 }
 ```
 

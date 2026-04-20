@@ -7,6 +7,12 @@
 #   - 如果不需要继续循环 → 无输出，exit 0（CC 正常停止）
 #   - 如果需要继续循环 → 输出 JSON {"decision":"block","reason":"<feedback>"} 让 CC 继续跑下一轮
 #
+# NEED_ARBITRATION 行为（V1.1+）：
+#   - PASS_CMD 通过但 worktree rebase 冲突 → 预读 state 提取 worktree_path /
+#     conflict_files / task_context / main_branch，从 loop.yml 读 max_attempts，
+#     输出结构化 block JSON（含 arbiter spawn 预填参数 + run-apply-arbitration.sh 路径）。
+#     CC 只需：spawn arbiter → 保存输出到文件 → 调 run-apply-arbitration.sh → 根据退出码决策。
+#
 # 行为：
 #   1. 读 stdin 拿 cwd（hook 可能在不同 CC 工作目录运行）
 #   2. 检测 cwd/.claude/builder-loop.local.md 是否存在且 active=true
@@ -111,15 +117,64 @@ PY
       exit 0
       ;;
     NEED_ARBITRATION)
-      # state 里已被 merge-worktree-back.sh 标记 need_arbitration=true；让 builder 下轮 spawn arbiter
+      # state 里已被 merge-worktree-back.sh 标记 need_arbitration=true
+      # 预读所有参数，输出结构化指令让 CC 只需 spawn + 调脚本
       WT_PATH="$(echo "$MERGE_LAST" | awk '{print $2}')"
+      CONFLICT_FILES="$(grep -E '^conflict_files:' "$STATE_FILE" | head -1 | sed -E 's/^conflict_files:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/')"
+      TASK_CTX="$(grep -E '^task_description:' "$STATE_FILE" | head -1 | sed -E 's/^task_description:[[:space:]]*//')"
+      MAIN_BR="$(git -C "$PROJECT_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")"
+      # 读 loop.yml 的 arbitration.max_attempts（默认 2）
+      MAX_ATT="2"
+      if [ -f "${PROJECT_ROOT}/.claude/loop.yml" ]; then
+        MAX_ATT_RAW="$(python3 -c "
+import re
+text = open('${PROJECT_ROOT}/.claude/loop.yml').read()
+m = re.search(r'max_attempts:\s*(\d+)', text)
+print(m.group(1) if m else '2')
+" 2>/dev/null || echo "2")"
+        [ -n "$MAX_ATT_RAW" ] && MAX_ATT="$MAX_ATT_RAW"
+      fi
+      STATE_FILE_ESC="${STATE_FILE}"
       python3 <<PY
 import json
-msg = f"""[builder-loop] ⚠️  PASS_CMD 通过，但 worktree rebase 主干时发生冲突。
-worktree 路径：${WT_PATH}
-请按 commands/builder.md 的「仲裁分支」流程 spawn arbiter subagent 解冲突，
-解完后再跑 bash ~/.claude/skills/builder-loop/scripts/merge-worktree-back.sh <state_file> 重试。
-"""
+params = {
+    "worktree_path": "${WT_PATH}",
+    "main_branch": "${MAIN_BR}",
+    "conflict_files": "${CONFLICT_FILES}",
+    "task_context": """${TASK_CTX}""",
+    "max_attempts": int("${MAX_ATT}"),
+    "state_file": "${STATE_FILE_ESC}",
+    "apply_script": "${SKILL_DIR}/run-apply-arbitration.sh"
+}
+msg = """[builder-loop] ⚠️  PASS_CMD 通过，但 worktree rebase 主干时发生冲突。
+
+请执行以下仲裁流程：
+1. spawn arbiter subagent（同步），参数如下：
+   subagent_type: arbiter
+   worktree_path: {wt}
+   main_branch: {mb}
+   conflict_files: {cf}
+   task_context: {tc}
+
+2. 保存 arbiter 输出到 /tmp/arbiter-output.txt
+
+3. 调用后处理脚本：
+   bash {script} {sf} /tmp/arbiter-output.txt
+
+4. 根据退出码决策：
+   APPLIED (exit 0) → 继续 Reviewer/commit 流程
+   LOW_CONFIDENCE (exit 1) → AskUserQuestion 让用户决策
+   APPLY_FAILED (exit 2) → 重试（max_attempts={ma}）或交用户
+   MERGE_FAILED (exit 3) → 同上
+""".format(
+    wt=params["worktree_path"],
+    mb=params["main_branch"],
+    cf=params["conflict_files"],
+    tc=params["task_context"][:200],
+    script=params["apply_script"],
+    sf=params["state_file"],
+    ma=params["max_attempts"]
+)
 print(json.dumps({"decision": "block", "reason": msg}))
 PY
       exit 0
