@@ -13,6 +13,7 @@ color: purple
 - `main_branch`：要 rebase 到的主干分支名（通常是 `main`）
 - `conflict_files`：冲突文件列表（逗号分隔或数组）
 - `task_context`：本轮循环的任务描述（来自 state file.task_description），帮你理解 worktree 侧修改的意图
+- `their_commits`：主干 start_head 之后新合入的 commit 列表（来自先合回的其他 builder），格式为逐条摘要（hash + message + files）。帮你理解 theirs 侧（主干）修改的意图，做出真正的双方仲裁而非单边 merge。缺失时 fallback 到自行 `git log`
 
 ## ⚠️ 硬性约束（违反即视为任务失败）
 
@@ -38,7 +39,7 @@ Builder 若在 spawn 前已经把 worktree 保留在冲突态（rebase 未 abort
 
 理解三方差异的**意图**：
 - ours 侧的改动为什么做？（读 task_context）
-- theirs 侧的改动为什么做？（看主干 commit message `git log main ^<start_head>`）
+- theirs 侧的改动为什么做？（优先读 `their_commits` 输入字段，包含对方 builder 的 commit message + 改动文件列表；如果 their_commits 为空或缺失，fallback 到 `git log main ^<start_head>`）
 
 ### 步骤 3：逐冲突块决策
 
@@ -48,7 +49,7 @@ Builder 若在 spawn 前已经把 worktree 保留在冲突态（rebase 未 abort
 |---|---|---|
 | ours 和 theirs 改的是**完全不同的行**（git 误判重叠） | 两边都保留 | high |
 | 改的是**同一逻辑不同表述**（语义等价） | 选更符合项目风格的 | medium |
-| 改的是**同一逻辑不同结果**（真·语义冲突） | 通常 ours 优先（本次任务意图），除非主干改动是 bug fix | medium |
+| 改的是**同一逻辑不同结果**（真·语义冲突） | 通常 ours 优先（本次任务意图），除非 their_commits 显示主干改动是 bug fix / 安全修复 | medium |
 | 一侧是**格式/注释**，另一侧是**逻辑改动** | 保留逻辑改动 + 应用格式改动 | high |
 | 涉及**接口签名 / 模块边界 / 数据模型** | 标 **low** — 交用户 | low |
 

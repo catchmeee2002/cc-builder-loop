@@ -123,6 +123,9 @@ PY
       CONFLICT_FILES="$(grep -E '^conflict_files:' "$STATE_FILE" | head -1 | sed -E 's/^conflict_files:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/')"
       TASK_CTX="$(grep -E '^task_description:' "$STATE_FILE" | head -1 | sed -E 's/^task_description:[[:space:]]*//')"
       MAIN_BR="$(git -C "$PROJECT_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")"
+      # 读对方 commits 上下文（merge-worktree-back.sh 已写入 state）
+      THEIR_COMMITS="$(grep -E '^their_commits:' "$STATE_FILE" | head -1 | sed -E "s/^their_commits:[[:space:]]*'?(.*)'?[[:space:]]*$/\1/")"
+      [ -z "$THEIR_COMMITS" ] && THEIR_COMMITS="[]"
       # 读 loop.yml 的 arbitration.max_attempts（默认 2）
       MAX_ATT="2"
       if [ -f "${PROJECT_ROOT}/.claude/loop.yml" ]; then
@@ -137,6 +140,21 @@ print(m.group(1) if m else '2')
       STATE_FILE_ESC="${STATE_FILE}"
       python3 <<PY
 import json
+their_commits_str = '${THEIR_COMMITS}'
+# 格式化为可读形式（arbiter 看的）
+try:
+    tc_list = json.loads(their_commits_str)
+    if tc_list:
+        lines = []
+        for c in tc_list[:20]:
+            lines.append(f"  - {c.get('hash','?')} {c.get('message','')}")
+            for f in c.get('files', []):
+                lines.append(f"    {f}")
+        their_commits_str = "\\n".join(lines)
+    else:
+        their_commits_str = "(无对方 commit)"
+except Exception:
+    their_commits_str = "(解析失败)"
 params = {
     "worktree_path": "${WT_PATH}",
     "main_branch": "${MAIN_BR}",
@@ -155,6 +173,7 @@ msg = """[builder-loop] ⚠️  PASS_CMD 通过，但 worktree rebase 主干时�
    main_branch: {mb}
    conflict_files: {cf}
    task_context: {tc}
+   their_commits: {commits}
 
 2. 保存 arbiter 输出到 /tmp/arbiter-output.txt
 
@@ -171,6 +190,7 @@ msg = """[builder-loop] ⚠️  PASS_CMD 通过，但 worktree rebase 主干时�
     mb=params["main_branch"],
     cf=params["conflict_files"],
     tc=params["task_context"][:200],
+    commits=their_commits_str,
     script=params["apply_script"],
     sf=params["state_file"],
     ma=params["max_attempts"]

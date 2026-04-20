@@ -88,6 +88,20 @@ if ! grep -q "conflict_files:" "$STATE"; then
 fi
 echo "✓ 阶段 1.5: state 正确写入 need_arbitration + conflict_files"
 
+# 验证 their_commits 写入
+if ! grep -q "their_commits:" "$STATE"; then
+  echo "❌ FAIL: state 缺少 their_commits" >&2
+  exit 1
+fi
+# 验证 JSON 含 "main edit" commit message
+THEIR_JSON="$(grep -E '^their_commits:' "$STATE" | sed -E "s/^their_commits:[[:space:]]*//" | sed -E "s/^'//;s/'[[:space:]]*$//")"
+if ! echo "$THEIR_JSON" | python3 -c "import sys,json; commits=json.load(sys.stdin); assert any('main edit' in c.get('message','') for c in commits), 'no main edit commit'" 2>/dev/null; then
+  echo "❌ FAIL: their_commits JSON 不含 'main edit' commit" >&2
+  echo "  JSON: $THEIR_JSON" >&2
+  exit 1
+fi
+echo "✓ 阶段 1.6: state 正确写入 their_commits（含对方 commit 摘要）"
+
 # === 阶段 2：mock arbiter 修复冲突（真 rebase + 解冲突，模拟 arbiter 行为）===
 echo "--- 阶段 2：mock arbiter 修复 ---"
 MAIN_BRANCH_NAME="$(git rev-parse --abbrev-ref HEAD)"

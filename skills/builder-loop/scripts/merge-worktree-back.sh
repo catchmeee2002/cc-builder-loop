@@ -54,12 +54,18 @@ CURRENT_HEAD="$(git -C "$PROJECT_ROOT" rev-parse --short HEAD 2>/dev/null || ech
 mark_arbitration() {
   local wt="$1"
   local files="$2"
-  # 用 python 安全改 yaml（防特殊字符）
-  STATE="$STATE" FILES="$files" python3 - <<'PY'
-import os, re
+  # 用 python 安全改 yaml（防特殊字符）+ 提取对方 commits 上下文
+  STATE="$STATE" FILES="$files" PROJECT_ROOT="$PROJECT_ROOT" START_HEAD="$START_HEAD" python3 - <<'PY'
+import os, re, json, subprocess
+
 sf = os.environ['STATE']
 files = os.environ['FILES']
+proj = os.environ['PROJECT_ROOT']
+start = os.environ['START_HEAD']
+
 text = open(sf).read()
+
+# 写 need_arbitration + conflict_files
 if re.search(r'^need_arbitration:', text, re.M):
     text = re.sub(r'^need_arbitration:.*$', 'need_arbitration: true', text, flags=re.M)
 else:
@@ -68,6 +74,45 @@ if re.search(r'^conflict_files:', text, re.M):
     text = re.sub(r'^conflict_files:.*$', f'conflict_files: "{files}"', text, flags=re.M)
 else:
     text += f'conflict_files: "{files}"\n'
+
+# 提取对方 commits（主干 start_head 之后的新 commit）
+their_commits = []
+try:
+    log_out = subprocess.check_output(
+        ['git', '-C', proj, 'log', f'{start}..HEAD',
+         '--format=%h|%s', '--stat', '-20'],
+        stderr=subprocess.DEVNULL, text=True
+    )
+    current = None
+    for line in log_out.strip().split('\n'):
+        if not line.strip():
+            continue
+        if '|' in line and not line.startswith(' '):
+            parts = line.split('|', 1)
+            if len(parts[0]) <= 12:  # hash 长度合理
+                if current:
+                    their_commits.append(current)
+                current = {
+                    'hash': parts[0].strip(),
+                    'message': parts[1].strip()[:200],
+                    'files': []
+                }
+                continue
+        if current and '|' in line and line.startswith(' '):
+            fname = line.split('|')[0].strip()
+            if fname:
+                current['files'].append(fname)
+    if current:
+        their_commits.append(current)
+except Exception:
+    pass
+
+tc_json = json.dumps(their_commits, ensure_ascii=False)
+if re.search(r'^their_commits:', text, re.M):
+    text = re.sub(r'^their_commits:.*$', f"their_commits: '{tc_json}'", text, flags=re.M)
+else:
+    text += f"their_commits: '{tc_json}'\n"
+
 open(sf, 'w').write(text)
 PY
   echo "NEED_ARBITRATION ${wt}"
