@@ -19,6 +19,13 @@ PROJECT_ROOT="$(cd "$(pwd)" && pwd -P)"
 LOOP_YML="${PROJECT_ROOT}/.claude/loop.yml"
 STATE_FILE="${PROJECT_ROOT}/.claude/builder-loop.local.md"
 LOG_DIR="${PROJECT_ROOT}/.claude/loop-runs"
+
+# 解析 --no-worktree flag（兜底激活时使用，跳过 worktree 创建）
+FORCE_NO_WORKTREE=0
+if [ "${1:-}" = "--no-worktree" ]; then
+  FORCE_NO_WORKTREE=1
+  shift
+fi
 TASK_DESC="${1:-untitled-task}"
 
 # ---- 校验配置 ----
@@ -98,7 +105,7 @@ PY
 )"
 WT_ENABLED="$(echo "$WT_CFG" | python3 -c "import sys,json; print(json.load(sys.stdin).get('enabled', False))" 2>/dev/null || echo "False")"
 
-if [ "$WT_ENABLED" = "True" ] && [ "$START_HEAD" != "no-git" ]; then
+if [ "$FORCE_NO_WORKTREE" -eq 0 ] && [ "$WT_ENABLED" = "True" ] && [ "$START_HEAD" != "no-git" ]; then
   WT_BASE_DIR="$(echo "$WT_CFG" | python3 -c "import sys,json; print(json.load(sys.stdin).get('base_dir','.claude/worktrees'))")"
   WT_PREFIX="$(echo "$WT_CFG" | python3 -c "import sys,json; print(json.load(sys.stdin).get('branch_prefix','loop/'))")"
   TASK_SLUG="$(echo "$TASK_DESC" | head -c 24 | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' '-' | sed -E 's/-+/-/g; s/^-|-$//g')"

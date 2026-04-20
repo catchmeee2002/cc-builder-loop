@@ -72,7 +72,7 @@ cc-builder-loop/
 └── agents/                     # tester.md + arbiter.md
 ```
 
-## 5. 已交付能力（V1.0~V1.3）
+## 5. 已交付能力（V1.0~V1.4）
 
 - 多阶段 PASS_CMD + 智能早停
 - tester 强隔离（hook 锁机制）
@@ -82,5 +82,6 @@ cc-builder-loop/
 - reviewer → tester 触发
 - 改动分级（L1 跳过 / L2 正常 / L3 先 tester）
 - 任务回顾与知识沉淀
+- Stop hook 兜底激活（loop.yml 存在 + 有改动 + 无状态文件 → 自动启动 loop）
 
 详见 `skills/builder-loop/README.md`。

@@ -28,6 +28,14 @@ bash ~/.claude/skills/builder-loop/scripts/setup-builder-loop.sh "$TASK_DESCRIPT
 - PASS → 删状态文件，builder 接力
 - FAIL → extract-error + early-stop-check → 写回状态文件 → 注入下轮
 
+### 兜底激活（硬门禁）
+
+当 builder 跳过激活流程（未调 setup-builder-loop.sh）时，Stop hook 提供最后防线：
+- **触发条件**：loop.yml 存在 + 有代码改动（git diff 或近 30 分钟 commit）+ 无状态文件
+- **行为**：自动调 `setup-builder-loop.sh --no-worktree` 创建状态文件，然后走正常 PASS_CMD 流程
+- **`--no-worktree`**：兜底激活时代码已在主干，跳过 worktree 创建以避免丢失改动
+- **安全兜底**：setup 失败 → 放行（不阻断 CC）；无改动 → 放行（不误触发）
+
 ## 状态文件 schema（`.claude/builder-loop.local.md`）
 
 ```yaml

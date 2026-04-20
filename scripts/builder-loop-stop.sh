@@ -39,17 +39,31 @@ CWD="$(echo "$INPUT" | python3 -c "import sys,json; print(json.load(sys.stdin).g
 #   2. 从 cwd 向上最多 5 层找含 .claude/loop.yml 的目录作为 PROJECT_ROOT
 #   3. 都找不到 → exit 0（未接入场景）
 # 命中后再读 state 里的 project_root 字段作为后续路径锚点（worktree / log 等）。
+FOUND_LOOP_ONLY=false
 find_project_root() {
   local start="$1"
   local depth="${2:-5}"
   local dir="$start"
   local i=0
+  # 第一轮：找 state file + loop.yml 都存在的目录（现有行为）
   while [ "$i" -lt "$depth" ]; do
     if [ -f "${dir}/.claude/builder-loop.local.md" ] && [ -f "${dir}/.claude/loop.yml" ]; then
       echo "$dir"
       return 0
     fi
-    # 到根了
+    [ "$dir" = "/" ] && break
+    dir="$(dirname "$dir")"
+    i=$(( i + 1 ))
+  done
+  # 第二轮 fallback：找只有 loop.yml 的目录（兜底激活用）
+  dir="$start"
+  i=0
+  while [ "$i" -lt "$depth" ]; do
+    if [ -f "${dir}/.claude/loop.yml" ] && [ ! -f "${dir}/.claude/builder-loop.local.md" ]; then
+      FOUND_LOOP_ONLY=true
+      echo "$dir"
+      return 0
+    fi
     [ "$dir" = "/" ] && return 1
     dir="$(dirname "$dir")"
     i=$(( i + 1 ))
@@ -64,12 +78,55 @@ else
   PROJECT_ROOT="$(find_project_root "$CWD" 5 || true)"
 fi
 
-# 未接入场景（没找到 state file）→ 静默放行
-if [ -z "$PROJECT_ROOT" ] || [ ! -f "${PROJECT_ROOT}/.claude/builder-loop.local.md" ]; then
+# 未接入场景（PROJECT_ROOT 完全找不到）→ 静默放行
+if [ -z "$PROJECT_ROOT" ]; then
   exit 0
 fi
 
+# ---- 兜底激活：loop.yml 存在但无状态文件 ----
+if [ "$FOUND_LOOP_ONLY" = "true" ]; then
+  # 检测是否有代码改动（未提交 或 近 30 分钟内的 commit）
+  HAS_DIFF=""
+  HAS_RECENT_COMMIT=""
+  if ! git -C "$PROJECT_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    # 非 git 仓库 → 放行（无法判断改动）
+    exit 0
+  fi
+  HAS_DIFF="$(git -C "$PROJECT_ROOT" diff --stat 2>/dev/null)" || true
+  [ -z "$HAS_DIFF" ] && { HAS_DIFF="$(git -C "$PROJECT_ROOT" diff --cached --stat 2>/dev/null)" || true; }
+  HAS_RECENT_COMMIT="$(git -C "$PROJECT_ROOT" log --since='30 minutes ago' --oneline 2>/dev/null | head -5)" || true
+  # 无任何改动 → 放行（纯对话 stop）
+  if [ -z "$HAS_DIFF" ] && [ -z "$HAS_RECENT_COMMIT" ]; then
+    exit 0
+  fi
+  # 推断 task_description
+  TASK_DESC="auto-activated-by-stop-hook"
+  PLAN_DIR="${PROJECT_ROOT}/.claude/plans"
+  if [ -d "$PLAN_DIR" ]; then
+    LATEST_PLAN="$(ls -1t "$PLAN_DIR"/*.md 2>/dev/null | head -n 1 || true)"
+    if [ -n "$LATEST_PLAN" ]; then
+      TASK_DESC="$(head -5 "$LATEST_PLAN" | grep -E '^# ' | head -1 | sed 's/^#[[:space:]]*//' || echo "$TASK_DESC")"
+      [ -z "$TASK_DESC" ] && TASK_DESC="auto-activated-by-stop-hook"
+    fi
+  fi
+  if [ "$TASK_DESC" = "auto-activated-by-stop-hook" ] && [ -n "$HAS_RECENT_COMMIT" ]; then
+    TASK_DESC="$(echo "$HAS_RECENT_COMMIT" | head -1 | sed 's/^[a-f0-9]\+[[:space:]]*//' || echo "$TASK_DESC")"
+  fi
+  echo "[builder-loop] ⚡ 兜底激活：检测到 loop.yml + 代码改动但无状态文件，自动启动 loop..." >&2
+  if ! bash "$SKILL_DIR/setup-builder-loop.sh" --no-worktree "$TASK_DESC" >&2; then
+    echo "[builder-loop] ⚠️  兜底激活 setup 失败，放行" >&2
+    exit 0
+  fi
+  # setup 成功 → 状态文件已创建，继续走正常流程
+fi
+
 STATE_FILE="${PROJECT_ROOT}/.claude/builder-loop.local.md"
+
+# state file 仍不存在（兜底激活 setup 可能写了不同路径）→ 放行
+if [ ! -f "$STATE_FILE" ]; then
+  echo "[builder-loop] ⚠️  兜底激活后状态文件未出现在预期路径：${STATE_FILE}，放行" >&2
+  exit 0
+fi
 
 # 优先用 state 里写的 project_root（绝对路径），向后兼容 state 无该字段的旧版本
 STATE_PROJECT_ROOT="$(grep -E '^project_root:' "$STATE_FILE" | head -1 | sed -E 's/^project_root:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/')"
