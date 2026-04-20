@@ -125,7 +125,13 @@ else
   # 有冲突 → apply patch 解冲突
   echo "[arbitration] 正在 apply patch..." >&2
   if ! git -C "$WORKTREE_PATH" apply --allow-overlap "$PATCH_FILE" 2>&1; then
-    # fallback: 尝试 patch -p1
+    # fallback: 先 dry-run 验证 patch 格式，再实际 apply
+    if ! (cd "$WORKTREE_PATH" && patch --dry-run -p1 < "$PATCH_FILE") >/dev/null 2>&1; then
+      echo "ERROR: patch dry-run 失败，patch 格式无效" >&2
+      git -C "$WORKTREE_PATH" rebase --abort 2>/dev/null || true
+      echo "APPLY_FAILED"
+      exit 2
+    fi
     if ! (cd "$WORKTREE_PATH" && patch -p1 < "$PATCH_FILE") 2>&1; then
       echo "ERROR: patch apply 失败" >&2
       git -C "$WORKTREE_PATH" rebase --abort 2>/dev/null || true

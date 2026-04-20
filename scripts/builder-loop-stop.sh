@@ -126,9 +126,9 @@ PY
       # 读 loop.yml 的 arbitration.max_attempts（默认 2）
       MAX_ATT="2"
       if [ -f "${PROJECT_ROOT}/.claude/loop.yml" ]; then
-        MAX_ATT_RAW="$(python3 -c "
-import re
-text = open('${PROJECT_ROOT}/.claude/loop.yml').read()
+        MAX_ATT_RAW="$(LOOP_YML_PATH="${PROJECT_ROOT}/.claude/loop.yml" python3 -c "
+import re, os
+text = open(os.environ['LOOP_YML_PATH']).read()
 m = re.search(r'max_attempts:\s*(\d+)', text)
 print(m.group(1) if m else '2')
 " 2>/dev/null || echo "2")"
