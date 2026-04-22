@@ -101,6 +101,20 @@ echo '<choice JSON>' | bash ~/.claude/skills/builder-loop/scripts/init-loop-conf
 
 choice JSON 含 pass_cmd / max_iterations / layout / worktree。
 
+**choice JSON 格式示例**（pass_cmd 必须是对象数组，不是纯字符串数组）：
+
+```json
+{
+  "pass_cmd": [
+    {"stage": "lint", "cmd": "ruff check src/", "timeout": 60},
+    {"stage": "test", "cmd": "pytest tests/ -x", "timeout": 300}
+  ],
+  "max_iterations": 5,
+  "layout": {"source_dirs": ["src"], "test_dirs": ["tests"]},
+  "worktree": {"enabled": false}
+}
+```
+
 ### Step 4: smoke test
 
 ```bash

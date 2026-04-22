@@ -72,7 +72,7 @@ cc-builder-loop/
 └── agents/                     # tester.md + arbiter.md
 ```
 
-## 5. 已交付能力（V1.0~V1.4）
+## 5. 已交付能力（V1.0~V1.5）
 
 - 多阶段 PASS_CMD + 智能早停
 - tester 强隔离（hook 锁机制）
@@ -83,5 +83,15 @@ cc-builder-loop/
 - 改动分级（L1 跳过 / L2 正常 / L3 先 tester）
 - 任务回顾与知识沉淀
 - Stop hook 兜底激活（loop.yml 存在 + 有改动 + 无状态文件 → 自动启动 loop）
+- **V1.5**: Stop hook 续接修复（exit 2 + stderr，取代无效的 JSON stdout）
+- **V1.5**: Worktree 前置（builder 进入后先 setup 再写代码，避免代码丢失）
+- **V1.5**: NDJSON trace（`.claude/loop-trace.jsonl`，每轮记录 iter/stage/result/duration）
+- **V1.5**: 一键 init（`loop-init.sh` 整合 probe + init-loop-config + git init）
+- **V1.5**: E2E 测试（全新仓库端到端验证）
 
 详见 `skills/builder-loop/README.md`。
+
+## 6. 开发原则
+
+- **不改 CC 源码**：所有功能基于 CC 的 hook / skill / agent 扩展机制实现
+- **可破坏性升级**：升级允许不兼容已接入项目的 loop.yml，但必须手动更新所有已接入项目确保继续可用

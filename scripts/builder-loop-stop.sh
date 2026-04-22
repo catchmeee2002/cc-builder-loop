@@ -4,8 +4,13 @@
 # 触发方式：CC 在每次 Stop 事件时调用（settings.json hooks.Stop 注册）
 # stdin：CC 提供的 Stop hook input JSON（含 session_id / cwd / transcript_path 等）
 # stdout：
-#   - 如果不需要继续循环 → 无输出，exit 0（CC 正常停止）
-#   - 如果需要继续循环 → 输出 JSON {"decision":"block","reason":"<feedback>"} 让 CC 继续跑下一轮
+#   - 不再使用 stdout 输出 JSON（V1.4 及之前的 {"decision":"block"} 格式已废弃）
+# stderr：
+#   - 日志信息（ >&2 ）：调试和状态通知
+# exit code：
+#   - exit 0：不需要续接（CC 正常停止）
+#   - exit 2：需要续接（CC 将 stderr 作为 user message 注入 LLM context，继续跑）
+#     机制：CC query.ts 收到 blockingErrors → 追加到消息历史 → state machine continue
 #
 # NEED_ARBITRATION 行为（V1.1+）：
 #   - PASS_CMD 通过但 worktree rebase 冲突 → 预读 state 提取 worktree_path /
@@ -18,10 +23,10 @@
 #   2. 检测 cwd/.claude/builder-loop.local.md 是否存在且 active=true
 #      - 不存在或 active=false → exit 0 立即放行
 #   3. 跑 run-pass-cmd.sh
-#      - PASS → 删状态文件、输出 block JSON 让 CC 继续执行 reviewer/commit pipeline
+#      - PASS → 删状态文件、exit 2 让 CC 继续执行 reviewer/commit pipeline
 #      - FAIL → 调 extract-error.sh + early-stop-check.sh
 #        - early-stop → 写 stopped_reason、删状态、exit 0（让 CC 停下，builder 自行 AskUserQuestion）
-#        - 否则 → 更新 iter / hash / count，输出 block JSON 让 CC 继续
+#        - 否则 → 更新 iter / hash / count，exit 2 让 CC 继续修复
 
 set -euo pipefail
 
@@ -150,6 +155,37 @@ ITER=$(grep -E '^iter:' "$STATE_FILE" | head -1 | awk '{print $2}')
 ITER=${ITER:-0}
 NEXT_ITER=$(( ITER + 1 ))
 
+# ---- trace 初始化 ----
+TRACE_FILE="${PROJECT_ROOT}/.claude/loop-trace.jsonl"
+mkdir -p "$(dirname "$TRACE_FILE")" 2>/dev/null || true
+TASK_DESC_SHORT="$(grep -E '^task_description:' "$STATE_FILE" | head -1 | sed -E 's/^task_description:[[:space:]]*//' | head -c 80)"
+START_TS="$(date +%s%N 2>/dev/null || date +%s)"
+
+# trace 写入函数
+write_trace() {
+  local result="$1" stage="${2:-}" error_hash="${3:-}" reason="${4:-}"
+  local end_ts="$(date +%s%N 2>/dev/null || date +%s)"
+  local duration_ms=$(( (end_ts - START_TS) / 1000000 )) 2>/dev/null || duration_ms=0
+  TRACE_FILE="$TRACE_FILE" NEXT_ITER="$NEXT_ITER" RESULT="$result" STAGE="$stage" \
+    ERROR_HASH="$error_hash" REASON="$reason" DURATION_MS="$duration_ms" TASK="$TASK_DESC_SHORT" \
+    python3 -c "
+import json, os, datetime
+line = {
+    'ts': datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    'iter': int(os.environ['NEXT_ITER']),
+    'result': os.environ['RESULT'],
+    'stage': os.environ.get('STAGE', ''),
+    'duration_ms': int(os.environ.get('DURATION_MS', '0')),
+    'error_hash': os.environ.get('ERROR_HASH', ''),
+    'reason': os.environ.get('REASON', ''),
+    'task': os.environ.get('TASK', ''),
+}
+line = {k: v for k, v in line.items() if v != '' and v != 0 or k in ('ts','iter','result')}
+with open(os.environ['TRACE_FILE'], 'a') as f:
+    f.write(json.dumps(line, ensure_ascii=False) + '\n')
+" 2>/dev/null || true
+}
+
 # ---- 3. 跑 PASS_CMD ----
 echo "[builder-loop] 🔄 iter ${NEXT_ITER}: 正在跑 PASS_CMD..." >&2
 RESULT="$(bash "${SKILL_DIR}/run-pass-cmd.sh" "$PROJECT_ROOT" "$NEXT_ITER" || true)"
@@ -165,13 +201,10 @@ if [ "$LAST_LINE" = "PASS" ]; then
     MERGED|NOOP)
       rm -f "$STATE_FILE"
       echo "[builder-loop] ✅ PASS at iter ${NEXT_ITER} (${MERGE_ACTION})" >&2
-      # 输出 block JSON 让 CC 继续执行 reviewer/commit pipeline，而不是停下来等用户输入
-      python3 <<PY
-import json
-msg = "[builder-loop] ✅ PASS_CMD 全部阶段通过（iter ${NEXT_ITER}）。状态文件已清理，循环结束。请继续执行 Builder 后续流程：触发 Reviewer Subagent → 文档更新评估 → 自动 commit → 改动汇总。"
-print(json.dumps({"decision": "block", "reason": msg}))
-PY
-      exit 0
+      write_trace "PASS"
+      # exit 2 让 CC 继续执行 reviewer/commit pipeline（stderr 作为 user message 注入 LLM）
+      echo "[builder-loop] ✅ PASS_CMD 全部阶段通过（iter ${NEXT_ITER}）。状态文件已清理，循环结束。请继续执行 Builder 后续流程：触发 Reviewer Subagent → 文档更新评估 → 自动 commit → 改动汇总。" >&2
+      exit 2
       ;;
     NEED_ARBITRATION)
       # state 里已被 merge-worktree-back.sh 标记 need_arbitration=true
@@ -194,67 +227,50 @@ print(m.group(1) if m else '2')
 " 2>/dev/null || echo "2")"
         [ -n "$MAX_ATT_RAW" ] && MAX_ATT="$MAX_ATT_RAW"
       fi
-      STATE_FILE_ESC="${STATE_FILE}"
-      python3 <<PY
-import json
-their_commits_str = '${THEIR_COMMITS}'
-# 格式化为可读形式（arbiter 看的）
+      # 格式化对方 commits 为可读形式
+      THEIR_COMMITS_TEXT="$(THEIR_COMMITS_RAW="$THEIR_COMMITS" python3 -c "
+import json, os
+raw = os.environ.get('THEIR_COMMITS_RAW', '[]')
 try:
-    tc_list = json.loads(their_commits_str)
+    tc_list = json.loads(raw)
     if tc_list:
         lines = []
         for c in tc_list[:20]:
-            lines.append(f"  - {c.get('hash','?')} {c.get('message','')}")
+            lines.append(f'  - {c.get(\"hash\",\"?\")}: {c.get(\"message\",\"\")}')
             for f in c.get('files', []):
-                lines.append(f"    {f}")
-        their_commits_str = "\\n".join(lines)
+                lines.append(f'    {f}')
+        print('\n'.join(lines))
     else:
-        their_commits_str = "(无对方 commit)"
+        print('(no opponent commits)')
 except Exception:
-    their_commits_str = "(解析失败)"
-params = {
-    "worktree_path": "${WT_PATH}",
-    "main_branch": "${MAIN_BR}",
-    "conflict_files": "${CONFLICT_FILES}",
-    "task_context": """${TASK_CTX}""",
-    "max_attempts": int("${MAX_ATT}"),
-    "state_file": "${STATE_FILE_ESC}",
-    "apply_script": "${SKILL_DIR}/run-apply-arbitration.sh"
-}
-msg = """[builder-loop] ⚠️  PASS_CMD 通过，但 worktree rebase 主干时发生冲突。
+    print('(parse failed)')
+" 2>/dev/null || echo "(parse failed)")"
+      # exit 2 让 CC 继续，stderr 注入仲裁指令
+      cat >&2 <<ARBITER_MSG
+[builder-loop] PASS_CMD 通过，但 worktree rebase 主干时发生冲突。
 
 请执行以下仲裁流程：
 1. spawn arbiter subagent（同步），参数如下：
    subagent_type: arbiter
-   worktree_path: {wt}
-   main_branch: {mb}
-   conflict_files: {cf}
-   task_context: {tc}
-   their_commits: {commits}
+   worktree_path: ${WT_PATH}
+   main_branch: ${MAIN_BR}
+   conflict_files: ${CONFLICT_FILES}
+   task_context: ${TASK_CTX}
+   their_commits:
+${THEIR_COMMITS_TEXT}
 
 2. 保存 arbiter 输出到 /tmp/arbiter-output.txt
 
 3. 调用后处理脚本：
-   bash {script} {sf} /tmp/arbiter-output.txt
+   bash ${SKILL_DIR}/run-apply-arbitration.sh ${STATE_FILE} /tmp/arbiter-output.txt
 
 4. 根据退出码决策：
    APPLIED (exit 0) → 继续 Reviewer/commit 流程
    LOW_CONFIDENCE (exit 1) → AskUserQuestion 让用户决策
-   APPLY_FAILED (exit 2) → 重试（max_attempts={ma}）或交用户
+   APPLY_FAILED (exit 2) → 重试（max_attempts=${MAX_ATT}）或交用户
    MERGE_FAILED (exit 3) → 同上
-""".format(
-    wt=params["worktree_path"],
-    mb=params["main_branch"],
-    cf=params["conflict_files"],
-    tc=params["task_context"][:200],
-    commits=their_commits_str,
-    script=params["apply_script"],
-    sf=params["state_file"],
-    ma=params["max_attempts"]
-)
-print(json.dumps({"decision": "block", "reason": msg}))
-PY
-      exit 0
+ARBITER_MSG
+      exit 2
       ;;
     *)
       echo "[builder-loop] ❌ merge-worktree-back.sh 未知结果：${MERGE_OUT}" >&2
@@ -286,6 +302,7 @@ text = re.sub(r'^active:.*$', 'active: false', text, flags=re.M)
 open(sf, 'w').write(text)
 PY
   echo "[builder-loop] ⛔ early stop at iter ${NEXT_ITER}, reason=${REASON}" >&2
+  write_trace "EARLY_STOP" "" "" "$REASON"
   # 不阻断 CC：让 builder 在下一次 user prompt 时 AskUserQuestion
   exit 0
 fi
@@ -305,15 +322,13 @@ open(sf, 'w').write(text)
 PY
 
 FEEDBACK="$(bash "${SKILL_DIR}/extract-error.sh" "$LOG_PATH" "$STAGE" "$PROJECT_ROOT")"
+write_trace "FAIL" "$STAGE" "$NEW_HASH"
 
-# ---- 输出 block JSON 让 CC 自动继续 ----
-python3 <<PY
-import json, sys
-fb = """${FEEDBACK//\"/\\\"}"""
-msg = f"""[builder-loop iter ${NEXT_ITER}/${ITER}+1] PASS_CMD failed at stage='${STAGE}'.
+# ---- exit 2 让 CC 自动继续，stderr 注入修复指令 ----
+cat >&2 <<FEEDBACK_MSG
+[builder-loop iter ${NEXT_ITER}] PASS_CMD failed at stage='${STAGE}'.
 请根据下面的失败信息修复代码。修复完成后会自动再跑一轮 PASS_CMD。
 
-{fb}
-"""
-print(json.dumps({"decision": "block", "reason": msg}))
-PY
+${FEEDBACK}
+FEEDBACK_MSG
+exit 2
