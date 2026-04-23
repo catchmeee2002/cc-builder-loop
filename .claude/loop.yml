@@ -1,0 +1,13 @@
+# 由 builder-loop init 向导生成；可手动编辑
+
+pass_cmd:
+  - { stage: "e2e", cmd: "bash skills/builder-loop/fixtures/e2e/test-new-repo-loop.sh", timeout: 120 }
+
+max_iterations: 5
+
+layout:
+  source_dirs: ["scripts", "skills/builder-loop/scripts"]
+  test_dirs: ["skills/builder-loop/fixtures/e2e"]
+
+worktree:
+  enabled: true
