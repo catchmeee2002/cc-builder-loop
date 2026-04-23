@@ -199,11 +199,19 @@ if [ "$LAST_LINE" = "PASS" ]; then
   MERGE_ACTION="$(echo "$MERGE_LAST" | awk '{print $1}')"
   case "$MERGE_ACTION" in
     MERGED|NOOP)
+      # 读 start_head 供 builder 构造 reviewer diff（必须在 rm 前读取）
+      PASS_START_HEAD="$(grep -E '^start_head:' "$STATE_FILE" | head -1 | sed -E 's/^start_head:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/')"
       rm -f "$STATE_FILE"
       echo "[builder-loop] ✅ PASS at iter ${NEXT_ITER} (${MERGE_ACTION})" >&2
       write_trace "PASS"
       # exit 2 让 CC 继续执行 reviewer/commit pipeline（stderr 作为 user message 注入 LLM）
-      echo "[builder-loop] ✅ PASS_CMD 全部阶段通过（iter ${NEXT_ITER}）。状态文件已清理，循环结束。请继续执行 Builder 后续流程：触发 Reviewer Subagent → 文档更新评估 → 自动 commit → 改动汇总。" >&2
+      cat >&2 <<PASS_MSG
+[builder-loop] ✅ PASS_CMD 全部阶段通过（iter ${NEXT_ITER}）。状态文件已清理，循环结束。
+start_head=${PASS_START_HEAD}
+请继续执行 Builder 后续流程：触发 Reviewer Subagent → 文档更新评估 → 自动 commit → 改动汇总。
+⚠️ 重要：如果之前已有 reviewer 在后台运行，其结果基于旧代码（loop 运行前的快照），无效。请忽略旧 reviewer 结果，基于当前 HEAD 重新 spawn reviewer。
+⚠️ Reviewer diff 获取：请使用 git diff ${PASS_START_HEAD}..HEAD（不要用 git diff HEAD，后者在 merge 后为空）。
+PASS_MSG
       exit 2
       ;;
     NEED_ARBITRATION)

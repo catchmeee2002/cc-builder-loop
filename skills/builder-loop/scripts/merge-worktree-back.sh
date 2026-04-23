@@ -126,6 +126,26 @@ cleanup_worktree() {
   git -C "$PROJECT_ROOT" branch -D "$BRANCH" 2>/dev/null || true
 }
 
+# ---- auto-commit：worktree 内未提交改动 → 自动 commit（防 cleanup 丢数据）----
+WT_STATUS="$(git -C "$WORKTREE_PATH" status --porcelain 2>/dev/null || echo "")"
+if [ -n "$WT_STATUS" ]; then
+  ITER_NUM="$(grep -E '^iter:' "$STATE" | head -1 | awk '{print $2}')"
+  ITER_NUM="${ITER_NUM:-0}"
+  git -C "$WORKTREE_PATH" add -A >&2
+  git -C "$WORKTREE_PATH" commit -m "chore(loop): auto-commit iter ${ITER_NUM}" >&2 || {
+    echo "ERROR auto-commit-failed"
+    exit 3
+  }
+fi
+
+# worktree 分支无新 commit（含 auto-commit 后仍未前进）→ NOOP（防 MERGED 假阳性）
+WT_HEAD="$(git -C "$WORKTREE_PATH" rev-parse --short HEAD 2>/dev/null || echo "")"
+if [ "$WT_HEAD" = "$START_HEAD" ]; then
+  cleanup_worktree
+  echo "NOOP"
+  exit 0
+fi
+
 # === 路径 A：主干 HEAD 未变 → 直接 fast-forward ===
 if [ "$CURRENT_HEAD" = "$START_HEAD" ] || git -C "$PROJECT_ROOT" merge-base --is-ancestor "$START_HEAD" HEAD 2>/dev/null; then
   if git -C "$PROJECT_ROOT" merge --ff-only "$BRANCH" >&2; then
