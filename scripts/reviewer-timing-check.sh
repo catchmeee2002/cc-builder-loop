@@ -12,8 +12,14 @@ set -uo pipefail
 
 INPUT="$(cat || echo '{}')"
 
-# 只拦截 reviewer spawn
-SUBAGENT_TYPE=$(printf '%s' "$INPUT" | jq -r '.tool_input.subagent_type // empty' 2>/dev/null || echo "")
+# 只拦截 reviewer spawn（jq 优先，python3 fallback）
+SUBAGENT_TYPE=""
+if command -v jq &>/dev/null; then
+  SUBAGENT_TYPE=$(printf '%s' "$INPUT" | jq -r '.tool_input.subagent_type // empty' 2>/dev/null || echo "")
+fi
+if [ -z "$SUBAGENT_TYPE" ]; then
+  SUBAGENT_TYPE=$(printf '%s' "$INPUT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('tool_input',{}).get('subagent_type',''))" 2>/dev/null || echo "")
+fi
 [ -z "$SUBAGENT_TYPE" ] && exit 0
 [ "$SUBAGENT_TYPE" != "reviewer" ] && exit 0
 

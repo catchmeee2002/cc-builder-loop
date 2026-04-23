@@ -201,6 +201,10 @@ if [ "$LAST_LINE" = "PASS" ]; then
     MERGED|NOOP)
       # 读 start_head 供 builder 构造 reviewer diff（必须在 rm 前读取）
       PASS_START_HEAD="$(grep -E '^start_head:' "$STATE_FILE" | head -1 | sed -E 's/^start_head:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/')"
+      # fallback：旧 state 文件可能无 start_head 字段
+      if [ -z "$PASS_START_HEAD" ]; then
+        PASS_START_HEAD="$(git -C "$PROJECT_ROOT" rev-parse --short HEAD 2>/dev/null || echo "")"
+      fi
       rm -f "$STATE_FILE"
 
       # ---- 预计算 reviewer 参数 → 写入文件，builder 直接消费 ----
