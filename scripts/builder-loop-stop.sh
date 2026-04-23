@@ -202,15 +202,39 @@ if [ "$LAST_LINE" = "PASS" ]; then
       # 读 start_head 供 builder 构造 reviewer diff（必须在 rm 前读取）
       PASS_START_HEAD="$(grep -E '^start_head:' "$STATE_FILE" | head -1 | sed -E 's/^start_head:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/')"
       rm -f "$STATE_FILE"
+
+      # ---- 预计算 reviewer 参数 → 写入文件，builder 直接消费 ----
+      PARAMS_FILE="${PROJECT_ROOT}/.claude/reviewer-params.json"
+      DIFF_FILE="${PROJECT_ROOT}/.claude/reviewer-diff.txt"
+      REVIEWER_FILES="$(git -C "$PROJECT_ROOT" diff --name-only "${PASS_START_HEAD}..HEAD" 2>/dev/null | tr '\n' ',' | sed 's/,$//' || echo "")"
+      PROJ_NAME="$(basename "$PROJECT_ROOT")"
+      mkdir -p "${PROJECT_ROOT}/.claude/review_reports" 2>/dev/null || true
+      REPORT_TS="$(date +%Y%m%d_%H%M%S)"
+      REPORT_PATH="${PROJECT_ROOT}/.claude/review_reports/${PROJ_NAME}_${REPORT_TS}.md"
+      git -C "$PROJECT_ROOT" diff "${PASS_START_HEAD}..HEAD" > "$DIFF_FILE" 2>/dev/null || echo "" > "$DIFF_FILE"
+      PARAMS_FILE="$PARAMS_FILE" PASS_START_HEAD="$PASS_START_HEAD" REVIEWER_FILES="$REVIEWER_FILES" \
+        REPORT_PATH="$REPORT_PATH" DIFF_FILE="$DIFF_FILE" python3 -c "
+import json, os
+params = {
+    'start_head': os.environ['PASS_START_HEAD'],
+    'changed_files': [f for f in os.environ['REVIEWER_FILES'].split(',') if f],
+    'report_path': os.environ['REPORT_PATH'],
+    'diff_file': os.environ['DIFF_FILE'],
+}
+with open(os.environ['PARAMS_FILE'], 'w') as f:
+    json.dump(params, f, indent=2, ensure_ascii=False)
+    f.write('\n')
+" 2>/dev/null || true
       echo "[builder-loop] ✅ PASS at iter ${NEXT_ITER} (${MERGE_ACTION})" >&2
       write_trace "PASS"
       # exit 2 让 CC 继续执行 reviewer/commit pipeline（stderr 作为 user message 注入 LLM）
       cat >&2 <<PASS_MSG
 [builder-loop] ✅ PASS_CMD 全部阶段通过（iter ${NEXT_ITER}）。状态文件已清理，循环结束。
 start_head=${PASS_START_HEAD}
+reviewer_params=${PARAMS_FILE}
 请继续执行 Builder 后续流程：触发 Reviewer Subagent → 文档更新评估 → 自动 commit → 改动汇总。
 ⚠️ 重要：如果之前已有 reviewer 在后台运行，其结果基于旧代码（loop 运行前的快照），无效。请忽略旧 reviewer 结果，基于当前 HEAD 重新 spawn reviewer。
-⚠️ Reviewer diff 获取：请使用 git diff ${PASS_START_HEAD}..HEAD（不要用 git diff HEAD，后者在 merge 后为空）。
+⚠️ Reviewer 参数已预计算到 ${PARAMS_FILE}（含 changed_files/report_path/diff_file），Read 后直接传给 reviewer。diff 用 git diff ${PASS_START_HEAD}..HEAD 或读 ${DIFF_FILE}。
 PASS_MSG
       exit 2
       ;;

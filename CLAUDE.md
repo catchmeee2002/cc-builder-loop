@@ -15,9 +15,10 @@ install.sh 创建以下软链，把仓库文件映射到 CC 运行时路径：
 | `scripts/tester-lock-write.sh` | `~/.claude/scripts/tester-lock-write.sh` | `ln -sf` 逐文件 | SubagentStart hook |
 | `scripts/tester-lock-check.sh` | `~/.claude/scripts/tester-lock-check.sh` | `ln -sf` 逐文件 | PreToolUse hook |
 | `scripts/tester-lock-clear.sh` | `~/.claude/scripts/tester-lock-clear.sh` | `ln -sf` 逐文件 | SubagentStop hook |
+| `scripts/reviewer-timing-check.sh` | `~/.claude/scripts/reviewer-timing-check.sh` | `ln -sf` 逐文件 | PreToolUse hook（Agent） |
 | `agents/tester.md` | `~/.claude/agents/tester.md` | `ln -sf` 逐文件 | tester subagent |
 | `agents/arbiter.md` | `~/.claude/agents/arbiter.md` | `ln -sf` 逐文件 | 仲裁 subagent |
-| *(install.sh)* | `~/.claude/settings.json` hooks 段 | python3 增量合并 | 4 个 hook 条目 |
+| *(install.sh)* | `~/.claude/settings.json` hooks 段 | python3 增量合并 | 5 个 hook 条目 |
 
 **注册的 4 个 hook**：
 
@@ -27,6 +28,7 @@ install.sh 创建以下软链，把仓库文件映射到 CC 运行时路径：
 | SubagentStart | `tester` | tester-lock-write.sh | tester 启动时落隔离锁 |
 | SubagentStop | `tester` | tester-lock-clear.sh | tester 结束时清锁 |
 | PreToolUse | `Read\|Grep\|Glob` | tester-lock-check.sh | 拦截 tester 对 source_dirs 的读操作 |
+| PreToolUse | `Agent` | reviewer-timing-check.sh | 拦截 loop 活跃期的 reviewer spawn |
 
 ## 2. 部署指南
 
@@ -68,11 +70,11 @@ cc-builder-loop/
 ├── install.sh / uninstall.sh   # 部署/卸载
 ├── CLAUDE.md                   # 本文件
 ├── skills/builder-loop/        # CC skill（含 SKILL.md、scripts/、fixtures/e2e/、schema/）
-├── scripts/                    # Stop hook + tester 隔离 hook（4 个 .sh）
+├── scripts/                    # Stop hook + tester 隔离 hook + reviewer 时序 hook（6 个 .sh）
 └── agents/                     # tester.md + arbiter.md
 ```
 
-## 5. 已交付能力（V1.0~V1.5）
+## 5. 已交付能力（V1.0~V1.6）
 
 - 多阶段 PASS_CMD + 智能早停
 - tester 强隔离（hook 锁机制）
@@ -88,6 +90,9 @@ cc-builder-loop/
 - **V1.5**: NDJSON trace（`.claude/loop-trace.jsonl`，每轮记录 iter/stage/result/duration）
 - **V1.5**: 一键 init（`loop-init.sh` 整合 probe + init-loop-config + git init）
 - **V1.5**: E2E 测试（全新仓库端到端验证）
+- **V1.6**: Worktree auto-commit（merge 前自动提交未 commit 改动，防数据丢失）
+- **V1.6**: Reviewer 时序硬门禁（PreToolUse hook 拦截 loop 活跃期的 reviewer spawn）
+- **V1.6**: Reviewer 参数预计算（stop hook PASS 后写 reviewer-params.json，消除 LLM diff 计算依赖）
 
 详见 `skills/builder-loop/README.md`。
 
