@@ -133,9 +133,18 @@ WT_STATUS="$(git -C "$WORKTREE_PATH" status --porcelain 2>/dev/null || echo "")"
 if [ -n "$WT_STATUS" ]; then
   ITER_NUM="$(grep -E '^iter:' "$STATE" | head -1 | awk '{print $2}')"
   ITER_NUM="${ITER_NUM:-0}"
+  # V1.8.3: message 从 state 的 task_description 构造，保留本次改动语义
+  # state schema 用 YAML block scalar（`task_description: |` + 下一行缩进），用 awk 解析
+  TASK_DESC="$(awk '/^task_description: \|/{getline; sub(/^[[:space:]]+/, ""); print; exit}' "$STATE" 2>/dev/null || echo "")"
+  if [ -n "$TASK_DESC" ]; then
+    COMMIT_MSG="chore(loop): [cr_id_skip] Auto-commit ${TASK_DESC}"
+  else
+    # 降级：task_description 为空时回退旧格式（向后兼容）
+    COMMIT_MSG="chore(loop): [cr_id_skip] Auto-commit iter ${ITER_NUM}"
+  fi
   git -C "$WORKTREE_PATH" add -A >&2
-  # V1.8.1: commit message 加 [cr_id_skip] 兼容启用了 commit-msg 校验 hook 的项目
-  git -C "$WORKTREE_PATH" commit -m "chore(loop): [cr_id_skip] Auto-commit iter ${ITER_NUM}" >&2 || {
+  # 用 -F - 从 stdin 读避免 TASK_DESC 中特殊字符（引号/反引号/$）被 shell 二次展开
+  printf '%s\n' "$COMMIT_MSG" | git -C "$WORKTREE_PATH" commit -F - >&2 || {
     echo "ERROR auto-commit-failed"
     exit 3
   }

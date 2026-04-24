@@ -109,6 +109,25 @@ if [ -z "$PROJECT_ROOT" ]; then
   exit 0
 fi
 
+# ---- V1.8.3: Stop hook 并发互斥（per-slug flock）----
+# 根因：CC 可能并发触发 Stop hook，Hook A 跑 PASS_CMD 时 Hook B 已启动读 state，
+#       A 完成后 rm state → B 内部 grep 踩空（复现 session d9ef1004 末尾 grep 报错）
+# 策略：per-slug 粒度互斥，抢不到锁立即 exit 0 静默放行（让正在跑的 A 独占完成）
+# bootstrap 场景（FOUND_LOOP_ONLY=true）固定用 __main__ slug 锁，天然互斥 setup race
+SLUG="__main__"
+if [ -n "$STATE_FILE" ]; then
+  SLUG="$(basename "$STATE_FILE" .yml 2>/dev/null || echo "__main__")"
+fi
+LOCK_FILE="${PROJECT_ROOT}/.claude/builder-loop/stop-hook-${SLUG}.lock"
+mkdir -p "$(dirname "$LOCK_FILE")" 2>/dev/null || true
+# 注意：不能写 `exec 200>FILE 2>/dev/null`，bash 会把 `2>/dev/null` 视为"空 exec 全局 FD 重定向"
+#       永久劫持主 shell 的 stderr，导致后续日志全部丢失
+exec 200>"$LOCK_FILE"
+if ! flock -n 200 2>/dev/null; then
+  # 另一 Stop hook 正持本 slug 锁，本次静默放行
+  exit 0
+fi
+
 # ---- 兜底激活：loop.yml 存在但无状态文件 ----
 if [ "$FOUND_LOOP_ONLY" = "true" ]; then
   # 检测是否有代码改动（未提交 或 近 30 分钟内的 commit）

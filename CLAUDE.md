@@ -108,6 +108,10 @@ cc-builder-loop/
   - Stop hook bootstrap 分支新增「已处理 HEAD 游标」（`.claude/builder-loop/last_processed_head`）：PASS / 异常 merge / EARLY_STOP 三处出口写入当前 HEAD，下次 Stop 时若 HEAD 未前进且无未提交改动则静默放行
   - 消除"推完 commit 后 30 分钟内每次对话反复触发 NOOP 空转 bootstrap"的自激循环（复现 session `3d62eb57`）
   - 降级保证：游标文件缺失/损坏/HEAD 读不到都自动退回旧行为
+- **V1.8.3**: Stop hook flock 互斥 + auto-commit message 语义化
+  - Stop hook 按 per-slug 粒度加 `flock -n`（`.claude/builder-loop/stop-hook-<slug>.lock`），抢不到锁 `exit 0` 静默放行，修 CC 并发触发时 `run-pass-cmd` 内部 grep 踩空 `rm state` 的 TOCTOU race（复现 session `d9ef1004` 末尾 `grep state: No such file`）
+  - `merge-worktree-back.sh` 的 auto-commit message 从 state 的 `task_description`（YAML block scalar）解析，构造 `chore(loop): [cr_id_skip] Auto-commit ${task}`，不再固化为 `Auto-commit iter N` 丢失语义
+  - 前提：flock 语义要求本地文件系统（ext4/xfs 等），NFS/FUSE 场景未验证
 
 详见 `skills/builder-loop/README.md`。
 
