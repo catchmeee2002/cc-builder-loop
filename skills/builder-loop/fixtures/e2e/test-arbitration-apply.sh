@@ -58,8 +58,10 @@ arbitration:
 LYML
 
   # 写 state file
-  cat > .claude/builder-loop.local.md <<STEOF
+  mkdir -p .claude/builder-loop/state
+  cat > .claude/builder-loop/state/test-wt.yml <<STEOF
 active: true
+slug: "test-wt"
 iter: 1
 max_iter: 3
 project_root: "${repo}"
@@ -83,7 +85,7 @@ STEOF
 echo "=== 场景 1：信心 high + 有效 patch ==="
 REPO1="${TMPDIR}/repo1"
 setup_repo "$REPO1" > /dev/null
-STATE1="${REPO1}/.claude/builder-loop.local.md"
+STATE1="${REPO1}/.claude/builder-loop/state/test-wt.yml"
 ARB_OUT1="${TMPDIR}/arb-out-1.txt"
 
 # 构造 mock arbiter 输出：信心 high + 有效 patch
@@ -125,7 +127,7 @@ fi
 echo "=== 场景 2：信心 low → LOW_CONFIDENCE ==="
 REPO2="${TMPDIR}/repo2"
 setup_repo "$REPO2" > /dev/null
-STATE2="${REPO2}/.claude/builder-loop.local.md"
+STATE2="${REPO2}/.claude/builder-loop/state/test-wt.yml"
 ARB_OUT2="${TMPDIR}/arb-out-2.txt"
 
 cat > "$ARB_OUT2" <<'ARBEOF'
@@ -156,7 +158,7 @@ fi
 echo "=== 场景 3：信心 high + 坏 patch ==="
 REPO3="${TMPDIR}/repo3"
 setup_repo "$REPO3" > /dev/null
-STATE3="${REPO3}/.claude/builder-loop.local.md"
+STATE3="${REPO3}/.claude/builder-loop/state/test-wt.yml"
 ARB_OUT3="${TMPDIR}/arb-out-3.txt"
 
 # 构造无效 patch（引用不存在的文件）

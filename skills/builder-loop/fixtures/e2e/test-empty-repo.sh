@@ -7,7 +7,7 @@
 #
 # 期望：
 #   - setup-builder-loop.sh exit 0
-#   - state file .claude/builder-loop.local.md 被生成
+#   - state file .claude/builder-loop/state/__main__.yml 被生成（bare 模式，无 git commit 走 no-git 路径）
 #   - source_dirs / test_dirs 字段值为空字符串（不报错）
 #
 # 用法：bash test-empty-repo.sh
@@ -43,7 +43,7 @@ if ! bash "$SETUP_SCRIPT" "test-empty-repo-task" >/tmp/setup-empty.log 2>&1; the
   exit 1
 fi
 
-STATE_FILE=".claude/builder-loop.local.md"
+STATE_FILE=".claude/builder-loop/state/__main__.yml"
 if [ ! -f "$STATE_FILE" ]; then
   echo "❌ FAIL: state file 未生成: $STATE_FILE" >&2
   exit 1

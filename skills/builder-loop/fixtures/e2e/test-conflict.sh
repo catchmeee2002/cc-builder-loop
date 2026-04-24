@@ -45,9 +45,11 @@ git add shared.txt
 git -c core.hooksPath=/dev/null commit -q -m "main edit"
 
 # === 写 state file ===
-STATE="$TMPDIR/.claude/builder-loop.local.md"
+mkdir -p "$TMPDIR/.claude/builder-loop/state"
+STATE="$TMPDIR/.claude/builder-loop/state/test-wt.yml"
 cat > "$STATE" <<STEOF
 active: true
+slug: "test-wt"
 iter: 1
 max_iter: 3
 project_root: "${TMPDIR}"

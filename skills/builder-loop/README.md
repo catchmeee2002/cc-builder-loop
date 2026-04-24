@@ -71,7 +71,7 @@
                       # 建议加入项目 .gitignore
 ```
 
-运行时还会出现 `<项目根>/.claude/builder-loop.local.md`（状态文件），同样应 .gitignore（local 后缀本就该忽略）。
+运行时还会出现 `<项目根>/.claude/builder-loop/state/*.yml`（每 loop 一份状态文件，多状态并行模式），建议把 `builder-loop/` 整个目录加入 .gitignore。
 
 `loop.yml` 字段以 `schema/loop.schema.yml` 为准，最小示例：
 

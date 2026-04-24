@@ -75,8 +75,8 @@ echo "--- Step 3: setup-builder-loop ---"
 cd "$TMP"
 bash "$SCRIPT_DIR/setup-builder-loop.sh" --no-worktree "E2E test task" 2>&1 | tail -3
 
-assert "状态文件存在" "[ -f '$TMP/.claude/builder-loop.local.md' ]"
-assert "active=true" "grep -q 'active: true' '$TMP/.claude/builder-loop.local.md'"
+assert "状态文件存在" "[ -f '$TMP/.claude/builder-loop/state/__main__.yml' ]"
+assert "active=true" "grep -q 'active: true' '$TMP/.claude/builder-loop/state/__main__.yml'"
 
 # ---- Step 4: run-pass-cmd → 预期 FAIL（语法错误）----
 echo "--- Step 4: run-pass-cmd (预期 FAIL) ---"

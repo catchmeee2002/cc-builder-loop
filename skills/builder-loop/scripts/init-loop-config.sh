@@ -119,7 +119,7 @@ add_gitignore() {
     echo "[init-loop] .gitignore 已加：$pattern" >&2
   fi
 }
-add_gitignore ".claude/builder-loop.local.md"
+add_gitignore ".claude/builder-loop/"
 add_gitignore ".claude/loop-runs/"
 
 # T2.8：worktree.enabled=true 时把 base_dir 加进 .gitignore（向导联动）

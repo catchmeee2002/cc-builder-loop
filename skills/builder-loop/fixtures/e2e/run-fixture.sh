@@ -52,8 +52,9 @@ if ! bash "$SCRIPTS/setup-builder-loop.sh" "e2e fixture test" > /dev/null 2>&1; 
   exit 1
 fi
 
-STATE=".claude/builder-loop.local.md"
-[ -f "$STATE" ] || { echo "❌ FAIL: state file not created" >&2; exit 1; }
+STATE_DIR=".claude/builder-loop/state"
+STATE="$(ls -1 "$STATE_DIR"/*.yml 2>/dev/null | head -1 || true)"
+[ -n "$STATE" ] && [ -f "$STATE" ] || { echo "❌ FAIL: state file not created under $STATE_DIR" >&2; exit 1; }
 
 if bash "$SCRIPTS/run-pass-cmd.sh" "$TMPDIR" 1 > /dev/null 2>&1; then
   echo "❌ FAIL: PASS_CMD 期望失败但成功了" >&2

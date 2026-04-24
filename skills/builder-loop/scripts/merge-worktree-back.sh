@@ -124,6 +124,8 @@ cleanup_worktree() {
     rm -rf "$WORKTREE_PATH" 2>/dev/null || true
   git -C "$PROJECT_ROOT" worktree prune 2>/dev/null || true
   git -C "$PROJECT_ROOT" branch -D "$BRANCH" 2>/dev/null || true
+  # 清理对应 state 文件（多状态模式下每 worktree 一份）
+  rm -f "$STATE" 2>/dev/null || true
 }
 
 # ---- auto-commit：worktree 内未提交改动 → 自动 commit（防 cleanup 丢数据）----

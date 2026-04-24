@@ -41,27 +41,34 @@ if [ -z "$CWD" ] || [ ! -d "$CWD" ]; then
   CWD="$(pwd)"
 fi
 
-# 向上找含 .claude/builder-loop.local.md 的目录（最多 5 级）
-find_state_file() {
-  local dir="$1"
-  for _ in 1 2 3 4 5; do
-    if [ -f "${dir}/.claude/builder-loop.local.md" ]; then
-      echo "${dir}/.claude/builder-loop.local.md"
-      return 0
-    fi
-    [ "$dir" = "/" ] && return 1
-    dir="$(dirname "$dir")"
+# 用 locate-state.sh 按 CWD 定位 state（多状态并行模式）
+SKILL_DIR="${HOME}/.claude/skills/builder-loop/scripts"
+LOCATE_SCRIPT="${SKILL_DIR}/locate-state.sh"
+if [ ! -f "$LOCATE_SCRIPT" ]; then
+  for _cand in \
+    "$(dirname "$0")/../skills/builder-loop/scripts/locate-state.sh" \
+    "$(pwd)/skills/builder-loop/scripts/locate-state.sh"; do
+    [ -f "$_cand" ] && { LOCATE_SCRIPT="$_cand"; break; }
   done
-  return 1
-}
+fi
 
-STATE_FILE="$(find_state_file "$CWD" || echo "")"
+STATE_FILE=""
+if [ -f "$LOCATE_SCRIPT" ]; then
+  STATE_FILE="$(bash "$LOCATE_SCRIPT" "$CWD" 2>/dev/null || echo "")"
+fi
+
 if [ -z "$STATE_FILE" ]; then
   log "no state file found from cwd=$CWD, skip"
   exit 0
 fi
 
-PROJECT_ROOT="$(dirname "$(dirname "$STATE_FILE")")"
+# state 在 <PROJECT_ROOT>/.claude/builder-loop/state/<slug>.yml → 回溯 4 层到 PROJECT_ROOT
+# 优先从 state 内 project_root 字段读（更可靠）
+PROJECT_ROOT="$(grep -E '^project_root:' "$STATE_FILE" | head -1 | sed -E 's/^project_root:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/')"
+if [ -z "$PROJECT_ROOT" ] || [ ! -d "$PROJECT_ROOT" ]; then
+  # fallback: state/<slug>.yml → ../../.. = project_root
+  PROJECT_ROOT="$(cd "$(dirname "$STATE_FILE")/../../.." 2>/dev/null && pwd -P || echo "")"
+fi
 
 # 解析 source_dirs（state file 中：source_dirs: "src,lib"）
 SRC_RAW=$(grep -E '^source_dirs:' "$STATE_FILE" | sed -E 's/^source_dirs:[[:space:]]*"?([^"]*)"?$/\1/' || echo "")

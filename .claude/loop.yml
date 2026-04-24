@@ -2,6 +2,7 @@
 
 pass_cmd:
   - { stage: "e2e", cmd: "bash skills/builder-loop/fixtures/e2e/test-new-repo-loop.sh", timeout: 120 }
+  - { stage: "parallel", cmd: "bash skills/builder-loop/fixtures/e2e/test-parallel-loop.sh", timeout: 120 }
 
 max_iterations: 5
 

@@ -23,23 +23,22 @@ fi
 [ -z "$SUBAGENT_TYPE" ] && exit 0
 [ "$SUBAGENT_TYPE" != "reviewer" ] && exit 0
 
-# 从 CWD 向上最多 5 层找 builder-loop.local.md
-CWD="$(pwd)"
-find_state() {
-  local dir="$1" i=0
-  while [ "$i" -lt 5 ]; do
-    if [ -f "${dir}/.claude/builder-loop.local.md" ]; then
-      echo "${dir}/.claude/builder-loop.local.md"
-      return 0
-    fi
-    [ "$dir" = "/" ] && return 1
-    dir="$(dirname "$dir")"
-    i=$((i+1))
-  done
-  return 1
-}
+# 用 locate-state.sh 按 CWD 定位对应的 state（多状态并行模式）
+# 关键点：只拦截"当前 cwd 所属 worktree 的 state"，不拦截同项目内其他 worktree 的 loop
+SKILL_DIR="${HOME}/.claude/skills/builder-loop/scripts"
+LOCATE_SCRIPT="${SKILL_DIR}/locate-state.sh"
 
-STATE_FILE="$(find_state "$CWD" || echo "")"
+# 本地部署 fallback（用户直接跑 cc-builder-loop 仓库场景）
+if [ ! -f "$LOCATE_SCRIPT" ]; then
+  for _cand in \
+    "$(dirname "$0")/../skills/builder-loop/scripts/locate-state.sh" \
+    "$(pwd)/skills/builder-loop/scripts/locate-state.sh"; do
+    [ -f "$_cand" ] && { LOCATE_SCRIPT="$_cand"; break; }
+  done
+fi
+[ ! -f "$LOCATE_SCRIPT" ] && exit 0  # 找不到 locate 脚本 → 放行
+
+STATE_FILE="$(bash "$LOCATE_SCRIPT" "$(pwd)" 2>/dev/null || echo "")"
 [ -z "$STATE_FILE" ] && exit 0
 
 # 检查 loop 是否活跃

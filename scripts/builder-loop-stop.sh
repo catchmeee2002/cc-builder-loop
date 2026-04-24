@@ -38,52 +38,44 @@ INPUT="$(cat)"
 CWD="$(echo "$INPUT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('cwd',''))" 2>/dev/null || echo "")"
 [ -z "$CWD" ] && CWD="$(pwd)"
 
-# ---- 定位 state file + project_root ----
-# 优先级：
-#   1. cwd/.claude/builder-loop.local.md 直接命中
-#   2. 从 cwd 向上最多 5 层找含 .claude/loop.yml 的目录作为 PROJECT_ROOT
+# ---- 定位 state file + project_root（多状态并行模式）----
+# 策略：
+#   1. 用 locate-state.sh 按 CWD 找对应 state：命中 → 走正常流程
+#   2. 未命中但向上 5 层能找到 .claude/loop.yml → 兜底激活（setup 一个 bare loop）
 #   3. 都找不到 → exit 0（未接入场景）
-# 命中后再读 state 里的 project_root 字段作为后续路径锚点（worktree / log 等）。
-FOUND_LOOP_ONLY=false
-find_project_root() {
-  local start="$1"
-  local depth="${2:-5}"
-  local dir="$start"
-  local i=0
-  # 第一轮：找 state file + loop.yml 都存在的目录（现有行为）
-  while [ "$i" -lt "$depth" ]; do
-    if [ -f "${dir}/.claude/builder-loop.local.md" ] && [ -f "${dir}/.claude/loop.yml" ]; then
-      echo "$dir"
-      return 0
-    fi
-    [ "$dir" = "/" ] && break
-    dir="$(dirname "$dir")"
-    i=$(( i + 1 ))
-  done
-  # 第二轮 fallback：找只有 loop.yml 的目录（兜底激活用）
-  dir="$start"
-  i=0
-  while [ "$i" -lt "$depth" ]; do
-    if [ -f "${dir}/.claude/loop.yml" ] && [ ! -f "${dir}/.claude/builder-loop.local.md" ]; then
-      FOUND_LOOP_ONLY=true
-      echo "$dir"
-      return 0
-    fi
-    [ "$dir" = "/" ] && return 1
-    dir="$(dirname "$dir")"
-    i=$(( i + 1 ))
-  done
-  return 1
-}
+LOCATE_SCRIPT="${SKILL_DIR}/locate-state.sh"
+[ ! -f "$LOCATE_SCRIPT" ] && LOCATE_SCRIPT="$HOME/.claude/skills/builder-loop/scripts/locate-state.sh"
 
+FOUND_LOOP_ONLY=false
 PROJECT_ROOT=""
-if [ -f "${CWD}/.claude/builder-loop.local.md" ]; then
-  PROJECT_ROOT="$CWD"
-else
-  PROJECT_ROOT="$(find_project_root "$CWD" 5 || true)"
+STATE_FILE=""
+
+if [ -f "$LOCATE_SCRIPT" ]; then
+  STATE_FILE="$(bash "$LOCATE_SCRIPT" "$CWD" 2>/dev/null || echo "")"
 fi
 
-# 未接入场景（PROJECT_ROOT 完全找不到）→ 静默放行
+if [ -n "$STATE_FILE" ]; then
+  # 命中 state → 从 state 读 project_root
+  PROJECT_ROOT="$(grep -E '^project_root:' "$STATE_FILE" | head -1 | sed -E 's/^project_root:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/')"
+  # fallback：state 路径回溯 .../.claude/builder-loop/state/<slug>.yml → 上 3 层
+  if [ -z "$PROJECT_ROOT" ] || [ ! -d "$PROJECT_ROOT" ]; then
+    PROJECT_ROOT="$(cd "$(dirname "$STATE_FILE")/../../.." 2>/dev/null && pwd -P || echo "")"
+  fi
+else
+  # 没 state，看能否向上找到 loop.yml（兜底激活前提）
+  _d="$CWD"
+  for _i in 1 2 3 4 5; do
+    if [ -f "${_d}/.claude/loop.yml" ]; then
+      PROJECT_ROOT="$_d"
+      FOUND_LOOP_ONLY=true
+      break
+    fi
+    [ "$_d" = "/" ] && break
+    _d="$(dirname "$_d")"
+  done
+fi
+
+# 未接入场景 → 静默放行
 if [ -z "$PROJECT_ROOT" ]; then
   exit 0
 fi
@@ -132,22 +124,14 @@ if [ "$FOUND_LOOP_ONLY" = "true" ]; then
     echo "[builder-loop] ⚠️  兜底激活 setup 失败，放行" >&2
     exit 0
   fi
-  # setup 成功 → 状态文件已创建，继续走正常流程
+  # setup 成功 → state 文件已在新目录创建（bare 模式 slug=__main__）
+  STATE_FILE="${PROJECT_ROOT}/.claude/builder-loop/state/__main__.yml"
 fi
 
-STATE_FILE="${PROJECT_ROOT}/.claude/builder-loop.local.md"
-
-# state file 仍不存在（兜底激活 setup 可能写了不同路径）→ 放行
+# state file 仍不存在 → 放行
 if [ ! -f "$STATE_FILE" ]; then
   echo "[builder-loop] ⚠️  兜底激活后状态文件未出现在预期路径：${STATE_FILE}，放行" >&2
   exit 0
-fi
-
-# 优先用 state 里写的 project_root（绝对路径），向后兼容 state 无该字段的旧版本
-STATE_PROJECT_ROOT="$(grep -E '^project_root:' "$STATE_FILE" | head -1 | sed -E 's/^project_root:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/')"
-if [ -n "$STATE_PROJECT_ROOT" ] && [ -d "$STATE_PROJECT_ROOT" ]; then
-  PROJECT_ROOT="$STATE_PROJECT_ROOT"
-  STATE_FILE="${PROJECT_ROOT}/.claude/builder-loop.local.md"
 fi
 
 
