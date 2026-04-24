@@ -126,6 +126,9 @@ call_stop_hook "$TMP" "$ERR4" || EC4=$?
 
 assert "第 4 次 exit 2（HAS_DIFF 优先于游标）" "[ '$EC4' -eq 2 ]"
 assert "第 4 次 stderr 含 '兜底激活'" "grep -q '兜底激活' '$ERR4'"
+# HAS_DIFF 路径 bootstrap 后 PASS_CMD 仍是 true → 进 PASS 分支写游标 → 游标值应是当前 HEAD（HEAD2）
+# 未提交改动不影响 commit hash，所以游标应仍等于 HEAD2
+assert "第 4 次游标仍等于 HEAD2（HAS_DIFF 不改变 HEAD）" "[ \"\$(cat '$CURSOR' 2>/dev/null | tr -d '[:space:]')\" = '$HEAD2' ]"
 
 # ---- Step 6: 游标文件损坏 → 降级为旧行为 ----
 echo "--- Step 6: 游标内容损坏 → 期望降级为旧 bootstrap ----"

@@ -49,6 +49,9 @@ archive_to_legacy() {
 
 # V1.8.2: 写"已处理 HEAD"游标 — 避免同一 commit 反复触发 bootstrap 兜底激活
 # 调用点：PASS / 异常 merge / EARLY_STOP 三处"本轮 loop 结束"的出口
+# 刻意不调用的路径：
+#   ① zombie_inactive（非本轮 loop 归档，HEAD 可能未经处理，写游标会误阻塞下次合法激活）
+#   ② NEED_ARBITRATION（state 未清，下次 Stop 命中 state 走正常流程，不进 bootstrap guard）
 write_processed_cursor() {
   local proj_root="$1"
   local head_sha
