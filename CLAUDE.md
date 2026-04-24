@@ -100,6 +100,10 @@ cc-builder-loop/
   - Stop hook 遇到 `active != true` 的 state → 归档到 `.claude/builder-loop/legacy/<ts>-zombie_inactive.bak` 后放行（原行为是保留僵尸，下次 builder 进场会误判为活跃 loop）
   - EARLY_STOP 路径从"改 active=false + exit 0"改为"归档 + exit 2 + stderr 注入"，builder 当场收到通知立即 AskUserQuestion（原行为需等到下轮 user prompt 才发现）
   - 配合 V1.8 的 per-worktree state 隔离，彻底闭环"同 session 多任务僵尸串味"问题（复现 session `81bdbe27`）
+- **V1.8.2**: 兜底激活 HEAD 游标
+  - Stop hook bootstrap 分支新增「已处理 HEAD 游标」（`.claude/builder-loop/last_processed_head`）：PASS / 异常 merge / EARLY_STOP 三处出口写入当前 HEAD，下次 Stop 时若 HEAD 未前进且无未提交改动则静默放行
+  - 消除"推完 commit 后 30 分钟内每次对话反复触发 NOOP 空转 bootstrap"的自激循环（复现 session `3d62eb57`）
+  - 降级保证：游标文件缺失/损坏/HEAD 读不到都自动退回旧行为
 
 详见 `skills/builder-loop/README.md`。
 

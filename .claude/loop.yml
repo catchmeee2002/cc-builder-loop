@@ -4,6 +4,7 @@ pass_cmd:
   - { stage: "e2e", cmd: "bash skills/builder-loop/fixtures/e2e/test-new-repo-loop.sh", timeout: 120 }
   - { stage: "parallel", cmd: "bash skills/builder-loop/fixtures/e2e/test-parallel-loop.sh", timeout: 120 }
   - { stage: "zombie_selfheal", cmd: "bash skills/builder-loop/fixtures/e2e/test-zombie-selfheal.sh", timeout: 30 }
+  - { stage: "stop_hook_cursor", cmd: "bash skills/builder-loop/fixtures/e2e/test-stop-hook-cursor.sh", timeout: 60 }
 
 max_iterations: 5
 

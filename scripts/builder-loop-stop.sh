@@ -47,6 +47,18 @@ archive_to_legacy() {
   mv "$sf" "${legacy_dir}/${ts}-${reason_safe}.bak" 2>/dev/null || true
 }
 
+# V1.8.2: 写"已处理 HEAD"游标 — 避免同一 commit 反复触发 bootstrap 兜底激活
+# 调用点：PASS / 异常 merge / EARLY_STOP 三处"本轮 loop 结束"的出口
+write_processed_cursor() {
+  local proj_root="$1"
+  local head_sha
+  head_sha="$(git -C "$proj_root" rev-parse HEAD 2>/dev/null || echo "")"
+  if [ -n "$head_sha" ]; then
+    mkdir -p "${proj_root}/.claude/builder-loop" 2>/dev/null || true
+    printf '%s\n' "$head_sha" > "${proj_root}/.claude/builder-loop/last_processed_head" 2>/dev/null || true
+  fi
+}
+
 # ---- 解析 stdin ----
 INPUT="$(cat)"
 CWD="$(echo "$INPUT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('cwd',''))" 2>/dev/null || echo "")"
@@ -119,6 +131,19 @@ if [ "$FOUND_LOOP_ONLY" = "true" ]; then
   # 无任何改动 → 放行（纯对话 stop）
   if [ -z "$HAS_DIFF" ] && [ -z "$HAS_RECENT_COMMIT" ]; then
     exit 0
+  fi
+  # V1.8.2: 已处理 HEAD 游标检查 — 同一 HEAD 不重复兜底激活
+  # 修复场景：推完 commit 后 30 分钟窗口内每次对话都触发 NOOP 空转（session 3d62eb57 复现）
+  # 仅当 HAS_DIFF 为空时游标生效；用户本地仍在改（HAS_DIFF 非空）时不受此限制
+  if [ -z "$HAS_DIFF" ]; then
+    CURSOR_FILE="${PROJECT_ROOT}/.claude/builder-loop/last_processed_head"
+    CURRENT_HEAD="$(git -C "$PROJECT_ROOT" rev-parse HEAD 2>/dev/null || echo "")"
+    if [ -f "$CURSOR_FILE" ] && [ -n "$CURRENT_HEAD" ]; then
+      LAST_HEAD="$(cat "$CURSOR_FILE" 2>/dev/null | head -1 | tr -d '[:space:]')"
+      if [ "$CURRENT_HEAD" = "$LAST_HEAD" ]; then
+        exit 0
+      fi
+    fi
   fi
   # 推断 task_description
   TASK_DESC="auto-activated-by-stop-hook"
@@ -217,6 +242,7 @@ if [ "$LAST_LINE" = "PASS" ]; then
       if [ -z "$PASS_START_HEAD" ]; then
         PASS_START_HEAD="$(git -C "$PROJECT_ROOT" rev-parse --short HEAD 2>/dev/null || echo "")"
       fi
+      write_processed_cursor "$PROJECT_ROOT"
       rm -f "$STATE_FILE"
 
       # ---- 预计算 reviewer 参数 → 写入文件，builder 直接消费 ----
@@ -322,6 +348,7 @@ ARBITER_MSG
       ;;
     *)
       echo "[builder-loop] ❌ merge-worktree-back.sh 未知结果：${MERGE_OUT}" >&2
+      write_processed_cursor "$PROJECT_ROOT"
       rm -f "$STATE_FILE"
       exit 0
       ;;
@@ -343,6 +370,7 @@ if [ "$ESTOP_ACTION" = "STOP" ]; then
   write_trace "EARLY_STOP" "" "" "$REASON"
   # V1.8.1: 不再"改 active=false 留僵尸"，直接归档 + exit 2 注入让 builder 立即 AskUserQuestion
   # 原行为 exit 0 需要 builder 在下一轮 user prompt 时才发现早停；新行为 builder 当场反应
+  write_processed_cursor "$PROJECT_ROOT"
   archive_to_legacy "$STATE_FILE" "early_stop_${REASON}"
   cat >&2 <<EARLY_STOP_MSG
 [builder-loop] ⛔ Auto-loop 早停 (iter=${NEXT_ITER}, reason=${REASON})。状态已归档到 legacy/。
