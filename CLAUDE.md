@@ -74,7 +74,7 @@ cc-builder-loop/
 └── agents/                     # tester.md + arbiter.md
 ```
 
-## 5. 已交付能力（V1.0~V1.7）
+## 5. 已交付能力（V1.0~V1.8）
 
 - 多阶段 PASS_CMD + 智能早停
 - tester 强隔离（hook 锁机制）
@@ -95,6 +95,7 @@ cc-builder-loop/
 - **V1.6**: Reviewer 参数预计算（stop hook PASS 后写 reviewer-params.json，消除 LLM diff 计算依赖）
 - **V1.7**: Reviewer 默认模型 sonnet（兼容 max / copilot 双路径，消除 haiku+xhigh 失败场景）+ Builder retry 错误分类（`effort/reasoning/not supported` 等 API 参数错误直接走兜底，不再盲重试）
 - **V1.7**: E2E 新增 `test-reviewer-compat.sh`（配置 lint + 可选 `--live` smoke）
+- **V1.8**: 多状态并行（state 文件从 `.claude/builder-loop.local.md` 迁移到 `.claude/builder-loop/state/<slug>.yml`；locate-state.sh 按 CWD 定位；单项目可并行多个 loop；migrate-state.sh 一键迁移旧版本）
 
 详见 `skills/builder-loop/README.md`。
 

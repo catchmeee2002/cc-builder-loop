@@ -152,6 +152,7 @@ done
 - **V1.2**（已完成）：改动分级（L1 跳过 loop / L2 正常 / L3 先 tester）
 - **V1.3**（已完成）：任务回顾与知识沉淀（commit 后触发 `/memory`）
 - **V1.7**（已完成）：Reviewer 默认模型升级为 sonnet，消除 haiku + xhigh effort 的不兼容；Builder retry 加错误分类（API 参数错误直接走兜底，不盲重试）；新增 `test-reviewer-compat.sh` 做配置 lint 与可选 live smoke。详见 CLAUDE.md 第 5 节版本清单
+- **V1.8**（已完成）：多状态并行架构（state 文件迁移到 `.claude/builder-loop/state/<slug>.yml`；locate-state.sh 按 CWD 找对应 state；单项目支持并行多个 loop；migrate-state.sh 向后兼容迁移旧版本）；setup-builder-loop.sh 加 flock 防并发竞态；merge-worktree-back.sh 清理时自动删除 state
 - **V2**：短命 orchestrator subagent 替代脚本调度（出现多 agent 仲裁需求时启动）
 - **V3**：独立 daemon 编排多项目（单开仓库 `cc-orchestrator-daemon`，复用本 skill 的契约）
 
