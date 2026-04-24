@@ -97,6 +97,16 @@ if [ "$FOUND_LOOP_ONLY" = "true" ]; then
     # 非 git 仓库 → 放行（无法判断改动）
     exit 0
   fi
+  # ---- 跨 session 污染守门（2026-04-24 新增）----
+  # 已存在 loop/ 前缀的 worktree → 说明别的 session 正在用 loop 或留下孤儿
+  # 兜底激活会误把当前 session 绑到别人的 plan / worktree 上，主仓 state file 被跨 session 污染
+  # 此时宁可放行不续接，让用户人工判断
+  EXISTING_LOOP_WORKTREES="$(git -C "$PROJECT_ROOT" worktree list 2>/dev/null | awk '{print $3}' | grep -c '^\[loop/' || true)"
+  if [ "${EXISTING_LOOP_WORKTREES:-0}" -gt 0 ]; then
+    echo "[builder-loop] ⚠️  检测到 ${EXISTING_LOOP_WORKTREES} 个已存在的 loop/ worktree，跳过兜底激活（避免跨 session 绑错 plan / worktree）" >&2
+    echo "[builder-loop]    如需清理：git -C '$PROJECT_ROOT' worktree list 查看 → git worktree remove <path> 移除" >&2
+    exit 0
+  fi
   HAS_DIFF="$(git -C "$PROJECT_ROOT" diff --stat 2>/dev/null)" || true
   [ -z "$HAS_DIFF" ] && { HAS_DIFF="$(git -C "$PROJECT_ROOT" diff --cached --stat 2>/dev/null)" || true; }
   HAS_RECENT_COMMIT="$(git -C "$PROJECT_ROOT" log --since='30 minutes ago' --oneline 2>/dev/null | head -5)" || true
