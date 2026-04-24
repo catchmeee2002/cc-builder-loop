@@ -107,3 +107,29 @@ cc-builder-loop/
 
 - **不改 CC 源码**：所有功能基于 CC 的 hook / skill / agent 扩展机制实现
 - **可破坏性升级**：升级允许不兼容已接入项目的 loop.yml，但必须手动更新所有已接入项目确保继续可用
+
+## 7. 已知问题 / 排查手册
+
+### 7.1 Stop hook 未触发测试 — 僵尸 state 文件 bug（2026-04-24 定位，V1.8.1 修复）
+
+**现象**：builder 回复"✅ loop 已活跃"，但 Stop hook 没跑测试，session 直接停下（复现 session `81bdbe27`）。
+
+**根因**：Stop hook 每次都正确触发，但读到 `active=false` 的僵尸 state（来自前一个任务手动编辑或早停遗留）后正确地放行了——这是设计行为。真正的问题是**僵尸 state 本身的存在**：同一 CC session 里连续做多个任务时，builder 可能跳过前置 setup，看到旧状态文件就假设"已活跃"，结果消费的是无效的僵尸。
+
+**修复**（V1.8.1）：Stop hook 现在遇到 `active != true` 的 state 从"放行保留"改为"归档到 `legacy/<ts>-zombie_inactive.bak` + 放行"，下次 builder 进场无法再读到僵尸；同时 EARLY_STOP 从"改字段 + exit 0"改为"归档 + exit 2 注入"，让 builder 当场收到通知。
+
+**排查步骤**：
+1. 用 `ls -la <project_root>/.claude/builder-loop/` 查看是否有 `state/` 或 `legacy/` 目录
+2. 若有 `legacy/*.bak`，用 `tail -20 /tmp/builder-loop-stop-debug.log` 查 hook 退出原因
+3. 若日志显示 `active=false` 或 `stopped_reason` 存在，证实是僵尸 → V1.8.1 修复已生效
+4. 若日志显示其他退出原因（如 `no_project_root`），按日志的 `EXIT_REASON` 字段诊断
+
+### 7.2 Commit-msg hook 拦截导致 auto-commit 失败
+
+**现象**：loop 跑到 merge-worktree-back.sh 时失败，错误信息含 "commit message" 或 "cr_id_skip"。
+
+**根因**：当项目启用了严格的 commit-msg hook（如 guard-commit-msg.sh）时，auto-commit message 的格式必须合规。V1.8 的 message `"chore(loop): auto-commit iter N"` 不含必要的 `[cr_id_skip]` 标记，被 hook 拦截。
+
+**修复**（V1.8.1）：merge-worktree-back.sh 的 auto-commit message 改为 `"chore(loop): [cr_id_skip] Auto-commit iter N"`，兼容所有启用 msg hook 的项目。
+
+**排查步骤**：检查 merge-worktree-back.sh 第 138 行的 commit message，应含 `[cr_id_skip]` 标记。

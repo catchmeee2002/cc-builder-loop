@@ -148,4 +148,4 @@ PASS → `✅ 配置可用`；FAIL → `⚠️ smoke test 失败，请检查`（
 
 ## 版本交付历史
 
-详见 `README.md` 第 7 节。涵盖 V1.0 基础循环、V1.1 强隔离+worktree+仲裁、V1.2 改动分级、V1.3 任务回顾、V1.7 reviewer 模型升级、V1.8 多状态并行架构。
+详见 `README.md` 第 7 节。涵盖 V1.0 基础循环、V1.1 强隔离+worktree+仲裁、V1.2 改动分级、V1.3 任务回顾、V1.7 reviewer 模型升级、V1.8 多状态并行架构、V1.8.1 僵尸 state 自愈 + EARLY_STOP 立即通知。
