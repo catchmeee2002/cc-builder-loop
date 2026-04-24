@@ -63,6 +63,10 @@ ls -la ~/.claude/skills/builder-loop/SKILL.md  # 应指向本仓库
 
 **路径约定**：所有脚本引用都通过 `~/.claude/` 前缀的运行时路径（如 `~/.claude/skills/builder-loop/scripts/xxx.sh`），不直接引用仓库路径。
 
+**解耦方向**（未来可选，现状不变；改 loop 行为要跨两仓同步是当前痛点）：
+- **C 契约化** — cc-builder-loop 声明对 dotfiles `builder.md` 的段落契约 + E2E 加 `check-prompt-sync.sh` 校验
+- **D 片段注入** — cc-builder-loop 持有 loop 相关 prompt 片段，`install.sh` 注入 dotfiles `builder.md` 的锚点之间，代码 + prompt 同仓改原子
+
 ## 4. 目录结构
 
 ```
