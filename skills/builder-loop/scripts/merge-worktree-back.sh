@@ -134,7 +134,8 @@ if [ -n "$WT_STATUS" ]; then
   ITER_NUM="$(grep -E '^iter:' "$STATE" | head -1 | awk '{print $2}')"
   ITER_NUM="${ITER_NUM:-0}"
   git -C "$WORKTREE_PATH" add -A >&2
-  git -C "$WORKTREE_PATH" commit -m "chore(loop): auto-commit iter ${ITER_NUM}" >&2 || {
+  # V1.8.1: commit message 加 [cr_id_skip] 兼容启用了 commit-msg 校验 hook 的项目
+  git -C "$WORKTREE_PATH" commit -m "chore(loop): [cr_id_skip] Auto-commit iter ${ITER_NUM}" >&2 || {
     echo "ERROR auto-commit-failed"
     exit 3
   }

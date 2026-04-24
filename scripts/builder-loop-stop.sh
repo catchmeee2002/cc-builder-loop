@@ -33,6 +33,20 @@ set -euo pipefail
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../skills/builder-loop/scripts" && pwd 2>/dev/null)" || \
   SKILL_DIR="$HOME/.claude/skills/builder-loop/scripts"
 
+# V1.8.1: state 归档到 legacy（替代"留着 active=false 僵尸"）
+# 两个调用点：① 发现 active!=true 的僵尸 state；② EARLY_STOP 不再改字段，直接归档
+archive_to_legacy() {
+  local sf="$1" reason="$2"
+  [ -f "$sf" ] || return 0
+  local legacy_dir
+  legacy_dir="$(dirname "$sf")/../legacy"
+  mkdir -p "$legacy_dir" 2>/dev/null || true
+  local ts reason_safe
+  ts="$(date +%Y%m%d-%H%M%S)"
+  reason_safe="$(printf '%s' "$reason" | tr -c 'a-zA-Z0-9_' '_')"
+  mv "$sf" "${legacy_dir}/${ts}-${reason_safe}.bak" 2>/dev/null || true
+}
+
 # ---- 解析 stdin ----
 INPUT="$(cat)"
 CWD="$(echo "$INPUT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('cwd',''))" 2>/dev/null || echo "")"
@@ -141,6 +155,10 @@ if [ ! -f "$STATE_FILE" ]; then
 fi
 ACTIVE="$(grep -E '^active:' "$STATE_FILE" | head -1 | awk '{print $2}')"
 if [ "$ACTIVE" != "true" ]; then
+  # V1.8.1: 非活跃 state 视为僵尸（手动编辑 / 早停遗留），归档后放行
+  # 防止下次 builder 进场误把僵尸当活跃 loop
+  echo "[builder-loop] 🧟 state active='${ACTIVE}' (非 true)，归档到 legacy/ 后放行" >&2
+  archive_to_legacy "$STATE_FILE" "zombie_inactive"
   exit 0
 fi
 
@@ -321,20 +339,24 @@ ESTOP_ACTION="$(echo "$ESTOP" | awk '{print $1}')"
 
 if [ "$ESTOP_ACTION" = "STOP" ]; then
   REASON="$(echo "$ESTOP" | awk '{print $2}')"
-  # 用 python 安全更新 yaml 字段（防特殊字符破坏）
-  STATE_FILE="$STATE_FILE" REASON="$REASON" python3 - <<'PY'
-import os, re
-sf = os.environ['STATE_FILE']
-reason = os.environ['REASON']
-text = open(sf).read()
-text = re.sub(r'^stopped_reason:.*$', f'stopped_reason: "{reason}"', text, flags=re.M)
-text = re.sub(r'^active:.*$', 'active: false', text, flags=re.M)
-open(sf, 'w').write(text)
-PY
   echo "[builder-loop] ⛔ early stop at iter ${NEXT_ITER}, reason=${REASON}" >&2
   write_trace "EARLY_STOP" "" "" "$REASON"
-  # 不阻断 CC：让 builder 在下一次 user prompt 时 AskUserQuestion
-  exit 0
+  # V1.8.1: 不再"改 active=false 留僵尸"，直接归档 + exit 2 注入让 builder 立即 AskUserQuestion
+  # 原行为 exit 0 需要 builder 在下一轮 user prompt 时才发现早停；新行为 builder 当场反应
+  archive_to_legacy "$STATE_FILE" "early_stop_${REASON}"
+  cat >&2 <<EARLY_STOP_MSG
+[builder-loop] ⛔ Auto-loop 早停 (iter=${NEXT_ITER}, reason=${REASON})。状态已归档到 legacy/。
+请立即用 AskUserQuestion 询问用户下一步：
+  - 继续手动调试（loop 已停，代码仍在当前 worktree）
+  - 放弃本次任务（后续可 git worktree remove）
+  - 重新进 loop（调 setup-builder-loop.sh 起新 slug）
+早停原因说明：
+  max_iter                 — 达最大迭代上限
+  no_progress              — 连续多轮错误 hash 完全一致，builder 无进展
+  error_growth             — 错误数持续增长
+  suspected_test_tampering — 疑似修改测试绕 PASS_CMD
+EARLY_STOP_MSG
+  exit 2
 fi
 
 # CONTINUE → 更新 state，注入反馈
