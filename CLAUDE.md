@@ -20,7 +20,7 @@ install.sh 创建以下软链，把仓库文件映射到 CC 运行时路径：
 | `agents/arbiter.md` | `~/.claude/agents/arbiter.md` | `ln -sf` 逐文件 | 仲裁 subagent |
 | *(install.sh)* | `~/.claude/settings.json` hooks 段 | python3 增量合并 | 5 个 hook 条目 |
 
-**注册的 4 个 hook**：
+**注册的 5 个 hook**：
 
 | Hook 类型 | Matcher | 脚本 | 作用 |
 |-----------|---------|------|------|
@@ -70,7 +70,7 @@ cc-builder-loop/
 ├── install.sh / uninstall.sh   # 部署/卸载
 ├── CLAUDE.md                   # 本文件
 ├── skills/builder-loop/        # CC skill（含 SKILL.md、scripts/、fixtures/e2e/、schema/）
-├── scripts/                    # Stop hook + tester 隔离 hook + reviewer 时序 hook（6 个 .sh）
+├── scripts/                    # Stop hook + tester 隔离 hook + reviewer 时序 hook（5 个 .sh）
 └── agents/                     # tester.md + arbiter.md
 ```
 
