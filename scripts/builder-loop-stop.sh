@@ -252,14 +252,18 @@ LAST_LINE="$(echo "$RESULT" | tail -1)"
 
 # ---- 3a. PASS → merge worktree 回主干 / 删状态、放行 ----
 if [ "$LAST_LINE" = "PASS" ]; then
+  # V1.8.3 hotfix: 预读 start_head — merge-worktree-back.sh 的 cleanup_worktree 会 rm state，
+  # 后续再 grep state 会抛 `No such file` 到用户屏幕（复现 session d9ef1004 `grep: .../state.yml`）
+  # 安全性：进入此分支前 STATE_FILE 已通过 L200 + L203 的 `[ -f "$STATE_FILE" ]` 检查，`set -u` 不会抢先触发
+  PASS_START_HEAD_PREREAD="$(grep -E '^start_head:' "$STATE_FILE" 2>/dev/null | head -1 | sed -E 's/^start_head:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' || echo "")"
   # T2.7：worktree 启用时先合回主干（fast-forward / rebase / 标记仲裁）
   MERGE_OUT="$(bash "${SKILL_DIR}/merge-worktree-back.sh" "$STATE_FILE" 2>&1 || true)"
   MERGE_LAST="$(echo "$MERGE_OUT" | tail -1)"
   MERGE_ACTION="$(echo "$MERGE_LAST" | awk '{print $1}')"
   case "$MERGE_ACTION" in
     MERGED|NOOP)
-      # 读 start_head 供 builder 构造 reviewer diff（必须在 rm 前读取）
-      PASS_START_HEAD="$(grep -E '^start_head:' "$STATE_FILE" | head -1 | sed -E 's/^start_head:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/')"
+      # 用 merge 前预读的 start_head（cleanup_worktree 可能已把 state 删了）
+      PASS_START_HEAD="$PASS_START_HEAD_PREREAD"
       # fallback：旧 state 文件可能无 start_head 字段
       if [ -z "$PASS_START_HEAD" ]; then
         PASS_START_HEAD="$(git -C "$PROJECT_ROOT" rev-parse --short HEAD 2>/dev/null || echo "")"

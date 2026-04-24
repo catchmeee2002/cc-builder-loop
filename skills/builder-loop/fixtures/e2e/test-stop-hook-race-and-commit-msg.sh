@@ -233,6 +233,66 @@ echo "    降级 commit message: $COMMIT_MSG_C"
 assert "空 task_description 降级为 'Auto-commit iter 2'" "echo '$COMMIT_MSG_C' | grep -qE 'Auto-commit iter 2$'"
 assert "降级 msg 合规（有 [cr_id_skip]）" "echo '$COMMIT_MSG_C' | grep -q 'chore(loop): \[cr_id_skip\]'"
 
+# ==== 场景 D：stop hook PASS 路径下，cleanup_worktree rm state 后不应 grep 报错 ====
+# 复现 session d9ef1004 `grep: .../1777049006-stop-hook-flock.yml: No such file` 的根因场景
+echo ""
+echo "--- 场景 D：stop hook PASS 路径下 state 被 cleanup rm 后不报错 ---"
+
+TMP_D="$(mktemp -d)"
+trap 'rm -rf "$TMP_A" "${TMP_B:-}" "${TMP_C:-}" "${TMP_D:-}"' EXIT
+cd "$TMP_D"
+git init -q
+git config user.email "e2e@test.local"
+git config user.name "e2e-test"
+mkdir -p src tests
+echo seed > README.md
+git add -A
+git commit -q -m "chore(test): [cr_id_skip] Base for stop-hook PASS test"
+START_HEAD_D="$(git rev-parse --short HEAD)"
+
+# 用真的 setup-builder-loop.sh 创建 worktree + state（而非手写 state，更贴近真实场景）
+# 但 setup 脚本依赖 loop-init 生成 loop.yml，我们直接手造最小 loop.yml
+mkdir -p .claude
+cat > .claude/loop.yml <<'YMLEOF'
+pass_cmd:
+  - stage: smoke
+    cmd: "true"
+    timeout: 10
+max_iterations: 3
+layout:
+  source_dirs: [src]
+  test_dirs: [tests]
+worktree:
+  enabled: true
+YMLEOF
+
+bash "$SKILL_SCRIPTS_DIR/setup-builder-loop.sh" "E2E stop hook PASS with cleanup" >/dev/null 2>&1
+
+# 定位 setup 产出的 worktree + state
+WT_PATH_D="$(ls -d "$TMP_D/.claude/worktrees/"*/ 2>/dev/null | head -1)"
+[ -n "$WT_PATH_D" ] && WT_PATH_D="${WT_PATH_D%/}"
+STATE_D="$(ls "$TMP_D/.claude/builder-loop/state/"*.yml 2>/dev/null | head -1)"
+
+assert "场景 D worktree 已创建" "[ -n '$WT_PATH_D' ] && [ -d '$WT_PATH_D' ]"
+assert "场景 D state 文件已创建" "[ -n '$STATE_D' ] && [ -f '$STATE_D' ]"
+
+# 在 worktree 里造真实的新 commit（让 merge 走 MERGED 分支而非 NOOP）
+mkdir -p "$WT_PATH_D/src"
+echo "feature" > "$WT_PATH_D/src/feature.txt"
+git -C "$WT_PATH_D" add -A
+git -C "$WT_PATH_D" commit -q -m "feat(test): [cr_id_skip] Add feature in worktree"
+
+# 调 Stop hook（cwd 设为主仓库，locate-state 会按 state 里的 worktree_path 匹配，但 cwd 不在 wt 下）
+# 为让 locate 命中，传 cwd = worktree 路径（模拟 CC 在 worktree 里 stop）
+ERR_D="$(mktemp)"
+EC_D=0
+printf '{"cwd": "%s"}' "$WT_PATH_D" | bash "$HOOK_SCRIPT" 2>"$ERR_D" >/dev/null || EC_D=$?
+
+assert "场景 D Stop hook exit 2（PASS 续接）" "[ '$EC_D' -eq 2 ]"
+assert "场景 D stderr 不含 'No such file'（修复关键断言）" "! grep -q 'No such file' '$ERR_D'"
+assert "场景 D stderr 含 'PASS_CMD 全部阶段通过'" "grep -q 'PASS_CMD 全部阶段通过' '$ERR_D'"
+assert "场景 D reviewer-params.json 已写入" "[ -f '$TMP_D/.claude/reviewer-params.json' ]"
+
 # ==== 汇总 ====
 echo ""
 echo "=== 汇总: ✅ PASS=${PASS}  ❌ FAIL=${FAIL} ==="
