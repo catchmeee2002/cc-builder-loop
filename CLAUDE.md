@@ -113,8 +113,20 @@ cc-builder-loop/
   - `merge-worktree-back.sh` 的 auto-commit message 从 state 的 `task_description`（YAML block scalar）解析，构造 `chore(loop): [cr_id_skip] Auto-commit ${task}`，不再固化为 `Auto-commit iter N` 丢失语义
   - **Hotfix**：PASS 分支把 `start_head` 读取提前到 `merge-worktree-back.sh` 调用**之前** — 因 `cleanup_worktree()` 会 `rm -f state`，原 merge **之后**再 grep state 的路径会抛 `No such file` 到用户屏幕，`set -e` 触发脚本非正常退出 → reviewer-params / exit 2 PASS 消息丢失（真正消除 session `d9ef1004` 复现的 `grep state: No such file` 报错）
   - 前提：flock 语义要求本地文件系统（ext4/xfs 等），NFS/FUSE 场景未验证
+- **V1.9**: Judge agent — LLM 语义判据补 PASS_CMD 二值判据盲区
+  - 新增 `skills/builder-loop/scripts/run-judge-agent.sh`：hook 内嵌 Anthropic API 调用，输出 `{action, confidence, reason, downgraded, ...}` 单行 JSON
+  - 凭证双路径：`ANTHROPIC_API_KEY` env（Copilot CC 方案优先）→ `~/.claude.json` `oauthAccount.accessToken`（正版 Max CC 方案 fallback）→ none（降级）
+  - 模型三层 fallback：`loop.yml.judge.model` > `$ANTHROPIC_DEFAULT_HAIKU_MODEL` > `"claude-haiku-4-5"`，dot/dash 命名自动规范化
+  - 三态判定：`continue_nudge`（exit 2 + nudge 文案 + state.iter++）/ `stop_done`（走原 PASS）/ `retry_transient`（FAIL 分支识别 API 抖动）
+  - 防脱缰：iter 上限不变 + 连续 nudge 上限默认 2 + confidence 阈值默认 0.5 + API 超时 8s
+  - 注入文案统一前缀 `[builder-loop judge | iter=X/Y | judge=Z | conf=W]` + 末尾"非用户输入"声明（与用户输入肉眼可分；retrospective T7 教训）
+  - State 字段扩展：新增 `last_judge_action / last_judge_confidence / last_judge_ts / consecutive_nudge_count`（旧 state 缺字段视为初始值，由 upsert 自动追加）
+  - Telemetry：每次 judge 调用一行 jsonl 落 `.claude/builder-loop/judge-trace.jsonl`，下一轮 stop hook 自动后置补 `outcome` 标签（仅 continue_nudge 类）
+  - 任何故障路径（API 超时 / 非 200 / JSON 解析失败 / confidence 偏低 / 凭证缺失）→ `downgraded=true` + 走原 PASS / FAIL 路径，**不阻断现有 PASS_CMD 流程**
+  - 完全回退方法：`loop.yml.judge.enabled: false` 或卸载 `run-judge-agent.sh`（stop hook 检测脚本缺失自动走原路径）
+  - loop.yml schema 新增 `judge:` 段（全部可选）；本仓 PASS_CMD 加 `judge_agent` / `judge_integration` 两个 e2e 阶段
 
-详见 `skills/builder-loop/README.md`。
+详见 `skills/builder-loop/README.md` 与 `skills/builder-loop/docs/judge-agent.md`。
 
 ## 6. 开发原则
 
@@ -146,3 +158,47 @@ cc-builder-loop/
 **修复**（V1.8.1）：merge-worktree-back.sh 的 auto-commit message 改为 `"chore(loop): [cr_id_skip] Auto-commit iter N"`，兼容所有启用 msg hook 的项目。
 
 **排查步骤**：检查 merge-worktree-back.sh 第 138 行的 commit message，应含 `[cr_id_skip]` 标记。
+
+### 7.3 Judge agent 全部判定都被降级（V1.9+）
+
+**现象**：开启 V1.9 后，`.claude/builder-loop/judge-trace.jsonl` 每行都是 `downgraded:true`，loop 行为退化为 V1.8（PASS_CMD 二值判据）。
+
+**排查步骤**：
+
+1. 跑 self-check：
+   ```bash
+   bash ~/.claude/skills/builder-loop/scripts/run-judge-agent.sh --self-check
+   ```
+   - 输出 `ERROR: missing credentials` → 检查 `ANTHROPIC_API_KEY` env 是否设置（Copilot 方案）
+   - **正版 Max CC 用户特别说明**：CC 自己的 OAuth token 不在 `~/.claude.json` 公开字段，judge 走不通 oauth 路径（详见 `skills/builder-loop/known-risks.md` R5）。Workaround：从 https://console.anthropic.com 申请独立 API key 后 `export ANTHROPIC_API_KEY=sk-ant-...`
+
+2. 看降级原因分布：
+   ```bash
+   cat <project_root>/.claude/builder-loop/judge-trace.jsonl | python3 -c "
+   import json, sys
+   from collections import Counter
+   c = Counter()
+   for line in sys.stdin:
+       try:
+           obj = json.loads(line)
+           if obj.get('downgraded'):
+               c[obj.get('downgrade_reason', '?')] += 1
+       except: pass
+   print(c.most_common(10))
+   "
+   ```
+
+3. 常见原因 → 处理：
+   - `missing_credentials` → 见步骤 1
+   - `timeout` → 检查 `ANTHROPIC_BASE_URL`（copilot-proxy 是否在跑 / 网络是否通）
+   - `http_401` / `http_403` → token 失效，重新登录 / 重启 copilot-proxy
+   - `parse_error` → 模型可能返回 markdown 包裹 JSON 或拒答；查 `model_used` 字段，可考虑在 loop.yml 改 `judge.model`
+   - `low_confidence` → 默认阈值 0.5 可能偏严，调高到 0.7 或调低到 0.3 看效果
+
+4. 完全回退到 V1.8 行为：在项目 `.claude/loop.yml` 加：
+   ```yaml
+   judge:
+     enabled: false
+   ```
+
+**已知风险开口项**：详见 `skills/builder-loop/known-risks.md`（R1 reward hacking / R2 LLM 假阳性 / R3 模型版本不可用 / R4 jsonl 增长）。

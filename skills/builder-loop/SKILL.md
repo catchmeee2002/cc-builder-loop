@@ -146,6 +146,35 @@ PASS → `✅ 配置可用`；FAIL → `⚠️ smoke test 失败，请检查`（
    smoke test：<结果>
 ```
 
+## 判定 agent（V1.9+）
+
+PASS_CMD 二值判据之上叠加一道 **LLM 语义判定**，识别假完成 / 求助 / 偷懒 / 网络中断等盲区。
+
+| 制品 | 路径 |
+|------|------|
+| 调用脚本 | `skills/builder-loop/scripts/run-judge-agent.sh` |
+| 系统 prompt | `skills/builder-loop/prompts/judge-system.md` |
+| 配置段 | `loop.yml.judge`（全部可选；缺省 enabled=true，凭证缺失自动降级回 PASS_CMD） |
+| Telemetry | `.claude/builder-loop/judge-trace.jsonl`（每次 judge 调用一行 + outcome 后置补标） |
+| 详细架构 | `docs/judge-agent.md` |
+| 已知风险 | `known-risks.md`（R1~R4 开口项） |
+
+**核心契约**：
+
+- 三态判定：`continue_nudge` / `stop_done` / `retry_transient`（FAIL 分支额外占位 `continue_strict` 走原路径）
+- 双路径凭证兼容：`ANTHROPIC_API_KEY` env（Copilot CC）优先于 `~/.claude.json` OAuth（正版 Max CC）
+- 模型 ID 三层 fallback：`loop.yml.judge.model` > `$ANTHROPIC_DEFAULT_HAIKU_MODEL` > `claude-haiku-4-5`
+- 任何故障路径都降级回 PASS_CMD 二值判据（不阻断既有流程）
+- 防脱缰：iter 上限 + 连续 nudge 上限（默认 2）+ confidence 阈值（默认 0.5）
+
+**快速验证**：
+
+```bash
+bash ~/.claude/skills/builder-loop/scripts/run-judge-agent.sh --self-check
+```
+
+输出当前凭证状态、模型选择、loop.yml 路径，**不调真实 API**。
+
 ## 版本交付历史
 
-详见 `README.md` 第 7 节。涵盖 V1.0 基础循环、V1.1 强隔离+worktree+仲裁、V1.2 改动分级、V1.3 任务回顾、V1.7 reviewer 模型升级、V1.8 多状态并行架构、V1.8.1 僵尸 state 自愈 + EARLY_STOP 立即通知。
+详见 `README.md` 第 7 节。涵盖 V1.0 基础循环、V1.1 强隔离+worktree+仲裁、V1.2 改动分级、V1.3 任务回顾、V1.7 reviewer 模型升级、V1.8 多状态并行架构、V1.8.1 僵尸 state 自愈 + EARLY_STOP 立即通知、V1.9 judge agent。

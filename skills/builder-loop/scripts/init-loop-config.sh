@@ -107,6 +107,19 @@ if wt:
     if wt.get('branch_prefix'):
         lines.append(f"  branch_prefix: {yaml_str(wt['branch_prefix'])}")
 
+# ---- V1.9 judge agent 提示（默认启用，仅注释形式列出可调参数）----
+lines.append("")
+lines.append("# ---- V1.9 judge agent ----")
+lines.append("# 默认启用，无需配置（凭证缺失会自动降级回 PASS_CMD 二值判据）。")
+lines.append("# 如需自定义，取消下列任一字段注释：")
+lines.append("# judge:")
+lines.append("#   enabled: true                  # false 完全关闭 judge")
+lines.append("#   model: \"\"                      # 留空走 env / 默认 fallback (claude-haiku-4-5)")
+lines.append("#   confidence_threshold: 0.5      # 置信度低于此值降级")
+lines.append("#   max_consecutive_nudges: 2      # 连续 nudge 上限（防 LLM 判据脱缰）")
+lines.append("#   api_timeout_sec: 8")
+lines.append("# 详见 ~/.claude/skills/builder-loop/docs/judge-agent.md")
+
 with open(yml, 'w') as f:
     f.write('\n'.join(lines) + '\n')
 PY

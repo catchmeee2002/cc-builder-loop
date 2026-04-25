@@ -154,6 +154,7 @@ done
 - **V1.7**（已完成）：Reviewer 默认模型升级为 sonnet，消除 haiku + xhigh effort 的不兼容；Builder retry 加错误分类（API 参数错误直接走兜底，不盲重试）；新增 `test-reviewer-compat.sh` 做配置 lint 与可选 live smoke。详见 CLAUDE.md 第 5 节版本清单
 - **V1.8**（已完成）：多状态并行架构（state 文件迁移到 `.claude/builder-loop/state/<slug>.yml`；locate-state.sh 按 CWD 找对应 state；单项目支持并行多个 loop；migrate-state.sh 向后兼容迁移旧版本）；setup-builder-loop.sh 加 flock 防并发竞态；merge-worktree-back.sh 清理时自动删除 state
 - **V1.8.1**（已完成）：僵尸 state 自愈（Stop hook 遇到 `active != true` 的僵尸 state → 归档到 `legacy/<ts>-zombie_inactive.bak` + 放行，防止下次 builder 误判为活跃 loop）；EARLY_STOP 立即通知（Stop hook 早停从"改字段 + exit 0"改为"归档 + exit 2 + stderr 注入"，让 builder 当场收到通知立即 AskUserQuestion，而非等下轮 prompt）；配合 V1.8 的 per-worktree state 隔离，彻底解决跨 session 多任务串味问题。顺带修复 merge-worktree-back.sh auto-commit message 加 `[cr_id_skip]` 兼容严格 commit-msg hook 的项目
+- **V1.9**（已完成）：Judge agent — LLM 语义判据补 PASS_CMD 二值判据盲区。新增 `scripts/run-judge-agent.sh`（hook 内嵌 API 调用，凭证双路径兼容正版 OAuth + Copilot env，模型 ID 三层 fallback），stop hook PASS 分支在 merge-worktree-back 之前叠加判定（continue_nudge / stop_done / retry_transient 三态路由），FAIL 分支仅识 retry_transient，任何故障路径降级回 PASS_CMD 二值判据。配套 `prompts/judge-system.md` / `docs/judge-agent.md` / `known-risks.md`。Telemetry 落 `.claude/builder-loop/judge-trace.jsonl`，下一轮 stop hook 自动后置补 outcome 标签（仅 continue_nudge 类）
 - **V2**：短命 orchestrator subagent 替代脚本调度（出现多 agent 仲裁需求时启动）
 - **V3**：独立 daemon 编排多项目（单开仓库 `cc-orchestrator-daemon`，复用本 skill 的契约）
 

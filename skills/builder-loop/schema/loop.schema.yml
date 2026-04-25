@@ -156,6 +156,50 @@ log_dir:
   description: 每轮日志和 metrics.jsonl 落地目录（建议 .gitignore）
 
 # ============================================================
+# Judge agent (V1.9+) — LLM 语义判定补 PASS_CMD 二值判据盲区
+# ============================================================
+# 整段可选；不写 judge: 段时使用全部默认值。enabled=true + 凭证缺失会自动降级。
+
+judge:
+  enabled:
+    type: boolean
+    default: true
+    description: |
+      是否启用 judge agent。false 时所有调用直接降级回 PASS_CMD 二值判据。
+      凭证缺失时自动降级，无需显式关闭。
+  model:
+    type: string
+    default: ""
+    description: |
+      LLM 模型 ID。三层 fallback：
+      1) 本字段（最高优先级）
+      2) $ANTHROPIC_DEFAULT_HAIKU_MODEL（env 默认，copilot 方案会设）
+      3) "claude-haiku-4-5"（硬编码兜底）
+      命名规范：用 dash 分隔（claude-haiku-4-5）。dot 写法（claude-haiku-4.5）会自动规范化。
+  confidence_threshold:
+    type: float
+    default: 0.5
+    description: 置信度阈值。判定结果 confidence < 此值时降级回 PASS_CMD 二值判据。
+  max_consecutive_nudges:
+    type: integer
+    default: 2
+    description: |
+      连续 continue_nudge 上限。超过强制 stop_done（防 LLM 判据脱缰）。
+      stop_done 时计数清零；continue_nudge 时计数 +1。
+  api_timeout_sec:
+    type: integer
+    default: 8
+    description: |
+      单次 API 调用超时秒数。超时降级。
+      hook 总耗时 = PASS_CMD + judge timeout，请勿设过大避免阻塞 stop hook。
+  system_prompt_path:
+    type: string
+    default: ""
+    description: |
+      自定义 judge system prompt 路径（相对项目根）。
+      留空使用 skills/builder-loop/prompts/judge-system.md 内置默认 prompt。
+
+# ============================================================
 # 示例（最小可用配置）
 # ============================================================
 

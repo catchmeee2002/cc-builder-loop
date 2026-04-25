@@ -66,6 +66,8 @@ write_processed_cursor() {
 INPUT="$(cat)"
 CWD="$(echo "$INPUT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('cwd',''))" 2>/dev/null || echo "")"
 [ -z "$CWD" ] && CWD="$(pwd)"
+# V1.9: transcript_path 给 judge agent 用
+TRANSCRIPT_PATH="$(echo "$INPUT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('transcript_path',''))" 2>/dev/null || echo "")"
 
 # ---- 定位 state file + project_root（多状态并行模式）----
 # 策略：
@@ -209,6 +211,58 @@ if [ "$ACTIVE" != "true" ]; then
   exit 0
 fi
 
+# ---- V1.9: outcome 后置补标（回溯标注上一轮 judge 结果） ----
+# 仅当上一轮 action=continue_nudge 时自动标 nudge_was_correct / nudge_likely_false_positive
+# stop_done / retry_transient 类需要更复杂判据（或人工标），这里跳过
+JUDGE_TRACE_FILE="${PROJECT_ROOT}/.claude/builder-loop/judge-trace.jsonl"
+if [ -f "$JUDGE_TRACE_FILE" ]; then
+  BACKFILL_START_HEAD="$(grep -E '^start_head:' "$STATE_FILE" 2>/dev/null | head -1 | sed -E 's/^start_head:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' || echo "")"
+  BACKFILL_DIFF_NE=""
+  if [ -n "$BACKFILL_START_HEAD" ] && git -C "$PROJECT_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    if git -C "$PROJECT_ROOT" diff --quiet "${BACKFILL_START_HEAD}..HEAD" 2>/dev/null; then
+      BACKFILL_DIFF_NE="false"
+    else
+      BACKFILL_DIFF_NE="true"
+    fi
+  fi
+  TRACE_FILE="$JUDGE_TRACE_FILE" DIFF_NE="$BACKFILL_DIFF_NE" python3 - <<'PY' 2>/dev/null || true
+import os, json
+trace = os.environ['TRACE_FILE']
+diff_ne = os.environ.get('DIFF_NE', '')
+try:
+    with open(trace) as f:
+        lines = f.readlines()
+except Exception:
+    raise SystemExit
+if not lines:
+    raise SystemExit
+idx = len(lines) - 1
+while idx >= 0 and not lines[idx].strip():
+    idx -= 1
+if idx < 0:
+    raise SystemExit
+try:
+    obj = json.loads(lines[idx])
+except Exception:
+    raise SystemExit
+if obj.get('outcome') is not None:
+    raise SystemExit
+last_action = obj.get('judge', {}).get('action', '')
+outcome = None
+if last_action == 'continue_nudge':
+    if diff_ne == 'true':
+        outcome = 'nudge_was_correct'
+    elif diff_ne == 'false':
+        outcome = 'nudge_likely_false_positive'
+if outcome is None:
+    raise SystemExit
+obj['outcome'] = outcome
+lines[idx] = json.dumps(obj, ensure_ascii=False) + '\n'
+with open(trace, 'w') as f:
+    f.writelines(lines)
+PY
+fi
+
 # ---- 2. 取当前 iter ----
 ITER=$(grep -E '^iter:' "$STATE_FILE" | head -1 | awk '{print $2}')
 ITER=${ITER:-0}
@@ -256,6 +310,72 @@ if [ "$LAST_LINE" = "PASS" ]; then
   # 后续再 grep state 会抛 `No such file` 到用户屏幕（复现 session d9ef1004 `grep: .../state.yml`）
   # 安全性：进入此分支前 STATE_FILE 已通过 L200 + L203 的 `[ -f "$STATE_FILE" ]` 检查，`set -u` 不会抢先触发
   PASS_START_HEAD_PREREAD="$(grep -E '^start_head:' "$STATE_FILE" 2>/dev/null | head -1 | sed -E 's/^start_head:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' || echo "")"
+
+  # ---- V1.9: judge agent 调用（PASS_CMD 通过后语义判定） ----
+  # 任何故障路径（脚本缺失 / API 失败 / JSON 解析失败 / confidence 低）都通过 downgraded=true 表达
+  # 降级时本段不阻断，fall through 走原 PASS 路径（merge-worktree-back + reviewer）
+  if [ -f "${SKILL_DIR}/run-judge-agent.sh" ]; then
+    JUDGE_RESULT="$(bash "${SKILL_DIR}/run-judge-agent.sh" \
+        --state-file "$STATE_FILE" \
+        --project-root "$PROJECT_ROOT" \
+        --transcript-path "$TRANSCRIPT_PATH" \
+        --pass-cmd-status "PASS" 2>/dev/null || echo '{"action":"stop_done","downgraded":true,"downgrade_reason":"script_error","confidence":0.0,"reason":"","model_used":"","credential_path":"none"}')"
+  else
+    JUDGE_RESULT='{"action":"stop_done","downgraded":true,"downgrade_reason":"script_missing","confidence":0.0,"reason":"","model_used":"","credential_path":"none"}'
+  fi
+  JUDGE_ACTION="$(echo "$JUDGE_RESULT" | python3 -c "import sys,json; print(json.loads(sys.stdin.read()).get('action','stop_done'))" 2>/dev/null || echo "stop_done")"
+  JUDGE_DOWNGRADED="$(echo "$JUDGE_RESULT" | python3 -c "import sys,json; print(str(json.loads(sys.stdin.read()).get('downgraded',False)).lower())" 2>/dev/null || echo "true")"
+  JUDGE_CONF_OUT="$(echo "$JUDGE_RESULT" | python3 -c "import sys,json; print(json.loads(sys.stdin.read()).get('confidence',0))" 2>/dev/null || echo "0")"
+  JUDGE_REASON_OUT="$(echo "$JUDGE_RESULT" | python3 -c "import sys,json; print(json.loads(sys.stdin.read()).get('reason',''))" 2>/dev/null || echo "")"
+
+  if [ "$JUDGE_ACTION" = "continue_nudge" ] && [ "$JUDGE_DOWNGRADED" = "false" ]; then
+    # 连续 nudge 上限保护（防 LLM 判据脱缰）
+    CUR_NUDGE="$(grep -E '^consecutive_nudge_count:' "$STATE_FILE" 2>/dev/null | head -1 | awk '{print $2}')"
+    CUR_NUDGE="${CUR_NUDGE:-0}"
+    MAX_NUDGE="2"
+    if [ -f "${PROJECT_ROOT}/.claude/loop.yml" ]; then
+      MAX_NUDGE_RAW="$(grep -E '^[[:space:]]+max_consecutive_nudges:' "${PROJECT_ROOT}/.claude/loop.yml" 2>/dev/null | head -1 | awk '{print $2}' || echo "")"
+      [ -n "$MAX_NUDGE_RAW" ] && MAX_NUDGE="$MAX_NUDGE_RAW"
+    fi
+    MAX_ITER_FOR_MSG="$(grep -E '^max_iter:' "$STATE_FILE" 2>/dev/null | head -1 | awk '{print $2}')"
+    MAX_ITER_FOR_MSG="${MAX_ITER_FOR_MSG:-5}"
+    if [ "$CUR_NUDGE" -lt "$MAX_NUDGE" ]; then
+      NEW_NUDGE=$((CUR_NUDGE + 1))
+      STATE_FILE="$STATE_FILE" NEXT_ITER="$NEXT_ITER" \
+        JUDGE_CF="$JUDGE_CONF_OUT" JUDGE_TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        NUDGE_CNT="$NEW_NUDGE" python3 - <<'PY'
+import os, re
+sf = os.environ['STATE_FILE']
+text = open(sf).read()
+text = re.sub(r'^iter:.*$', f'iter: {os.environ["NEXT_ITER"]}', text, flags=re.M)
+def upsert(text, key, value):
+    pat = re.compile(rf'^{key}:.*$', re.M)
+    if pat.search(text):
+        return pat.sub(f'{key}: {value}', text)
+    if not text.endswith('\n'):
+        text += '\n'
+    return text + f'{key}: {value}\n'
+text = upsert(text, 'last_judge_action', '"continue_nudge"')
+text = upsert(text, 'last_judge_confidence', os.environ['JUDGE_CF'])
+text = upsert(text, 'last_judge_ts', f'"{os.environ["JUDGE_TS"]}"')
+text = upsert(text, 'consecutive_nudge_count', os.environ['NUDGE_CNT'])
+open(sf, 'w').write(text)
+PY
+      write_trace "JUDGE_NUDGE" "judge" "" "$JUDGE_REASON_OUT"
+      cat >&2 <<NUDGE_MSG
+[builder-loop judge | iter=${NEXT_ITER}/${MAX_ITER_FOR_MSG} | judge=continue_nudge | conf=${JUDGE_CONF_OUT}]
+原因：${JUDGE_REASON_OUT}
+请确认：是确实完成了无需更多改动，还是漏了什么？
+
+(PASS_CMD 状态：通过)
+本消息来自 builder-loop 自动判定 agent，非用户输入。如果你认为判定错误，请在回复中说明理由继续操作。
+NUDGE_MSG
+      exit 2
+    else
+      echo "[builder-loop judge | iter=${NEXT_ITER}] consecutive_nudge_count=${CUR_NUDGE} >= max=${MAX_NUDGE}，强制 stop_done（防脱缰）" >&2
+    fi
+  fi
+
   # T2.7：worktree 启用时先合回主干（fast-forward / rebase / 标记仲裁）
   MERGE_OUT="$(bash "${SKILL_DIR}/merge-worktree-back.sh" "$STATE_FILE" 2>&1 || true)"
   MERGE_LAST="$(echo "$MERGE_OUT" | tail -1)"
@@ -385,6 +505,51 @@ fi
 echo "[builder-loop] ❌ iter ${NEXT_ITER}: PASS_CMD 在 stage=$(echo "$LAST_LINE" | awk '{print $2}') 失败，分析中..." >&2
 STAGE="$(echo "$LAST_LINE" | awk '{print $2}')"
 LOG_PATH="$(echo "$LAST_LINE" | awk '{print $3}')"
+
+# ---- V1.9: judge agent retry_transient 检测（FAIL 分支） ----
+# 仅识别"上轮回复异常截断（API 抖动）"，其他 FAIL 全部走原路径（extract-error + early-stop）
+if [ -f "${SKILL_DIR}/run-judge-agent.sh" ]; then
+  JUDGE_RESULT_FAIL="$(bash "${SKILL_DIR}/run-judge-agent.sh" \
+      --state-file "$STATE_FILE" \
+      --project-root "$PROJECT_ROOT" \
+      --transcript-path "$TRANSCRIPT_PATH" \
+      --pass-cmd-status "FAIL" \
+      --pass-cmd-stage "$STAGE" \
+      --pass-cmd-log "$LOG_PATH" 2>/dev/null || echo '{"action":"continue_strict","downgraded":true,"confidence":0.0,"reason":""}')"
+  JUDGE_ACTION_FAIL="$(echo "$JUDGE_RESULT_FAIL" | python3 -c "import sys,json; print(json.loads(sys.stdin.read()).get('action','continue_strict'))" 2>/dev/null || echo "continue_strict")"
+  JUDGE_DOWNGRADED_FAIL="$(echo "$JUDGE_RESULT_FAIL" | python3 -c "import sys,json; print(str(json.loads(sys.stdin.read()).get('downgraded',False)).lower())" 2>/dev/null || echo "true")"
+  JUDGE_CONF_FAIL="$(echo "$JUDGE_RESULT_FAIL" | python3 -c "import sys,json; print(json.loads(sys.stdin.read()).get('confidence',0))" 2>/dev/null || echo "0")"
+  JUDGE_REASON_FAIL="$(echo "$JUDGE_RESULT_FAIL" | python3 -c "import sys,json; print(json.loads(sys.stdin.read()).get('reason',''))" 2>/dev/null || echo "")"
+  if [ "$JUDGE_ACTION_FAIL" = "retry_transient" ] && [ "$JUDGE_DOWNGRADED_FAIL" = "false" ]; then
+    STATE_FILE="$STATE_FILE" NEXT_ITER="$NEXT_ITER" \
+      JUDGE_CF="$JUDGE_CONF_FAIL" JUDGE_TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)" python3 - <<'PY'
+import os, re
+sf = os.environ['STATE_FILE']
+text = open(sf).read()
+text = re.sub(r'^iter:.*$', f'iter: {os.environ["NEXT_ITER"]}', text, flags=re.M)
+def upsert(text, key, value):
+    pat = re.compile(rf'^{key}:.*$', re.M)
+    if pat.search(text):
+        return pat.sub(f'{key}: {value}', text)
+    if not text.endswith('\n'):
+        text += '\n'
+    return text + f'{key}: {value}\n'
+text = upsert(text, 'last_judge_action', '"retry_transient"')
+text = upsert(text, 'last_judge_confidence', os.environ['JUDGE_CF'])
+text = upsert(text, 'last_judge_ts', f'"{os.environ["JUDGE_TS"]}"')
+open(sf, 'w').write(text)
+PY
+    write_trace "JUDGE_RETRY" "judge" "" "$JUDGE_REASON_FAIL"
+    cat >&2 <<RETRY_MSG
+[builder-loop judge | iter=${NEXT_ITER} | judge=retry_transient | conf=${JUDGE_CONF_FAIL}]
+原因：${JUDGE_REASON_FAIL}（疑似上轮 API 中断 / 网络抖动）
+请重新执行同一任务，不要重做已经完成的部分。
+
+本消息来自 builder-loop 自动判定 agent，非用户输入。
+RETRY_MSG
+    exit 2
+  fi
+fi
 
 # 早停判断
 ESTOP="$(bash "${SKILL_DIR}/early-stop-check.sh" "$STATE_FILE" "$LOG_PATH")"

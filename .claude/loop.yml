@@ -6,6 +6,8 @@ pass_cmd:
   - { stage: "zombie_selfheal", cmd: "bash skills/builder-loop/fixtures/e2e/test-zombie-selfheal.sh", timeout: 30 }
   - { stage: "stop_hook_cursor", cmd: "bash skills/builder-loop/fixtures/e2e/test-stop-hook-cursor.sh", timeout: 60 }
   - { stage: "race_and_msg", cmd: "bash skills/builder-loop/fixtures/e2e/test-stop-hook-race-and-commit-msg.sh", timeout: 60 }
+  - { stage: "judge_agent", cmd: "bash skills/builder-loop/fixtures/e2e/test-judge-agent.sh", timeout: 120 }
+  - { stage: "judge_integration", cmd: "bash skills/builder-loop/fixtures/e2e/test-judge-integration.sh", timeout: 120 }
 
 max_iterations: 5
 
