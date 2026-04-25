@@ -23,7 +23,9 @@ STATE="${1:?state file path required}"
 [ -f "$STATE" ] || { echo "ERROR state-not-found"; exit 3; }
 
 read_field() {
-  grep -E "^${1}:" "$STATE" | head -1 | sed -E "s/^${1}:[[:space:]]*\"?([^\"]*)\"?[[:space:]]*\$/\1/"
+  # V1.9 fix: 字段不存在时 grep exit 1 + pipefail + set -e 会让脚本提前退出（bare loop 场景：
+  # state 没 worktree_path 字段触发 stop hook merge_action 为空），加 || true 容错
+  grep -E "^${1}:" "$STATE" 2>/dev/null | head -1 | sed -E "s/^${1}:[[:space:]]*\"?([^\"]*)\"?[[:space:]]*\$/\1/" || true
 }
 
 PROJECT_ROOT="$(read_field project_root)"

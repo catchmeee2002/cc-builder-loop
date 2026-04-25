@@ -214,6 +214,12 @@ fi
 # ---- V1.9: outcome 后置补标（回溯标注上一轮 judge 结果） ----
 # 仅当上一轮 action=continue_nudge 时自动标 nudge_was_correct / nudge_likely_false_positive
 # stop_done / retry_transient 类需要更复杂判据（或人工标），这里跳过
+#
+# 局限：本逻辑只在「同一 task 内多轮 loop」严格成立——start_head 与 jsonl 末尾的 nudge
+#       同源（同一 setup-builder-loop.sh 调用）。跨 task 场景（上一 task PASS+stop_done
+#       已 cleanup state，新 task setup 创建新 state.start_head）下，jsonl 末尾通常是
+#       上 task 的 stop_done（不会触发 outcome 标记）；理论边界：上 task 末轮 nudge
+#       后未到 stop_done 就被外部中断 → 新 task 进场可能误标。当前接受此小概率边界。
 JUDGE_TRACE_FILE="${PROJECT_ROOT}/.claude/builder-loop/judge-trace.jsonl"
 if [ -f "$JUDGE_TRACE_FILE" ]; then
   BACKFILL_START_HEAD="$(grep -E '^start_head:' "$STATE_FILE" 2>/dev/null | head -1 | sed -E 's/^start_head:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' || echo "")"
@@ -328,6 +334,8 @@ if [ "$LAST_LINE" = "PASS" ]; then
   JUDGE_CONF_OUT="$(echo "$JUDGE_RESULT" | python3 -c "import sys,json; print(json.loads(sys.stdin.read()).get('confidence',0))" 2>/dev/null || echo "0")"
   JUDGE_REASON_OUT="$(echo "$JUDGE_RESULT" | python3 -c "import sys,json; print(json.loads(sys.stdin.read()).get('reason',''))" 2>/dev/null || echo "")"
 
+  # 仅在 PASS 分支才会到这里，run-judge-agent.sh 的 FAIL→PASS 错调用由本块所在的 PASS 段位置保证；
+  # 这里不再检查 pass_cmd_status——纯 action 路由
   if [ "$JUDGE_ACTION" = "continue_nudge" ] && [ "$JUDGE_DOWNGRADED" = "false" ]; then
     # 连续 nudge 上限保护（防 LLM 判据脱缰）
     CUR_NUDGE="$(grep -E '^consecutive_nudge_count:' "$STATE_FILE" 2>/dev/null | head -1 | awk '{print $2}')"
@@ -342,7 +350,7 @@ if [ "$LAST_LINE" = "PASS" ]; then
     if [ "$CUR_NUDGE" -lt "$MAX_NUDGE" ]; then
       NEW_NUDGE=$((CUR_NUDGE + 1))
       STATE_FILE="$STATE_FILE" NEXT_ITER="$NEXT_ITER" \
-        JUDGE_CF="$JUDGE_CONF_OUT" JUDGE_TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        JUDGE_CF="$JUDGE_CONF_OUT" JUDGE_TS="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo '1970-01-01T00:00:00Z')" \
         NUDGE_CNT="$NEW_NUDGE" python3 - <<'PY'
 import os, re
 sf = os.environ['STATE_FILE']
@@ -373,6 +381,33 @@ NUDGE_MSG
       exit 2
     else
       echo "[builder-loop judge | iter=${NEXT_ITER}] consecutive_nudge_count=${CUR_NUDGE} >= max=${MAX_NUDGE}，强制 stop_done（防脱缰）" >&2
+      # V1.9 fix: 强制 stop_done 也要写 telemetry，标记 max_nudge_reached（reviewer 反馈）
+      MAX_NUDGE_TRACE="${PROJECT_ROOT}/.claude/builder-loop/judge-trace.jsonl"
+      MAX_NUDGE_SLUG="$(basename "$STATE_FILE" .yml 2>/dev/null || echo "")"
+      TRACE_FILE="$MAX_NUDGE_TRACE" SLUG="$MAX_NUDGE_SLUG" NEXT_ITER="$NEXT_ITER" \
+        CUR_NUDGE="$CUR_NUDGE" MAX_NUDGE="$MAX_NUDGE" JUDGE_CONF_OUT="$JUDGE_CONF_OUT" \
+        python3 - <<'PY' 2>/dev/null || true
+import os, json, datetime
+line = {
+    "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    "slug": os.environ.get('SLUG', ''),
+    "iter": int(os.environ.get('NEXT_ITER') or 0),
+    "action": "stop_done",
+    "judge": {
+        "action": "stop_done",
+        "confidence": float(os.environ.get('JUDGE_CONF_OUT') or 0),
+        "reason": f"max_nudge_reached: {os.environ.get('CUR_NUDGE','')} >= {os.environ.get('MAX_NUDGE','')}",
+    },
+    "downgraded": True,
+    "downgrade_reason": "max_nudge_reached",
+    "outcome": None,
+}
+try:
+    with open(os.environ['TRACE_FILE'], 'a') as f:
+        f.write(json.dumps(line, ensure_ascii=False) + '\n')
+except Exception:
+    pass
+PY
     fi
   fi
 
@@ -522,7 +557,7 @@ if [ -f "${SKILL_DIR}/run-judge-agent.sh" ]; then
   JUDGE_REASON_FAIL="$(echo "$JUDGE_RESULT_FAIL" | python3 -c "import sys,json; print(json.loads(sys.stdin.read()).get('reason',''))" 2>/dev/null || echo "")"
   if [ "$JUDGE_ACTION_FAIL" = "retry_transient" ] && [ "$JUDGE_DOWNGRADED_FAIL" = "false" ]; then
     STATE_FILE="$STATE_FILE" NEXT_ITER="$NEXT_ITER" \
-      JUDGE_CF="$JUDGE_CONF_FAIL" JUDGE_TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)" python3 - <<'PY'
+      JUDGE_CF="$JUDGE_CONF_FAIL" JUDGE_TS="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo '1970-01-01T00:00:00Z')" python3 - <<'PY'
 import os, re
 sf = os.environ['STATE_FILE']
 text = open(sf).read()

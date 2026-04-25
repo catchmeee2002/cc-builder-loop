@@ -220,8 +220,9 @@ LOOPEOF
   local HEAD
   HEAD=$(git -C "$dir" rev-parse HEAD 2>/dev/null || echo "abc123deadbeef")
 
-  # state.yml（slug = integration-test-XXXXXX 保证唯一，防 flock 冲突）
-  local slug="itest-$(basename "$dir")"
+  # state.yml（worktree.enabled=false → bare loop，必须 slug=__main__ 让 locate-state.sh 兜底策略 4 命中
+  # 各 case 用独立 PROJECT_ROOT，flock 路径天然不冲突）
+  local slug="__main__"
   mkdir -p "${dir}/.claude/builder-loop/state"
   cat > "${dir}/.claude/builder-loop/state/${slug}.yml" <<STATEEOF
 active: true
@@ -294,8 +295,9 @@ read_state_field() {
   # $1 = dir $2 = slug $3 = field_name
   local dir="$1" slug="$2" field="$3"
   local state_file="${dir}/.claude/builder-loop/state/${slug}.yml"
-  [ -f "$state_file" ] || { echo ""; return; }
-  grep "^${field}:" "$state_file" | head -1 | sed 's/^[^:]*: *//' | tr -d "'\""
+  [ -f "$state_file" ] || { echo ""; return 0; }
+  # 字段不存在时 grep exit 1，pipefail+set -e 会中断脚本——加 || true
+  grep "^${field}:" "$state_file" 2>/dev/null | head -1 | sed 's/^[^:]*: *//' | tr -d "'\"" || true
 }
 
 # =============================================================
@@ -330,7 +332,7 @@ echo ""
 echo "=== CASE I2: PASS_CMD pass + judge continue_nudge → nudge 文案 + 计数递增 ==="
 {
   PROJ="${TMP}/proj_i2"
-  SLUG="itest-proj_i2"
+  SLUG="__main__"
   make_fixture_project "$PROJ" "judge:
   enabled: true" "consecutive_nudge_count: 0" "true" >/dev/null
 
@@ -360,7 +362,7 @@ echo ""
 echo "=== CASE I3: 连续 nudge 达上限（2次）→ 强制 stop_done ==="
 {
   PROJ="${TMP}/proj_i3"
-  SLUG="itest-proj_i3"
+  SLUG="__main__"
   make_fixture_project "$PROJ" "judge:
   enabled: true
   max_consecutive_nudges: 2" "consecutive_nudge_count: 2" "true" >/dev/null

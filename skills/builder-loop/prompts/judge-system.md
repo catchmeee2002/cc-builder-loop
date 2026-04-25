@@ -28,6 +28,8 @@
 
 `continue_strict` 是占位 action，用于让上游走原 FAIL 路径（extract-error → 继续修复）。
 
+**严格约束**：当 `pass_cmd_status = PASS` 时**禁止输出 `continue_strict`**——它仅是 FAIL 路径的占位。PASS 路径只在 `stop_done` / `continue_nudge` / `retry_transient` 之间选择。
+
 ## 输出契约
 
 **严格 JSON 单行**，不输出任何额外文本（包括 markdown 代码块标记）：

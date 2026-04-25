@@ -62,21 +62,6 @@
 
 ---
 
-## R5: 正版 Max CC 方案的 OAuth token 不可读
-
-**风险描述**（2026-04-26 落地时实测发现）：CC 把 OAuth access token 存在系统级位置（推测 keyring / DBus secret service），**不写到 `~/.claude.json` 的 `oauthAccount` 字段**。该字段只含 metadata（emailAddress / accountUuid 等）。这意味着原方案"oauth 路径凭证检测"在当前 CC 架构下**永远返回 none**，judge agent 在正版 Max CC 方案上无法直接工作。
-
-**当前状态**：
-- run-judge-agent.sh 的 oauth 路径检测代码保留（如果 CC 未来在 oauthAccount 加 accessToken 字段，自动启用）
-- 实际行为：正版 Max CC 用户跑 judge → missing_credentials 降级 → 行为等价 V1.8（无功能损失，只是没拿到 judge 的盲区识别）
-
-**Workaround**：用户可以从 https://console.anthropic.com 申请独立 API key（不影响 Max 订阅，只会少量计费走 console），导出 `ANTHROPIC_API_KEY=sk-ant-...`，judge agent 自动走 env 路径生效。
-
-**长期解法**（需要 CC 主动开放）：
-- CC 开放 `~/.claude/credentials/access_token` 文件接口（非 keyring）
-- CC 提供 `claude internal-token` CLI 命令导出当前 OAuth token
-- 或方案 v3 的独立仲裁进程通过 CC 的 IPC 复用同一对话上下文
-
 ## R4: judge-trace.jsonl 无限增长
 
 **风险描述**：每次 stop hook 触发都写一行 jsonl，单个项目可能积累到 100MB+，影响 git status / IDE 性能。
@@ -91,3 +76,20 @@
 **后续可能解法**：
 - 按月分片：`judge-trace-2026-04.jsonl`
 - 引入轮转脚本（手工调用）
+
+---
+
+## R5: 正版 Max CC 方案的 OAuth token 不可读
+
+**风险描述**（2026-04-26 落地时实测发现）：CC 把 OAuth access token 存在系统级位置（推测 keyring / DBus secret service），**不写到 `~/.claude.json` 的 `oauthAccount` 字段**。该字段只含 metadata（emailAddress / accountUuid 等）。这意味着原方案"oauth 路径凭证检测"在当前 CC 架构下**永远返回 none**，judge agent 在正版 Max CC 方案上无法直接工作。
+
+**当前状态**：
+- run-judge-agent.sh 的 oauth 路径检测代码保留（如果 CC 未来在 oauthAccount 加 accessToken 字段，自动启用）
+- 实际行为：正版 Max CC 用户跑 judge → missing_credentials 降级 → 行为等价 V1.8（无功能损失，只是没拿到 judge 的盲区识别）
+
+**Workaround**：用户可以从 https://console.anthropic.com 申请独立 API key（不影响 Max 订阅，只会少量计费走 console），导出 `ANTHROPIC_API_KEY=sk-ant-...`，judge agent 自动走 env 路径生效。
+
+**长期解法**（需要 CC 主动开放）：
+- CC 开放 `~/.claude/credentials/access_token` 文件接口（非 keyring）
+- CC 提供 `claude internal-token` CLI 命令导出当前 OAuth token
+- 或方案 v3 的独立仲裁进程通过 CC 的 IPC 复用同一对话上下文

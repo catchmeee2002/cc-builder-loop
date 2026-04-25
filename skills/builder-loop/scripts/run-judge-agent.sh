@@ -363,9 +363,12 @@ PY
 # ==================================================================
 parse_api_response() {
   local body="$1"
-  printf '%s' "$body" | python3 - <<'PY'
-import json, sys, re
-body = sys.stdin.read()
+  # 注：早期写法 `printf "$body" | python3 - <<'PY'` 有 bug——bash 的 here-doc
+  # `<<'PY'` 会**覆盖** pipe 提供的 stdin，python 实际读到的是 here-doc 内的脚本文本，
+  # 不是 body。改用 BODY env var 传递。
+  BODY="$body" python3 - <<'PY'
+import json, os, re, sys
+body = os.environ.get('BODY', '')
 try:
     resp = json.loads(body)
     blocks = resp.get('content', [])
@@ -429,6 +432,9 @@ line = {
     "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
     "slug": os.environ.get('SLUG', ''),
     "iter": int(os.environ.get('ITER') or 0),
+    # 顶层 action 是 judge.action 的快捷别名（便于 jq / python 简单查询）；
+    # 完整结构在 judge 嵌套字段里
+    "action": os.environ.get('ACTION', ''),
     "input": {
         "pass_cmd_status": os.environ.get('STATUS', ''),
         "pass_cmd_stage": os.environ.get('STAGE', ''),
@@ -546,7 +552,9 @@ if [ -n "$JUDGE_PROMPT_PATH_REL" ]; then
     SYSTEM_PROMPT_FILE="${JUDGE_PROJECT_ROOT}/${JUDGE_PROMPT_PATH_REL}"
   fi
 fi
-[ -z "$SYSTEM_PROMPT_FILE" ] || [ ! -f "$SYSTEM_PROMPT_FILE" ] && SYSTEM_PROMPT_FILE="${SKILL_ROOT}/prompts/judge-system.md"
+if [ -z "$SYSTEM_PROMPT_FILE" ] || [ ! -f "$SYSTEM_PROMPT_FILE" ]; then
+  SYSTEM_PROMPT_FILE="${SKILL_ROOT}/prompts/judge-system.md"
+fi
 if [ ! -f "$SYSTEM_PROMPT_FILE" ]; then
   output_downgrade "missing_prompt" "$RESOLVED_MODEL" "$CRED"
   write_telemetry "stop_done" "0" "missing_prompt" "true" "missing_prompt" "$RESOLVED_MODEL" "$CRED" "" "" ""
