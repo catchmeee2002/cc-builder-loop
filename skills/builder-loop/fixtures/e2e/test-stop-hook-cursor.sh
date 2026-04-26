@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
-# test-stop-hook-cursor.sh — E2E：V1.8.2 兜底激活 HEAD 游标
+# test-stop-hook-cursor.sh — E2E：bootstrap 触发器 + HEAD 游标兼容性
 #
-# 覆盖场景：
-#   1. 首次 Stop（刚 commit）→ 兜底激活 + 写游标
-#   2. 同 HEAD 再次 Stop → 游标命中 exit 0 静默
-#   3. 新 commit 后 Stop → 游标过期，重新激活
-#   4. HEAD 未动但有未提交改动 → HAS_DIFF 优先，仍然激活
+# V2.2 议题 3 行为变更：bootstrap 兜底**只看** HAS_DIFF（未提交工作树改动），
+# 砍 HAS_RECENT_COMMIT 触发器。详见 CLAUDE.md V2.2 段 + §7.7。
+#
+# 覆盖场景（V2.2 新行为）：
+#   Step 2: 首次 Stop（HEAD 刚 commit + 工作树干净）→ 静默 exit 0（V2.2 行为变更，原 V1.8.2 期望 exit 2）
+#   Step 3: 同 HEAD 再次 Stop → 仍 exit 0（行为一致）
+#   Step 4: 新 commit + 工作树干净 → 静默 exit 0（V2.2 行为变更）
+#   Step 5: HAS_DIFF 非空 → exit 2 + bootstrap（保留旧行为，新游标写入仍工作）
+#   Step 6: HAS_DIFF 空 + 游标损坏 → 仍 exit 0（不再降级为旧 bootstrap）
 #
 # 用法：bash test-stop-hook-cursor.sh
 # 退出码：0=全部通过 / 1=有失败
@@ -33,7 +37,7 @@ call_stop_hook() {
   return "$ec"
 }
 
-echo "=== E2E: V1.8.2 兜底激活 HEAD 游标 ==="
+echo "=== E2E: V2.2 bootstrap 触发器 + HEAD 游标兼容性 ==="
 echo "    被测脚本：$HOOK_SCRIPT"
 assert "被测脚本存在" "[ -f '$HOOK_SCRIPT' ]"
 
@@ -72,32 +76,29 @@ assert "loop.yml 存在" "[ -f '$TMP/.claude/loop.yml' ]"
 assert "HEAD1 已记录" "[ -n '$HEAD1' ]"
 assert "游标文件初始不存在" "[ ! -f '$CURSOR' ]"
 
-# ---- Step 2: 第 1 次 Stop → 兜底激活 + 写游标 ----
-echo "--- Step 2: 首次 Stop → 期望激活 bootstrap + 写游标 ----"
+# ---- Step 2: V2.2 行为 — 首次 Stop（HAS_DIFF 空 + HEAD 刚 commit）→ 静默 ----
+echo "--- Step 2: 首次 Stop（工作树干净）→ V2.2 期望静默 exit 0（不再因 HAS_RECENT_COMMIT 激活）----"
 ERR1="$(mktemp)"
 EC1=0
 call_stop_hook "$TMP" "$ERR1" || EC1=$?
 
-assert "第 1 次 exit 2（PASS 续接）" "[ '$EC1' -eq 2 ]"
-assert "第 1 次 stderr 含 '兜底激活'" "grep -q '兜底激活' '$ERR1'"
-assert "第 1 次 stderr 含 'PASS_CMD 全部阶段通过'" "grep -q 'PASS_CMD 全部阶段通过' '$ERR1'"
-assert "游标文件已创建" "[ -f '$CURSOR' ]"
-assert "游标内容 == HEAD1" "[ \"\$(cat '$CURSOR' 2>/dev/null | tr -d '[:space:]')\" = '$HEAD1' ]"
-assert "state 文件已被 rm（loop 结束）" "[ ! -f '$STATE_FILE' ]"
+assert "第 1 次 exit 0（V2.2 不再激活）" "[ '$EC1' -eq 0 ]"
+assert "第 1 次 stderr 不含 '兜底激活'" "! grep -q '兜底激活' '$ERR1'"
+assert "游标文件未创建（未走 PASS 路径）" "[ ! -f '$CURSOR' ]"
+assert "state 文件未创建" "[ ! -f '$STATE_FILE' ]"
 
-# ---- Step 3: 第 2 次 Stop（同 HEAD）→ 游标命中 exit 0 ----
-echo "--- Step 3: 同 HEAD 再次 Stop → 期望游标命中静默 ----"
+# ---- Step 3: 同 HEAD 再次 Stop → 仍 exit 0 ----
+echo "--- Step 3: 同 HEAD 再次 Stop → 仍 exit 0（行为一致）----"
 ERR2="$(mktemp)"
 EC2=0
 call_stop_hook "$TMP" "$ERR2" || EC2=$?
 
-assert "第 2 次 exit 0（游标跳过）" "[ '$EC2' -eq 0 ]"
+assert "第 2 次 exit 0" "[ '$EC2' -eq 0 ]"
 assert "第 2 次 stderr 不含 '兜底激活'" "! grep -q '兜底激活' '$ERR2'"
-assert "第 2 次 未创建新 state" "[ ! -f '$STATE_FILE' ]"
-assert "游标仍等于 HEAD1（未被覆盖为空）" "[ \"\$(cat '$CURSOR' 2>/dev/null | tr -d '[:space:]')\" = '$HEAD1' ]"
+assert "第 2 次 未创建 state" "[ ! -f '$STATE_FILE' ]"
 
-# ---- Step 4: 新 commit → 第 3 次 Stop 应重新激活 ----
-echo "--- Step 4: 新增 commit → 期望游标过期，重新 bootstrap ----"
+# ---- Step 4: 新 commit + 工作树干净 → 仍 exit 0（V2.2 行为变更）----
+echo "--- Step 4: 新增 commit + 工作树干净 → V2.2 期望仍 exit 0（行为变更，原 V1.8.2 会激活）----"
 echo "more" > CHANGES.md
 git add -A
 git commit -q -m "feat(test): [cr_id_skip] Second commit for cursor test"
@@ -109,14 +110,13 @@ ERR3="$(mktemp)"
 EC3=0
 call_stop_hook "$TMP" "$ERR3" || EC3=$?
 
-assert "第 3 次 exit 2（HEAD 前进后重新激活）" "[ '$EC3' -eq 2 ]"
-assert "第 3 次 stderr 含 '兜底激活'" "grep -q '兜底激活' '$ERR3'"
-assert "游标已更新为 HEAD2" "[ \"\$(cat '$CURSOR' 2>/dev/null | tr -d '[:space:]')\" = '$HEAD2' ]"
+assert "第 3 次 exit 0（V2.2 不再因 HEAD 前进而激活）" "[ '$EC3' -eq 0 ]"
+assert "第 3 次 stderr 不含 '兜底激活'" "! grep -q '兜底激活' '$ERR3'"
+assert "游标文件仍未创建" "[ ! -f '$CURSOR' ]"
 
-# ---- Step 5: HEAD 未动 + HAS_DIFF 非空 → 游标不阻塞 ----
-echo "--- Step 5: 未提交改动 + 同 HEAD → 期望 HAS_DIFF 优先，触发 bootstrap ----"
+# ---- Step 5: HAS_DIFF 非空 → 触发 bootstrap + 写游标 ----
+echo "--- Step 5: 未提交改动 → 触发 bootstrap，验证游标写入仍工作 ----"
 echo "local edit" >> README.md
-# 确认此刻有 unstaged diff
 DIFF_STAT="$(git diff --stat)"
 assert "HAS_DIFF 非空" "[ -n '$DIFF_STAT' ]"
 
@@ -124,27 +124,28 @@ ERR4="$(mktemp)"
 EC4=0
 call_stop_hook "$TMP" "$ERR4" || EC4=$?
 
-assert "第 4 次 exit 2（HAS_DIFF 优先于游标）" "[ '$EC4' -eq 2 ]"
+assert "第 4 次 exit 2（HAS_DIFF 触发兜底）" "[ '$EC4' -eq 2 ]"
 assert "第 4 次 stderr 含 '兜底激活'" "grep -q '兜底激活' '$ERR4'"
-# HAS_DIFF 路径 bootstrap 后 PASS_CMD 仍是 true → 进 PASS 分支写游标 → 游标值应是当前 HEAD（HEAD2）
-# 未提交改动不影响 commit hash，所以游标应仍等于 HEAD2
-assert "第 4 次游标仍等于 HEAD2（HAS_DIFF 不改变 HEAD）" "[ \"\$(cat '$CURSOR' 2>/dev/null | tr -d '[:space:]')\" = '$HEAD2' ]"
+assert "第 4 次 stderr 含 'PASS_CMD 全部阶段通过'" "grep -q 'PASS_CMD 全部阶段通过' '$ERR4'"
+# bootstrap → setup → PASS → write_processed_cursor → state 删除
+assert "游标文件已创建（V2.2 写入逻辑保留）" "[ -f '$CURSOR' ]"
+assert "游标内容 == HEAD2" "[ \"\$(cat '$CURSOR' 2>/dev/null | tr -d '[:space:]')\" = '$HEAD2' ]"
+assert "state 文件已被 rm（loop 结束）" "[ ! -f '$STATE_FILE' ]"
 
-# ---- Step 6: 游标文件损坏 → 降级为旧行为 ----
-echo "--- Step 6: 游标内容损坏 → 期望降级为旧 bootstrap ----"
-# 清理未提交改动，让 HAS_DIFF 空
+# ---- Step 6: HAS_DIFF 空 + 游标损坏 → 仍 exit 0（不再降级激活）----
+echo "--- Step 6: 游标损坏 + 工作树干净 → V2.2 仍 exit 0（不再降级激活）----"
 cd "$TMP"
 git checkout -q -- README.md
-# 损坏游标
 echo "not-a-valid-sha" > "$CURSOR"
 
 ERR5="$(mktemp)"
 EC5=0
 call_stop_hook "$TMP" "$ERR5" || EC5=$?
 
-assert "第 5 次 exit 2（游标损坏 → 降级 bootstrap）" "[ '$EC5' -eq 2 ]"
-assert "第 5 次 stderr 含 '兜底激活'" "grep -q '兜底激活' '$ERR5'"
-assert "游标已被刷新为真实 HEAD" "[ \"\$(cat '$CURSOR' 2>/dev/null | tr -d '[:space:]')\" = '$HEAD2' ]"
+assert "第 5 次 exit 0（V2.2 工作树干净一律放行）" "[ '$EC5' -eq 0 ]"
+assert "第 5 次 stderr 不含 '兜底激活'" "! grep -q '兜底激活' '$ERR5'"
+# 游标损坏不会被刷新（V2.2 不进 bootstrap 路径，无 PASS 出口写游标）
+assert "游标内容仍是损坏值（未走 PASS 写入）" "[ \"\$(cat '$CURSOR' 2>/dev/null | tr -d '[:space:]')\" = 'not-a-valid-sha' ]"
 
 # ---- 汇总 ----
 echo ""

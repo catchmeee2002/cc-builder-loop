@@ -15,19 +15,21 @@ install.sh 创建以下软链，把仓库文件映射到 CC 运行时路径：
 | `scripts/tester-lock-write.sh` | `~/.claude/scripts/tester-lock-write.sh` | `ln -sf` 逐文件 | SubagentStart hook |
 | `scripts/tester-lock-check.sh` | `~/.claude/scripts/tester-lock-check.sh` | `ln -sf` 逐文件 | PreToolUse hook |
 | `scripts/tester-lock-clear.sh` | `~/.claude/scripts/tester-lock-clear.sh` | `ln -sf` 逐文件 | SubagentStop hook |
+| `scripts/tester-write-guard.sh` | `~/.claude/scripts/tester-write-guard.sh` | `ln -sf` 逐文件 | PreToolUse hook（Write\|Edit\|MultiEdit）|
 | `scripts/reviewer-timing-check.sh` | `~/.claude/scripts/reviewer-timing-check.sh` | `ln -sf` 逐文件 | PreToolUse hook（Agent） |
 | `agents/tester.md` | `~/.claude/agents/tester.md` | `ln -sf` 逐文件 | tester subagent |
 | `agents/arbiter.md` | `~/.claude/agents/arbiter.md` | `ln -sf` 逐文件 | 仲裁 subagent |
-| *(install.sh)* | `~/.claude/settings.json` hooks 段 | python3 增量合并 | 5 个 hook 条目 |
+| *(install.sh)* | `~/.claude/settings.json` hooks 段 | python3 增量合并 | 6 个 hook 条目 |
 
-**注册的 5 个 hook**：
+**注册的 6 个 hook**：
 
 | Hook 类型 | Matcher | 脚本 | 作用 |
 |-----------|---------|------|------|
 | Stop | 无（全局） | builder-loop-stop.sh | 每次 CC Stop 时检查是否需要继续循环 |
-| SubagentStart | `tester` | tester-lock-write.sh | tester 启动时落隔离锁 |
+| SubagentStart | `tester` | tester-lock-write.sh | tester 启动时落隔离锁（V2.2 锁文件追加 worktree_path / main_repo_path / slug 字段）|
 | SubagentStop | `tester` | tester-lock-clear.sh | tester 结束时清锁 |
 | PreToolUse | `Read\|Grep\|Glob` | tester-lock-check.sh | 拦截 tester 对 source_dirs 的读操作 |
+| PreToolUse | `Write\|Edit\|MultiEdit` | tester-write-guard.sh | V2.2：拦截 tester 把文件写到 worktree 之外（exit 2 + 精确诊断 stderr）|
 | PreToolUse | `Agent` | reviewer-timing-check.sh | 拦截 loop 活跃期的 reviewer spawn |
 
 ## 2. 部署指南
@@ -78,7 +80,7 @@ cc-builder-loop/
 └── agents/                     # tester.md + arbiter.md
 ```
 
-## 5. 已交付能力（V1.0~V2.1）
+## 5. 已交付能力（V1.0~V2.2）
 
 - 多阶段 PASS_CMD + 智能早停
 - tester 强隔离（hook 锁机制）
@@ -147,6 +149,17 @@ cc-builder-loop/
   - **修复**：(1) `init-loop-config.sh` 接入向导新增 3 条规则（顶层 `.claude/loop-trace.jsonl` / `.claude/reviewer-params.json` / `.claude/reviewer-diff.txt`），原有 `.claude/builder-loop/` + `.claude/loop-runs/` 不变；(2) `setup-builder-loop.sh` 每次启动 loop 时跑 `ensure_gitignore_rules()` 幂等自愈，存量项目（接入时漏配的）自动追加，stderr 输出 `🛡️ .gitignore 自愈追加：<rule>`
   - **fixture 健壮性顺修**：`test-nudge-max-reads-worktree.sh` 的 `bash setup ... | head -5` 改用临时日志文件解耦（防 head 关 pipe 触发 SIGPIPE 让 setup 中途死，setup 输出量随版本会增长）
   - **根因 follow-up（未修）**：`merge-worktree-back.sh` 的 `git add -A` 仍是过度收集；本期靠 `.gitignore` 兜底，独立任务再做精确化
+- **V2.2**: Tester 跨目录写硬门禁 + 复盘强制分类闸门 + Bootstrap 空转修复
+  - **背景**：session `283ee3b2` 暴露 3 个独立 bug。①tester subagent 虽然 cwd=worktree、prompt 明示 worktree_path，仍把 5 处工具调用写到主仓绝对路径，下游 ff-merge 撞 untracked。②同 session 复盘把"tester 跨目录写"这种**显然能用 hook 防住**的 A2 类机制缺口判成 B 类落 memory，违反 builder.md L177 自身判据。③同 session 阶段 0 闭环后，stop hook 因 `HAS_RECENT_COMMIT` 触发器太激进连续两次 NOOP 兜底激活、输出 reviewer 流程提示空转
+  - **议题 1 防御**：(a) `scripts/tester-write-guard.sh` 新 PreToolUse hook（matcher=`Write|Edit|MultiEdit`），物理拦截 tester subagent 把文件写到 worktree 之外。识别 tester 复用 V1.1 既有锁文件 `${ISOLATION_LOCK_DIR:-/tmp}/cc-subagent-${session_id}.lock`，新读 `worktree_path` 字段决定是否拦截。(b) `tester-lock-write.sh` 锁 schema 扩展：追加 `worktree_path` / `main_repo_path` / `slug` 三字段。(c) `agents/tester.md` 输入字段表新增 `worktree_path`，硬性约束第 6 条「路径根硬约束」+ 步骤 4 自检追加路径根校验项 + 禁 Bash cp/mv/ln 搬运
+  - **议题 1 路径白名单**：严格只允 `${worktree_path}/*`（含尾斜杠防 `/wt` 与 `/wt2` 误匹配），realpath 解析后再 prefix 比较防 path traversal 绕过。bare loop（`worktree_path` 为空）+ V1.x 老锁（无字段）→ 放行所有 Write/Edit
+  - **议题 1 拒绝语义**：exit 2 + stderr 含「尝试写入路径 / 解析后 abspath / 允许根 worktree_path / 主仓 main_repo_path / 改用建议」5 行精确诊断，让 tester 看到错误后能直接拼出正确路径自动重试
+  - **议题 1 spawn 契约**：`~/.claude/commands/builder.md` L119/L122 spawn tester 段强制传 `worktree_path`（loop 活跃 = state.worktree_path / loop 已结束 = ""）
+  - **议题 2 复盘改造**：`builder.md` 步骤 5 重写为「① 列全部候选 → ② 强制 4 桶分类（A1/A2/B/C 各列号或'无'+理由）→ ③ 仅 B/C 走 5 问 → ④ 提审强制 [A1]/[A2]/[mem] 前缀 → ⑤ 落盘」。空桶必须显式写"无"+一句话理由，4 桶并列输出。钉 3 条反例锚点（跨目录写 → A2 / .gitignore 自愈 → 已交付不立项 / stop hook 平台契约 → B 不是 A）
+  - **议题 3 bootstrap 触发器收敛**：`scripts/builder-loop-stop.sh` L173-179 砍 `HAS_RECENT_COMMIT` 作为触发条件，bootstrap 兜底**只看** `HAS_DIFF`（未提交工作树改动）。`HAS_RECENT_COMMIT` 变量保留供 task_desc fallback 推断
+  - **议题 3 取舍**：用户/builder 手动 commit 后工作树干净 → bootstrap 静默放行（不再被无意义 NOOP 触发的 reviewer 提示困扰）；损失场景：用户在主仓直接改代码 + commit + 关 CC（不经 loop）→ 失去自动补 PASS_CMD 兜底，需手动 `setup-builder-loop.sh "<task>"` 起 loop（详见 §7.7）
+  - **install.sh / uninstall.sh** 同步追加 `tester-write-guard.sh` 软链 + hook 注册条目（registrations 列表 +1 条；uninstall.sh `bl_scripts` 列表 +1 项）
+  - 配套新 e2e fixture：`test-tester-write-guard.sh`（13 case，A1-A9 覆盖 拒绝主仓 / 放行 worktree / 无锁 / bare loop 老锁兼容 / 等于 worktree 根 / 前缀部分匹配 / path traversal / 非 tester subagent 放行）
 
 详见 `skills/builder-loop/README.md` 与 `skills/builder-loop/docs/judge-agent.md`。
 
@@ -283,3 +296,21 @@ curl -sS -X POST $ANTHROPIC_BASE_URL/v1/messages \
 - 5xx / 401 / timeout → 后端真的有问题；haiku fallback 是合理的兜底
 
 **完全禁用降级链**：在 `loop.yml.judge` 设 `fallback_model: ""`，sonnet 失败直接 downgrade 回 PASS_CMD 二值（不切 haiku）。
+
+### 7.7 用户主仓直接 commit 后 loop 没自动验证 PASS_CMD（V2.2+ 行为变更）
+
+**现象**：用户在主仓直接改代码 + commit + 关 CC（不经过 builder loop / 不调 setup-builder-loop.sh）。期望 stop hook 兜底激活帮跑 PASS_CMD 验证，但 loop 没起来。
+
+**原因**（V2.2 议题 3 设计变更）：bootstrap 兜底激活原本看「未提交工作树改动 OR 30 分钟内有 commit」任一条件就触发，V2.1 及之前会针对用户的新 commit 自动跑 PASS_CMD。
+
+V2.2 砍了 `HAS_RECENT_COMMIT` 触发器，bootstrap **只看**未提交工作树改动。原因：原行为造成「builder/用户手动 commit 收尾后连续两次 NOOP 兜底激活、输出 reviewer 流程提示空转」（复现 session `283ee3b2`）——多数场景下用户 commit 完就是真的"已收尾"，loop 不该再纠缠。
+
+**处理**（V2.2 推荐）：
+- 用户主仓直接改代码后，commit **之前**关 CC：下次开 CC 触发 stop hook 时仍会兜底（HAS_DIFF 非空）
+- 用户主仓直接改代码 + commit + 关 CC：下次开 CC 后**手动**调
+  ```bash
+  bash ~/.claude/skills/builder-loop/scripts/setup-builder-loop.sh "<task description>"
+  ```
+  起 loop 跑 PASS_CMD 验证
+
+**自检**：bootstrap 是否触发可看 stderr 是否含 `[builder-loop] ⚡ 兜底激活：检测到 loop.yml + 代码改动但无状态文件...`。

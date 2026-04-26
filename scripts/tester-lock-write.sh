@@ -63,12 +63,21 @@ if [ -z "$STATE_FILE" ]; then
 fi
 
 # state 在 <PROJECT_ROOT>/.claude/builder-loop/state/<slug>.yml → 回溯 4 层到 PROJECT_ROOT
-# 优先从 state 内 project_root 字段读（更可靠）
-PROJECT_ROOT="$(grep -E '^project_root:' "$STATE_FILE" | head -1 | sed -E 's/^project_root:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/')"
+# V2.0 schema：project_root = 干活的地方（worktree 启用时 = worktree path / bare = 主仓）
+#              main_repo_path = 主仓（V2.0 新字段；老 state 缺失时按 project_root 兜底）
+#              worktree_path = worktree path（bare 模式为空字段）
+# || true 兜底：老 state 不含某字段时 grep exit 1 + pipefail + set -e 可能让脚本静默退出
+PROJECT_ROOT="$(grep -E '^project_root:' "$STATE_FILE" 2>/dev/null | head -1 | sed -E 's/^project_root:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' || true)"
+MAIN_REPO_PATH="$(grep -E '^main_repo_path:' "$STATE_FILE" 2>/dev/null | head -1 | sed -E 's/^main_repo_path:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' || true)"
+WORKTREE_PATH="$(grep -E '^worktree_path:' "$STATE_FILE" 2>/dev/null | head -1 | sed -E 's/^worktree_path:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' || true)"
+SLUG="$(basename "$STATE_FILE" .yml 2>/dev/null || echo "")"
+
 if [ -z "$PROJECT_ROOT" ] || [ ! -d "$PROJECT_ROOT" ]; then
   # fallback: state/<slug>.yml → ../../.. = project_root
   PROJECT_ROOT="$(cd "$(dirname "$STATE_FILE")/../../.." 2>/dev/null && pwd -P || echo "")"
 fi
+# V1.x 兼容：缺 main_repo_path 字段时按"project_root 等于主仓"旧语义
+[ -z "$MAIN_REPO_PATH" ] && MAIN_REPO_PATH="$PROJECT_ROOT"
 
 # 解析 source_dirs（state file 中：source_dirs: "src,lib"）
 SRC_RAW=$(grep -E '^source_dirs:' "$STATE_FILE" | sed -E 's/^source_dirs:[[:space:]]*"?([^"]*)"?$/\1/' || echo "")
@@ -106,11 +115,17 @@ fi
 
 LOCK_FILE="${LOCK_DIR}/cc-subagent-${SESSION_ID}.lock"
 
-# 写锁（YAML，tester-lock-check.sh 用 grep 解析）
+# 写锁（YAML，tester-lock-check.sh 与 tester-write-guard.sh 用 grep 解析）
+# V2.2 新增字段：worktree_path / main_repo_path / slug
+#   - worktree_path 非空 → tester-write-guard.sh 拦截非 worktree 路径的 Write/Edit
+#   - worktree_path 为空（bare loop / V1.x 老 state）→ tester-write-guard.sh 放行所有 Write/Edit
 {
   echo "agent_type: tester"
   echo "session_id: ${SESSION_ID}"
   echo "project_root: \"${PROJECT_ROOT}\""
+  echo "main_repo_path: \"${MAIN_REPO_PATH}\""
+  echo "worktree_path: \"${WORKTREE_PATH}\""
+  echo "slug: \"${SLUG}\""
   echo "start_ts: $(date +%s)"
   echo "ttl_min: ${TTL_MIN}"
   echo "source_dirs_abs:"
@@ -121,5 +136,5 @@ LOCK_FILE="${LOCK_DIR}/cc-subagent-${SESSION_ID}.lock"
   fi
 } > "$LOCK_FILE"
 
-log "lock written: $LOCK_FILE | source_dirs=$SRC_RAW"
+log "lock written: $LOCK_FILE | worktree=$WORKTREE_PATH | source_dirs=$SRC_RAW"
 exit 0

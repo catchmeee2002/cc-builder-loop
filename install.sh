@@ -90,6 +90,7 @@ registrations = [
     ("SubagentStart",  "tester-lock-write.sh",      "tester"),
     ("SubagentStop",   "tester-lock-clear.sh",      "tester"),
     ("PreToolUse",     "tester-lock-check.sh",      "Read|Grep|Glob"),
+    ("PreToolUse",     "tester-write-guard.sh",     "Write|Edit|MultiEdit"),
     ("PreToolUse",     "reviewer-timing-check.sh",  "Agent"),
 ]
 
@@ -104,7 +105,7 @@ with open(settings_path, "w") as f:
     json.dump(cfg, f, indent=2, ensure_ascii=False)
     f.write("\n")
 
-print(f"✓ hooks: {added} 条新增，{5 - added} 条已存在")
+print(f"✓ hooks: {added} 条新增，{len(registrations) - added} 条已存在")
 PYEOF
   fi
 fi
@@ -112,5 +113,5 @@ fi
 echo ""
 echo "✅ cc-builder-loop 安装完成"
 echo "   skill: ~/.claude/skills/builder-loop/"
-echo "   scripts: ~/.claude/scripts/builder-loop-stop.sh + tester-lock-*.sh + reviewer-timing-check.sh"
+echo "   scripts: ~/.claude/scripts/builder-loop-stop.sh + tester-lock-*.sh + tester-write-guard.sh + reviewer-timing-check.sh"
 echo "   agents: ~/.claude/agents/tester.md + arbiter.md"

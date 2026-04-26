@@ -14,6 +14,7 @@ pass_cmd:
   - { stage: "v2_nudge_max_reads_worktree", cmd: "bash skills/builder-loop/fixtures/e2e/test-nudge-max-reads-worktree.sh", timeout: 60 }
   - { stage: "v21_judge_env_file_load", cmd: "bash skills/builder-loop/fixtures/e2e/test-judge-env-file-load.sh", timeout: 60 }
   - { stage: "v21_judge_model_fallback", cmd: "bash skills/builder-loop/fixtures/e2e/test-judge-model-fallback.sh", timeout: 90 }
+  - { stage: "v22_tester_write_guard", cmd: "bash skills/builder-loop/fixtures/e2e/test-tester-write-guard.sh", timeout: 30 }
 
 max_iterations: 5
 

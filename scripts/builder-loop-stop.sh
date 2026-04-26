@@ -172,14 +172,19 @@ if [ "$FOUND_LOOP_ONLY" = "true" ]; then
   fi
   HAS_DIFF="$(git -C "$PROJECT_ROOT" diff --stat 2>/dev/null)" || true
   [ -z "$HAS_DIFF" ] && { HAS_DIFF="$(git -C "$PROJECT_ROOT" diff --cached --stat 2>/dev/null)" || true; }
+  # V2.2 议题 3：HAS_RECENT_COMMIT 不再作为兜底激活触发条件（仅保留供 L_TASK_FALLBACK 推断 task_desc）
+  # 旧行为（V2.1 及之前）：30 分钟内有 commit 也触发 → 用户/builder 主动 commit 收尾后空转
+  #   复现：session 283ee3b2 阶段 0 闭环、builder 手动 commit 02aec58+7feb39f 后连续两次 NOOP 兜底
+  # 新行为：只看 HAS_DIFF（未提交工作树改动）；commit 完工作树干净 → 静默放行
+  # 损失场景：用户在主仓直接改代码 + commit + 关 CC（不经 loop） → 失去自动补 PASS_CMD 兜底
+  #         需手动 `bash ~/.claude/skills/builder-loop/scripts/setup-builder-loop.sh "<task>"` 起 loop
   HAS_RECENT_COMMIT="$(git -C "$PROJECT_ROOT" log --since='30 minutes ago' --oneline 2>/dev/null | head -5)" || true
-  # 无任何改动 → 放行（纯对话 stop）
-  if [ -z "$HAS_DIFF" ] && [ -z "$HAS_RECENT_COMMIT" ]; then
+  if [ -z "$HAS_DIFF" ]; then
     exit 0
   fi
-  # V1.8.2: 已处理 HEAD 游标检查 — 同一 HEAD 不重复兜底激活
-  # 修复场景：推完 commit 后 30 分钟窗口内每次对话都触发 NOOP 空转（session 3d62eb57 复现）
-  # 仅当 HAS_DIFF 为空时游标生效；用户本地仍在改（HAS_DIFF 非空）时不受此限制
+  # V1.8.2: 已处理 HEAD 游标检查 — V2.2 起触发器已收紧到 HAS_DIFF 非空，HAS_DIFF 空场景已在前面静默放行
+  # 本段保留作为防御冗余：未来如果重新引入 HAS_RECENT_COMMIT 触发器，游标可拦同一 HEAD 反复激活
+  # 写入逻辑（PASS / 异常 merge / EARLY_STOP 三处出口的 write_processed_cursor）不变，作审计/排查辅助
   if [ -z "$HAS_DIFF" ]; then
     CURSOR_FILE="${PROJECT_ROOT}/.claude/builder-loop/last_processed_head"
     CURRENT_HEAD="$(git -C "$PROJECT_ROOT" rev-parse HEAD 2>/dev/null || echo "")"
