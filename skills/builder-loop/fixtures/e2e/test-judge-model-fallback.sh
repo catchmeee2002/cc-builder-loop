@@ -149,7 +149,10 @@ EOF
 }
 
 make_loop_yml() {
-  # $1 = 项目根 / $2 = primary / $3 = fallback / $4 = threshold
+  # $1 = 项目根
+  # $2 = primary_model（如 "claude-sonnet-4-6"；空字符串表示让 schema/代码用默认）
+  # $3 = fallback_model（如 "claude-haiku-4-5"；空字符串表示禁用降级链回 V1.9 行为）
+  # $4 = fallback_after_failures（整数，达此阈值后切 fallback；典型值 2）
   local proj="$1" pri="$2" fb="$3" thr="$4"
   mkdir -p "$proj/.claude"
   cat > "$proj/.claude/loop.yml" <<EOF

@@ -576,10 +576,17 @@ ERROR: missing credentials (no env, no oauth)
 
 提示：
   - Copilot CC 用户：检查 ANTHROPIC_API_KEY / ANTHROPIC_BASE_URL（应在 ~/.claude/settings.json env 段）
-  - 正版 Max CC 用户：CC 自己的 OAuth token 不在 ~/.claude.json 公开字段中，judge agent 无法直接复用。
-    workaround：从 https://console.anthropic.com 申请独立 API key（不影响 Max 订阅），
-                export ANTHROPIC_API_KEY=sk-ant-... 即可启用 judge。
-    或保持现状 — judge 会自动降级回 PASS_CMD 二值判据，行为等价 V1.8。
+  - 正版 Max CC 用户（V2.1 推荐）：CC 自己的 OAuth token 不在 ~/.claude.json 公开字段中，
+    judge agent 无法直接复用。请写 ~/.claude/skills/builder-loop/judge-env.sh：
+        # 方案 A：copilot-proxy 链路（已有 proxy 用户首选）
+        export ANTHROPIC_API_KEY=sk-666
+        export ANTHROPIC_BASE_URL=http://localhost:4142
+        # 方案 B：独立 sk-ant-key（无 proxy 用户）
+        # export ANTHROPIC_API_KEY=sk-ant-...
+    模板见 skills/builder-loop/judge-env.sh.example。
+    主 env 已设的 Copilot 用户行为不变；env file 仅在主 env 缺失时 source。
+  - 项目级覆盖到别的路径：在 loop.yml.judge.credentials_file 指定。
+  - 不配置 judge：保持现状即可 — judge 会自动降级回 PASS_CMD 二值判据，行为等价 V1.8。
 HINT
     return 1
   fi
@@ -752,7 +759,6 @@ err_to_dgr() {
 
 # V2.1 主调用 + 失败处理状态机
 PARSED=""
-FALLBACK_TRIGGERED="false"
 if do_call_and_parse "$RESOLVED_MODEL"; then
   # 成功 → 重置计数 + 保存当前 active（保 V2.0 schema 字段写回兼容）
   upsert_state_field "judge_consecutive_failures" "0"
@@ -767,7 +773,6 @@ else
       RESOLVED_MODEL="$FALLBACK_MODEL"
       upsert_state_field "judge_active_model" "$FALLBACK_MODEL"
       upsert_state_field "judge_consecutive_failures" "0"   # 切 fallback 即重置计数（避免再次降级）
-      FALLBACK_TRIGGERED="true"
       echo "[run-judge-agent] sonnet 连续失败 ${NEW_FAILURES} 次（阈值 ${JUDGE_FALLBACK_THRESHOLD}），切 fallback 模型 ${FALLBACK_MODEL} 重试" >&2
       if do_call_and_parse "$FALLBACK_MODEL"; then
         PARSED="$CALL_RESULT"
