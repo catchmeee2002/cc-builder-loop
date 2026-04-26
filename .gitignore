@@ -7,3 +7,4 @@ worktrees/
 .claude/loop-trace.jsonl
 .claude/reviewer-params.json
 .claude/reviewer-diff.txt
+.claude/loop-runs/
