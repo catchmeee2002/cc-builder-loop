@@ -114,11 +114,14 @@ assert "第 3 次 exit 0（V2.2 不再因 HEAD 前进而激活）" "[ '$EC3' -eq
 assert "第 3 次 stderr 不含 '兜底激活'" "! grep -q '兜底激活' '$ERR3'"
 assert "游标文件仍未创建" "[ ! -f '$CURSOR' ]"
 
-# ---- Step 5: HAS_DIFF 非空 → 触发 bootstrap + 写游标 ----
-echo "--- Step 5: 未提交改动 → 触发 bootstrap，验证游标写入仍工作 ----"
-echo "local edit" >> README.md
-DIFF_STAT="$(git diff --stat)"
-assert "HAS_DIFF 非空" "[ -n '$DIFF_STAT' ]"
+# ---- Step 5: 非文档改动 → 触发 bootstrap + 写游标 ----
+# 注意：V2.2.1 起 README.md 等 *.md 命中文档白名单不触发，故必须改非白名单文件
+# 改动需 git add 进 staged 才被 git diff --cached --name-only 看见（untracked 不算 HAS_DIFF）
+echo "--- Step 5: 未提交非文档改动 → 触发 bootstrap，验证游标写入仍工作 ----"
+echo "package main" > src/main.go
+git add src/main.go
+DIFF_STAT="$(git diff --cached --stat)"
+assert "HAS_DIFF（staged）非空" "[ -n '$DIFF_STAT' ]"
 
 ERR4="$(mktemp)"
 EC4=0
@@ -135,7 +138,10 @@ assert "state 文件已被 rm（loop 结束）" "[ ! -f '$STATE_FILE' ]"
 # ---- Step 6: HAS_DIFF 空 + 游标损坏 → 仍 exit 0（不再降级激活）----
 echo "--- Step 6: 游标损坏 + 工作树干净 → V2.2 仍 exit 0（不再降级激活）----"
 cd "$TMP"
-git checkout -q -- README.md
+# step 5 的 src/main.go staged 在 bootstrap PASS 后未被 commit，需 reset 干净
+git reset -q HEAD src/main.go 2>/dev/null || true
+rm -f src/main.go
+git checkout -q -- README.md 2>/dev/null || true
 echo "not-a-valid-sha" > "$CURSOR"
 
 ERR5="$(mktemp)"
@@ -146,6 +152,76 @@ assert "第 5 次 exit 0（V2.2 工作树干净一律放行）" "[ '$EC5' -eq 0 
 assert "第 5 次 stderr 不含 '兜底激活'" "! grep -q '兜底激活' '$ERR5'"
 # 游标损坏不会被刷新（V2.2 不进 bootstrap 路径，无 PASS 出口写游标）
 assert "游标内容仍是损坏值（未走 PASS 写入）" "[ \"\$(cat '$CURSOR' 2>/dev/null | tr -d '[:space:]')\" = 'not-a-valid-sha' ]"
+
+# ---- Step 7: V2.2.1 纯文档改动（CLAUDE.md / docs/ / *.txt / LICENSE / .gitignore）→ 静默放行 ----
+echo "--- Step 7: 纯文档改动 → V2.2.1 期望静默 exit 0（不再因 *.md / docs/ 触发 NOOP loop）----"
+cd "$TMP"
+mkdir -p docs
+echo "# initial doc" > CLAUDE.md
+echo "# license" > LICENSE
+echo "# changelog" > docs/CHANGELOG.md
+echo "*.bak" > .gitignore
+git add -A
+git commit -q -m "chore(test): [cr_id_skip] Seed for doc whitelist test"
+HEAD3="$(git rev-parse HEAD)"
+
+# 改纯文档文件（unstaged）
+echo "## new section" >> CLAUDE.md
+echo "## v2" >> docs/CHANGELOG.md
+echo "MIT" >> LICENSE
+echo "*.tmp" >> .gitignore
+
+DOC_DIFF="$(git diff --name-only)"
+assert "纯文档改动 git diff 含 4 个文件" "[ \"\$(echo '$DOC_DIFF' | wc -l)\" -eq 4 ]"
+
+ERR6="$(mktemp)"
+EC6=0
+call_stop_hook "$TMP" "$ERR6" || EC6=$?
+
+assert "第 6 次 exit 0（V2.2.1 纯文档放行）" "[ '$EC6' -eq 0 ]"
+assert "第 6 次 stderr 不含 '兜底激活'" "! grep -q '兜底激活' '$ERR6'"
+assert "第 6 次 未创建 state（doc-only 未触发 setup）" "[ ! -f '$STATE_FILE' ]"
+
+# ---- Step 8: V2.2.1 mixed 改动（doc + code）→ 仍触发 bootstrap ----
+echo "--- Step 8: mixed 改动（doc + code 混合）→ V2.2.1 期望仍触发 bootstrap ----"
+# 此时 step 7 的 4 个 doc 文件还 unstaged，新增 src/main.py（非白名单）让改动变 mixed
+echo "real code" > src/main.py
+git add src/main.py
+
+ALL_CHANGED="$(git diff --name-only; git diff --cached --name-only)"
+assert "mixed 改动含 src/main.py（非 doc）" "echo '$ALL_CHANGED' | grep -q 'src/main.py'"
+
+ERR7="$(mktemp)"
+EC7=0
+call_stop_hook "$TMP" "$ERR7" || EC7=$?
+
+assert "第 7 次 exit 2（mixed 改动仍触发）" "[ '$EC7' -eq 2 ]"
+assert "第 7 次 stderr 含 '兜底激活'" "grep -q '兜底激活' '$ERR7'"
+
+# Step 9 之前彻底 reset 工作树（避免 step 5/7/8 残余 staged/unstaged 影响判定）
+# 注意：fixture 临时仓未把 .claude/builder-loop/ 加进 .gitignore，前面 setup 写的游标可能被 git tracked，
+# 必须 git rm --cached 撤出索引，否则 step 9 的 git diff 会显示 builder-loop/last_processed_head（非白名单）→ 触发 bootstrap
+cd "$TMP"
+git reset -q --hard HEAD
+git rm -q --cached -r .claude/builder-loop/ 2>/dev/null || true
+git commit -q -m "chore(test): [cr_id_skip] Drop builder-loop runtime files from git" 2>/dev/null || true
+rm -rf .claude/builder-loop/
+git clean -qfd
+
+# ---- Step 9: 仅 docs/ 子目录改动（不含 .md 后缀文件）→ 静默放行 ----
+echo "--- Step 9: docs/ 下任意类型文件改动 → V2.2.1 静默放行（docs/ 路径模式）----"
+mkdir -p docs/diagrams
+echo "binary placeholder" > docs/diagrams/arch.svg
+git add docs/diagrams/arch.svg
+git commit -q -m "chore(test): [cr_id_skip] Add arch diagram"
+echo "updated svg" > docs/diagrams/arch.svg
+
+ERR8="$(mktemp)"
+EC8=0
+call_stop_hook "$TMP" "$ERR8" || EC8=$?
+
+assert "第 8 次 exit 0（docs/ 路径放行 .svg）" "[ '$EC8' -eq 0 ]"
+assert "第 8 次 stderr 不含 '兜底激活'" "! grep -q '兜底激活' '$ERR8'"
 
 # ---- 汇总 ----
 echo ""

@@ -170,19 +170,31 @@ if [ "$FOUND_LOOP_ONLY" = "true" ]; then
     echo "[builder-loop]    如需清理：git -C '$PROJECT_ROOT' worktree list 查看 → git worktree remove <path> 移除" >&2
     exit 0
   fi
-  HAS_DIFF="$(git -C "$PROJECT_ROOT" diff --stat 2>/dev/null)" || true
-  [ -z "$HAS_DIFF" ] && { HAS_DIFF="$(git -C "$PROJECT_ROOT" diff --cached --stat 2>/dev/null)" || true; }
-  # V2.2 议题 3：HAS_RECENT_COMMIT 不再作为兜底激活触发条件（仅保留供 L_TASK_FALLBACK 推断 task_desc）
+  # V2.2.1: 收集改动文件列表（unstaged + staged 合并去重），供后续触发判定 + 文档白名单识别
+  CHANGED_FILES="$(
+    { git -C "$PROJECT_ROOT" diff --name-only 2>/dev/null
+      git -C "$PROJECT_ROOT" diff --cached --name-only 2>/dev/null
+    } | sort -u | grep -v '^$' || true
+  )"
+  # V2.2 议题 3：HAS_RECENT_COMMIT 不再作为兜底激活触发条件（仅保留供下方 L_TASK_FALLBACK 推断 task_desc）
   # 旧行为（V2.1 及之前）：30 分钟内有 commit 也触发 → 用户/builder 主动 commit 收尾后空转
   #   复现：session 283ee3b2 阶段 0 闭环、builder 手动 commit 02aec58+7feb39f 后连续两次 NOOP 兜底
-  # 新行为：只看 HAS_DIFF（未提交工作树改动）；commit 完工作树干净 → 静默放行
+  # 新行为：只看未提交工作树改动；commit 完工作树干净 → 静默放行
   # 损失场景：用户在主仓直接改代码 + commit + 关 CC（不经 loop） → 失去自动补 PASS_CMD 兜底
   #         需手动 `bash ~/.claude/skills/builder-loop/scripts/setup-builder-loop.sh "<task>"` 起 loop
   HAS_RECENT_COMMIT="$(git -C "$PROJECT_ROOT" log --since='30 minutes ago' --oneline 2>/dev/null | head -5)" || true
-  if [ -z "$HAS_DIFF" ]; then
+  if [ -z "$CHANGED_FILES" ]; then
     exit 0
   fi
-  # V1.8.2 游标段已删（HAS_DIFF 空场景在前面已静默放行，游标段不可达）
+  # V2.2.1: 纯文档改动（*.md / docs/ / *.txt / LICENSE / .gitignore）跳过 bootstrap
+  # 避免改 CLAUDE.md / SKILL.md / docs/ 等触发 NOOP loop（fixture 跑 1-2 分钟 + cache miss）
+  # mixed 改动（文档 + 代码）→ 仍触发；纯文档 → 静默放行
+  DOC_PATTERN='\.md$|^docs/|/docs/|\.txt$|^LICENSE$|\.gitignore$'
+  NON_DOC_FILES="$(printf '%s\n' "$CHANGED_FILES" | grep -v -E "$DOC_PATTERN" || true)"
+  if [ -z "$NON_DOC_FILES" ]; then
+    exit 0
+  fi
+  # V1.8.2 游标段已删（CHANGED_FILES 空场景在前面已静默放行，游标段不可达）
   # write_processed_cursor 在 PASS / 异常 merge / EARLY_STOP 三处出口仍写入，作审计/排查辅助
   # 推断 task_description
   TASK_DESC="auto-activated-by-stop-hook"

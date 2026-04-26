@@ -169,6 +169,12 @@ cc-builder-loop/
   - **议题 3 取舍**：用户/builder 手动 commit 后工作树干净 → bootstrap 静默放行（不再被无意义 NOOP 触发的 reviewer 提示困扰）；损失场景：用户在主仓直接改代码 + commit + 关 CC（不经 loop）→ 失去自动补 PASS_CMD 兜底，需手动 `setup-builder-loop.sh "<task>"` 起 loop（详见 §7.7）
   - **install.sh / uninstall.sh** 同步追加 `tester-write-guard.sh` 软链 + hook 注册条目（registrations 列表 +1 条；uninstall.sh `bl_scripts` 列表 +1 项）
   - 配套新 e2e fixture：`test-tester-write-guard.sh`（11 case A1-A10 / 16 个 assert，覆盖 拒绝主仓 / 放行 worktree / Edit / MultiEdit 拦截实证 / 无锁 / V1.x 老锁兼容（worktree_path 缺字段 vs 空字符串）/ 等于 worktree 根 / 前缀部分匹配 / path traversal / 非 tester subagent 放行）
+- **V2.2.1**: Bootstrap 纯文档白名单（V2.2 议题 3 同模式延伸）
+  - **背景**：V2.2 议题 3 砍 HAS_RECENT_COMMIT 后仍有同类痛点——改纯文档（CLAUDE.md / docs/*.md / LICENSE）触发 bootstrap → 跑 PASS_CMD 13 stage NOOP → exit 2 续接 → 一次 cache miss + 1-2 分钟空转。文档跑 lint/test 无意义
+  - **修复**：`scripts/builder-loop-stop.sh` bootstrap 段新增 `DOC_PATTERN='\.md$|^docs/|/docs/|\.txt$|^LICENSE$|\.gitignore$'`；改动文件全部命中白名单 → 静默 exit 0；mixed 改动（doc + code 混合）→ 仍触发 bootstrap
+  - **改动审计**：`HAS_DIFF` 变量替换为 `CHANGED_FILES`（unstaged + staged 文件名合并去重），原 `git diff --stat` 触发判定改为 `CHANGED_FILES` 非空判定；`HAS_RECENT_COMMIT` 仍保留供 task_desc fallback 推断
+  - **fixture 扩展**：`test-stop-hook-cursor.sh` 加 Step 7-9 / 共 34 个 assert，覆盖（纯文档 → 静默 / mixed → 触发 / docs/ 子目录非 .md 文件 → 静默）。Step 9 之前用 `git rm --cached` 撤出 `.claude/builder-loop/` 避免临时仓游标文件被 tracked 干扰判定
+  - **完全向后兼容**：白名单是纯增——以前会触发的改动今天可能仍触发；唯一行为变化是「全部命中白名单」从触发改为静默放行
 
 详见 `skills/builder-loop/README.md` 与 `skills/builder-loop/docs/judge-agent.md`。
 
