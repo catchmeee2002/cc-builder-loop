@@ -78,7 +78,7 @@ cc-builder-loop/
 └── agents/                     # tester.md + arbiter.md
 ```
 
-## 5. 已交付能力（V1.0~V2.0）
+## 5. 已交付能力（V1.0~V2.1）
 
 - 多阶段 PASS_CMD + 智能早停
 - tester 强隔离（hook 锁机制）
@@ -134,6 +134,14 @@ cc-builder-loop/
   - **M4 tester subagent prompt 加 4 条硬约束**：bare loop fixture slug=__main__ / V2.0 state schema 写 main_repo_path / worktree 启用前先 commit loop.yml / bash grep+head+sed 必须 || true 收尾（防止 `set -euo pipefail` 静默退出）
   - **M2 doc-maintainer audit checklist** 落地 `skills/builder-loop/docs/doc-maintainer-audit-checklist.md`：要求 maintainer 必跑 6 步黑盒 audit（fixture 表格交叉对账 / 版本号 / SKILL schema / 链接映射 / hook 注册 / 已修问题 fix 状态）+ 4 项分类勾选 + 历史欠账反查。Builder spawn doc-maintainer 时**必须把本文件路径附进 prompt**，杜绝引导式 prompt 漏判 V1.5–V1.9 累计 9 次 fixture 表格欠账的老问题
   - 配套两个新 e2e fixture：`test-pass-cmd-runs-worktree.sh`（17 case）+ `test-bare-loop-merge.sh`（10 case）
+- **V2.1**: Judge agent 长期共存方案 + sonnet→haiku 降级链
+  - **背景**：V1.9 凭证检测 `env > oauth > none`，正版 Max CC 用户主会话走 OAuth 不 export `ANTHROPIC_API_KEY`，OAuth token 又不在 `~/.claude.json` 公开字段（known-risks R5）→ judge 一直降级回 V1.8 二值判据
+  - **env file 自动加载**：`run-judge-agent.sh` 顶部新增"主 env 缺失时 source 全局 `~/.claude/skills/builder-loop/judge-env.sh`"；`set -a` 模式让用户写裸赋值即可。**主 env 已设的用户不被覆盖**（向后兼容 Copilot env 方案）。新增 `loop.yml.judge.credentials_file` 字段允许项目级覆盖（phase 1 加载，覆盖默认全局路径）
+  - **sonnet → haiku 降级链**：默认 `primary_model=claude-sonnet-4-6`（copilot-proxy 唯一支持的 sonnet ID），失败 `fallback_after_failures=2` 次后自动切 `fallback_model=claude-haiku-4-5`。失败定义：API timeout / HTTP 5xx / JSON parse_error；不计数：401/403（凭证）/ 429（rate_limit）/ low_confidence（模型判断能力问题）。**降级状态本 loop 内有效**（state.judge_active_model + judge_consecutive_failures 字段，loop PASS 删 state 自动重置；下个 loop 重新从 sonnet 试）
+  - **默认 timeout 8 → 15 秒**：sonnet 单次 ~5.8s，留余量防偶发慢响应误降级
+  - **完全向后兼容**：V1.9 配置 `model: <id>` 仍工作（自动等价 primary_model）；`fallback_model: ""` 留空 = 禁用降级链回 V1.9 行为；`enabled: false` 仍可整段关闭
+  - 配套两个新 e2e fixture：`test-judge-env-file-load.sh`（12 case，5 个 A 段：主 env 优先 / 文件不存在 / 语法错降级 / loop.yml 项目级覆盖）+ `test-judge-model-fallback.sh`（28 case，11 个 B 段：成功路径 / 失败计数 / 切 fallback / 切 fallback 后再失败 / 401/429 不计数 / parse_error 计数 / 旧 state 兼容 / 改 primary_model 立即生效）
+  - 用户配置示例：`skills/builder-loop/judge-env.sh.example` 模板（含 copilot-proxy + 独立 sk-ant-key 两条路径说明）
 
 详见 `skills/builder-loop/README.md` 与 `skills/builder-loop/docs/judge-agent.md`。
 
@@ -179,7 +187,16 @@ cc-builder-loop/
    bash ~/.claude/skills/builder-loop/scripts/run-judge-agent.sh --self-check
    ```
    - 输出 `ERROR: missing credentials` → 检查 `ANTHROPIC_API_KEY` env 是否设置（Copilot 方案）
-   - **正版 Max CC 用户特别说明**：CC 自己的 OAuth token 不在 `~/.claude.json` 公开字段，judge 走不通 oauth 路径（详见 `skills/builder-loop/known-risks.md` R5）。Workaround：从 https://console.anthropic.com 申请独立 API key 后 `export ANTHROPIC_API_KEY=sk-ant-...`
+   - **正版 Max CC 用户**（V2.1+ 推荐）：CC 自己的 OAuth token 不在 `~/.claude.json` 公开字段，judge 走不通 oauth 路径（详见 `skills/builder-loop/known-risks.md` R5）。
+     **V2.1 Workaround**：写 `~/.claude/skills/builder-loop/judge-env.sh`：
+     ```bash
+     # 方案 A：copilot-proxy 链路（已有 proxy 用户首选）
+     export ANTHROPIC_API_KEY=sk-666
+     export ANTHROPIC_BASE_URL=http://localhost:4142
+     # 方案 B：独立 sk-ant-key（无 proxy 用户）
+     # export ANTHROPIC_API_KEY=sk-ant-...
+     ```
+     模板见 `skills/builder-loop/judge-env.sh.example`。run-judge-agent.sh 启动时自动 source（仅主 env 未设时）。
 
 2. 看降级原因分布：
    ```bash
@@ -234,3 +251,29 @@ cc-builder-loop/
 **修复**（V2.0）：state schema 增加 `main_repo_path` 字段，`project_root` 字段语义改为"干活的地方"；下游脚本全链路适配；run-pass-cmd.sh 删死代码改三参签名。
 
 **自检**：项目根 `.claude/builder-loop/state/<slug>.yml` 应同时含 `project_root: <worktree>` + `main_repo_path: <主仓>` 字段。缺 `main_repo_path` 就是老 V1.x state——下次 setup 后会自动写新 schema。
+
+### 7.6 sonnet 降级到 haiku 后再不切（V2.1+）
+
+**现象**：本 loop 后续 judge 调用 `model_used` 一直是 `claude-haiku-4-5`，看 `judge-trace.jsonl` 发现一段时间前发生过 `fallback_also_failed` 或 `fallback_triggered`。
+
+**根因**：V2.1 设计：sonnet 连续失败 `fallback_after_failures` 次（默认 2）后切 haiku，**本 loop 内不再切第三档**也不重新尝试 sonnet。state 字段 `judge_active_model` 持久化到 loop PASS。
+
+**何时重置**：
+- loop PASS（merge 后 state 删除）→ 下个 loop 自动重新从 sonnet 试
+- 手动 rm `<P>/.claude/builder-loop/state/<slug>.yml` 后下次 setup 重新开始
+- 手动编辑 state 删除 `judge_active_model` 字段（不推荐，可能引入不一致）
+
+**判断 sonnet 是否真的不可用**（避免误判 haiku 替代生效）：
+```bash
+# 测试 sonnet 直连
+curl -sS -X POST $ANTHROPIC_BASE_URL/v1/messages \
+  -H "x-api-key: $ANTHROPIC_API_KEY" \
+  -H "anthropic-version: 2023-06-01" \
+  -H "content-type: application/json" \
+  -d '{"model":"claude-sonnet-4-6","max_tokens":10,"messages":[{"role":"user","content":"ping"}]}' \
+  --max-time 10
+```
+- 200 + content → sonnet 后端正常，judge 状态机本 loop 锁定 haiku 是预期行为
+- 5xx / 401 / timeout → 后端真的有问题；haiku fallback 是合理的兜底
+
+**完全禁用降级链**：在 `loop.yml.judge` 设 `fallback_model: ""`，sonnet 失败直接 downgrade 回 PASS_CMD 二值（不切 haiku）。

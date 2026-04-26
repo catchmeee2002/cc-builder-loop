@@ -170,12 +170,40 @@ judge:
   model:
     type: string
     default: ""
+    deprecated: "V2.1+ 请用 primary_model；本字段保留向后兼容（V1.9 → V2.1 升级时自动等价 primary_model）"
     description: |
-      LLM 模型 ID。三层 fallback：
-      1) 本字段（最高优先级）
-      2) $ANTHROPIC_DEFAULT_HAIKU_MODEL（env 默认，copilot 方案会设）
-      3) "claude-haiku-4-5"（硬编码兜底）
+      [V1.9 兼容字段] LLM 模型 ID。
+      V2.1 起优先级：primary_model > model（本字段） > $ANTHROPIC_DEFAULT_HAIKU_MODEL > 默认 sonnet。
       命名规范：用 dash 分隔（claude-haiku-4-5）。dot 写法（claude-haiku-4.5）会自动规范化。
+  primary_model:
+    type: string
+    default: "claude-sonnet-4-6"
+    description: |
+      [V2.1 新增] judge 优先使用的模型。
+      copilot-proxy 唯一支持的 sonnet 是 claude-sonnet-4-6（claude-sonnet-4-5 被后端拒绝）。
+      失败 fallback_after_failures 次后自动切到 fallback_model。
+  fallback_model:
+    type: string
+    default: "claude-haiku-4-5"
+    description: |
+      [V2.1 新增] primary_model 连续失败 fallback_after_failures 次后切的兜底模型。
+      留空字符串则禁用降级链（primary 失败直接 downgraded）。
+      切换到 fallback 后本 loop 内不再切第三档；loop PASS 后 state 删除自动重置。
+  fallback_after_failures:
+    type: integer
+    default: 2
+    description: |
+      [V2.1 新增] primary_model 连续失败几次后切 fallback_model。
+      失败定义：API timeout / HTTP 5xx / JSON parse_error。
+      不计入失败：HTTP 401/403（凭证）/ HTTP 429（rate_limit）/ low_confidence（模型判断能力问题）。
+  credentials_file:
+    type: string
+    default: "~/.claude/skills/builder-loop/judge-env.sh"
+    description: |
+      [V2.1 新增] judge agent 凭证 env file 路径。
+      仅在 ANTHROPIC_API_KEY 主 env 缺失时 source（不会覆盖已设的主 env）。
+      默认为全局路径（所有项目共享）；项目级覆盖示例：".claude/builder-loop/judge-env.sh"。
+      用途：让正版 Max CC 用户主会话保持 OAuth 干净，judge 独立通过此文件读 copilot-proxy 凭证。
   confidence_threshold:
     type: float
     default: 0.5
@@ -188,9 +216,10 @@ judge:
       stop_done 时计数清零；continue_nudge 时计数 +1。
   api_timeout_sec:
     type: integer
-    default: 8
+    default: 15
     description: |
-      单次 API 调用超时秒数。超时降级。
+      [V2.1: 默认 8 → 15] 单次 API 调用超时秒数。超时降级。
+      sonnet 单次 ~5.8s，留余量到 15s 防偶发慢响应误降级。
       hook 总耗时 = PASS_CMD + judge timeout，请勿设过大避免阻塞 stop hook。
   system_prompt_path:
     type: string

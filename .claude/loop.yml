@@ -12,6 +12,8 @@ pass_cmd:
   - { stage: "v2_bare_loop_merge", cmd: "bash skills/builder-loop/fixtures/e2e/test-bare-loop-merge.sh", timeout: 60 }
   - { stage: "v2_run_pass_cmd_args", cmd: "bash skills/builder-loop/fixtures/e2e/test-run-pass-cmd-args.sh", timeout: 60 }
   - { stage: "v2_nudge_max_reads_worktree", cmd: "bash skills/builder-loop/fixtures/e2e/test-nudge-max-reads-worktree.sh", timeout: 60 }
+  - { stage: "v21_judge_env_file_load", cmd: "bash skills/builder-loop/fixtures/e2e/test-judge-env-file-load.sh", timeout: 60 }
+  - { stage: "v21_judge_model_fallback", cmd: "bash skills/builder-loop/fixtures/e2e/test-judge-model-fallback.sh", timeout: 90 }
 
 max_iterations: 5
 

@@ -85,9 +85,22 @@
 
 **当前状态**：
 - run-judge-agent.sh 的 oauth 路径检测代码保留（如果 CC 未来在 oauthAccount 加 accessToken 字段，自动启用）
-- 实际行为：正版 Max CC 用户跑 judge → missing_credentials 降级 → 行为等价 V1.8（无功能损失，只是没拿到 judge 的盲区识别）
+- V2.1 起加了 env file 自动加载（见下方 V2.1 Workaround），主 OAuth 用户也能用 judge
 
-**Workaround**：用户可以从 https://console.anthropic.com 申请独立 API key（不影响 Max 订阅，只会少量计费走 console），导出 `ANTHROPIC_API_KEY=sk-ant-...`，judge agent 自动走 env 路径生效。
+**V2.1 Workaround**（推荐，2026-04-26 落地）：写 `~/.claude/skills/builder-loop/judge-env.sh`（不进 git）：
+
+```bash
+# 方案 A：copilot-proxy 链路（已有 proxy 用户首选）
+export ANTHROPIC_API_KEY=sk-666
+export ANTHROPIC_BASE_URL=http://localhost:4142
+
+# 方案 B：独立 sk-ant-key（无 proxy 用户）
+# export ANTHROPIC_API_KEY=sk-ant-...
+```
+
+`run-judge-agent.sh` 启动时自动 source（仅主 env 未设时；已设主 env 的 Copilot 用户行为不变）。详见 `skills/builder-loop/judge-env.sh.example` 模板与 `CLAUDE.md` 7.3 排查手册。
+
+**V1.9 老 Workaround**（V2.1 起改 env file 路径更清洁）：用户可以从 https://console.anthropic.com 申请独立 API key（不影响 Max 订阅，只会少量计费走 console），主进程 `export ANTHROPIC_API_KEY=sk-ant-...` 即可。**缺点**：会污染主 CC env 让其也走 sk-ant-key 而非 OAuth；V2.1 的 env file 方案没有这个副作用。
 
 **长期解法**（需要 CC 主动开放）：
 - CC 开放 `~/.claude/credentials/access_token` 文件接口（非 keyring）

@@ -68,6 +68,29 @@ SKILL_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd 2>/dev/null)" || \
   SKILL_ROOT="$HOME/.claude/skills/builder-loop"
 
 # ==================================================================
+# V2.1: env file 加载（仅在 ANTHROPIC_API_KEY 主 env 缺失时 source）
+# 用途：让正版 Max CC 主会话保持 OAuth 干净，judge agent 独立从配置文件读 copilot-proxy 凭证
+# 优先级：主 env > judge-env.sh > oauth > none
+# 安全：source 失败不阻断（仅 stderr 警告 + 走后续 oauth/none 检测路径）
+# ==================================================================
+maybe_source_env_file() {
+  local file="$1"
+  if [ -z "${ANTHROPIC_API_KEY:-}" ] && [ -f "$file" ]; then
+    # set -a 让 source 内的 var= 都隐式 export，省得用户每行写 export
+    set -a
+    # shellcheck disable=SC1090
+    if ! source "$file" 2>/dev/null; then
+      echo "[run-judge-agent] WARN: failed to source env file: $file" >&2
+    fi
+    set +a
+  fi
+}
+
+JUDGE_ENV_FILE_DEFAULT="$HOME/.claude/skills/builder-loop/judge-env.sh"
+# Phase 0: 全局默认路径（loop.yml 加载之前就先试一次）
+maybe_source_env_file "$JUDGE_ENV_FILE_DEFAULT"
+
+# ==================================================================
 # 输出 JSON 工具
 # ==================================================================
 output_result_json() {
@@ -154,10 +177,17 @@ import sys, re, os
 path = sys.argv[1]
 defaults = {
     'enabled': 'true',
+    # V1.9 兼容字段（旧）
     'model': '',
+    # V2.1 新增
+    'primary_model': '',
+    'fallback_model': '',
+    'fallback_after_failures': '2',
+    'credentials_file': '',
+    # 不变字段
     'confidence_threshold': '0.5',
     'max_consecutive_nudges': '2',
-    'api_timeout_sec': '8',
+    'api_timeout_sec': '15',           # V2.1: 默认 8 → 15（sonnet 单次 5.8s 留余量）
     'system_prompt_path': '',
 }
 fields = dict(defaults)
@@ -175,7 +205,7 @@ if m:
         if km:
             val = (km.group(1) or km.group(2) or km.group(3) or '').strip()
             fields[key] = val
-# 输出 KEY=VALUE 一行（VALUE 用 base64 编码避免特殊字符问题不大；这里值都简单）
+# 输出 KEY=VALUE 一行
 for k, v in fields.items():
     print(f'{k}={v}')
 PY
@@ -183,6 +213,8 @@ PY
 
 # ==================================================================
 # 模型选择 + 规范化（dot → dash）
+# V2.1 顺序：from_yml（caller 已合并 primary_model > model 优先级）> $ANTHROPIC_DEFAULT_HAIKU_MODEL > sonnet 默认
+# 注意默认从 V1.9 的 claude-haiku-4-5 改为 V2.1 的 claude-sonnet-4-6（搭配 fallback 链兜底）
 # ==================================================================
 resolve_model() {
   local from_yml="$1" from_env="${ANTHROPIC_DEFAULT_HAIKU_MODEL:-}"
@@ -192,7 +224,7 @@ resolve_model() {
   elif [ -n "$from_env" ]; then
     raw="$from_env"
   else
-    raw="claude-haiku-4-5"
+    raw="claude-sonnet-4-6"
   fi
   echo "$raw" | sed -E 's/([0-9])\.([0-9])/\1-\2/g'
 }
@@ -270,7 +302,7 @@ PY
 }
 
 # ==================================================================
-# 读 state 字段（iter / consecutive_nudge_count / start_head）
+# 读 state 字段（iter / consecutive_nudge_count / start_head / V2.1 judge_active_model 等）
 # ==================================================================
 read_state_field() {
   local key="$1"
@@ -278,7 +310,61 @@ read_state_field() {
     echo ""
     return
   fi
-  grep -E "^${key}:" "$JUDGE_STATE_FILE" 2>/dev/null | head -1 | sed -E "s/^${key}:[[:space:]]*\"?([^\"]*)\"?[[:space:]]*$/\1/"
+  # || true 兜底：字段不存在时 grep exit 1 + pipefail + set -e 让脚本静默退出
+  grep -E "^${key}:" "$JUDGE_STATE_FILE" 2>/dev/null | head -1 | sed -E "s/^${key}:[[:space:]]*\"?([^\"]*)\"?[[:space:]]*$/\1/" || true
+}
+
+# ==================================================================
+# V2.1: state 字段 upsert（缺字段则追加，存在则替换）
+# 用于把 judge_active_model / judge_consecutive_failures 写回 state
+# 不写整个 state 是因为 stop hook 在 judge 调用前后还有自己的 state 读写流程
+# ==================================================================
+upsert_state_field() {
+  local key="$1" value="$2"
+  [ -f "$JUDGE_STATE_FILE" ] || return 0
+  STATE_FILE="$JUDGE_STATE_FILE" KEY="$key" VALUE="$value" python3 - <<'PY'
+import os, re
+sf = os.environ['STATE_FILE']
+key = os.environ['KEY']
+value = os.environ['VALUE']
+try:
+    text = open(sf).read()
+except Exception:
+    raise SystemExit
+pat = re.compile(rf'^{re.escape(key)}:.*$', re.M)
+# value 是字符串字面量，含引号需要 python 自己加（仅模型名加引号、纯数字不加）
+quoted = False
+try:
+    int(value)
+except ValueError:
+    quoted = True
+formatted = f'{key}: "{value}"' if quoted else f'{key}: {value}'
+if pat.search(text):
+    text = pat.sub(formatted, text)
+else:
+    if not text.endswith('\n'):
+        text += '\n'
+    text += formatted + '\n'
+try:
+    open(sf, 'w').write(text)
+except Exception:
+    pass
+PY
+}
+
+# ==================================================================
+# V2.1: 失败分类 — 决定该次 API 调用是否计入"sonnet 失败计数"
+# 计数：timeout / 5xx / parse_error
+# 不计数：401 / 403（凭证问题） / 429（rate_limit） / 其他
+# ==================================================================
+classify_failure() {
+  local err="$1"
+  case "$err" in
+    ERR_TIMEOUT) echo "1"; return ;;
+    ERR_HTTP_5*) echo "1"; return ;;
+    PARSE_*)     echo "1"; return ;;   # parse_api_response 返回的 PARSE_NO_TEXT/PARSE_BAD_ACTION/PARSE_ERR_*
+    *)           echo "0" ;;
+  esac
 }
 
 # ==================================================================
@@ -515,35 +601,61 @@ if [ -z "$JUDGE_STATE_FILE" ] || [ -z "$JUDGE_PROJECT_ROOT" ] || [ -z "$JUDGE_TR
   exit 0
 fi
 
-# 读 judge 配置
+# 读 judge 配置（V2.1：含 primary_model / fallback_model / fallback_after_failures / credentials_file）
 JUDGE_CONFIG="$(read_judge_config)"
 JUDGE_ENABLED="$(echo "$JUDGE_CONFIG" | grep '^enabled=' | head -1 | cut -d= -f2-)"
-JUDGE_MODEL_YML="$(echo "$JUDGE_CONFIG" | grep '^model=' | head -1 | cut -d= -f2-)"
+JUDGE_MODEL_YML_LEGACY="$(echo "$JUDGE_CONFIG" | grep '^model=' | head -1 | cut -d= -f2-)"        # V1.9 兼容
+JUDGE_PRIMARY_YML="$(echo "$JUDGE_CONFIG" | grep '^primary_model=' | head -1 | cut -d= -f2-)"     # V2.1
+JUDGE_FALLBACK_YML="$(echo "$JUDGE_CONFIG" | grep '^fallback_model=' | head -1 | cut -d= -f2-)"   # V2.1
+JUDGE_FALLBACK_THRESHOLD="$(echo "$JUDGE_CONFIG" | grep '^fallback_after_failures=' | head -1 | cut -d= -f2-)"
+JUDGE_CRED_FILE_YML="$(echo "$JUDGE_CONFIG" | grep '^credentials_file=' | head -1 | cut -d= -f2-)"  # V2.1
 JUDGE_CONF_THR="$(echo "$JUDGE_CONFIG" | grep '^confidence_threshold=' | head -1 | cut -d= -f2-)"
 JUDGE_TIMEOUT="$(echo "$JUDGE_CONFIG" | grep '^api_timeout_sec=' | head -1 | cut -d= -f2-)"
 JUDGE_PROMPT_PATH_REL="$(echo "$JUDGE_CONFIG" | grep '^system_prompt_path=' | head -1 | cut -d= -f2-)"
 JUDGE_CONF_THR="${JUDGE_CONF_THR:-0.5}"
-JUDGE_TIMEOUT="${JUDGE_TIMEOUT:-8}"
+JUDGE_TIMEOUT="${JUDGE_TIMEOUT:-15}"                       # V2.1: 默认 8 → 15
+JUDGE_FALLBACK_THRESHOLD="${JUDGE_FALLBACK_THRESHOLD:-2}"
+
+# V2.1 Phase 1: env file 二次加载 — loop.yml.judge.credentials_file 指定了别处 + env 仍缺时再 source
+if [ -n "$JUDGE_CRED_FILE_YML" ] && [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+  # eval echo 展开 ~/$VAR；用户值是从自己的 loop.yml 读的，可信
+  EXPANDED_CRED_FILE="$(eval echo "$JUDGE_CRED_FILE_YML" 2>/dev/null || echo "")"
+  if [ -n "$EXPANDED_CRED_FILE" ] && [ "$EXPANDED_CRED_FILE" != "$JUDGE_ENV_FILE_DEFAULT" ]; then
+    maybe_source_env_file "$EXPANDED_CRED_FILE"
+  fi
+fi
+
+# 模型 resolve：primary > V1.9 兼容 model > $ANTHROPIC_DEFAULT_HAIKU_MODEL > 默认 sonnet
+PRIMARY_MODEL_RAW="${JUDGE_PRIMARY_YML:-$JUDGE_MODEL_YML_LEGACY}"
+PRIMARY_MODEL="$(resolve_model "$PRIMARY_MODEL_RAW")"
+if [ -n "$JUDGE_FALLBACK_YML" ]; then
+  FALLBACK_MODEL="$(echo "$JUDGE_FALLBACK_YML" | sed -E 's/([0-9])\.([0-9])/\1-\2/g')"
+else
+  FALLBACK_MODEL=""
+fi
 
 if [ "$JUDGE_ENABLED" = "false" ]; then
-  RESOLVED_MODEL="$(resolve_model "$JUDGE_MODEL_YML")"
   CRED="$(detect_credentials)"
-  output_downgrade "disabled" "$RESOLVED_MODEL" "$CRED"
-  write_telemetry "stop_done" "0" "disabled" "true" "disabled" "$RESOLVED_MODEL" "$CRED" "" "" ""
+  output_downgrade "disabled" "$PRIMARY_MODEL" "$CRED"
+  write_telemetry "stop_done" "0" "disabled" "true" "disabled" "$PRIMARY_MODEL" "$CRED" "" "" ""
   exit 0
 fi
 
 # 凭证检测
 CRED="$(detect_credentials)"
 if [ "$CRED" = "none" ]; then
-  RESOLVED_MODEL="$(resolve_model "$JUDGE_MODEL_YML")"
-  output_downgrade "missing_credentials" "$RESOLVED_MODEL" "none"
-  write_telemetry "stop_done" "0" "missing_credentials" "true" "missing_credentials" "$RESOLVED_MODEL" "none" "" "" ""
+  output_downgrade "missing_credentials" "$PRIMARY_MODEL" "none"
+  write_telemetry "stop_done" "0" "missing_credentials" "true" "missing_credentials" "$PRIMARY_MODEL" "none" "" "" ""
   exit 0
 fi
 
-# 模型 resolve
-RESOLVED_MODEL="$(resolve_model "$JUDGE_MODEL_YML")"
+# V2.1: 读 state 当前活跃模型 + 失败计数（缺则取默认值）
+JUDGE_ACTIVE_MODEL_FROM_STATE="$(read_state_field 'judge_active_model')"
+JUDGE_ACTIVE_MODEL="${JUDGE_ACTIVE_MODEL_FROM_STATE:-$PRIMARY_MODEL}"
+JUDGE_FAILURES="$(read_state_field 'judge_consecutive_failures')"
+JUDGE_FAILURES="${JUDGE_FAILURES:-0}"
+# RESOLVED_MODEL 沿用 V1.9 命名表达"本轮调用的模型"，初值 = active model
+RESOLVED_MODEL="$JUDGE_ACTIVE_MODEL"
 
 # 读 system prompt
 SYSTEM_PROMPT_FILE=""
@@ -604,28 +716,86 @@ print('\n'.join(out))
 PY
 )"
 
-# 调 API
-API_RESP="$(call_anthropic_api "$RESOLVED_MODEL" "$SYSTEM_PROMPT" "$USER_MSG" "$JUDGE_TIMEOUT" "$CRED")"
-API_STATUS=$?
+# V2.1: 把 API 调用 + 响应解析抽到函数里，便于 fallback retry 复用
+# 输出（设置全局 var）：
+#   CALL_RESULT = parse 后的 PARSED JSON（成功）
+#   CALL_ERR    = ERR_* / PARSE_* 错误标识（失败）
+do_call_and_parse() {
+  local model_to_call="$1"
+  local resp status parsed
+  resp="$(call_anthropic_api "$model_to_call" "$SYSTEM_PROMPT" "$USER_MSG" "$JUDGE_TIMEOUT" "$CRED")"
+  status=$?
+  if [ $status -ne 0 ] || [[ "$resp" == ERR_* ]]; then
+    CALL_ERR="$resp"
+    return 1
+  fi
+  parsed="$(parse_api_response "$resp")"
+  if [[ "$parsed" == PARSE_* ]]; then
+    CALL_ERR="$parsed"
+    return 1
+  fi
+  CALL_RESULT="$parsed"
+  return 0
+}
 
-if [ $API_STATUS -ne 0 ] || [[ "$API_RESP" == ERR_* ]]; then
-  case "$API_RESP" in
-    ERR_TIMEOUT)        DGR="timeout" ;;
-    ERR_HTTP_*)         DGR="http_${API_RESP#ERR_HTTP_}" ;;
-    ERR_NO_TOKEN)       DGR="no_oauth_token" ;;
-    *)                  DGR="api_error" ;;
+# 把 ERR_* / PARSE_* 转成 downgrade_reason 字符串
+err_to_dgr() {
+  local err="$1"
+  case "$err" in
+    ERR_TIMEOUT)   echo "timeout" ;;
+    ERR_HTTP_*)    echo "http_${err#ERR_HTTP_}" ;;
+    ERR_NO_TOKEN)  echo "no_oauth_token" ;;
+    PARSE_*)       echo "parse_error" ;;
+    *)             echo "api_error" ;;
   esac
-  output_downgrade "$DGR" "$RESOLVED_MODEL" "$CRED"
-  write_telemetry "stop_done" "0" "$DGR" "true" "$DGR" "$RESOLVED_MODEL" "$CRED" "$DIFF_STAT" "$LAST_A" "$LAST_U"
-  exit 0
-fi
+}
 
-# 解析响应
-PARSED="$(parse_api_response "$API_RESP")"
-if [[ "$PARSED" == PARSE_* ]]; then
-  output_downgrade "parse_error" "$RESOLVED_MODEL" "$CRED"
-  write_telemetry "stop_done" "0" "parse_error:$PARSED" "true" "parse_error" "$RESOLVED_MODEL" "$CRED" "$DIFF_STAT" "$LAST_A" "$LAST_U"
-  exit 0
+# V2.1 主调用 + 失败处理状态机
+PARSED=""
+FALLBACK_TRIGGERED="false"
+if do_call_and_parse "$RESOLVED_MODEL"; then
+  # 成功 → 重置计数 + 保存当前 active（保 V2.0 schema 字段写回兼容）
+  upsert_state_field "judge_consecutive_failures" "0"
+  upsert_state_field "judge_active_model" "$RESOLVED_MODEL"
+  PARSED="$CALL_RESULT"
+else
+  CLASSIFIED="$(classify_failure "$CALL_ERR")"
+  if [ "$CLASSIFIED" = "1" ] && [ "$RESOLVED_MODEL" = "$PRIMARY_MODEL" ] && [ -n "$FALLBACK_MODEL" ]; then
+    NEW_FAILURES=$((JUDGE_FAILURES + 1))
+    if [ "$NEW_FAILURES" -ge "$JUDGE_FALLBACK_THRESHOLD" ]; then
+      # 达阈值 → 切 fallback + 立即 retry 一次
+      RESOLVED_MODEL="$FALLBACK_MODEL"
+      upsert_state_field "judge_active_model" "$FALLBACK_MODEL"
+      upsert_state_field "judge_consecutive_failures" "0"   # 切 fallback 即重置计数（避免再次降级）
+      FALLBACK_TRIGGERED="true"
+      echo "[run-judge-agent] sonnet 连续失败 ${NEW_FAILURES} 次（阈值 ${JUDGE_FALLBACK_THRESHOLD}），切 fallback 模型 ${FALLBACK_MODEL} 重试" >&2
+      if do_call_and_parse "$FALLBACK_MODEL"; then
+        PARSED="$CALL_RESULT"
+      else
+        # fallback 也失败 → 不再切第三档，直接 downgrade
+        DGR="$(err_to_dgr "$CALL_ERR")"
+        output_downgrade "fallback_also_failed:$DGR" "$FALLBACK_MODEL" "$CRED"
+        write_telemetry "stop_done" "0" "fallback_also_failed:$DGR" "true" "$DGR" "$FALLBACK_MODEL" "$CRED" "$DIFF_STAT" "$LAST_A" "$LAST_U"
+        exit 0
+      fi
+    else
+      # 未达阈值 → 仅累计 failures，本轮不切；走 downgrade 让 stop hook 退回原 PASS 路径
+      upsert_state_field "judge_consecutive_failures" "$NEW_FAILURES"
+      DGR="$(err_to_dgr "$CALL_ERR")"
+      output_downgrade "$DGR" "$RESOLVED_MODEL" "$CRED"
+      write_telemetry "stop_done" "0" "${DGR}:failures=${NEW_FAILURES}/${JUDGE_FALLBACK_THRESHOLD}" "true" "$DGR" "$RESOLVED_MODEL" "$CRED" "$DIFF_STAT" "$LAST_A" "$LAST_U"
+      exit 0
+    fi
+  else
+    # 1) classified=0（401/403/429/no_token 等凭证类失败）→ 不计数
+    # 2) active_model 已经是 fallback → 不再切第三档
+    # 3) classified=1 但 fallback_model 为空 → 用户禁用了降级链
+    # 三种情况都直接 downgrade
+    DGR="$(err_to_dgr "$CALL_ERR")"
+    output_downgrade "$DGR" "$RESOLVED_MODEL" "$CRED"
+    write_telemetry "stop_done" "0" "$DGR" "true" "$DGR" "$RESOLVED_MODEL" "$CRED" "$DIFF_STAT" "$LAST_A" "$LAST_U"
+    exit 0
+  fi
 fi
 
 JUDGE_ACTION="$(echo "$PARSED" | python3 -c "import json,sys; print(json.load(sys.stdin)['action'])" 2>/dev/null || echo "")"

@@ -143,6 +143,8 @@ done
 | `test-bare-loop-merge.sh` | V2.0: bare loop 完整 stop hook + merge 路径（10 case：bare PASS + cleanup / merge-worktree-back NOOP 输出 / 老 V1.x state 缺 main_repo_path 兼容） | merge-worktree-back.sh |
 | `test-run-pass-cmd-args.sh` | V2.0: run-pass-cmd.sh 三参签名行为（13 case：三参 LOG_ROOT 决定日志归档 / 两参 缺省 LOG_ROOT=RUN_CWD / FAIL 消息含 LOG_ROOT 路径 / RUN_CWD 内 loop.yml 缺失 fallback 主仓 + stderr 警告） | reviewer hint 补测 |
 | `test-nudge-max-reads-worktree.sh` | V2.0: stop hook nudge 上限优先读 worktree loop.yml（18 case：worktree max=1 触发强制 stop_done / worktree loop.yml 缺失 fallback 主仓 max=99 走 nudge 分支） | mock judge agent + reviewer hint 补测 |
+| `test-judge-env-file-load.sh` | V2.1: judge env file 自动加载（12 case：主 env 干净时 source / 主 env 已设时不覆盖 / 文件不存在退回 V1.9 行为 / 语法错误 stderr WARN / loop.yml.credentials_file 项目级覆盖） | run-judge-agent.sh + 重定向 HOME |
+| `test-judge-model-fallback.sh` | V2.1: sonnet → haiku 降级链（28 case：连续成功 / 1 失败计数 / 2 失败切 fallback retry / fallback 也失败 / 401-429 不计数 / parse_error 计数 / fallback 留空禁用降级 / 旧 state 兼容 / 改 primary 立即生效） | mock copilot-proxy + 状态机 |
 | `test-new-repo-loop.sh` | V1.5: 新仓初始化场景（loop-init 一键、空仓 setup、首轮 PASS_CMD） | loop-init.sh + 全套 |
 | `test-parallel-loop.sh` | V1.8: 多状态并行（同项目两个 worktree slug 各自走 PASS 路径） | locate-state.sh |
 | `test-zombie-selfheal.sh` | V1.8.1: 僵尸 state 自愈（active=false 归档到 legacy/）+ EARLY_STOP 立即通知 | builder-loop-stop.sh |
@@ -177,6 +179,7 @@ done
   - tester subagent prompt 加"bare loop fixture 必须 slug=__main__"等 4 条硬约束
   - 新增 `docs/doc-maintainer-audit-checklist.md`（M2）：doc-maintainer 必须 6 步全集 audit + 4 项类型分类 + 历史欠账反查，杜绝引导式 prompt 漏判 e2e 表格的老问题
   - 新增 `test-pass-cmd-runs-worktree.sh` (M1.5) + `test-bare-loop-merge.sh` (M3) 两个 e2e
+- **V2.1**（已完成）：Judge agent 长期共存方案 + sonnet→haiku 降级链。`run-judge-agent.sh` 顶部加 env file 自动加载（仅主 env 缺失时 source `~/.claude/skills/builder-loop/judge-env.sh`，主 env 已设的用户不被覆盖；loop.yml.judge.credentials_file 项目级覆盖）。模型链 primary_model=`claude-sonnet-4-6`（copilot-proxy 唯一可用 sonnet）→ fallback_model=`claude-haiku-4-5`，连续 fallback_after_failures=2 次（API timeout / HTTP 5xx / parse_error 计数；401/403/429 不计数）后切并立即 retry；fallback 也失败回 PASS_CMD 二值。状态在 state.judge_active_model + judge_consecutive_failures 字段，loop PASS 自动重置。timeout 默认 8→15s。完全向后兼容 V1.9（`model:` 字段自动等价 primary_model）。新增 `test-judge-env-file-load.sh`（12 case）+ `test-judge-model-fallback.sh`（28 case）+ `judge-env.sh.example` 模板
 - **V2**：短命 orchestrator subagent 替代脚本调度（出现多 agent 仲裁需求时启动）
 - **V3**：独立 daemon 编排多项目（单开仓库 `cc-orchestrator-daemon`，复用本 skill 的契约）
 

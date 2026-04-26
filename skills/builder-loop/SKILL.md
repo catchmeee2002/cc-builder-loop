@@ -68,6 +68,10 @@ last_judge_action: "continue_nudge"
 last_judge_confidence: 0.8
 last_judge_ts: "2026-04-26T..."
 consecutive_nudge_count: 1
+
+# V2.1 judge agent 模型降级链字段（仅 judge 已开启时填充）
+judge_active_model: "claude-sonnet-4-6"      # 当前活跃模型；连续 fallback_after_failures 次失败后切 fallback_model
+judge_consecutive_failures: 0                # primary 模型连续失败计数（5xx/timeout/parse_error 计数；401/429 不计数）
 ```
 
 ### 旧 schema 迁移
@@ -187,4 +191,4 @@ bash ~/.claude/skills/builder-loop/scripts/run-judge-agent.sh --self-check
 
 ## 版本交付历史
 
-详见 `README.md` 第 7 节。涵盖 V1.0 基础循环、V1.1 强隔离+worktree+仲裁、V1.2 改动分级、V1.3 任务回顾、V1.7 reviewer 模型升级、V1.8 多状态并行架构、V1.8.1 僵尸 state 自愈 + EARLY_STOP 立即通知、V1.9 judge agent。
+详见 `README.md` 第 7 节。涵盖 V1.0 基础循环、V1.1 强隔离+worktree+仲裁、V1.2 改动分级、V1.3 任务回顾、V1.7 reviewer 模型升级、V1.8 多状态并行架构、V1.8.1 僵尸 state 自愈 + EARLY_STOP 立即通知、V1.9 judge agent、V2.0 PASS_CMD 跑 worktree 元问题修复、V2.1 judge env file 自动加载 + sonnet→haiku 降级链。

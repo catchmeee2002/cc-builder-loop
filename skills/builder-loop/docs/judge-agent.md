@@ -1,6 +1,14 @@
-# Judge Agent (V1.9+)
+# Judge Agent (V1.9+ / V2.1 升级)
 
 LLM 语义判据，用于补 PASS_CMD 二值判据看不见的盲区（假完成 / 求助 / 偷懒 / 网络中断）。
+
+## V2.1 升级速览
+
+V2.1 重点解决两件事：
+1. **正版 Max CC 用户也能用 judge**：`run-judge-agent.sh` 顶部加 env file 自动加载（仅主 env 缺失时 source `~/.claude/skills/builder-loop/judge-env.sh`），主会话保持 OAuth 干净，judge 独立从文件读 copilot-proxy 凭证
+2. **优先 sonnet + 失败软着陆 haiku**：默认 `primary_model=claude-sonnet-4-6`（copilot-proxy 唯一可用 sonnet），连续 2 次失败（timeout/5xx/parse_error，不含 401/429）后自动切 `fallback_model=claude-haiku-4-5` 并立即 retry；fallback 也失败回 PASS_CMD 二值。状态在 state.judge_active_model + judge_consecutive_failures 字段，loop PASS 自动重置
+
+V1.9 配置完全兼容（`model:` 字段自动等价 primary_model）。配置示例见 `skills/builder-loop/judge-env.sh.example`。
 
 ## 1. 整体架构
 

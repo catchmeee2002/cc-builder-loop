@@ -1,0 +1,40 @@
+# judge agent 凭证 env file 模板（V2.1+）
+#
+# 复制本文件到 ~/.claude/skills/builder-loop/judge-env.sh（不进 git 的本地配置），
+# run-judge-agent.sh 启动时若主 env 没设 ANTHROPIC_API_KEY 会自动 source。
+#
+# 用途：让正版 Max CC 主会话保持 OAuth 干净，judge agent 独立从本文件读凭证。
+#
+# 加载机制：
+#   1. run-judge-agent.sh 顶部检测 $ANTHROPIC_API_KEY 是否已设
+#   2. 已设 → 跳过 source（不覆盖主 env，向后兼容已用 env 的 Copilot 用户）
+#   3. 未设 + 本文件存在 → set -a 模式 source（变量隐式 export）
+#   4. 凭证检测：env > oauth > none
+#
+# 项目级覆盖：在 <project>/.claude/loop.yml 写 judge.credentials_file: <path>
+# 可指定项目专属的 env file（V2.1 phase 1 加载）。
+
+# ----------------------------------------------------------
+# 方案 A：copilot-proxy 桥接 GitHub Copilot API（推荐，已有 proxy 服务的用户）
+# ----------------------------------------------------------
+# 前提：本地 copilot-proxy 已在跑（默认 localhost:4142）
+# 优点：不增加 token 成本，直接复用已有 GitHub Copilot 订阅
+# sk-666 是占位 key，copilot-proxy 不校验内容；BASE_URL 指向本地代理服务
+# 启用：取消下两行注释 + 改 base_url 端口为你的 copilot-proxy 端口
+# export ANTHROPIC_API_KEY=sk-666
+# export ANTHROPIC_BASE_URL=http://localhost:4142
+
+# ----------------------------------------------------------
+# 方案 B：独立 sk-ant-key（适合无 copilot-proxy 的用户）
+# ----------------------------------------------------------
+# 前提：从 https://console.anthropic.com 申请独立 API key（不影响 Max 订阅）
+# 优点：直连官方 API，稳定性高
+# 缺点：按 token 计费（judge 用 sonnet 单次 < 1¢，月成本预计 < $5）
+# 启用：取消下行注释 + 填真实 key
+# export ANTHROPIC_API_KEY=sk-ant-...
+
+# ----------------------------------------------------------
+# 进阶：自定义 Anthropic 默认 haiku 模型（覆盖 V2.1 default）
+# ----------------------------------------------------------
+# 影响 resolve_model 第二层 fallback；通常不需要设。
+# export ANTHROPIC_DEFAULT_HAIKU_MODEL=claude-haiku-4-5

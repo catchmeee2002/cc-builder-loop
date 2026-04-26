@@ -3,3 +3,7 @@
 loop-runs/
 worktrees/
 *.log
+.claude/builder-loop/
+.claude/loop-trace.jsonl
+.claude/reviewer-params.json
+.claude/reviewer-diff.txt
