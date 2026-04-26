@@ -136,6 +136,11 @@ done
 | `test-isolation.sh` | T6.3: tester 隔离 hook 拦截 source_dirs | tester-lock-check.sh 软链 |
 | `test-conflict.sh` | T6.4: rebase 冲突 → 仲裁标记 → mock 修复 → 合回 | merge-worktree-back.sh |
 | `test-arbitration-apply.sh` | V1.1: run-apply-arbitration.sh 三场景（high→APPLIED / low→LOW_CONFIDENCE / bad patch→APPLY_FAILED） | run-apply-arbitration.sh + merge-worktree-back.sh |
+| `test-judge-agent.sh` | V1.9: judge agent 单元（mock Anthropic API，9 case：env 凭证 / API 超时 / 500 / 非法 JSON / low confidence / 凭证全缺 / disabled / dot 模型规范化） | python3 内嵌 mock server |
+| `test-judge-integration.sh` | V1.9: judge agent 集成（stop hook 全流程 7 case：PASS+stop_done / PASS+continue_nudge / 连续 nudge 上限强制 / 降级原路径 / FAIL+retry_transient / FAIL 降级 / disabled） | run-judge-agent.sh + builder-loop-stop.sh |
+| `test-judge-edge-cases.sh` | V1.9.1: judge edge case（reviewer TESTER_HINT 4 case：stop_done 后 nudge 计数清零 / backfill 幂等 / self-check 凭证全缺 exit 1 / FAIL 分支脚本缺失降级原 V1.8 路径） | 同上 |
+
+> ⚠️ 历史欠账：V1.5/V1.6/V1.7/V1.8/V1.8.x 也加过 fixture（test-new-repo-loop / test-parallel-loop / test-zombie-selfheal / test-stop-hook-cursor / test-stop-hook-race-and-commit-msg / test-reviewer-compat），都没补到此表。下次完整 audit 时一并回补。
 
 ## 6. 设计原则（修改时遵守）
 
