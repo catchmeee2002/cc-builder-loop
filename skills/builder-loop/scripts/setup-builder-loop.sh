@@ -37,6 +37,33 @@ fi
 
 mkdir -p "$LOG_DIR" "$STATE_DIR"
 
+# ---- 幂等自愈 .gitignore（V2.1+） ----
+# 防 worktree merge ff 撞 telemetry/reviewer 中转文件 untracked（K1 教训预防）。
+# 存量项目（接入时漏 V1.5/V1.6/V2.x 引入的规则）每次 setup 时自动补齐。
+ensure_gitignore_rules() {
+  local gi="${PROJECT_ROOT}/.gitignore"
+  git -C "$PROJECT_ROOT" rev-parse --git-dir >/dev/null 2>&1 || return 0
+  local rules=(
+    ".claude/builder-loop/"
+    ".claude/loop-runs/"
+    ".claude/loop-trace.jsonl"
+    ".claude/reviewer-params.json"
+    ".claude/reviewer-diff.txt"
+  )
+  local added=0
+  for r in "${rules[@]}"; do
+    if [ ! -f "$gi" ] || ! grep -qFx "$r" "$gi" 2>/dev/null; then
+      printf '%s\n' "$r" >> "$gi"
+      echo "[setup-builder-loop] 🛡️  .gitignore 自愈追加：$r" >&2
+      added=$(( added + 1 ))
+    fi
+  done
+  if [ "$added" -gt 0 ]; then
+    echo "[setup-builder-loop] 💡 共追加 $added 条规则到 .gitignore（防 worktree merge ff 撞 untracked telemetry）" >&2
+  fi
+}
+ensure_gitignore_rules
+
 # ---- 优先读 loop.yml 的 layout 字段，fallback 到自动探测 ----
 LAYOUT_JSON="$(python3 -c "
 import yaml, json

@@ -196,7 +196,10 @@ IGNEOF
   local old_cwd
   old_cwd="$(pwd)"
   cd "${repo}"
-  bash "${SETUP_SCRIPT}" "${dir_name}-slug" 2>&1 | head -5 || true
+  # 走临时日志解耦（防 head 关 pipe 触发 SIGPIPE 让 setup 中途死，setup 输出量随版本会增长）
+  local setup_log="${TMP}/setup-${dir_name}.log"
+  bash "${SETUP_SCRIPT}" "${dir_name}-slug" > "${setup_log}" 2>&1 || true
+  head -5 "${setup_log}" || true
   cd "${old_cwd}"
 
   # 输出到带前缀的全局变量（bash 无引用传 hack，用 eval）

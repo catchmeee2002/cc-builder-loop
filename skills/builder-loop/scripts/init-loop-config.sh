@@ -134,6 +134,10 @@ add_gitignore() {
 }
 add_gitignore ".claude/builder-loop/"
 add_gitignore ".claude/loop-runs/"
+# V1.5+ 顶层 telemetry 文件 / V1.6+ reviewer 中转文件 — 防 worktree merge ff 撞同路径 untracked
+add_gitignore ".claude/loop-trace.jsonl"
+add_gitignore ".claude/reviewer-params.json"
+add_gitignore ".claude/reviewer-diff.txt"
 
 # T2.8：worktree.enabled=true 时把 base_dir 加进 .gitignore（向导联动）
 WT_BASE_DIR="$(echo "$JSON" | python3 -c "

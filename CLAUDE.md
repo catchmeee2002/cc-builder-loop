@@ -142,6 +142,11 @@ cc-builder-loop/
   - **完全向后兼容**：V1.9 配置 `model: <id>` 仍工作（自动等价 primary_model）；`fallback_model: ""` 留空 = 禁用降级链回 V1.9 行为；`enabled: false` 仍可整段关闭
   - 配套两个新 e2e fixture：`test-judge-env-file-load.sh`（12 case，5 个 A 段：主 env 优先 / 文件不存在 / 语法错降级 / loop.yml 项目级覆盖）+ `test-judge-model-fallback.sh`（28 case，11 个 B 段：成功路径 / 失败计数 / 切 fallback / 切 fallback 后再失败 / 401/429 不计数 / parse_error 计数 / 旧 state 兼容 / 改 primary_model 立即生效）
   - 用户配置示例：`skills/builder-loop/judge-env.sh.example` 模板（含 copilot-proxy + 独立 sk-ant-key 两条路径说明）
+- **V2.1.1**: `.gitignore` 自愈固化（K1 教训预防）
+  - **背景**：worktree 模式下 `merge-worktree-back.sh` 的 `git add -A` 会把 PASS_CMD 跑过程中生成的运行时文件（`judge-trace.jsonl` / `loop-trace.jsonl` / `reviewer-params.json` / lock）也 commit 进 branch，主仓同路径 untracked 顶住 ff merge → stop hook 报 `MERGE_LAST="ERROR ff-after-rebase-failed"`（V2.1 落地时刚踩过一次）
+  - **修复**：(1) `init-loop-config.sh` 接入向导新增 3 条规则（顶层 `.claude/loop-trace.jsonl` / `.claude/reviewer-params.json` / `.claude/reviewer-diff.txt`），原有 `.claude/builder-loop/` + `.claude/loop-runs/` 不变；(2) `setup-builder-loop.sh` 每次启动 loop 时跑 `ensure_gitignore_rules()` 幂等自愈，存量项目（接入时漏配的）自动追加，stderr 输出 `🛡️ .gitignore 自愈追加：<rule>`
+  - **fixture 健壮性顺修**：`test-nudge-max-reads-worktree.sh` 的 `bash setup ... | head -5` 改用临时日志文件解耦（防 head 关 pipe 触发 SIGPIPE 让 setup 中途死，setup 输出量随版本会增长）
+  - **根因 follow-up（未修）**：`merge-worktree-back.sh` 的 `git add -A` 仍是过度收集；本期靠 `.gitignore` 兜底，独立任务再做精确化
 
 详见 `skills/builder-loop/README.md` 与 `skills/builder-loop/docs/judge-agent.md`。
 
