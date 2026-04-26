@@ -43,7 +43,8 @@ assert "merge 脚本存在" "[ -f '$MERGE_SCRIPT' ]"
 echo ""
 echo "=== Case 1: bare loop 完整 PASS 路径 ==="
 TMP1="$(mktemp -d)"
-trap 'rm -rf "$TMP1" "${TMP2:-}"' EXIT
+# TMP1/TMP2 都加 :- 兜底，case 1 异常退出时 TMP2 可能未赋值，避免 unset var 杀 trap
+trap 'rm -rf "${TMP1:-}" "${TMP2:-}"' EXIT
 cd "$TMP1"
 git init -q
 git config user.email "e2e@test.local"

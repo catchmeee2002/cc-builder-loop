@@ -60,7 +60,7 @@ color: green
 
 ### 步骤 4.5：（仅 cc-builder-loop 项目）写 e2e fixture 时的硬约束
 
-如果 `target_test_dirs` 含 `skills/builder-loop/fixtures/e2e/` —— 即在为 builder-loop 自身写 stop hook / merge / setup 类的 fixture：
+如果 `target_test_dirs` 任一条目含 `builder-loop/fixtures` 子串（防未来路径重命名漏判）—— 即在为 builder-loop 自身写 stop hook / merge / setup 类的 fixture：
 
 1. **bare loop fixture 必须 slug=__main__**
    - locate-state.sh 兜底策略 4 用文件名 `__main__.yml` 作为 bare loop（worktree.enabled=false）的固定锚点

@@ -369,8 +369,12 @@ if [ "$LAST_LINE" = "PASS" ]; then
     CUR_NUDGE="$(grep -E '^consecutive_nudge_count:' "$STATE_FILE" 2>/dev/null | head -1 | awk '{print $2}')"
     CUR_NUDGE="${CUR_NUDGE:-0}"
     MAX_NUDGE="2"
-    if [ -f "${PROJECT_ROOT}/.claude/loop.yml" ]; then
-      MAX_NUDGE_RAW="$(grep -E '^[[:space:]]+max_consecutive_nudges:' "${PROJECT_ROOT}/.claude/loop.yml" 2>/dev/null | head -1 | awk '{print $2}' || echo "")"
+    # V2.0：与 PASS_CMD 一致从 RUN_CWD（worktree）读 loop.yml，让 worktree 内改 judge 配置立即生效；
+    # 文件缺失时（worktree 未 commit loop.yml 的极少数场景）fallback 主仓
+    NUDGE_LOOP_YML="${RUN_CWD}/.claude/loop.yml"
+    [ ! -f "$NUDGE_LOOP_YML" ] && NUDGE_LOOP_YML="${PROJECT_ROOT}/.claude/loop.yml"
+    if [ -f "$NUDGE_LOOP_YML" ]; then
+      MAX_NUDGE_RAW="$(grep -E '^[[:space:]]+max_consecutive_nudges:' "$NUDGE_LOOP_YML" 2>/dev/null | head -1 | awk '{print $2}' || echo "")"
       [ -n "$MAX_NUDGE_RAW" ] && MAX_NUDGE="$MAX_NUDGE_RAW"
     fi
     MAX_ITER_FOR_MSG="$(grep -E '^max_iter:' "$STATE_FILE" 2>/dev/null | head -1 | awk '{print $2}')"

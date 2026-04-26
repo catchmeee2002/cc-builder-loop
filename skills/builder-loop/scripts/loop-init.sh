@@ -62,8 +62,10 @@ if [ "$INIT_RC" -ne 0 ]; then
 fi
 
 # ---- 5. Smoke test ----
+# V2.0 三参签名：<run_cwd> <iter> [<log_root>]。loop-init 是接入向导阶段，worktree 还未创建，
+# run_cwd = log_root = 主仓 PROJECT_ROOT；显式传第三参以与 stop hook 调用约定保持一致。
 echo "[loop-init] 运行 smoke test..." >&2
-SMOKE="$(bash "$SCRIPT_DIR/run-pass-cmd.sh" "$PROJECT_ROOT" 0 || true)"
+SMOKE="$(bash "$SCRIPT_DIR/run-pass-cmd.sh" "$PROJECT_ROOT" 0 "$PROJECT_ROOT" || true)"
 SMOKE_LAST="$(echo "$SMOKE" | tail -1)"
 
 # ---- 6. 汇报 ----

@@ -68,8 +68,8 @@ git commit -q -m "chore(test): [cr_id_skip] Initial seed for v2.0 worktree pass-
 # ---- Step 2: 调 setup 创建 worktree + state（V2.0 schema）----
 echo "--- Step 2: setup-builder-loop.sh 启动 worktree ---"
 SETUP_OUT="$(bash "$SETUP_SCRIPT" "v2-pass-cmd-test" 2>&1 || true)"
-STATE_FILE_GLOB="$TMP/.claude/builder-loop/state/"*"-v2-pass-cmd-test.yml"
-STATE_FILE="$(ls $STATE_FILE_GLOB 2>/dev/null | head -1 || echo "")"
+# 用 find 替代未引号 glob 展开（防 $TMP 含空格时裂行）
+STATE_FILE="$(find "$TMP/.claude/builder-loop/state" -maxdepth 1 -name '*-v2-pass-cmd-test.yml' 2>/dev/null | head -1)"
 
 assert "setup 创建了 state 文件" "[ -n '$STATE_FILE' ] && [ -f '$STATE_FILE' ]"
 WORKTREE_PATH="$(grep -E '^worktree_path:' "$STATE_FILE" | head -1 | sed -E 's/^worktree_path:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/')"
@@ -176,6 +176,37 @@ LEGACY_LOG="$TMP/.claude/loop-runs/iter-1-legacy_marker.log"
 assert "老 state stop hook 退出码 = 2" "[ '$EC2' -eq 2 ]"
 assert "老 state PASS_CMD 跑了 worktree 配置" "[ -f '$LEGACY_LOG' ]"
 assert "老 state worktree 内命令真跑了" "grep -q 'LEGACY_RAN_IN_WORKTREE' '$LEGACY_LOG' 2>/dev/null"
+
+# ---- Step 6: 含空格路径鲁棒性（reviewer 🟡 修复回归）----
+echo "--- Step 6: 含空格的 mktemp 路径下 setup + state 定位仍正常 ---"
+SPACE_TMP="$(mktemp -d)/dir with space"
+mkdir -p "$SPACE_TMP"
+cd "$SPACE_TMP"
+git init -q
+git config user.email "e2e@test.local"
+git config user.name "e2e-test"
+mkdir -p .claude src
+cat > .claude/loop.yml <<'YMLEOF'
+pass_cmd:
+  - stage: smoke
+    cmd: "true"
+    timeout: 10
+max_iterations: 3
+layout:
+  source_dirs: [src]
+worktree:
+  enabled: true
+YMLEOF
+echo "seed" > README.md
+git add -A
+git commit -q -m "chore(test): [cr_id_skip] Init in spaced path"
+SETUP_OUT_S="$(bash "$SETUP_SCRIPT" "spaced-path-test" 2>&1 || true)"
+# 用 find 替代 ls + glob，验证含空格路径下 fixture 自身 robust
+STATE_FILE_S="$(find "$SPACE_TMP/.claude/builder-loop/state" -maxdepth 1 -name '*-spaced-path-test.yml' 2>/dev/null | head -1)"
+
+assert "含空格路径 state 能定位到（find 替代 glob）" "[ -n '$STATE_FILE_S' ] && [ -f '$STATE_FILE_S' ]"
+WT_PATH_S="$(grep -E '^worktree_path:' "$STATE_FILE_S" 2>/dev/null | head -1 | sed -E 's/^worktree_path:[[:space:]]*\"?([^\"]*)\"?[[:space:]]*$/\1/')"
+assert "含空格 worktree 已创建" "[ -n '$WT_PATH_S' ] && [ -d '$WT_PATH_S' ]"
 
 # ---- 总结 ----
 echo ""

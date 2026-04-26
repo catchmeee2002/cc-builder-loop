@@ -15,6 +15,11 @@ STATE_FILE="${1:?state file required}"
 CUR_LOG="${2:?current log required}"
 
 # ---- 解析 state 文件中的关键字段 ----
+# 函数内 "$1" 引用语义说明：
+#   - bash 函数会把位置参数 $1/$2/... 局部覆盖为函数自己的入参
+#   - 因此本函数体内的 "$1" 是字段名（如 iter / project_root），而非脚本入参 $1
+#   - python3 -c '... sys.argv[2]' 拿到的就是 "$1"（字段名）
+#   - sys.argv[1] 用 "$STATE_FILE" 而非 "$1"，避免位置参数歧义、显式说明本意是读 state 文件
 get_field() {
   # 优先 python3 yaml 真解析，fallback grep+sed（无 python3/yaml 环境）
   python3 -c "

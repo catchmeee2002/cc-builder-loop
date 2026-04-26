@@ -36,14 +36,17 @@ grep -ohE 'test-[a-z0-9-]+\.sh' skills/builder-loop/README.md skills/builder-loo
 
 ### 3. SKILL.md 状态字段 schema vs setup-builder-loop.sh 实际写入字段
 
+state 文件实际字段定义在 setup-builder-loop.sh 的 `cat > "$STATE_FILE" <<EOF ... EOF` heredoc 段内：
+
 ```bash
-# 用例：state 文件实际字段
-grep -E '^[a-z_]+:' skills/builder-loop/scripts/setup-builder-loop.sh | grep -E 'state' -A1 | head -30
-# vs SKILL.md 文档化字段
-grep -E '^- `[a-z_]+:' skills/builder-loop/SKILL.md
+# 提取 setup 写 state 的 heredoc 段中的字段名
+sed -n '/^cat > "\$STATE_FILE" <<EOF/,/^EOF$/{ /^[a-z_]\+:/p }' skills/builder-loop/scripts/setup-builder-loop.sh
+
+# vs SKILL.md "状态文件 schema" 块内文档化的字段（YAML 形式）
+sed -n '/^## 状态文件 schema/,/^##[^#]/{ /^[a-z_]\+:/p }' skills/builder-loop/SKILL.md
 ```
 
-任一字段在代码中存在但文档缺失（或反之）→ 必须同步。
+两份输出取字段名集合对账（去注释、去引号），任一字段在代码中存在但文档缺失（或反之）→ 必须同步。
 
 ### 4. 链接映射表 vs install.sh 实际链接
 
