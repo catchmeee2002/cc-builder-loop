@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # test-judge-model-fallback.sh — V2.1 E2E：sonnet → haiku 降级链
 #
-# 覆盖 11 个 case（B1-B11），用 python3 mock Anthropic API server，按 mode 控制返回 200 / 5xx / 401 / 429 / parse_err / timeout。
+# 覆盖 12 个 case（B1-B12），用 python3 mock Anthropic API server，按 mode 控制返回 200 / 5xx / 401 / 429 / parse_err / timeout。
 #
 # 关键场景：
 #   B1  连续 sonnet 成功 → state.failures=0, active=sonnet
 #   B2  sonnet 1 次 5xx → failures=1（未达阈值，本轮 downgrade）
-#   B3  sonnet 2 次 5xx → 切 haiku, failures=0, fallback retry → 输出 model_used=haiku
+#   B3  sonnet 2 次 5xx → 切 haiku, failures=0, fallback retry → 输出 model_used=haiku，downgrade_reason 前缀 fallback_also_failed:
 #   B4  sonnet 切 haiku 后 haiku 也 5xx → downgrade fallback_also_failed
 #   B5  sonnet 1 失败 + 1 成功 → failures=0（成功后重置）
 #   B6  401 不计数（凭证类） → failures 不变
@@ -15,6 +15,7 @@
 #   B9  fallback_model 留空 → 不切，失败直接 downgrade
 #   B10 缺 V2.1 state 字段（旧 state） → 默认值（active=primary, failures=0）
 #   B11 worktree 内改 primary_model 立即生效（指向 mock 不同 endpoint 模拟）
+#   B12 active_model=haiku 时成功一次 → failures 重置 0，active 仍 haiku（haiku 路径成功语义对偶 B5）
 #
 # 用法：bash test-judge-model-fallback.sh
 # 退出码：0=全部通过 / 1=有失败
@@ -246,6 +247,9 @@ assert "B3 state failures=0（切后重置）" "[ \"\$(read_state '$SF_B2' judge
 # 验证调用日志：第二次调用应有 sonnet + haiku 两次
 assert "B3 model_log 含 sonnet" "grep -q 'claude-sonnet-4-6' '$TMP/model_log.txt'"
 assert "B3 model_log 含 haiku（fallback retry 触发）" "grep -q 'claude-haiku-4-5' '$TMP/model_log.txt'"
+# 补充：downgrade_reason 精确匹配前缀 fallback_also_failed:
+REASON_B3="$(echo "$J" | python3 -c "import json,sys; d=json.loads(sys.stdin.read()); print(d.get('downgrade_reason','__MISSING__'))" 2>/dev/null || echo "__PARSE__")"
+assert "B3 downgrade_reason 前缀为 fallback_also_failed:" "echo '$REASON_B3' | grep -q '^fallback_also_failed:'"
 
 # ============================================================
 # B4: 已切 haiku 后 haiku 也 5xx
@@ -377,6 +381,29 @@ assert_json "B11 第 2 次 model_used 仍是 state.judge_active_model=sonnet" "$
 sed -i '/^judge_active_model:/d; /^judge_consecutive_failures:/d' "$SF_B11"
 J="$(call_judge "$SF_B11" "$PROJ_B11")"
 assert_json "B11 清 state 后 model_used=haiku（loop.yml 改的 primary 生效）" "$J" "model_used" "claude-haiku-4-5"
+
+# ============================================================
+# B12: active_model=haiku 时成功一次 → failures 重置 0，active 仍 haiku
+# ============================================================
+echo ""
+echo "--- B12: active_model=haiku 成功 → failures 重置，active 仍 haiku ---"
+PROJ_B12="$TMP/b12"; mkdir -p "$PROJ_B12"
+make_loop_yml "$PROJ_B12" "claude-sonnet-4-6" "claude-haiku-4-5" 2
+SF_B12="$PROJ_B12/state.yml"
+# 手动写初始 state：模拟前几轮 sonnet 已切到 haiku，haiku 已累计失败 1 次
+make_state "$PROJ_B12" "$SF_B12"
+# 追加 V2.1 字段：active_model=haiku + failures=1
+printf 'judge_active_model: "claude-haiku-4-5"\njudge_consecutive_failures: 1\n' >> "$SF_B12"
+
+clear_model_log; set_mode "ok"
+J="$(call_judge "$SF_B12" "$PROJ_B12")"
+
+assert "B12 state active_model 仍是 haiku（成功不切回 sonnet）" \
+  "[ \"\$(read_state '$SF_B12' judge_active_model)\" = 'claude-haiku-4-5' ]"
+assert "B12 state failures 重置为 0（成功后清零）" \
+  "[ \"\$(read_state '$SF_B12' judge_consecutive_failures)\" = '0' ]"
+assert_json "B12 downgraded=False（调用成功，无降级）" "$J" "downgraded" "False"
+assert_json "B12 model_used=haiku（active_model=haiku 路径）" "$J" "model_used" "claude-haiku-4-5"
 
 # ============================================================
 # 总结

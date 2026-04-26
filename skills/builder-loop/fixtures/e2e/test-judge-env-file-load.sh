@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # test-judge-env-file-load.sh — V2.1 E2E：env file 自动加载机制
 #
-# 覆盖 5 个 case：
+# 覆盖 6 个 case：
 #   A1 主 env 干净 + judge-env.sh 存在（含 sk-666） → source 后 self-check OK
 #   A2 主 env 已设 sk-real + judge-env.sh 含别的值 → 不覆盖主 env
 #   A3 主 env 干净 + judge-env.sh 不存在 → missing credentials（V1.9 行为）
 #   A4 主 env 干净 + judge-env.sh 语法错 → stderr WARN + 仍 missing credentials
 #   A5 主 env 干净 + loop.yml.judge.credentials_file 指定别处 → phase 1 source 别处
+#   A6 loop.yml.credentials_file 等于全局默认路径 → phase 0 已 source，phase 1 跳过不报错
 #
 # 测试技巧：修改 HOME 环境变量重定向 ~/.claude/... 到临时目录，避免污染用户真实 env file
 #
@@ -154,6 +155,60 @@ JSON_A5="$(HOME="$FAKE_HOME" env -u ANTHROPIC_API_KEY bash "$JUDGE_SCRIPT" \
 
 assert "A5 输出含 credential_path=env（phase 1 source 成功）" \
   "echo '$JSON_A5' | python3 -c 'import json,sys;d=json.loads(sys.stdin.read());sys.exit(0 if d.get(\"credential_path\")==\"env\" else 1)'"
+
+# ============================================================
+# A6: credentials_file == 默认全局路径 → phase 1 检测到重复，不报错也不重复 source
+# ============================================================
+echo ""
+echo "--- A6: loop.yml.credentials_file 等于默认全局路径 → 跳过 phase 1 二次 source ---"
+PROJ_A6="$TMP/proj-a6"
+mkdir -p "$PROJ_A6/.claude"
+# 还原 judge-env.sh（A4 写了语法错文件，这里重置为合法内容）
+cat > "$FAKE_HOME/.claude/skills/builder-loop/judge-env.sh" <<'EOF'
+ANTHROPIC_API_KEY=sk-666-a6-global
+ANTHROPIC_BASE_URL=http://localhost:4142
+EOF
+
+# loop.yml 将 credentials_file 显式写成与默认全局路径相同（$HOME 展开形式）
+cat > "$PROJ_A6/.claude/loop.yml" <<EOF
+pass_cmd:
+  - { stage: smoke, cmd: "true", timeout: 10 }
+judge:
+  enabled: true
+  credentials_file: "$FAKE_HOME/.claude/skills/builder-loop/judge-env.sh"
+EOF
+
+mkdir -p "$PROJ_A6/.claude/builder-loop/state"
+cat > "$PROJ_A6/.claude/builder-loop/state/test-a6.yml" <<EOF
+active: true
+slug: test-a6
+iter: 1
+max_iter: 3
+project_root: "$PROJ_A6"
+main_repo_path: "$PROJ_A6"
+start_head: deadbeef
+EOF
+echo '{"role":"assistant","content":[{"type":"text","text":"ok"}]}' > "$PROJ_A6/transcript.jsonl"
+
+# 期望：phase 0 source 全局文件后，phase 1 发现 credentials_file == 默认全局路径 → 跳过
+# 最终：不报错、不 exit 非 0，凭证来自 phase 0 source 的全局文件
+EC_A6=0
+JSON_A6="$(HOME="$FAKE_HOME" env -u ANTHROPIC_API_KEY bash "$JUDGE_SCRIPT" \
+  --state-file "$PROJ_A6/.claude/builder-loop/state/test-a6.yml" \
+  --project-root "$PROJ_A6" \
+  --transcript-path "$PROJ_A6/transcript.jsonl" \
+  --pass-cmd-status PASS 2>/tmp/stderr-a6.txt)" || EC_A6=$?
+
+STDERR_A6="$(cat /tmp/stderr-a6.txt 2>/dev/null || true)"
+
+# 凭证来自 phase 0 source 的全局文件（不管 phase 1 是否二次 source，结果应一致）
+assert "A6 脚本无异常退出（exit=0 或因无 API 网络降级 downgraded 但不 exit 1）" \
+  "[ '$EC_A6' -eq 0 ] || echo '$JSON_A6' | python3 -c 'import json,sys; d=json.loads(sys.stdin.read()); sys.exit(0 if d.get(\"downgraded\") else 1)' 2>/dev/null"
+assert "A6 stderr 不含 ERROR（phase 1 重复路径不报错）" \
+  "! echo '$STDERR_A6' | grep -qi '^ERROR:'"
+# 验证凭证来自全局 env file（credential_path=env 或 downgrade 时降级，但不因路径重复 fail）
+assert "A6 输出中 credential_path=env（env file 被正确加载）" \
+  "echo '$JSON_A6' | python3 -c 'import json,sys; d=json.loads(sys.stdin.read()); sys.exit(0 if d.get(\"credential_path\")==\"env\" else 1)' 2>/dev/null"
 
 # ============================================================
 # 总结
