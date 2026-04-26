@@ -10,6 +10,8 @@ pass_cmd:
   - { stage: "judge_integration", cmd: "bash skills/builder-loop/fixtures/e2e/test-judge-integration.sh", timeout: 120 }
   - { stage: "v2_pass_cmd_in_worktree", cmd: "bash skills/builder-loop/fixtures/e2e/test-pass-cmd-runs-worktree.sh", timeout: 60 }
   - { stage: "v2_bare_loop_merge", cmd: "bash skills/builder-loop/fixtures/e2e/test-bare-loop-merge.sh", timeout: 60 }
+  - { stage: "v2_run_pass_cmd_args", cmd: "bash skills/builder-loop/fixtures/e2e/test-run-pass-cmd-args.sh", timeout: 60 }
+  - { stage: "v2_nudge_max_reads_worktree", cmd: "bash skills/builder-loop/fixtures/e2e/test-nudge-max-reads-worktree.sh", timeout: 60 }
 
 max_iterations: 5
 

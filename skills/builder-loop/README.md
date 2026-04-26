@@ -139,8 +139,10 @@ done
 | `test-judge-agent.sh` | V1.9: judge agent 单元（mock Anthropic API，9 case：env 凭证 / API 超时 / 500 / 非法 JSON / low confidence / 凭证全缺 / disabled / dot 模型规范化） | python3 内嵌 mock server |
 | `test-judge-integration.sh` | V1.9: judge agent 集成（stop hook 全流程 7 case：PASS+stop_done / PASS+continue_nudge / 连续 nudge 上限强制 / 降级原路径 / FAIL+retry_transient / FAIL 降级 / disabled） | run-judge-agent.sh + builder-loop-stop.sh |
 | `test-judge-edge-cases.sh` | V1.9.1: judge edge case（reviewer TESTER_HINT 4 case：stop_done 后 nudge 计数清零 / backfill 幂等 / self-check 凭证全缺 exit 1 / FAIL 分支脚本缺失降级原 V1.8 路径） | 同上 |
-| `test-pass-cmd-runs-worktree.sh` | V2.0: PASS_CMD 在 worktree 内跑（17 case：state 写 main_repo_path / project_root=worktree / worktree 内 loop.yml 加 stage 立即生效 / 老 V1.x state 兼容 fallback） | setup-builder-loop.sh + builder-loop-stop.sh |
+| `test-pass-cmd-runs-worktree.sh` | V2.0: PASS_CMD 在 worktree 内跑（19 case：state 写 main_repo_path / project_root=worktree / worktree 内 loop.yml 加 stage 立即生效 / 老 V1.x state 兼容 fallback / 含空格 mktemp 路径鲁棒性） | setup-builder-loop.sh + builder-loop-stop.sh |
 | `test-bare-loop-merge.sh` | V2.0: bare loop 完整 stop hook + merge 路径（10 case：bare PASS + cleanup / merge-worktree-back NOOP 输出 / 老 V1.x state 缺 main_repo_path 兼容） | merge-worktree-back.sh |
+| `test-run-pass-cmd-args.sh` | V2.0: run-pass-cmd.sh 三参签名行为（13 case：三参 LOG_ROOT 决定日志归档 / 两参 缺省 LOG_ROOT=RUN_CWD / FAIL 消息含 LOG_ROOT 路径 / RUN_CWD 内 loop.yml 缺失 fallback 主仓 + stderr 警告） | reviewer hint 补测 |
+| `test-nudge-max-reads-worktree.sh` | V2.0: stop hook nudge 上限优先读 worktree loop.yml（18 case：worktree max=1 触发强制 stop_done / worktree loop.yml 缺失 fallback 主仓 max=99 走 nudge 分支） | mock judge agent + reviewer hint 补测 |
 | `test-new-repo-loop.sh` | V1.5: 新仓初始化场景（loop-init 一键、空仓 setup、首轮 PASS_CMD） | loop-init.sh + 全套 |
 | `test-parallel-loop.sh` | V1.8: 多状态并行（同项目两个 worktree slug 各自走 PASS 路径） | locate-state.sh |
 | `test-zombie-selfheal.sh` | V1.8.1: 僵尸 state 自愈（active=false 归档到 legacy/）+ EARLY_STOP 立即通知 | builder-loop-stop.sh |
