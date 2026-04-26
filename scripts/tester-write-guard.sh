@@ -17,6 +17,9 @@
 # 退出码：
 #   0 = 放行
 #   2 = 拒绝（CC 硬约定：PreToolUse exit 2 → 阻断工具调用 + stderr 注入 LLM context）
+#
+# 注意：未加 set -e —— hook 需要精细控退出码（任何故障路径要 exit 0 放行而非 fail-stop）；
+# 解析失败 / lock 缺失 / TTL 过期等都走 exit 0，只有"识别到 tester + 路径越界"才 exit 2
 
 set -uo pipefail
 
@@ -28,6 +31,8 @@ log() { printf '[%s] %s\n' "$(date -Iseconds)" "$*" >> "$LOG_FILE" 2>/dev/null |
 INPUT="$(cat || echo '{}')"
 
 # 解析 session_id / tool_name / file_path
+# 限制：python3 fallback 用 split('.') 解析路径，仅支持点分隔的简单嵌套（如 .a.b.c）；
+# 不支持数组下标 / 含点 key（当前所有解析需求都是简单路径，未来扩展需注意）
 parse_field() {
   local field="$1"
   if command -v jq >/dev/null 2>&1; then
@@ -50,6 +55,7 @@ except Exception:
 
 SESSION_ID="$(parse_field '.session_id')"
 TOOL_NAME="$(parse_field '.tool_name')"
+# Write / Edit / MultiEdit 的 file_path 都是顶层字段（MultiEdit 的 edits 数组共享同一 file_path）
 TARGET="$(parse_field '.tool_input.file_path')"
 
 [ -z "$SESSION_ID" ] && exit 0

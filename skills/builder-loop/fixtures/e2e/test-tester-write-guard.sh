@@ -1,16 +1,18 @@
 #!/usr/bin/env bash
 # test-tester-write-guard.sh — V2.2 E2E：tester subagent 跨目录写防御
 #
-# 覆盖 9 个 case（A 段路径白名单 + bare loop / 老锁兼容）：
-#   A1 lock 含 worktree_path=/wt + Write file_path=主仓 → exit 2 + stderr 含 worktree/main
-#   A2 lock 含 worktree_path=/wt + Edit  file_path=/wt/sub/foo.py → exit 0
-#   A3 lock 含 worktree_path=/wt + MultiEdit file_path=/wt/foo.py → exit 0
-#   A4 无 lock → exit 0（非 tester subagent 放行）
-#   A5 lock 无 worktree_path 字段 → exit 0（bare loop / V1.x 老锁兼容）
-#   A6 lock 含 worktree_path=/wt + Write file_path=/wt（恰好等于 worktree 根，无文件名）→ exit 2
-#   A7 lock 含 worktree_path=/wt + Write file_path=/wt2/foo.py（前缀部分匹配）→ exit 2
-#   A8 lock 含 worktree_path=/wt + Write file_path=/wt/../main/foo.py（path traversal）→ exit 2
-#   A9 lock 含 agent_type=reviewer（非 tester）+ Write file_path=主仓 → exit 0
+# 覆盖 11 个 case（A 段路径白名单 + bare loop / 老锁兼容 + MultiEdit 拦截实证）：
+#   A1  lock 含 worktree_path=/wt + Write file_path=主仓 → exit 2 + stderr 含 worktree/main
+#   A2  lock 含 worktree_path=/wt + Edit  file_path=/wt/sub/foo.py → exit 0
+#   A3  lock 含 worktree_path=/wt + MultiEdit file_path=/wt/foo.py → exit 0（放行场景）
+#   A4  无 lock → exit 0（非 tester subagent 放行）
+#   A5  lock worktree_path 字段为空字符串 → exit 0（bare loop 兼容）
+#   A5b lock **完全不含** worktree_path 行（V1.x 老锁文件格式）→ exit 0
+#   A6  lock 含 worktree_path=/wt + Write file_path=/wt（恰好等于 worktree 根，无文件名）→ exit 2
+#   A7  lock 含 worktree_path=/wt + Write file_path=/wt2/foo.py（前缀部分匹配）→ exit 2
+#   A8  lock 含 worktree_path=/wt + Write file_path=/wt/../main/foo.py（path traversal）→ exit 2
+#   A9  lock 含 agent_type=reviewer（非 tester）+ Write file_path=主仓 → exit 0
+#   A10 lock 含 worktree_path=/wt + MultiEdit file_path=主仓 → exit 2（MultiEdit 拦截实证）
 #
 # 用法：bash test-tester-write-guard.sh
 # 退出码：0=全部通过 / 1=有失败
@@ -167,6 +169,32 @@ echo "[A9] agent_type=reviewer → 放行（仅拦 tester）"
 write_lock "sid-a9" "reviewer" "$WT" >/dev/null
 run_guard "$(make_input "sid-a9" "Write" "$MAIN/foo.py")"
 assert_exit "A9 exit code" "0" "$GUARD_RC"
+
+# ---- A5b: lock 完全不含 worktree_path 行（V1.x 老锁文件格式）→ exit 0 ----
+echo ""
+echo "[A5b] lock 完全不含 worktree_path 行（V1.x 老锁）→ 放行"
+LOCK_A5B="$LOCK_DIR/cc-subagent-sid-a5b.lock"
+{
+  echo "agent_type: tester"
+  echo "session_id: sid-a5b"
+  echo "project_root: \"$WT\""
+  echo "start_ts: $(date +%s)"
+  echo "ttl_min: 30"
+  echo "source_dirs_abs:"
+  echo "  []"
+} > "$LOCK_A5B"
+run_guard "$(make_input "sid-a5b" "Write" "$MAIN/foo.py")"
+assert_exit "A5b exit code（V1.x 老锁兼容）" "0" "$GUARD_RC"
+
+# ---- A10: tester + MultiEdit 跨界写主仓 → exit 2（MultiEdit 拦截实证）----
+echo ""
+echo "[A10] tester + MultiEdit file_path=主仓 → 拒绝（验证 MultiEdit 真能拦）"
+write_lock "sid-a10" "tester" "$WT" >/dev/null
+# 完整 MultiEdit 输入：含顶层 file_path + edits 数组（MultiEdit 真实结构）
+INPUT_A10="$(printf '{"session_id":"sid-a10","tool_name":"MultiEdit","tool_input":{"file_path":"%s/tests/foo.py","edits":[{"old_string":"a","new_string":"b"}]}}' "$MAIN")"
+run_guard "$INPUT_A10"
+assert_exit "A10 exit code（MultiEdit 拦截）" "2" "$GUARD_RC"
+assert_stderr_contains "A10 stderr 含禁止字样" "tester 跨目录写禁止" "$GUARD_STDERR"
 
 echo ""
 echo "============================================="

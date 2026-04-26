@@ -182,19 +182,8 @@ if [ "$FOUND_LOOP_ONLY" = "true" ]; then
   if [ -z "$HAS_DIFF" ]; then
     exit 0
   fi
-  # V1.8.2: 已处理 HEAD 游标检查 — V2.2 起触发器已收紧到 HAS_DIFF 非空，HAS_DIFF 空场景已在前面静默放行
-  # 本段保留作为防御冗余：未来如果重新引入 HAS_RECENT_COMMIT 触发器，游标可拦同一 HEAD 反复激活
-  # 写入逻辑（PASS / 异常 merge / EARLY_STOP 三处出口的 write_processed_cursor）不变，作审计/排查辅助
-  if [ -z "$HAS_DIFF" ]; then
-    CURSOR_FILE="${PROJECT_ROOT}/.claude/builder-loop/last_processed_head"
-    CURRENT_HEAD="$(git -C "$PROJECT_ROOT" rev-parse HEAD 2>/dev/null || echo "")"
-    if [ -f "$CURSOR_FILE" ] && [ -n "$CURRENT_HEAD" ]; then
-      LAST_HEAD="$(cat "$CURSOR_FILE" 2>/dev/null | head -1 | tr -d '[:space:]')"
-      if [ "$CURRENT_HEAD" = "$LAST_HEAD" ]; then
-        exit 0
-      fi
-    fi
-  fi
+  # V1.8.2 游标段已删（HAS_DIFF 空场景在前面已静默放行，游标段不可达）
+  # write_processed_cursor 在 PASS / 异常 merge / EARLY_STOP 三处出口仍写入，作审计/排查辅助
   # 推断 task_description
   TASK_DESC="auto-activated-by-stop-hook"
   PLAN_DIR="${PROJECT_ROOT}/.claude/plans"

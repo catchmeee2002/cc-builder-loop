@@ -76,7 +76,7 @@ cc-builder-loop/
 ├── install.sh / uninstall.sh   # 部署/卸载
 ├── CLAUDE.md                   # 本文件
 ├── skills/builder-loop/        # CC skill（含 SKILL.md、scripts/、fixtures/e2e/、schema/）
-├── scripts/                    # Stop hook + tester 隔离 hook + reviewer 时序 hook（5 个 .sh）
+├── scripts/                    # Stop hook + tester 隔离 hook + tester 跨目录写防护 hook + reviewer 时序 hook（6 个 .sh）
 └── agents/                     # tester.md + arbiter.md
 ```
 
@@ -159,7 +159,7 @@ cc-builder-loop/
   - **议题 3 bootstrap 触发器收敛**：`scripts/builder-loop-stop.sh` L173-179 砍 `HAS_RECENT_COMMIT` 作为触发条件，bootstrap 兜底**只看** `HAS_DIFF`（未提交工作树改动）。`HAS_RECENT_COMMIT` 变量保留供 task_desc fallback 推断
   - **议题 3 取舍**：用户/builder 手动 commit 后工作树干净 → bootstrap 静默放行（不再被无意义 NOOP 触发的 reviewer 提示困扰）；损失场景：用户在主仓直接改代码 + commit + 关 CC（不经 loop）→ 失去自动补 PASS_CMD 兜底，需手动 `setup-builder-loop.sh "<task>"` 起 loop（详见 §7.7）
   - **install.sh / uninstall.sh** 同步追加 `tester-write-guard.sh` 软链 + hook 注册条目（registrations 列表 +1 条；uninstall.sh `bl_scripts` 列表 +1 项）
-  - 配套新 e2e fixture：`test-tester-write-guard.sh`（13 case，A1-A9 覆盖 拒绝主仓 / 放行 worktree / 无锁 / bare loop 老锁兼容 / 等于 worktree 根 / 前缀部分匹配 / path traversal / 非 tester subagent 放行）
+  - 配套新 e2e fixture：`test-tester-write-guard.sh`（11 case A1-A10 / 16 个 assert，覆盖 拒绝主仓 / 放行 worktree / Edit / MultiEdit 拦截实证 / 无锁 / V1.x 老锁兼容（worktree_path 缺字段 vs 空字符串）/ 等于 worktree 根 / 前缀部分匹配 / path traversal / 非 tester subagent 放行）
 
 详见 `skills/builder-loop/README.md` 与 `skills/builder-loop/docs/judge-agent.md`。
 

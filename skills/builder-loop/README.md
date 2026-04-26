@@ -145,6 +145,7 @@ done
 | `test-nudge-max-reads-worktree.sh` | V2.0: stop hook nudge 上限优先读 worktree loop.yml（18 case：worktree max=1 触发强制 stop_done / worktree loop.yml 缺失 fallback 主仓 max=99 走 nudge 分支） | mock judge agent + reviewer hint 补测 |
 | `test-judge-env-file-load.sh` | V2.1: judge env file 自动加载（12 case：主 env 干净时 source / 主 env 已设时不覆盖 / 文件不存在退回 V1.9 行为 / 语法错误 stderr WARN / loop.yml.credentials_file 项目级覆盖） | run-judge-agent.sh + 重定向 HOME |
 | `test-judge-model-fallback.sh` | V2.1: sonnet → haiku 降级链（28 case：连续成功 / 1 失败计数 / 2 失败切 fallback retry / fallback 也失败 / 401-429 不计数 / parse_error 计数 / fallback 留空禁用降级 / 旧 state 兼容 / 改 primary 立即生效） | mock copilot-proxy + 状态机 |
+| `test-tester-write-guard.sh` | V2.2: tester 跨目录写拦截（13 case：拒绝主仓 / 放行 worktree / 无锁 / bare loop 老锁兼容 / 等于 worktree 根 / 前缀部分匹配 / path traversal / 非 tester 放行） | tester-write-guard.sh + 锁文件 |
 | `test-new-repo-loop.sh` | V1.5: 新仓初始化场景（loop-init 一键、空仓 setup、首轮 PASS_CMD） | loop-init.sh + 全套 |
 | `test-parallel-loop.sh` | V1.8: 多状态并行（同项目两个 worktree slug 各自走 PASS 路径） | locate-state.sh |
 | `test-zombie-selfheal.sh` | V1.8.1: 僵尸 state 自愈（active=false 归档到 legacy/）+ EARLY_STOP 立即通知 | builder-loop-stop.sh |
