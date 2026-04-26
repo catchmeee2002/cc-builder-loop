@@ -139,8 +139,14 @@ done
 | `test-judge-agent.sh` | V1.9: judge agent 单元（mock Anthropic API，9 case：env 凭证 / API 超时 / 500 / 非法 JSON / low confidence / 凭证全缺 / disabled / dot 模型规范化） | python3 内嵌 mock server |
 | `test-judge-integration.sh` | V1.9: judge agent 集成（stop hook 全流程 7 case：PASS+stop_done / PASS+continue_nudge / 连续 nudge 上限强制 / 降级原路径 / FAIL+retry_transient / FAIL 降级 / disabled） | run-judge-agent.sh + builder-loop-stop.sh |
 | `test-judge-edge-cases.sh` | V1.9.1: judge edge case（reviewer TESTER_HINT 4 case：stop_done 后 nudge 计数清零 / backfill 幂等 / self-check 凭证全缺 exit 1 / FAIL 分支脚本缺失降级原 V1.8 路径） | 同上 |
-
-> ⚠️ 历史欠账：V1.5/V1.6/V1.7/V1.8/V1.8.x 也加过 fixture（test-new-repo-loop / test-parallel-loop / test-zombie-selfheal / test-stop-hook-cursor / test-stop-hook-race-and-commit-msg / test-reviewer-compat），都没补到此表。下次完整 audit 时一并回补。
+| `test-pass-cmd-runs-worktree.sh` | V2.0: PASS_CMD 在 worktree 内跑（17 case：state 写 main_repo_path / project_root=worktree / worktree 内 loop.yml 加 stage 立即生效 / 老 V1.x state 兼容 fallback） | setup-builder-loop.sh + builder-loop-stop.sh |
+| `test-bare-loop-merge.sh` | V2.0: bare loop 完整 stop hook + merge 路径（10 case：bare PASS + cleanup / merge-worktree-back NOOP 输出 / 老 V1.x state 缺 main_repo_path 兼容） | merge-worktree-back.sh |
+| `test-new-repo-loop.sh` | V1.5: 新仓初始化场景（loop-init 一键、空仓 setup、首轮 PASS_CMD） | loop-init.sh + 全套 |
+| `test-parallel-loop.sh` | V1.8: 多状态并行（同项目两个 worktree slug 各自走 PASS 路径） | locate-state.sh |
+| `test-zombie-selfheal.sh` | V1.8.1: 僵尸 state 自愈（active=false 归档到 legacy/）+ EARLY_STOP 立即通知 | builder-loop-stop.sh |
+| `test-stop-hook-cursor.sh` | V1.8.2: 兜底激活 HEAD 游标（同 commit 不重复触发） | builder-loop-stop.sh |
+| `test-stop-hook-race-and-commit-msg.sh` | V1.8.3: 并发 flock 互斥 + auto-commit task_description 语义化 + PASS 分支 state 预读 | builder-loop-stop.sh + merge-worktree-back.sh |
+| `test-reviewer-compat.sh` | V1.7: reviewer 模型默认 sonnet 配置 lint（可选 --live smoke） | reviewer.md |
 
 ## 6. 设计原则（修改时遵守）
 
@@ -160,6 +166,15 @@ done
 - **V1.8**（已完成）：多状态并行架构（state 文件迁移到 `.claude/builder-loop/state/<slug>.yml`；locate-state.sh 按 CWD 找对应 state；单项目支持并行多个 loop；migrate-state.sh 向后兼容迁移旧版本）；setup-builder-loop.sh 加 flock 防并发竞态；merge-worktree-back.sh 清理时自动删除 state
 - **V1.8.1**（已完成）：僵尸 state 自愈（Stop hook 遇到 `active != true` 的僵尸 state → 归档到 `legacy/<ts>-zombie_inactive.bak` + 放行，防止下次 builder 误判为活跃 loop）；EARLY_STOP 立即通知（Stop hook 早停从"改字段 + exit 0"改为"归档 + exit 2 + stderr 注入"，让 builder 当场收到通知立即 AskUserQuestion，而非等下轮 prompt）；配合 V1.8 的 per-worktree state 隔离，彻底解决跨 session 多任务串味问题。顺带修复 merge-worktree-back.sh auto-commit message 加 `[cr_id_skip]` 兼容严格 commit-msg hook 的项目
 - **V1.9**（已完成）：Judge agent — LLM 语义判据补 PASS_CMD 二值判据盲区。新增 `scripts/run-judge-agent.sh`（hook 内嵌 API 调用，凭证双路径兼容正版 OAuth + Copilot env，模型 ID 三层 fallback），stop hook PASS 分支在 merge-worktree-back 之前叠加判定（continue_nudge / stop_done / retry_transient 三态路由），FAIL 分支仅识 retry_transient，任何故障路径降级回 PASS_CMD 二值判据。配套 `prompts/judge-system.md` / `docs/judge-agent.md` / `known-risks.md`。Telemetry 落 `.claude/builder-loop/judge-trace.jsonl`，下一轮 stop hook 自动后置补 outcome 标签（仅 continue_nudge 类）
+- **V2.0**（已完成）：PASS_CMD 跑 worktree 元问题修复 + tester/doc-maintainer 流程加固
+  - state schema 字段语义重构：`project_root` 改为"干活的地方"（worktree 启用 = worktree 路径 / bare = 主仓），新增 `main_repo_path`（永远是主仓）。setup/stop/merge/arbitration 全链路适配，老 V1.x state 缺 `main_repo_path` 时按"project_root 等于主仓"旧语义兜底
+  - run-pass-cmd.sh 删除 V1.7 旧路径（`.claude/builder-loop.local.md`）的死代码，改为接收 `<run_cwd> <iter> [<log_root>]` 三参，LOOP_YML 从 worktree 读、日志归档主仓；worktree 内 loop.yml 缺失时 fallback 主仓并 stderr 警告
+  - merge-worktree-back.sh case 默认分支不再静默 `exit 0 + rm state`，改为 `exit 2 + 详细错误`（M5；防 V1.9.1 修过的 grep 静默退出回归再次丢 state）
+  - early-stop-check.sh PROJECT_ROOT 计算修：从 state.project_root 读（V2.0 = worktree），git diff 看到 builder 真实改的文件而非空目录
+  - run-apply-arbitration.sh 优先读 main_repo_path + read_field 加 `|| true` 兜底（仲裁 fixture 老 state 没新字段会静默退出的问题）
+  - tester subagent prompt 加"bare loop fixture 必须 slug=__main__"等 4 条硬约束
+  - 新增 `docs/doc-maintainer-audit-checklist.md`（M2）：doc-maintainer 必须 6 步全集 audit + 4 项类型分类 + 历史欠账反查，杜绝引导式 prompt 漏判 e2e 表格的老问题
+  - 新增 `test-pass-cmd-runs-worktree.sh` (M1.5) + `test-bare-loop-merge.sh` (M3) 两个 e2e
 - **V2**：短命 orchestrator subagent 替代脚本调度（出现多 agent 仲裁需求时启动）
 - **V3**：独立 daemon 编排多项目（单开仓库 `cc-orchestrator-daemon`，复用本 skill 的契约）
 

@@ -265,6 +265,9 @@ layout:
 worktree:
   enabled: true
 YMLEOF
+# V2.0 起 PASS_CMD 在 worktree 内跑，worktree 必须能看到 loop.yml → 先 commit 到主分支
+git add .claude/loop.yml
+git commit -q -m "chore(test): [cr_id_skip] Add loop.yml so worktree can see it"
 
 bash "$SKILL_SCRIPTS_DIR/setup-builder-loop.sh" "E2E stop hook PASS with cleanup" >/dev/null 2>&1
 

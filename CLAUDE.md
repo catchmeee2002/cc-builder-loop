@@ -125,6 +125,15 @@ cc-builder-loop/
   - 任何故障路径（API 超时 / 非 200 / JSON 解析失败 / confidence 偏低 / 凭证缺失）→ `downgraded=true` + 走原 PASS / FAIL 路径，**不阻断现有 PASS_CMD 流程**
   - 完全回退方法：`loop.yml.judge.enabled: false` 或卸载 `run-judge-agent.sh`（stop hook 检测脚本缺失自动走原路径）
   - loop.yml schema 新增 `judge:` 段（全部可选）；本仓 PASS_CMD 加 `judge_agent` / `judge_integration` 两个 e2e 阶段
+- **V2.0**: PASS_CMD 跑 worktree（元问题修复）+ tester/doc-maintainer 流程加固
+  - **元问题根因**：V1.7 起 `run-pass-cmd.sh` L22 `STATE_FILE="${PROJECT_ROOT}/.claude/builder-loop.local.md"` 是 V1.7 之前的旧文件路径，V1.8 把 state 迁到 `.claude/builder-loop/state/<slug>.yml` 后这段成死代码；后果是 `RUN_CWD = PROJECT_ROOT = 主仓`，PASS_CMD 永远跑主仓 loop.yml + 主仓代码——"在 worktree 改 loop.yml 加 stage" 本轮看不到（V1.9 落地时被发现）
+  - **state schema 重构**：`project_root` 字段语义改为"干活的地方"（worktree 模式 = worktree path / bare = 主仓），新增 `main_repo_path` 字段固定为主仓。下游 5 个脚本（setup / stop hook / merge-worktree-back / run-apply-arbitration / early-stop-check）全链路改造；老 V1.x state 缺 `main_repo_path` 时按"project_root 等于主仓"旧语义兜底
+  - **run-pass-cmd.sh** 删除 V1.7 死代码，改为接收 `<run_cwd> <iter> [<log_root>]`；LOOP_YML 从 RUN_CWD 读、日志归档主仓；worktree 内 loop.yml 缺失（用户首次未 commit）→ fallback 主仓 + stderr 警告
+  - **early-stop-check.sh** 顺修 V1.x 既有 bug：原"state path 向上 2 层"只到 `.claude/builder-loop` 子目录，git diff `-- "$test_dirs"` 永远 0 命中——保护路径作弊检测实质失效。改为读 state.project_root（V2.0 = worktree）能看见 builder 真实改的文件
+  - **M5 merge-worktree-back.sh case 默认分支显式错误**：unknown action 不再静默 `exit 0 + rm state` 丢 state，改为 `exit 2 + stderr 完整输出`，防 V1.9.1 修过的 grep 静默退出回归再次踩坑
+  - **M4 tester subagent prompt 加 4 条硬约束**：bare loop fixture slug=__main__ / V2.0 state schema 写 main_repo_path / worktree 启用前先 commit loop.yml / bash grep+head+sed 必须 || true 收尾（防止 `set -euo pipefail` 静默退出）
+  - **M2 doc-maintainer audit checklist** 落地 `skills/builder-loop/docs/doc-maintainer-audit-checklist.md`：要求 maintainer 必跑 6 步黑盒 audit（fixture 表格交叉对账 / 版本号 / SKILL schema / 链接映射 / hook 注册 / 已修问题 fix 状态）+ 4 项分类勾选 + 历史欠账反查。Builder spawn doc-maintainer 时**必须把本文件路径附进 prompt**，杜绝引导式 prompt 漏判 V1.5–V1.9 累计 9 次 fixture 表格欠账的老问题
+  - 配套两个新 e2e fixture：`test-pass-cmd-runs-worktree.sh`（17 case）+ `test-bare-loop-merge.sh`（10 case）
 
 详见 `skills/builder-loop/README.md` 与 `skills/builder-loop/docs/judge-agent.md`。
 
@@ -202,3 +211,26 @@ cc-builder-loop/
    ```
 
 **已知风险开口项**：详见 `skills/builder-loop/known-risks.md`（R1 reward hacking / R2 LLM 假阳性 / R3 模型版本不可用 / R4 jsonl 增长）。
+
+### 7.4 worktree 内 loop.yml 不存在（V2.0+）
+
+**现象**：stop hook 跑 PASS_CMD 时 stderr 出现 `[run-pass-cmd] ⚠️  <worktree>/.claude/loop.yml 不存在（可能 worktree 内 loop.yml 未 commit），fallback 到主仓 ...`。
+
+**根因**：V2.0 起 PASS_CMD 在 worktree 内跑、loop.yml 也从 worktree 读（让 worktree 内改 loop.yml 立即生效）。git worktree add HEAD 只拷贝 git tracked 的文件——若 loop.yml 写完后还没 `git add + git commit`，worktree 内就看不到。
+
+**处理**：
+- 用户接入新仓库时序：写 `.claude/loop.yml` → `git add .claude/loop.yml && git commit -m "..."` → 再调 `setup-builder-loop.sh`
+- 已发生时：fallback 主仓 loop.yml 仍能跑，**不阻断**；下次 setup 前补 commit 即可
+- e2e fixture 在 setup 前必须 commit loop.yml，否则会触发本警告（不算失败但产生多余 stderr）
+
+**fixture 已知例**：`test-stop-hook-race-and-commit-msg.sh::场景 D` 在 V2.0 升级时失败，fix 是 setup 之前显式 `git add .claude/loop.yml && git commit`。
+
+### 7.5 PASS_CMD 跑了主仓而非 worktree（已修）
+
+**现象**：在 worktree 内改 loop.yml 加 stage，本轮 PASS_CMD 没跑新 stage（`.claude/loop-runs/iter-N-<new-stage>.log` 不存在）。
+
+**根因**（V1.7-V1.9.x）：`run-pass-cmd.sh` L22 死代码读旧 V1.7 之前路径 `.claude/builder-loop.local.md`，V1.8 已迁移到新路径 → 永远找不到 → `RUN_CWD = PROJECT_ROOT = 主仓` → PASS_CMD 跑主仓的 loop.yml。Worktree 改的 loop.yml 不生效要等到 PASS + merge 回主仓后下一轮才看到。
+
+**修复**（V2.0）：state schema 增加 `main_repo_path` 字段，`project_root` 字段语义改为"干活的地方"；下游脚本全链路适配；run-pass-cmd.sh 删死代码改三参签名。
+
+**自检**：项目根 `.claude/builder-loop/state/<slug>.yml` 应同时含 `project_root: <worktree>` + `main_repo_path: <主仓>` 字段。缺 `main_repo_path` 就是老 V1.x state——下次 setup 后会自动写新 schema。

@@ -175,8 +175,16 @@ if [ "$FORCE_NO_WORKTREE" -eq 0 ] && [ "$WT_ENABLED" = "True" ] && [ "$START_HEA
 fi
 
 # ---- 写状态文件 ----
-# 注意：layout 字段拍平为顶层（source_dirs / test_dirs），方便 early-stop-check.sh
-# 用 grep '^test_dirs:' 直接匹配；不用嵌套结构。
+# V2.0 schema：project_root 语义改为"干活的地方"
+#   - worktree 启用 → project_root = worktree_path（PASS_CMD 在此跑，loop.yml 从此读）
+#   - bare 模式    → project_root = main_repo_path = 主仓
+# main_repo_path 永远是主仓（git merge / worktree prune / reviewer-params 写入位置）
+# 老 V1.x 兼容：缺 main_repo_path 字段时，下游脚本把 project_root 当主仓使用
+if [ -n "$WORKTREE_PATH" ]; then
+  RUNTIME_ROOT="$WORKTREE_PATH"
+else
+  RUNTIME_ROOT="$PROJECT_ROOT"
+fi
 OWNER_CWD="$(pwd -P)"
 cat > "$STATE_FILE" <<EOF
 # builder-loop state file (do NOT manually edit while loop is active)
@@ -185,7 +193,8 @@ slug: "${SLUG}"
 owner_cwd: "${OWNER_CWD}"
 iter: 0
 max_iter: 5
-project_root: "${PROJECT_ROOT}"
+project_root: "${RUNTIME_ROOT}"
+main_repo_path: "${PROJECT_ROOT}"
 start_head: "${START_HEAD}"
 worktree_path: "${WORKTREE_PATH}"
 plan_file: "${PLAN_FILE}"

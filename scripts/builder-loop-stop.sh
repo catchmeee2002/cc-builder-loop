@@ -86,11 +86,32 @@ if [ -f "$LOCATE_SCRIPT" ]; then
 fi
 
 if [ -n "$STATE_FILE" ]; then
-  # 命中 state → 从 state 读 project_root
-  PROJECT_ROOT="$(grep -E '^project_root:' "$STATE_FILE" | head -1 | sed -E 's/^project_root:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/')"
-  # fallback：state 路径回溯 .../.claude/builder-loop/state/<slug>.yml → 上 3 层
+  # V2.0 多状态 + 字段语义重构：
+  #   project_root  字段 = 干活的地方（worktree 模式 = worktree / bare = 主仓）
+  #   main_repo_path 字段 = 主仓（V2.0 新增；老 state 缺失，缺失时按旧语义把 project_root 当主仓）
+  # || true 兜底：老 state 不含 main_repo_path 时 grep exit 1 + pipefail + set -e 会让脚本静默退出
+  PROJECT_ROOT_FIELD="$(grep -E '^project_root:' "$STATE_FILE" 2>/dev/null | head -1 | sed -E 's/^project_root:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' || true)"
+  MAIN_REPO_PATH_FIELD="$(grep -E '^main_repo_path:' "$STATE_FILE" 2>/dev/null | head -1 | sed -E 's/^main_repo_path:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' || true)"
+  WORKTREE_PATH_FIELD="$(grep -E '^worktree_path:' "$STATE_FILE" 2>/dev/null | head -1 | sed -E 's/^worktree_path:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' || true)"
+  if [ -n "$MAIN_REPO_PATH_FIELD" ]; then
+    PROJECT_ROOT="$MAIN_REPO_PATH_FIELD"     # 主仓（git op）
+    RUN_CWD="$PROJECT_ROOT_FIELD"            # 干活的地方（PASS_CMD / loop.yml）
+  else
+    # V1.x 老 state 兼容：project_root 等于主仓；worktree 模式下让 PASS_CMD 也跑 worktree
+    PROJECT_ROOT="$PROJECT_ROOT_FIELD"
+    if [ -n "$WORKTREE_PATH_FIELD" ] && [ -d "$WORKTREE_PATH_FIELD" ]; then
+      RUN_CWD="$WORKTREE_PATH_FIELD"
+    else
+      RUN_CWD="$PROJECT_ROOT_FIELD"
+    fi
+  fi
+  # 兜底：路径无效时回溯 state 文件位置
   if [ -z "$PROJECT_ROOT" ] || [ ! -d "$PROJECT_ROOT" ]; then
     PROJECT_ROOT="$(cd "$(dirname "$STATE_FILE")/../../.." 2>/dev/null && pwd -P || echo "")"
+  fi
+  # 不能写 `[ ... ] || [ ... ] && X=...` — set -e 下两个测试都假时整行返回非 0 杀脚本，必须用显式 if
+  if [ -z "$RUN_CWD" ] || [ ! -d "$RUN_CWD" ]; then
+    RUN_CWD="$PROJECT_ROOT"
   fi
 else
   # 没 state，看能否向上找到 loop.yml（兜底激活前提）
@@ -189,6 +210,8 @@ if [ "$FOUND_LOOP_ONLY" = "true" ]; then
   fi
   # setup 成功 → state 文件已在新目录创建（bare 模式 slug=__main__）
   STATE_FILE="${PROJECT_ROOT}/.claude/builder-loop/state/__main__.yml"
+  # bootstrap 走 bare 模式，干活的地方 = 主仓
+  RUN_CWD="$PROJECT_ROOT"
 fi
 
 # state file 仍不存在 → 放行
@@ -196,6 +219,8 @@ if [ ! -f "$STATE_FILE" ]; then
   echo "[builder-loop] ⚠️  兜底激活后状态文件未出现在预期路径：${STATE_FILE}，放行" >&2
   exit 0
 fi
+# 兜底：未命中 state 分支时 RUN_CWD 可能未设置
+RUN_CWD="${RUN_CWD:-$PROJECT_ROOT}"
 
 
 # ---- 1. 状态文件不存在或非活跃 → 放行 ----
@@ -306,8 +331,10 @@ with open(os.environ['TRACE_FILE'], 'a') as f:
 }
 
 # ---- 3. 跑 PASS_CMD ----
-echo "[builder-loop] 🔄 iter ${NEXT_ITER}: 正在跑 PASS_CMD..." >&2
-RESULT="$(bash "${SKILL_DIR}/run-pass-cmd.sh" "$PROJECT_ROOT" "$NEXT_ITER" || true)"
+# V2.0：第一参 = 干活的地方（worktree 或主仓），LOOP_YML 从此读、PASS_CMD 在此跑；
+#       第三参 = 主仓（日志归档目录基址）
+echo "[builder-loop] 🔄 iter ${NEXT_ITER}: 正在跑 PASS_CMD（cwd=${RUN_CWD}）..." >&2
+RESULT="$(bash "${SKILL_DIR}/run-pass-cmd.sh" "$RUN_CWD" "$NEXT_ITER" "$PROJECT_ROOT" || true)"
 LAST_LINE="$(echo "$RESULT" | tail -1)"
 
 # ---- 3a. PASS → merge worktree 回主干 / 删状态、放行 ----
@@ -321,9 +348,10 @@ if [ "$LAST_LINE" = "PASS" ]; then
   # 任何故障路径（脚本缺失 / API 失败 / JSON 解析失败 / confidence 低）都通过 downgraded=true 表达
   # 降级时本段不阻断，fall through 走原 PASS 路径（merge-worktree-back + reviewer）
   if [ -f "${SKILL_DIR}/run-judge-agent.sh" ]; then
+    # V2.0: --project-root 传 RUN_CWD（干活的地方），让 judge 读 worktree 内 loop.yml + git diff worktree
     JUDGE_RESULT="$(bash "${SKILL_DIR}/run-judge-agent.sh" \
         --state-file "$STATE_FILE" \
-        --project-root "$PROJECT_ROOT" \
+        --project-root "$RUN_CWD" \
         --transcript-path "$TRANSCRIPT_PATH" \
         --pass-cmd-status "PASS" 2>/dev/null || echo '{"action":"stop_done","downgraded":true,"downgrade_reason":"script_error","confidence":0.0,"reason":"","model_used":"","credential_path":"none"}')"
   else
@@ -528,10 +556,16 @@ ARBITER_MSG
       exit 2
       ;;
     *)
-      echo "[builder-loop] ❌ merge-worktree-back.sh 未知结果：${MERGE_OUT}" >&2
-      write_processed_cursor "$PROJECT_ROOT"
-      rm -f "$STATE_FILE"
-      exit 0
+      # M5: 不再静默删 state；显式把 merge 完整输出抛给 builder + exit 2 让 builder 收到通知
+      # 历史教训：V1.9.1 之前 merge-worktree-back.sh 因 grep+pipefail 静默退出导致 MERGE_OUT 为空，
+      # 走到这里 echo 一行后 exit 0 + rm state，state 丢了下一轮进 builder 找不着→数据丢失
+      cat >&2 <<MERGE_FAIL_MSG
+[builder-loop] ❌ merge-worktree-back.sh 未识别结果（MERGE_LAST="${MERGE_LAST}"），不删除 state 也不走 reviewer。
+完整输出：
+${MERGE_OUT}
+请检查 worktree=$(grep -E '^worktree_path:' "$STATE_FILE" 2>/dev/null | head -1) 与主仓状态后手动决定下一步。
+MERGE_FAIL_MSG
+      exit 2
       ;;
   esac
 fi
@@ -546,7 +580,7 @@ LOG_PATH="$(echo "$LAST_LINE" | awk '{print $3}')"
 if [ -f "${SKILL_DIR}/run-judge-agent.sh" ]; then
   JUDGE_RESULT_FAIL="$(bash "${SKILL_DIR}/run-judge-agent.sh" \
       --state-file "$STATE_FILE" \
-      --project-root "$PROJECT_ROOT" \
+      --project-root "$RUN_CWD" \
       --transcript-path "$TRANSCRIPT_PATH" \
       --pass-cmd-status "FAIL" \
       --pass-cmd-stage "$STAGE" \

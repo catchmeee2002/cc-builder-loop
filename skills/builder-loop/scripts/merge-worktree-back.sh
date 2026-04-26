@@ -15,7 +15,8 @@
 #   - PASS 且无冲突 → `git merge --ff-only` + `git worktree remove` + `git branch -d`
 #   - rebase 冲突 → 在 state 里写 `need_arbitration: true` + `conflict_files: <...>`
 #
-# 依赖 state 字段：project_root / worktree_path / start_head
+# 依赖 state 字段：main_repo_path（V2.0+，缺失则 fallback project_root 视为旧主仓） /
+#                  worktree_path / start_head
 
 set -euo pipefail
 
@@ -28,7 +29,10 @@ read_field() {
   grep -E "^${1}:" "$STATE" 2>/dev/null | head -1 | sed -E "s/^${1}:[[:space:]]*\"?([^\"]*)\"?[[:space:]]*\$/\1/" || true
 }
 
-PROJECT_ROOT="$(read_field project_root)"
+# V2.0：main_repo_path 是主仓（git merge / branch / worktree prune 都在此）。
+# 老 V1.x state 没 main_repo_path 字段 → 它的 project_root 就是主仓（旧语义）。
+PROJECT_ROOT="$(read_field main_repo_path)"
+[ -z "$PROJECT_ROOT" ] && PROJECT_ROOT="$(read_field project_root)"
 WORKTREE_PATH="$(read_field worktree_path)"
 START_HEAD="$(read_field start_head)"
 

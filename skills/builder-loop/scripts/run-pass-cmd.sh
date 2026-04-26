@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # run-pass-cmd.sh — 按阶段顺序跑 loop.yml.pass_cmd
 #
-# 用法：bash run-pass-cmd.sh <project_root> <iter_num>
+# 用法：bash run-pass-cmd.sh <run_cwd> <iter_num> [<log_root>]
+#   run_cwd  = 干活的地方（V2.0 = worktree / bare = 主仓）
+#              LOOP_YML 从此读，PASS_CMD 在此跑
+#   log_root = 日志归档根（V2.0 = 主仓 / 缺省时 = run_cwd）
 #
 # 输出（stdout）：
 #   PASS                              ← 全部阶段通过
@@ -10,26 +13,23 @@
 # 退出码：0=PASS，非0=FAIL
 #
 # 副作用：
-#   - 每阶段日志落地 <log_dir>/iter-<N>-<stage>.log
+#   - 每阶段日志落地 <log_root>/.claude/loop-runs/iter-<N>-<stage>.log
 #   - 阶段超时则在日志末尾写 [TIMEOUT]
 
 set -euo pipefail
 
-PROJECT_ROOT="${1:?project_root required}"
+RUN_CWD="${1:?run_cwd required}"
 ITER="${2:?iter number required}"
-LOOP_YML="${PROJECT_ROOT}/.claude/loop.yml"
-LOG_DIR="${PROJECT_ROOT}/.claude/loop-runs"
-STATE_FILE="${PROJECT_ROOT}/.claude/builder-loop.local.md"
+LOG_ROOT="${3:-$RUN_CWD}"
+LOOP_YML="${RUN_CWD}/.claude/loop.yml"
+LOG_DIR="${LOG_ROOT}/.claude/loop-runs"
 mkdir -p "$LOG_DIR"
 
-# T2.5：worktree 启用时，PASS_CMD 应在 worktree 内执行（能看到 builder 改动）
-# 日志仍落主项目 log_dir（集中归档），命令工作目录切到 worktree
-RUN_CWD="$PROJECT_ROOT"
-if [ -f "$STATE_FILE" ]; then
-  WT="$(grep -E '^worktree_path:' "$STATE_FILE" | head -1 | sed -E 's/^worktree_path:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/')"
-  if [ -n "$WT" ] && [ -d "$WT" ]; then
-    RUN_CWD="$WT"
-  fi
+# V2.0 兼容：worktree 启用但 loop.yml 未 commit 时 worktree 内不存在 → fallback 到主仓
+# 真实场景：用户首次接入仓库写完 loop.yml 立即跑 setup，loop.yml 还在 untracked 状态
+if [ ! -f "$LOOP_YML" ] && [ "$LOG_ROOT" != "$RUN_CWD" ] && [ -f "${LOG_ROOT}/.claude/loop.yml" ]; then
+  echo "[run-pass-cmd] ⚠️  ${LOOP_YML} 不存在（可能 worktree 内 loop.yml 未 commit），fallback 到主仓 ${LOG_ROOT}/.claude/loop.yml" >&2
+  LOOP_YML="${LOG_ROOT}/.claude/loop.yml"
 fi
 
 # ---- 简易 yaml 解析（仅取 pass_cmd 数组）----

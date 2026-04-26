@@ -43,11 +43,15 @@ bash ~/.claude/skills/builder-loop/scripts/setup-builder-loop.sh "$TASK_DESCRIPT
 ```yaml
 active: true
 slug: "1777040807-task-alpha"  # = 文件名；bare loop 时 slug="__main__"
-owner_cwd: "/path/to/worktree"  # setup 时所在 CWD
+owner_cwd: "/path/to/main-repo"  # setup 时所在 CWD（一般 = main_repo_path）
 iter: 3
 max_iter: 5
-start_head: abc1234
-worktree_path: /path/...       # worktree 时（bare loop 时空）
+project_root: /path/to/worktree  # V2.0 起 = "干活的地方"（worktree 启用 = worktree path / bare = 主仓）
+                                 # PASS_CMD 在此跑、loop.yml 从此读，所以 worktree 内改 loop.yml 加 stage 立即生效
+main_repo_path: /path/to/main    # V2.0 起新增；永远是主仓（git merge / branch / worktree prune 在此）
+                                 # 老 V1.x state 缺该字段时下游脚本按"project_root 等于主仓"的旧语义兜底
+start_head: abc1234              # setup 时主仓 HEAD
+worktree_path: /path/...         # worktree 启用时 = project_root；bare 时为空
 task_description: |
   ...
 source_dirs: "src,lib"
@@ -58,6 +62,12 @@ last_error_hash: deadbeef
 last_error_count: 7
 stopped_reason: ""
 created_at: "2026-04-18T..."
+
+# V1.9 judge agent 字段（仅 judge 已开启时填充）
+last_judge_action: "continue_nudge"
+last_judge_confidence: 0.8
+last_judge_ts: "2026-04-26T..."
+consecutive_nudge_count: 1
 ```
 
 ### 旧 schema 迁移

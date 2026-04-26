@@ -58,6 +58,29 @@ color: green
 - 没有 import 任何 `source_dirs` 下的实现细节（只 import 公开接口）
 - 没有 mock 实现细节（只 mock 外部依赖如 DB/API）
 
+### 步骤 4.5：（仅 cc-builder-loop 项目）写 e2e fixture 时的硬约束
+
+如果 `target_test_dirs` 含 `skills/builder-loop/fixtures/e2e/` —— 即在为 builder-loop 自身写 stop hook / merge / setup 类的 fixture：
+
+1. **bare loop fixture 必须 slug=__main__**
+   - locate-state.sh 兜底策略 4 用文件名 `__main__.yml` 作为 bare loop（worktree.enabled=false）的固定锚点
+   - 用其他 slug（如 `edge-${dir}` / `itest-${dir}`）会导致 stop hook 找不到 state，走兜底激活默认分支静默 exit 0，断言会全部失败
+   - state 文件路径必须 `<P>/.claude/builder-loop/state/__main__.yml`
+
+2. **worktree fixture 写入 state 必须含 `main_repo_path` 字段**（V2.0 schema）
+   - `project_root` 字段 = 干活的地方（worktree 启用时 = worktree path / bare 时 = 主仓）
+   - `main_repo_path` 字段 = 主仓（git op 用）
+   - 缺 `main_repo_path` 会触发 V1.x 兼容路径，但建议显式写入避免歧义
+
+3. **worktree 启用时必须先 commit `loop.yml` 再调 setup**
+   - V2.0 PASS_CMD 在 worktree 跑、读 worktree 内 loop.yml；worktree 由 git worktree add HEAD 创建只拷 tracked 文件
+   - fixture 顺序：`mkdir .claude` → `cat > .claude/loop.yml` → `git add .claude/loop.yml && git commit` → `bash setup-builder-loop.sh ...`
+   - 否则 worktree 内 `.claude/loop.yml` 不存在，run-pass-cmd.sh 会 fallback 主仓但会有 stderr 警告
+
+4. **bash 工程红线**
+   - 字段读取（`grep | head | sed`）必须以 `|| true` 收尾——脚本带 `set -euo pipefail` 时未命中会静默退出
+   - here-doc 写入 python 时不要走 pipe stdin（`printf | python3 - <<'PY'` 会把 here-doc 当 stdin），改用 env var：`BODY=... python3 - <<'PY'`
+
 ### 步骤 5：输出 TESTER_SUMMARY（必须最后一行）
 
 成功时：

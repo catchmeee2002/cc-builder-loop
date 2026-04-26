@@ -32,7 +32,14 @@ ITER=$(get_field iter)
 MAX_ITER=$(get_field max_iter)
 LAST_HASH=$(get_field last_error_hash)
 LAST_COUNT=$(get_field last_error_count)
-PROJECT_ROOT="$(dirname "$(dirname "$STATE_FILE")")"  # state 在 .claude/ 下，向上两级
+# V2.0: state.project_root 在新 schema 下 = 干活的地方（worktree 或主仓）
+# 旧 V1.8 路径："dirname dirname state" 只回 2 层得到 .claude/builder-loop，git diff 相对基址错
+# git diff 用 project_root 才能看到 builder 当前实际改的文件（worktree 改动主仓未合时不可见）
+PROJECT_ROOT="$(get_field project_root)"
+if [ -z "$PROJECT_ROOT" ] || [ ! -d "$PROJECT_ROOT" ]; then
+  # 兜底：state 路径 = <P>/.claude/builder-loop/state/<slug>.yml → 向上 4 层
+  PROJECT_ROOT="$(cd "$(dirname "$STATE_FILE")/../../.." 2>/dev/null && pwd -P || echo "")"
+fi
 
 # ---- 1. 硬上限 ----
 if [ "${ITER:-0}" -ge "${MAX_ITER:-5}" ]; then

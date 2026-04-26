@@ -7,7 +7,9 @@
 # 调用约定：
 #   bash run-judge-agent.sh \
 #     --state-file <path>          # state.yml 路径（必填）
-#     --project-root <path>        # 项目根（必填）
+#     --project-root <path>        # 干活的地方（V2.0 起 = worktree 路径 / bare loop = 主仓）
+#                                  #   loop.yml 从此读、git diff 在此跑——这才能让 worktree 内
+#                                  #   builder 改的 loop.yml.judge 配置 / 改的代码立即可见
 #     --transcript-path <path>     # CC transcript jsonl（必填）
 #     --pass-cmd-status PASS|FAIL  # 上轮 PASS_CMD 结果（必填）
 #     [--pass-cmd-stage <name>]    # 失败阶段名（FAIL 时填）

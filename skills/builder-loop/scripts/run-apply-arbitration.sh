@@ -31,11 +31,16 @@ ARBITER_OUTPUT="${2:?用法: run-apply-arbitration.sh <state_file> <arbiter_outp
 
 # ---- 辅助函数 ----
 read_field() {
-  grep -E "^${1}:" "$STATE" | head -1 | sed -E "s/^${1}:[[:space:]]*\"?([^\"]*)\"?[[:space:]]*\$/\1/"
+  # || true 兜底：字段不存在时 grep exit 1 + pipefail + set -e 让脚本静默退出
+  # 老 V1.x state 缺 main_repo_path 字段时尤其重要
+  grep -E "^${1}:" "$STATE" 2>/dev/null | head -1 | sed -E "s/^${1}:[[:space:]]*\"?([^\"]*)\"?[[:space:]]*\$/\1/" || true
 }
 
 # ---- 1. 读 state 取关键字段 ----
-PROJECT_ROOT="$(read_field project_root)"
+# V2.0: 仲裁脚本里 PROJECT_ROOT 仅用于主仓 git 操作（rebase / merge / branch），
+#       优先读 main_repo_path（V2.0+），缺失时按旧语义把 project_root 当主仓。
+PROJECT_ROOT="$(read_field main_repo_path)"
+[ -z "$PROJECT_ROOT" ] && PROJECT_ROOT="$(read_field project_root)"
 WORKTREE_PATH="$(read_field worktree_path)"
 
 if [ -z "$WORKTREE_PATH" ] || [ ! -d "$WORKTREE_PATH" ]; then
@@ -44,7 +49,7 @@ if [ -z "$WORKTREE_PATH" ] || [ ! -d "$WORKTREE_PATH" ]; then
   exit 2
 fi
 if [ -z "$PROJECT_ROOT" ] || [ ! -d "$PROJECT_ROOT" ]; then
-  echo "ERROR: project_root 无效: $PROJECT_ROOT" >&2
+  echo "ERROR: 主仓路径无效（main_repo_path/project_root 都为空或不存在）: $PROJECT_ROOT" >&2
   echo "APPLY_FAILED"
   exit 2
 fi
