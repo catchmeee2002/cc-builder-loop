@@ -36,6 +36,38 @@ PROJECT_ROOT="$(read_field main_repo_path)"
 WORKTREE_PATH="$(read_field worktree_path)"
 START_HEAD="$(read_field start_head)"
 
+# V2.3 新增字段：dirty stash 流程使用（缺字段视为空 = clean / bare 模式）
+PRE_LOOP_DIRTY_FILES="$(read_field pre_loop_dirty_files)"
+SLUG_FIELD="$(read_field slug)"
+
+# V2.3: PASS 路径合回主仓后 drop 主仓 stash 副本（已通过 worktree commit 合回，副本冗余）
+# 通过 SLUG 签名（builder-loop:auto:slug=<slug>:）匹配 stash list，避免 stash@{N} 多 builder 串味
+# 注：bash 内 stash@{N} 字面量正常；若用户在 zsh 拼接调用本函数需 quote `stash@\{N\}` 防 brace expansion
+drop_pre_loop_stash() {
+  [ -z "$SLUG_FIELD" ] && return 0
+  local sig="builder-loop:auto:slug=${SLUG_FIELD}:"
+  local idx
+  idx="$(git -C "$PROJECT_ROOT" stash list 2>/dev/null | grep -F "$sig" | head -1 | awk -F: '{print $1}' || true)"
+  if [ -n "$idx" ]; then
+    git -C "$PROJECT_ROOT" stash drop "$idx" 2>/dev/null || \
+      echo "[merge-worktree-back] ⚠️  stash drop 失败（${idx}），需手动 git stash drop" >&2
+  fi
+}
+
+# V2.3: 失败路径用——提示主仓 stash 残留（不 drop，让用户决定是否清理）
+# 调用点：NEED_ARBITRATION（中间态，arbiter 处理后 PASS 时再 drop）/ ff-after-rebase-failed（终态错误）
+warn_stash_residual() {
+  [ -z "$SLUG_FIELD" ] && return 0
+  local sig="builder-loop:auto:slug=${SLUG_FIELD}:"
+  local idx
+  idx="$(git -C "$PROJECT_ROOT" stash list 2>/dev/null | grep -F "$sig" | head -1 | awk -F: '{print $1}' || true)"
+  if [ -n "$idx" ]; then
+    echo "[merge-worktree-back] ⚠️  主仓 dirty stash 副本仍在 stash list：${idx}" >&2
+    echo "                           签名：${sig}" >&2
+    echo "                           本路径不自动 drop（PASS 路径才 drop）；用户人工清理：git stash drop ${idx}" >&2
+  fi
+}
+
 # worktree 未启用 → 直接放行（V1 老配置 / worktree.enabled=false 场景）
 if [ -z "$WORKTREE_PATH" ] || [ ! -d "$WORKTREE_PATH" ]; then
   echo "NOOP"
@@ -143,11 +175,24 @@ if [ -n "$WT_STATUS" ]; then
   # state schema 用 YAML block scalar（`task_description: |` + 下一行缩进），用 awk 解析
   TASK_DESC="$(awk '/^task_description: \|/{getline; sub(/^[[:space:]]+/, ""); print; exit}' "$STATE" 2>/dev/null || echo "")"
   if [ -n "$TASK_DESC" ]; then
-    COMMIT_MSG="chore(loop): [cr_id_skip] Auto-commit ${TASK_DESC}"
+    COMMIT_SUBJECT="chore(loop): [cr_id_skip] Auto-commit ${TASK_DESC}"
   else
     # 降级：task_description 为空时回退旧格式（向后兼容）
-    COMMIT_MSG="chore(loop): [cr_id_skip] Auto-commit iter ${ITER_NUM}"
+    COMMIT_SUBJECT="chore(loop): [cr_id_skip] Auto-commit iter ${ITER_NUM}"
   fi
+  # V2.3: dirty stash 模式下，subject 加 [+N main-dirty] 标记 + body 列文件清单
+  DIRTY_BODY=""
+  if [ -n "$PRE_LOOP_DIRTY_FILES" ]; then
+    DIRTY_COUNT="$(printf '%s' "$PRE_LOOP_DIRTY_FILES" | tr ',' '\n' | grep -c . || true)"
+    if [ "$DIRTY_COUNT" -gt 0 ]; then
+      COMMIT_SUBJECT="${COMMIT_SUBJECT} [+${DIRTY_COUNT} main-dirty]"
+      DIRTY_BODY=$'\n\n含主仓预存改动（V2.3 dirty stash apply）：'
+      while IFS= read -r _f; do
+        [ -n "$_f" ] && DIRTY_BODY="${DIRTY_BODY}"$'\n'"  - ${_f}"
+      done < <(printf '%s' "$PRE_LOOP_DIRTY_FILES" | tr ',' '\n')
+    fi
+  fi
+  COMMIT_MSG="${COMMIT_SUBJECT}${DIRTY_BODY}"
   git -C "$WORKTREE_PATH" add -A >&2
   # 用 -F - 从 stdin 读避免 TASK_DESC 中特殊字符（引号/反引号/$）被 shell 二次展开
   printf '%s\n' "$COMMIT_MSG" | git -C "$WORKTREE_PATH" commit -F - >&2 || {
@@ -167,6 +212,8 @@ fi
 # === 路径 A：主干 HEAD 未变 → 直接 fast-forward ===
 if [ "$CURRENT_HEAD" = "$START_HEAD" ] || git -C "$PROJECT_ROOT" merge-base --is-ancestor "$START_HEAD" HEAD 2>/dev/null; then
   if git -C "$PROJECT_ROOT" merge --ff-only "$BRANCH" >&2; then
+    # V2.3: drop 主仓 stash 副本（合回主仓后冗余），需在 cleanup 删 state 之前
+    drop_pre_loop_stash
     cleanup_worktree
     echo "MERGED ${BRANCH}"
     exit 0
@@ -178,10 +225,13 @@ fi
 if git -C "$WORKTREE_PATH" rebase "$MAIN_BRANCH" >&2; then
   # rebase 成功 → 回主干 ff
   if git -C "$PROJECT_ROOT" merge --ff-only "$BRANCH" >&2; then
+    drop_pre_loop_stash
     cleanup_worktree
     echo "MERGED ${BRANCH}"
     exit 0
   fi
+  # V2.3: ff 失败终态错误 → 提示主仓 stash 副本仍在（用户须手动清理）
+  warn_stash_residual
   echo "ERROR ff-after-rebase-failed"
   exit 3
 fi
@@ -189,5 +239,7 @@ fi
 # === 路径 C：rebase 冲突 → 标记仲裁 ===
 CONFLICT_FILES="$(git -C "$WORKTREE_PATH" diff --name-only --diff-filter=U 2>/dev/null | tr '\n' ',' | sed 's/,$//')"
 git -C "$WORKTREE_PATH" rebase --abort 2>/dev/null || true
+# V2.3: 仲裁中间态 → 提示 stash 副本仍在（arbiter 处理后再次 ff 成功才 drop）
+warn_stash_residual
 mark_arbitration "$WORKTREE_PATH" "$CONFLICT_FILES"
 exit 1

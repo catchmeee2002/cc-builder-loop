@@ -22,6 +22,10 @@
 - 引入对抗样本测试集
 - v3 高级仲裁进程接入历史 transcript 做更复杂判据
 
+**V2.3 已扩展防御**：reward hacking 检测扩展到 PASS_CMD 配置 diff（`loop.yml` / `pyproject.toml` / `pytest.ini` / `setup.cfg` / `conftest.py` / `tests*/...py` 命中 `--reruns` / `@pytest.mark.flaky` / `xfail` / `skip` / `-k "not X"` 关键词）→ 强制 `action=continue_nudge` + stop hook 注入三选项 stderr 让 builder AskUserQuestion 二次确认（quarantine / 修测试根因 / 保留 cmd）。Layer 1（LLM）+ Layer 2（本地正则兜底）双层判据。
+
+**V2.3 后仍存在的盲区**：白名单关键词不全（如 `--ignore-glob='tests/flaky/*'` 等"看似无害的过滤"绕过命中）→ 持续观察假阴性率，下迭代加白名单文件路径机制 / 扩关键词清单。
+
 ---
 
 ## R2: Judge LLM 假阳性（误判已完成为未完成）
@@ -58,6 +62,22 @@
 
 **后续可能解法**：
 - 维护一个"已知可用模型"白名单，硬编码兜底跟着 Anthropic 发布节奏滚动更新
+
+---
+
+## R6: V2.3 dirty stash 流程边界 case（reviewer V2.3 提出）
+
+**R6.1**：`git status --porcelain` 的 `awk '{print $NF}'` 对**重命名文件**（`R old -> new` 格式）只取 `new` 路径，`old` 路径丢失 → `pre_loop_dirty_files` 列文件清单不全；merge auto-commit body 少行（语义上不影响 stash 内容，仅记录欠完整）。
+
+**R6.2**：EARLY_STOP 还原路径 `git stash apply <hash>` 失败（用户主仓被中途修改 / 冲突）→ 当前仅 warn `STASH_RESTORED=conflict`，stash 副本不 drop。用户事后需手动处理。fixture 未覆盖此 case（不易构造）。
+
+**R6.3**：worktree add 失败时主仓 stash 已写入 → 已实现 `git stash apply <hash>` 还原回滚，但**未有 fixture 覆盖**（需精心构造 worktree add 失败但不影响 stash 的场景）。
+
+**R6.4**：`merge-worktree-back.sh` 路径 B（rebase 后 ff 失败 / `ERROR ff-after-rebase-failed`）+ 路径 C（NEED_ARBITRATION）下，主仓 stash 副本不会自动 drop（V2.3 已加 `warn_stash_residual` stderr 提示）。用户需见到提示后手动 `git stash drop`。fixture 未覆盖。
+
+**R6.5**：`reward_hacking_detection` Layer 2 关键词清单不全——`--ignore-glob` / `--collect-only` / `pytest.mark.skipif` 等"看似无害的过滤"未在清单。当前依赖 Layer 1 LLM 判据兜底；持续观察假阴性率，下迭代加白名单文件路径机制 / 扩关键词清单。
+
+**R6.6**：grep 实现差异——CC 环境注入 ugrep wrapper（function 级覆盖），ugrep 不解析 `\NNN` ASCII escape；GNU grep 解析。V2.3.1 已把 reward hacking pattern 从 `\047` 改为字面字符类 `['"'"'"]` 跨实现兼容。**留一个潜在 risk**：用户环境若有别的 grep 实现（如 BSD grep on macOS）可能仍有边界。fixture 已用同 pattern 验证。
 - 增加自动切换：4xx 时尝试用 sonnet 重试一次
 
 ---

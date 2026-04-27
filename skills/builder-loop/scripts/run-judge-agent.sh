@@ -189,6 +189,8 @@ defaults = {
     'max_consecutive_nudges': '2',
     'api_timeout_sec': '15',           # V2.1: 默认 8 → 15（sonnet 单次 5.8s 留余量）
     'system_prompt_path': '',
+    # V2.3 新增：reward hacking 检测开关（默认 true）
+    'reward_hacking_detection': 'true',
 }
 fields = dict(defaults)
 try:
@@ -806,6 +808,37 @@ fi
 JUDGE_ACTION="$(echo "$PARSED" | python3 -c "import json,sys; print(json.load(sys.stdin)['action'])" 2>/dev/null || echo "")"
 JUDGE_CONF="$(echo "$PARSED" | python3 -c "import json,sys; print(json.load(sys.stdin)['confidence'])" 2>/dev/null || echo "0")"
 JUDGE_REASON="$(echo "$PARSED" | python3 -c "import json,sys; print(json.load(sys.stdin).get('reason',''))" 2>/dev/null || echo "")"
+
+# V2.3: reward hacking 检测（Layer 2 正则兜底，防 LLM 漏判）
+# 仅 PASS 路径生效；命中 → 强制 action=continue_nudge + reason 加 suspected_reward_hack 前缀
+# 命中条件：本轮 diff 中文件路径 + 内容双命中（pass_cmd 配置文件 + reruns/xfail/skip/flaky）
+RH_ENABLED_VAL="$(echo "$JUDGE_CONFIG" | grep '^reward_hacking_detection=' | head -1 | cut -d= -f2-)"
+RH_ENABLED_VAL="${RH_ENABLED_VAL:-true}"
+if [ "$JUDGE_PASS_CMD_STATUS" = "PASS" ] && [ "$RH_ENABLED_VAL" = "true" ]; then
+  RH_FILE_PATTERN='\.claude/loop\.yml$|pyproject\.toml$|pytest\.ini$|setup\.cfg$|conftest\.py$|^tests?/.*\.py$|/tests?/.*\.py$'
+  # V2.3.1: -k 'not X' 模式用真字面字符类 ['"'"'"]（含真单/真双引号），避开 \047 在不同 grep 实现上的差异
+  # 原 \047 在 GNU grep ERE 命中、ugrep 不命中 — 跨环境兼容性差
+  RH_DIFF_PATTERN='--reruns|@pytest\.mark\.flaky|@flaky|xfail|pytest\.skip|@unittest\.skip|-k +['"'"'"]not '
+  RH_START_HEAD="$(read_state_field "start_head")"
+  if [ -n "$RH_START_HEAD" ]; then
+    RH_DIFF="$(git -C "$JUDGE_PROJECT_ROOT" diff "${RH_START_HEAD}..HEAD" 2>/dev/null || true)"
+    if [ -n "$RH_DIFF" ]; then
+      RH_FILES_HIT="$(printf '%s' "$RH_DIFF" | grep -oE '^diff --git [^ ]+ [^ ]+' | awk '{print $4}' | sed 's|^b/||' | grep -E "$RH_FILE_PATTERN" | head -3 || true)"
+      if [ -n "$RH_FILES_HIT" ]; then
+        RH_CONTENT_HIT="$(printf '%s' "$RH_DIFF" | grep -E '^\+' | grep -vE '^\+\+\+' | grep -E "$RH_DIFF_PATTERN" | head -1 || true)"
+        if [ -n "$RH_CONTENT_HIT" ]; then
+          RH_FIRST_FILE="$(printf '%s' "$RH_FILES_HIT" | head -1)"
+          # 关键词截短到 32 字符防 reason 超长
+          RH_KW_SAMPLE="$(printf '%s' "$RH_CONTENT_HIT" | sed 's/^+//' | head -c 32)"
+          JUDGE_ACTION="continue_nudge"
+          JUDGE_REASON="suspected_reward_hack: ${RH_FIRST_FILE} contains ${RH_KW_SAMPLE}"
+          # confidence 维持 ≥ 0.6（确保走 nudge 路径，不被 low_confidence 降级）
+          JUDGE_CONF="$(python3 -c "v=float('$JUDGE_CONF' or 0); print(max(v, 0.6))" 2>/dev/null || echo "0.6")"
+        fi
+      fi
+    fi
+  fi
+fi
 
 # confidence 阈值检查
 LOW_CONF="$(python3 -c "import sys; print('1' if float('$JUDGE_CONF') < float('$JUDGE_CONF_THR') else '0')" 2>/dev/null || echo "1")"

@@ -19,6 +19,10 @@
 #                  builder-loop-stop.sh / merge-worktree-back.sh / run-apply-arbitration.sh
 #                  在运行时按"老 V1.x state.project_root 等于主仓"的旧语义兜底兼容。
 #                  无需手动迁移；下次 setup-builder-loop.sh 触发时会写新 schema。
+#   V2.0 → V2.3  ：state 增加 worktree_mode / pre_loop_stash_ref / pre_loop_dirty_files
+#                  三字段。老 state 缺字段时下游按"worktree_mode 由 worktree_path 推断
+#                  （非空=clean / 空=bare）+ stash_ref 视为空值"兼容，不需要手动迁移；
+#                  下次 setup-builder-loop.sh 触发时会写新 schema。
 #
 # 输出：迁移动作的简要日志（stdout）
 # 退出码：0=成功或无需迁移 / 1=失败

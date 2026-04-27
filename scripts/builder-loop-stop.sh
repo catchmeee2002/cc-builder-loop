@@ -416,6 +416,19 @@ PY
 (PASS_CMD 状态：通过)
 本消息来自 builder-loop 自动判定 agent，非用户输入。如果你认为判定错误，请在回复中说明理由继续操作。
 NUDGE_MSG
+      # V2.3: reward hacking 命中 → 加三选项二次确认提示
+      case "$JUDGE_REASON_OUT" in
+        *suspected_reward_hack*)
+          cat >&2 <<'RH_MSG'
+[builder-loop reward-hack-guard] PASS_CMD 配置改动疑似 reward hacking。
+立即用 AskUserQuestion 列三选项让用户决策：
+  ① quarantine 该测试（pytest.mark.skip / --ignore=... / xfail）+ 留 followup issue
+  ② 修测试根因（race / sleep / 共享状态 改成同步原语）
+  ③ 保留 cmd 改动（需在回复中给出必要性理由）
+禁止单方面继续完成 commit 流程。
+RH_MSG
+          ;;
+      esac
       exit 2
     else
       echo "[builder-loop judge | iter=${NEXT_ITER}] consecutive_nudge_count=${CUR_NUDGE} >= max=${MAX_NUDGE}，强制 stop_done（防脱缰）" >&2
@@ -638,15 +651,47 @@ if [ "$ESTOP_ACTION" = "STOP" ]; then
   REASON="$(echo "$ESTOP" | awk '{print $2}')"
   echo "[builder-loop] ⛔ early stop at iter ${NEXT_ITER}, reason=${REASON}" >&2
   write_trace "EARLY_STOP" "" "" "$REASON"
+
+  # V2.3: dirty 模式 → 还原主仓 stash（apply 不 pop，副本保留供事后查阅 / 用户决定要不要 drop）
+  # 防御性 trim：sed 已剥引号，这里再 tr 删 [:space:] 防极端 corner case 路径前后空白污染 git 命令
+  PRE_LOOP_STASH_REF_ES="$(grep -E '^pre_loop_stash_ref:' "$STATE_FILE" 2>/dev/null | head -1 | sed -E 's/^pre_loop_stash_ref:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' | tr -d '[:space:]' || true)"
+  WORKTREE_MODE_ES="$(grep -E '^worktree_mode:' "$STATE_FILE" 2>/dev/null | head -1 | sed -E 's/^worktree_mode:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' | tr -d '[:space:]' || true)"
+  WORKTREE_PATH_ES="$(grep -E '^worktree_path:' "$STATE_FILE" 2>/dev/null | head -1 | sed -E 's/^worktree_path:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' || true)"
+  STASH_RESTORED="no"
+  if [ "$WORKTREE_MODE_ES" = "dirty" ] && [ -n "$PRE_LOOP_STASH_REF_ES" ]; then
+    if git -C "$PROJECT_ROOT" stash apply "$PRE_LOOP_STASH_REF_ES" 2>/dev/null; then
+      STASH_RESTORED="yes"
+    else
+      echo "[builder-loop] ⚠️  EARLY_STOP 还原 stash 失败（可能主仓被中途修改），stash 副本仍保留：${PRE_LOOP_STASH_REF_ES:0:8}" >&2
+      STASH_RESTORED="conflict"
+    fi
+  fi
+
   # V1.8.1: 不再"改 active=false 留僵尸"，直接归档 + exit 2 注入让 builder 立即 AskUserQuestion
   # 原行为 exit 0 需要 builder 在下一轮 user prompt 时才发现早停；新行为 builder 当场反应
   write_processed_cursor "$PROJECT_ROOT"
   archive_to_legacy "$STATE_FILE" "early_stop_${REASON}"
+
+  # V2.3: legacy 补一个 .info 文件记录现场上下文（worktree path / stash hash / 还原结果）
+  LEGACY_INFO="${PROJECT_ROOT}/.claude/builder-loop/legacy/$(date +%Y%m%d-%H%M%S)-early_stop_${REASON}.info"
+  mkdir -p "$(dirname "$LEGACY_INFO")" 2>/dev/null || true
+  {
+    echo "reason: early_stop_${REASON}"
+    echo "iter: ${NEXT_ITER}"
+    echo "worktree_path: ${WORKTREE_PATH_ES}"
+    echo "worktree_mode: ${WORKTREE_MODE_ES}"
+    echo "pre_loop_stash_ref: ${PRE_LOOP_STASH_REF_ES}"
+    echo "stash_restored: ${STASH_RESTORED}"
+    echo "ts: $(date -Iseconds 2>/dev/null || date '+%Y-%m-%dT%H:%M:%S')"
+  } > "$LEGACY_INFO" 2>/dev/null || true
+
   cat >&2 <<EARLY_STOP_MSG
 [builder-loop] ⛔ Auto-loop 早停 (iter=${NEXT_ITER}, reason=${REASON})。状态已归档到 legacy/。
+现场保留：worktree=${WORKTREE_PATH_ES:-<bare>} | dirty stash 副本=${PRE_LOOP_STASH_REF_ES:0:8}（restored=${STASH_RESTORED}）
+注：dirty 模式下主仓 stash 副本不会自动 drop（仅 PASS 路径 drop）。继续 / 放弃 / 重新进 loop 后请视情况手动 git stash drop 清理。
 请立即用 AskUserQuestion 询问用户下一步：
-  - 继续手动调试（loop 已停，代码仍在当前 worktree）
-  - 放弃本次任务（后续可 git worktree remove）
+  - 继续手动调试（loop 已停，代码仍在当前 worktree，主仓 dirty 已还原；事后清理 git stash drop）
+  - 放弃本次任务（后续可 git worktree remove + git stash drop）
   - 重新进 loop（调 setup-builder-loop.sh 起新 slug）
 早停原因说明：
   max_iter                 — 达最大迭代上限

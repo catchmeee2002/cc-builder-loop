@@ -175,6 +175,18 @@ cc-builder-loop/
   - **改动审计**：`HAS_DIFF` 变量替换为 `CHANGED_FILES`（unstaged + staged 文件名合并去重），原 `git diff --stat` 触发判定改为 `CHANGED_FILES` 非空判定；`HAS_RECENT_COMMIT` 仍保留供 task_desc fallback 推断
   - **fixture 扩展**：`test-stop-hook-cursor.sh` 加 Step 7-9 / 共 34 个 assert，覆盖（纯文档 → 静默 / mixed → 触发 / docs/ 子目录非 .md 文件 → 静默）。Step 9 之前用 `git rm --cached` 撤出 `.claude/builder-loop/` 避免临时仓游标文件被 tracked 干扰判定
   - **完全向后兼容**：白名单是纯增——以前会触发的改动今天可能仍触发；唯一行为变化是「全部命中白名单」从触发改为静默放行
+- **V2.3**: 主仓 dirty 安全入 worktree + Reward Hacking 检测（session `3ed02147` 暴露两条裂缝合并修复）
+  - **背景**：(1) `setup-builder-loop.sh:196` 写死 `git worktree add HEAD`——用户手动跑 setup 时主仓 unstaged/untracked 被静默丢失（bootstrap 路径用 `--no-worktree` 绕过，手动入口默认走 worktree → 三入口三行为）。(2) builder 在 PASS_CMD 配置加 `--reruns 2` 等关键词软化判据典型 reward hacking，judge agent 现有检测仅看测试代码 diff 不看 `loop.yml` / `pyproject.toml` 等配置 diff
+  - **裂缝 1（dirty stash）**：`setup-builder-loop.sh` 加 pre-flight 检测 + `git stash push -u -m "builder-loop:auto:slug=...:ts=..."` + 立即取 `^{commit}` hash 存 `state.pre_loop_stash_ref`（commit hash 形式，多 builder 安全）。worktree 创建后 `git stash apply <hash>` 把 dirty 还原为 worktree 内 unstaged。state schema 新增三字段：`pre_loop_stash_ref` / `pre_loop_dirty_files` / `worktree_mode`（clean/dirty/bare）。`merge-worktree-back.sh` PASS 路径 commit message 末尾加 `[+N main-dirty]` + body 列文件清单 + drop 主仓 stash 副本（按 SLUG 签名匹配 stash@{N}）。EARLY_STOP 路径 `git stash apply` 还原主仓 + 写 `legacy/<ts>-early_stop_<reason>.info` 留现场（worktree 不删）
+  - **dirty 检测排除清单**：setup 自管理路径（`.claude/builder-loop/` / `.claude/loop-runs/` / `.claude/loop-trace.jsonl` / `.claude/worktrees/` / `.gitignore` 自身）不算 dirty，避免 ensure_gitignore_rules 引入虚假 dirty + 避免 .gitignore 进 stash 让 worktree 缺规则撞 telemetry
+  - **特殊状态拒绝**：主仓在 rebase / cherry-pick / revert / merge / submodule dirty 进行中 → setup exit 2 拒绝（state 不创建）。提供 `--no-stash` flag 让用户显式跳过 stash 流程（worktree 仍创建，dirty 留主仓）
+  - **stash 创建机制选 push 不选 create**：`git stash create -u` 在"仅 untracked"场景返回空字符串，必须 `git stash push -u -m "$STASH_MSG"` + `git rev-parse 'stash@{0}^{commit}'` 取 commit hash（race fallback 用 message 兜底匹配）
+  - **裂缝 2（reward hacking）**：`run-judge-agent.sh` 解析 LLM JSON 后、阈值检查前加 Layer 2 正则兜底——双命中（文件路径 ∈ `loop.yml` / `pyproject.toml` / `pytest.ini` / `setup.cfg` / `conftest.py` / `tests*/...py` AND 内容 ∈ `--reruns` / `@pytest.mark.flaky` / `xfail` / `pytest.skip` / `@unittest.skip` / `-k "not X"`）→ 强制 `action=continue_nudge` + `reason=suspected_reward_hack: ...` + `confidence ≥ 0.6`（避免被 low_confidence 降级）
+  - **stop hook 三选项注入**：`builder-loop-stop.sh` 在 nudge stderr 之后识别 `reason` 含 `suspected_reward_hack` → 追加 `[builder-loop reward-hack-guard]` 段强制 builder 用 AskUserQuestion 列三选项（quarantine / 修测试根因 / 保留 cmd 改动并给理由）
+  - **Layer 1（LLM）+ Layer 2（正则）双层判据**：`prompts/judge-system.md` 加 V2.3 段教 LLM 如何输出；本地正则兜底防 LLM 漏判。`loop.yml.judge.reward_hacking_detection: false` 可关；不设字段默认开
+  - **builder.md 硬约束**：dotfiles 仓 `~/.claude/commands/builder.md` 加 1 条 Reward hacking 警戒条（≤80 字），与 loop hook 注入语义一致
+  - **配套 fixture**：`test-dirty-stash-flow.sh`（5 case / 25 assert，覆盖 clean / dirty stash / rebase 拒绝 / --no-stash 降级 / stash 副本可还原）+ `test-reward-hacking-detect.sh`（13 个配置 lint + 关键词算法验证 4 case / 23 assert）。loop.yml PASS_CMD 新增 `v23_dirty_stash_flow` 与 `v23_reward_hacking_detect` 两 stage
+  - **完全向后兼容**：老 V2.2 state 缺三字段 → 下游脚本 `read_field || true` 兜底（缺值视为 clean / bare 模式）；migrate-state.sh 不强制升级，下次 setup 写新 schema
 
 详见 `skills/builder-loop/README.md` 与 `skills/builder-loop/docs/judge-agent.md`。
 
@@ -329,3 +341,32 @@ V2.2 砍了 `HAS_RECENT_COMMIT` 触发器，bootstrap **只看**未提交工作�
   起 loop 跑 PASS_CMD 验证
 
 **自检**：bootstrap 是否触发可看 stderr 是否含 `[builder-loop] ⚡ 兜底激活：检测到 loop.yml + 代码改动但无状态文件...`。
+
+### 7.8 主仓 dirty + 手动跑 setup 的预期行为（V2.3+）
+
+**默认行为**：主仓有未 commit 改动 + 手动跑 `setup-builder-loop.sh "<task>"` + loop.yml `worktree.enabled: true` →
+1. setup pre-flight 检测 dirty + 执行 `git stash push -u -m "builder-loop:auto:slug=...:ts=..."`
+2. 主仓 working tree 变 clean（用户回主仓会发现"代码暂时不见了"——是预期，stash 副本仍在 stash list）
+3. worktree 创建 + `git stash apply <hash>` 把 dirty 还原到 worktree 内（unstaged 形态）
+4. PASS → merge-worktree-back commit message subject 加 `[+N main-dirty]` + body 列文件 + 自动 drop 主仓 stash 副本
+5. EARLY_STOP / 异常退出 → worktree 保留 + 主仓 `git stash apply <hash>` 还原 dirty + 写 `legacy/<ts>-early_stop_<reason>.info` 留现场（stash 副本不 drop）
+
+**dirty 排除清单**：`.gitignore` / `.claude/builder-loop/` / `.claude/loop-runs/` / `.claude/loop-trace.jsonl` / `.claude/worktrees/` 不计入 dirty（setup 自管理路径）。
+
+**特殊状态拒绝**：rebase / merge / cherry-pick / revert 进行中 / submodule dirty → setup `exit 2` 拒绝。请先结束特殊状态或加 `--no-stash` 跳过 stash 流程。
+
+**`--no-stash` flag**：显式跳过 stash 流程；worktree 仍创建但 dirty 留主仓不进 worktree（用户后续在主仓 / worktree 各自工作）。
+
+**自检**：dirty 入 worktree 是否成功看 setup stderr 是否含 `📦 主仓 dirty 已 stash → builder-loop:auto:slug=...` + `✅ stash 已 apply 到 worktree`。state 文件 `worktree_mode: "dirty"` + `pre_loop_stash_ref` 是 commit hash。
+
+### 7.9 Reward hacking 检测误触发 / 假阴性（V2.3+）
+
+**误触发场景**：本期改动确实在配置文件（`loop.yml` / `pyproject.toml` / `pytest.ini` / `setup.cfg` / `conftest.py` / `tests*/...py`）+ 含关键词（`--reruns` / `xfail` / `skip` / `@pytest.mark.flaky` / `-k "not X"`），但用户**真有充分理由**保留改动 → 走 AskUserQuestion 第三选项「保留 cmd 改动并给必要性理由」即可。
+
+**完全禁用**：`loop.yml.judge.reward_hacking_detection: false` 关 Layer 2 正则；Layer 1 LLM 仍可独立判定（按 `judge-system.md` V2.3 段）。
+
+**假阴性盲区**：当前关键词清单不含 `--ignore-glob` / `--collect-only` / `pytest.mark.skipif` 等"看似无害的过滤"。已在 `known-risks.md` R6.5 记录跟踪。
+
+**grep 实现兼容性**：V2.3.1 起 pattern 用 `['"'"'"]` 字面字符类（GNU grep + ugrep 双兼容），不再依赖 `\047` ASCII escape。已在 `known-risks.md` R6.6 记录。
+
+**自检**：reward hacking 命中可看 stop hook stderr 是否含 `[builder-loop reward-hack-guard]` + 三选项注入。`judge-trace.jsonl` 含 `reason="suspected_reward_hack: ..."` 行。

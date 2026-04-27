@@ -1,6 +1,19 @@
-# Judge Agent (V1.9+ / V2.1 升级)
+# Judge Agent (V1.9+ / V2.1 / V2.3 升级)
 
-LLM 语义判据，用于补 PASS_CMD 二值判据看不见的盲区（假完成 / 求助 / 偷懒 / 网络中断）。
+LLM 语义判据，用于补 PASS_CMD 二值判据看不见的盲区（假完成 / 求助 / 偷懒 / 网络中断 / **reward hacking 配置改动**）。
+
+## V2.3 升级速览
+
+reward hacking 检测从"仅 LLM 判据"扩展到"LLM + 本地正则兜底"双层：
+
+| 层 | 触发位置 | 命中规则 |
+|---|----------|---------|
+| **Layer 1（LLM）** | `prompts/judge-system.md` 含 V2.3 段教 LLM 如何输出 | LLM 看 diff 自行识别 reward hacking 并输出 `action=continue_nudge` + `reason=suspected_reward_hack: ...` |
+| **Layer 2（本地正则兜底）** | `run-judge-agent.sh` 解析 LLM JSON 后 / 阈值检查前 | 双命中：文件 ∈ `loop.yml` / `pyproject.toml` / `pytest.ini` / `setup.cfg` / `conftest.py` / `tests*/...py` AND 内容 ∈ `--reruns` / `@pytest.mark.flaky` / `xfail` / `pytest.skip` / `@unittest.skip` / `-k "not X"` |
+
+命中后强制 `action=continue_nudge` + `confidence ≥ 0.6`（防 low_confidence 降级），stop hook 在 nudge stderr 之后追加 `[builder-loop reward-hack-guard]` 段强制 builder 用 AskUserQuestion 列三选项（quarantine / 修测试根因 / 保留 cmd 改动并给理由）。
+
+回退：`loop.yml.judge.reward_hacking_detection: false` 关 Layer 2；不设字段默认开。
 
 ## V2.1 升级速览
 

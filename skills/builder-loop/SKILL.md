@@ -52,6 +52,15 @@ main_repo_path: /path/to/main    # V2.0 起新增；永远是主仓（git merge 
                                  # 老 V1.x state 缺该字段时下游脚本按"project_root 等于主仓"的旧语义兜底
 start_head: abc1234              # setup 时主仓 HEAD
 worktree_path: /path/...         # worktree 启用时 = project_root；bare 时为空
+worktree_mode: clean             # V2.3 新增：clean / dirty / bare
+                                 #   clean = worktree from HEAD（无 stash）
+                                 #   dirty = 主仓 dirty 已 stash 并 apply 到 worktree（V2.3 dirty stash 流程）
+                                 #   bare  = --no-worktree（直接跑主仓）
+pre_loop_stash_ref: ""           # V2.3 新增：worktree_mode=dirty 时的 git stash commit hash
+                                 # 用 commit hash 不用 stash@{N} index — 多 builder 并行安全
+                                 # PASS 路径 merge 后自动 drop / EARLY_STOP 路径 apply 还原主仓
+pre_loop_dirty_files: ""         # V2.3 新增：进 stash 的文件清单（逗号分隔）
+                                 # auto-commit message body 列文件用，让 PR review 看到边界
 task_description: |
   ...
 source_dirs: "src,lib"

@@ -20,12 +20,19 @@ LOOP_YML="${PROJECT_ROOT}/.claude/loop.yml"
 STATE_DIR="${PROJECT_ROOT}/.claude/builder-loop/state"
 LOG_DIR="${PROJECT_ROOT}/.claude/loop-runs"
 
-# 解析 --no-worktree flag（兜底激活时使用，跳过 worktree 创建）
+# 解析 --no-worktree / --no-stash flag（V2.3）
+#   --no-worktree: 跳过 worktree 创建（兜底激活 / 用户显式 bare）
+#   --no-stash   : 主仓 dirty 时跳过 stash 流程，直接走 bare（V2.3）。
+#                   仅 worktree 模式下有意义；--no-worktree 已 implicitly 等价于 no-stash
 FORCE_NO_WORKTREE=0
-if [ "${1:-}" = "--no-worktree" ]; then
-  FORCE_NO_WORKTREE=1
-  shift
-fi
+FORCE_NO_STASH=0
+while [ $# -gt 0 ]; do
+  case "${1:-}" in
+    --no-worktree) FORCE_NO_WORKTREE=1; shift ;;
+    --no-stash)    FORCE_NO_STASH=1; shift ;;
+    *) break ;;
+  esac
+done
 TASK_DESC="${1:-untitled-task}"
 
 # ---- 校验配置 ----
@@ -190,15 +197,115 @@ if [ -f "$STATE_FILE" ]; then
   fi
 fi
 
+# ---- V2.3: 主仓 dirty 检测 + stash 副本（worktree 模式专用）----
+# 决定 WORKTREE_MODE_DETECTED；clean→走原 worktree 路径；dirty→stash 后再 worktree apply
+# bare（FORCE_NO_WORKTREE / WT_ENABLED=False）以及 --no-stash 直接跳过本段
+DIRTY_FILES=""
+PRE_LOOP_STASH_REF=""
+WORKTREE_MODE_DETECTED="clean"  # 默认；后面根据 pre-flight 调整
+if [ "$FORCE_NO_WORKTREE" -eq 0 ] && [ "$WT_ENABLED" = "True" ] && \
+   [ "$START_HEAD" != "no-git" ] && [ "$FORCE_NO_STASH" -eq 0 ]; then
+  # pre-flight: 检测 git 特殊状态（rebase/merge/cherry-pick/revert）
+  GIT_DIR_REL="$(git -C "$PROJECT_ROOT" rev-parse --git-dir 2>/dev/null || echo "")"
+  if [ -n "$GIT_DIR_REL" ]; then
+    if [[ "$GIT_DIR_REL" = /* ]]; then
+      GIT_DIR_ABS="$GIT_DIR_REL"
+    else
+      GIT_DIR_ABS="${PROJECT_ROOT}/${GIT_DIR_REL}"
+    fi
+    for _special in MERGE_HEAD CHERRY_PICK_HEAD REVERT_HEAD; do
+      if [ -e "${GIT_DIR_ABS}/${_special}" ]; then
+        echo "❌ git 状态特殊（${_special} 存在），无法 dirty stash + worktree" >&2
+        echo "   请先结束 merge/cherry-pick/revert，或加 --no-stash 跳过 stash 流程" >&2
+        exit 2
+      fi
+    done
+    if [ -d "${GIT_DIR_ABS}/rebase-merge" ] || [ -d "${GIT_DIR_ABS}/rebase-apply" ]; then
+      echo "❌ git rebase 进行中，无法 dirty stash + worktree" >&2
+      echo "   请 git rebase --abort 或 --continue 后重试，或加 --no-stash 跳过" >&2
+      exit 2
+    fi
+    # submodule dirty 检测（本期不支持）
+    SUBMOD_DIRTY="$(git -C "$PROJECT_ROOT" submodule foreach --quiet 'git status --porcelain 2>/dev/null | head -1' 2>/dev/null || true)"
+    if [ -n "$SUBMOD_DIRTY" ]; then
+      echo "❌ submodule 含未提交改动，本期 dirty stash 暂不支持" >&2
+      echo "   请 git submodule foreach git stash 后重试，或加 --no-stash 跳过" >&2
+      exit 2
+    fi
+    # 收集 dirty 文件清单（含 untracked，逗号分隔）
+    # V2.3: 排除 setup 自管理 / 不应进 stash 的路径：
+    #   .claude/builder-loop/ — setup 自身的 state/lock/log
+    #   .claude/loop-runs/ / .claude/loop-trace.jsonl — telemetry
+    #   .claude/worktrees/ — git worktree add 创建（setup 副产品）
+    #   .gitignore — V2.1.1 ensure_gitignore_rules 自愈写入；进 stash 会让 worktree 内缺规则撞 telemetry
+    DIRTY_FILES="$(git -C "$PROJECT_ROOT" status --porcelain 2>/dev/null \
+      | awk 'NF{print $NF}' \
+      | grep -v -E '^\.claude/builder-loop(/|$)' \
+      | grep -v -E '^\.claude/loop-runs(/|$)' \
+      | grep -v -E '^\.claude/loop-trace\.jsonl$' \
+      | grep -v -E '^\.claude/worktrees(/|$)' \
+      | grep -v -E '^\.gitignore$' \
+      | tr '\n' ',' | sed 's/,$//' || true)"
+  fi
+  # dirty 非空 → 创建 stash 副本（commit hash 形式，多 builder 安全）
+  if [ -n "$DIRTY_FILES" ]; then
+    STASH_MSG="builder-loop:auto:slug=${SLUG}:ts=$(date +%s)"
+    # 用 git stash push -u -m 一步完成 create + store + working tree cleanup
+    # 注：git stash create -u 在"仅 untracked 无 tracked 改动"场景会返回空字符串，必须用 push
+    if ! git -C "$PROJECT_ROOT" stash push -u -m "$STASH_MSG" >/dev/null 2>&1; then
+      echo "❌ git stash push 失败（dirty 但 stash 创建不成功）" >&2
+      echo "   请人工 git stash 后再调用，或加 --no-stash 跳过" >&2
+      exit 2
+    fi
+    # 立即拿 commit hash（^{commit} 解析；多 builder race 时用 message 兜底匹配）
+    PRE_LOOP_STASH_REF="$(git -C "$PROJECT_ROOT" rev-parse 'stash@{0}^{commit}' 2>/dev/null || true)"
+    if [ -z "$PRE_LOOP_STASH_REF" ]; then
+      # message 兜底：从 stash list 找匹配 STASH_MSG 的条目
+      _stash_idx="$(git -C "$PROJECT_ROOT" stash list 2>/dev/null | grep -F "$STASH_MSG" | head -1 | grep -oE 'stash@\{[0-9]+\}' | head -1 || true)"
+      if [ -n "$_stash_idx" ]; then
+        PRE_LOOP_STASH_REF="$(git -C "$PROJECT_ROOT" rev-parse "${_stash_idx}^{commit}" 2>/dev/null || true)"
+      fi
+    fi
+    if [ -z "$PRE_LOOP_STASH_REF" ]; then
+      echo "❌ stash 已创建但拿不到 commit hash，回滚" >&2
+      git -C "$PROJECT_ROOT" stash pop 2>/dev/null || true
+      exit 2
+    fi
+    WORKTREE_MODE_DETECTED="dirty"
+    echo "[setup-builder-loop] 📦 主仓 dirty 已 stash → ${STASH_MSG}" >&2
+    echo "[setup-builder-loop]    hash=${PRE_LOOP_STASH_REF:0:12}, 主仓 working tree 已 clean" >&2
+    echo "[setup-builder-loop]    dirty 改动将在 worktree 内以 unstaged 形态可见" >&2
+  fi
+fi
+
 # ---- worktree 真接入 ----
 if [ "$FORCE_NO_WORKTREE" -eq 0 ] && [ "$WT_ENABLED" = "True" ] && [ "$START_HEAD" != "no-git" ]; then
   mkdir -p "${PROJECT_ROOT}/${WT_BASE_DIR}"
   if ! git -C "$PROJECT_ROOT" worktree add -b "$WORKTREE_BRANCH" "$WORKTREE_PATH" HEAD >&2; then
     echo "❌ git worktree add 失败，worktree_path=${WORKTREE_PATH} branch=${WORKTREE_BRANCH}" >&2
     rm -rf "$WORKTREE_PATH" 2>/dev/null || true
+    # 主仓 stash 已写入但 worktree 失败 → 回滚主仓还原 dirty
+    if [ -n "$PRE_LOOP_STASH_REF" ]; then
+      git -C "$PROJECT_ROOT" stash apply "$PRE_LOOP_STASH_REF" 2>/dev/null || true
+      echo "[setup-builder-loop] ↩️  主仓 dirty 已从 stash 恢复（stash 副本仍保留）" >&2
+    fi
     exit 2
   fi
   echo "[setup-builder-loop] 🌿 worktree 已创建：${WORKTREE_PATH} (branch=${WORKTREE_BRANCH})" >&2
+fi
+
+# ---- V2.3: dirty 模式 → 在 worktree 内 apply stash（不 pop，副本保留）----
+if [ "$WORKTREE_MODE_DETECTED" = "dirty" ] && [ -n "$PRE_LOOP_STASH_REF" ] && [ -n "$WORKTREE_PATH" ]; then
+  if ! git -C "$WORKTREE_PATH" stash apply "$PRE_LOOP_STASH_REF" >&2; then
+    echo "❌ git stash apply 在 worktree 失败，回滚 worktree + 还原主仓" >&2
+    # 回滚 worktree
+    git -C "$PROJECT_ROOT" worktree remove --force "$WORKTREE_PATH" 2>/dev/null || rm -rf "$WORKTREE_PATH" 2>/dev/null || true
+    git -C "$PROJECT_ROOT" branch -D "$WORKTREE_BRANCH" 2>/dev/null || true
+    # 主仓恢复 dirty（apply 副本，不动 stash list）
+    git -C "$PROJECT_ROOT" stash apply "$PRE_LOOP_STASH_REF" 2>/dev/null || true
+    exit 2
+  fi
+  echo "[setup-builder-loop] ✅ stash 已 apply 到 worktree（unstaged 形态可见，副本仍在 stash list）" >&2
 fi
 
 # ---- 写状态文件 ----
@@ -207,10 +314,22 @@ fi
 #   - bare 模式    → project_root = main_repo_path = 主仓
 # main_repo_path 永远是主仓（git merge / worktree prune / reviewer-params 写入位置）
 # 老 V1.x 兼容：缺 main_repo_path 字段时，下游脚本把 project_root 当主仓使用
+#
+# V2.3 schema 新增三字段：
+#   - pre_loop_stash_ref     : git stash commit hash（worktree-dirty 模式才填，否则空）
+#   - pre_loop_dirty_files   : 进 stash 的文件列表（逗号分隔，merge commit message 用）
+#   - worktree_mode          : clean | dirty | bare（语义清晰化）
+# Step 1 仅写默认值；Step 2 实施 dirty stash 时填非空值
 if [ -n "$WORKTREE_PATH" ]; then
   RUNTIME_ROOT="$WORKTREE_PATH"
+  # V2.3: WORKTREE_MODE_DETECTED 由前置 pre-flight 决定（clean / dirty）
+  # 注：用户显式 --no-stash 时 WORKTREE_MODE_DETECTED 保持 "clean"，dirty 留主仓不进 stash
+  #     这种"看似 clean 实则用户主仓 dirty"的语义对维护者可能 confusing；EARLY_STOP 路径
+  #     按 worktree_mode=clean 不还原 stash 也是预期（无 stash 可还原）
+  WORKTREE_MODE="${WORKTREE_MODE_DETECTED:-clean}"
 else
   RUNTIME_ROOT="$PROJECT_ROOT"
+  WORKTREE_MODE="bare"
 fi
 OWNER_CWD="$(pwd -P)"
 cat > "$STATE_FILE" <<EOF
@@ -224,6 +343,9 @@ project_root: "${RUNTIME_ROOT}"
 main_repo_path: "${PROJECT_ROOT}"
 start_head: "${START_HEAD}"
 worktree_path: "${WORKTREE_PATH}"
+worktree_mode: "${WORKTREE_MODE}"
+pre_loop_stash_ref: "${PRE_LOOP_STASH_REF}"
+pre_loop_dirty_files: "${DIRTY_FILES}"
 plan_file: "${PLAN_FILE}"
 task_description: |
   ${TASK_DESC}

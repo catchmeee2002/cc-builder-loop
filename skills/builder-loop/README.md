@@ -146,6 +146,8 @@ done
 | `test-judge-env-file-load.sh` | V2.1: judge env file 自动加载（12 case：主 env 干净时 source / 主 env 已设时不覆盖 / 文件不存在退回 V1.9 行为 / 语法错误 stderr WARN / loop.yml.credentials_file 项目级覆盖） | run-judge-agent.sh + 重定向 HOME |
 | `test-judge-model-fallback.sh` | V2.1: sonnet → haiku 降级链（28 case：连续成功 / 1 失败计数 / 2 失败切 fallback retry / fallback 也失败 / 401-429 不计数 / parse_error 计数 / fallback 留空禁用降级 / 旧 state 兼容 / 改 primary 立即生效） | mock copilot-proxy + 状态机 |
 | `test-tester-write-guard.sh` | V2.2: tester 跨目录写拦截（13 case：拒绝主仓 / 放行 worktree / 无锁 / bare loop 老锁兼容 / 等于 worktree 根 / 前缀部分匹配 / path traversal / 非 tester 放行） | tester-write-guard.sh + 锁文件 |
+| `test-dirty-stash-flow.sh` | V2.3: 主仓 dirty stash + worktree apply（5 case / 25 assert：clean 路径 / dirty stash push / rebase 拒绝 / --no-stash 跳过 stash / stash 副本可还原） | setup-builder-loop.sh + git stash |
+| `test-reward-hacking-detect.sh` | V2.3: reward hacking 检测（13 个配置 lint + 5 case / 25 assert：双命中 LLM+正则 / -k 'not X' 跨 grep 实现 / B4 控制组不命中） | run-judge-agent.sh + judge-system.md + builder-loop-stop.sh |
 | `test-new-repo-loop.sh` | V1.5: 新仓初始化场景（loop-init 一键、空仓 setup、首轮 PASS_CMD） | loop-init.sh + 全套 |
 | `test-parallel-loop.sh` | V1.8: 多状态并行（同项目两个 worktree slug 各自走 PASS 路径） | locate-state.sh |
 | `test-zombie-selfheal.sh` | V1.8.1: 僵尸 state 自愈（active=false 归档到 legacy/）+ EARLY_STOP 立即通知 | builder-loop-stop.sh |
