@@ -127,6 +127,35 @@ else
   done
 fi
 
+# ---- V2.4: locate 未命中诊断 stderr（条件：PROJECT_ROOT 已锚定 + STATE_DIR 有 active 候选）----
+# 触发：locate-state.sh 全部策略 miss（含 V2.4 策略 5 多 active 不绑场景）
+# 行为：扫 STATE_DIR active=true + worktree_path 存活的 state，列 worktree 路径让用户 cd
+# 限频：仅当扫描有 active 候选时打印（无 active 时静默，避免无 loop 项目 / 新接入项目刷屏）
+if [ -z "$STATE_FILE" ] && [ -n "$PROJECT_ROOT" ]; then
+  V24_STATE_DIR="${PROJECT_ROOT}/.claude/builder-loop/state"
+  if [ -d "$V24_STATE_DIR" ]; then
+    V24_DIAG=""
+    for _sf in "$V24_STATE_DIR"/*.yml; do
+      [ -e "$_sf" ] || continue
+      _act="$(grep -E '^active:' "$_sf" 2>/dev/null | head -1 | awk '{print $2}' || true)"
+      [ "$_act" != "true" ] && continue
+      _wt="$(grep -E '^worktree_path:' "$_sf" 2>/dev/null | head -1 | sed -E 's/^worktree_path:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' || true)"
+      [ -z "$_wt" ] && continue
+      [ ! -d "$_wt" ] && continue
+      V24_DIAG="${V24_DIAG}    - $(basename "$_sf"): worktree=${_wt}"$'\n'
+    done
+    if [ -n "$V24_DIAG" ]; then
+      # 注：本段触发表示 locate-state.sh 未输出 state path，可能是「多 active 候选」（V2.4 策略 5
+      # 拒绝绑定）或「单 active 但 cwd 不在其 worktree 子目录 + 没 __main__.yml」之类的边界。
+      # 后续 hook 流程仍会进 bootstrap 路径（worktree 守门检测到 loop/ worktree 时静默放行），
+      # 此 stderr 仅诊断提示用户 cd，不阻断 hook。
+      echo "[builder-loop] ⚠️  cwd=${CWD} 未唯一绑定 state（多 active 不绑 / 边界情况），现存 active worktree：" >&2
+      printf '%s' "$V24_DIAG" >&2
+      echo "[builder-loop]    若要让 stop hook 跟踪本 loop，请 cd 到对应 worktree" >&2
+    fi
+  fi
+fi
+
 # 未接入场景 → 静默放行
 if [ -z "$PROJECT_ROOT" ]; then
   exit 0

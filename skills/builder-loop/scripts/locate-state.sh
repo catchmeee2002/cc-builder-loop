@@ -13,6 +13,9 @@
 #   3. 否则遍历 <PROJECT_ROOT>/.claude/builder-loop/state/*.yml，
 #      比对 worktree_path 字段是否等于 cwd（或 cwd 落在其下）
 #   4. 兜底 <PROJECT_ROOT>/.claude/builder-loop/state/__main__.yml（bare loop 场景）
+#   5. V2.4：cwd 既不在 worktree 子目录、又无 __main__.yml → 扫 state/*.yml 找
+#      active=true 且 worktree_path 目录存活的 state，**恰好 1 个时**自动绑定（主仓 cwd
+#      自动跟唯一 active worktree loop）；≥2 个时仍返回空（保 V1.8 多状态隔离精神）
 #
 # 输出：state 文件绝对路径（stdout，单行）；未找到 → 空 + exit 1。
 #
@@ -101,6 +104,32 @@ MAIN_STATE="${STATE_DIR}/__main__.yml"
 if [ -f "$MAIN_STATE" ]; then
   echo "$MAIN_STATE"
   exit 0
+fi
+
+# --- 5. V2.4：唯一 active worktree state 自动绑定 ---
+# 触发：策略 2/3/4 全部 miss（cwd 是主仓 / 任意非 worktree 子目录、且无 bare __main__.yml）。
+# 候选筛选：active=true AND worktree_path 非空 AND 目录存活 → 排除孤儿 / inactive / 死 worktree
+# 决策：恰好 1 个候选 → 输出；0 / ≥2 → 静默返回空（locate 静默契约；多 active 由调用方诊断）
+if [ -d "$STATE_DIR" ]; then
+  v24_match=""
+  v24_count=0
+  for sf in "$STATE_DIR"/*.yml; do
+    [ -e "$sf" ] || continue
+    active="$(grep -E '^active:' "$sf" 2>/dev/null | head -1 | awk '{print $2}' || true)"
+    [ "$active" != "true" ] && continue
+    wt="$(grep -E '^worktree_path:' "$sf" 2>/dev/null | head -1 | sed -E 's/^worktree_path:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' || true)"
+    [ -z "$wt" ] && continue                 # bare loop：策略 4 已接管
+    [ ! -d "$wt" ] && continue               # worktree 已删 → 孤儿，不绑
+    v24_count=$(( v24_count + 1 ))
+    v24_match="$sf"
+    [ "$v24_count" -ge 2 ] && break          # 早退：≥2 个候选确定不绑
+  done
+  # v24_match 在 break 时保留的是第 2 个候选路径，但下方判定 v24_count == 1 才使用，
+  # 多 active 路径不消费此变量；保留单一变量是为了不引入 array 维护成本（candidates[]）
+  if [ "$v24_count" -eq 1 ]; then
+    echo "$v24_match"
+    exit 0
+  fi
 fi
 
 exit 1

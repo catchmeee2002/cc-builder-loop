@@ -17,6 +17,7 @@ pass_cmd:
   - { stage: "v22_tester_write_guard", cmd: "bash skills/builder-loop/fixtures/e2e/test-tester-write-guard.sh", timeout: 30 }
   - { stage: "v23_dirty_stash_flow", cmd: "bash skills/builder-loop/fixtures/e2e/test-dirty-stash-flow.sh", timeout: 60 }
   - { stage: "v23_reward_hacking_detect", cmd: "bash skills/builder-loop/fixtures/e2e/test-reward-hacking-detect.sh", timeout: 30 }
+  - { stage: "v24_locate_strategy5", cmd: "bash skills/builder-loop/fixtures/e2e/test-locate-state-strategy5.sh", timeout: 90 }
 
 max_iterations: 5
 

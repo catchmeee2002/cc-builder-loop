@@ -368,4 +368,21 @@ echo "   方案文件：${PLAN_FILE:-<未找到 .claude/plans/*.md>}"
 echo "   探测 source_dirs：${DETECTED_SRC:-<空>}"
 echo "   探测 test_dirs：${DETECTED_TEST:-<空>}"
 echo ""
+
+# V2.4: 检测 setup 调用 cwd 与 worktree path 不一致 → 醒目警告
+# 触发：worktree 模式 AND OWNER_CWD = 主仓（CC session cwd 仍在主仓）
+# 后果：stop hook 直接定位 state 时主仓 cwd 不在 worktrees 子目录 / 不等于 worktree_path
+#       → 策略 2/3/4 全 miss，需靠 V2.4 策略 5（唯一 active worktree 自动绑定）兜底
+# 多 active 场景策略 5 也不绑，必须 cd 到对应 worktree
+if [ -n "$WORKTREE_PATH" ] && [ "$OWNER_CWD" = "$PROJECT_ROOT" ]; then
+  cat >&2 <<WARN
+⚠️  CC session cwd 仍在主仓：${OWNER_CWD}
+   stop hook 触发时不能直接定位本 worktree state（V2.4 策略 5 仅在唯一 active worktree
+   时自动绑定；多 active 必须显式 cd 到对应 worktree 才能让 stop hook 跟踪）。
+   建议下一步：
+     1. 若本 session 还要继续：cd ${WORKTREE_PATH}
+     2. 若并发多 worktree：在新 CC session 用 --cwd ${WORKTREE_PATH} 启动
+WARN
+fi
+
 echo "提示：下次 Stop hook 触发时会自动跑 loop.yml.pass_cmd 验证。"

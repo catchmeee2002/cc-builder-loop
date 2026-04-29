@@ -4,6 +4,8 @@
 > 项目接入只需在项目根放 `.claude/loop.yml`，定义 `pass_cmd`（lint/test 等通过条件），
 > builder 改完代码会自动跑 PASS_CMD，失败自动喂回让 builder 再改，直到 PASS 或达到上限。
 
+> **与 CC 官方 `/loop` skill 的边界**：本仓库 = 机器判据驱动的**代码迭代闭环**（PASS_CMD 客观判据 + worktree 隔离 + reward hacking 防御）；官方 `/loop`（v2.1.121+）= `ScheduleWakeup` 驱动的**通用步频再触发器**（LLM 主观判停）。判据维度不同，**不要叠用**。版本跟踪 / 借鉴清单 / 互斥防御见 [`skills/builder-loop/docs/cc-loop-tracking.md`](skills/builder-loop/docs/cc-loop-tracking.md)。
+
 ## 1. 链接映射表
 
 install.sh 创建以下软链，把仓库文件映射到 CC 运行时路径：
@@ -89,7 +91,7 @@ cc-builder-loop/
 └── agents/                     # tester.md + arbiter.md
 ```
 
-## 5. 已交付能力（V1.0~V2.2）
+## 5. 已交付能力（V1.0~V2.4）
 
 - 多阶段 PASS_CMD + 智能早停
 - tester 强隔离（hook 锁机制）
@@ -187,6 +189,15 @@ cc-builder-loop/
   - **builder.md 硬约束**：dotfiles 仓 `~/.claude/commands/builder.md` 加 1 条 Reward hacking 警戒条（≤80 字），与 loop hook 注入语义一致
   - **配套 fixture**：`test-dirty-stash-flow.sh`（5 case / 25 assert，覆盖 clean / dirty stash / rebase 拒绝 / --no-stash 降级 / stash 副本可还原）+ `test-reward-hacking-detect.sh`（13 个配置 lint + 关键词算法验证 4 case / 23 assert）。loop.yml PASS_CMD 新增 `v23_dirty_stash_flow` 与 `v23_reward_hacking_detect` 两 stage
   - **完全向后兼容**：老 V2.2 state 缺三字段 → 下游脚本 `read_field || true` 兜底（缺值视为 clean / bare 模式）；migrate-state.sh 不强制升级，下次 setup 写新 schema
+- **V2.4**: locate-state.sh 策略 5 — 主仓 cwd 自动绑定唯一 active worktree（V1.8 多状态盲区收敛）
+  - **背景**：V1.8 多状态并行后，`setup-builder-loop.sh` 创建 worktree 但 CC session cwd 仍在主仓时 → `locate-state.sh` 4 个策略全 miss（cwd 不在 worktrees 子目录 / cwd ≠ worktree_path / 无 `__main__.yml` 兜底）→ stop hook 拿空 STATE_FILE 走 bootstrap → 跨 session 守门检测到 worktree 存在直接放行 → **永不跑 PASS_CMD**（复现 session `1781a3be`，绕过靠手动 cd worktree）。是 V1.8 主推荐路径的核心盲区
+  - **修复 1（locate 策略 5）**：`locate-state.sh` 加策略 5 — 策略 2/3/4 全 miss 后扫 `STATE_DIR/*.yml`，过滤 `active=true` AND `worktree_path` 非空 AND 该目录存活 → 恰好 1 个候选时输出 + exit 0；0 个 / ≥2 个 → 仍返回空（≥2 时绑错代价 > 漏绑，保 V1.8 多状态隔离精神）
+  - **修复 2（setup cwd 警告）**：`setup-builder-loop.sh` 末尾检测 `WORKTREE_PATH` 非空 AND `OWNER_CWD == PROJECT_ROOT`（CC session cwd 仍在主仓） → 打 stderr 醒目警告 + 给两条建议（cd 到 worktree / 在新 CC session 用 `--cwd` 启动）
+  - **修复 3（stop hook 诊断 stderr）**：`builder-loop-stop.sh` locate 未命中 + PROJECT_ROOT 已锚定 + STATE_DIR 有 active worktree 候选 → 列各 state 的 worktree path + 提示用户手动 cd（条件「有 active 候选」限频，避免无 loop 项目刷屏）
+  - **静默契约**：`locate-state.sh` 仍保持「不向 stderr 喷」（hook 频繁调用），诊断 stderr 由 `builder-loop-stop.sh` 自己出
+  - **完全向后兼容**：策略 5 仅在策略 1-4 全 miss 后介入；V1.x 老 state 缺 `active` 字段 → 字符串比对 `!= "true"` → 不绑（保守）；bare loop（`worktree_path` 空）已被策略 4 兜底，不受影响
+  - **配套 fixture**：`test-locate-state-strategy5.sh`（4 case / 21 assert，覆盖 唯一 active 命中 / 多 active 不绑 + stop hook stderr 含诊断 / 死 worktree 孤儿排除 / inactive state 不参与 / setup 后端到端 setup-stderr-含警告 + locate 命中）。loop.yml PASS_CMD 新增 `v24_locate_strategy5` stage
+  - **未来扩展**：长期反馈强烈再考虑 `loop.yml.locate.tie_breaker: latest_mtime` 配置项让多 active 时绑最近一个；本期不实现
 
 详见 `skills/builder-loop/README.md` 与 `skills/builder-loop/docs/judge-agent.md`。
 
@@ -370,3 +381,35 @@ V2.2 砍了 `HAS_RECENT_COMMIT` 触发器，bootstrap **只看**未提交工作�
 **grep 实现兼容性**：V2.3.1 起 pattern 用 `['"'"'"]` 字面字符类（GNU grep + ugrep 双兼容），不再依赖 `\047` ASCII escape。已在 `known-risks.md` R6.6 记录。
 
 **自检**：reward hacking 命中可看 stop hook stderr 是否含 `[builder-loop reward-hack-guard]` + 三选项注入。`judge-trace.jsonl` 含 `reason="suspected_reward_hack: ..."` 行。
+
+### 7.10 主仓 cwd 仍 setup 进 worktree → stop hook 不跟（V2.4 缓解 + 自检指引）
+
+**现象**：手动跑 `setup-builder-loop.sh` 后 worktree 创建成功，CC session cwd 仍在主仓，下次 stop hook 触发没跑 PASS_CMD。
+
+**V2.4 默认行为**（缓解）：
+1. setup 末尾会打 stderr 警告 `⚠️ CC session cwd 仍在主仓 ...` + 给 cd 建议
+2. 主仓 cwd + **唯一** active worktree state（worktree_path 目录存活）→ `locate-state.sh` 策略 5 自动绑定，stop hook 正常跟
+3. **多** active worktree state（用户并发跑多个 loop）→ 策略 5 不绑（保 V1.8 多状态隔离），stop hook stderr 列各候选 worktree path 提示用户手动 cd
+
+**何时仍会哑火**：
+- ≥2 个 active worktree state 同时存在 + 主仓 cwd → 必须 cd 到目标 worktree
+- worktree 已被 `git worktree remove` 但 state 文件残留（孤儿）→ 策略 5 排除孤儿后仍可能 0 候选 → 走 bootstrap 路径
+
+**排查步骤**：
+1. 看 setup stderr 是否含 `⚠️ CC session cwd 仍在主仓` → 提示已经发了，按建议 cd
+2. 看 stop hook stderr 是否含 `[builder-loop] ⚠️  cwd=... 未匹配任何 state` → 列出的 worktree 就是当前 active 候选，挑一个 cd
+3. 看 `<repo>/.claude/builder-loop/state/*.yml` 各 state 的 `active` 字段 + `worktree_path` 目录是否存活：
+   ```bash
+   for f in <repo>/.claude/builder-loop/state/*.yml; do
+     echo "=== $(basename "$f") ==="
+     grep -E '^(active|worktree_path):' "$f"
+   done
+   ```
+4. 自动绑定不希望发生（如多 active 时不想被自动选一个）→ 当前 V2.4 已是「多 active 不绑」，无需额外配置
+
+**完全禁用策略 5**：本期未提供配置项关闭。需关闭可手动归档：
+```bash
+mkdir -p .claude/builder-loop/legacy/
+mv .claude/builder-loop/state/<slug>.yml .claude/builder-loop/legacy/
+```
+或编辑 state `active: false` 让其不参与候选筛选。
