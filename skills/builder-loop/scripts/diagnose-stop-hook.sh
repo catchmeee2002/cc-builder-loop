@@ -240,6 +240,7 @@ PYEOF
 )"
 
 LOCK_JSON="$(STATE_DIR="$STATE_DIR" PROJECT_ROOT="$PROJECT_ROOT" CURSOR_FILE="$CURSOR_FILE" python3 -c "$LOCK_PYTHON" 2>/dev/null || echo '{"verdict":"ok"}')"
+LOCK_VERDICT="$(echo "$LOCK_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin).get('verdict','ok'))" 2>/dev/null || echo "ok")"
 
 # ---- [5/6] trace + debug log 摘要 ----
 TRACE_PYTHON="$(cat <<'PYEOF'
@@ -414,7 +415,7 @@ for it in items:
 echo ""
 
 # [4/6]
-echo "[4/6] lock / cursor / stash 状态 ......... ✅ ok"
+echo "[4/6] lock / cursor / stash 状态 ......... $(verdict_icon "$LOCK_VERDICT")"
 echo "$LOCK_JSON" | python3 -c "
 import sys, json
 d = json.load(sys.stdin)

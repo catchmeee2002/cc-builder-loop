@@ -149,7 +149,7 @@ done
 | `test-dirty-stash-flow.sh` | V2.3: 主仓 dirty stash + worktree apply（5 case / 25 assert：clean 路径 / dirty stash push / rebase 拒绝 / --no-stash 跳过 stash / stash 副本可还原） | setup-builder-loop.sh + git stash |
 | `test-reward-hacking-detect.sh` | V2.3: reward hacking 检测（13 个配置 lint + 5 case / 25 assert：双命中 LLM+正则 / -k 'not X' 跨 grep 实现 / B4 控制组不命中） | run-judge-agent.sh + judge-system.md + builder-loop-stop.sh |
 | `test-locate-state-strategy5.sh` | V2.4: locate-state.sh 策略 5（4 case / 21 assert：1 active 命中 / 多 active 不绑 + stop hook 诊断 stderr / 死 worktree 排除 / inactive 不参与 / setup 后端到端 cwd 警告 + locate 命中） | locate-state.sh + setup-builder-loop.sh + builder-loop-stop.sh |
-| `test-stop-hook-debug-log.sh` | V2.5: stop hook 可观测性（5 case：debug log 基础写入 + phase 顺序 / IO 失败容忍 / 1 MB rotate 触发 .1-.5 / diagnose-stop-hook.sh 6 段 + 严格 dry-run / setup 末尾自检识别 hook 注册缺失） | builder-loop-stop.sh + diagnose-stop-hook.sh + setup-builder-loop.sh |
+| `test-stop-hook-debug-log.sh` | V2.5: stop hook 可观测性（V2.5.1 hotfix 后 7 case：debug log 基础写入 + phase 顺序 / IO 失败容忍 / 1 MB rotate 触发 .1-.5 / diagnose-stop-hook.sh 6 段 + 严格 dry-run / setup 末尾自检识别 hook 注册缺失 / 子目录 cwd 路径不分裂 / log_path 含空格不截断） | builder-loop-stop.sh + diagnose-stop-hook.sh + setup-builder-loop.sh |
 | `test-new-repo-loop.sh` | V1.5: 新仓初始化场景（loop-init 一键、空仓 setup、首轮 PASS_CMD） | loop-init.sh + 全套 |
 | `test-parallel-loop.sh` | V1.8: 多状态并行（同项目两个 worktree slug 各自走 PASS 路径） | locate-state.sh |
 | `test-zombie-selfheal.sh` | V1.8.1: 僵尸 state 自愈（active=false 归档到 legacy/）+ EARLY_STOP 立即通知 | builder-loop-stop.sh |

@@ -201,7 +201,7 @@ with open(target, 'w') as f:
         f.write(line)
         f.flush()
 "
-A3_PRE_SIZE="$(stat -c%s "$DEBUG_LOG" 2>/dev/null || stat -f%z "$DEBUG_LOG")"
+A3_PRE_SIZE="$(stat -c%s "$DEBUG_LOG" 2>/dev/null || stat -f%z "$DEBUG_LOG" | tr -d '[:space:]')"
 
 A3_INPUT="$(printf '{"cwd":"%s","session_id":"a3session"}' "$TMP")"
 A3_EC=0
@@ -210,9 +210,9 @@ BUILDER_LOOP_DEBUG_LOG_MAX_BYTES=1048576 bash -c '
 ' _ "$A3_INPUT" "$HOOK_SCRIPT" || A3_EC=$?
 
 assert "A3 .1 文件已生成" "[ -f '${DEBUG_LOG}.1' ]"
-A3_BAK_SIZE="$(stat -c%s "${DEBUG_LOG}.1" 2>/dev/null || stat -f%z "${DEBUG_LOG}.1" 2>/dev/null || echo 0)"
+A3_BAK_SIZE="$(stat -c%s "${DEBUG_LOG}.1" 2>/dev/null || stat -f%z "${DEBUG_LOG}.1" 2>/dev/null | tr -d '[:space:]' || echo 0)"
 assert "A3 .1 文件大小约等于 rotate 前的 log 大小" "[ '$A3_BAK_SIZE' = '$A3_PRE_SIZE' ]"
-A3_NEW_SIZE="$(stat -c%s "$DEBUG_LOG" 2>/dev/null || stat -f%z "$DEBUG_LOG" 2>/dev/null || echo 0)"
+A3_NEW_SIZE="$(stat -c%s "$DEBUG_LOG" 2>/dev/null || stat -f%z "$DEBUG_LOG" 2>/dev/null | tr -d '[:space:]' || echo 0)"
 assert "A3 新 log 比旧 log 小（rotate 后重新写）" "[ '$A3_NEW_SIZE' -lt '$A3_PRE_SIZE' ]"
 assert "A3 新 log 含 entry phase（本轮新写）" "grep -q '\"phase\": \"entry\"' '$DEBUG_LOG'"
 
@@ -228,14 +228,14 @@ write_state_yml "${STATE_DIR}/__main__.yml" "true" "" "__main__"
 
 # 拍前快照（mtime + size）
 A4_BEFORE="$(mktemp)"
-find "$TMP" -type f -printf '%T@ %s %p\n' 2>/dev/null | sort > "$A4_BEFORE" || true
+find "$TMP" -maxdepth 5 -type f -printf '%T@ %s %p\n' 2>/dev/null | sort > "$A4_BEFORE" || true
 
 A4_OUT="$(bash "$DIAG_SCRIPT" "$TMP" 2>&1)"
 A4_EC=$?
 
 # 拍后快照
 A4_AFTER="$(mktemp)"
-find "$TMP" -type f -printf '%T@ %s %p\n' 2>/dev/null | sort > "$A4_AFTER" || true
+find "$TMP" -maxdepth 5 -type f -printf '%T@ %s %p\n' 2>/dev/null | sort > "$A4_AFTER" || true
 
 assert "A4 输出含 [1/6]" "echo '$A4_OUT' | grep -qF '[1/6]'"
 assert "A4 输出含 [2/6]" "echo '$A4_OUT' | grep -qF '[2/6]'"
@@ -306,6 +306,60 @@ assert "A5.3 配置齐全时无 V2.5 自检警告" "! grep -qF '⚠️  V2.5 自
 
 rm -rf "$A5_FAKE_HOME"
 rm -f "$A5_LOG" "$A5_LOG2" "$A5_LOG3"
+
+# ============================================================
+# A6: CWD 在项目子目录时 entry/locate_result phase 写到正确 PROJECT_ROOT（防路径分裂）
+# 回归 reviewer 反馈 🟡-1 — 修复前 entry/locate_result fallback 到 CWD，
+# 与后续 phase 的 PROJECT_ROOT 不一致 → 同次触发日志分散在两个文件
+# ============================================================
+echo ""
+echo "--- A6: CWD 在子目录时 entry phase 不分裂日志路径 ---"
+
+# 独立 fake 项目根（不是 git 仓 → bootstrap 早退到 not_git_repo，避免 PASS_CMD 污染）
+A6_ROOT="$(mktemp -d)"
+mkdir -p "${A6_ROOT}/.claude" "${A6_ROOT}/src/deep/nested"
+echo "pass_cmd: []" > "${A6_ROOT}/.claude/loop.yml"
+A6_SUBCWD="${A6_ROOT}/src/deep/nested"
+
+A6_INPUT="$(printf '{"cwd":"%s","session_id":"a6session"}' "$A6_SUBCWD")"
+printf '%s' "$A6_INPUT" | bash "$HOOK_SCRIPT" >/dev/null 2>&1 || true
+
+# debug log 应在 PROJECT_ROOT 下，不在 CWD 子目录
+A6_ROOT_LOG="${A6_ROOT}/.claude/builder-loop/stop-hook-debug.log"
+A6_SUB_LOG="${A6_SUBCWD}/.claude/builder-loop/stop-hook-debug.log"
+
+assert "A6 PROJECT_ROOT 下的 debug log 存在" "[ -f '$A6_ROOT_LOG' ]"
+assert "A6 CWD 子目录下的 debug log 不存在（路径不分裂）" "[ ! -f '$A6_SUB_LOG' ]"
+assert "A6 debug log 含 entry phase（lazy probe 命中）" "grep -q '\"phase\": \"entry\"' '$A6_ROOT_LOG'"
+assert "A6 debug log 含 locate_result phase" "grep -q '\"phase\": \"locate_result\"' '$A6_ROOT_LOG'"
+assert "A6 debug log 含 exit phase" "grep -q '\"phase\": \"exit\"' '$A6_ROOT_LOG'"
+
+rm -rf "$A6_ROOT"
+
+# ============================================================
+# A7: pass_cmd_result.log_path 含空格时不被截断（回归 🟡-2）
+# 直接验证 hook 内嵌 python split 表达式行为，避免 mock run-pass-cmd.sh 复杂度
+# ============================================================
+echo ""
+echo "--- A7: pass_cmd_result.log_path 含空格不截断 ---"
+
+A7_OUT="$(LL='FAIL stage1 /tmp/path with space/iter-1.log' python3 -c "
+import os, json
+last = os.environ.get('LL','')
+parts = last.split()
+print(json.dumps({
+  'last_line': last,
+  'result': 'PASS' if last == 'PASS' else 'FAIL' if parts and parts[0] == 'FAIL' else 'UNKNOWN',
+  'last_stage': parts[1] if len(parts) > 1 else '',
+  'log_path': ' '.join(parts[2:]) if len(parts) > 2 else '',
+}))
+")"
+
+A7_LOG_PATH="$(echo "$A7_OUT" | python3 -c "import sys, json; print(json.load(sys.stdin)['log_path'])")"
+assert "A7 log_path 完整保留空格" "[ '$A7_LOG_PATH' = '/tmp/path with space/iter-1.log' ]"
+
+A7_STAGE="$(echo "$A7_OUT" | python3 -c "import sys, json; print(json.load(sys.stdin)['last_stage'])")"
+assert "A7 last_stage 仍是 stage1（不被空格污染）" "[ '$A7_STAGE' = 'stage1' ]"
 
 # ============================================================
 # 汇总

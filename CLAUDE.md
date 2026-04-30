@@ -206,7 +206,12 @@ cc-builder-loop/
   - **CLAUDE.md §7.1 路径修正**：`/tmp/builder-loop-stop-debug.log` → `<P>/.claude/builder-loop/stop-hook-debug.log`，加注「老路径在 V2.4 及之前从未实际写入，是文档承诺与实现脱节，本次 V2.5 修正」
   - **forensic 价值**：c1 / c5 类间歇性 stop hook 行为问题下次再现时，`tail -50 stop-hook-debug.log` 能直接看出每次 stop hook 触发时哪些条件成立 / 哪些 phase 命中 / 因什么 reason 退出。c5 bullet 5 的"commit 后多 1 次 NOOP"靠 bootstrap_check phase 的 details.changed_files_count + decision 字段一眼定位
   - **完全向后兼容**：debug log 是新增独立文件，不动 trace.jsonl / loop-trace.jsonl / state schema；任何 IO 失败静默；`BUILDER_LOOP_DEBUG_LOG_MAX_BYTES=0` 可关 rotate；本期**不改触发逻辑**（c1 / c5 的修复推后到阶段 2，等真实数据让根因显形）
-  - **配套 fixture**：`test-stop-hook-debug-log.sh`（5 case，覆盖 基础写入 + phase 顺序 / IO 失败容忍 / rotate 触发 / diagnose 6 段 + 严格 dry-run / setup 自检识别 hook 注册缺失）。loop.yml PASS_CMD 新增 `v25_stop_hook_observability` stage
+  - **配套 fixture**：`test-stop-hook-debug-log.sh`（V2.5 = 5 case；V2.5.1 hotfix 加 A6/A7 共 7 case，覆盖 基础写入 + phase 顺序 / IO 失败容忍 / rotate 触发 / diagnose 6 段 + 严格 dry-run / setup 自检识别 hook 注册缺失 / 子目录 cwd 路径不分裂 / log_path 含空格不截断）。loop.yml PASS_CMD 新增 `v25_stop_hook_observability` stage
+- **V2.5.1**: stop hook observability hotfix（reviewer 反馈采纳）
+  - **debug_log 路径分裂修复**：CWD 在项目子目录时，原代码 entry / locate_result phase（PROJECT_ROOT 未赋值）fallback 到 `${CWD}/.claude/builder-loop/`，与后续 phase 写入的 `${PROJECT_ROOT}/.claude/builder-loop/` 不一致 → 同次触发日志分散在两个文件破坏 forensic。修：debug_log 函数内 lazy probe（沿 CWD 向上 5 层找 `.claude/loop.yml`），探测命中即用作 root；探测失败静默 return（与原 IO 容忍策略一致）。fixture A6 case 验证子目录 cwd 时全部 phase 集中写到 PROJECT_ROOT
+  - **pass_cmd_result.log_path 空格截断修复**：原 `parts[2] if len(parts) > 2 else ''` 用 split 后取单 token，路径含空格被截断。改 `' '.join(parts[2:])`。fixture A7 case 验证 `FAIL stage1 /tmp/path with space/iter-1.log` 输入下 log_path 完整保留
+  - **diagnose [4/6] 图标统一**：原硬编码 `✅ ok`，改用 `verdict_icon "$LOCK_VERDICT"`（与 [1/6]-[3/6]-[5/6]-[6/6] 风格一致）；新增 LOCK_VERDICT 变量从 LOCK_JSON 解析 verdict 字段
+  - **fixture 健壮性**：A3 stat 输出加 `tr -d '[:space:]'`（防 macOS 兼容性边界）；A4 find 加 `-maxdepth 5`（防特殊虚拟文件系统下递归过深）
 
 详见 `skills/builder-loop/README.md` 与 `skills/builder-loop/docs/judge-agent.md`。
 

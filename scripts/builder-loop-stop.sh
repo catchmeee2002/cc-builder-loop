@@ -56,10 +56,31 @@ archive_to_legacy() {
 #   - IO 失败容忍：mkdir/写入末尾 || true，任何失败都不阻断 hook 主流程
 #   - flock 之前也写：entry / locate_result phase 必须在 exec 200>... 之前完成
 DEBUG_LOG_ROTATE_CHECKED=0
+_DEBUG_PROBED_ROOT=""
 debug_log() {
   local phase="$1" details="${2:-{\}}"
-  local log_dir log_file
-  log_dir="${PROJECT_ROOT:-${CWD:-.}}/.claude/builder-loop"
+  local log_dir log_file root
+  # 路径解析：PROJECT_ROOT 锚定后用之；否则用 CWD 向上 5 层探测 .claude/loop.yml
+  # 防止 entry / locate_result phase 时（PROJECT_ROOT 未赋值）日志写到 CWD 子目录与
+  # 后续 phase 写到 PROJECT_ROOT 不一致 → 同次触发日志分散在两个文件破坏 forensic
+  if [ -n "${PROJECT_ROOT:-}" ]; then
+    root="$PROJECT_ROOT"
+  else
+    if [ -z "$_DEBUG_PROBED_ROOT" ]; then
+      local _d="${CWD:-$(pwd 2>/dev/null || echo .)}"
+      for _ in 1 2 3 4 5; do
+        if [ -f "${_d}/.claude/loop.yml" ]; then
+          _DEBUG_PROBED_ROOT="$_d"
+          break
+        fi
+        [ "$_d" = "/" ] && break
+        _d="$(dirname "$_d")"
+      done
+    fi
+    [ -z "$_DEBUG_PROBED_ROOT" ] && return 0
+    root="$_DEBUG_PROBED_ROOT"
+  fi
+  log_dir="${root}/.claude/builder-loop"
   log_file="${log_dir}/stop-hook-debug.log"
   mkdir -p "$log_dir" 2>/dev/null || return 0
   # rotate（lazy check 避免每次 stat IO）
@@ -489,7 +510,7 @@ print(json.dumps({
   'last_line': last,
   'result': 'PASS' if last == 'PASS' else 'FAIL' if parts and parts[0] == 'FAIL' else 'UNKNOWN',
   'last_stage': parts[1] if len(parts) > 1 else '',
-  'log_path': parts[2] if len(parts) > 2 else '',
+  'log_path': ' '.join(parts[2:]) if len(parts) > 2 else '',
 }))
 " 2>/dev/null || echo '{}')"
 
