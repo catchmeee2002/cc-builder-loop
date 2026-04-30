@@ -65,6 +65,15 @@ worktree:
   enabled: false
 YMLEOF
 echo "seed" > README.md
+# V2.5: 写 .gitignore 排除 telemetry / debug log（V2.1.1 设计 + V2.5 stop-hook-debug.log）
+# 不写则 V2.5 stop hook 写 debug log 后 git add -A 会把它 commit 进 git，下次 git diff 触发误判
+cat > .gitignore <<'GITIGNORE'
+.claude/builder-loop/
+.claude/loop-runs/
+.claude/loop-trace.jsonl
+.claude/reviewer-params.json
+.claude/reviewer-diff.txt
+GITIGNORE
 git add -A
 git commit -q -m "chore(test): [cr_id_skip] Initial seed for e2e cursor test"
 
@@ -160,7 +169,8 @@ mkdir -p docs
 echo "# initial doc" > CLAUDE.md
 echo "# license" > LICENSE
 echo "# changelog" > docs/CHANGELOG.md
-echo "*.bak" > .gitignore
+# V2.5: 用 >> 追加（不覆盖 Step 1 写的 V2.1.1 五条规则，否则 stop-hook-debug.log 会被 git add -A 加进 commit）
+echo "*.bak" >> .gitignore
 git add -A
 git commit -q -m "chore(test): [cr_id_skip] Seed for doc whitelist test"
 HEAD3="$(git rev-parse HEAD)"

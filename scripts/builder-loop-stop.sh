@@ -47,6 +47,59 @@ archive_to_legacy() {
   mv "$sf" "${legacy_dir}/${ts}-${reason_safe}.bak" 2>/dev/null || true
 }
 
+# V2.5: stop hook 可观测性 — debug log 写到 <P>/.claude/builder-loop/stop-hook-debug.log
+# 目的：c1（loop 哑火）/ c5（自激空转）这类间歇性 stop hook 行为问题需要 forensic 数据
+# 设计：
+#   - 路径：<PROJECT_ROOT>/.claude/builder-loop/stop-hook-debug.log（多项目隔离 + .gitignore 排除）
+#   - 格式：每行 1 条 NDJSON（ts/session/cwd/slug/phase/details）
+#   - 滚动：默认 1 MB（BUILDER_LOOP_DEBUG_LOG_MAX_BYTES env 可调），保留 5 个 .1-.5
+#   - IO 失败容忍：mkdir/写入末尾 || true，任何失败都不阻断 hook 主流程
+#   - flock 之前也写：entry / locate_result phase 必须在 exec 200>... 之前完成
+DEBUG_LOG_ROTATE_CHECKED=0
+debug_log() {
+  local phase="$1" details="${2:-{\}}"
+  local log_dir log_file
+  log_dir="${PROJECT_ROOT:-${CWD:-.}}/.claude/builder-loop"
+  log_file="${log_dir}/stop-hook-debug.log"
+  mkdir -p "$log_dir" 2>/dev/null || return 0
+  # rotate（lazy check 避免每次 stat IO）
+  if [ "$DEBUG_LOG_ROTATE_CHECKED" -eq 0 ] && [ -f "$log_file" ]; then
+    local sz max
+    max="${BUILDER_LOOP_DEBUG_LOG_MAX_BYTES:-1048576}"
+    sz="$(stat -c%s "$log_file" 2>/dev/null || stat -f%z "$log_file" 2>/dev/null || echo 0)"
+    if [ "${sz:-0}" -gt "$max" ]; then
+      [ -f "${log_file}.5" ] && rm -f "${log_file}.5" 2>/dev/null || true
+      for i in 4 3 2 1; do
+        [ -f "${log_file}.$i" ] && mv "${log_file}.$i" "${log_file}.$((i+1))" 2>/dev/null || true
+      done
+      mv "$log_file" "${log_file}.1" 2>/dev/null || true
+    fi
+    DEBUG_LOG_ROTATE_CHECKED=1
+  fi
+  # 用 python3 拼 JSON 防引号 / 特殊字符破格式
+  TS="$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  PHASE="$phase" DETAILS="$details" CWD="${CWD:-}" \
+  SESSION="${HOOK_SESSION_ID:-}" SLUG="${SLUG:-}" \
+  LOG_FILE="$log_file" \
+    python3 -c "
+import os, json
+try:
+    details = json.loads(os.environ.get('DETAILS') or '{}')
+except Exception:
+    details = {'raw': os.environ.get('DETAILS', '')}
+line = {
+    'ts': os.environ.get('TS',''),
+    'session': os.environ.get('SESSION','')[:8],
+    'cwd': os.environ.get('CWD',''),
+    'slug': os.environ.get('SLUG',''),
+    'phase': os.environ.get('PHASE',''),
+    'details': details,
+}
+with open(os.environ['LOG_FILE'], 'a') as f:
+    f.write(json.dumps(line, ensure_ascii=False) + '\n')
+" 2>/dev/null || true
+}
+
 # V1.8.2: 写"已处理 HEAD"游标 — 避免同一 commit 反复触发 bootstrap 兜底激活
 # 调用点：PASS / 异常 merge / EARLY_STOP 三处"本轮 loop 结束"的出口
 # 刻意不调用的路径：
@@ -68,6 +121,14 @@ CWD="$(echo "$INPUT" | python3 -c "import sys,json; print(json.load(sys.stdin).g
 [ -z "$CWD" ] && CWD="$(pwd)"
 # V1.9: transcript_path 给 judge agent 用
 TRANSCRIPT_PATH="$(echo "$INPUT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('transcript_path',''))" 2>/dev/null || echo "")"
+# V2.5: session_id 给 debug log 关联，便于跨 hook 触发追踪
+HOOK_SESSION_ID="$(echo "$INPUT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('session_id',''))" 2>/dev/null || echo "")"
+
+# V2.5: entry phase（在 locate / flock 之前）— 即使后续 exit 0 早退也能看到 hook 触发
+debug_log "entry" "$(CWD_J="$CWD" TP="$TRANSCRIPT_PATH" python3 -c "
+import os, json
+print(json.dumps({'cwd': os.environ.get('CWD_J',''), 'transcript_path': os.environ.get('TP','')}))
+" 2>/dev/null || echo '{}')"
 
 # ---- 定位 state file + project_root（多状态并行模式）----
 # 策略：
@@ -84,6 +145,12 @@ STATE_FILE=""
 if [ -f "$LOCATE_SCRIPT" ]; then
   STATE_FILE="$(bash "$LOCATE_SCRIPT" "$CWD" 2>/dev/null || echo "")"
 fi
+
+# V2.5: locate_result phase（PROJECT_ROOT 此时还没赋值，仍可记 state_file 命中情况）
+debug_log "locate_result" "$(SF="$STATE_FILE" python3 -c "
+import os, json
+print(json.dumps({'state_file': os.environ.get('SF',''), 'matched': bool(os.environ.get('SF',''))}))
+" 2>/dev/null || echo '{}')"
 
 if [ -n "$STATE_FILE" ]; then
   # V2.0 多状态 + 字段语义重构：
@@ -158,6 +225,7 @@ fi
 
 # 未接入场景 → 静默放行
 if [ -z "$PROJECT_ROOT" ]; then
+  debug_log "exit" '{"code":0,"reason":"no_project_root"}'
   exit 0
 fi
 
@@ -177,8 +245,17 @@ mkdir -p "$(dirname "$LOCK_FILE")" 2>/dev/null || true
 exec 200>"$LOCK_FILE"
 if ! flock -n 200 2>/dev/null; then
   # 另一 Stop hook 正持本 slug 锁，本次静默放行
+  debug_log "flock_acquire" "$(LF="$LOCK_FILE" python3 -c "
+import os, json
+print(json.dumps({'lock_file': os.environ.get('LF',''), 'acquired': False}))
+" 2>/dev/null || echo '{}')"
+  debug_log "exit" '{"code":0,"reason":"lock_held_by_other"}'
   exit 0
 fi
+debug_log "flock_acquire" "$(LF="$LOCK_FILE" python3 -c "
+import os, json
+print(json.dumps({'lock_file': os.environ.get('LF',''), 'acquired': True}))
+" 2>/dev/null || echo '{}')"
 
 # ---- 兜底激活：loop.yml 存在但无状态文件 ----
 if [ "$FOUND_LOOP_ONLY" = "true" ]; then
@@ -187,6 +264,7 @@ if [ "$FOUND_LOOP_ONLY" = "true" ]; then
   HAS_RECENT_COMMIT=""
   if ! git -C "$PROJECT_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     # 非 git 仓库 → 放行（无法判断改动）
+    debug_log "exit" '{"code":0,"reason":"not_git_repo"}'
     exit 0
   fi
   # ---- 跨 session 污染守门（2026-04-24 新增）----
@@ -197,6 +275,11 @@ if [ "$FOUND_LOOP_ONLY" = "true" ]; then
   if [ "${EXISTING_LOOP_WORKTREES:-0}" -gt 0 ]; then
     echo "[builder-loop] ⚠️  检测到 ${EXISTING_LOOP_WORKTREES} 个已存在的 loop/ worktree，跳过兜底激活（避免跨 session 绑错 plan / worktree）" >&2
     echo "[builder-loop]    如需清理：git -C '$PROJECT_ROOT' worktree list 查看 → git worktree remove <path> 移除" >&2
+    debug_log "bootstrap_check" "$(EW="$EXISTING_LOOP_WORKTREES" python3 -c "
+import os, json
+print(json.dumps({'found_loop_only': True, 'decision': 'skip_existing_worktree', 'existing_loop_worktrees': int(os.environ.get('EW','0') or 0)}))
+" 2>/dev/null || echo '{}')"
+    debug_log "exit" '{"code":0,"reason":"existing_loop_worktrees"}'
     exit 0
   fi
   # V2.2.1: 收集改动文件列表（unstaged + staged 合并去重），供后续触发判定 + 文档白名单识别
@@ -212,7 +295,13 @@ if [ "$FOUND_LOOP_ONLY" = "true" ]; then
   # 损失场景：用户在主仓直接改代码 + commit + 关 CC（不经 loop） → 失去自动补 PASS_CMD 兜底
   #         需手动 `bash ~/.claude/skills/builder-loop/scripts/setup-builder-loop.sh "<task>"` 起 loop
   HAS_RECENT_COMMIT="$(git -C "$PROJECT_ROOT" log --since='30 minutes ago' --oneline 2>/dev/null | head -5)" || true
+  CHANGED_FILES_COUNT="$(printf '%s\n' "$CHANGED_FILES" | grep -c '.' || true)"
   if [ -z "$CHANGED_FILES" ]; then
+    debug_log "bootstrap_check" "$(HRC="$HAS_RECENT_COMMIT" python3 -c "
+import os, json
+print(json.dumps({'found_loop_only': True, 'decision': 'skip_no_diff', 'changed_files_count': 0, 'has_recent_commit': bool(os.environ.get('HRC',''))}))
+" 2>/dev/null || echo '{}')"
+    debug_log "exit" '{"code":0,"reason":"no_diff"}'
     exit 0
   fi
   # V2.2.1: 纯文档改动（*.md / docs/ / *.txt / LICENSE / .gitignore）跳过 bootstrap
@@ -221,8 +310,18 @@ if [ "$FOUND_LOOP_ONLY" = "true" ]; then
   DOC_PATTERN='\.md$|^docs/|/docs/|\.txt$|^LICENSE$|\.gitignore$'
   NON_DOC_FILES="$(printf '%s\n' "$CHANGED_FILES" | grep -v -E "$DOC_PATTERN" || true)"
   if [ -z "$NON_DOC_FILES" ]; then
+    debug_log "bootstrap_check" "$(CFC="$CHANGED_FILES_COUNT" python3 -c "
+import os, json
+print(json.dumps({'found_loop_only': True, 'decision': 'skip_doc_only', 'changed_files_count': int(os.environ.get('CFC','0') or 0), 'doc_only': True}))
+" 2>/dev/null || echo '{}')"
+    debug_log "exit" '{"code":0,"reason":"doc_only"}'
     exit 0
   fi
+  # V2.5: 触发 bootstrap → 记 phase（trigger 决策点）
+  debug_log "bootstrap_check" "$(CFC="$CHANGED_FILES_COUNT" python3 -c "
+import os, json
+print(json.dumps({'found_loop_only': True, 'decision': 'trigger', 'changed_files_count': int(os.environ.get('CFC','0') or 0), 'doc_only': False}))
+" 2>/dev/null || echo '{}')"
   # V1.8.2 游标段已删（CHANGED_FILES 空场景在前面已静默放行，游标段不可达）
   # write_processed_cursor 在 PASS / 异常 merge / EARLY_STOP 三处出口仍写入，作审计/排查辅助
   # 推断 task_description
@@ -241,6 +340,7 @@ if [ "$FOUND_LOOP_ONLY" = "true" ]; then
   echo "[builder-loop] ⚡ 兜底激活：检测到 loop.yml + 代码改动但无状态文件，自动启动 loop..." >&2
   if ! bash "$SKILL_DIR/setup-builder-loop.sh" --no-worktree "$TASK_DESC" >&2; then
     echo "[builder-loop] ⚠️  兜底激活 setup 失败，放行" >&2
+    debug_log "exit" '{"code":0,"reason":"bootstrap_setup_failed"}'
     exit 0
   fi
   # setup 成功 → state 文件已在新目录创建（bare 模式 slug=__main__）
@@ -252,6 +352,7 @@ fi
 # state file 仍不存在 → 放行
 if [ ! -f "$STATE_FILE" ]; then
   echo "[builder-loop] ⚠️  兜底激活后状态文件未出现在预期路径：${STATE_FILE}，放行" >&2
+  debug_log "exit" '{"code":0,"reason":"state_file_missing_after_bootstrap"}'
   exit 0
 fi
 # 兜底：未命中 state 分支时 RUN_CWD 可能未设置
@@ -260,6 +361,7 @@ RUN_CWD="${RUN_CWD:-$PROJECT_ROOT}"
 
 # ---- 1. 状态文件不存在或非活跃 → 放行 ----
 if [ ! -f "$STATE_FILE" ]; then
+  debug_log "exit" '{"code":0,"reason":"state_file_missing"}'
   exit 0
 fi
 ACTIVE="$(grep -E '^active:' "$STATE_FILE" | head -1 | awk '{print $2}')"
@@ -268,6 +370,10 @@ if [ "$ACTIVE" != "true" ]; then
   # 防止下次 builder 进场误把僵尸当活跃 loop
   echo "[builder-loop] 🧟 state active='${ACTIVE}' (非 true)，归档到 legacy/ 后放行" >&2
   archive_to_legacy "$STATE_FILE" "zombie_inactive"
+  debug_log "exit" "$(A="$ACTIVE" python3 -c "
+import os, json
+print(json.dumps({'code':0,'reason':'zombie_inactive','active': os.environ.get('A','')}))
+" 2>/dev/null || echo '{}')"
   exit 0
 fi
 
@@ -369,8 +475,23 @@ with open(os.environ['TRACE_FILE'], 'a') as f:
 # V2.0：第一参 = 干活的地方（worktree 或主仓），LOOP_YML 从此读、PASS_CMD 在此跑；
 #       第三参 = 主仓（日志归档目录基址）
 echo "[builder-loop] 🔄 iter ${NEXT_ITER}: 正在跑 PASS_CMD（cwd=${RUN_CWD}）..." >&2
+debug_log "pass_cmd_start" "$(IT="$NEXT_ITER" RC="$RUN_CWD" python3 -c "
+import os, json
+print(json.dumps({'iter': int(os.environ.get('IT','0') or 0), 'run_cwd': os.environ.get('RC','')}))
+" 2>/dev/null || echo '{}')"
 RESULT="$(bash "${SKILL_DIR}/run-pass-cmd.sh" "$RUN_CWD" "$NEXT_ITER" "$PROJECT_ROOT" || true)"
 LAST_LINE="$(echo "$RESULT" | tail -1)"
+debug_log "pass_cmd_result" "$(LL="$LAST_LINE" python3 -c "
+import os, json
+last = os.environ.get('LL','')
+parts = last.split()
+print(json.dumps({
+  'last_line': last,
+  'result': 'PASS' if last == 'PASS' else 'FAIL' if parts and parts[0] == 'FAIL' else 'UNKNOWN',
+  'last_stage': parts[1] if len(parts) > 1 else '',
+  'log_path': parts[2] if len(parts) > 2 else '',
+}))
+" 2>/dev/null || echo '{}')"
 
 # ---- 3a. PASS → merge worktree 回主干 / 删状态、放行 ----
 if [ "$LAST_LINE" = "PASS" ]; then
@@ -458,6 +579,11 @@ NUDGE_MSG
 RH_MSG
           ;;
       esac
+      debug_log "judge_result" "$(JA="continue_nudge" JD="false" JC="$JUDGE_CONF_OUT" JR="$JUDGE_REASON_OUT" python3 -c "
+import os, json
+print(json.dumps({'action': os.environ.get('JA',''), 'downgraded': os.environ.get('JD','false') == 'true', 'confidence': float(os.environ.get('JC','0') or 0), 'reason': os.environ.get('JR','')[:200]}))
+" 2>/dev/null || echo '{}')"
+      debug_log "exit" '{"code":2,"reason":"judge_continue_nudge"}'
       exit 2
     else
       echo "[builder-loop judge | iter=${NEXT_ITER}] consecutive_nudge_count=${CUR_NUDGE} >= max=${MAX_NUDGE}，强制 stop_done（防脱缰）" >&2
@@ -495,6 +621,10 @@ PY
   MERGE_OUT="$(bash "${SKILL_DIR}/merge-worktree-back.sh" "$STATE_FILE" 2>&1 || true)"
   MERGE_LAST="$(echo "$MERGE_OUT" | tail -1)"
   MERGE_ACTION="$(echo "$MERGE_LAST" | awk '{print $1}')"
+  debug_log "merge_result" "$(MA="$MERGE_ACTION" ML="$MERGE_LAST" python3 -c "
+import os, json
+print(json.dumps({'merge_action': os.environ.get('MA',''), 'merge_last_line': os.environ.get('ML','')[:200]}))
+" 2>/dev/null || echo '{}')"
   case "$MERGE_ACTION" in
     MERGED|NOOP)
       # 用 merge 前预读的 start_head（cleanup_worktree 可能已把 state 删了）
@@ -539,6 +669,10 @@ reviewer_params=${PARAMS_FILE}
 ⚠️ 重要：如果之前已有 reviewer 在后台运行，其结果基于旧代码（loop 运行前的快照），无效。请忽略旧 reviewer 结果，基于当前 HEAD 重新 spawn reviewer。
 ⚠️ Reviewer 参数已预计算到 ${PARAMS_FILE}（含 changed_files/report_path/diff_file），Read 后直接传给 reviewer。diff 用 git diff ${PASS_START_HEAD}..HEAD 或读 ${DIFF_FILE}。
 PASS_MSG
+      debug_log "exit" "$(IT="$NEXT_ITER" MA="$MERGE_ACTION" python3 -c "
+import os, json
+print(json.dumps({'code':2,'reason':'pass_done','iter': int(os.environ.get('IT','0') or 0), 'merge_action': os.environ.get('MA','')}))
+" 2>/dev/null || echo '{}')"
       exit 2
       ;;
     NEED_ARBITRATION)
@@ -605,6 +739,7 @@ ${THEIR_COMMITS_TEXT}
    APPLY_FAILED (exit 2) → 重试（max_attempts=${MAX_ATT}）或交用户
    MERGE_FAILED (exit 3) → 同上
 ARBITER_MSG
+      debug_log "exit" '{"code":2,"reason":"need_arbitration"}'
       exit 2
       ;;
     *)
@@ -617,6 +752,10 @@ ARBITER_MSG
 ${MERGE_OUT}
 请检查 worktree=$(grep -E '^worktree_path:' "$STATE_FILE" 2>/dev/null | head -1) 与主仓状态后手动决定下一步。
 MERGE_FAIL_MSG
+      debug_log "exit" "$(MA="$MERGE_ACTION" python3 -c "
+import os, json
+print(json.dumps({'code':2,'reason':'merge_failed','merge_action':os.environ.get('MA','')}))
+" 2>/dev/null || echo '{}')"
       exit 2
       ;;
   esac
@@ -668,6 +807,11 @@ PY
 
 本消息来自 builder-loop 自动判定 agent，非用户输入。
 RETRY_MSG
+    debug_log "judge_result" "$(JA='retry_transient' JD='false' JC="$JUDGE_CONF_FAIL" JR="$JUDGE_REASON_FAIL" python3 -c "
+import os, json
+print(json.dumps({'action': os.environ.get('JA',''), 'downgraded': os.environ.get('JD','false') == 'true', 'confidence': float(os.environ.get('JC','0') or 0), 'reason': os.environ.get('JR','')[:200]}))
+" 2>/dev/null || echo '{}')"
+    debug_log "exit" '{"code":2,"reason":"judge_retry_transient"}'
     exit 2
   fi
 fi
@@ -680,6 +824,10 @@ if [ "$ESTOP_ACTION" = "STOP" ]; then
   REASON="$(echo "$ESTOP" | awk '{print $2}')"
   echo "[builder-loop] ⛔ early stop at iter ${NEXT_ITER}, reason=${REASON}" >&2
   write_trace "EARLY_STOP" "" "" "$REASON"
+  debug_log "early_stop" "$(IT="$NEXT_ITER" R="$REASON" python3 -c "
+import os, json
+print(json.dumps({'iter': int(os.environ.get('IT','0') or 0), 'reason': os.environ.get('R','')}))
+" 2>/dev/null || echo '{}')"
 
   # V2.3: dirty 模式 → 还原主仓 stash（apply 不 pop，副本保留供事后查阅 / 用户决定要不要 drop）
   # 防御性 trim：sed 已剥引号，这里再 tr 删 [:space:] 防极端 corner case 路径前后空白污染 git 命令
@@ -728,6 +876,10 @@ if [ "$ESTOP_ACTION" = "STOP" ]; then
   error_growth             — 错误数持续增长
   suspected_test_tampering — 疑似修改测试绕 PASS_CMD
 EARLY_STOP_MSG
+  debug_log "exit" "$(R="$REASON" python3 -c "
+import os, json
+print(json.dumps({'code':2,'reason':'early_stop_'+os.environ.get('R','unknown')}))
+" 2>/dev/null || echo '{}')"
   exit 2
 fi
 
@@ -755,4 +907,8 @@ cat >&2 <<FEEDBACK_MSG
 
 ${FEEDBACK}
 FEEDBACK_MSG
+debug_log "exit" "$(IT="$NEXT_ITER" S="$STAGE" python3 -c "
+import os, json
+print(json.dumps({'code':2,'reason':'fail_continue','iter': int(os.environ.get('IT','0') or 0), 'stage': os.environ.get('S','')}))
+" 2>/dev/null || echo '{}')"
 exit 2

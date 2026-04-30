@@ -385,4 +385,47 @@ if [ -n "$WORKTREE_PATH" ] && [ "$OWNER_CWD" = "$PROJECT_ROOT" ]; then
 WARN
 fi
 
+# V2.5: hook 注册 + 软链自检（缺失时 stderr 醒目警告）
+# 触发：每次 setup 都跑（轻量 IO，python3 解析 JSON 一次 + 几个 stat）
+# 目的：c1 根因 1 — settings.json hook 条目丢失 / 软链断 → stop hook 永不触发，但用户毫无察觉
+# 不阻断 setup：缺则警告 + 给修复指引，state 仍正常创建
+SETTINGS_JSON_V25="${HOME}/.claude/settings.json"
+HOOK_REG_OK=1
+LINK_OK=1
+if [ -f "$SETTINGS_JSON_V25" ]; then
+  if ! SJ="$SETTINGS_JSON_V25" python3 -c "
+import json, os, sys
+try:
+    cfg = json.load(open(os.environ['SJ']))
+    hooks = cfg.get('hooks', {})
+    for entry in hooks.get('Stop', []):
+        for h in entry.get('hooks', []):
+            cmd = h.get('command', '')
+            if 'builder-loop-stop.sh' in cmd:
+                sys.exit(0)
+    sys.exit(1)
+except Exception:
+    sys.exit(1)
+" 2>/dev/null; then
+    HOOK_REG_OK=0
+  fi
+else
+  HOOK_REG_OK=0
+fi
+[ ! -e "${HOME}/.claude/scripts/builder-loop-stop.sh" ] && LINK_OK=0
+if [ "$HOOK_REG_OK" -eq 0 ] || [ "$LINK_OK" -eq 0 ]; then
+  HOOK_STATUS="❌ missing"
+  LINK_STATUS="❌ broken/missing"
+  [ "$HOOK_REG_OK" -eq 1 ] && HOOK_STATUS="✅ ok"
+  [ "$LINK_OK" -eq 1 ] && LINK_STATUS="✅ ok"
+  cat >&2 <<HOOK_WARN
+
+⚠️  V2.5 自检：builder-loop hook 配置异常，stop hook 可能不会触发！
+   ① settings.json Stop hook 注册：${HOOK_STATUS}
+   ② ~/.claude/scripts/builder-loop-stop.sh 软链：${LINK_STATUS}
+   修复：cd <cc-builder-loop 仓> && bash install.sh
+   排查：bash ~/.claude/skills/builder-loop/scripts/diagnose-stop-hook.sh
+HOOK_WARN
+fi
+
 echo "提示：下次 Stop hook 触发时会自动跑 loop.yml.pass_cmd 验证。"

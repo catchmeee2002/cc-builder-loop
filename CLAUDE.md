@@ -91,7 +91,7 @@ cc-builder-loop/
 └── agents/                     # tester.md + arbiter.md
 ```
 
-## 5. 已交付能力（V1.0~V2.4）
+## 5. 已交付能力（V1.0~V2.5）
 
 - 多阶段 PASS_CMD + 智能早停
 - tester 强隔离（hook 锁机制）
@@ -198,6 +198,15 @@ cc-builder-loop/
   - **完全向后兼容**：策略 5 仅在策略 1-4 全 miss 后介入；V1.x 老 state 缺 `active` 字段 → 字符串比对 `!= "true"` → 不绑（保守）；bare loop（`worktree_path` 空）已被策略 4 兜底，不受影响
   - **配套 fixture**：`test-locate-state-strategy5.sh`（4 case / 21 assert，覆盖 唯一 active 命中 / 多 active 不绑 + stop hook stderr 含诊断 / 死 worktree 孤儿排除 / inactive state 不参与 / setup 后端到端 setup-stderr-含警告 + locate 命中）。loop.yml PASS_CMD 新增 `v24_locate_strategy5` stage
   - **未来扩展**：长期反馈强烈再考虑 `loop.yml.locate.tie_breaker: latest_mtime` 配置项让多 active 时绑最近一个；本期不实现
+- **V2.5**: stop hook 可观测性 — debug log + diagnose 脚本 + setup 自检（c1 / c5 复盘 forensic 基础）
+  - **背景**：c1（V2.4 落地 session loop 哑火）+ c5（generator session a9a1ceef 自激空转）两个反向极端复现，复盘时**完全没数据可看**——CLAUDE.md §7.1 排查指引让用户 `tail /tmp/builder-loop-stop-debug.log`，但 `grep -r 'debug.log' scripts/` 零命中，**承诺与实现脱节**。c5 bullet 5（commit 后还多 1 次 NOOP）的根因显式承认"需先审 stop hook 实际检测代码"，没数据只能旁路推理
+  - **修复 1（debug log 写入）**：`builder-loop-stop.sh` 顶部加 `debug_log()` 函数 + 10 处 phase 插桩（entry / locate_result / flock_acquire / bootstrap_check / pass_cmd_start / pass_cmd_result / merge_result / judge_result / early_stop / exit）。路径 `<P>/.claude/builder-loop/stop-hook-debug.log`（多项目隔离 + .gitignore 已排除 `.claude/builder-loop/`）。每行 NDJSON `{ts/session/cwd/slug/phase/details}`。1 MB rotate / 保留 5 个 .1-.5（`BUILDER_LOOP_DEBUG_LOG_MAX_BYTES` env 可调）。IO / mkdir / 写入失败末尾 `|| true`，**不阻断** hook 主流程
+  - **修复 2（diagnose-stop-hook.sh）**：新脚本 `skills/builder-loop/scripts/diagnose-stop-hook.sh [project_root] [--json]`。6 段 dry-run 排查（hook 注册 / 软链 / state / lock+cursor+stash / trace+debug log 摘要 / git worktree list）。退出码 0/1/2 = ok/warn/fail。严格只读 `git -C` / `cat` / `stat`，不写任何文件不调外部 API
+  - **修复 3（setup 末尾自检）**：`setup-builder-loop.sh` cwd 警告段之后加 settings.json Stop hook 注册 + `~/.claude/scripts/builder-loop-stop.sh` 软链有效性自检 → 缺则 stderr `⚠️ V2.5 自检：...` + 给 `bash install.sh` / `diagnose-stop-hook.sh` 修复指引。不阻断 setup
+  - **CLAUDE.md §7.1 路径修正**：`/tmp/builder-loop-stop-debug.log` → `<P>/.claude/builder-loop/stop-hook-debug.log`，加注「老路径在 V2.4 及之前从未实际写入，是文档承诺与实现脱节，本次 V2.5 修正」
+  - **forensic 价值**：c1 / c5 类间歇性 stop hook 行为问题下次再现时，`tail -50 stop-hook-debug.log` 能直接看出每次 stop hook 触发时哪些条件成立 / 哪些 phase 命中 / 因什么 reason 退出。c5 bullet 5 的"commit 后多 1 次 NOOP"靠 bootstrap_check phase 的 details.changed_files_count + decision 字段一眼定位
+  - **完全向后兼容**：debug log 是新增独立文件，不动 trace.jsonl / loop-trace.jsonl / state schema；任何 IO 失败静默；`BUILDER_LOOP_DEBUG_LOG_MAX_BYTES=0` 可关 rotate；本期**不改触发逻辑**（c1 / c5 的修复推后到阶段 2，等真实数据让根因显形）
+  - **配套 fixture**：`test-stop-hook-debug-log.sh`（5 case，覆盖 基础写入 + phase 顺序 / IO 失败容忍 / rotate 触发 / diagnose 6 段 + 严格 dry-run / setup 自检识别 hook 注册缺失）。loop.yml PASS_CMD 新增 `v25_stop_hook_observability` stage
 
 详见 `skills/builder-loop/README.md` 与 `skills/builder-loop/docs/judge-agent.md`。
 
@@ -219,9 +228,11 @@ cc-builder-loop/
 
 **排查步骤**：
 1. 用 `ls -la <project_root>/.claude/builder-loop/` 查看是否有 `state/` 或 `legacy/` 目录
-2. 若有 `legacy/*.bak`，用 `tail -20 /tmp/builder-loop-stop-debug.log` 查 hook 退出原因
-3. 若日志显示 `active=false` 或 `stopped_reason` 存在，证实是僵尸 → V1.8.1 修复已生效
-4. 若日志显示其他退出原因（如 `no_project_root`），按日志的 `EXIT_REASON` 字段诊断
+2. 用 `tail -50 <project_root>/.claude/builder-loop/stop-hook-debug.log` 查最近 hook 触发的关键决策点（V2.5 引入；NDJSON 格式 + 10 处 phase 插桩；详见 §7.11）
+   - 注：老路径 `/tmp/builder-loop-stop-debug.log` 在 V2.4 及之前从未实际写入，是文档承诺与实现脱节，V2.5 修正
+3. 若 debug log 含 `phase=exit` + `reason=zombie_inactive`，证实是僵尸 → V1.8.1 修复已生效
+4. 若日志显示其他退出原因（`no_project_root` / `lock_held_by_other` / `not_git_repo` / `state_file_missing` / `existing_loop_worktrees` / `no_diff` / `doc_only` / `bootstrap_setup_failed`），按 phase=exit 的 reason 字段定位
+5. 一键全量诊断：`bash ~/.claude/skills/builder-loop/scripts/diagnose-stop-hook.sh` 输出 6 段（hook 注册 / 软链 / state / lock / trace+debug log / worktree）
 
 ### 7.2 Commit-msg hook 拦截导致 auto-commit 失败
 
@@ -413,3 +424,79 @@ mkdir -p .claude/builder-loop/legacy/
 mv .claude/builder-loop/state/<slug>.yml .claude/builder-loop/legacy/
 ```
 或编辑 state `active: false` 让其不参与候选筛选。
+
+### 7.11 stop hook debug log 格式 + 排查指南（V2.5）
+
+**位置**：`<project_root>/.claude/builder-loop/stop-hook-debug.log`
+
+**格式**：每行 1 条 NDJSON
+```jsonc
+{"ts":"2026-04-30T12:34:56.789Z","session":"abc12345","cwd":"/path","slug":"<slug>","phase":"<phase>","details":{...}}
+```
+- `session`：CC session_id 前 8 字符（跨 hook 触发追踪用）
+- `slug`：state 文件名去 `.yml`（bare loop = `__main__`）；entry / locate_result phase 时为空
+- `phase` / `details`：见下表
+
+**滚动**：默认 1 MB（`BUILDER_LOOP_DEBUG_LOG_MAX_BYTES` env 可调），保留 5 个 `.1-.5`。超过 `.5` 删除（最多 5 MB 占用）
+
+**Phase 表**（10 种）：
+
+| phase | 时机 | 关键 details 字段 |
+|-------|------|-----------------|
+| `entry` | hook 入口（解析 stdin 后） | `cwd`, `transcript_path` |
+| `locate_result` | locate-state.sh 调用后 | `state_file`, `matched` |
+| `flock_acquire` | flock 抢锁结果 | `lock_file`, `acquired` |
+| `bootstrap_check` | bootstrap 触发条件判定 | `found_loop_only`, `decision`（`trigger`/`skip_doc_only`/`skip_no_diff`/`skip_existing_worktree`）, `changed_files_count`, `doc_only` |
+| `pass_cmd_start` | 跑 PASS_CMD 前 | `iter`, `run_cwd` |
+| `pass_cmd_result` | PASS_CMD 跑完 | `result`（`PASS`/`FAIL`/`UNKNOWN`）, `last_line`, `last_stage`, `log_path` |
+| `merge_result` | merge-worktree-back.sh 后 | `merge_action`, `merge_last_line` |
+| `judge_result` | run-judge-agent.sh 后 | `action`, `downgraded`, `confidence`, `reason` |
+| `early_stop` | early-stop-check STOP 时 | `iter`, `reason` |
+| `exit` | 脚本退出前 | `code`（0/2）, `reason`（详见下） |
+
+**`exit.reason` 取值**（看每次 hook 为啥退出）：
+
+| reason | 含义 |
+|--------|------|
+| `no_project_root` | 未找到 `.claude/loop.yml`（项目未接入 loop） |
+| `lock_held_by_other` | 另一 stop hook 在跑（flock 抢锁失败） |
+| `not_git_repo` | bootstrap 时 PROJECT_ROOT 不是 git 仓 |
+| `existing_loop_worktrees` | bootstrap 时检测到已有 loop/* worktree（跨 session 守门） |
+| `no_diff` | bootstrap 时无未提交工作树改动 |
+| `doc_only` | bootstrap 时改动全是文档（V2.2.1 白名单） |
+| `bootstrap_setup_failed` | bootstrap 调 setup-builder-loop 失败 |
+| `state_file_missing` / `state_file_missing_after_bootstrap` | state 文件路径异常 |
+| `zombie_inactive` | state.active != true 僵尸归档 |
+| `pass_done` | PASS_CMD 全过 + merge ok（正常 PASS 退出，code=2） |
+| `need_arbitration` | merge rebase 冲突需仲裁（code=2） |
+| `merge_failed` | merge-worktree-back 异常（code=2） |
+| `early_stop_<reason>` | 早停（max_iter / no_progress / error_growth / suspected_test_tampering） |
+| `judge_continue_nudge` / `judge_retry_transient` | judge agent 决策注入 nudge / retry |
+| `fail_continue` | PASS_CMD fail，注入 feedback 等下一轮（code=2） |
+
+**典型排查流程**：
+
+1. **stop hook 完全没触发**：
+   - `tail -10 <P>/.claude/builder-loop/stop-hook-debug.log` 看是否有 `entry` phase
+   - 全无 → 跑 `diagnose-stop-hook.sh`，重点看 [1/6] hook 注册 + [2/6] 软链
+   - 有 entry 但无 exit → 脚本中途崩溃，看 stderr 错误
+
+2. **stop hook 反复跑 NOOP（c5 类）**：
+   - `grep '"phase":"bootstrap_check"' debug.log | tail -10` 看每次的 `decision` + `changed_files_count`
+   - 同一 dirty 状态反复 `decision:trigger` → bootstrap 节流缺失，确认 c5 假设
+   - HEAD 推进后又触发 → 看 `bootstrap_check.details.changed_files_count` 与上次对比
+
+3. **PASS_CMD 路径异常（merge / judge / arbiter）**：
+   - `grep '"phase":"merge_result"\|"phase":"judge_result"' debug.log | tail -5`
+   - merge_action `MERGED`/`NOOP`/`NEED_ARBITRATION`/其他 → 比对 §7.10 行为说明
+
+4. **看某 session 完整流程**：
+   - `grep '"session":"abc12345"' debug.log` 拿该 session 所有 phase 链
+   - 标准链：entry → locate_result → flock_acquire(true) → (bootstrap_check / 直走) → pass_cmd_start → pass_cmd_result → (merge_result / judge_result) → exit
+
+**关闭 / 清理**：
+- 默认开（无配置项关闭，IO 失败已容忍）
+- 手动清理：`rm <P>/.claude/builder-loop/stop-hook-debug.log*`，下次 hook 触发自动重建
+- 调小 rotate：`export BUILDER_LOOP_DEBUG_LOG_MAX_BYTES=262144`（256 KB）
+
+**老路径迁移说明**：V2.4 及之前 CLAUDE.md §7.1 提的 `/tmp/builder-loop-stop-debug.log` **从未实际写入过**（grep stop hook 代码 0 命中）。V2.5 路径换到项目本地 + 真实写入。如果用户从老笔记看到 `/tmp/builder-loop-stop-debug.log`，已是历史包袱。
