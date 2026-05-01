@@ -17,7 +17,8 @@
 #   - 还原主仓 stash（V2.3 路径，仅 worktree_mode=dirty）
 #   - 写 trace event "ABANDON"
 #   - archive_to_legacy state → legacy/<ts>-abandon_<reason>.bak
-#   - 写 legacy/<ts>-abandon_<reason>.info（worktree path / stash hash / changed_files / reason）
+#   - 写 legacy/<ts>-abandon_<reason>.info（reason / slug / iter / worktree path / worktree_mode /
+#     stash_ref / stash_restored / baseline_probe_status / ts）
 #   - **不动** state.worktree_path 目录（保留 worktree + branch 让用户手动 cherry-pick）
 #
 # 设计：
@@ -61,6 +62,10 @@ if [ -z "$REASON_STRIPPED" ]; then
   exit 2
 fi
 
+# 含换行符 → flatten 成单行（防 .info 文件 YAML-like 格式被破坏 / trace 行变多行）
+# 用空格替换 LF / CR；连续空白不压缩（保留 reason 可读性，仅防 multi-line poisoning）
+REASON="$(printf '%s' "$REASON" | tr '\n\r' '  ')"
+
 if [ ! -f "$STATE" ]; then
   echo "[abandon-loop] ❌ state file 不存在：$STATE" >&2
   echo "                可能 loop 已 PASS 或已被 abandon；无需操作。" >&2
@@ -69,7 +74,17 @@ fi
 
 # ---- 读 state 字段（容错：缺字段视为空，不杀脚本）----
 read_field() {
-  # 与 merge-worktree-back.sh 一致语义；末尾 || true 防 grep 未命中触发 set -e
+  # 与 builder-loop-stop.sh EARLY_STOP 路径对齐：sed 剥引号 + tr -d [:space:] 防尾部空白污染
+  # （后者防 git stash apply "<hash with trailing space>" / 路径含空白等失败）
+  # 末尾 || true 防 grep 未命中触发 set -e
+  grep -E "^${1}:" "$STATE" 2>/dev/null | head -1 \
+    | sed -E "s/^${1}:[[:space:]]*\"?([^\"]*)\"?[[:space:]]*\$/\1/" \
+    | tr -d '[:space:]' || true
+}
+
+# 注：worktree_path 字段例外，路径本身可能含空白（虽然项目约定不允许，仍保留容错）。
+# 用 read_field_path 单独读，仅 sed 剥引号不 strip 内部空白
+read_field_path() {
   grep -E "^${1}:" "$STATE" 2>/dev/null | head -1 \
     | sed -E "s/^${1}:[[:space:]]*\"?([^\"]*)\"?[[:space:]]*\$/\1/" || true
 }
@@ -77,14 +92,14 @@ read_field() {
 ACTIVE="$(read_field active)"
 SLUG="$(read_field slug)"
 ITER="$(read_field iter)"
-PROJECT_ROOT="$(read_field main_repo_path)"
-[ -z "$PROJECT_ROOT" ] && PROJECT_ROOT="$(read_field project_root)"  # V1.x 老 state 兼容
-WORKTREE_PATH="$(read_field worktree_path)"
+PROJECT_ROOT="$(read_field_path main_repo_path)"
+[ -z "$PROJECT_ROOT" ] && PROJECT_ROOT="$(read_field_path project_root)"  # V1.x 老 state 兼容
+WORKTREE_PATH="$(read_field_path worktree_path)"
 WORKTREE_MODE="$(read_field worktree_mode)"
 PRE_LOOP_STASH_REF="$(read_field pre_loop_stash_ref)"
 # V2.6 Phase 2 字段（本期 abandon-loop.sh 已支持，缺字段当作空）
 BASELINE_PROBE_PID="$(read_field baseline_probe_pid)"
-BASELINE_PROBE_WORKTREE="$(read_field baseline_probe_worktree)"
+BASELINE_PROBE_WORKTREE="$(read_field_path baseline_probe_worktree)"
 BASELINE_PROBE_STATUS="$(read_field baseline_probe_status)"
 
 # active 必须为 true 才允许 abandon（防 zombie 重复归档）
@@ -106,6 +121,8 @@ echo "[abandon-loop] ⛔ 开始 abandon (slug=${SLUG:-<unknown>}, iter=${ITER:-?
 
 # ---- Step 1: V2.6 Phase 2 — kill baseline probe 进程 + 清临时 worktree（缺字段静默） ----
 # 当前 Phase 1 这两个字段都是空，下方 if 不执行；Phase 2 后才生效
+# TODO[Phase 2]：替换 sleep 1 为 waitpid 风格短轮询（参考 EARLY_STOP 路径 / flock 用法），
+#               防止 abandon 在 hook 阻塞场景下被 sleep 卡住影响响应速度。
 if [ -n "$BASELINE_PROBE_PID" ] && [ "$BASELINE_PROBE_PID" != "0" ]; then
   if kill -0 "$BASELINE_PROBE_PID" 2>/dev/null; then
     kill "$BASELINE_PROBE_PID" 2>/dev/null || true

@@ -11,7 +11,7 @@
 
 | Phase | 范围 | 状态 | commit ref | E2E 验证 | 坑点笔记 |
 |-------|------|------|-----------|---------|---------|
-| **Phase 1** | abandon-loop.sh + dotfiles A3 关键词识别 + test-abandon-loop-flow.sh + CLAUDE.md §5 V2.6 段 + §7.12 + loop.yml v26 stage | ✅ 已完成 | _本仓:待 commit / dotfiles:待 commit_ | ✅ 42/42 通过 | install/uninstall 不需改（整目录软链已生效） |
+| **Phase 1** | abandon-loop.sh + dotfiles A3 关键词识别 + test-abandon-loop-flow.sh + CLAUDE.md §5 V2.6 段 + §7.12 + loop.yml v26 stage | ✅ 已完成 | 本仓: `2934b15` (auto-commit) + reviewer fix commit (待打) / dotfiles: 待 commit | ✅ 42/42 通过（reviewer fix 后仍 42/42） | (1) install/uninstall 不需改（整目录软链已生效）；(2) fixture 临时仓必须建 `.claude/loop.yml` 让 locate-state.sh 策略 1 锚定 PROJECT_ROOT；(3) commit-msg hook 全局拦截 fixture 内 git commit 必须 `chore(test): [cr_id_skip] Xxx` 格式；(4) `bash ... \|\| true` 让命令替换 exit 永远 0，捕获非 0 退出码用 `_out=$(cmd 2>&1); _ec=$?` |
 | **Phase 2** | run-baseline-probe.sh + refresh-baseline-probe.sh + setup fork + state schema 4 字段 + run-pass-cmd.sh 抽函数 + 2 fixture + CLAUDE.md §7.13 | ⬜ 未启动 | — | — | — |
 | **Phase 3** | builder-loop-stop.sh 差集归因 + merge-worktree-back kill probe + dotfiles A2 段 + 2 fixture + Phase 3 loop.yml stages + CLAUDE.md §7.14 + .gitignore 规则 | ⬜ 未启动 | — | — | — |
 
@@ -258,7 +258,7 @@ worktree_mode: "dirty"
 pre_loop_stash_ref: "abc123..."
 # ...
 
-# V2.5 新增
+# V2.6 新增
 baseline_probe_status: "pending"  # pending|running|done|failed|skipped
 baseline_probe_pid: 0              # 0 表示未启动 / 已清理
 baseline_probe_worktree: ""        # 临时 worktree 路径
@@ -304,7 +304,7 @@ baseline_probe:
 新增「步骤 X：fail 归因决策」段（在 stop hook fail 注入后第一步执行）：
 
 ```markdown
-### 步骤 X：fail 归因决策（V2.5）
+### 步骤 X：fail 归因决策（V2.6）
 
 stop hook 喂回 fail 信息后，**第一步**判断 fail 是否本期责任：
 
@@ -322,7 +322,7 @@ stop hook 喂回 fail 信息后，**第一步**判断 fail 是否本期责任：
 ### A3 关键词识别段（dotfiles `~/.claude/commands/builder.md`）
 
 ```markdown
-### 步骤 Y：用户主动喊停识别（V2.5）
+### 步骤 Y：用户主动喊停识别（V2.6）
 
 仅在**上一轮收到 `[builder-loop ...]` stderr 注入后的下一轮 user reply** 中识别。其他时机不识别。
 
@@ -465,8 +465,8 @@ stop hook 喂回 fail 信息后，**第一步**判断 fail 是否本期责任：
 | `skills/builder-loop/schema/loop.schema.json` | 新增 baseline_probe 段 schema |
 | `install.sh` | 新增 abandon-loop.sh / run-baseline-probe.sh / refresh-baseline-probe.sh 软链 |
 | `uninstall.sh` | 同上反向 |
-| `loop.yml`（cc-builder-loop 自身） | PASS_CMD 加 v25_abandon_flow / v25_baseline_probe stages |
-| `CLAUDE.md` | §5 加 V2.5 段 + §7 新增 §7.11~§7.13 排查 |
+| `loop.yml`（cc-builder-loop 自身） | PASS_CMD 加 v26_abandon_loop_flow / v26_baseline_probe stages |
+| `CLAUDE.md` | §5 加 V2.6 段 + §7 新增 §7.12~§7.14 排查 |
 | `.gitignore` | 加 `.claude/builder-loop/baseline-probe/` + `.claude/worktrees/baseline-*` + `.claude/builder-loop/legacy/*-abandon_*.{bak,info}` |
 | `~/.claude/commands/builder.md`（**dotfiles 仓**） | A2 归因决策段 + A3 关键词识别段；走 dotfiles 独立 commit |
 | `~/.claude/settings.json` | （如需）PreToolUse permission 放行 abandon-loop.sh / refresh-baseline-probe.sh 调用 |
@@ -495,7 +495,7 @@ stop hook 喂回 fail 信息后，**第一步**判断 fail 是否本期责任：
 3. **改 `~/.claude/settings.json`**（如需）：PreToolUse permission 放行 abandon-loop.sh 调用
 4. **改 `~/.claude/commands/builder.md`**（dotfiles 仓）：加 A3 关键词识别段（含白名单 + 上下文限定 + AskUserQuestion 二确认 + 调脚本）
 5. **新增 fixture `test-abandon-loop-flow.sh`**：覆盖 reason 必填 / 成功 abandon / state 归档 / worktree 保留 / stash 还原 / 重复调拒绝
-6. **改 `CLAUDE.md`**：§5 加 V2.5 第一段（abandon-loop.sh）+ §7 加 §7.11
+6. **改 `CLAUDE.md`**：§5 加 V2.6 第一段（abandon-loop.sh）+ §7 加 §7.12（V2.5 已占 §7.11）
 
 ### Phase 2: baseline probe（异步）
 
@@ -507,7 +507,7 @@ stop hook 喂回 fail 信息后，**第一步**判断 fail 是否本期责任：
 12. **新增 `skills/builder-loop/scripts/refresh-baseline-probe.sh`**
 13. **改 `install.sh` / `uninstall.sh`**：新增 run-baseline-probe / refresh-baseline-probe 软链
 14. **新增 fixture `test-baseline-probe-async.sh`** + `test-baseline-probe-failure-fallback.sh`
-15. **改 `CLAUDE.md`**：§5 V2.5 段补 baseline probe 部分 + §7 加 §7.12
+15. **改 `CLAUDE.md`**：§5 V2.6 段补 baseline probe 部分 + §7 加 §7.13
 
 ### Phase 3: 归因升级 + A2 接入
 
@@ -515,13 +515,13 @@ stop hook 喂回 fail 信息后，**第一步**判断 fail 是否本期责任：
 17. **改 `skills/builder-loop/scripts/merge-worktree-back.sh`**：cleanup_worktree 前 kill probe pid + remove 临时 worktree
 18. **改 `~/.claude/commands/builder.md`**（dotfiles 仓）：加 A2 归因决策段（步骤 X）
 19. **新增 fixture `test-attribution-diff-set.sh`** + `test-refresh-after-abandon.sh`
-20. **改 `loop.yml`**（cc-builder-loop 自身）：PASS_CMD 加 v25 stages
-21. **改 `CLAUDE.md`**：§5 V2.5 段补 A2/A3 + §7 加 §7.13
+20. **改 `loop.yml`**（cc-builder-loop 自身）：PASS_CMD 加 v26 stages
+21. **改 `CLAUDE.md`**：§5 V2.6 段补 A2/A3 + §7 加 §7.14
 22. **改 `.gitignore`**：加 baseline-probe / worktrees/baseline-* / legacy/*-abandon_* 规则
 
 ### Phase 4: 跨仓同步 commit
 
-23. **本仓 commit**：`feat(builder-loop): [cr_id_skip] V2.5 abandon-loop + async baseline probe`
+23. **本仓 commit**：`feat(builder-loop): [cr_id_skip] V2.6 abandon-loop + async baseline probe`
 24. **dotfiles 仓 commit**：`feat(commands): [cr_id_skip] Builder.md A2/A3 abandon decision and keyword recognition`
 25. **本仓 commit 后查 CLAUDE.md §3 同步 checklist**：确认软链/hook 注册 / matcher 改动同步
 
@@ -536,8 +536,8 @@ stop hook 喂回 fail 信息后，**第一步**判断 fail 是否本期责任：
 | **场景 1**：BOT 复现（baseline 已 broken + 本期改动无关） | 手动跑 e2e fixture `test-attribution-diff-set.sh` 中的对应 case | builder 收到 fail 注入应识别 abandon-candidate 标记 + 主动 AskUserQuestion + 模拟 user 选 abandon → 调脚本 → state 归档 |
 | **场景 2**：用户主动喊「停掉loop」 | 手动跑 fixture `test-abandon-loop-flow.sh` 中的关键词识别 case | 仅在 fail 注入后下一轮触发 + AskUserQuestion 单确认 + 命中后调脚本 |
 | **场景 3**：probe 失败/timeout | 手动跑 fixture `test-baseline-probe-failure-fallback.sh` | builder 走原启发式归因路径 + setup 不阻塞 + stderr 一行提示 |
-| **机器验收**：5 个 e2e fixture 全过 | 跑完整 PASS_CMD（含 v25_* stages） | 退出码 0 |
-| **回归验收**：V2.4 已有 fixture 不挂 | 跑 PASS_CMD 全套 | 全部 pre-V2.5 fixture 不受新字段影响 |
+| **机器验收**：5 个 e2e fixture 全过 | 跑完整 PASS_CMD（含 v26_* stages） | 退出码 0 |
+| **回归验收**：V2.4 已有 fixture 不挂 | 跑 PASS_CMD 全套 | 全部 pre-V2.6 fixture 不受新字段影响 |
 
 **长期验收**（不阻断本期合入，但要求一周内跟踪）：
 - 真实 BOT 项目下次遇到「跨 PR baseline broken」时 abandon 一次着陆 → 验收闭环达成

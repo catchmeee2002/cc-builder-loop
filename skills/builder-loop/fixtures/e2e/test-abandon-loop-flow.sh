@@ -41,6 +41,8 @@ assert() {
 
 # 捕获命令的 stdout+stderr 与 exit code（不依赖 set -e 行为）
 # 用法：run_capture VAR_OUT VAR_EC cmd args...
+# 注：assert "echo '$VAR' | grep -q ..." 的 eval 路径在 VAR 含单引号时会 syntax error。
+#     当前 abandon-loop.sh 输出不含单引号；若未来改输出含单引号，断言改为 grep -q ... <<< "$VAR"
 run_capture() {
   local _vout="$1" _vec="$2"; shift 2
   local _out _ec
@@ -249,11 +251,13 @@ git -C "$WT_PATH_A10" config user.name "e2e-test"
 echo "wt-a10" > "$WT_PATH_A10/wt.txt"
 git -C "$WT_PATH_A10" add . && git -C "$WT_PATH_A10" commit -q -m "chore(test): [cr_id_skip] Wt-a10 init"
 
-# A10 reviewer hook 通过 locate-state.sh 找 state，需要在主仓生效（reviewer hook 走 cwd → 找
-# state）。但临时 fixture 不调 install.sh，所以 reviewer hook 实际上 fallback 到 LOCATE_SCRIPT
-# 的本地搜索。这里用 cd 到 worktree 后调 hook，hook 会通过 locate-state.sh 4-5 策略定位。
-# locate-state.sh 默认查 STATE_DIR（CWD 向上找 .claude/builder-loop/state/），所以临时仓的
-# .claude/builder-loop/state/ 仍生效。
+# A10 reviewer hook 集成验证。依赖 locate-state.sh 路径解析的两个前提：
+#   1. cwd（$TMP）必须含 .claude/loop.yml — 策略 1 锚定 PROJECT_ROOT
+#      （fixture 顶部 init 段已写入；漏写则 hook fallthrough exit 0 → A10 BEFORE 假阳性 flaky）
+#   2. 临时仓 .claude/builder-loop/state/<slug>.yml 必须 active=true + worktree_path 目录存活
+#      — 策略 5 唯一 active worktree 自动绑定（V2.4）
+# 任一前提失效则 hook 走 exit 0 放行 → BEFORE 断言 flaky。下方 write_state + WT_PATH_A10 mkdir
+# 是处理前提 (2) 的实现。
 write_state "$STATE_DIR/a10.yml" "true" "clean" "$WT_PATH_A10" "" "$TMP"
 
 # 在 worktree 的 .claude/builder-loop/state 下也放一份（locate-state 策略 1 查的是 CWD）
@@ -270,6 +274,95 @@ bash "$ABANDON_SCRIPT" "$STATE_DIR/a10.yml" "hook integration test" >/dev/null 2
 # Step 3: abandon 后再调 reviewer hook → 应放行
 run_capture HOOK_AFTER_OUT HOOK_AFTER_EC bash -c "cd '$TMP' && echo '$HOOK_INPUT' | bash '$REVIEWER_HOOK'"
 assert "abandon 之后 reviewer hook 放行 (exit 0)" "[ '$HOOK_AFTER_EC' -eq 0 ]"
+
+# ============================================================
+# A11: reason 含换行符 → .info 的 reason_raw 单行（\n flatten 成空格）
+# ============================================================
+echo "--- A11: reason 含换行符 → info reason_raw 不被换行破坏 ---"
+WT_PATH_A11="$TMP/.claude/worktrees/1777647748-test-a11"
+mkdir -p "$WT_PATH_A11"
+write_state "$STATE_DIR/a11.yml" "true" "clean" "$WT_PATH_A11" "" "$TMP"
+# 用 printf 构造含真实换行的 reason（不走 bash $'...' 以免单引号与 assert eval 冲突）
+REASON_A11="$(printf 'line1\nline2')"
+run_capture A11_OUT A11_EC bash "$ABANDON_SCRIPT" "$STATE_DIR/a11.yml" "$REASON_A11"
+assert "换行 reason → exit 0" "[ '$A11_EC' -eq 0 ]"
+assert "换行 reason → state 已归档" "[ ! -f '$STATE_DIR/a11.yml' ]"
+LEGACY_INFO_A11="$(ls "$LEGACY_DIR"/*-abandon_line1_line2.info 2>/dev/null | head -1)"
+assert "换行 reason → legacy .info 存在（spaces flatten）" "[ -f '$LEGACY_INFO_A11' ]"
+# reason_raw 字段必须在同一行（不能有裸换行导致字段值溢出到下一行）
+# 用 grep -c 确保只有一行匹配（多行说明 flatten 失效）
+REASON_RAW_LINES="$(grep -c 'reason_raw:' "$LEGACY_INFO_A11" 2>/dev/null || echo 0)"
+assert "info reason_raw 只出现一行（无多行溢出）" "[ '$REASON_RAW_LINES' -eq 1 ]"
+
+# ============================================================
+# A12: reason 含单引号/反引号/$ → trace NDJSON 合法 + info 不被 shell 展开
+# ============================================================
+echo "--- A12: reason 含特殊字符 → trace JSON 合法 + info reason_raw 安全 ---"
+WT_PATH_A12="$TMP/.claude/worktrees/1777647748-test-a12"
+mkdir -p "$WT_PATH_A12"
+write_state "$STATE_DIR/a12.yml" "true" "clean" "$WT_PATH_A12" "" "$TMP"
+# 故意使用含 单引号/反引号/dollar 的 reason（全部是原始字面量，不展开）
+REASON_A12="it's done: backtick-cmd and dollar-sign"
+run_capture A12_OUT A12_EC bash "$ABANDON_SCRIPT" "$STATE_DIR/a12.yml" "$REASON_A12"
+assert "特殊字符 reason → exit 0" "[ '$A12_EC' -eq 0 ]"
+assert "特殊字符 reason → state 已归档" "[ ! -f '$STATE_DIR/a12.yml' ]"
+# 验证 trace jsonl 最后一条 ABANDON event 是合法 JSON
+TRACE_VALID="$(tail -1 "$TMP/.claude/loop-trace.jsonl" 2>/dev/null | python3 -c "import json,sys; json.load(sys.stdin); print('ok')" 2>/dev/null || echo "invalid")"
+assert "trace jsonl ABANDON event 是合法 JSON" "[ '$TRACE_VALID' = 'ok' ]"
+# 文件名 sanitize：单引号→'_', 冒号→'__', 空格→'_'
+# "it's done: backtick-cmd and dollar-sign" → "it_s_done__backtick_cmd_and_dollar_sign"
+LEGACY_INFO_A12="$(ls "$LEGACY_DIR"/*-abandon_it_s_done__backtick_cmd_and_dollar_sign.info 2>/dev/null | head -1)"
+assert "特殊字符 reason → legacy .info 存在" "[ -f '$LEGACY_INFO_A12' ]"
+
+# ============================================================
+# A13: stash_ref 含尾部空格 → read_field strip 生效 → stash apply 成功
+# ============================================================
+echo "--- A13: stash_ref 含尾部空格 → strip 后 stash apply 成功 ---"
+# 创建真实 stash（需要有未 commit 改动）
+echo "trailing-space dirty" > "$TMP/src/trailing-dirty.txt"
+git -C "$TMP" add "src/trailing-dirty.txt"
+git -C "$TMP" stash push -u -m 'builder-loop:auto:slug=a13:ts=9999' >/dev/null 2>&1
+STASH_REF_A13="$(git -C "$TMP" rev-parse 'stash@{0}^{commit}' 2>/dev/null)"
+assert "A13 stash 创建成功（有有效 hash）" "[ -n '$STASH_REF_A13' ]"
+
+WT_PATH_A13="$TMP/.claude/worktrees/1777647748-test-a13"
+mkdir -p "$WT_PATH_A13"
+# 关键：state 里 stash_ref 写带尾部空格（手动写 cat，绕过 write_state 的 shellvar 展开）
+mkdir -p "$STATE_DIR"
+cat > "$STATE_DIR/a13.yml" <<EOF
+active: true
+slug: "test-abandon-fixture"
+iter: 0
+max_iter: 5
+project_root: "$WT_PATH_A13"
+main_repo_path: "$TMP"
+worktree_path: "$WT_PATH_A13"
+worktree_mode: "dirty"
+pre_loop_stash_ref: "${STASH_REF_A13}  "
+pre_loop_dirty_files: "src/trailing-dirty.txt"
+plan_file: ""
+task_description: |
+  trailing space stash ref test
+source_dirs: ""
+test_dirs: ""
+last_pass_stage: ""
+last_error_hash: ""
+last_error_count: 0
+stopped_reason: ""
+created_at: "1970-01-01T00:00:00+00:00"
+EOF
+run_capture A13_OUT A13_EC bash "$ABANDON_SCRIPT" "$STATE_DIR/a13.yml" "trailing stash ref test"
+assert "尾部空格 stash_ref → exit 0（strip 后 apply 成功）" "[ '$A13_EC' -eq 0 ]"
+assert "state 已归档" "[ ! -f '$STATE_DIR/a13.yml' ]"
+LEGACY_INFO_A13="$(ls "$LEGACY_DIR"/*-abandon_trailing_stash_ref_test.info 2>/dev/null | head -1)"
+assert "info 含 stash_restored: yes（strip 后 hash 有效）" "grep -q 'stash_restored: yes' '$LEGACY_INFO_A13'"
+# stash apply 后主仓工作树应能看到 trailing-dirty.txt
+assert "stash apply 还原 dirty 文件可见" "git -C '$TMP' status --porcelain 2>/dev/null | grep -q 'trailing-dirty.txt'"
+
+# 清理 A13 残留（避免后续影响）
+git -C "$TMP" stash drop stash@{0} 2>/dev/null || true
+git -C "$TMP" reset --hard HEAD 2>/dev/null >/dev/null
+git -C "$TMP" clean -fd 2>/dev/null >/dev/null
 
 # ============================================================
 # 汇总
