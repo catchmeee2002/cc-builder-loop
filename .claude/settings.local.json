@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(for d:*)",
+      "Bash(do echo:*)",
+      "Read(//mnt/hongyu.liao_docker/cc-builder-loop/$d/**)",
+      "Bash(done)",
+      "Bash(git remote:*)",
+      "Bash(git:*)",
+      "Bash(chmod:*)",
+      "Bash(bash /mnt/hongyu.liao_docker/cc-builder-loop/install.sh)",
+      "Bash(bash ~/.claude/skills/builder-loop/scripts/split-plan-by-role.sh /mnt/hongyu.liao_docker/cc-builder-loop/.claude/plans/20260425-stop-hook-bootstrap-cursor.md builder)",
+      "Read(//tmp/**)"
+    ]
+  }
+}

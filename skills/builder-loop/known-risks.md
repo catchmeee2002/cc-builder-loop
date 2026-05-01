@@ -99,6 +99,18 @@
 
 ---
 
+## R7: 与 CC 官方 `/loop` skill 叠用撞车
+
+**风险描述**：CC v2.1.121 起 `/loop` 含 dynamic 自适应步频模式（`ScheduleWakeup` 工具）。用户若在已激活 cc-builder-loop 的项目上叠用 `/loop` 监督 builder，wake-up 时机不感知 builder-loop state → 可能撞 worktree 跑到一半 / PASS_CMD 中途 / state 锁未释放。
+
+**当前缓解**（用户层）：CLAUDE.md 顶部 + `docs/cc-loop-tracking.md` §3 明示禁忌。
+
+**监测**：暂无自动监测（v3 计划探测 wake-up context 主动 skip bootstrap）。
+
+**详见**：`skills/builder-loop/docs/cc-loop-tracking.md` — 含官方版本快照表 + 借鉴清单 + 持续超越方向 + 复查节奏。
+
+---
+
 ## R5: 正版 Max CC 方案的 OAuth token 不可读
 
 **风险描述**（2026-04-26 落地时实测发现）：CC 把 OAuth access token 存在系统级位置（推测 keyring / DBus secret service），**不写到 `~/.claude.json` 的 `oauthAccount` 字段**。该字段只含 metadata（emailAddress / accountUuid 等）。这意味着原方案"oauth 路径凭证检测"在当前 CC 架构下**永远返回 none**，judge agent 在正版 Max CC 方案上无法直接工作。

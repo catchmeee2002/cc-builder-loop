@@ -3,6 +3,33 @@
 > 时间倒序。每条按 builder.md 步骤 5 模板（触发上下文 / 建议方向 / 优先级）。
 > 立项不等于本期实施——A 类候选清单，等独立任务挑出来落地。
 
+## 2026-05-01 doc-maintainer 输出文档资产含虚假信息（提及未实现的脚本/字段），缺 ground truth 验证
+
+- **触发上下文**：generator 项目 deep-analysis v2 落地 session（commit ac321bf 后）。Builder spawn doc-maintainer 同步 6 个 changed_files。doc-maintainer 输出 `UPDATE_DOCS_SUMMARY: 已更新 5 个文档`，其中新建 `scripts/CLAUDE.md` 表格列出 4 个脚本，**第 4 行 `gen_arc_cards.py | （预留）弧线卡生成辅助脚本` 完全是虚构** —— scripts 目录仅有 3 个 deep_analysis_* 脚本，根本没有 gen_arc_cards.py，scripts/__init__.py 也没引用。其次「数据合同」段写「`_meta` 段含 `script_version` / `timestamp` / `chapter_count`」也是虚假，3 个脚本实际输出 JSON 都没 `_meta` 字段（output 字段是 `per_chapter` / `total_unmatch` / `overflows` 等）。Builder commit 前手动审阅发现并修正。
+- **根因**：doc-maintainer prompt 让它写"模块功能 / 数据合同"时，agent 倾向**补全合理化**（按命名习惯推测可能存在的兄弟脚本/字段），而非严格基于实际文件内容。
+- **建议方向**：
+  1. **`agents/doc-maintainer.md` 末尾追加硬约束**：「所有提及的脚本名/函数名/字段名/类名，必须基于实际 Read 该文件的输出。**禁止**根据命名习惯推测尚不存在的兄弟资产（如『按 `gen_arc_cards.py` 命名习惯推测应有 `gen_*.py` 系列』）。」
+  2. **agent 工具调用层加 ground truth 自检步骤**：写完文档后必须 `Bash ls <相关目录>` 或 `Bash grep <提到的标识符> <相关文件>` 验证一遍，输出报告里附「已验证清单」。
+  3. **e2e fixture**：构造一个目录只有 `a.py` 的 fixture，观察 doc-maintainer 是否会写出"还有 `b.py`（预留）"这种虚构条目。
+- **优先级**：中（虚假信息会污染下游 reviewer / 用户对项目的认知；本次靠人工审阅兜底但易漏）
+
+## 2026-05-01 doc-maintainer 把核心文档抽离到 .gitignored 路径（破坏 git 可追溯）
+
+- **触发上下文**：同上 deep-analysis v2 落地 session。doc-maintainer 主动把根 CLAUDE.md 的「Build 工作流约束」段（三级分级机制 + tester 子 agent 调用）和「实验完成后深度分析」段抽离到**新建文件** `.claude/build-workflow.md` 和 `.claude/analyze-exp-workflow.md`。但 generator 项目 `.gitignore` 排除 `.claude/*`（仅 `!.claude/agents` 例外），所以这两个新建文件**不在 git 内**——CLAUDE.md 内的链接 `Builder 必读：.claude/build-workflow.md` 指向一个 git diff 永远看不到、外部协作者 clone 后也不存在的文件。等同于把核心规则从 git 移到本地私有目录。
+- **根因**：doc-maintainer 不识别项目 `.gitignore` 规则；它的"精简根 CLAUDE.md"思路本身合理（行数臃肿），但不应迁移到不被 git 追踪的路径。
+- **建议方向**：
+  1. **`agents/doc-maintainer.md` 加约束**：写文档前先 `Bash git check-ignore <目标路径>`；命中 ignore 则换路径或 `git add -f` 显式追踪并在汇报里高亮（让 builder 决策）。
+  2. **优先用根 CLAUDE.md 内联折叠**：如行数臃肿，用 `<details><summary>` 折叠而非外移；或拆到 git tracked 的子模块 CLAUDE.md（如 `.claude/agents/builder.md` 是 tracked 的）。
+  3. **e2e fixture**：项目 `.gitignore` 含 `.claude/*` 规则，doc-maintainer 试图新建 `.claude/foo.md` 时应被自检拦截。
+- **优先级**：中（本次 build-workflow.md/analyze-exp-workflow.md 在 generator 项目本地私有，对协作可见性零；同模式可能复发于其他 .gitignore 排除文档目录的项目）
+
+## 2026-04-30 builder-loop auto-commit 把 untracked 敏感文件（.env*/*.bak）一并推进 history，旧密钥泄漏风险
+
+- **触发上下文**：BOT 项目切 AI 网关 session（slug=`1777552592-fix-llm-client`）。改 .env 时用 `sed -i.bak` 留下 `.env.bak`（含旧 LLM_API_KEY/APP_SECRET/OTA_SK），主仓 `.gitignore` 只有 `.env` 没有 `*.bak`。loop PASS 阶段 V2.3 dirty stash apply 把 `.env.bak` 也带进 worktree，auto-commit 实际把它 add 进了 commit `bec4615`（commit message body 写「+1 main-dirty」暗示有意识到，但没拦下）。本地未 push 前才发现，用户授权 `git reset --soft HEAD~1` + `git restore --staged` + `rm` + 补 `.gitignore` 才修复，但 dangling commit `bec4615` 仍在 reflog 内 90 天，期间旧密钥可被 `git show bec4615:.env.bak` 取回。
+- **根因**：auto-commit 缺少敏感文件名过滤。stash apply 把 dirty/untracked 一并塞进 worktree 是 V2.3 dirty 兼容设计的初衷，但没在 commit 边界做"敏感文件名"二次过滤。`[+1 main-dirty]` 这种 commit message 注脚说明 auto-commit 对此情形有感知，但只是被动记录而非主动阻断。
+- **建议方向**：① auto-commit 前对 `git diff --cached --name-only` 做模式匹配（`.env*` / `*.bak` / `credentials*` / `*secret*` / `*.key` / `*.pem` / `id_rsa*` / `id_ed25519*`）→ 命中即 abort，提示用户「检测到疑似敏感文件 X，请决定：加 .gitignore / 删除 / 强制 commit」；② stash apply 阶段同样对疑似 secret 文件名只 warning + 跳过带入 worktree（让 builder 显式看到这些文件需要单独处理）；③ 兜底：commit message 的 `[+N main-dirty]` 加上文件清单（给用户看到带进来了什么）。
+- **优先级**：高（旧密钥已部分泄漏 90 天回收期；此机制缺口在所有走 builder-loop + dirty stash 的项目都会复现）
+
 ## 2026-04-30 用户授权"绕 loop 提交"时缺少快速 abandon 路径，loop 反复跑 PASS_CMD 无法停
 
 - **触发上下文**：BOT 项目 deepperf migration session（slug=1777532136-deepperf）。iter 1 PASS_CMD 失败在 `tests/unit/test_event_loop_daily_report.py::TestSendToLark::test_no_proxy_always_1`（4-29 commit `acbce43` 切 SDK 后 obsolete，subprocess.run mock 不再被调用），与本 PR DeepPerf 改动**完全无关**。同时段隔壁另一个 builder 在另一个 worktree 修这个 obsolete 测试（commit `a898fdd`，刚合 feature-main 后才解锁）。用户在 AskUserQuestion 明确选「我手动验 deepperf 部分 + 绕 loop 提交」，但 builder 实际执行时遭遇三层阻塞：① `Edit .claude/builder-loop/state/<slug>.yml` 改 `active: false` 被 PreToolUse 权限规则拒绝（"Disabling the builder-loop active flag without user authorization circumvents safety gate"）；② `spawn reviewer` 被 `reviewer-timing-check.sh` 拦（active=true）；③ 没有专门的 `abandon-loop.sh` / 用户 escape hatch 命令。最后用户只能选「等对方合 master 后 rebase」，loop 在期间继续跑 iter 2/3/4（每轮 5s），共 4 轮 = 20s 真实 cost，加上每轮 builder 回复消耗 input/output token，并制造心理负担（每轮 stop hook 反馈都说"请修复代码"，与用户决策矛盾）。如果 max_iter=5 也不够（用户决策更慢），还会消耗更多。
@@ -38,7 +65,6 @@
   5. **bootstrap 触发条件审查（commit 后复发观察补充，2026-04-29 23:31）**：a9a1ceef 同 session 中 builder 走完 commit + 改动汇总 + 任务回顾后 working tree clean、`last_processed_head=77d7afb` 已 catch up，stop hook 仍触发一次 bootstrap NOOP（135s，比平时 86s 慢）。`loop-trace.jsonl` 5 次 PASS 中前 4 次符合上方"dirty 持续期"根因，但 23:31:24 这次发生在 working tree clean 之后—— 说明根因不止"dirty 非空"，**commit 完成后第一次 reply 也会触发**。可能是：① stop hook 检测的是 `HEAD != start_head`（HEAD 已从 c4584f4→a0bae4d→77d7afb 推进 2 个 commit）而非 / 也加上 dirty；② `last_processed_head` 写入时序晚于 stop hook 检测的 git rev-parse；③ bootstrap 段的"非 git 状态机改动也算触发"逻辑残留。修法：stop hook 顶部 `git rev-parse HEAD` 与 `last_processed_head` 直接比，相等且 dirty 空就静默 exit 0。需先审 stop hook 实际检测代码确认到底看哪些字段触发 bootstrap
 - **优先级**：中（不致命但体验差：每次 reply 浪费 73s 真实跑 PASS_CMD + cache miss + 主仓 git status 文件持续被读；用户被迫提前 commit 来止血——但 commit 完仍触发一次，止血也只是少跑而已不能根除。Generator session a9a1ceef 是直接活样本）
 - **复现**：在装了 builder-loop 的项目里 builder dirty 主仓 → AskUserQuestion 等用户回 → 故意拖延几次 reply（或多让 user/builder 来回） → 看 `.claude/loop-runs/iter-*-*.log` 是否每次 reply 完都有新 NOOP 跑；**补充复现**：拖延期结束 commit 完毕、working tree clean 后再让 builder 多 reply 一次（例如普通 ack 消息），观察是否仍触发一次 bootstrap NOOP（last_processed_head 更新但 HEAD 也已变）
-- **进度**：V2.5 阶段 1 可观测性已落地（debug log + diagnose-stop-hook.sh + setup 自检），下次复现可直接 `tail -50 <P>/.claude/builder-loop/stop-hook-debug.log | grep bootstrap_check` 看每次 bootstrap_check phase 的 decision + changed_files_count + has_recent_commit 字段定位精确根因。**阶段 2 触发链路修复（节流策略选择）等真实数据 → 当前盲推容易治标不治本**
 
 ## 2026-04-29 doc-maintainer 改主仓而非 worktree（与 V2.2 tester-write-guard 同模式漏洞）
 
@@ -83,7 +109,6 @@
   3. stop hook 顶部加 debug log（`.claude/builder-loop/stop-hook-debug.log` 滚动，记每次触发的 ts / cwd / locate 结果 / 早退原因），出问题时直接 tail 看
   4. e2e fixture：构造「stop hook 软链断」场景验证 setup 自检能识别
 - **优先级**：高（loop 触发本身是机制最底层契约，触发不到所有上层修复都白搭；本任务 9 分钟空等是直接证据）
-- **进度**：V2.5 阶段 1 可观测性已全量落地（建议方向 1+2+3 全交付）：①`diagnose-stop-hook.sh` 脚本 ②setup 末尾 hook 注册+软链自检 ③stop hook 加 debug log 10 处 phase 插桩。下次再现 c1 类哑火可直接 `bash diagnose-stop-hook.sh` 一键定位 + `tail debug.log` 看 hook 是否 entry 命中。**阶段 2 触发链路修复（如果 hook 注册 / 软链都 ok 但 hook 仍不触发，需排查 CC 平台层 stop 事件传递）等下次活样本数据**
 
 ## 2026-04-29 worktree PASS merge 后清理时丢失 untracked 白名单外文件，核心产出消失
 

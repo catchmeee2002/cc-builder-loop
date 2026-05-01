@@ -91,7 +91,7 @@ cc-builder-loop/
 └── agents/                     # tester.md + arbiter.md
 ```
 
-## 5. 已交付能力（V1.0~V2.5）
+## 5. 已交付能力（V1.0~V2.6）
 
 - 多阶段 PASS_CMD + 智能早停
 - tester 强隔离（hook 锁机制）
@@ -212,6 +212,17 @@ cc-builder-loop/
   - **pass_cmd_result.log_path 空格截断修复**：原 `parts[2] if len(parts) > 2 else ''` 用 split 后取单 token，路径含空格被截断。改 `' '.join(parts[2:])`。fixture A7 case 验证 `FAIL stage1 /tmp/path with space/iter-1.log` 输入下 log_path 完整保留
   - **diagnose [4/6] 图标统一**：原硬编码 `✅ ok`，改用 `verdict_icon "$LOCK_VERDICT"`（与 [1/6]-[3/6]-[5/6]-[6/6] 风格一致）；新增 LOCK_VERDICT 变量从 LOCK_JSON 解析 verdict 字段
   - **fixture 健壮性**：A3 stat 输出加 `tr -d '[:space:]'`（防 macOS 兼容性边界）；A4 find 加 `-maxdepth 5`（防特殊虚拟文件系统下递归过深）
+- **V2.6 Phase 1**: abandon-loop.sh 出口 + dotfiles A3 关键词识别（多阶段方案首段；详见 `.claude/plans/20260501-abandon-loop-and-baseline-probe.md` Phase 进度表）
+  - **背景**：用户在 builder loop 进行中遇到 PASS_CMD fail 但与本期改动无关时（典型：跨 PR tech debt 浮出 / 隔壁 worktree 还没合 master），无合法 escape 路径——`Edit state.active=false` 被 PreToolUse 权限拦、spawn reviewer 被 reviewer-timing-check.sh 拦、没有专门的 abandon 入口。BOT 项目活样本：loop 在用户决策期间继续跑 iter 2/3/4 浪费 token + 心理负担
+  - **新脚本**：`skills/builder-loop/scripts/abandon-loop.sh <state_file> <reason>`。reason 必填（写入 legacy info 用于审计）；state.active=true 才允许 abandon（防 zombie 二次归档）
+  - **副作用对称 EARLY_STOP 路径**：复用 V1.8.1 archive_to_legacy（state → `legacy/<ts>-abandon_<reason>.bak`）+ V2.3 stash 还原（worktree_mode=dirty + pre_loop_stash_ref → `git stash apply`，apply 不 pop 副本保留）+ V1.5 NDJSON trace（写 ABANDON event）+ legacy info 文件（reason / iter / worktree_path / worktree_mode / stash_restored / ts）
+  - **worktree 不动**：abandon 后 worktree 目录 + branch 保留供用户手动 cherry-pick / 重新 setup / 纯丢弃。stdout 输出三条建议命令（cherry-pick / worktree remove + branch -D / 重新 setup）
+  - **hook 自动放行**：state 归档后 reviewer-timing-check.sh 调 locate-state.sh 找不到 active state → 自动 exit 0 放行，**不需单独的 user-override 通道**（V2.6 fixture A10 case 实证）
+  - **dotfiles A3 关键词识别**：`~/.claude/commands/builder.md` 加硬规则 — 仅在收到 stop hook `[builder-loop ...]` stderr 注入后的下一轮 user reply 中识别白名单（停下loop / 停掉loop / 停止loop / 中止loop / abandon loop；必含 "loop" 或 "abandon" 锚词；单独「停了」不识别防假阳性）→ AskUserQuestion 单确认 reason → 调 abandon-loop.sh
+  - **install/uninstall 不需要改**：abandon-loop.sh 通过 `~/.claude/skills/builder-loop/` 整目录软链自动生效（不像 hook 入口需注册 settings.json）
+  - **完全向后兼容**：V2.5 及以下 state 缺 V2.6 字段（baseline_probe_pid / baseline_probe_worktree / baseline_probe_status）→ read_field 容错跳过；V1.x 老 state 缺 main_repo_path → fallback project_root（旧语义）；abandon 既不需要 V2.6 Phase 2 baseline probe 也不依赖任何新基础设施
+  - **配套 fixture**：`test-abandon-loop-flow.sh`（10 case A1-A10 / 42 个 assert，覆盖 reason 必填 / state 不存在 / 空白 reason / active=false 拒绝 / dirty + valid stash / clean / bare / invalid stash → conflict / 重复调拒绝 / hook 集成）
+  - **后续 Phase**（未实施，状态见方案文件 Phase 进度表）：Phase 2 异步 baseline probe（setup 时临时 worktree 后台跑 PASS_CMD baseline）+ Phase 3 严格差集归因（builder 主动诱导 abandon）
 
 详见 `skills/builder-loop/README.md` 与 `skills/builder-loop/docs/judge-agent.md`。
 
@@ -505,3 +516,56 @@ mv .claude/builder-loop/state/<slug>.yml .claude/builder-loop/legacy/
 - 调小 rotate：`export BUILDER_LOOP_DEBUG_LOG_MAX_BYTES=262144`（256 KB）
 
 **老路径迁移说明**：V2.4 及之前 CLAUDE.md §7.1 提的 `/tmp/builder-loop-stop-debug.log` **从未实际写入过**（grep stop hook 代码 0 命中）。V2.5 路径换到项目本地 + 真实写入。如果用户从老笔记看到 `/tmp/builder-loop-stop-debug.log`，已是历史包袱。
+
+### 7.12 用户主动 abandon loop 的合法路径（V2.6 Phase 1）
+
+**何时使用**：loop 进行中遇到 PASS_CMD fail，但用户判定 fail 与本期改动无关（典型：跨 PR tech debt / 隔壁 worktree 还没合 master）→ 想停掉本次 loop 不再纠缠。当前 max_iter 自然耗尽要花 5 轮 PASS_CMD（约 5-15 min 真实跑 + 多轮 input/output token），abandon 入口让用户 < 2s 退出。
+
+**两种触发方式**：
+
+1. **用户自然语言（A3 关键词）**：在收到 stop hook `[builder-loop ...]` stderr 注入后的**下一轮**回复说「停下loop / 停掉loop / 停止loop / 中止loop / abandon loop」任一关键词。Builder 识别后会主动 AskUserQuestion 单确认 reason → 调脚本。
+   - 不识别：「停了 / 不修了 / 中止」单独出现（缺 "loop" 或 "abandon" 锚词，假阳性高）
+   - 不识别：非 fail 注入语境（避免普通对话误触发）
+
+2. **直接调脚本**：
+   ```bash
+   bash ~/.claude/skills/builder-loop/scripts/abandon-loop.sh <state_file> "<reason>"
+   ```
+   reason 必填（写入 legacy info 审计）。state 路径通过 `~/.claude/skills/builder-loop/scripts/locate-state.sh "$PWD"` 拿到，或直接看 `<P>/.claude/builder-loop/state/<slug>.yml`。
+
+**abandon 后的状态**：
+
+- ✅ state 归档到 `<P>/.claude/builder-loop/legacy/<ts>-abandon_<reason>.bak`
+- ✅ `<P>/.claude/builder-loop/legacy/<ts>-abandon_<reason>.info` 留现场（worktree path / stash hash / changed_files / reason / ts）
+- ✅ trace event "ABANDON" 写入 `<P>/.claude/loop-trace.jsonl`
+- ✅ V2.3 dirty 模式 → 主仓 stash apply 还原（副本不 drop，事后用户决定）
+- ✅ worktree 目录 + branch **保留**（不删！供用户手动 cherry-pick / 丢弃）
+- ✅ stop hook / reviewer-timing-check.sh 自动放行（state 归档后 locate 找不到 active）
+
+**abandon 后下一步选项**（脚本 stdout 也会列出）：
+
+```bash
+# 选项 1：等外部修复后 cherry-pick 本期改动到主仓
+git -C <project_root> cherry-pick <commits-on-loop/branch>
+
+# 选项 2：直接丢弃本期改动
+git -C <project_root> worktree remove --force <worktree_path>
+git -C <project_root> branch -D loop/<slug>
+
+# 选项 3：外部条件就绪后重新进 loop
+bash ~/.claude/skills/builder-loop/scripts/setup-builder-loop.sh "<task>"
+```
+
+**何时拒绝（exit 2）**：
+
+- reason 缺失 / 仅空白 → "reason 必填"
+- state 文件不存在 → "state file 不存在"（可能已经 abandon 过 / loop 已 PASS）
+- state.active != true → "loop 非活跃，不重复归档"（防 zombie 二次归档）
+- main_repo_path / project_root 字段缺失或目录不存在 → "state 文件可能损坏"
+
+**完全回退方法**：
+
+- 误 abandon 想恢复 → 重新调 `setup-builder-loop.sh "<task>"` 起新 slug，原 worktree 还在，可在 worktree 内继续工作
+- legacy/.bak 仅审计用，**不可直接 mv 回 state/ 复活 loop**（active 字段 / iter / 等已是过期快照）
+
+**已知开口**：见 `.claude/plans/20260501-abandon-loop-and-baseline-probe.md` 的 Phase 2/3——异步 baseline probe + 严格差集归因升级，让 builder 能自动识别「fail 不在本期责任」并主动诱导 abandon（A2 路径）。本期 V2.6 Phase 1 仅落地中断侧，预防侧待后续 Phase。
