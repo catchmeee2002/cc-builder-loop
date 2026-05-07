@@ -4,7 +4,23 @@
 > 项目接入只需在项目根放 `.claude/loop.yml`，定义 `pass_cmd`（lint/test 等通过条件），
 > builder 改完代码会自动跑 PASS_CMD，失败自动喂回让 builder 再改，直到 PASS 或达到上限。
 
-> **与 CC 官方 `/loop` skill 的边界**：本仓库 = 机器判据驱动的**代码迭代闭环**（PASS_CMD 客观判据 + worktree 隔离 + reward hacking 防御）；官方 `/loop`（v2.1.121+）= `ScheduleWakeup` 驱动的**通用步频再触发器**（LLM 主观判停）。判据维度不同，**不要叠用**。版本跟踪 / 借鉴清单 / 互斥防御见 [`skills/builder-loop/docs/cc-loop-tracking.md`](skills/builder-loop/docs/cc-loop-tracking.md)。
+> **与 CC 官方 `/loop` skill 的边界**：本仓库 = 机器判据驱动的**代码迭代闭环**（PASS_CMD 客观判据 + worktree 隔离 + reward hacking 防御）；官方 `/loop`（v2.1.121+）= `ScheduleWakeup` 驱动的**通用步频再触发器**（LLM 主观判停）。判据维度不同，**不要叠用**。版本跟踪见 [`skills/builder-loop/docs/cc-loop-tracking.md`](skills/builder-loop/docs/cc-loop-tracking.md)。
+
+---
+
+## 文档导航
+
+| 文档 | 定位 | 何时读 |
+|------|------|--------|
+| [`CHANGELOG.md`](CHANGELOG.md) | 各版本交付能力（V1.0~V2.6） | 需要了解历史版本做了什么时 |
+| [`docs/troubleshooting.md`](skills/builder-loop/docs/troubleshooting.md) | 排查手册（§7.1~7.12） | stop hook / judge / worktree / state 出问题时 |
+| [`docs/sync-checklist.md`](skills/builder-loop/docs/sync-checklist.md) | 改动同步 checklist | 本仓 commit 后需同步操作时 |
+| [`docs/judge-agent.md`](skills/builder-loop/docs/judge-agent.md) | Judge agent 设计与配置 | judge 相关开发 / 排查时 |
+| [`docs/arbiter-flow.md`](skills/builder-loop/docs/arbiter-flow.md) | Rebase 冲突仲裁流程 | merge 冲突时 |
+| [`docs/cc-loop-tracking.md`](skills/builder-loop/docs/cc-loop-tracking.md) | CC 官方 /loop 版本跟踪 | 评估官方能力是否可替代时 |
+| [`skills/builder-loop/README.md`](skills/builder-loop/README.md) | SKILL 使用说明 | 了解用户侧接入流程时 |
+
+---
 
 ## 1. 链接映射表
 
@@ -28,10 +44,10 @@ install.sh 创建以下软链，把仓库文件映射到 CC 运行时路径：
 | Hook 类型 | Matcher | 脚本 | 作用 |
 |-----------|---------|------|------|
 | Stop | 无（全局） | builder-loop-stop.sh | 每次 CC Stop 时检查是否需要继续循环 |
-| SubagentStart | `tester` | tester-lock-write.sh | tester 启动时落隔离锁（V2.2 锁文件追加 worktree_path / main_repo_path / slug 字段）|
+| SubagentStart | `tester` | tester-lock-write.sh | tester 启动时落隔离锁 |
 | SubagentStop | `tester` | tester-lock-clear.sh | tester 结束时清锁 |
 | PreToolUse | `Read\|Grep\|Glob` | tester-lock-check.sh | 拦截 tester 对 source_dirs 的读操作 |
-| PreToolUse | `Write\|Edit\|MultiEdit` | tester-write-guard.sh | V2.2：拦截 tester 把文件写到 worktree 之外（exit 2 + 精确诊断 stderr）|
+| PreToolUse | `Write\|Edit\|MultiEdit` | tester-write-guard.sh | 拦截 tester 把文件写到 worktree 之外 |
 | PreToolUse | `Agent` | reviewer-timing-check.sh | 拦截 loop 活跃期的 reviewer spawn |
 
 ## 2. 部署指南
@@ -51,7 +67,6 @@ ls -la ~/.claude/skills/builder-loop/SKILL.md  # 应指向本仓库
 **前置依赖**：
 - `~/.claude/` 目录已存在（通常由 dotfiles 的 `stow claude` 创建）
 - python3（hook 注册用）
-- jq（可选，install.sh 实际用 python3 做 JSON 操作）
 
 **新机器部署顺序**：先 `my-dotfiles/install.sh`（stow 创建 `~/.claude/`），后 `cc-builder-loop/install.sh`。
 
@@ -65,20 +80,9 @@ ls -la ~/.claude/skills/builder-loop/SKILL.md  # 应指向本仓库
 | `~/.claude/commands/planner.md` | planner 模式定义，含 3 视图区块约定 |
 | `~/.claude/agents/reviewer.md` | reviewer 定义，含 TESTER_HINT 输出格式 |
 
-**路径约定**：所有脚本引用都通过 `~/.claude/` 前缀的运行时路径（如 `~/.claude/skills/builder-loop/scripts/xxx.sh`），不直接引用仓库路径。
+**路径约定**：所有脚本引用都通过 `~/.claude/` 前缀的运行时路径，不直接引用仓库路径。
 
-**解耦方向**（未来可选，现状不变；改 loop 行为要跨两仓同步是当前痛点）：
-- **C 契约化** — cc-builder-loop 声明对 dotfiles `builder.md` 的段落契约 + E2E 加 `check-prompt-sync.sh` 校验
-- **D 片段注入** — cc-builder-loop 持有 loop 相关 prompt 片段，`install.sh` 注入 dotfiles `builder.md` 的锚点之间，代码 + prompt 同仓改原子
-
-### 改动同步 checklist（本仓 builder commit 后必查）
-
-| 改动类型 | 操作 |
-|---------|------|
-| 改 `scripts/*.sh` / `agents/*.md` 内容（不增删） | **不操作**（软链已存在，主仓改即时生效）|
-| 新增/删除 `scripts/*.sh` 或 `agents/*.md` | `bash install.sh` 创建/移除软链 + 同步 settings.json hook 注册 |
-| 改 hook matcher（如 `Read\|Grep` → `Read\|Grep\|WebFetch`）| 删旧 settings.json 条目后跑 `bash install.sh`（**已知 install.sh `has_entry()` 仅比脚本名不比 matcher，改 matcher 不会更新——见 `.claude/improvements.md`**）|
-| 改 `~/.claude/commands/builder.md` / `planner.md`、`~/.claude/agents/reviewer.md` | 切到 `~/.hongyu.liao_debian12/my-dotfiles` 仓 commit（cc-builder-loop 与 my-dotfiles 是两个独立 git 仓）|
+**改动同步**：见 [`docs/sync-checklist.md`](skills/builder-loop/docs/sync-checklist.md)。
 
 ## 4. 目录结构
 
@@ -86,486 +90,14 @@ ls -la ~/.claude/skills/builder-loop/SKILL.md  # 应指向本仓库
 cc-builder-loop/
 ├── install.sh / uninstall.sh   # 部署/卸载
 ├── CLAUDE.md                   # 本文件
-├── skills/builder-loop/        # CC skill（含 SKILL.md、scripts/、fixtures/e2e/、schema/）
-├── scripts/                    # Stop hook + tester 隔离 hook + tester 跨目录写防护 hook + reviewer 时序 hook（6 个 .sh）
+├── CHANGELOG.md                # 版本历史（V1.0~V2.6）
+├── skills/builder-loop/        # CC skill（含 SKILL.md、scripts/、fixtures/e2e/、schema/、docs/）
+├── scripts/                    # Stop hook + tester 隔离 hook + tester 写防护 hook + reviewer 时序 hook（6 个 .sh）
 └── agents/                     # tester.md + arbiter.md
 ```
 
-## 5. 已交付能力（V1.0~V2.6）
-
-- 多阶段 PASS_CMD + 智能早停
-- tester 强隔离（hook 锁机制）
-- 方案文件三视图过滤（builder/tester/shared）
-- worktree 真隔离 + 三档合回
-- rebase 冲突仲裁（arbiter subagent）
-- reviewer → tester 触发
-- 改动分级（L1 跳过 / L2 正常 / L3 先 tester）
-- 任务回顾与知识沉淀
-- Stop hook 兜底激活（loop.yml 存在 + 有改动 + 无状态文件 → 自动启动 loop）
-- **V1.5**: Stop hook 续接修复（exit 2 + stderr，取代无效的 JSON stdout）
-- **V1.5**: Worktree 前置（builder 进入后先 setup 再写代码，避免代码丢失）
-- **V1.5**: NDJSON trace（`.claude/loop-trace.jsonl`，每轮记录 iter/stage/result/duration）
-- **V1.5**: 一键 init（`loop-init.sh` 整合 probe + init-loop-config + git init）
-- **V1.5**: E2E 测试（全新仓库端到端验证）
-- **V1.6**: Worktree auto-commit（merge 前自动提交未 commit 改动，防数据丢失）
-- **V1.6**: Reviewer 时序硬门禁（PreToolUse hook 拦截 loop 活跃期的 reviewer spawn）
-- **V1.6**: Reviewer 参数预计算（stop hook PASS 后写 reviewer-params.json，消除 LLM diff 计算依赖）
-- **V1.7**: Reviewer 默认模型 sonnet（兼容 max / copilot 双路径，消除 haiku+xhigh 失败场景）+ Builder retry 错误分类（`effort/reasoning/not supported` 等 API 参数错误直接走兜底，不再盲重试）
-- **V1.7**: E2E 新增 `test-reviewer-compat.sh`（配置 lint + 可选 `--live` smoke）
-- **V1.8**: 多状态并行（state 文件从 `.claude/builder-loop.local.md` 迁移到 `.claude/builder-loop/state/<slug>.yml`；locate-state.sh 按 CWD 定位；单项目可并行多个 loop；migrate-state.sh 一键迁移旧版本）
-- **V1.8.1**: 僵尸 state 自愈 + EARLY_STOP 立即通知
-  - Stop hook 遇到 `active != true` 的 state → 归档到 `.claude/builder-loop/legacy/<ts>-zombie_inactive.bak` 后放行（原行为是保留僵尸，下次 builder 进场会误判为活跃 loop）
-  - EARLY_STOP 路径从"改 active=false + exit 0"改为"归档 + exit 2 + stderr 注入"，builder 当场收到通知立即 AskUserQuestion（原行为需等到下轮 user prompt 才发现）
-  - 配合 V1.8 的 per-worktree state 隔离，彻底闭环"同 session 多任务僵尸串味"问题（复现 session `81bdbe27`）
-- **V1.8.2**: 兜底激活 HEAD 游标
-  - Stop hook bootstrap 分支新增「已处理 HEAD 游标」（`.claude/builder-loop/last_processed_head`）：PASS / 异常 merge / EARLY_STOP 三处出口写入当前 HEAD，下次 Stop 时若 HEAD 未前进且无未提交改动则静默放行
-  - 消除"推完 commit 后 30 分钟内每次对话反复触发 NOOP 空转 bootstrap"的自激循环（复现 session `3d62eb57`）
-  - 降级保证：游标文件缺失/损坏/HEAD 读不到都自动退回旧行为
-- **V1.8.3**: Stop hook flock 互斥 + auto-commit message 语义化 + PASS 分支 state 预读
-  - Stop hook 按 per-slug 粒度加 `flock -n`（`.claude/builder-loop/stop-hook-<slug>.lock`），抢不到锁 `exit 0` 静默放行（防 CC 并发触发的 TOCTOU race）
-  - `merge-worktree-back.sh` 的 auto-commit message 从 state 的 `task_description`（YAML block scalar）解析，构造 `chore(loop): [cr_id_skip] Auto-commit ${task}`，不再固化为 `Auto-commit iter N` 丢失语义
-  - **Hotfix**：PASS 分支把 `start_head` 读取提前到 `merge-worktree-back.sh` 调用**之前** — 因 `cleanup_worktree()` 会 `rm -f state`，原 merge **之后**再 grep state 的路径会抛 `No such file` 到用户屏幕，`set -e` 触发脚本非正常退出 → reviewer-params / exit 2 PASS 消息丢失（真正消除 session `d9ef1004` 复现的 `grep state: No such file` 报错）
-  - 前提：flock 语义要求本地文件系统（ext4/xfs 等），NFS/FUSE 场景未验证
-- **V1.9**: Judge agent — LLM 语义判据补 PASS_CMD 二值判据盲区
-  - 新增 `skills/builder-loop/scripts/run-judge-agent.sh`：hook 内嵌 Anthropic API 调用，输出 `{action, confidence, reason, downgraded, ...}` 单行 JSON
-  - 凭证双路径：`ANTHROPIC_API_KEY` env（Copilot CC 方案优先）→ `~/.claude.json` `oauthAccount.accessToken`（正版 Max CC 方案 fallback）→ none（降级）
-  - 模型三层 fallback：`loop.yml.judge.model` > `$ANTHROPIC_DEFAULT_HAIKU_MODEL` > `"claude-haiku-4-5"`，dot/dash 命名自动规范化
-  - 三态判定：`continue_nudge`（exit 2 + nudge 文案 + state.iter++）/ `stop_done`（走原 PASS）/ `retry_transient`（FAIL 分支识别 API 抖动）
-  - 防脱缰：iter 上限不变 + 连续 nudge 上限默认 2 + confidence 阈值默认 0.5 + API 超时 8s
-  - 注入文案统一前缀 `[builder-loop judge | iter=X/Y | judge=Z | conf=W]` + 末尾"非用户输入"声明（与用户输入肉眼可分；retrospective T7 教训）
-  - State 字段扩展：新增 `last_judge_action / last_judge_confidence / last_judge_ts / consecutive_nudge_count`（旧 state 缺字段视为初始值，由 upsert 自动追加）
-  - Telemetry：每次 judge 调用一行 jsonl 落 `.claude/builder-loop/judge-trace.jsonl`，下一轮 stop hook 自动后置补 `outcome` 标签（仅 continue_nudge 类）
-  - 任何故障路径（API 超时 / 非 200 / JSON 解析失败 / confidence 偏低 / 凭证缺失）→ `downgraded=true` + 走原 PASS / FAIL 路径，**不阻断现有 PASS_CMD 流程**
-  - 完全回退方法：`loop.yml.judge.enabled: false` 或卸载 `run-judge-agent.sh`（stop hook 检测脚本缺失自动走原路径）
-  - loop.yml schema 新增 `judge:` 段（全部可选）；本仓 PASS_CMD 加 `judge_agent` / `judge_integration` 两个 e2e 阶段
-- **V2.0**: PASS_CMD 跑 worktree（元问题修复）+ tester/doc-maintainer 流程加固
-  - **元问题根因**：V1.7 起 `run-pass-cmd.sh` L22 `STATE_FILE="${PROJECT_ROOT}/.claude/builder-loop.local.md"` 是 V1.7 之前的旧文件路径，V1.8 把 state 迁到 `.claude/builder-loop/state/<slug>.yml` 后这段成死代码；后果是 `RUN_CWD = PROJECT_ROOT = 主仓`，PASS_CMD 永远跑主仓 loop.yml + 主仓代码——"在 worktree 改 loop.yml 加 stage" 本轮看不到（V1.9 落地时被发现）
-  - **state schema 重构**：`project_root` 字段语义改为"干活的地方"（worktree 模式 = worktree path / bare = 主仓），新增 `main_repo_path` 字段固定为主仓。下游 5 个脚本（setup / stop hook / merge-worktree-back / run-apply-arbitration / early-stop-check）全链路改造；老 V1.x state 缺 `main_repo_path` 时按"project_root 等于主仓"旧语义兜底
-  - **run-pass-cmd.sh** 删除 V1.7 死代码，改为接收 `<run_cwd> <iter> [<log_root>]`；LOOP_YML 从 RUN_CWD 读、日志归档主仓；worktree 内 loop.yml 缺失（用户首次未 commit）→ fallback 主仓 + stderr 警告
-  - **early-stop-check.sh** 顺修 V1.x 既有 bug：原"state path 向上 2 层"只到 `.claude/builder-loop` 子目录，git diff `-- "$test_dirs"` 永远 0 命中——保护路径作弊检测实质失效。改为读 state.project_root（V2.0 = worktree）能看见 builder 真实改的文件
-  - **M5 merge-worktree-back.sh case 默认分支显式错误**：unknown action 不再静默 `exit 0 + rm state` 丢 state，改为 `exit 2 + stderr 完整输出`，防 V1.9.1 修过的 grep 静默退出回归再次踩坑
-  - **M4 tester subagent prompt 加 4 条硬约束**：bare loop fixture slug=__main__ / V2.0 state schema 写 main_repo_path / worktree 启用前先 commit loop.yml / bash grep+head+sed 必须 || true 收尾（防止 `set -euo pipefail` 静默退出）
-  - **M2 doc-maintainer audit checklist** 落地 `skills/builder-loop/docs/doc-maintainer-audit-checklist.md`：要求 maintainer 必跑 6 步黑盒 audit（fixture 表格交叉对账 / 版本号 / SKILL schema / 链接映射 / hook 注册 / 已修问题 fix 状态）+ 4 项分类勾选 + 历史欠账反查。Builder spawn doc-maintainer 时**必须把本文件路径附进 prompt**，杜绝引导式 prompt 漏判 V1.5–V1.9 累计 9 次 fixture 表格欠账的老问题
-  - 配套两个新 e2e fixture：`test-pass-cmd-runs-worktree.sh`（17 case）+ `test-bare-loop-merge.sh`（10 case）
-- **V2.1**: Judge agent 长期共存方案 + sonnet→haiku 降级链
-  - **背景**：V1.9 凭证检测 `env > oauth > none`，正版 Max CC 用户主会话走 OAuth 不 export `ANTHROPIC_API_KEY`，OAuth token 又不在 `~/.claude.json` 公开字段（known-risks R5）→ judge 一直降级回 V1.8 二值判据
-  - **env file 自动加载**：`run-judge-agent.sh` 顶部新增"主 env 缺失时 source 全局 `~/.claude/skills/builder-loop/judge-env.sh`"；`set -a` 模式让用户写裸赋值即可。**主 env 已设的用户不被覆盖**（向后兼容 Copilot env 方案）。新增 `loop.yml.judge.credentials_file` 字段允许项目级覆盖（phase 1 加载，覆盖默认全局路径）
-  - **sonnet → haiku 降级链**：默认 `primary_model=claude-sonnet-4-6`（copilot-proxy 唯一支持的 sonnet ID），失败 `fallback_after_failures=2` 次后自动切 `fallback_model=claude-haiku-4-5`。失败定义：API timeout / HTTP 5xx / JSON parse_error；不计数：401/403（凭证）/ 429（rate_limit）/ low_confidence（模型判断能力问题）。**降级状态本 loop 内有效**（state.judge_active_model + judge_consecutive_failures 字段，loop PASS 删 state 自动重置；下个 loop 重新从 sonnet 试）
-  - **默认 timeout 8 → 15 秒**：sonnet 单次 ~5.8s，留余量防偶发慢响应误降级
-  - **完全向后兼容**：V1.9 配置 `model: <id>` 仍工作（自动等价 primary_model）；`fallback_model: ""` 留空 = 禁用降级链回 V1.9 行为；`enabled: false` 仍可整段关闭
-  - 配套两个新 e2e fixture：`test-judge-env-file-load.sh`（12 case，5 个 A 段：主 env 优先 / 文件不存在 / 语法错降级 / loop.yml 项目级覆盖）+ `test-judge-model-fallback.sh`（28 case，11 个 B 段：成功路径 / 失败计数 / 切 fallback / 切 fallback 后再失败 / 401/429 不计数 / parse_error 计数 / 旧 state 兼容 / 改 primary_model 立即生效）
-  - 用户配置示例：`skills/builder-loop/judge-env.sh.example` 模板（含 copilot-proxy + 独立 sk-ant-key 两条路径说明）
-- **V2.1.1**: `.gitignore` 自愈固化（K1 教训预防）
-  - **背景**：worktree 模式下 `merge-worktree-back.sh` 的 `git add -A` 会把 PASS_CMD 跑过程中生成的运行时文件（`judge-trace.jsonl` / `loop-trace.jsonl` / `reviewer-params.json` / lock）也 commit 进 branch，主仓同路径 untracked 顶住 ff merge → stop hook 报 `MERGE_LAST="ERROR ff-after-rebase-failed"`（V2.1 落地时刚踩过一次）
-  - **修复**：(1) `init-loop-config.sh` 接入向导新增 3 条规则（顶层 `.claude/loop-trace.jsonl` / `.claude/reviewer-params.json` / `.claude/reviewer-diff.txt`），原有 `.claude/builder-loop/` + `.claude/loop-runs/` 不变；(2) `setup-builder-loop.sh` 每次启动 loop 时跑 `ensure_gitignore_rules()` 幂等自愈，存量项目（接入时漏配的）自动追加，stderr 输出 `🛡️ .gitignore 自愈追加：<rule>`
-  - **fixture 健壮性顺修**：`test-nudge-max-reads-worktree.sh` 的 `bash setup ... | head -5` 改用临时日志文件解耦（防 head 关 pipe 触发 SIGPIPE 让 setup 中途死，setup 输出量随版本会增长）
-  - **根因 follow-up（未修）**：`merge-worktree-back.sh` 的 `git add -A` 仍是过度收集；本期靠 `.gitignore` 兜底，独立任务再做精确化
-- **V2.2**: Tester 跨目录写硬门禁 + 复盘强制分类闸门 + Bootstrap 空转修复
-  - **背景**：session `283ee3b2` 暴露 3 个独立 bug。①tester subagent 虽然 cwd=worktree、prompt 明示 worktree_path，仍把 5 处工具调用写到主仓绝对路径，下游 ff-merge 撞 untracked。②同 session 复盘把"tester 跨目录写"这种**显然能用 hook 防住**的 A2 类机制缺口判成 B 类落 memory，违反 builder.md L177 自身判据。③同 session 阶段 0 闭环后，stop hook 因 `HAS_RECENT_COMMIT` 触发器太激进连续两次 NOOP 兜底激活、输出 reviewer 流程提示空转
-  - **议题 1 防御**：(a) `scripts/tester-write-guard.sh` 新 PreToolUse hook（matcher=`Write|Edit|MultiEdit`），物理拦截 tester subagent 把文件写到 worktree 之外。识别 tester 复用 V1.1 既有锁文件 `${ISOLATION_LOCK_DIR:-/tmp}/cc-subagent-${session_id}.lock`，新读 `worktree_path` 字段决定是否拦截。(b) `tester-lock-write.sh` 锁 schema 扩展：追加 `worktree_path` / `main_repo_path` / `slug` 三字段。(c) `agents/tester.md` 输入字段表新增 `worktree_path`，硬性约束第 6 条「路径根硬约束」+ 步骤 4 自检追加路径根校验项 + 禁 Bash cp/mv/ln 搬运
-  - **议题 1 路径白名单**：严格只允 `${worktree_path}/*`（含尾斜杠防 `/wt` 与 `/wt2` 误匹配），realpath 解析后再 prefix 比较防 path traversal 绕过。bare loop（`worktree_path` 为空）+ V1.x 老锁（无字段）→ 放行所有 Write/Edit
-  - **议题 1 拒绝语义**：exit 2 + stderr 含「尝试写入路径 / 解析后 abspath / 允许根 worktree_path / 主仓 main_repo_path / 改用建议」5 行精确诊断，让 tester 看到错误后能直接拼出正确路径自动重试
-  - **议题 1 spawn 契约**：`~/.claude/commands/builder.md` L119/L122 spawn tester 段强制传 `worktree_path`（loop 活跃 = state.worktree_path / loop 已结束 = ""）
-  - **议题 2 复盘改造**：`builder.md` 步骤 5 重写为「① 列全部候选 → ② 强制 4 桶分类（A1/A2/B/C 各列号或'无'+理由）→ ③ 仅 B/C 走 5 问 → ④ 提审强制 [A1]/[A2]/[mem] 前缀 → ⑤ 落盘」。空桶必须显式写"无"+一句话理由，4 桶并列输出。钉 3 条反例锚点（跨目录写 → A2 / .gitignore 自愈 → 已交付不立项 / stop hook 平台契约 → B 不是 A）
-  - **议题 3 bootstrap 触发器收敛**：`scripts/builder-loop-stop.sh` L173-179 砍 `HAS_RECENT_COMMIT` 作为触发条件，bootstrap 兜底**只看** `HAS_DIFF`（未提交工作树改动）。`HAS_RECENT_COMMIT` 变量保留供 task_desc fallback 推断
-  - **议题 3 取舍**：用户/builder 手动 commit 后工作树干净 → bootstrap 静默放行（不再被无意义 NOOP 触发的 reviewer 提示困扰）；损失场景：用户在主仓直接改代码 + commit + 关 CC（不经 loop）→ 失去自动补 PASS_CMD 兜底，需手动 `setup-builder-loop.sh "<task>"` 起 loop（详见 §7.7）
-  - **install.sh / uninstall.sh** 同步追加 `tester-write-guard.sh` 软链 + hook 注册条目（registrations 列表 +1 条；uninstall.sh `bl_scripts` 列表 +1 项）
-  - 配套新 e2e fixture：`test-tester-write-guard.sh`（11 case A1-A10 / 16 个 assert，覆盖 拒绝主仓 / 放行 worktree / Edit / MultiEdit 拦截实证 / 无锁 / V1.x 老锁兼容（worktree_path 缺字段 vs 空字符串）/ 等于 worktree 根 / 前缀部分匹配 / path traversal / 非 tester subagent 放行）
-- **V2.2.1**: Bootstrap 纯文档白名单（V2.2 议题 3 同模式延伸）
-  - **背景**：V2.2 议题 3 砍 HAS_RECENT_COMMIT 后仍有同类痛点——改纯文档（CLAUDE.md / docs/*.md / LICENSE）触发 bootstrap → 跑 PASS_CMD 13 stage NOOP → exit 2 续接 → 一次 cache miss + 1-2 分钟空转。文档跑 lint/test 无意义
-  - **修复**：`scripts/builder-loop-stop.sh` bootstrap 段新增 `DOC_PATTERN='\.md$|^docs/|/docs/|\.txt$|^LICENSE$|\.gitignore$'`；改动文件全部命中白名单 → 静默 exit 0；mixed 改动（doc + code 混合）→ 仍触发 bootstrap
-  - **改动审计**：`HAS_DIFF` 变量替换为 `CHANGED_FILES`（unstaged + staged 文件名合并去重），原 `git diff --stat` 触发判定改为 `CHANGED_FILES` 非空判定；`HAS_RECENT_COMMIT` 仍保留供 task_desc fallback 推断
-  - **fixture 扩展**：`test-stop-hook-cursor.sh` 加 Step 7-9 / 共 34 个 assert，覆盖（纯文档 → 静默 / mixed → 触发 / docs/ 子目录非 .md 文件 → 静默）。Step 9 之前用 `git rm --cached` 撤出 `.claude/builder-loop/` 避免临时仓游标文件被 tracked 干扰判定
-  - **完全向后兼容**：白名单是纯增——以前会触发的改动今天可能仍触发；唯一行为变化是「全部命中白名单」从触发改为静默放行
-- **V2.3**: 主仓 dirty 安全入 worktree + Reward Hacking 检测（session `3ed02147` 暴露两条裂缝合并修复）
-  - **背景**：(1) `setup-builder-loop.sh:196` 写死 `git worktree add HEAD`——用户手动跑 setup 时主仓 unstaged/untracked 被静默丢失（bootstrap 路径用 `--no-worktree` 绕过，手动入口默认走 worktree → 三入口三行为）。(2) builder 在 PASS_CMD 配置加 `--reruns 2` 等关键词软化判据典型 reward hacking，judge agent 现有检测仅看测试代码 diff 不看 `loop.yml` / `pyproject.toml` 等配置 diff
-  - **裂缝 1（dirty stash）**：`setup-builder-loop.sh` 加 pre-flight 检测 + `git stash push -u -m "builder-loop:auto:slug=...:ts=..."` + 立即取 `^{commit}` hash 存 `state.pre_loop_stash_ref`（commit hash 形式，多 builder 安全）。worktree 创建后 `git stash apply <hash>` 把 dirty 还原为 worktree 内 unstaged。state schema 新增三字段：`pre_loop_stash_ref` / `pre_loop_dirty_files` / `worktree_mode`（clean/dirty/bare）。`merge-worktree-back.sh` PASS 路径 commit message 末尾加 `[+N main-dirty]` + body 列文件清单 + drop 主仓 stash 副本（按 SLUG 签名匹配 stash@{N}）。EARLY_STOP 路径 `git stash apply` 还原主仓 + 写 `legacy/<ts>-early_stop_<reason>.info` 留现场（worktree 不删）
-  - **dirty 检测排除清单**：setup 自管理路径（`.claude/builder-loop/` / `.claude/loop-runs/` / `.claude/loop-trace.jsonl` / `.claude/worktrees/` / `.gitignore` 自身）不算 dirty，避免 ensure_gitignore_rules 引入虚假 dirty + 避免 .gitignore 进 stash 让 worktree 缺规则撞 telemetry
-  - **特殊状态拒绝**：主仓在 rebase / cherry-pick / revert / merge / submodule dirty 进行中 → setup exit 2 拒绝（state 不创建）。提供 `--no-stash` flag 让用户显式跳过 stash 流程（worktree 仍创建，dirty 留主仓）
-  - **stash 创建机制选 push 不选 create**：`git stash create -u` 在"仅 untracked"场景返回空字符串，必须 `git stash push -u -m "$STASH_MSG"` + `git rev-parse 'stash@{0}^{commit}'` 取 commit hash（race fallback 用 message 兜底匹配）
-  - **裂缝 2（reward hacking）**：`run-judge-agent.sh` 解析 LLM JSON 后、阈值检查前加 Layer 2 正则兜底——双命中（文件路径 ∈ `loop.yml` / `pyproject.toml` / `pytest.ini` / `setup.cfg` / `conftest.py` / `tests*/...py` AND 内容 ∈ `--reruns` / `@pytest.mark.flaky` / `xfail` / `pytest.skip` / `@unittest.skip` / `-k "not X"`）→ 强制 `action=continue_nudge` + `reason=suspected_reward_hack: ...` + `confidence ≥ 0.6`（避免被 low_confidence 降级）
-  - **stop hook 三选项注入**：`builder-loop-stop.sh` 在 nudge stderr 之后识别 `reason` 含 `suspected_reward_hack` → 追加 `[builder-loop reward-hack-guard]` 段强制 builder 用 AskUserQuestion 列三选项（quarantine / 修测试根因 / 保留 cmd 改动并给理由）
-  - **Layer 1（LLM）+ Layer 2（正则）双层判据**：`prompts/judge-system.md` 加 V2.3 段教 LLM 如何输出；本地正则兜底防 LLM 漏判。`loop.yml.judge.reward_hacking_detection: false` 可关；不设字段默认开
-  - **builder.md 硬约束**：dotfiles 仓 `~/.claude/commands/builder.md` 加 1 条 Reward hacking 警戒条（≤80 字），与 loop hook 注入语义一致
-  - **配套 fixture**：`test-dirty-stash-flow.sh`（5 case / 25 assert，覆盖 clean / dirty stash / rebase 拒绝 / --no-stash 降级 / stash 副本可还原）+ `test-reward-hacking-detect.sh`（13 个配置 lint + 关键词算法验证 4 case / 23 assert）。loop.yml PASS_CMD 新增 `v23_dirty_stash_flow` 与 `v23_reward_hacking_detect` 两 stage
-  - **完全向后兼容**：老 V2.2 state 缺三字段 → 下游脚本 `read_field || true` 兜底（缺值视为 clean / bare 模式）；migrate-state.sh 不强制升级，下次 setup 写新 schema
-- **V2.4**: locate-state.sh 策略 5 — 主仓 cwd 自动绑定唯一 active worktree（V1.8 多状态盲区收敛）
-  - **背景**：V1.8 多状态并行后，`setup-builder-loop.sh` 创建 worktree 但 CC session cwd 仍在主仓时 → `locate-state.sh` 4 个策略全 miss（cwd 不在 worktrees 子目录 / cwd ≠ worktree_path / 无 `__main__.yml` 兜底）→ stop hook 拿空 STATE_FILE 走 bootstrap → 跨 session 守门检测到 worktree 存在直接放行 → **永不跑 PASS_CMD**（复现 session `1781a3be`，绕过靠手动 cd worktree）。是 V1.8 主推荐路径的核心盲区
-  - **修复 1（locate 策略 5）**：`locate-state.sh` 加策略 5 — 策略 2/3/4 全 miss 后扫 `STATE_DIR/*.yml`，过滤 `active=true` AND `worktree_path` 非空 AND 该目录存活 → 恰好 1 个候选时输出 + exit 0；0 个 / ≥2 个 → 仍返回空（≥2 时绑错代价 > 漏绑，保 V1.8 多状态隔离精神）
-  - **修复 2（setup cwd 警告）**：`setup-builder-loop.sh` 末尾检测 `WORKTREE_PATH` 非空 AND `OWNER_CWD == PROJECT_ROOT`（CC session cwd 仍在主仓） → 打 stderr 醒目警告 + 给两条建议（cd 到 worktree / 在新 CC session 用 `--cwd` 启动）
-  - **修复 3（stop hook 诊断 stderr）**：`builder-loop-stop.sh` locate 未命中 + PROJECT_ROOT 已锚定 + STATE_DIR 有 active worktree 候选 → 列各 state 的 worktree path + 提示用户手动 cd（条件「有 active 候选」限频，避免无 loop 项目刷屏）
-  - **静默契约**：`locate-state.sh` 仍保持「不向 stderr 喷」（hook 频繁调用），诊断 stderr 由 `builder-loop-stop.sh` 自己出
-  - **完全向后兼容**：策略 5 仅在策略 1-4 全 miss 后介入；V1.x 老 state 缺 `active` 字段 → 字符串比对 `!= "true"` → 不绑（保守）；bare loop（`worktree_path` 空）已被策略 4 兜底，不受影响
-  - **配套 fixture**：`test-locate-state-strategy5.sh`（4 case / 21 assert，覆盖 唯一 active 命中 / 多 active 不绑 + stop hook stderr 含诊断 / 死 worktree 孤儿排除 / inactive state 不参与 / setup 后端到端 setup-stderr-含警告 + locate 命中）。loop.yml PASS_CMD 新增 `v24_locate_strategy5` stage
-  - **未来扩展**：长期反馈强烈再考虑 `loop.yml.locate.tie_breaker: latest_mtime` 配置项让多 active 时绑最近一个；本期不实现
-- **V2.5**: stop hook 可观测性 — debug log + diagnose 脚本 + setup 自检（c1 / c5 复盘 forensic 基础）
-  - **背景**：c1（V2.4 落地 session loop 哑火）+ c5（generator session a9a1ceef 自激空转）两个反向极端复现，复盘时**完全没数据可看**——CLAUDE.md §7.1 排查指引让用户 `tail /tmp/builder-loop-stop-debug.log`，但 `grep -r 'debug.log' scripts/` 零命中，**承诺与实现脱节**。c5 bullet 5（commit 后还多 1 次 NOOP）的根因显式承认"需先审 stop hook 实际检测代码"，没数据只能旁路推理
-  - **修复 1（debug log 写入）**：`builder-loop-stop.sh` 顶部加 `debug_log()` 函数 + 10 处 phase 插桩（entry / locate_result / flock_acquire / bootstrap_check / pass_cmd_start / pass_cmd_result / merge_result / judge_result / early_stop / exit）。路径 `<P>/.claude/builder-loop/stop-hook-debug.log`（多项目隔离 + .gitignore 已排除 `.claude/builder-loop/`）。每行 NDJSON `{ts/session/cwd/slug/phase/details}`。1 MB rotate / 保留 5 个 .1-.5（`BUILDER_LOOP_DEBUG_LOG_MAX_BYTES` env 可调）。IO / mkdir / 写入失败末尾 `|| true`，**不阻断** hook 主流程
-  - **修复 2（diagnose-stop-hook.sh）**：新脚本 `skills/builder-loop/scripts/diagnose-stop-hook.sh [project_root] [--json]`。6 段 dry-run 排查（hook 注册 / 软链 / state / lock+cursor+stash / trace+debug log 摘要 / git worktree list）。退出码 0/1/2 = ok/warn/fail。严格只读 `git -C` / `cat` / `stat`，不写任何文件不调外部 API
-  - **修复 3（setup 末尾自检）**：`setup-builder-loop.sh` cwd 警告段之后加 settings.json Stop hook 注册 + `~/.claude/scripts/builder-loop-stop.sh` 软链有效性自检 → 缺则 stderr `⚠️ V2.5 自检：...` + 给 `bash install.sh` / `diagnose-stop-hook.sh` 修复指引。不阻断 setup
-  - **CLAUDE.md §7.1 路径修正**：`/tmp/builder-loop-stop-debug.log` → `<P>/.claude/builder-loop/stop-hook-debug.log`，加注「老路径在 V2.4 及之前从未实际写入，是文档承诺与实现脱节，本次 V2.5 修正」
-  - **forensic 价值**：c1 / c5 类间歇性 stop hook 行为问题下次再现时，`tail -50 stop-hook-debug.log` 能直接看出每次 stop hook 触发时哪些条件成立 / 哪些 phase 命中 / 因什么 reason 退出。c5 bullet 5 的"commit 后多 1 次 NOOP"靠 bootstrap_check phase 的 details.changed_files_count + decision 字段一眼定位
-  - **完全向后兼容**：debug log 是新增独立文件，不动 trace.jsonl / loop-trace.jsonl / state schema；任何 IO 失败静默；`BUILDER_LOOP_DEBUG_LOG_MAX_BYTES=0` 可关 rotate；本期**不改触发逻辑**（c1 / c5 的修复推后到阶段 2，等真实数据让根因显形）
-  - **配套 fixture**：`test-stop-hook-debug-log.sh`（V2.5 = 5 case；V2.5.1 hotfix 加 A6/A7 共 7 case，覆盖 基础写入 + phase 顺序 / IO 失败容忍 / rotate 触发 / diagnose 6 段 + 严格 dry-run / setup 自检识别 hook 注册缺失 / 子目录 cwd 路径不分裂 / log_path 含空格不截断）。loop.yml PASS_CMD 新增 `v25_stop_hook_observability` stage
-- **V2.5.1**: stop hook observability hotfix（reviewer 反馈采纳）
-  - **debug_log 路径分裂修复**：CWD 在项目子目录时，原代码 entry / locate_result phase（PROJECT_ROOT 未赋值）fallback 到 `${CWD}/.claude/builder-loop/`，与后续 phase 写入的 `${PROJECT_ROOT}/.claude/builder-loop/` 不一致 → 同次触发日志分散在两个文件破坏 forensic。修：debug_log 函数内 lazy probe（沿 CWD 向上 5 层找 `.claude/loop.yml`），探测命中即用作 root；探测失败静默 return（与原 IO 容忍策略一致）。fixture A6 case 验证子目录 cwd 时全部 phase 集中写到 PROJECT_ROOT
-  - **pass_cmd_result.log_path 空格截断修复**：原 `parts[2] if len(parts) > 2 else ''` 用 split 后取单 token，路径含空格被截断。改 `' '.join(parts[2:])`。fixture A7 case 验证 `FAIL stage1 /tmp/path with space/iter-1.log` 输入下 log_path 完整保留
-  - **diagnose [4/6] 图标统一**：原硬编码 `✅ ok`，改用 `verdict_icon "$LOCK_VERDICT"`（与 [1/6]-[3/6]-[5/6]-[6/6] 风格一致）；新增 LOCK_VERDICT 变量从 LOCK_JSON 解析 verdict 字段
-  - **fixture 健壮性**：A3 stat 输出加 `tr -d '[:space:]'`（防 macOS 兼容性边界）；A4 find 加 `-maxdepth 5`（防特殊虚拟文件系统下递归过深）
-- **V2.6 Phase 1**: abandon-loop.sh 出口 + dotfiles A3 关键词识别（多阶段方案首段；详见 `.claude/plans/20260501-abandon-loop-and-baseline-probe.md` Phase 进度表）
-  - **背景**：用户在 builder loop 进行中遇到 PASS_CMD fail 但与本期改动无关时（典型：跨 PR tech debt 浮出 / 隔壁 worktree 还没合 master），无合法 escape 路径——`Edit state.active=false` 被 PreToolUse 权限拦、spawn reviewer 被 reviewer-timing-check.sh 拦、没有专门的 abandon 入口。BOT 项目活样本：loop 在用户决策期间继续跑 iter 2/3/4 浪费 token + 心理负担
-  - **新脚本**：`skills/builder-loop/scripts/abandon-loop.sh <state_file> <reason>`。reason 必填（写入 legacy info 用于审计）；state.active=true 才允许 abandon（防 zombie 二次归档）
-  - **副作用对称 EARLY_STOP 路径**：复用 V1.8.1 archive_to_legacy（state → `legacy/<ts>-abandon_<reason>.bak`）+ V2.3 stash 还原（worktree_mode=dirty + pre_loop_stash_ref → `git stash apply`，apply 不 pop 副本保留）+ V1.5 NDJSON trace（写 ABANDON event）+ legacy info 文件（reason / iter / worktree_path / worktree_mode / stash_restored / ts）
-  - **worktree 不动**：abandon 后 worktree 目录 + branch 保留供用户手动 cherry-pick / 重新 setup / 纯丢弃。stdout 输出三条建议命令（cherry-pick / worktree remove + branch -D / 重新 setup）
-  - **hook 自动放行**：state 归档后 reviewer-timing-check.sh 调 locate-state.sh 找不到 active state → 自动 exit 0 放行，**不需单独的 user-override 通道**（V2.6 fixture A10 case 实证）
-  - **dotfiles A3 关键词识别**：`~/.claude/commands/builder.md` 加硬规则 — 仅在收到 stop hook `[builder-loop ...]` stderr 注入后的下一轮 user reply 中识别白名单（停下loop / 停掉loop / 停止loop / 中止loop / abandon loop；必含 "loop" 或 "abandon" 锚词；单独「停了」不识别防假阳性）→ AskUserQuestion 单确认 reason → 调 abandon-loop.sh
-  - **install/uninstall 不需要改**：abandon-loop.sh 通过 `~/.claude/skills/builder-loop/` 整目录软链自动生效（不像 hook 入口需注册 settings.json）
-  - **完全向后兼容**：V2.5 及以下 state 缺 V2.6 字段（baseline_probe_pid / baseline_probe_worktree / baseline_probe_status）→ read_field 容错跳过；V1.x 老 state 缺 main_repo_path → fallback project_root（旧语义）；abandon 既不需要 V2.6 Phase 2 baseline probe 也不依赖任何新基础设施
-  - **配套 fixture**：`test-abandon-loop-flow.sh`（10 case A1-A10 / 42 个 assert，覆盖 reason 必填 / state 不存在 / 空白 reason / active=false 拒绝 / dirty + valid stash / clean / bare / invalid stash → conflict / 重复调拒绝 / hook 集成）
-  - **后续 Phase**（未实施，状态见方案文件 Phase 进度表）：Phase 2 异步 baseline probe（setup 时临时 worktree 后台跑 PASS_CMD baseline）+ Phase 3 严格差集归因（builder 主动诱导 abandon）
-
-详见 `skills/builder-loop/README.md` 与 `skills/builder-loop/docs/judge-agent.md`。
-
-## 6. 开发原则
+## 5. 开发原则
 
 - **不改 CC 源码**：所有功能基于 CC 的 hook / skill / agent 扩展机制实现
 - **可破坏性升级**：升级允许不兼容已接入项目的 loop.yml，但必须手动更新所有已接入项目确保继续可用
-- **[HARD RULE] Prompt 只写"做什么"**：写 builder.md / SKILL.md / agent prompt / commands/*.md 时只下达 imperative 指令（操作步骤、判据、出口、约束），禁止写动机/原因/反向出题/"防偷懒"等心理说辞。设计思路写到代码注释或 `docs/`，不进 prompt。
-
-## 7. 已知问题 / 排查手册
-
-### 7.1 Stop hook 未触发测试 — 僵尸 state 文件 bug（2026-04-24 定位，V1.8.1 修复）
-
-**现象**：builder 回复"✅ loop 已活跃"，但 Stop hook 没跑测试，session 直接停下（复现 session `81bdbe27`）。
-
-**根因**：Stop hook 每次都正确触发，但读到 `active=false` 的僵尸 state（来自前一个任务手动编辑或早停遗留）后正确地放行了——这是设计行为。真正的问题是**僵尸 state 本身的存在**：同一 CC session 里连续做多个任务时，builder 可能跳过前置 setup，看到旧状态文件就假设"已活跃"，结果消费的是无效的僵尸。
-
-**修复**（V1.8.1）：Stop hook 现在遇到 `active != true` 的 state 从"放行保留"改为"归档到 `legacy/<ts>-zombie_inactive.bak` + 放行"，下次 builder 进场无法再读到僵尸；同时 EARLY_STOP 从"改字段 + exit 0"改为"归档 + exit 2 注入"，让 builder 当场收到通知。
-
-**排查步骤**：
-1. 用 `ls -la <project_root>/.claude/builder-loop/` 查看是否有 `state/` 或 `legacy/` 目录
-2. 用 `tail -50 <project_root>/.claude/builder-loop/stop-hook-debug.log` 查最近 hook 触发的关键决策点（V2.5 引入；NDJSON 格式 + 10 处 phase 插桩；详见 §7.11）
-   - 注：老路径 `/tmp/builder-loop-stop-debug.log` 在 V2.4 及之前从未实际写入，是文档承诺与实现脱节，V2.5 修正
-3. 若 debug log 含 `phase=exit` + `reason=zombie_inactive`，证实是僵尸 → V1.8.1 修复已生效
-4. 若日志显示其他退出原因（`no_project_root` / `lock_held_by_other` / `not_git_repo` / `state_file_missing` / `existing_loop_worktrees` / `no_diff` / `doc_only` / `bootstrap_setup_failed`），按 phase=exit 的 reason 字段定位
-5. 一键全量诊断：`bash ~/.claude/skills/builder-loop/scripts/diagnose-stop-hook.sh` 输出 6 段（hook 注册 / 软链 / state / lock / trace+debug log / worktree）
-
-### 7.2 Commit-msg hook 拦截导致 auto-commit 失败
-
-**现象**：loop 跑到 merge-worktree-back.sh 时失败，错误信息含 "commit message" 或 "cr_id_skip"。
-
-**根因**：当项目启用了严格的 commit-msg hook（如 guard-commit-msg.sh）时，auto-commit message 的格式必须合规。V1.8 的 message `"chore(loop): auto-commit iter N"` 不含必要的 `[cr_id_skip]` 标记，被 hook 拦截。
-
-**修复**（V1.8.1）：merge-worktree-back.sh 的 auto-commit message 改为 `"chore(loop): [cr_id_skip] Auto-commit iter N"`，兼容所有启用 msg hook 的项目。
-
-**排查步骤**：检查 merge-worktree-back.sh 第 138 行的 commit message，应含 `[cr_id_skip]` 标记。
-
-### 7.3 Judge agent 全部判定都被降级（V1.9+）
-
-**现象**：开启 V1.9 后，`.claude/builder-loop/judge-trace.jsonl` 每行都是 `downgraded:true`，loop 行为退化为 V1.8（PASS_CMD 二值判据）。
-
-**排查步骤**：
-
-1. 跑 self-check：
-   ```bash
-   bash ~/.claude/skills/builder-loop/scripts/run-judge-agent.sh --self-check
-   ```
-   - 输出 `ERROR: missing credentials` → 检查 `ANTHROPIC_API_KEY` env 是否设置（Copilot 方案）
-   - **正版 Max CC 用户**（V2.1+ 推荐）：CC 自己的 OAuth token 不在 `~/.claude.json` 公开字段，judge 走不通 oauth 路径（详见 `skills/builder-loop/known-risks.md` R5）。
-     **V2.1 Workaround**：写 `~/.claude/skills/builder-loop/judge-env.sh`：
-     ```bash
-     # 方案 A：copilot-proxy 链路（已有 proxy 用户首选）
-     export ANTHROPIC_API_KEY=sk-666
-     export ANTHROPIC_BASE_URL=http://localhost:4142
-     # 方案 B：独立 sk-ant-key（无 proxy 用户）
-     # export ANTHROPIC_API_KEY=sk-ant-...
-     ```
-     模板见 `skills/builder-loop/judge-env.sh.example`。run-judge-agent.sh 启动时自动 source（仅主 env 未设时）。
-
-2. 看降级原因分布：
-   ```bash
-   cat <project_root>/.claude/builder-loop/judge-trace.jsonl | python3 -c "
-   import json, sys
-   from collections import Counter
-   c = Counter()
-   for line in sys.stdin:
-       try:
-           obj = json.loads(line)
-           if obj.get('downgraded'):
-               c[obj.get('downgrade_reason', '?')] += 1
-       except: pass
-   print(c.most_common(10))
-   "
-   ```
-
-3. 常见原因 → 处理：
-   - `missing_credentials` → 见步骤 1
-   - `timeout` → 检查 `ANTHROPIC_BASE_URL`（copilot-proxy 是否在跑 / 网络是否通）
-   - `http_401` / `http_403` → token 失效，重新登录 / 重启 copilot-proxy
-   - `parse_error` → 模型可能返回 markdown 包裹 JSON 或拒答；查 `model_used` 字段，可考虑在 loop.yml 改 `judge.model`
-   - `low_confidence` → 默认阈值 0.5 可能偏严，调高到 0.7 或调低到 0.3 看效果
-
-4. 完全回退到 V1.8 行为：在项目 `.claude/loop.yml` 加：
-   ```yaml
-   judge:
-     enabled: false
-   ```
-
-**已知风险开口项**：详见 `skills/builder-loop/known-risks.md`（R1 reward hacking / R2 LLM 假阳性 / R3 模型版本不可用 / R4 jsonl 增长）。
-
-### 7.4 worktree 内 loop.yml 不存在（V2.0+）
-
-**现象**：stop hook 跑 PASS_CMD 时 stderr 出现 `[run-pass-cmd] ⚠️  <worktree>/.claude/loop.yml 不存在（可能 worktree 内 loop.yml 未 commit），fallback 到主仓 ...`。
-
-**根因**：V2.0 起 PASS_CMD 在 worktree 内跑、loop.yml 也从 worktree 读（让 worktree 内改 loop.yml 立即生效）。git worktree add HEAD 只拷贝 git tracked 的文件——若 loop.yml 写完后还没 `git add + git commit`，worktree 内就看不到。
-
-**处理**：
-- 用户接入新仓库时序：写 `.claude/loop.yml` → `git add .claude/loop.yml && git commit -m "..."` → 再调 `setup-builder-loop.sh`
-- 已发生时：fallback 主仓 loop.yml 仍能跑，**不阻断**；下次 setup 前补 commit 即可
-- e2e fixture 在 setup 前必须 commit loop.yml，否则会触发本警告（不算失败但产生多余 stderr）
-
-**fixture 已知例**：`test-stop-hook-race-and-commit-msg.sh::场景 D` 在 V2.0 升级时失败，fix 是 setup 之前显式 `git add .claude/loop.yml && git commit`。
-
-### 7.5 PASS_CMD 跑了主仓而非 worktree（已修）
-
-**现象**：在 worktree 内改 loop.yml 加 stage，本轮 PASS_CMD 没跑新 stage（`.claude/loop-runs/iter-N-<new-stage>.log` 不存在）。
-
-**根因**（V1.7-V1.9.x）：`run-pass-cmd.sh` L22 死代码读旧 V1.7 之前路径 `.claude/builder-loop.local.md`，V1.8 已迁移到新路径 → 永远找不到 → `RUN_CWD = PROJECT_ROOT = 主仓` → PASS_CMD 跑主仓的 loop.yml。Worktree 改的 loop.yml 不生效要等到 PASS + merge 回主仓后下一轮才看到。
-
-**修复**（V2.0）：state schema 增加 `main_repo_path` 字段，`project_root` 字段语义改为"干活的地方"；下游脚本全链路适配；run-pass-cmd.sh 删死代码改三参签名。
-
-**自检**：项目根 `.claude/builder-loop/state/<slug>.yml` 应同时含 `project_root: <worktree>` + `main_repo_path: <主仓>` 字段。缺 `main_repo_path` 就是老 V1.x state——下次 setup 后会自动写新 schema。
-
-### 7.6 sonnet 降级到 haiku 后再不切（V2.1+）
-
-**现象**：本 loop 后续 judge 调用 `model_used` 一直是 `claude-haiku-4-5`，看 `judge-trace.jsonl` 发现一段时间前发生过 `fallback_also_failed` 或 `fallback_triggered`。
-
-**根因**：V2.1 设计：sonnet 连续失败 `fallback_after_failures` 次（默认 2）后切 haiku，**本 loop 内不再切第三档**也不重新尝试 sonnet。state 字段 `judge_active_model` 持久化到 loop PASS。
-
-**何时重置**：
-- loop PASS（merge 后 state 删除）→ 下个 loop 自动重新从 sonnet 试
-- 手动 rm `<P>/.claude/builder-loop/state/<slug>.yml` 后下次 setup 重新开始
-- 手动编辑 state 删除 `judge_active_model` 字段（不推荐，可能引入不一致）
-
-**判断 sonnet 是否真的不可用**（避免误判 haiku 替代生效）：
-```bash
-# 测试 sonnet 直连
-curl -sS -X POST $ANTHROPIC_BASE_URL/v1/messages \
-  -H "x-api-key: $ANTHROPIC_API_KEY" \
-  -H "anthropic-version: 2023-06-01" \
-  -H "content-type: application/json" \
-  -d '{"model":"claude-sonnet-4-6","max_tokens":10,"messages":[{"role":"user","content":"ping"}]}' \
-  --max-time 10
-```
-- 200 + content → sonnet 后端正常，judge 状态机本 loop 锁定 haiku 是预期行为
-- 5xx / 401 / timeout → 后端真的有问题；haiku fallback 是合理的兜底
-
-**完全禁用降级链**：在 `loop.yml.judge` 设 `fallback_model: ""`，sonnet 失败直接 downgrade 回 PASS_CMD 二值（不切 haiku）。
-
-### 7.7 用户主仓直接 commit 后 loop 没自动验证 PASS_CMD（V2.2+ 行为变更）
-
-**现象**：用户在主仓直接改代码 + commit + 关 CC（不经过 builder loop / 不调 setup-builder-loop.sh）。期望 stop hook 兜底激活帮跑 PASS_CMD 验证，但 loop 没起来。
-
-**原因**（V2.2 议题 3 设计变更）：bootstrap 兜底激活原本看「未提交工作树改动 OR 30 分钟内有 commit」任一条件就触发，V2.1 及之前会针对用户的新 commit 自动跑 PASS_CMD。
-
-V2.2 砍了 `HAS_RECENT_COMMIT` 触发器，bootstrap **只看**未提交工作树改动。原因：原行为造成「builder/用户手动 commit 收尾后连续两次 NOOP 兜底激活、输出 reviewer 流程提示空转」（复现 session `283ee3b2`）——多数场景下用户 commit 完就是真的"已收尾"，loop 不该再纠缠。
-
-**处理**（V2.2 推荐）：
-- 用户主仓直接改代码后，commit **之前**关 CC：下次开 CC 触发 stop hook 时仍会兜底（HAS_DIFF 非空）
-- 用户主仓直接改代码 + commit + 关 CC：下次开 CC 后**手动**调
-  ```bash
-  bash ~/.claude/skills/builder-loop/scripts/setup-builder-loop.sh "<task description>"
-  ```
-  起 loop 跑 PASS_CMD 验证
-
-**自检**：bootstrap 是否触发可看 stderr 是否含 `[builder-loop] ⚡ 兜底激活：检测到 loop.yml + 代码改动但无状态文件...`。
-
-### 7.8 主仓 dirty + 手动跑 setup 的预期行为（V2.3+）
-
-**默认行为**：主仓有未 commit 改动 + 手动跑 `setup-builder-loop.sh "<task>"` + loop.yml `worktree.enabled: true` →
-1. setup pre-flight 检测 dirty + 执行 `git stash push -u -m "builder-loop:auto:slug=...:ts=..."`
-2. 主仓 working tree 变 clean（用户回主仓会发现"代码暂时不见了"——是预期，stash 副本仍在 stash list）
-3. worktree 创建 + `git stash apply <hash>` 把 dirty 还原到 worktree 内（unstaged 形态）
-4. PASS → merge-worktree-back commit message subject 加 `[+N main-dirty]` + body 列文件 + 自动 drop 主仓 stash 副本
-5. EARLY_STOP / 异常退出 → worktree 保留 + 主仓 `git stash apply <hash>` 还原 dirty + 写 `legacy/<ts>-early_stop_<reason>.info` 留现场（stash 副本不 drop）
-
-**dirty 排除清单**：`.gitignore` / `.claude/builder-loop/` / `.claude/loop-runs/` / `.claude/loop-trace.jsonl` / `.claude/worktrees/` 不计入 dirty（setup 自管理路径）。
-
-**特殊状态拒绝**：rebase / merge / cherry-pick / revert 进行中 / submodule dirty → setup `exit 2` 拒绝。请先结束特殊状态或加 `--no-stash` 跳过 stash 流程。
-
-**`--no-stash` flag**：显式跳过 stash 流程；worktree 仍创建但 dirty 留主仓不进 worktree（用户后续在主仓 / worktree 各自工作）。
-
-**自检**：dirty 入 worktree 是否成功看 setup stderr 是否含 `📦 主仓 dirty 已 stash → builder-loop:auto:slug=...` + `✅ stash 已 apply 到 worktree`。state 文件 `worktree_mode: "dirty"` + `pre_loop_stash_ref` 是 commit hash。
-
-### 7.9 Reward hacking 检测误触发 / 假阴性（V2.3+）
-
-**误触发场景**：本期改动确实在配置文件（`loop.yml` / `pyproject.toml` / `pytest.ini` / `setup.cfg` / `conftest.py` / `tests*/...py`）+ 含关键词（`--reruns` / `xfail` / `skip` / `@pytest.mark.flaky` / `-k "not X"`），但用户**真有充分理由**保留改动 → 走 AskUserQuestion 第三选项「保留 cmd 改动并给必要性理由」即可。
-
-**完全禁用**：`loop.yml.judge.reward_hacking_detection: false` 关 Layer 2 正则；Layer 1 LLM 仍可独立判定（按 `judge-system.md` V2.3 段）。
-
-**假阴性盲区**：当前关键词清单不含 `--ignore-glob` / `--collect-only` / `pytest.mark.skipif` 等"看似无害的过滤"。已在 `known-risks.md` R6.5 记录跟踪。
-
-**grep 实现兼容性**：V2.3.1 起 pattern 用 `['"'"'"]` 字面字符类（GNU grep + ugrep 双兼容），不再依赖 `\047` ASCII escape。已在 `known-risks.md` R6.6 记录。
-
-**自检**：reward hacking 命中可看 stop hook stderr 是否含 `[builder-loop reward-hack-guard]` + 三选项注入。`judge-trace.jsonl` 含 `reason="suspected_reward_hack: ..."` 行。
-
-### 7.10 主仓 cwd 仍 setup 进 worktree → stop hook 不跟（V2.4 缓解 + 自检指引）
-
-**现象**：手动跑 `setup-builder-loop.sh` 后 worktree 创建成功，CC session cwd 仍在主仓，下次 stop hook 触发没跑 PASS_CMD。
-
-**V2.4 默认行为**（缓解）：
-1. setup 末尾会打 stderr 警告 `⚠️ CC session cwd 仍在主仓 ...` + 给 cd 建议
-2. 主仓 cwd + **唯一** active worktree state（worktree_path 目录存活）→ `locate-state.sh` 策略 5 自动绑定，stop hook 正常跟
-3. **多** active worktree state（用户并发跑多个 loop）→ 策略 5 不绑（保 V1.8 多状态隔离），stop hook stderr 列各候选 worktree path 提示用户手动 cd
-
-**何时仍会哑火**：
-- ≥2 个 active worktree state 同时存在 + 主仓 cwd → 必须 cd 到目标 worktree
-- worktree 已被 `git worktree remove` 但 state 文件残留（孤儿）→ 策略 5 排除孤儿后仍可能 0 候选 → 走 bootstrap 路径
-
-**排查步骤**：
-1. 看 setup stderr 是否含 `⚠️ CC session cwd 仍在主仓` → 提示已经发了，按建议 cd
-2. 看 stop hook stderr 是否含 `[builder-loop] ⚠️  cwd=... 未匹配任何 state` → 列出的 worktree 就是当前 active 候选，挑一个 cd
-3. 看 `<repo>/.claude/builder-loop/state/*.yml` 各 state 的 `active` 字段 + `worktree_path` 目录是否存活：
-   ```bash
-   for f in <repo>/.claude/builder-loop/state/*.yml; do
-     echo "=== $(basename "$f") ==="
-     grep -E '^(active|worktree_path):' "$f"
-   done
-   ```
-4. 自动绑定不希望发生（如多 active 时不想被自动选一个）→ 当前 V2.4 已是「多 active 不绑」，无需额外配置
-
-**完全禁用策略 5**：本期未提供配置项关闭。需关闭可手动归档：
-```bash
-mkdir -p .claude/builder-loop/legacy/
-mv .claude/builder-loop/state/<slug>.yml .claude/builder-loop/legacy/
-```
-或编辑 state `active: false` 让其不参与候选筛选。
-
-### 7.11 stop hook debug log 格式 + 排查指南（V2.5）
-
-**位置**：`<project_root>/.claude/builder-loop/stop-hook-debug.log`
-
-**格式**：每行 1 条 NDJSON
-```jsonc
-{"ts":"2026-04-30T12:34:56.789Z","session":"abc12345","cwd":"/path","slug":"<slug>","phase":"<phase>","details":{...}}
-```
-- `session`：CC session_id 前 8 字符（跨 hook 触发追踪用）
-- `slug`：state 文件名去 `.yml`（bare loop = `__main__`）；entry / locate_result phase 时为空
-- `phase` / `details`：见下表
-
-**滚动**：默认 1 MB（`BUILDER_LOOP_DEBUG_LOG_MAX_BYTES` env 可调），保留 5 个 `.1-.5`。超过 `.5` 删除（最多 5 MB 占用）
-
-**Phase 表**（10 种）：
-
-| phase | 时机 | 关键 details 字段 |
-|-------|------|-----------------|
-| `entry` | hook 入口（解析 stdin 后） | `cwd`, `transcript_path` |
-| `locate_result` | locate-state.sh 调用后 | `state_file`, `matched` |
-| `flock_acquire` | flock 抢锁结果 | `lock_file`, `acquired` |
-| `bootstrap_check` | bootstrap 触发条件判定 | `found_loop_only`, `decision`（`trigger`/`skip_doc_only`/`skip_no_diff`/`skip_existing_worktree`）, `changed_files_count`, `doc_only` |
-| `pass_cmd_start` | 跑 PASS_CMD 前 | `iter`, `run_cwd` |
-| `pass_cmd_result` | PASS_CMD 跑完 | `result`（`PASS`/`FAIL`/`UNKNOWN`）, `last_line`, `last_stage`, `log_path` |
-| `merge_result` | merge-worktree-back.sh 后 | `merge_action`, `merge_last_line` |
-| `judge_result` | run-judge-agent.sh 后 | `action`, `downgraded`, `confidence`, `reason` |
-| `early_stop` | early-stop-check STOP 时 | `iter`, `reason` |
-| `exit` | 脚本退出前 | `code`（0/2）, `reason`（详见下） |
-
-**`exit.reason` 取值**（看每次 hook 为啥退出）：
-
-| reason | 含义 |
-|--------|------|
-| `no_project_root` | 未找到 `.claude/loop.yml`（项目未接入 loop） |
-| `lock_held_by_other` | 另一 stop hook 在跑（flock 抢锁失败） |
-| `not_git_repo` | bootstrap 时 PROJECT_ROOT 不是 git 仓 |
-| `existing_loop_worktrees` | bootstrap 时检测到已有 loop/* worktree（跨 session 守门） |
-| `no_diff` | bootstrap 时无未提交工作树改动 |
-| `doc_only` | bootstrap 时改动全是文档（V2.2.1 白名单） |
-| `bootstrap_setup_failed` | bootstrap 调 setup-builder-loop 失败 |
-| `state_file_missing` / `state_file_missing_after_bootstrap` | state 文件路径异常 |
-| `zombie_inactive` | state.active != true 僵尸归档 |
-| `pass_done` | PASS_CMD 全过 + merge ok（正常 PASS 退出，code=2） |
-| `need_arbitration` | merge rebase 冲突需仲裁（code=2） |
-| `merge_failed` | merge-worktree-back 异常（code=2） |
-| `early_stop_<reason>` | 早停（max_iter / no_progress / error_growth / suspected_test_tampering） |
-| `judge_continue_nudge` / `judge_retry_transient` | judge agent 决策注入 nudge / retry |
-| `fail_continue` | PASS_CMD fail，注入 feedback 等下一轮（code=2） |
-
-**典型排查流程**：
-
-1. **stop hook 完全没触发**：
-   - `tail -10 <P>/.claude/builder-loop/stop-hook-debug.log` 看是否有 `entry` phase
-   - 全无 → 跑 `diagnose-stop-hook.sh`，重点看 [1/6] hook 注册 + [2/6] 软链
-   - 有 entry 但无 exit → 脚本中途崩溃，看 stderr 错误
-
-2. **stop hook 反复跑 NOOP（c5 类）**：
-   - `grep '"phase":"bootstrap_check"' debug.log | tail -10` 看每次的 `decision` + `changed_files_count`
-   - 同一 dirty 状态反复 `decision:trigger` → bootstrap 节流缺失，确认 c5 假设
-   - HEAD 推进后又触发 → 看 `bootstrap_check.details.changed_files_count` 与上次对比
-
-3. **PASS_CMD 路径异常（merge / judge / arbiter）**：
-   - `grep '"phase":"merge_result"\|"phase":"judge_result"' debug.log | tail -5`
-   - merge_action `MERGED`/`NOOP`/`NEED_ARBITRATION`/其他 → 比对 §7.10 行为说明
-
-4. **看某 session 完整流程**：
-   - `grep '"session":"abc12345"' debug.log` 拿该 session 所有 phase 链
-   - 标准链：entry → locate_result → flock_acquire(true) → (bootstrap_check / 直走) → pass_cmd_start → pass_cmd_result → (merge_result / judge_result) → exit
-
-**关闭 / 清理**：
-- 默认开（无配置项关闭，IO 失败已容忍）
-- 手动清理：`rm <P>/.claude/builder-loop/stop-hook-debug.log*`，下次 hook 触发自动重建
-- 调小 rotate：`export BUILDER_LOOP_DEBUG_LOG_MAX_BYTES=262144`（256 KB）
-
-**老路径迁移说明**：V2.4 及之前 CLAUDE.md §7.1 提的 `/tmp/builder-loop-stop-debug.log` **从未实际写入过**（grep stop hook 代码 0 命中）。V2.5 路径换到项目本地 + 真实写入。如果用户从老笔记看到 `/tmp/builder-loop-stop-debug.log`，已是历史包袱。
-
-### 7.12 用户主动 abandon loop 的合法路径（V2.6 Phase 1）
-
-**何时使用**：loop 进行中遇到 PASS_CMD fail，但用户判定 fail 与本期改动无关（典型：跨 PR tech debt / 隔壁 worktree 还没合 master）→ 想停掉本次 loop 不再纠缠。当前 max_iter 自然耗尽要花 5 轮 PASS_CMD（约 5-15 min 真实跑 + 多轮 input/output token），abandon 入口让用户 < 2s 退出。
-
-**两种触发方式**：
-
-1. **用户自然语言（A3 关键词）**：在收到 stop hook `[builder-loop ...]` stderr 注入后的**下一轮**回复说「停下loop / 停掉loop / 停止loop / 中止loop / abandon loop」任一关键词。Builder 识别后会主动 AskUserQuestion 单确认 reason → 调脚本。
-   - 不识别：「停了 / 不修了 / 中止」单独出现（缺 "loop" 或 "abandon" 锚词，假阳性高）
-   - 不识别：非 fail 注入语境（避免普通对话误触发）
-
-2. **直接调脚本**：
-   ```bash
-   bash ~/.claude/skills/builder-loop/scripts/abandon-loop.sh <state_file> "<reason>"
-   ```
-   reason 必填（写入 legacy info 审计）。state 路径通过 `~/.claude/skills/builder-loop/scripts/locate-state.sh "$PWD"` 拿到，或直接看 `<P>/.claude/builder-loop/state/<slug>.yml`。
-
-**abandon 后的状态**：
-
-- ✅ state 归档到 `<P>/.claude/builder-loop/legacy/<ts>-abandon_<reason>.bak`
-- ✅ `<P>/.claude/builder-loop/legacy/<ts>-abandon_<reason>.info` 留现场（worktree path / stash hash / changed_files / reason / ts）
-- ✅ trace event "ABANDON" 写入 `<P>/.claude/loop-trace.jsonl`
-- ✅ V2.3 dirty 模式 → 主仓 stash apply 还原（副本不 drop，事后用户决定）
-- ✅ worktree 目录 + branch **保留**（不删！供用户手动 cherry-pick / 丢弃）
-- ✅ stop hook / reviewer-timing-check.sh 自动放行（state 归档后 locate 找不到 active）
-
-**abandon 后下一步选项**（脚本 stdout 也会列出）：
-
-```bash
-# 选项 1：等外部修复后 cherry-pick 本期改动到主仓
-git -C <project_root> cherry-pick <commits-on-loop/branch>
-
-# 选项 2：直接丢弃本期改动
-git -C <project_root> worktree remove --force <worktree_path>
-git -C <project_root> branch -D loop/<slug>
-
-# 选项 3：外部条件就绪后重新进 loop
-bash ~/.claude/skills/builder-loop/scripts/setup-builder-loop.sh "<task>"
-```
-
-**何时拒绝（exit 2）**：
-
-- reason 缺失 / 仅空白 → "reason 必填"
-- state 文件不存在 → "state file 不存在"（可能已经 abandon 过 / loop 已 PASS）
-- state.active != true → "loop 非活跃，不重复归档"（防 zombie 二次归档）
-- main_repo_path / project_root 字段缺失或目录不存在 → "state 文件可能损坏"
-
-**完全回退方法**：
-
-- 误 abandon 想恢复 → 重新调 `setup-builder-loop.sh "<task>"` 起新 slug，原 worktree 还在，可在 worktree 内继续工作
-- legacy/.bak 仅审计用，**不可直接 mv 回 state/ 复活 loop**（active 字段 / iter / 等已是过期快照）
-
-**已知开口**：见 `.claude/plans/20260501-abandon-loop-and-baseline-probe.md` 的 Phase 2/3——异步 baseline probe + 严格差集归因升级，让 builder 能自动识别「fail 不在本期责任」并主动诱导 abandon（A2 路径）。本期 V2.6 Phase 1 仅落地中断侧，预防侧待后续 Phase。
+- **[HARD RULE] Prompt 只写"做什么"**：写 builder.md / SKILL.md / agent prompt / commands/*.md 时只下达 imperative 指令（操作步骤、判据、出口、约束），禁止写动机/原因/反向出题/"防偷懒"等心理说辞。设计思路写到代码注释或 `docs/`，不进 prompt
