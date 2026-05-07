@@ -3,6 +3,24 @@
 > 时间倒序。每条按 builder.md 步骤 5 模板（触发上下文 / 建议方向 / 优先级）。
 > 立项不等于本期实施——A 类候选清单，等独立任务挑出来落地。
 
+## 2026-05-01 reviewer 退化为事后建议而非合主线门禁，PASS_CMD 通过即 ff merge 让 reviewer 阻塞级反馈难撤回（V3.0 框架级重构）
+
+- **触发上下文**：cc-builder-loop V2.6 Phase 1（abandon-loop.sh 出口）落地 session。Loop iter 1 PASS → `merge-worktree-back.sh` 自动 auto-commit + ff merge + cleanup → 此时 commit `2934b15` 已在主线 → 才被 stop hook 通知 builder spawn reviewer 看 commit。Reviewer 反馈 `🔴 0 / 🟡 4 / 🔵 4`（虽然不到阻塞级但都是实质改动 — read_field 缺 strip / reason 换行污染 / 注释与实现不符 / SKILL+README V2.6 段缺失），builder 走新 commit `60c950a` 修。本次侥幸没 🔴 阻塞级；下次若 reviewer 发 🔴 阻塞级问题，已 merge 难撤回（要 git revert，破坏主线 history）。用户在收尾时质疑"理论上 reviewer 通过才能进 commit 环节吧"，明确了**当前流程让 reviewer 退化为事后建议而非合主线门禁**的设计缺陷。
+- **根因**：V1.6 修 worktree 数据丢失 bug（git worktree remove --force 静默吞掉 uncommitted 改动）时把「worktree auto-commit + ff merge 主干 + cleanup worktree + drop state」绑成 `merge-worktree-back.sh` 一个原子动作，没有"留 worktree 等 reviewer"的中间态。Reviewer 又是 PASS_CMD 通过后由 stop hook 通知 builder spawn 的——时序天然在 merge 之后，**reviewer 永远只能看已合主线的代码**。
+- **建议方向**（V3.0 框架级重构，**改造规模 ≈ V2.6 全部 Phase 之和**）：
+  1. **拆原子动作**：`merge-worktree-back.sh` 拆为 `worktree-commit-only.sh`（PASS 后调，仅 worktree 内 git add+commit 不动主仓 / 不 ff merge / 不 cleanup）+ `merge-and-cleanup.sh`（reviewer 通过才调，做 ff merge + cleanup worktree + drop state）
+  2. **state schema 加中间态字段**：`phase: active | passed_pending_review`（默认 active；worktree-commit-only 后 stop hook 写 passed_pending_review；reviewer 通过调 merge-and-cleanup 时直接 drop state 不留 phase=passed_merged 防僵尸）
+  3. **builder.md 流程改造**：PASS 后强制 spawn reviewer；🔴 阻塞 → 用户决策（修复回 PASS_CMD 新一轮 iter / abandon-loop 放弃）；🟡 / 🔵 非阻塞 → builder 修 → worktree 新 commit → 重 spawn reviewer 复审；0 🔴 → 调 merge-and-cleanup 才合主线
+  4. **reviewer-timing-check.sh 语义反转**：从「loop 活跃禁止 spawn reviewer」改为「state.phase=active 禁止 spawn / state.phase=passed_pending_review 必须 spawn」
+  5. **locate-state.sh / stop hook 适配** passed_pending_review 态：stop hook 看到此态**不再跑 PASS_CMD**（已通过），仅识别 reviewer 反馈喂回；多 passed_pending_review 并存允许（多 worktree 等审）
+  6. **abandon-loop.sh 兼容**：passed_pending_review 态下用户也能 abandon（reviewer 阻塞 + 用户不想修），本期 V2.6 Phase 1 abandon-loop.sh 已支持 active=true state，新增需识别 phase=passed_pending_review 也允许 abandon
+  7. **e2e fixture**：`test-reviewer-as-gate.sh` 覆盖 PASS → reviewer 通过 → merge / PASS → 🟡 → builder 修 → 复审通过 → merge / PASS → 🔴 → 用户修走新 PASS_CMD 轮 / PASS → 🔴 → abandon / 多 passed_pending_review 并存
+  8. **配置项可选保守模式**：`loop.yml.merge_gate: pass | reviewer`（默认 reviewer，激进项目可设 pass 退回 V2.6 行为）
+- **代价**：状态机多一态 + worktree 保留期变长 + 多 worktree 并存概率提高 + reviewer-timing-check.sh 语义反转 + 跨脚本协议 breaking change（拆 merge-worktree-back.sh）。需迁移所有已接入项目的 state schema。
+- **好处**：reviewer 真成合主线门禁 + 阻塞级反馈不再污染主线 + commit history 干净（只有 reviewer 通过的代码进主线）+ 与人类 PR review 文化对齐
+- **优先级**：高（reviewer 退化为事后建议是当前架构核心缺陷；V3.0 主题级重构；V2.6 全部 3 个 Phase 收尾后启动）
+- **复现**：装了 builder-loop 的项目，让 loop 跑 PASS_CMD 通过 → 看到 commit 已自动合主线 → spawn reviewer → 模拟 reviewer 报 🔴 → 此时 commit 已在主线难撤回。本 V2.6 Phase 1 reviewer 报 🟡 4 没到 🔴 是侥幸。
+
 ## 2026-05-01 doc-maintainer 输出文档资产含虚假信息（提及未实现的脚本/字段），缺 ground truth 验证
 
 - **触发上下文**：generator 项目 deep-analysis v2 落地 session（commit ac321bf 后）。Builder spawn doc-maintainer 同步 6 个 changed_files。doc-maintainer 输出 `UPDATE_DOCS_SUMMARY: 已更新 5 个文档`，其中新建 `scripts/CLAUDE.md` 表格列出 4 个脚本，**第 4 行 `gen_arc_cards.py | （预留）弧线卡生成辅助脚本` 完全是虚构** —— scripts 目录仅有 3 个 deep_analysis_* 脚本，根本没有 gen_arc_cards.py，scripts/__init__.py 也没引用。其次「数据合同」段写「`_meta` 段含 `script_version` / `timestamp` / `chapter_count`」也是虚假，3 个脚本实际输出 JSON 都没 `_meta` 字段（output 字段是 `per_chapter` / `total_unmatch` / `overflows` 等）。Builder commit 前手动审阅发现并修正。
