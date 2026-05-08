@@ -24,6 +24,16 @@
 
 set -uo pipefail
 
+# ---- 方案识别（max / copilot），与 install.sh 同判据 ----
+detect_plan() {
+  local url="${ANTHROPIC_BASE_URL:-}"
+  case "$url" in
+    *localhost*|*127.0.0.1*) echo "copilot" ;;
+    *)                       echo "max" ;;
+  esac
+}
+PLAN="$(detect_plan)"
+
 JSON_MODE=0
 PROJECT_ROOT_ARG=""
 for arg in "$@"; do
@@ -80,14 +90,17 @@ update_verdict() { local v="$1"; [ "$v" -gt "$VERDICT" ] && VERDICT="$v"; }
 # ---- [1/6] settings.json hook 注册 ----
 diagnose_hooks_python="$(cat <<'PYEOF'
 import json, os, sys
-expected = [
-    ('Stop', 'builder-loop-stop.sh', None),
-    ('SubagentStart', 'tester-lock-write.sh', 'tester'),
-    ('SubagentStop', 'tester-lock-clear.sh', 'tester'),
-    ('PreToolUse', 'tester-lock-check.sh', 'Read|Grep|Glob'),
-    ('PreToolUse', 'tester-write-guard.sh', 'Write|Edit|MultiEdit'),
-    ('PreToolUse', 'reviewer-timing-check.sh', 'Agent'),
+plan = os.environ.get('PLAN', 'copilot')
+# 第 4 字段 plan_filter：''=通用，'copilot'=仅 copilot 方案要求
+expected_all = [
+    ('Stop', 'builder-loop-stop.sh', None, ''),
+    ('SubagentStart', 'tester-lock-write.sh', 'tester', ''),
+    ('SubagentStop', 'tester-lock-clear.sh', 'tester', ''),
+    ('PreToolUse', 'tester-lock-check.sh', 'Read|Grep|Glob', ''),
+    ('PreToolUse', 'tester-write-guard.sh', 'Write|Edit|MultiEdit', 'copilot'),
+    ('PreToolUse', 'reviewer-timing-check.sh', 'Agent', ''),
 ]
+expected = [(t, s, m) for (t, s, m, pf) in expected_all if (not pf) or pf == plan]
 results = []
 sj = os.environ.get('SETTINGS_JSON', '')
 if not os.path.isfile(sj):
@@ -120,7 +133,7 @@ print(json.dumps({'verdict': verdict, 'items': results}))
 PYEOF
 )"
 
-HOOKS_JSON="$(SETTINGS_JSON="$SETTINGS_JSON" python3 -c "$diagnose_hooks_python" 2>/dev/null || echo '{"verdict":"fail","items":[]}')"
+HOOKS_JSON="$(SETTINGS_JSON="$SETTINGS_JSON" PLAN="$PLAN" python3 -c "$diagnose_hooks_python" 2>/dev/null || echo '{"verdict":"fail","items":[]}')"
 HOOKS_VERDICT="$(echo "$HOOKS_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin).get('verdict','fail'))" 2>/dev/null || echo "fail")"
 case "$HOOKS_VERDICT" in
   ok) ;;
@@ -353,6 +366,7 @@ fi
 echo "=== diagnose-stop-hook v0.1 ==="
 echo "project_root: $PROJECT_ROOT"
 echo "ts: $TS_NOW"
+echo "plan: $PLAN base_url=${ANTHROPIC_BASE_URL:-unset}"
 echo ""
 
 verdict_icon() {

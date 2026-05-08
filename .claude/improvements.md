@@ -3,6 +3,35 @@
 > 时间倒序。每条按 builder.md 步骤 5 模板（触发上下文 / 建议方向 / 优先级）。
 > 立项不等于本期实施——A 类候选清单，等独立任务挑出来落地。
 
+## 2026-05-08 同 session 串行多 worktree：第二轮 worktree 的 stop hook 反馈完全静默丢失
+
+- **触发上下文**：BOT 项目同一 CC session 内做 B-1「hmi_flash 漏斗埋点」任务，连续两轮 setup-builder-loop.sh：
+  - 第一轮 worktree `1778223247-b-1-hmi-flash` 跑 PASS → auto-commit `337dd65` → reviewer 启动 → 用户继续追问发现 stats 脚本还有缺口 → 没退出 builder 模式直接 setup 第二轮 worktree `1778223431-b-1-hmi-flash-stat`
+  - 第二轮 worktree 内改完 service/vehicle_ws.py + scripts/hmi_flash_stats.py，PoC 跑通后发文本「等 Stop hook 跑 PASS_CMD」
+  - **实际**：stop hook 跑了 PASS_CMD（HEAD 推进到 `519e66e`）+ merge-worktree-back.sh ff merge + 写 reviewer-params.json（含正确 changed_files / report_path / diff_file）+ 清理 worktree（worktree list 里只剩主仓和两个老旧 worktree，第二轮 1778223431-... 已不存在）—— **但 stderr 注入的「请继续 spawn reviewer」反馈消息完全没传到 CC 对话**
+  - 用户主动追问"reviewer 和 pass_cmd 呢"才让我意识到 hook 实际跑完了；手动 Read reviewer-params.json + spawn reviewer 才接续上
+- **根因（推测）**：CC session cwd 始终在主仓（setup 输出已警告过），同时 git worktree list 里除当前轮还有两个老 worktree（`1776923599-llm`、`1776930498-hmi`）—— 触发 V2.4 多 worktree 绑定策略：「策略 5 仅在唯一 active worktree 时自动绑定；多 active 必须显式 cd 到对应 worktree 才能让 stop hook 跟踪」。但实际 stop hook 仍能找到本轮 state 跑 PASS_CMD + auto-commit（因为 state 文件名带 timestamp），只是**反馈注入这一步**因为多 worktree 状态而被跳过。这与 05-08 早些时候那条「跨 session 串扰」的根因可能同源（hook 不识别 origin session/worktree），但表现是反向的：**该送的没送**而不是送错对象。
+- **建议方向**：
+  1. **state 文件加 origin_cc_session_id 字段**：与跨 session 那条建议合并，让 hook 能精确匹配「当前 stop 事件的 session 是不是这条 state 的 origin」决定是否注入
+  2. **多 worktree 兜底反馈**：即便 V2.4 策略 5 不自动绑定，PASS_CMD 跑完 + auto-commit + 写 reviewer-params.json 后**至少要打一行可见日志或在 hook stdout 里告诉当前 session "PASS at iter N (MERGED)"**——现在是完全静默
+  3. **builder.md 提示**：在「检查 loop.yml」段加一条警告：「同 session 内连续 setup 多个 worktree 时，第二轮 stop hook 反馈可能丢失。建议第一轮收尾后退出 builder 模式 / 主动 cd 进新 worktree / 改用新 CC session」
+  4. **诊断脚本**：`diagnose-stop-hook.sh` 加一项[7/N]：检测当前 session 是否处于"多 worktree 但 cwd 在主仓"状态，若是则警告
+  5. **e2e fixture**：构造同 session 内连续 setup 两个 worktree 的场景，断言第二轮 PASS 后 stop hook 也能注入消息（否则 fixture 红）
+- **优先级**：中（同 session 多 worktree 不是常见模式，但一旦发生静默丢失会让用户以为 loop 卡住，浪费上下文/排查时间。频次中）
+
+## 2026-05-08 worktree 内多步改动节流不足：单次 Edit 后发文本就触发 stop hook 提前 auto-commit
+
+- **触发上下文**：B-1 第一轮 worktree（`1778223247-b-1-hmi-flash`）。计划改 3 个文件：handler/card_vehicle_ops.py（7 处日志）+ scripts/hmi_flash_stats.py（PATTERNS + 聚合 + 漏斗）+ service/vehicle_ws.py（pull_file 完成日志）。Edit 完第一个文件后发了一条文本「先 Edit 加 7 处阶段日志」+ 跑 syntax check + 没继续动手，然后 user 给了下一条系统提醒（task tools 提醒），CC 一回合自然结束 → stop hook 立即跑 PASS_CMD（lint/test 单文件改动当然 PASS）→ ff merge 主仓 → auto-commit `337dd65` → worktree 清理。结果：本来计划"3 文件一并交付"的任务被切成"1 文件提前交付"，第二轮要重新 setup-builder-loop.sh 接续做剩下 2 个文件。
+- **根因**：builder 工作流没有"WIP 节流"概念。stop hook 触发条件是"CC 一回合自然结束"，不论改动是否完整。Builder prompt 里只在 doc-policy / debug 三禁这种宏观规则，没有「连续 Edit 之间不发文本以免触发 hook」的约束。普通用户写 Edit/Write 天然连续；但 CC 写代码自己习惯每改一个文件就发一段文字解释 + syntax check —— 这种"分阶段汇报"模式在 builder-loop 下变成提前 commit 的风险。
+- **建议方向**：
+  1. **builder.md 加 prompt**：「在 worktree 内改多个文件时，所有 Edit 调用之间不输出非工具文本；汇报留到所有 Edit 完成后一次性输出。验证（syntax check / PoC）也算工具调用，不会触发；但纯 print 文字会让 CC 一回合 stop」
+  2. **stop hook 节流策略**：state 文件加 `min_iter_files_changed` 字段，PASS_CMD 通过但 git diff 改动文件数 < 该值时**不立即 merge**，等下一次 stop 再判定。默认 1（向后兼容），有方案时显式设置如 3。
+  3. **打开 explicit "loop done" 信号**：让 builder 显式告诉 hook"我改完了"（发空 commit、touch 个 sentinel 文件、或其他低阻抗信号），hook 看到信号才 merge；没信号则只 PASS 不 merge。
+  4. **e2e fixture**：构造"Edit 一个文件 + syntax ok + 中途发文本"场景，断言 stop hook 不立即 auto-commit（除非 builder 显式发完成信号）
+- **优先级**：中（不修也能用，但每次"半成品提前 commit"都浪费一次 worktree 建立成本 + 让 git log 多两条 chore(loop) commit 噪音。频次：跨多文件改动的中型任务必现）
+
+---
+
 ## 2026-05-08 stop hook 跨 session 串扰：A session 跑完 PASS 把 reviewer 触发指令注入到无关 B session
 
 - **触发上下文**：BOT 项目两个 CC session 并发。A session（slug=`1778223247-b-1-hmi-flash`）跑 builder-loop 改 `handler/card_vehicle_ops.py` 加 hmi_flash 漏斗埋点，14:55:40 PASS_CMD iter 1 通过 → `merge-worktree-back.sh` ff merge 主仓为 commit `337dd65` + 写 `.claude/reviewer-params.json`（含 changed_files / report_path / diff_file）+ stop hook 注入「请继续 spawn reviewer ...」反馈到 stdout。但 stop hook 注入是按"当前被 stop 的 CC 进程"分发的，不识别 origin session —— 这条反馈塞给了**完全无关的 B session（id=`42a64c02`，正在帮用户查飞书私聊聊天记录 + 统计 LLM tool_call 退化日志分布）**，B session 从头到尾零代码改动。B session 主理人识破后拒绝接管（理由：① 自己未改代码 spawn reviewer 没 diff 可审 ② A session 才是 commit 作者应自己跑 reviewer ③ 跨 session 抢 reviewer 与 `cross_session_collaboration_etiquette` 记忆冲突），但 hook 设计层面这条注入本不应到 B 手里。

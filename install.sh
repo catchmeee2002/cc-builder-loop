@@ -15,6 +15,19 @@ set -euo pipefail
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CLAUDE_DIR="${HOME}/.claude"
 
+# ---- 0. 方案识别（max / copilot）----
+# 运行时唯一判据：ANTHROPIC_BASE_URL 含 localhost / 127.0.0.1 → copilot；否则 → max
+# max 方案下不需要 tester-write-guard.sh hook（CC 直连不走代理拦截）
+detect_plan() {
+  local url="${ANTHROPIC_BASE_URL:-}"
+  case "$url" in
+    *localhost*|*127.0.0.1*) echo "copilot" ;;
+    *)                       echo "max" ;;
+  esac
+}
+PLAN="$(detect_plan)"
+echo "✓ 检测方案=${PLAN} base_url=${ANTHROPIC_BASE_URL:-unset}"
+
 # ---- 前置检查 ----
 if [ ! -d "$CLAUDE_DIR" ]; then
   echo "❌ ~/.claude/ 不存在，请先部署 dotfiles（stow claude）" >&2
@@ -75,12 +88,13 @@ if [ "$JQ_AVAILABLE" = true ]; then
 
     # ---- 5.3 写入到 .tmp，再原子替换（避免半成品落到目标路径）----
     SETTINGS_TMP="${SETTINGS}.tmp.$$"
-    if ! python3 - "$SETTINGS" "$SETTINGS_TMP" "$SCRIPTS_DIR" <<'PYEOF'
+    if ! PLAN="$PLAN" python3 - "$SETTINGS" "$SETTINGS_TMP" "$SCRIPTS_DIR" <<'PYEOF'
 import json, sys, os
 
 settings_path = sys.argv[1]
 out_path = sys.argv[2]
 scripts_dir = sys.argv[3]
+plan = os.environ.get("PLAN", "copilot")
 
 with open(settings_path) as f:
     cfg = json.load(f)
@@ -100,27 +114,35 @@ def has_entry(arr, cmd_name):
                 return True
     return False
 
+# 元组第 4 字段 plan_filter：""=通用，"copilot"=仅 copilot 方案装
 registrations = [
-    ("Stop",           "builder-loop-stop.sh",      None),
-    ("SubagentStart",  "tester-lock-write.sh",      "tester"),
-    ("SubagentStop",   "tester-lock-clear.sh",      "tester"),
-    ("PreToolUse",     "tester-lock-check.sh",      "Read|Grep|Glob"),
-    ("PreToolUse",     "tester-write-guard.sh",     "Write|Edit|MultiEdit"),
-    ("PreToolUse",     "reviewer-timing-check.sh",  "Agent"),
+    ("Stop",           "builder-loop-stop.sh",      None,                    ""),
+    ("SubagentStart",  "tester-lock-write.sh",      "tester",                ""),
+    ("SubagentStop",   "tester-lock-clear.sh",      "tester",                ""),
+    ("PreToolUse",     "tester-lock-check.sh",      "Read|Grep|Glob",        ""),
+    ("PreToolUse",     "tester-write-guard.sh",     "Write|Edit|MultiEdit",  "copilot"),
+    ("PreToolUse",     "reviewer-timing-check.sh",  "Agent",                 ""),
 ]
 
 added = 0
-for hook_type, cmd_name, matcher in registrations:
+skipped = 0
+for hook_type, cmd_name, matcher, plan_filter in registrations:
+    if plan_filter and plan_filter != plan:
+        skipped += 1
+        continue
     arr = hooks.setdefault(hook_type, [])
     if not has_entry(arr, cmd_name):
         arr.append(make_entry(cmd_name, matcher))
         added += 1
 
+applicable = len(registrations) - skipped
+existed = applicable - added
+
 with open(out_path, "w") as f:
     json.dump(cfg, f, indent=2, ensure_ascii=False)
     f.write("\n")
 
-print(f"✓ hooks: {added} 条新增，{len(registrations) - added} 条已存在")
+print(f"✓ hooks ({plan} plan): {added} 条新增，{existed} 条已存在，{skipped} 条跳过（不属于本方案）")
 PYEOF
     then
       echo "❌ python3 改写失败，未触碰原 settings.json" >&2
