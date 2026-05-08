@@ -21,6 +21,44 @@ V3.0 「reviewer-as-gate + 文件按 slug 拆 + 多层闸」一波重构（详�
 
 ---
 
+## 2026-05-09 [A2] spec 偏离实施时强制标注 — DEVIATION_FROM_SPEC 协议
+
+- **触发上下文**：V3.0 主期 spec 写「老 state 缺 phase 字段 → AskUserQuestion 阻断让用户决策」，实施时改成「stderr warning + 隐式自动升级」（更平滑），reviewer 不知道偏离动机当 🔴 报。Builder 自主回复采纳/拒绝时多消耗一轮上下文反驳。频次：每次 builder 实施时遇到 spec 设计过激进 / 与现实冲突的场景都可能踩。
+- **建议方向**（机制化代替"靠 builder 自我习惯"）：
+  1. **builder.md 加 prompt**：「实施偏离 spec 时必须在 commit message body 加一段 `DEVIATION_FROM_SPEC: <reason>`」，落地 `~/.claude/commands/builder.md`（dotfiles 改动）
+  2. **reviewer.md 加 prompt**：「评审前 scan commit message body 找 `DEVIATION_FROM_SPEC:` 标记；命中条目视为有意识决定，不当 bug 报；如不认同偏离 reason 单独提"建议回退到 spec"而非 🔴 阻塞」
+  3. **fixture**：构造一个 commit message 含 DEVIATION_FROM_SPEC 标记的场景，断言 reviewer 输出不含该条目的 🔴
+  4. **plan.md / spec 文件可选**：加「实施偏离记录」段，让方案 review 阶段就能识别"哪些 spec 项实施时大概率会偏离"
+- **优先级**：中（机制比 builder 自我纪律更稳；每次 V3.x / V4.x 大改造都该用）
+- **复现**：构造一个 spec 与现实有冲突的小任务（如 spec 写"严格阻断"实施改"warning 兜底"），看 reviewer 是否还会当 🔴 报
+
+---
+
+## 2026-05-09 [A2] planner 方案模板强制「老路径调用方清单」段
+
+- **触发上下文**：V3.0 拆 `merge-worktree-back.sh` 为 commit-only + merge-and-cleanup 时，漏 grep 全仓调用方，结果 `run-apply-arbitration.sh` 仍调老脚本，arbiter 续路径绕过 reviewer-as-gate（reviewer 反馈 🟡 抓到）。Builder 改造大架构时需主动 grep 全仓"老路径调用方"清单——但当前没有机制强制做这件事，只能靠 builder 自觉。
+- **建议方向**（机制化代替"靠 builder 自我习惯"）：
+  1. **planner.md 方案模板加段**：「老路径调用方清单」必填——任何架构改造（拆脚本、改接口、废弃文件）方案在「文件地图」段后加新段，列出所有调用方（用 `grep -l <旧路径> -r` 输出截图证据），逐个标注「迁移 / 兼容 / 已知技术债」，落地 `~/.claude/commands/planner.md`（dotfiles 改动）
+  2. **builder.md 加 prompt**：「读到方案文件含「老路径调用方清单」段时，进 builder 模式后第一动作是逐项验证迁移 / 兼容 / 标债，不能跳过任何一条」
+  3. **fixture**：构造一个方案文件无该段的场景，断言 builder 启动时 stderr warning「方案缺老路径调用方清单」（不阻断但显眼提示）
+- **优先级**：中（架构改造频次低但单次漏改成本高，比 V3.0 arbiter 缺口立项条目更上一层 — 那条是结果，这条是预防机制）
+- **复现**：开新方案做架构改造任务，看是否有这一段；没有则规划 / 实施期容易漏调用方
+
+---
+
+## 2026-05-09 [A2] schema 字段变更强制「老 state 兼容 fixture」类别
+
+- **触发上下文**：V3.0 加 `phase` / `last_iter_head` / `cleanup_phase` 三个新字段，hook L1 闸初版漏写「state 缺 phase 字段」的处理（PHASE_FIELD 为空 fall-through，reviewer 反馈 🔴 抓到）。每次 schema 字段变更都该考虑「老数据缺该字段时走什么分支」——但当前没机制强制。
+- **建议方向**（机制化代替"靠 builder 自我习惯"）：
+  1. **fixture 框架扩展**：新增 `test-state-schema-old-data-compat.sh` 总入口 — 读 SKILL.md「状态文件 schema」段所有字段名，逐字段构造「state 缺该字段」的场景跑 hook，断言结果是「降级 / warning + 自动升级 / 显式 abort」三选一明确（不允许默默 fall-through）
+  2. **builder.md 加 prompt**：「改 setup-builder-loop.sh / merge-* / hook 等读 state 字段的脚本前，先看 schema 字段是否有新增；新增字段必须先在 `test-state-schema-old-data-compat.sh` 加对应断言才能 commit」
+  3. **CI hook**（可选）：commit-msg / pre-push hook 检测 SKILL.md 「状态文件 schema」段字段数量变化，强制要求对应 fixture 也增加断言数量（非严格匹配但量级一致）
+  4. 与 [A2] 上面「fixture 验证 SKILL.md schema 与代码一致」条目同源 — 可合并实施
+- **优先级**：中（每次 schema 演进都该跑；本期 V3.0 是个活样本）
+- **复现**：往 SKILL.md schema 段加一个新字段不更新 fixture，看是否有报警
+
+---
+
 ## 2026-05-09 reviewer 长 diff 评审 prompt 加约束 + fixture 验证 SKILL.md schema 与代码一致
 
 - **触发上下文**：V3.0 reviewer-as-gate 主期 reviewer 反馈（🔵 2 条误读 + 🔴 1 条 schema 漂移）。
