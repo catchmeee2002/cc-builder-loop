@@ -109,12 +109,16 @@ def make_entry(cmd_name, matcher=None):
         entry["matcher"] = matcher
     return entry
 
-def has_entry(arr, cmd_name):
-    for item in arr:
+def find_entry_status(arr, cmd_name, matcher):
+    # 返回 (status, index)。status: 'missing' | 'match' | 'stale'
+    # 'match' = 脚本名命中且 matcher 字面相等；'stale' = 脚本名命中但 matcher 不同
+    for i, item in enumerate(arr):
         for h in item.get("hooks", []):
             if cmd_name in h.get("command", ""):
-                return True
-    return False
+                if item.get("matcher") == matcher:
+                    return ("match", i)
+                return ("stale", i)
+    return ("missing", -1)
 
 # 元组第 4 字段 plan_filter：""=通用，"copilot"=仅 copilot 方案装
 # 未来加新方案（gemini / openrouter 等）：plan_filter 可写 "copilot,gemini" 这种逗号分隔
@@ -129,24 +133,31 @@ registrations = [
 ]
 
 added = 0
+updated = 0
 skipped = 0
 for hook_type, cmd_name, matcher, plan_filter in registrations:
     if plan_filter and plan_filter != plan:
         skipped += 1
         continue
     arr = hooks.setdefault(hook_type, [])
-    if not has_entry(arr, cmd_name):
+    status, idx = find_entry_status(arr, cmd_name, matcher)
+    if status == "missing":
         arr.append(make_entry(cmd_name, matcher))
         added += 1
+    elif status == "stale":
+        arr.pop(idx)
+        arr.append(make_entry(cmd_name, matcher))
+        updated += 1
+    # 'match' 则跳过
 
 applicable = len(registrations) - skipped
-existed = applicable - added
+existed = applicable - added - updated
 
 with open(out_path, "w") as f:
     json.dump(cfg, f, indent=2, ensure_ascii=False)
     f.write("\n")
 
-print(f"✓ hooks ({plan} plan): {added} 条新增，{existed} 条已存在，{skipped} 条跳过（不属于本方案）")
+print(f"✓ hooks ({plan} plan): {added} 条新增，{updated} 条更新，{existed} 条已存在，{skipped} 条跳过（不属于本方案）")
 PYEOF
     then
       echo "❌ python3 改写失败，未触碰原 settings.json" >&2

@@ -182,18 +182,15 @@ fi
 
 # ============================================================
 # Case 3: uninstall + 还原
-# TODO: A 批 (worktree branch loop/1778210210-a-install-sh-has-e) cherry-pick 回 main 后，
-#       uninstall.sh bl_scripts 列表会含 reviewer-timing-check.sh，此 ≤1 容忍应改回严格 [ "$n" = "0" ]
-#       并删除本段「容忍 pre-existing bug」注释。当前 main HEAD 的 uninstall.sh 漏这条。
 # ============================================================
 echo ""
 echo "--- Case 3: uninstall ---"
 HOME="$TMPHOME" bash "$UNINSTALL_SCRIPT" >/dev/null 2>&1 || true
 n="$(count_bl_hooks "$TMPHOME/.claude/settings.json")"
-if [ "$n" -le 1 ]; then
-  ok "uninstall 后 settings.json 含 $n 条 hook（≤1，A 批 cherry-pick 后改严格 0）"
+if [ "$n" = "0" ]; then
+  ok "uninstall 后 settings.json 含 0 条 builder-loop hook"
 else
-  fail "uninstall 后 settings.json 含 $n 条 hook（>1，超出 pre-existing bug 范围）"
+  fail "uninstall 后 settings.json 含 $n 条 hook（期望 0）"
 fi
 
 # ============================================================
