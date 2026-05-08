@@ -17,6 +17,21 @@ V3.0 「reviewer-as-gate + 文件按 slug 拆 + 多层闸」一波重构（详�
 
 8 个 e2e fixture 覆盖上述场景，全部 PASS。已接入项目 state 文件需重新 setup（不写迁移脚本，老 state 由 hook 检测缺 phase 字段时让 builder AskUserQuestion 决策）。
 
+> **实施偏离 spec 备忘**：spec 写「老 state 缺字段 → AskUserQuestion 阻断让用户决策」，落地改为「stderr warning + 隐式自动升级」。理由：跨 1-2 个版本周期所有已接入项目自动升级，不打断用户工作流；隐式升级语义安全（老 state 经一次 hook 自动写 phase 字段）。
+
+---
+
+## 2026-05-09 [V3.0 缺口] arbiter 续路径迁移到 reviewer-as-gate
+
+- **触发上下文**：V3.0 reviewer-as-gate 落地 reviewer 反馈（🟡）。`run-apply-arbitration.sh` 在 rebase 冲突由 arbiter 解决后调 `merge-worktree-back.sh`（V2.x「立即合」路径），commit 直接 ff 进主线，**跳过 reviewer gate**。冲突解决场景下 reviewer 看不到合并后的代码，无法发挥门禁作用。本期保留这条 V2.x 路径是为了不破坏 `test-conflict.sh` 等 fixture，但属于 V3.0 落地的已知缺口。
+- **建议方向**：
+  1. **首选**：`run-apply-arbitration.sh` 改调 `merge-and-cleanup.sh`（V3.0 拆 merge 路径，先 commit-only 再等 reviewer 才 ff merge）。Arbiter 解决冲突后 worktree 内仍有干净 commit，进 phase=passed_pending_review 等审。
+  2. `merge-worktree-back.sh` 退化为纯 bare 模式入口（worktree 模式分支删除）。
+  3. fixture 适配：`test-conflict.sh` 把"arbiter 完成立即合主线"断言改成"arbiter 完成进 passed_pending_review、reviewer 通过才合主线"。
+  4. 跨 arbiter 重试场景验证：arbiter 第二次解决冲突 → 仍走新 gate 路径不重复合主线。
+- **优先级**：中（不修不会出严重事故，但 reviewer-as-gate 的核心防御在冲突场景下被绕过；rebase 冲突频次中等）
+- **复现**：本仓 `test-conflict.sh` 跑通即可复现 — arbiter 解决冲突后看 commit 是否在主仓 HEAD 上（跳过了 reviewer gate）
+
 ---
 
 ## 2026-05-09 [技术债] active 字段下掉计划

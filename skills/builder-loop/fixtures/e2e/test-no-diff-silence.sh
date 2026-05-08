@@ -114,6 +114,71 @@ EC2="$(run_hook "$WT" "$ERR2")"
 assert "Case 2 hook 不再因 L2B 静默（stderr 有 PASS_CMD 跑或写入相关迹象）" \
   "grep -q '正在跑 PASS_CMD\|PASS_CMD\|phase=passed_pending_review\|已 commit' '$ERR2'"
 
+# ============================================================
+# Case 3: bare 模式 L2B（worktree_path 空，主仓 cwd，无改动）
+# ============================================================
+echo ""
+echo "=== Case 3: bare 模式 L2B 静默 ==="
+TMP_BARE="$(mktemp -d)"
+cd "$TMP_BARE"
+git init -q
+git config user.email "e2e@test.local"
+git config user.name "e2e-test"
+mkdir -p .claude
+cat > .claude/loop.yml <<'Y'
+pass_cmd:
+  - stage: smoke
+    cmd: "true"
+    timeout: 10
+worktree:
+  enabled: false
+Y
+echo "seed" > README.md
+cat > .gitignore <<'G'
+.claude/builder-loop/
+.claude/loop-runs/
+.claude/reviewer-*.txt
+.claude/review_reports/
+G
+git add -A
+git commit -q -m "chore(test): [cr_id_skip] Bare L2B fixture seed"
+HEAD_BARE="$(git -C "$TMP_BARE" rev-parse --short HEAD)"
+
+mkdir -p "$TMP_BARE/.claude/builder-loop/state"
+cat > "$TMP_BARE/.claude/builder-loop/state/__main__.yml" <<EOF
+active: true
+phase: "active"
+slug: "__main__"
+owner_cwd: "$TMP_BARE"
+iter: 1
+max_iter: 5
+project_root: "$TMP_BARE"
+main_repo_path: "$TMP_BARE"
+start_head: "${HEAD_BARE}"
+last_iter_head: "${HEAD_BARE}"
+worktree_path: ""
+worktree_mode: "bare"
+plan_file: ""
+task_description: |
+  bare-no-diff-test
+source_dirs: ""
+test_dirs: ""
+last_pass_stage: ""
+last_error_hash: ""
+last_error_count: 0
+stopped_reason: ""
+cleanup_phase: ""
+created_at: "2026-05-09T00:00:00+08:00"
+EOF
+
+ERR3="$(mktemp)"
+EC3="$(run_hook "$TMP_BARE" "$ERR3")"
+
+assert "Case 3 bare 模式 hook EC=0（L2B 用 PROJECT_ROOT 静默）" "[ '$EC3' -eq 0 ]"
+assert "Case 3 bare 模式 PASS_CMD 未跑" "! grep -q '正在跑 PASS_CMD' '$ERR3'"
+
+rm -rf "$TMP_BARE"
+
 echo ""
 echo "=== 总计 ==="
 echo "  ✅ PASS: $PASS"

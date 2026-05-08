@@ -1,9 +1,14 @@
 # V3.0 reviewer-as-gate — dotfiles `builder.md` 待同步改动
 
+> ⚠️ **POST-MERGE CRITICAL**：cc-builder-loop V3.0 主线 merge 后**必须立即**同步 dotfiles `builder.md`，否则线上 builder 行为会出问题：
+> - hook 写 `state.phase=passed_pending_review` 但 `state.active` 仍是 `true`
+> - 现版 builder.md 硬规则「自闭环活跃期间（active=true）绝对不 spawn reviewer」会**误判**
+> - builder 收到 hook stderr「请继续 spawn reviewer」却被旧硬规则拦住 → 卡死流程
+>
+> 落实步骤见末尾「同步操作」段。**本仓 V3.0 主线 merge 后第一件事就是去 dotfiles 仓改并 commit，再开第二条 cc-builder-loop loop**。
+
 > 本仓 V3.0 改造涉及 `~/.claude/commands/builder.md` 的 builder 行为约束更新。
 > 因 cc-builder-loop loop 在 worktree 内运行、不能跨仓改动 dotfiles，本期 commit 后必须**单独**到 dotfiles 仓 `~/.hongyu.liao_debian12/my-dotfiles/claude/.claude/commands/builder.md` 落实下述改动并 commit。
->
-> 落实步骤见末尾「同步操作」段。
 
 ---
 

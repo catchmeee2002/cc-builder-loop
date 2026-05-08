@@ -93,7 +93,7 @@ created_at: "2026-04-18T..."
 # V3.0 reviewer-as-gate 段（仅 phase=passed_pending_review 时存在）
 reviewer_pending:
   pass_start_head: "abc1234"     # loop 起始 HEAD
-  reviewer_files: "a.py,b.py"    # 改动文件（逗号分隔）
+  reviewer_files: "a.py,b.py"    # 改动文件 — comma-separated string（builder 解析时 split(',')；不是 YAML list）
   diff_file: ".../reviewer-diff-<slug>.txt"
   report_path: ".../review_reports/<proj>_<slug>_<ts>.md"
   written_at: "2026-05-09T..."

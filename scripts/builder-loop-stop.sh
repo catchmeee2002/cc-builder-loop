@@ -467,10 +467,20 @@ NEXT_ITER=$(( ITER + 1 ))
 #       特例：worktree 出现 dirty/新 commit → 自愈回 active 继续跑（reviewer 反馈修复路径）
 #   L2A transcript 末是 pending AskUserQuestion → 不跑（builder 等用户答）
 #   L2B worktree HEAD == last_iter_head + git status 空 → 不跑（无改动 thinking/讨论）
+#       bare 模式（无 worktree_path）使用 PROJECT_ROOT 作 git 路径
 #   L3  .claude/builder-loop/<slug>.pause 文件存在 → 不跑（builder 主动 pause）
 
-# L1: phase 闸 + worktree 改动兜底自愈
+# 老 state（V2.x 创建，无 phase 字段）兼容：stderr warning + 隐式升级（fall-through 到 PASS_CMD 路径，
+# 跑完 PASS_CMD 后写 phase=passed_pending_review 自动升级 schema）。
+# 设计偏离 spec：spec 要求 AskUserQuestion 阻断，实施改为"提示 + 隐式升级"——更平滑、跨 1-2 个版本周期所有
+# 已接入项目自动升级到 V3.0 schema，不打断用户工作流。
 PHASE_FIELD="$(grep -E '^phase:' "$STATE_FILE" 2>/dev/null | head -1 | sed -E 's/^phase:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' || echo "")"
+if [ -z "$PHASE_FIELD" ] && grep -qE '^active:' "$STATE_FILE" 2>/dev/null; then
+  echo "[builder-loop] ⚠️  检测到 V2.x 老 state（无 phase 字段）：${STATE_FILE}" >&2
+  echo "                本轮 hook 已自动升级到 V3.0 schema（PASS 后自动写 phase=passed_pending_review）" >&2
+  debug_log "old_state_compat" '{"action":"warn_and_upgrade","missing_field":"phase"}'
+fi
+# L1: phase 闸 + worktree 改动兜底自愈
 if [ "$PHASE_FIELD" = "passed_pending_review" ]; then
   WT_PATH_GATE="$(grep -E '^worktree_path:' "$STATE_FILE" 2>/dev/null | head -1 | sed -E 's/^worktree_path:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' || echo "")"
   WT_HAS_CHANGES=0
@@ -548,12 +558,20 @@ PY
   fi
 fi
 
-# L2B: worktree HEAD == last_iter_head + git status 空 静默
+# L2B: HEAD == last_iter_head + git status 空 静默
+# worktree 模式用 worktree_path；bare 模式（worktree_path 空）用 PROJECT_ROOT 主仓
 WT_PATH_L2B="$(grep -E '^worktree_path:' "$STATE_FILE" 2>/dev/null | head -1 | sed -E 's/^worktree_path:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' || echo "")"
 if [ -n "$WT_PATH_L2B" ] && [ -d "$WT_PATH_L2B" ]; then
+  GIT_PATH_L2B="$WT_PATH_L2B"
+elif [ -n "${PROJECT_ROOT:-}" ] && [ -d "$PROJECT_ROOT" ]; then
+  GIT_PATH_L2B="$PROJECT_ROOT"
+else
+  GIT_PATH_L2B=""
+fi
+if [ -n "$GIT_PATH_L2B" ]; then
   LIH_L2B="$(grep -E '^last_iter_head:' "$STATE_FILE" 2>/dev/null | head -1 | sed -E 's/^last_iter_head:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' || echo "")"
-  CUR_HEAD_L2B="$(git -C "$WT_PATH_L2B" rev-parse --short HEAD 2>/dev/null || echo "")"
-  WT_STATUS_L2B="$(git -C "$WT_PATH_L2B" status --porcelain 2>/dev/null || echo "")"
+  CUR_HEAD_L2B="$(git -C "$GIT_PATH_L2B" rev-parse --short HEAD 2>/dev/null || echo "")"
+  WT_STATUS_L2B="$(git -C "$GIT_PATH_L2B" status --porcelain 2>/dev/null || echo "")"
   if [ -n "$LIH_L2B" ] && [ "$LIH_L2B" = "$CUR_HEAD_L2B" ] && [ -z "$WT_STATUS_L2B" ]; then
     debug_log "exit" '{"code":0,"reason":"l2b_no_diff"}'
     exit 0

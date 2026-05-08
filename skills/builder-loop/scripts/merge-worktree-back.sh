@@ -9,6 +9,13 @@
 #     test-stop-hook-race-and-commit-msg.sh）继续使用。
 #   - 行为不变。后续可考虑把 arbiter 续路径迁到 merge-and-cleanup.sh，本期保留兼容。
 #
+# ⚠️  V3.0 已知技术债 — arbiter 续路径绕过 reviewer-as-gate：
+#     run-apply-arbitration.sh 在 rebase 冲突由 arbiter 解决后调本脚本（"立即合"语义），
+#     此时 commit 直接 ff 进主线，**跳过了 reviewer gate**。这是 V3.0 落地的已知缺口：
+#     冲突解决场景下 reviewer 看不到合并后的代码，无法发挥门禁作用。
+#     跟踪在 .claude/improvements.md「arbiter 续路径迁移到 reviewer-as-gate」候选条目。
+#     建议修法：run-apply-arbitration.sh 改调 merge-and-cleanup.sh（V3.0 拆 merge 路径）。
+#
 # 用法：bash merge-worktree-back.sh <state_file>
 #
 # 输出（stdout 的最后一行为决定性结果）：
