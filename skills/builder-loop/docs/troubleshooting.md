@@ -27,6 +27,8 @@
 
 **排查**：检查 merge-worktree-back.sh 的 commit message 是否含 `[cr_id_skip]`。
 
+**补充**（V2.7）：若 diagnose-stop-hook.sh 报「[1/6] verdict=ok 但只显示 5 条」→ 表示方案是 max，hook 注册正确，tester-write-guard.sh 不需要出现。
+
 ## 7.3 Judge agent 全部判定都被降级（V1.9+）
 
 **现象**：`judge-trace.jsonl` 每行 `downgraded:true`，loop 退化为 PASS_CMD 二值判据。

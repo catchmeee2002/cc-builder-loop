@@ -149,25 +149,49 @@ else
   fail "max diagnose [1/6] verdict 不是 ok"
 fi
 
+# [2/6] 软链段：max 方案下软链全装（install.sh 软链循环不分方案），verdict 应 ok
+if grep -E '^\[2/6\]' "$DIAG_OUT_FILE" | grep -qF 'ok'; then
+  ok "max diagnose [2/6] verdict=ok（软链全 9 条均存在，install.sh 软链循环不分方案）"
+else
+  fail "max diagnose [2/6] verdict 不是 ok"
+fi
+
 # diagnose 退出码语义：0=全 ok / 1=有 warn / 2=有 fail
 # 临时仓 trace 必然为空，[5/6] warn 是合理的，断言不能=2 即 [1/6]/[2/6] 等都没 fail
 if [ "$DIAG_EC" -ne 2 ]; then
-  ok "max diagnose 退出码 != 2（[1/6] 等关键段无 fail，实际=$DIAG_EC，warn 来自空 trace 合理）"
+  ok "max diagnose 退出码 != 2（[1/6]/[2/6] 等关键段无 fail，实际=$DIAG_EC，warn 来自空 trace 合理）"
 else
   fail "max diagnose 退出码 = 2（有 fail 段）"
   cat "$DIAG_OUT_FILE" >&2
 fi
 
+# --json 模式 plan 字段
+DIAG_JSON_OUT="$(env -u ANTHROPIC_BASE_URL HOME="$TMPHOME" bash "$DIAG_SCRIPT" "$TMPREPO" --json 2>/dev/null || true)"
+if echo "$DIAG_JSON_OUT" | python3 -c '
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    sys.exit(0 if d.get("plan") == "max" else 1)
+except Exception:
+    sys.exit(1)
+' 2>/dev/null; then
+  ok "max diagnose --json 输出 plan='max'"
+else
+  fail "max diagnose --json 输出 plan 字段缺失或非 max"
+fi
+
 # ============================================================
-# Case 3: uninstall + 还原（容忍 pre-existing bug：main HEAD uninstall.sh 漏 reviewer-timing-check）
+# Case 3: uninstall + 还原
+# TODO: A 批 (worktree branch loop/1778210210-a-install-sh-has-e) cherry-pick 回 main 后，
+#       uninstall.sh bl_scripts 列表会含 reviewer-timing-check.sh，此 ≤1 容忍应改回严格 [ "$n" = "0" ]
+#       并删除本段「容忍 pre-existing bug」注释。当前 main HEAD 的 uninstall.sh 漏这条。
 # ============================================================
 echo ""
 echo "--- Case 3: uninstall ---"
 HOME="$TMPHOME" bash "$UNINSTALL_SCRIPT" >/dev/null 2>&1 || true
 n="$(count_bl_hooks "$TMPHOME/.claude/settings.json")"
-# A 批 cherry-pick 后期望 0；当前 main 的 uninstall.sh 漏 reviewer-timing-check 残留 1 条
 if [ "$n" -le 1 ]; then
-  ok "uninstall 后 settings.json 含 $n 条 hook（≤1，A 批 cherry-pick 后会到 0）"
+  ok "uninstall 后 settings.json 含 $n 条 hook（≤1，A 批 cherry-pick 后改严格 0）"
 else
   fail "uninstall 后 settings.json 含 $n 条 hook（>1，超出 pre-existing bug 范围）"
 fi
@@ -234,11 +258,32 @@ else
   fail "copilot diagnose [1/6] verdict 不是 ok"
 fi
 
+if grep -E '^\[2/6\]' "$DIAG_OUT_FILE2" | grep -qF 'ok'; then
+  ok "copilot diagnose [2/6] verdict=ok"
+else
+  fail "copilot diagnose [2/6] verdict 不是 ok"
+fi
+
 if [ "$DIAG_EC2" -ne 2 ]; then
   ok "copilot diagnose 退出码 != 2（实际=$DIAG_EC2）"
 else
   fail "copilot diagnose 退出码 = 2"
   cat "$DIAG_OUT_FILE2" >&2
+fi
+
+# --json 模式 plan 字段
+DIAG_JSON_OUT2="$(ANTHROPIC_BASE_URL=http://127.0.0.1:4141 HOME="$TMPHOME" bash "$DIAG_SCRIPT" "$TMPREPO" --json 2>/dev/null || true)"
+if echo "$DIAG_JSON_OUT2" | python3 -c '
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    sys.exit(0 if d.get("plan") == "copilot" else 1)
+except Exception:
+    sys.exit(1)
+' 2>/dev/null; then
+  ok "copilot diagnose --json 输出 plan='copilot'"
+else
+  fail "copilot diagnose --json 输出 plan 字段缺失或非 copilot"
 fi
 
 # ============================================================

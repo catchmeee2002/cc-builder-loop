@@ -138,3 +138,12 @@
   - `abandon-loop.sh <state_file> <reason>`：归档 state + stash 还原 + trace event + worktree 保留
   - A3 关键词白名单：停下loop / 停掉loop / 停止loop / 中止loop / abandon loop
   - 后续 Phase：Phase 2 异步 baseline probe + Phase 3 严格差集归因（未实施）
+
+## V2.7
+
+- Max / Copilot 方案运行时识别
+  - install.sh 新增 `detect_plan()` 函数，读 `ANTHROPIC_BASE_URL` env 识别方案
+  - Max 方案（direct HTTPS）→ 5 个 hook（不注册 tester-write-guard.sh，CC 直连无需 Write/Edit 代理拦截）
+  - Copilot 方案（localhost/127.0.0.1）→ 6 个 hook（含 tester-write-guard.sh）
+  - diagnose-stop-hook.sh 同步 PLAN env 参数，banner 加"plan: X base_url=Y"，[1/6] hook 检测按方案过滤
+  - 新增 e2e fixture `test-plan-detection.sh`（17 断言覆盖两方案 install + diagnose）

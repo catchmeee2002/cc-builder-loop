@@ -12,7 +12,7 @@
 
 | 文档 | 定位 | 何时读 |
 |------|------|--------|
-| [`CHANGELOG.md`](CHANGELOG.md) | 各版本交付能力（V1.0~V2.6） | 需要了解历史版本做了什么时 |
+| [`CHANGELOG.md`](CHANGELOG.md) | 各版本交付能力（V1.0~V2.7） | 需要了解历史版本做了什么时 |
 | [`docs/troubleshooting.md`](skills/builder-loop/docs/troubleshooting.md) | 排查手册（§7.1~7.12） | stop hook / judge / worktree / state 出问题时 |
 | [`docs/sync-checklist.md`](skills/builder-loop/docs/sync-checklist.md) | 改动同步 checklist | 本仓 commit 后需同步操作时 |
 | [`docs/judge-agent.md`](skills/builder-loop/docs/judge-agent.md) | Judge agent 设计与配置 | judge 相关开发 / 排查时 |
@@ -37,18 +37,20 @@ install.sh 创建以下软链，把仓库文件映射到 CC 运行时路径：
 | `scripts/reviewer-timing-check.sh` | `~/.claude/scripts/reviewer-timing-check.sh` | `ln -sf` 逐文件 | PreToolUse hook（Agent） |
 | `agents/tester.md` | `~/.claude/agents/tester.md` | `ln -sf` 逐文件 | tester subagent |
 | `agents/arbiter.md` | `~/.claude/agents/arbiter.md` | `ln -sf` 逐文件 | 仲裁 subagent |
-| *(install.sh)* | `~/.claude/settings.json` hooks 段 | python3 增量合并 | 6 个 hook 条目 |
+| *(install.sh)* | `~/.claude/settings.json` hooks 段 | python3 增量合并 | 5-6 个 hook 条目（取决于方案） |
 
-**注册的 6 个 hook**：
+**注册的 hook（方案差异）**：
 
-| Hook 类型 | Matcher | 脚本 | 作用 |
-|-----------|---------|------|------|
-| Stop | 无（全局） | builder-loop-stop.sh | 每次 CC Stop 时检查是否需要继续循环 |
-| SubagentStart | `tester` | tester-lock-write.sh | tester 启动时落隔离锁 |
-| SubagentStop | `tester` | tester-lock-clear.sh | tester 结束时清锁 |
-| PreToolUse | `Read\|Grep\|Glob` | tester-lock-check.sh | 拦截 tester 对 source_dirs 的读操作 |
-| PreToolUse | `Write\|Edit\|MultiEdit` | tester-write-guard.sh | 拦截 tester 把文件写到 worktree 之外 |
-| PreToolUse | `Agent` | reviewer-timing-check.sh | 拦截 loop 活跃期的 reviewer spawn |
+| Hook 类型 | Matcher | 脚本 | 作用 | 方案 |
+|-----------|---------|------|------|------|
+| Stop | 无（全局） | builder-loop-stop.sh | 每次 CC Stop 时检查是否需要继续循环 | 全部 |
+| SubagentStart | `tester` | tester-lock-write.sh | tester 启动时落隔离锁 | 全部 |
+| SubagentStop | `tester` | tester-lock-clear.sh | tester 结束时清锁 | 全部 |
+| PreToolUse | `Read\|Grep\|Glob` | tester-lock-check.sh | 拦截 tester 对 source_dirs 的读操作 | 全部 |
+| PreToolUse | `Write\|Edit\|MultiEdit` | tester-write-guard.sh | 拦截 tester 把文件写到 worktree 之外 | copilot 方案 |
+| PreToolUse | `Agent` | reviewer-timing-check.sh | 拦截 loop 活跃期的 reviewer spawn | 全部 |
+
+**方案说明**：install.sh 在运行时读 `ANTHROPIC_BASE_URL` env 识别方案 — localhost/127.0.0.1 → copilot（6 个 hook）；其他 → max（5 个 hook，不注册 tester-write-guard.sh）。
 
 ## 2. 部署指南
 
@@ -67,6 +69,7 @@ ls -la ~/.claude/skills/builder-loop/SKILL.md  # 应指向本仓库
 **前置依赖**：
 - `~/.claude/` 目录已存在（通常由 dotfiles 的 `stow claude` 创建）
 - python3（hook 注册用）
+- 建议设置 `ANTHROPIC_BASE_URL` env（决定 install.sh 选择的方案）
 
 **新机器部署顺序**：先 `my-dotfiles/install.sh`（stow 创建 `~/.claude/`），后 `cc-builder-loop/install.sh`。
 
@@ -92,7 +95,7 @@ cc-builder-loop/
 ├── CLAUDE.md                   # 本文件
 ├── CHANGELOG.md                # 版本历史（V1.0~V2.6）
 ├── skills/builder-loop/        # CC skill（含 SKILL.md、scripts/、fixtures/e2e/、schema/、docs/）
-├── scripts/                    # Stop hook + tester 隔离 hook + tester 写防护 hook + reviewer 时序 hook（6 个 .sh）
+├── scripts/                    # Stop hook + tester 隔离 hook + tester 写防护 hook + reviewer 时序 hook（6 个 .sh，其中 tester-write-guard.sh 仅 copilot 方案注册）
 └── agents/                     # tester.md + arbiter.md
 ```
 

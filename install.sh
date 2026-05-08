@@ -94,6 +94,8 @@ import json, sys, os
 settings_path = sys.argv[1]
 out_path = sys.argv[2]
 scripts_dir = sys.argv[3]
+# PLAN env 由外层 bash 通过 detect_plan() 注入；env 传递失败时静默降级到 "copilot"
+# （注册全部 6 条，向后兼容老行为）。
 plan = os.environ.get("PLAN", "copilot")
 
 with open(settings_path) as f:
@@ -115,6 +117,8 @@ def has_entry(arr, cmd_name):
     return False
 
 # 元组第 4 字段 plan_filter：""=通用，"copilot"=仅 copilot 方案装
+# 未来加新方案（gemini / openrouter 等）：plan_filter 可写 "copilot,gemini" 这种逗号分隔
+# 字符串，过滤逻辑改 `plan in plan_filter.split(',')` 即可保持兼容
 registrations = [
     ("Stop",           "builder-loop-stop.sh",      None,                    ""),
     ("SubagentStart",  "tester-lock-write.sh",      "tester",                ""),

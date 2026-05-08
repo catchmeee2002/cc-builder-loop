@@ -90,8 +90,11 @@ update_verdict() { local v="$1"; [ "$v" -gt "$VERDICT" ] && VERDICT="$v"; }
 # ---- [1/6] settings.json hook 注册 ----
 diagnose_hooks_python="$(cat <<'PYEOF'
 import json, os, sys
+# PLAN env 由外层 bash 通过 detect_plan() 注入；env 传递失败时静默降级到 "copilot"
+# （要求全部 6 条，与 install.sh 老行为兼容）。
 plan = os.environ.get('PLAN', 'copilot')
 # 第 4 字段 plan_filter：''=通用，'copilot'=仅 copilot 方案要求
+# 未来加新方案：plan_filter 可写 'copilot,gemini' 逗号分隔，过滤改 plan in pf.split(',')
 expected_all = [
     ('Stop', 'builder-loop-stop.sh', None, ''),
     ('SubagentStart', 'tester-lock-write.sh', 'tester', ''),
@@ -342,11 +345,14 @@ if [ "$JSON_MODE" -eq 1 ]; then
   HOOKS_JSON="$HOOKS_JSON" LINKS_JSON="$LINKS_JSON" STATE_JSON="$STATE_JSON" \
     LOCK_JSON="$LOCK_JSON" TRACE_JSON="$TRACE_JSON" WT_JSON="$WT_JSON" \
     PROJECT_ROOT="$PROJECT_ROOT" TS_NOW="$TS_NOW" VERDICT="$VERDICT" \
+    PLAN="$PLAN" BASE_URL="${ANTHROPIC_BASE_URL:-}" \
     python3 -c "
 import os, json
 out = {
     'project_root': os.environ.get('PROJECT_ROOT',''),
     'ts': os.environ.get('TS_NOW',''),
+    'plan': os.environ.get('PLAN',''),
+    'base_url': os.environ.get('BASE_URL',''),
     'verdict_code': int(os.environ.get('VERDICT','0')),
     'sections': {
         'hooks': json.loads(os.environ.get('HOOKS_JSON','{}')),
