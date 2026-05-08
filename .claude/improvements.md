@@ -3,6 +3,34 @@
 > 时间倒序。每条按 builder.md 步骤 5 模板（触发上下文 / 建议方向 / 优先级）。
 > 立项不等于本期实施——A 类候选清单，等独立任务挑出来落地。
 
+## 2026-05-08 install.sh / diagnose-stop-hook.sh 不分 max / copilot 方案 → max 用户 fixture 永远报「少一条 hook」
+
+- **触发上下文**：cc-builder-loop A 批 session（slug=`1778210210-a-install-sh-has-e`）。loop iter 1 PASS_CMD 在 stage `v25_stop_hook_observability` 挂掉 → A 批被 abandon。根因：fixture A4 段调 diagnose-stop-hook.sh 时输出 `[1/6] settings.json hook 注册 ❌ fail`，因为 ~/.claude/settings.json 缺 `tester-write-guard.sh` 这条 hook。但用户告知「edit/write 写入相关的 hook，在 max 方案里本来就不需要注册，只注册在 copilot 方案的配置里」—— 即 max 方案下 settings.json 缺这条是**正确状态**。当前 install.sh L103-110 的 `registrations` 列表写死 6 条无脑全注册；diagnose-stop-hook.sh 也写死 6 条期望，没有方案差异判别 → max 用户运行 fixture 必然撞「[1/6] verdict=fail」。
+- **建议方向**：
+  1. **install.sh 加方案识别**：检测 ENV `BUILDER_LOOP_PLAN`（值 max / copilot，默认 copilot）或读 settings.json 是否含 max OAuth 字段自动判定；max 方案下 `registrations` 表跳过 tester-write-guard.sh
+  2. **diagnose-stop-hook.sh 同步识别**：[1/6] 检查根据方案过滤期望列表，max 方案下少 tester-write-guard 视为 ok
+  3. **uninstall.sh 不动**：删一个不存在的 hook 本来就 no-op，已是该语义
+  4. **方案识别结果持久化**：写到 `<P>/.claude/builder-loop/plan` 文件或 state schema 加 `plan: max | copilot` 字段
+  5. **e2e fixture**：构造「max 方案 settings.json 缺 tester-write-guard」场景，断言 install.sh 跳过该条注册 + diagnose [1/6] verdict=ok
+- **优先级**：高（本次直接挡住 A 批 PASS_CMD；max 方案用户每次跑该 fixture 都会撞）
+
+## 2026-05-08 V2.5 fixture A4 段 set -e + 命令替换吞退出码 → 测试静默 exit 看似 hang
+
+- **触发上下文**：同上 A 批 session。stop hook 反馈日志末尾停在 `--- A4: diagnose-stop-hook.sh 6 段 + 严格 dry-run ---` 后没任何 assert 行，看似 hang。手动加 90s/120s timeout 仍只输出到 A4 段就停。最后 bash -x trace 才发现：fixture `test-stop-hook-debug-log.sh` 第 233 行 `A4_OUT="$(bash "$DIAG_SCRIPT" "$TMP" 2>&1)"` 在顶部 `set -euo pipefail` 下，当 diagnose 因 [1/6] verdict=fail 返回非 0 时，`$()` 命令替换退出码传到外层赋值，set -e 直接杀 fixture，下一行 `A4_EC=$?` 来不及执行。fixture 设计本意是仅检查输出含 `[1/6]~[6/6]` 字面（与 verdict ok 无关），但 set -e 让它走不到 assert 行就 silent exit。A1/A2/A3 段类似调用都已有 `|| A?_EC=$?` 容错，A4 漏写。
+- **建议方向**：
+  1. **A4 段补容错**：第 233 行末尾加 `|| A4_EC=$?`，跟 A1/A2/A3 写法对齐
+  2. **全仓同模式扫描**：grep 找 `set -euo pipefail` + `_OUT="$(... 2>&1)"` + 下一行 `_EC=$?` 的写法，统一容错
+  3. **fixture 反向断言**：A4 段加一条 `assert "A4 退出码可捕获（set -e 不抢）" "[ -n \"${A4_EC+set}\" ]"`，显式让以后改 fixture 的人意识到这种容错的必要性
+  4. **memory 锚点**：项目记忆已有 `bash_command_substitution_or_true_swallows_exitcode.md`（讲 `|| true` 让 ec 永远 0），这次是反例 —— 不加 `|| ec=$?` 让 set -e 杀外层
+- **优先级**：中（不修这条，下次 settings.json 再跟 install.sh 漂移就会复现「PASS_CMD 假阳性 hang」假象，徒增排查成本）
+
+## 2026-05-07 worktree merge 后 cwd 切回主仓但 builder file state cache 仍在 worktree 路径
+
+- **触发上下文**：generator 项目 exp-016 followup loop iter 1 PASS + MERGED 后，builder 想在主仓改 `novel_writer/engine.py` 应用 reviewer 反馈。Edit 调用直接报 `File has not been read yet`——CC 主 agent 的 file state cache 仍记录的是 worktree 路径下的版本，loop merge-worktree-back.sh 把改动 ff merge 到主仓 + cleanup worktree 后，主仓 engine.py 是新版（含 builder 改动），但主 agent 不知道——必须重新 Read 主仓的 engine.py 才能 Edit。worktree 已被物理删除（`ls .claude/worktrees/<slug>` not found），但 cache 还在记忆它。
+- **根因**：CC harness 的 file state cache 按"绝对路径"索引，loop merge 触发的 worktree 删除 + cwd 切换是 hook 层的副作用，主 agent 不感知；builder 直觉上"已经改过的文件"包含 worktree 路径下的版本，但 merge 后那些 worktree 路径下的文件已不存在。
+- **建议方向**：① merge-worktree-back.sh 在 stop hook 注入消息里显式提示「worktree 已删除，主仓 cwd 切回主仓；如需对 merge 后代码做后续 Edit，必须先重新 Read 主仓文件路径」② 或者更轻量：SKILL.md/builder.md 加一节「loop PASS 后 reviewer 反馈如何修」明确告知"先 Read 主仓文件再 Edit"③ 不一定值得 V3.0 大重构，但 reviewer 反馈修复路径会反复踩这个坑（每次 reviewer 给 🟡 都要 Edit 修，每次都首先撞 cache 失效），频次不低。
+- **优先级**：低中（频次中等，但损失只是一次额外的 Read 调用，不是数据丢失级）
+
 ## 2026-05-01 reviewer 退化为事后建议而非合主线门禁，PASS_CMD 通过即 ff merge 让 reviewer 阻塞级反馈难撤回（V3.0 框架级重构）
 
 - **触发上下文**：cc-builder-loop V2.6 Phase 1（abandon-loop.sh 出口）落地 session。Loop iter 1 PASS → `merge-worktree-back.sh` 自动 auto-commit + ff merge + cleanup → 此时 commit `2934b15` 已在主线 → 才被 stop hook 通知 builder spawn reviewer 看 commit。Reviewer 反馈 `🔴 0 / 🟡 4 / 🔵 4`（虽然不到阻塞级但都是实质改动 — read_field 缺 strip / reason 换行污染 / 注释与实现不符 / SKILL+README V2.6 段缺失），builder 走新 commit `60c950a` 修。本次侥幸没 🔴 阻塞级；下次若 reviewer 发 🔴 阻塞级问题，已 merge 难撤回（要 git revert，破坏主线 history）。用户在收尾时质疑"理论上 reviewer 通过才能进 commit 环节吧"，明确了**当前流程让 reviewer 退化为事后建议而非合主线门禁**的设计缺陷。
