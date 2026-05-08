@@ -3,6 +3,20 @@
 > 时间倒序。每条按 builder.md 步骤 5 模板（触发上下文 / 建议方向 / 优先级）。
 > 立项不等于本期实施——A 类候选清单，等独立任务挑出来落地。
 
+## 2026-05-08 stop hook 跨 session 串扰：A session 跑完 PASS 把 reviewer 触发指令注入到无关 B session
+
+- **触发上下文**：BOT 项目两个 CC session 并发。A session（slug=`1778223247-b-1-hmi-flash`）跑 builder-loop 改 `handler/card_vehicle_ops.py` 加 hmi_flash 漏斗埋点，14:55:40 PASS_CMD iter 1 通过 → `merge-worktree-back.sh` ff merge 主仓为 commit `337dd65` + 写 `.claude/reviewer-params.json`（含 changed_files / report_path / diff_file）+ stop hook 注入「请继续 spawn reviewer ...」反馈到 stdout。但 stop hook 注入是按"当前被 stop 的 CC 进程"分发的，不识别 origin session —— 这条反馈塞给了**完全无关的 B session（id=`42a64c02`，正在帮用户查飞书私聊聊天记录 + 统计 LLM tool_call 退化日志分布）**，B session 从头到尾零代码改动。B session 主理人识破后拒绝接管（理由：① 自己未改代码 spawn reviewer 没 diff 可审 ② A session 才是 commit 作者应自己跑 reviewer ③ 跨 session 抢 reviewer 与 `cross_session_collaboration_etiquette` 记忆冲突），但 hook 设计层面这条注入本不应到 B 手里。
+- **根因**：`merge-worktree-back.sh` 写 `reviewer-params.json` + stop hook 注入消息时**没有 origin session_id 字段**，stop hook 分发逻辑也不做 session 匹配。CC harness 的 stop hook 触发条件是"任意 CC 进程 stop"，所以无论哪个 session 在这一刻刚好结束一轮，都会被 hook 抓到喂同一份反馈。该问题在单 session 项目下不可见；多 session 并发开发同一项目的场景（同一仓 `.claude/` 共享，state 文件全局唯一）会暴露。CLAUDE.md 项目记忆 [worktree_inherits_claude_dir] 和 [cross_session_collaboration_etiquette] 已经隐约触及该模式——这次是"reviewer 触发"环节也撞上了同一类问题。
+- **建议方向**：
+  1. **reviewer-params.json 加 origin_session_id 字段**：`merge-worktree-back.sh` / `run-pass-cmd.sh` 写状态时把当前 `CC_SESSION_ID`（或 `CLAUDE_SESSION_ID`，按 harness 暴露的环境变量为准）落进 JSON。
+  2. **stop hook 注入前匹配 session**：`builder-loop-stop.sh` 读 reviewer-params 的 origin_session_id，与当前 stop 事件的 session_id 比较，不匹配则**不注入**（仍可保留状态文件，等正确 session 下次 stop 再触发）；或 fallback 行为是把消息改写成「检测到 A session（id=xxx）的 reviewer 等待 spawn，但你不是它。如有需要，请到对应 session 接续；本 session 忽略即可」让 B session 主理人不必每次都自己识破。
+  3. **state schema 同步加字段**：所有 builder-loop 产出的状态文件（worktree state、reviewer-params、reviewer-diff、loop iteration log）都带 origin_session_id，便于事后审计 + 跨 session 防撞。
+  4. **e2e fixture**：构造两个 CC session 并发场景，session A 跑 PASS_CMD 通过 → session B 同时也在做不相关查询任务并刚好 stop → 断言 stop hook 不会把 A 的 reviewer 触发消息塞给 B。
+  5. **文档/SKILL.md 提示**：在 README 或 troubleshooting 加一节「多 session 并发开发同仓时的注意事项」，列出已知串扰点（reviewer 触发 / state 文件冲突 / worktree 互相可见但内容不同步）。
+- **优先级**：中（不修不会有数据损坏，但会浪费 B session 上下文 + 在 reviewer-as-gate 的 V3.0 落地后变得**更危险**——届时 B session 若没识破而盲目跑 reviewer，可能误把 A 的 commit 给 ff merge / cleanup，破坏 A session 的工作流。频次随多 session 协作增加而上升）
+
+---
+
 ## 2026-05-08 install.sh / diagnose-stop-hook.sh 不分 max / copilot 方案 → max 用户 fixture 永远报「少一条 hook」
 
 - **触发上下文**：cc-builder-loop A 批 session（slug=`1778210210-a-install-sh-has-e`）。loop iter 1 PASS_CMD 在 stage `v25_stop_hook_observability` 挂掉 → A 批被 abandon。根因：fixture A4 段调 diagnose-stop-hook.sh 时输出 `[1/6] settings.json hook 注册 ❌ fail`，因为 ~/.claude/settings.json 缺 `tester-write-guard.sh` 这条 hook。但用户告知「edit/write 写入相关的 hook，在 max 方案里本来就不需要注册，只注册在 copilot 方案的配置里」—— 即 max 方案下 settings.json 缺这条是**正确状态**。当前 install.sh L103-110 的 `registrations` 列表写死 6 条无脑全注册；diagnose-stop-hook.sh 也写死 6 条期望，没有方案差异判别 → max 用户运行 fixture 必然撞「[1/6] verdict=fail」。
