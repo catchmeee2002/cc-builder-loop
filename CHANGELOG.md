@@ -45,8 +45,8 @@
 - test-merge-and-cleanup-idempotent.sh：cleanup_phase 幂等
 - test-worktree-commit-only.sh：单点验证
 
-**8. 同步备忘**
-- `~/.claude/commands/builder.md` V3.0 改动落到 [`docs/v30-builder-md-patch.md`](skills/builder-loop/docs/v30-builder-md-patch.md)，cc-builder-loop 主线 merge 后单独到 dotfiles 仓 commit（详见 [`docs/sync-checklist.md`](skills/builder-loop/docs/sync-checklist.md)）。
+**8. dotfiles 同步**
+- `~/.claude/commands/builder.md` V3.0 改动已同步（dotfiles commit `3349374`）：硬规则按 phase 判定 + 步骤 2 加 V3.0 路径分支（state.reviewer_pending）+ 老 state 兼容指引 + pause 用法。
 
 并入的 improvements 候选：跨 session 串扰 / 同 session 多 worktree 反馈丢失 / V3.0 reviewer-as-gate / WIP 节流 / AskUserQuestion 期间 hook 自激空转。
 

@@ -8,4 +8,4 @@
 | 新增/删除 `scripts/*.sh` 或 `agents/*.md` | `bash install.sh` 创建/移除软链 + 同步 settings.json hook 注册 |
 | 改 hook matcher（如 `Read\|Grep` → `Read\|Grep\|WebFetch`）| 直接跑 `bash install.sh` 即可（V2.7.1 起 `find_entry_status()` 三态返回，matcher 字面变化会被识别为 stale 自动删旧加新；输出含「N 条更新」字段）|
 | 改 `~/.claude/commands/builder.md` / `planner.md`、`~/.claude/agents/reviewer.md` | 切到 `~/.hongyu.liao_debian12/my-dotfiles` 仓 commit（cc-builder-loop 与 my-dotfiles 是两个独立 git 仓）|
-| ⚠️ **V3.0 POST-MERGE CRITICAL** — `~/.claude/commands/builder.md` 同步 | cc-builder-loop V3.0 主线 merge 完成后**必须立即**按 [`docs/v30-builder-md-patch.md`](v30-builder-md-patch.md) 落实到 dotfiles 仓。**不同步会卡死流程**：hook 写 `phase=passed_pending_review` 但 builder.md 旧硬规则「active=true 不 spawn reviewer」误判 → builder 不响应 hook 提示，loop 流程卡住。 |
+| ✅ **V3.0** dotfiles `~/.claude/commands/builder.md` 同步 | 已落实（dotfiles commit `3349374`）：硬规则按 phase 判定 / 步骤 2 加 V3.0 路径分支 / 老 state 兼容指引 / pause 用法 |

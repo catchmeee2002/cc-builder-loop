@@ -15,7 +15,6 @@
 | [`CHANGELOG.md`](CHANGELOG.md) | 各版本交付能力（V1.0~V3.0） | 需要了解历史版本做了什么时 |
 | [`docs/troubleshooting.md`](skills/builder-loop/docs/troubleshooting.md) | 排查手册（§7.1~7.12） | stop hook / judge / worktree / state 出问题时 |
 | [`docs/sync-checklist.md`](skills/builder-loop/docs/sync-checklist.md) | 改动同步 checklist | 本仓 commit 后需同步操作时 |
-| [`docs/v30-builder-md-patch.md`](skills/builder-loop/docs/v30-builder-md-patch.md) | V3.0 后 dotfiles `builder.md` 待同步内容 | V3.0 主线 merge 后落实 dotfiles 改动时 |
 | [`docs/judge-agent.md`](skills/builder-loop/docs/judge-agent.md) | Judge agent 设计与配置 | judge 相关开发 / 排查时 |
 | [`docs/arbiter-flow.md`](skills/builder-loop/docs/arbiter-flow.md) | Rebase 冲突仲裁流程 | merge 冲突时 |
 | [`docs/cc-loop-tracking.md`](skills/builder-loop/docs/cc-loop-tracking.md) | CC 官方 /loop 版本跟踪 | 评估官方能力是否可替代时 |

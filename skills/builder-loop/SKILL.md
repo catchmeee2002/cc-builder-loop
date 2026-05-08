@@ -226,4 +226,4 @@ bash ~/.claude/skills/builder-loop/scripts/run-judge-agent.sh --self-check
 
 ## 版本交付历史
 
-详见 `README.md` 第 7 节及 `../CLAUDE.md` 第 5 节"已交付能力"。涵盖 V1.0 基础循环、V1.1 强隔离+worktree+仲裁、V1.2 改动分级、V1.3 任务回顾、V1.7 reviewer 模型升级、V1.8 多状态并行架构、V1.8.1 僵尸 state 自愈 + EARLY_STOP 立即通知、V1.9 judge agent、V2.0 PASS_CMD 跑 worktree 元问题修复、V2.1 judge env file 自动加载 + sonnet→haiku 降级链、V2.2 tester 跨目录写硬门禁 + 复盘强制分类闸门 + bootstrap 空转修复、V2.2.1 bootstrap 纯文档白名单、V2.3 主仓 dirty stash + reward hacking 检测、V2.4 locate-state 策略 5、V2.5 stop hook 可观测性 debug log + diagnose 脚本、V2.5.1 debug_log 路径分裂修复 + pass_cmd_result 空格截断修复、V2.6 Phase 1 abandon-loop.sh 用户中断出口 + A3 关键词识别、V2.7 install/diagnose 加 max/copilot 方案识别、**V3.0 reviewer-as-gate 重构（拆 merge 时机 + 文件按 slug 拆 + 多层闸）**。
+详见 [`../../CHANGELOG.md`](../../CHANGELOG.md)（V1.0 ~ V3.0）。当前最新 **V3.0 reviewer-as-gate 重构**（拆 merge 时机 + 文件按 slug 拆 + 多层闸）。
