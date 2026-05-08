@@ -12,13 +12,30 @@
 
 | 文档 | 定位 | 何时读 |
 |------|------|--------|
-| [`CHANGELOG.md`](CHANGELOG.md) | 各版本交付能力（V1.0~V2.7） | 需要了解历史版本做了什么时 |
+| [`CHANGELOG.md`](CHANGELOG.md) | 各版本交付能力（V1.0~V3.0） | 需要了解历史版本做了什么时 |
 | [`docs/troubleshooting.md`](skills/builder-loop/docs/troubleshooting.md) | 排查手册（§7.1~7.12） | stop hook / judge / worktree / state 出问题时 |
 | [`docs/sync-checklist.md`](skills/builder-loop/docs/sync-checklist.md) | 改动同步 checklist | 本仓 commit 后需同步操作时 |
+| [`docs/v30-builder-md-patch.md`](skills/builder-loop/docs/v30-builder-md-patch.md) | V3.0 后 dotfiles `builder.md` 待同步内容 | V3.0 主线 merge 后落实 dotfiles 改动时 |
 | [`docs/judge-agent.md`](skills/builder-loop/docs/judge-agent.md) | Judge agent 设计与配置 | judge 相关开发 / 排查时 |
 | [`docs/arbiter-flow.md`](skills/builder-loop/docs/arbiter-flow.md) | Rebase 冲突仲裁流程 | merge 冲突时 |
 | [`docs/cc-loop-tracking.md`](skills/builder-loop/docs/cc-loop-tracking.md) | CC 官方 /loop 版本跟踪 | 评估官方能力是否可替代时 |
 | [`skills/builder-loop/README.md`](skills/builder-loop/README.md) | SKILL 使用说明 | 了解用户侧接入流程时 |
+
+---
+
+## V3.0 reviewer-as-gate 关键事实
+
+**V3.0 行为**：worktree 模式下 hook PASS 后**只 commit 不 merge**，等 reviewer 通过才合主线（详见 [CHANGELOG V3.0](CHANGELOG.md#v30-reviewer-as-gate-重构2026-05-09)）。bare 模式行为不变。
+
+**关键 state 字段**：`phase`（active / passed_pending_review）+ `last_iter_head` + `reviewer_pending` 段 + `cleanup_phase`。详见 SKILL.md 「状态文件 schema」段。
+
+**Hook 闸顺序**（PASS_CMD 之前命中即静默 exit 0）：
+- L1 `phase=passed_pending_review` → 静默（worktree 改动时自愈回 active）
+- L2A 末尾 pending AskUserQuestion → 静默
+- L2B HEAD == last_iter_head + git status 空 → 静默
+- L3 `.claude/builder-loop/<slug>.pause` 存在 → 静默
+
+**[技术债] active 字段下掉计划**：V3.0 起 hook 主判用 phase 字段，`active: true` 仅写不读做新决策。下掉计划见 [`.claude/improvements.md`](.claude/improvements.md) 「active 字段下掉计划」候选条目；时间窗 V3.x 某版本统一 grep 全仓引用清单后移除。**禁止**在新代码里读 active 字段做决策。
 
 ---
 

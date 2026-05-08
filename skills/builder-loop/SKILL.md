@@ -26,9 +26,24 @@ bash ~/.claude/skills/builder-loop/scripts/setup-builder-loop.sh "$TASK_DESCRIPT
 
 ## Stop Hook
 
-`~/.claude/scripts/builder-loop-stop.sh`：按 CWD 调用 `locate-state.sh` 找本 worktree 对应 state → 检测 active=true → 跑 PASS_CMD：
-- PASS → 删状态文件 + cleanup worktree + 分支，builder 接力
-- FAIL → extract-error + early-stop-check → 写回状态文件 → 注入下轮
+`~/.claude/scripts/builder-loop-stop.sh`：按 CWD 调用 `locate-state.sh` 找本 worktree 对应 state → 检测 active=true → 多层闸过滤非目标场景 → 跑 PASS_CMD。
+
+**V3.0 多层闸（PASS_CMD 之前自动识别非目标场景静默退出）**：
+
+| 闸 | 触发条件 | 静默原因 |
+|----|---------|---------|
+| L1 | `state.phase=passed_pending_review` | 牌子挂着等 reviewer 审查（特例：worktree 出现 dirty/新 commit → 自愈回 active） |
+| L2A | transcript 末尾是 pending AskUserQuestion（无 tool_result） | builder 在等用户答 |
+| L2B | worktree HEAD == `state.last_iter_head` 且 git status 空 | builder 在思考 / 讨论，没改代码 |
+| L3 | `.claude/builder-loop/<slug>.pause` 文件存在 | builder 主动 pause |
+
+**PASS_CMD 通过后**：
+- **worktree 模式（V3.0 reviewer-as-gate）** → 调 `worktree-commit-only.sh` 在 worktree 内 commit + 写 `state.phase=passed_pending_review` + 写 `reviewer_pending` 段 + 落盘 `reviewer-diff-<slug>.txt`，**不 merge 主线、不删 worktree**。Builder 收 stderr 提示 → 自检 cwd 推 slug → spawn reviewer → 反馈分支：
+  - 0🔴 通过 → builder 调 `merge-and-cleanup.sh <state>` 才 ff merge 主线 + 删 worktree
+  - 🟡/🔵 → builder 在 worktree 内修复 → dirty 触发 L1 自愈回 active → 下一轮 PASS_CMD
+  - 🔴 阻塞 → AskUserQuestion 让用户选 [继续修 / abandon-loop.sh]
+- **bare 模式** → 保留 V2.x 行为：`merge-worktree-back.sh` NOOP + 写全局 `reviewer-params.json` + 删 state + builder 事后审 reviewer
+- **FAIL** → extract-error + early-stop-check → 写回状态文件 → 注入下轮
 
 ### 兜底激活（硬门禁）
 
@@ -41,11 +56,13 @@ bash ~/.claude/skills/builder-loop/scripts/setup-builder-loop.sh "$TASK_DESCRIPT
 ## 状态文件 schema（`.claude/builder-loop/state/<slug>.yml`）
 
 ```yaml
-active: true
-slug: "1777040807-task-alpha"  # = 文件名；bare loop 时 slug="__main__"
+active: true                     # V3.x 后渐进下掉（仅写不读做新决策；详见 improvements.md「active 下掉计划」）
+phase: "active"                  # V3.0 新增：active / passed_pending_review；hook 主判用此字段
+slug: "1777040807-task-alpha"    # = 文件名；bare loop 时 slug="__main__"
 owner_cwd: "/path/to/main-repo"  # setup 时所在 CWD（一般 = main_repo_path）
 iter: 3
 max_iter: 5
+last_iter_head: abc1234          # V3.0 新增：上一轮 PASS_CMD 后 worktree HEAD short sha；L2B 闸用
 project_root: /path/to/worktree  # V2.0 起 = "干活的地方"（worktree 启用 = worktree path / bare = 主仓）
                                  # PASS_CMD 在此跑、loop.yml 从此读，所以 worktree 内改 loop.yml 加 stage 立即生效
 main_repo_path: /path/to/main    # V2.0 起新增；永远是主仓（git merge / branch / worktree prune 在此）
@@ -70,7 +87,16 @@ last_pass_stage: test
 last_error_hash: deadbeef
 last_error_count: 7
 stopped_reason: ""
+cleanup_phase: ""                # V3.0 新增：merge-and-cleanup.sh 幂等用 — ff_merged / worktree_removed
 created_at: "2026-04-18T..."
+
+# V3.0 reviewer-as-gate 段（仅 phase=passed_pending_review 时存在）
+reviewer_pending:
+  pass_start_head: "abc1234"     # loop 起始 HEAD
+  reviewer_files: "a.py,b.py"    # 改动文件（逗号分隔）
+  diff_file: ".../reviewer-diff-<slug>.txt"
+  report_path: ".../review_reports/<proj>_<slug>_<ts>.md"
+  written_at: "2026-05-09T..."
 
 # V1.9 judge agent 字段（仅 judge 已开启时填充）
 last_judge_action: "continue_nudge"
@@ -200,4 +226,4 @@ bash ~/.claude/skills/builder-loop/scripts/run-judge-agent.sh --self-check
 
 ## 版本交付历史
 
-详见 `README.md` 第 7 节及 `../CLAUDE.md` 第 5 节"已交付能力"。涵盖 V1.0 基础循环、V1.1 强隔离+worktree+仲裁、V1.2 改动分级、V1.3 任务回顾、V1.7 reviewer 模型升级、V1.8 多状态并行架构、V1.8.1 僵尸 state 自愈 + EARLY_STOP 立即通知、V1.9 judge agent、V2.0 PASS_CMD 跑 worktree 元问题修复、V2.1 judge env file 自动加载 + sonnet→haiku 降级链、V2.2 tester 跨目录写硬门禁 + 复盘强制分类闸门 + bootstrap 空转修复、V2.2.1 bootstrap 纯文档白名单、V2.3 主仓 dirty stash + reward hacking 检测、V2.4 locate-state 策略 5、V2.5 stop hook 可观测性 debug log + diagnose 脚本、V2.5.1 debug_log 路径分裂修复 + pass_cmd_result 空格截断修复、V2.6 Phase 1 abandon-loop.sh 用户中断出口 + A3 关键词识别。
+详见 `README.md` 第 7 节及 `../CLAUDE.md` 第 5 节"已交付能力"。涵盖 V1.0 基础循环、V1.1 强隔离+worktree+仲裁、V1.2 改动分级、V1.3 任务回顾、V1.7 reviewer 模型升级、V1.8 多状态并行架构、V1.8.1 僵尸 state 自愈 + EARLY_STOP 立即通知、V1.9 judge agent、V2.0 PASS_CMD 跑 worktree 元问题修复、V2.1 judge env file 自动加载 + sonnet→haiku 降级链、V2.2 tester 跨目录写硬门禁 + 复盘强制分类闸门 + bootstrap 空转修复、V2.2.1 bootstrap 纯文档白名单、V2.3 主仓 dirty stash + reward hacking 检测、V2.4 locate-state 策略 5、V2.5 stop hook 可观测性 debug log + diagnose 脚本、V2.5.1 debug_log 路径分裂修复 + pass_cmd_result 空格截断修复、V2.6 Phase 1 abandon-loop.sh 用户中断出口 + A3 关键词识别、V2.7 install/diagnose 加 max/copilot 方案识别、**V3.0 reviewer-as-gate 重构（拆 merge 时机 + 文件按 slug 拆 + 多层闸）**。

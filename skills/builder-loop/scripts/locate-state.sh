@@ -10,6 +10,10 @@
 # 定位策略（按优先级）：
 #   1. 向上最多 5 层找 .claude/loop.yml → 锚定 PROJECT_ROOT
 #   2. 若 cwd 在 <PROJECT_ROOT>/.claude/worktrees/<slug>/ 下 → 直接拼 state/<slug>.yml
+#      [V3.0 reviewer-as-gate 主信号源] cwd 含 worktrees/<slug> 时 slug 推断 100% 准确，
+#      不依赖 session_id / 不需要遍历 state，是跨 session 隔离的核心机制：
+#      builder cwd 在 worktree 内 → 推出本 session 自己的 slug → 找对应 state；
+#      其他 session cwd 不在 worktrees 子目录 → 走策略 3-5，自然不会绑到本 slug。
 #   3. 否则遍历 <PROJECT_ROOT>/.claude/builder-loop/state/*.yml，
 #      比对 worktree_path 字段是否等于 cwd（或 cwd 落在其下）
 #   4. 兜底 <PROJECT_ROOT>/.claude/builder-loop/state/__main__.yml（bare loop 场景）

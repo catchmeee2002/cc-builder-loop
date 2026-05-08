@@ -3,6 +3,40 @@
 > 时间倒序。每条按 builder.md 步骤 5 模板（触发上下文 / 建议方向 / 优先级）。
 > 立项不等于本期实施——A 类候选清单，等独立任务挑出来落地。
 
+---
+
+## ✅ 2026-05-09 V3.0 reviewer-as-gate 已落地，并入 5 条候选
+
+V3.0 「reviewer-as-gate + 文件按 slug 拆 + 多层闸」一波重构（详见 `CHANGELOG.md` V3.0 段）已并入下列 improvements 候选，**视为关闭**：
+
+1. **同 session 多 worktree 第二轮反馈静默丢失**（2026-05-08）→ V3.0 文件按 slug 拆 + cwd 推 slug 自然解决
+2. **WIP 节流：单文件 Edit 后发文本就触发提前 auto-commit**（2026-05-08）→ V3.0 L2B 闸（worktree HEAD == last_iter_head + git status 空 → 静默）覆盖
+3. **stop hook 跨 session 串扰：A 的 reviewer 触发塞给 B**（2026-05-08）→ V3.0 文件按 slug 拆 + builder cwd 自检自然不串
+4. **reviewer 退化为事后建议而非合主线门禁（V3.0 框架级重构）**（2026-05-01）→ V3.0 拆 merge 时机直接落地
+5. **AskUserQuestion 期间 stop hook 反复 bootstrap 兜底跑 NOOP loop**（2026-04-29）→ V3.0 L2A 闸（transcript 末是 pending AskUserQuestion → 静默）覆盖
+
+8 个 e2e fixture 覆盖上述场景，全部 PASS。已接入项目 state 文件需重新 setup（不写迁移脚本，老 state 由 hook 检测缺 phase 字段时让 builder AskUserQuestion 决策）。
+
+---
+
+## 2026-05-09 [技术债] active 字段下掉计划
+
+- **触发上下文**：V3.0 reviewer-as-gate 引入 `phase` 字段作为 hook 主判信号源，但向后兼容保留了 `active: true / false` 字段。新写代码只读 phase、不读 active。`active` 字段成为只写不读的冗余字段，是技术债。
+- **建议方向**：
+  1. **V3.x 某版本（建议 V3.2 或 V3.3）统一移除 active 字段**：
+     - grep 全仓 `'^active:'` / `state\.active` 等模式找所有引用点
+     - 已知引用（截至 V3.0）：`builder-loop-stop.sh` L388 zombie 检测、`abandon-loop.sh` L106 active check、`locate-state.sh` L118 V2.4 策略 5、`merge-worktree-back.sh` 老 state 兼容、`setup-builder-loop.sh` L337 写状态、各 fixture 的 state 字段
+     - 全部改用 `phase != ""`（非空即活跃）/ `phase != "active"`（特定状态）等表达
+  2. **下掉前置条件**：
+     - 所有已接入项目 state 文件至少经历过一次 setup-builder-loop.sh（即都含 phase 字段）—— 这要求至少跨 1-2 个版本周期
+     - 没有外部脚本 / 用户工作流依赖 active 字段（grep public docs / SKILL.md / commands/builder.md 检查）
+  3. **下掉时机**：在 V3.x 某次重构窗口顺手做（不专门开版本只改这件事）；下掉前发 announcement 给已接入项目用户
+  4. **fixture**：增加 `test-active-field-deprecated.sh` 验证 hook 在 state 仅含 phase 字段（无 active 字段）时仍正常工作
+- **优先级**：低（技术债不阻塞功能；V3.0 引入时已规划）
+- **复现 / 验证**：grep 全仓 `\bactive\b` 看引用点是否还在；hook 读 phase 决策是否正确
+
+---
+
 ## 2026-05-08 loop PASS 后 auto-commit 时序与 builder.md 步骤 4 描述不一致
 
 - **触发上下文**：generator 项目修 deep-analysis 元问题。loop 跑完 iter 1 PASS（MERGED），主仓 git log 已多出 `8a90f72 chore(loop): Auto-commit ...`；builder 此时 spawn reviewer，reviewer 给出 🟡3 → builder 改 follow-up code → 想走 builder.md 步骤 4「自动 commit」时发现主仓已 clean。这次因为还有 follow-up dirty 改动，commit 没出错，但 builder 在 spawn reviewer 之前一度尝试改 worktree 内的 tests/CLAUDE.md（cwd 已被自动切回主仓）才意识到 worktree 已被 merge。

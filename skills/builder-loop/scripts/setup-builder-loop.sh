@@ -335,6 +335,7 @@ OWNER_CWD="$(pwd -P)"
 cat > "$STATE_FILE" <<EOF
 # builder-loop state file (do NOT manually edit while loop is active)
 active: true
+phase: "active"
 slug: "${SLUG}"
 owner_cwd: "${OWNER_CWD}"
 iter: 0
@@ -342,6 +343,7 @@ max_iter: 5
 project_root: "${RUNTIME_ROOT}"
 main_repo_path: "${PROJECT_ROOT}"
 start_head: "${START_HEAD}"
+last_iter_head: "${START_HEAD}"
 worktree_path: "${WORKTREE_PATH}"
 worktree_mode: "${WORKTREE_MODE}"
 pre_loop_stash_ref: "${PRE_LOOP_STASH_REF}"
@@ -355,10 +357,16 @@ last_pass_stage: ""
 last_error_hash: ""
 last_error_count: 0
 stopped_reason: ""
+cleanup_phase: ""
 created_at: "$(date -Iseconds)"
 EOF
 
 echo "✅ builder-loop 已启动"
+if [ -n "$WORKTREE_PATH" ]; then
+  echo "   模式：worktree（reviewer-as-gate — PASS 后挂牌等审，reviewer 通过才合主线）"
+else
+  echo "   模式：bare（事后审 — PASS 后立即 commit 主仓，reviewer 事后审查）"
+fi
 echo "   配置文件：${LOOP_YML}"
 PASS_CNT=$(python3 -c "import yaml; print(len(yaml.safe_load(open('$LOOP_YML')).get('pass_cmd', [])))" 2>/dev/null || echo "?")
 echo "   PASS_CMD 阶段数：${PASS_CNT}"

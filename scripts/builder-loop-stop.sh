@@ -461,6 +461,117 @@ ITER=$(grep -E '^iter:' "$STATE_FILE" | head -1 | awk '{print $2}')
 ITER=${ITER:-0}
 NEXT_ITER=$(( ITER + 1 ))
 
+# ---- V3.0: PASS_CMD 前多层闸（命中即静默 exit 0） ----
+# 闸顺序（早闸优先，成本低到高）：
+#   L1  phase=passed_pending_review → 不跑（牌子挂着等 reviewer 审）
+#       特例：worktree 出现 dirty/新 commit → 自愈回 active 继续跑（reviewer 反馈修复路径）
+#   L2A transcript 末是 pending AskUserQuestion → 不跑（builder 等用户答）
+#   L2B worktree HEAD == last_iter_head + git status 空 → 不跑（无改动 thinking/讨论）
+#   L3  .claude/builder-loop/<slug>.pause 文件存在 → 不跑（builder 主动 pause）
+
+# L1: phase 闸 + worktree 改动兜底自愈
+PHASE_FIELD="$(grep -E '^phase:' "$STATE_FILE" 2>/dev/null | head -1 | sed -E 's/^phase:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' || echo "")"
+if [ "$PHASE_FIELD" = "passed_pending_review" ]; then
+  WT_PATH_GATE="$(grep -E '^worktree_path:' "$STATE_FILE" 2>/dev/null | head -1 | sed -E 's/^worktree_path:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' || echo "")"
+  WT_HAS_CHANGES=0
+  if [ -n "$WT_PATH_GATE" ] && [ -d "$WT_PATH_GATE" ]; then
+    LIH_GATE="$(grep -E '^last_iter_head:' "$STATE_FILE" 2>/dev/null | head -1 | sed -E 's/^last_iter_head:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' || echo "")"
+    CUR_HEAD_GATE="$(git -C "$WT_PATH_GATE" rev-parse --short HEAD 2>/dev/null || echo "")"
+    WT_STATUS_GATE="$(git -C "$WT_PATH_GATE" status --porcelain 2>/dev/null || echo "")"
+    if [ -n "$WT_STATUS_GATE" ]; then
+      WT_HAS_CHANGES=1
+    elif [ -n "$LIH_GATE" ] && [ -n "$CUR_HEAD_GATE" ] && [ "$LIH_GATE" != "$CUR_HEAD_GATE" ]; then
+      WT_HAS_CHANGES=1
+    fi
+  fi
+  if [ "$WT_HAS_CHANGES" = "1" ]; then
+    STATE_FILE="$STATE_FILE" python3 -c "
+import os, re
+sf = os.environ['STATE_FILE']
+text = open(sf).read()
+text = re.sub(r'^phase:.*\$', 'phase: \"active\"', text, flags=re.M)
+open(sf, 'w').write(text)
+" 2>/dev/null || true
+    echo "[builder-loop] L1 phase 自愈：worktree 检测到改动，phase passed_pending_review → active" >&2
+    debug_log "phase_self_heal" '{"from":"passed_pending_review","to":"active","reason":"worktree_changed"}'
+  else
+    debug_log "exit" '{"code":0,"reason":"l1_phase_passed_pending_review"}'
+    exit 0
+  fi
+fi
+
+# L2A: transcript 末尾 pending AskUserQuestion 静默
+if [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
+  ASKUQ_PENDING="$(TP="$TRANSCRIPT_PATH" python3 - <<'PY' 2>/dev/null || echo "false"
+import os, json
+tp = os.environ.get('TP', '')
+try:
+    with open(tp) as f:
+        lines = [l for l in f if l.strip()]
+except Exception:
+    print('false'); raise SystemExit
+if not lines:
+    print('false'); raise SystemExit
+last_id = None
+last_idx = -1
+for i, line in enumerate(lines):
+    try:
+        obj = json.loads(line)
+    except Exception:
+        continue
+    if obj.get('type') == 'assistant':
+        msg = obj.get('message', {})
+        for blk in msg.get('content', []) or []:
+            if blk.get('type') == 'tool_use' and blk.get('name') == 'AskUserQuestion':
+                last_id = blk.get('id')
+                last_idx = i
+if not last_id:
+    print('false'); raise SystemExit
+for line in lines[last_idx+1:]:
+    try:
+        obj = json.loads(line)
+    except Exception:
+        continue
+    if obj.get('type') == 'user':
+        msg = obj.get('message', {})
+        cont = msg.get('content', []) or []
+        if isinstance(cont, list):
+            for blk in cont:
+                if isinstance(blk, dict) and blk.get('type') == 'tool_result' and blk.get('tool_use_id') == last_id:
+                    print('false'); raise SystemExit
+print('true')
+PY
+)"
+  if [ "$ASKUQ_PENDING" = "true" ]; then
+    debug_log "exit" '{"code":0,"reason":"l2a_askuq_pending"}'
+    exit 0
+  fi
+fi
+
+# L2B: worktree HEAD == last_iter_head + git status 空 静默
+WT_PATH_L2B="$(grep -E '^worktree_path:' "$STATE_FILE" 2>/dev/null | head -1 | sed -E 's/^worktree_path:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' || echo "")"
+if [ -n "$WT_PATH_L2B" ] && [ -d "$WT_PATH_L2B" ]; then
+  LIH_L2B="$(grep -E '^last_iter_head:' "$STATE_FILE" 2>/dev/null | head -1 | sed -E 's/^last_iter_head:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' || echo "")"
+  CUR_HEAD_L2B="$(git -C "$WT_PATH_L2B" rev-parse --short HEAD 2>/dev/null || echo "")"
+  WT_STATUS_L2B="$(git -C "$WT_PATH_L2B" status --porcelain 2>/dev/null || echo "")"
+  if [ -n "$LIH_L2B" ] && [ "$LIH_L2B" = "$CUR_HEAD_L2B" ] && [ -z "$WT_STATUS_L2B" ]; then
+    debug_log "exit" '{"code":0,"reason":"l2b_no_diff"}'
+    exit 0
+  fi
+fi
+
+# L3: pause 文件 静默
+SLUG_L3="$(grep -E '^slug:' "$STATE_FILE" 2>/dev/null | head -1 | sed -E 's/^slug:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' || echo "")"
+if [ -n "$SLUG_L3" ]; then
+  PAUSE_FILE="${PROJECT_ROOT}/.claude/builder-loop/${SLUG_L3}.pause"
+  if [ -f "$PAUSE_FILE" ]; then
+    echo "[builder-loop] L3 pause 文件命中，hook 静默：${PAUSE_FILE}" >&2
+    debug_log "exit" '{"code":0,"reason":"l3_pause_file"}'
+    exit 0
+  fi
+fi
+# ---- /V3.0 闸 ----
+
 # ---- trace 初始化 ----
 TRACE_FILE="${PROJECT_ROOT}/.claude/loop-trace.jsonl"
 mkdir -p "$(dirname "$TRACE_FILE")" 2>/dev/null || true
@@ -637,6 +748,108 @@ except Exception:
 PY
     fi
   fi
+
+  # ---- V3.0 reviewer-as-gate: worktree 模式分支 ----
+  # 判定 worktree 模式 → 调 worktree-commit-only.sh 只 commit 不 merge
+  # bare 模式（worktree_path 空）fall-through 到下面 V2.x 路径（merge-worktree-back NOOP）
+  WORKTREE_PATH_PASS="$(grep -E '^worktree_path:' "$STATE_FILE" 2>/dev/null | head -1 | sed -E 's/^worktree_path:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' || echo "")"
+  if [ -n "$WORKTREE_PATH_PASS" ] && [ -d "$WORKTREE_PATH_PASS" ]; then
+    COMMIT_OUT="$(bash "${SKILL_DIR}/worktree-commit-only.sh" "$STATE_FILE" 2>&1 || true)"
+    COMMIT_LAST="$(echo "$COMMIT_OUT" | tail -1)"
+    COMMIT_ACTION="$(echo "$COMMIT_LAST" | awk '{print $1}')"
+    debug_log "commit_only_result" "$(CA="$COMMIT_ACTION" CL="$COMMIT_LAST" python3 -c "
+import os, json
+print(json.dumps({'commit_action': os.environ.get('CA',''), 'commit_last_line': os.environ.get('CL','')[:200]}))
+" 2>/dev/null || echo '{}')"
+
+    case "$COMMIT_ACTION" in
+      COMMIT_DONE|NOOP)
+        NEW_HEAD_SHORT="$(echo "$COMMIT_LAST" | awk '{print $2}')"
+        [ -z "$NEW_HEAD_SHORT" ] && NEW_HEAD_SHORT="$(git -C "$WORKTREE_PATH_PASS" rev-parse --short HEAD 2>/dev/null || echo "")"
+        SLUG_PASS="$(grep -E '^slug:' "$STATE_FILE" 2>/dev/null | head -1 | sed -E 's/^slug:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' || echo "")"
+        DIFF_FILE_PASS="${PROJECT_ROOT}/.claude/reviewer-diff-${SLUG_PASS}.txt"
+        PROJ_NAME_PASS="$(basename "$PROJECT_ROOT")"
+        mkdir -p "${PROJECT_ROOT}/.claude/review_reports" 2>/dev/null || true
+        REPORT_TS_PASS="$(date +%Y%m%d_%H%M%S)"
+        REPORT_PATH_PASS="${PROJECT_ROOT}/.claude/review_reports/${PROJ_NAME_PASS}_${SLUG_PASS}_${REPORT_TS_PASS}.md"
+        REVIEWER_FILES_PASS="$(git -C "$WORKTREE_PATH_PASS" diff --name-only "${PASS_START_HEAD_PREREAD}..HEAD" 2>/dev/null | tr '\n' ',' | sed 's/,$//' || echo "")"
+        git -C "$WORKTREE_PATH_PASS" diff "${PASS_START_HEAD_PREREAD}..HEAD" > "$DIFF_FILE_PASS" 2>/dev/null || echo "" > "$DIFF_FILE_PASS"
+
+        # 写 state：phase=passed_pending_review + last_iter_head + reviewer_pending 段
+        STATE_FILE="$STATE_FILE" NEW_HEAD="$NEW_HEAD_SHORT" \
+          PASS_SH_PASS="$PASS_START_HEAD_PREREAD" RFILES_PASS="$REVIEWER_FILES_PASS" \
+          DFILE_PASS="$DIFF_FILE_PASS" RPATH_PASS="$REPORT_PATH_PASS" \
+          WAT_PASS="$(date -Iseconds 2>/dev/null || date +%s)" python3 - <<'PY' 2>/dev/null || true
+import os, re
+sf = os.environ['STATE_FILE']
+text = open(sf).read()
+
+def upsert(text, key, val):
+    pat = re.compile(rf'^{key}:.*$', re.M)
+    if pat.search(text):
+        return pat.sub(f'{key}: {val}', text)
+    if not text.endswith('\n'):
+        text += '\n'
+    return text + f'{key}: {val}\n'
+
+text = upsert(text, 'phase', '"passed_pending_review"')
+text = upsert(text, 'last_iter_head', f'"{os.environ["NEW_HEAD"]}"')
+
+# 删除老 reviewer_pending 段（块内每行以 2 空格缩进）
+text = re.sub(r'^reviewer_pending:\n(?:  .+\n)*', '', text, flags=re.M)
+if not text.endswith('\n'):
+    text += '\n'
+pending_block = (
+    'reviewer_pending:\n'
+    f'  pass_start_head: "{os.environ["PASS_SH_PASS"]}"\n'
+    f'  reviewer_files: "{os.environ["RFILES_PASS"]}"\n'
+    f'  diff_file: "{os.environ["DFILE_PASS"]}"\n'
+    f'  report_path: "{os.environ["RPATH_PASS"]}"\n'
+    f'  written_at: "{os.environ["WAT_PASS"]}"\n'
+)
+text += pending_block
+open(sf, 'w').write(text)
+PY
+
+        write_processed_cursor "$PROJECT_ROOT"
+        echo "[builder-loop] ✅ PASS at iter ${NEXT_ITER} (worktree commit, phase=passed_pending_review)" >&2
+        write_trace "PASS"
+
+        cat >&2 <<PASS_MSG
+[builder-loop] ✅ PASS_CMD 全部阶段通过（iter ${NEXT_ITER}）。已在 worktree 内 commit，等待 reviewer 通过后才合主线。
+phase=passed_pending_review
+slug=${SLUG_PASS}
+state_file=${STATE_FILE}
+worktree_path=${WORKTREE_PATH_PASS}
+
+请继续 Builder 后续流程：
+1. Read state.yml 拿 reviewer_pending 段（含 reviewer_files / report_path / diff_file）
+2. spawn reviewer subagent 评审
+3. 反馈分支：
+   - 0🔴 通过       → bash ${SKILL_DIR}/merge-and-cleanup.sh ${STATE_FILE}
+   - 🟡/🔵 非阻塞   → 在 worktree 内 Edit/Write 修复 → 下一轮 PASS_CMD（hook 自动检测 dirty 改回 active）
+   - 🔴 阻塞        → AskUserQuestion 让用户选 [继续修 / abandon-loop.sh]
+PASS_MSG
+
+        debug_log "exit" "$(IT="$NEXT_ITER" python3 -c "
+import os, json
+print(json.dumps({'code':2,'reason':'pass_done_v3','iter': int(os.environ.get('IT','0') or 0), 'phase': 'passed_pending_review'}))
+" 2>/dev/null || echo '{}')"
+        exit 2
+        ;;
+      *)
+        echo "[builder-loop] ⚠️  worktree-commit-only.sh 失败：${COMMIT_LAST}" >&2
+        debug_log "exit" '{"code":2,"reason":"worktree_commit_only_error"}'
+        cat >&2 <<COMMIT_ERR
+[builder-loop] ⚠️  worktree commit 失败（iter ${NEXT_ITER}）
+${COMMIT_OUT}
+请检查 worktree 状态后重试。
+COMMIT_ERR
+        exit 2
+        ;;
+    esac
+  fi
+  # ---- /V3.0 worktree 模式分支结束；以下走 bare 模式 V2.x 路径 ----
 
   # T2.7：worktree 启用时先合回主干（fast-forward / rebase / 标记仲裁）
   MERGE_OUT="$(bash "${SKILL_DIR}/merge-worktree-back.sh" "$STATE_FILE" 2>&1 || true)"

@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 # abandon-loop.sh — V2.6 用户主动放弃本次 loop 的合法出口
 #
-# 用法：bash abandon-loop.sh <state_file> <reason>
+# 用法：bash abandon-loop.sh [--keep-worktree] <state_file> <reason>
+#
+# V3.0 起支持 --keep-worktree flag（默认行为，作向后兼容显式入口）。
+# 本脚本始终保留 worktree + branch（让用户决定 cherry-pick / 丢弃）；
+# active 状态和 passed_pending_review 状态都按此语义。
 #
 # 参数：
 #   $1 = state file 绝对路径（必填）
@@ -35,10 +39,15 @@
 
 set -euo pipefail
 
+# ---- V3.0 flag 解析：--keep-worktree（默认行为，作显式入口） ----
+if [ "${1:-}" = "--keep-worktree" ]; then
+  shift
+fi
+
 # ---- 参数校验 ----
 if [ "$#" -lt 2 ]; then
   cat >&2 <<USAGE
-用法：bash abandon-loop.sh <state_file> <reason>
+用法：bash abandon-loop.sh [--keep-worktree] <state_file> <reason>
 
   state_file = 状态文件绝对路径，例如：
     <project_root>/.claude/builder-loop/state/<slug>.yml
@@ -90,6 +99,7 @@ read_field_path() {
 }
 
 ACTIVE="$(read_field active)"
+PHASE_FIELD="$(read_field phase)"  # V3.0：active / passed_pending_review；老 state 缺字段为空
 SLUG="$(read_field slug)"
 ITER="$(read_field iter)"
 PROJECT_ROOT="$(read_field_path main_repo_path)"
@@ -199,9 +209,17 @@ fi
 # ---- Step 5: stdout 输出供 builder 解析 ----
 echo "[abandon-loop] ✅ Loop abandoned"
 echo "  slug:          ${SLUG}"
+echo "  phase:         ${PHASE_FIELD:-active}"
 echo "  reason:        ${REASON}"
 echo "  state archived to: ${LEGACY_BAK}"
 echo "  legacy info:   ${LEGACY_INFO}"
+case "$PHASE_FIELD" in
+  passed_pending_review)
+    echo ""
+    echo "  ℹ️  注意：本 loop 处于 passed_pending_review（已 PASS_CMD 通过、worktree 已 commit、尚未 reviewer 通过合主线）。"
+    echo "     worktree 已保留，可手动 cherry-pick 这些 commit 或丢弃。"
+    ;;
+esac
 if [ -n "$WORKTREE_PATH" ] && [ -d "$WORKTREE_PATH" ]; then
   BRANCH="$(git -C "$WORKTREE_PATH" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "<unknown>")"
   echo "  worktree kept: ${WORKTREE_PATH}"

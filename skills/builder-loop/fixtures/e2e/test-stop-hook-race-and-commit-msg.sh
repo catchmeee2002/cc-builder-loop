@@ -294,7 +294,11 @@ printf '{"cwd": "%s"}' "$WT_PATH_D" | bash "$HOOK_SCRIPT" 2>"$ERR_D" >/dev/null 
 assert "场景 D Stop hook exit 2（PASS 续接）" "[ '$EC_D' -eq 2 ]"
 assert "场景 D stderr 不含 'No such file'（修复关键断言）" "! grep -q 'No such file' '$ERR_D'"
 assert "场景 D stderr 含 'PASS_CMD 全部阶段通过'" "grep -q 'PASS_CMD 全部阶段通过' '$ERR_D'"
-assert "场景 D reviewer-params.json 已写入" "[ -f '$TMP_D/.claude/reviewer-params.json' ]"
+# V3.0 reviewer-as-gate：worktree 模式 PASS 后写 state.reviewer_pending 段（替代 V2.x 的全局 reviewer-params.json）
+assert "场景 D state 仍存在（V3.0 worktree 模式不删 state）" "[ -f '$STATE_D' ]"
+assert "场景 D state 含 reviewer_pending 段（V3.0 替代 reviewer-params.json）" "grep -q '^reviewer_pending:' '$STATE_D'"
+assert "场景 D state.phase = passed_pending_review" \
+  "grep -E '^phase:' '$STATE_D' | head -1 | grep -q 'passed_pending_review'"
 
 # ==== 汇总 ====
 echo ""

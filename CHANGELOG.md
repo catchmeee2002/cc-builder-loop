@@ -2,6 +2,54 @@
 
 > 从 CLAUDE.md §5 外移。记录各版本交付的能力与关键实现细节。
 
+## V3.0 reviewer-as-gate 重构（2026-05-09）
+
+把 hook 行为从「主动喊话 + 立即 merge」改成「挂牌子 + builder 主动拉取」。三件事同时落地：
+
+**1. 拆 merge 时机（reviewer-as-gate）**
+- 新建 `worktree-commit-only.sh`：PASS 后只在 worktree 内 commit、不 merge、不删 worktree。
+- 新建 `merge-and-cleanup.sh`：reviewer 通过后由 builder 主动调，做 ff merge + 删 worktree + 删 state；幂等设计（state.cleanup_phase 字段记进度 ff_merged → worktree_removed → state_removed）。
+- `merge-worktree-back.sh` 保留作 V2.x 立即合主线路径（arbiter 续路径 + bare 模式 + 兼容 fixture 仍用）。
+- bare 模式（slug=`__main__`）行为保持不变（仍走 PASS-then-commit-then-event-审）。
+
+**2. 文件按 slug 拆**
+- `reviewer-params.json` 合并到 state.reviewer_pending 段（消除两份字段漂移源）。
+- `reviewer-diff.txt` → `reviewer-diff-<slug>.txt`（按 slug 拆，跨 worktree 不撞）。
+- review_reports/ 路径含 slug（同上）。
+
+**3. Hook 加多层闸自动识别非目标场景静默**
+- L1 phase 闸：`state.phase=passed_pending_review` → 静默（牌子挂着等审）；特例：worktree 出现 dirty/新 commit → phase 自愈回 active 重跑 PASS_CMD。
+- L2A AskUserQuestion 闸：transcript 末尾是 pending AskUserQuestion → 静默（builder 等用户答）。
+- L2B 无改动闸：worktree HEAD == `state.last_iter_head` 且 git status 空 → 静默（builder 在思考/讨论）。
+- L3 pause 闸：`.claude/builder-loop/<slug>.pause` 文件存在 → 静默（builder 主动 pause）。
+
+**4. State schema 演进**
+- 新增字段：`phase`（active / passed_pending_review）、`last_iter_head`、`cleanup_phase`、`reviewer_pending` 段。
+- `active` 字段保留作向后兼容，**V3.x 渐进下掉**（详见 [improvements.md](.claude/improvements.md) 「active 字段下掉计划」）。
+
+**5. abandon-loop.sh 适配**
+- 加 `--keep-worktree` flag（默认行为，作显式入口）。
+- 识别 `phase=passed_pending_review` 状态并在输出中提示用户。
+
+**6. 跨 session 隔离 + 同 session 多 worktree 不丢消息**
+- 通过 cwd 推 slug + 文件按 slug 拆双保险，跨 session 串扰 / 同 session 多 worktree 反馈丢失两个症状自动消除。
+- locate-state.sh 策略 2 注释加强：cwd 含 worktrees/<slug> 是 V3.0 主信号源。
+
+**7. 8 个新 e2e fixture**
+- test-cross-session-isolation.sh：双 worktree cwd 隔离
+- test-multi-worktree-feedback.sh：同 session 串行多 worktree 反馈不丢
+- test-askuserquestion-silence.sh：L2A 闸
+- test-no-diff-silence.sh：L2B 闸
+- test-pause-file.sh：L3 闸
+- test-passed-pending-review-lifecycle.sh：phase 全生命周期（reviewer 通过 / 阻塞 / 非阻塞）
+- test-merge-and-cleanup-idempotent.sh：cleanup_phase 幂等
+- test-worktree-commit-only.sh：单点验证
+
+**8. 同步备忘**
+- `~/.claude/commands/builder.md` V3.0 改动落到 [`docs/v30-builder-md-patch.md`](skills/builder-loop/docs/v30-builder-md-patch.md)，cc-builder-loop 主线 merge 后单独到 dotfiles 仓 commit（详见 [`docs/sync-checklist.md`](skills/builder-loop/docs/sync-checklist.md)）。
+
+并入的 improvements 候选：跨 session 串扰 / 同 session 多 worktree 反馈丢失 / V3.0 reviewer-as-gate / WIP 节流 / AskUserQuestion 期间 hook 自激空转。
+
 ## V1.0 核心能力
 
 - 多阶段 PASS_CMD + 智能早停
