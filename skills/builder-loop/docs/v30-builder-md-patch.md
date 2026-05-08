@@ -1,4 +1,8 @@
-# V3.0 reviewer-as-gate — dotfiles `builder.md` 待同步改动
+# V3.0 reviewer-as-gate — dotfiles `builder.md` 同步记录
+
+> ✅ **已完成**：dotfiles `~/.hongyu.liao_debian12/my-dotfiles` commit `3349374`（feat(claude): Update builder.md for V3.0 reviewer-as-gate）已落实下述 4 处改动并 push origin/main。本文档转为历史档案，留作下次类似改动的样板。
+>
+> 历史背景（保留供回溯）：
 
 > ⚠️ **POST-MERGE CRITICAL**：cc-builder-loop V3.0 主线 merge 后**必须立即**同步 dotfiles `builder.md`，否则线上 builder 行为会出问题：
 > - hook 写 `state.phase=passed_pending_review` 但 `state.active` 仍是 `true`

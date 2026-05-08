@@ -240,3 +240,66 @@ bash ~/.claude/skills/builder-loop/scripts/setup-builder-loop.sh "<task>"
 ```
 
 **拒绝条件**：reason 缺失 / state 不存在 / active != true / 字段损坏。
+
+## 7.13 phase=passed_pending_review 卡住（V3.0）
+
+**症状**：worktree loop 跑完 PASS 后 state.phase 变 passed_pending_review，但 builder 没 spawn reviewer / 没调 merge-and-cleanup.sh，state 一直挂着，再 stop 也是 L1 闸静默。
+
+**排查**：
+
+1. 看主仓 `.claude/builder-loop/state/<slug>.yml` 的 `phase` 字段是不是 `passed_pending_review`
+2. 看 builder 是否在 worktree 内（`pwd` 应含 `.claude/worktrees/<slug>`）
+3. 看 `reviewer_pending` 段是否完整（含 reviewer_files / report_path / diff_file）
+
+**3 条出口**（按 reviewer 反馈选）：
+
+| 情况 | 操作 |
+|---|---|
+| reviewer 已通过（0🔴）| `bash ~/.claude/skills/builder-loop/scripts/merge-and-cleanup.sh <state_file>` 合主线 |
+| reviewer 给 🟡/🔵，需要修 | 在 worktree 内 Edit/Write → dirty 出现 → 下一轮 hook L1 闸自愈回 phase=active 自动重跑 PASS_CMD |
+| 用户决定不合 | `bash ~/.claude/skills/builder-loop/scripts/abandon-loop.sh <state_file> "<reason>"`（worktree 保留供 cherry-pick） |
+
+**自愈失效**：L1 闸自愈条件是「worktree HEAD 推进 OR git status 非空」。改完代码没 dirty 出现（如把改动撤回）→ L1 不自愈 → state 卡住。修法：再改个文件或用 abandon-loop 退出。
+
+**merge-and-cleanup 中断重跑**：state.cleanup_phase 字段记进度（ff_merged / worktree_removed），中断后重跑会从中断点续跑（幂等），不会重复 ff merge。
+
+## 7.14 老 V2.x state 升级 V3.0 schema warning（V3.0）
+
+**症状**：升级到 V3.0 后 stop hook stderr 注入「⚠️ 检测到 V2.x 老 state（无 phase 字段）：<state> 本轮 hook 已自动升级到 V3.0 schema」。
+
+**原因**：V2.x 创建的 state 无 phase / last_iter_head / cleanup_phase 三个 V3.0 新字段。Hook 检测到 phase 字段缺失 → stderr warning + 不阻断流程（自动升级路径：跑完 PASS_CMD 后 hook 写 phase=passed_pending_review 自动补字段）。
+
+**用户行为**：不需要任何操作。Builder 看到 warning 不需 AskUserQuestion，按正常 V3.0 流程继续即可。
+
+**手动升级（可选）**：
+```bash
+# 不想等 hook 自动升级时，直接给 state 文件补字段
+SLUG=...
+sed -i '/^active:/a\
+phase: "active"' .claude/builder-loop/state/${SLUG}.yml
+# 加 last_iter_head
+START_HEAD="$(grep -E '^start_head:' .claude/builder-loop/state/${SLUG}.yml | sed -E 's/.*"([^"]*)".*/\1/')"
+sed -i "/^start_head:/a\\
+last_iter_head: \"${START_HEAD}\"" .claude/builder-loop/state/${SLUG}.yml
+```
+
+## 7.15 多闸静默无 PASS_CMD 跑（V3.0）
+
+**症状**：CC 一回合结束后 stop hook 看似没反应，loop-runs 不新增，但 stop-hook-debug.log 有 entry 记录。
+
+**排查 — 看 stop-hook-debug.log 末尾几条 phase**：
+
+| debug log 末尾 phase | 闸命中 | 行为正确性 |
+|---|---|---|
+| `exit reason=l1_phase_passed_pending_review` | L1 phase | ✅ 牌子挂着等 reviewer，参考 7.13 |
+| `exit reason=l2a_askuq_pending` | L2A | ✅ Builder 在等用户答 AskUserQuestion |
+| `exit reason=l2b_no_diff` | L2B | ✅ worktree HEAD 不变 + git status 空，无改动可跑 |
+| `exit reason=l3_pause_file` | L3 pause | ✅ pause 文件存在主动静默 |
+| `exit reason=phase_self_heal` | L1 自愈 | ✅ worktree dirty/HEAD 推进 → phase 改回 active 跑 PASS_CMD |
+| 无 exit 记录 / 中断在某 phase | 异常 | 看 phase 字段定位中断点 |
+
+**常见误判**：
+
+- **L2B 在 bare 模式不生效（V3.0 修前）**：V3.0 初版 L2B 只看 worktree_path，bare 模式（worktree_path 空）跳过 L2B。V3.0 反馈 fixup 后扩展为 worktree_path 空时用 PROJECT_ROOT，bare 也享 WIP 节流。
+- **pause 文件忘了删**：debug log 一直 `l3_pause_file`，rm 掉 `.claude/builder-loop/<slug>.pause` 即可。
+- **AskUserQuestion 已答但 transcript 没回**：CC harness 自身问题；用户重新发一句话即可。
