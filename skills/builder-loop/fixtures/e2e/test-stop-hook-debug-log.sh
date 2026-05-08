@@ -230,12 +230,17 @@ write_state_yml "${STATE_DIR}/__main__.yml" "true" "" "__main__"
 A4_BEFORE="$(mktemp)"
 find "$TMP" -maxdepth 5 -type f -printf '%T@ %s %p\n' 2>/dev/null | sort > "$A4_BEFORE" || true
 
-A4_OUT="$(bash "$DIAG_SCRIPT" "$TMP" 2>&1)"
-A4_EC=$?
+# set -euo pipefail 下，$() 子进程退出码非 0 会触发 set -e 杀外层（A4_EC=$? 来不及赋值）
+# diagnose 在 verdict=fail 时退出码=2，verdict=warn 时退出码=1，必须 || 容错让 A4_EC 可捕获
+A4_EC=0
+A4_OUT="$(bash "$DIAG_SCRIPT" "$TMP" 2>&1)" || A4_EC=$?
 
 # 拍后快照
 A4_AFTER="$(mktemp)"
 find "$TMP" -maxdepth 5 -type f -printf '%T@ %s %p\n' 2>/dev/null | sort > "$A4_AFTER" || true
+
+# 反向断言：A4_EC 必须可被捕获（防止以后改写法又退化到 set -e 杀外层）
+assert "A4 diagnose 退出码可被捕获（set -e 未抢）" "[ -n \"\${A4_EC+set}\" ]"
 
 assert "A4 输出含 [1/6]" "echo '$A4_OUT' | grep -qF '[1/6]'"
 assert "A4 输出含 [2/6]" "echo '$A4_OUT' | grep -qF '[2/6]'"
