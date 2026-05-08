@@ -6,5 +6,5 @@
 |---------|------|
 | 改 `scripts/*.sh` / `agents/*.md` 内容（不增删） | **不操作**（软链已存在，主仓改即时生效）|
 | 新增/删除 `scripts/*.sh` 或 `agents/*.md` | `bash install.sh` 创建/移除软链 + 同步 settings.json hook 注册 |
-| 改 hook matcher（如 `Read\|Grep` → `Read\|Grep\|WebFetch`）| 删旧 settings.json 条目后跑 `bash install.sh`（**已知 install.sh `has_entry()` 仅比脚本名不比 matcher，改 matcher 不会更新——见 `.claude/improvements.md`**）|
+| 改 hook matcher（如 `Read\|Grep` → `Read\|Grep\|WebFetch`）| 直接跑 `bash install.sh` 即可（V2.7.1 起 `find_entry_status()` 三态返回，matcher 字面变化会被识别为 stale 自动删旧加新；输出含「N 条更新」字段）|
 | 改 `~/.claude/commands/builder.md` / `planner.md`、`~/.claude/agents/reviewer.md` | 切到 `~/.hongyu.liao_debian12/my-dotfiles` 仓 commit（cc-builder-loop 与 my-dotfiles 是两个独立 git 仓）|
