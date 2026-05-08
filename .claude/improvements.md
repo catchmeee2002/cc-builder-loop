@@ -3,6 +3,47 @@
 > 时间倒序。每条按 builder.md 步骤 5 模板（触发上下文 / 建议方向 / 优先级）。
 > 立项不等于本期实施——A 类候选清单，等独立任务挑出来落地。
 
+## 2026-05-08 loop PASS 后 auto-commit 时序与 builder.md 步骤 4 描述不一致
+
+- **触发上下文**：generator 项目修 deep-analysis 元问题。loop 跑完 iter 1 PASS（MERGED），主仓 git log 已多出 `8a90f72 chore(loop): Auto-commit ...`；builder 此时 spawn reviewer，reviewer 给出 🟡3 → builder 改 follow-up code → 想走 builder.md 步骤 4「自动 commit」时发现主仓已 clean。这次因为还有 follow-up dirty 改动，commit 没出错，但 builder 在 spawn reviewer 之前一度尝试改 worktree 内的 tests/CLAUDE.md（cwd 已被自动切回主仓）才意识到 worktree 已被 merge。
+- **根因**：builder.md 步骤 4「自动 commit（Reviewer 通过后）」的描述顺序是 reviewer→commit，但 loop 实际行为是 loop_pass→auto_commit→reviewer→（可能的 follow-up commit）。文档与实际时序的 mismatch 让 builder 容易：① 看到主仓 clean 怀疑是不是 stash 出错 ② 在 reviewer 反馈的 follow-up 改动后，混淆"重新 commit"还是"follow-up commit"
+- **建议方向**：
+  1. **builder.md 步骤 4 重写**：明确"loop active 路径"和"非 loop 路径"两条时序：
+     - loop 路径：loop_pass→**auto-commit 已发生**→reviewer→follow-up 改动用 follow-up commit（不 amend，按 `[cr_id_skip] Apply reviewer feedback for ...` 风格命名）
+     - 非 loop 路径：reviewer 通过后 builder 主动 commit
+  2. **stop hook 输出补一句指向**：当前 stop hook 输出含 `start_head=3fe1ac5 reviewer_params=...`，建议加 `auto_commit_sha=8a90f72` 让 builder 直接看到 auto-commit 已落地，不需要再 git log 确认
+  3. **reviewer-params.json 加字段**：`auto_commit_sha` + `auto_commit_msg`，便于 reviewer 在报告中引用具体 commit；同时让 builder 在 follow-up commit 时复用相同 task 描述前缀
+  4. **builder.md 4.5 改动汇总要含两个 commit**：当 loop+follow-up 都发生时，明确列 [auto-commit-sha] + [follow-up-sha]，避免 builder 误以为只有一次 commit
+- **优先级**：中（不修不会出错事故，但 builder 文档与 loop 实际行为有 gap，每次跨 reviewer 修改都会让 builder 心智负担一次。频次：高——所有 L2/L3 + reviewer 给 🟡 建议时都触发）
+
+---
+
+## 2026-05-08 builder 接到「加一行/改一参」类小任务时，setup loop 前应先 grep 确认前提
+
+- **触发上下文**：BOT 项目 hmi 推送 9 分钟后 WS 自身 abort 排查。Builder 在用户聊天里基于"跳板机日志看到 ConnectionClosedError"分析得出根因 = "WS 没开 ping 心跳"，给用户讲了"加一行 `ping_interval=30` 就好"。用户「开搞」→ builder 立刻 setup-builder-loop.sh 创建 worktree → cd 进 worktree 准备 Edit `vehicle-jumpbox/client.py` → grep 该文件后**当场发现 `ping_interval=30, ping_timeout=10` 早就在 initial commit 里**！前提推翻。Builder 立刻停手 + 重新分析 → 修正根因为 "ping_timeout=10 太短"，AskUserQuestion 让用户重新拍板。所幸 worktree 还没动 Edit，没浪费实质工作；但已经创建了 worktree + 分支 + state，归档/清理需要 abandon-loop 走流程，对工作流是可见噪音。
+- **根因**：builder.md 「前置 loop 检查」只要求"读方案文件 → setup loop"，没要求 setup 之前先验证"用户讲述的根因/前提与代码现状一致"。当用户的描述简短又笃定（如"加一行参数就好"）时，builder 容易直接跟进 setup，没做"前提核验"步骤。代码文件是确定性产物，5 秒一个 grep 就能避免错误 setup。
+- **建议方向**：
+  1. **builder.md 步骤 1 加自检**：「先计划，后动手」段加一句：当任务描述涉及"在 X 文件加/改 Y 参数/函数/导入"等可直接验证的具体改动点时，**setup loop 之前**先 `grep` 一下确认 X 当前状态是否真如预期；前提与现状不一致 → 不 setup loop，反过来 AskUserQuestion 给用户对齐根因
+  2. **小改动豁免**：单文件 ≤10 行的小改动，可考虑 builder 模式默认在主仓直接改（按 HARD RULE 现有豁免规则），减少 setup loop 后才发现前提推翻的成本
+  3. **abandon-loop 友好**：当 setup 后才发现"无需此 loop"时，提供一个轻量 `cancel-fresh-loop.sh`，识别 worktree 内零改动 + 状态文件 ≤5 分钟前创建 → 直接 git worktree remove + 删 state，不需要走完整 abandon 归档（abandon 是面向"已经做了大半再弃"的语义）
+  4. **fixture**：构造"用户假前提" → builder 接收任务但 setup 前 grep 发现前提错"场景，断言 builder 的行为是 AskUserQuestion 而非继续 setup
+- **优先级**：中（不修不会出严重事故，但"假前提任务"是常见模式：用户基于不完整信息描述任务，builder 跟进创建 worktree 后才发现要重新对齐根因。频次中等）
+
+---
+
+## 2026-05-08 reviewer 对非 git 改动 + 文件存在性验证不充分
+
+- **触发上下文**：BOT 项目精简两个运维文档（删 `docs/hmi-flash-file-push-improvement.md` + 精简 `docs/ssh-eventloop-blocking.md` 563→140 行）。两个文件都不在 git（项目 .gitignore 排除所有 .md），git diff 看不到这部分改动。reviewer 收到 changed_files=[CLAUDE.md, agent/CLAUDE.md] 但任务主旨是 docs 清理。Builder 在 prompt 里详细告知"⚠️ 这次主要内容（hmi 删 + ssh-eventloop 精简）不在 diff 里。请直接 Read 主仓副本评估其完整性，并 grep 确认 hmi 文档已不存在"。reviewer 接受了，主动 Read 主仓 + grep 验证，覆盖性结论扎实。但同一份报告里 reviewer 又对 CLAUDE.md 导航重构后 `docs/agent-architecture.md` 条目消失发出 🟡 警告——**没主动 ls 验证该文件是否还存在**就下结论"建议确认文件已删除"。实际该文件早已被删除（内容并入 agent/CLAUDE.md），新版括号注是合理内化。Builder 拒绝采纳该 🟡，给出"reviewer 漏验证存在性"的反驳理由。
+- **根因**：reviewer SKILL prompt 当前对"non-git 改动"和"引用文件路径验证"两件事的处理策略不对称：① non-git 改动这次因 builder 显式提示 + 提供主仓直读路径，reviewer 做到了 ② 但对引用文件路径的存在性验证（"agent-architecture.md 是否还存在"），reviewer 默认不主动 ls/grep 而是凭印象下结论。差异本质：①需要 builder 主动告知，②应该是 reviewer 自检默认动作。
+- **建议方向**：
+  1. **reviewer SKILL prompt 加自检条款**：「凡涉及"某文件不存在/被删除/缺失"的论断，先 `ls <path>` 或 `git log -- <path>` 验证再下结论；不允许凭印象给警告」
+  2. **non-git 改动的 builder→reviewer 协议**：固化为 reviewer-params.json 里加 `non_git_paths` 字段（builder 显式列出本轮改动的非 git 路径），reviewer SKILL 自动将这些路径加入"必须直读评估"清单。当前靠 prompt 自由文本提示，下次 builder 漏写就会有盲点
+  3. **fixture**：构造一份 reviewer-params 含 `non_git_paths=["docs/foo.md"]`，断言 reviewer 输出包含对该路径的直读评估
+  4. **CLAUDE.md / SKILL.md 约束**：reviewer 报告里所有"建议确认 X"的句式必须先自我验证；如果验证后 X 实际不存在/不影响，应改为"已 ls 验证 X 不存在，原条目已合理内化"而不是"建议确认"
+- **优先级**：中（不修不会出严重事故，但 reviewer 报告会出现"凭印象的伪问题"，让 builder 每次都要花时间反驳验证。频次：跨 git/非 git 改动 + 用户重构类任务必现）
+
+---
+
 ## 2026-05-08 同 session 串行多 worktree：第二轮 worktree 的 stop hook 反馈完全静默丢失
 
 - **触发上下文**：BOT 项目同一 CC session 内做 B-1「hmi_flash 漏斗埋点」任务，连续两轮 setup-builder-loop.sh：
