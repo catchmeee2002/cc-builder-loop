@@ -21,6 +21,25 @@ V3.0 「reviewer-as-gate + 文件按 slug 拆 + 多层闸」一波重构（详�
 
 ---
 
+## 2026-05-09 [V3.0 P0 缺口] reviewer-timing-check.sh 还读 active 字段，PASS 后 reviewer 永远 spawn 不出来
+
+- **触发上下文**：Engineering_Delivery_Bot 项目跑 V3.0 reviewer-as-gate（session f80932fb），builder PASS 后想 spawn reviewer subagent，PreToolUse hook（reviewer-timing-check.sh）直接拦下，CC 渲染成「PreToolUse:Agent hook error: No stderr output」。Builder 只能走兜底自审，整个 V3.0 设计的 reviewer 门禁被绕过。所有已接入 V3.0 的项目都会撞这一条。
+- **根因**：`scripts/reviewer-timing-check.sh` L45-46 还在 grep `^active:` 字段做拦截判定，V3.0 加的 `phase` 字段它根本不看。V3.0 时序：
+  1. PASS 之前：phase=active，active=true → hook 应该拦（防 reviewer 读旧代码），现有逻辑正确
+  2. PASS 之后：stop hook 把 phase 改成 passed_pending_review，但 active 字段不动还是 true（V3.0 设计 active 只写不读做新决策）→ hook 应该放行让 reviewer spawn，**实际仍按 active=true 拦**，exit 2 + deny JSON
+  3. builder 看到 hook 报 error 只能走兜底自审，reviewer-as-gate 完全失效
+- **CC 渲染坑**：hook 退出码 2 + stdout JSON 是 deny 的标准协议，但 CC 把没 stderr 的 deny 渲染成「hook error: No stderr output」，让人误以为脚本崩了。这是次要观察，不一定要 fix CC，但建议 hook 在 deny 时也往 stderr 写一行明确原因，避免误判
+- **建议方向**：
+  1. **改 reviewer-timing-check.sh L45-46**：改读 phase 字段，仅在 `phase=active` 时拦（passed_pending_review、空 phase 都放行）
+  2. **老 state 兼容**：phase 字段为空（V2.x 老 state）时 fallback 看 active=true 兼容老语义，stderr warning 提示需重新 setup（跟 stop hook L477-481 同款隐式升级套路）
+  3. **deny 时 stderr 写一行**：避免「No stderr output」误判，例如 `echo "[builder-loop] reviewer-timing-check: blocked (phase=active)" >&2`
+  4. **fixture**：构造「phase=passed_pending_review + active=true」的 state 喂给 hook（带 reviewer subagent_type 的 PreToolUse stdin），断言 exit 0；再构造「phase=active + active=true」断言 exit 2
+  5. **同步推「active 字段下掉计划」**（improvements.md L89 那条 [技术债]）：本条是它的活样本，下掉前必须先把所有读 active 的点改完
+- **优先级**：高（P0 — 直接卡死 V3.0 主链路 reviewer-as-gate；所有已接入 V3.0 项目活样本必撞；事故已经发生在 Engineering_Delivery_Bot）
+- **复现 / 验证**：在已接入 V3.0 的项目跑 loop 到 PASS → 让 builder spawn reviewer subagent → 必看到 PreToolUse hook deny + 渲染成「No stderr output」；改完后同样路径 spawn 应放行
+
+---
+
 ## 2026-05-09 [A2] spec 偏离实施时强制标注 — DEVIATION_FROM_SPEC 协议
 
 - **触发上下文**：V3.0 主期 spec 写「老 state 缺 phase 字段 → AskUserQuestion 阻断让用户决策」，实施时改成「stderr warning + 隐式自动升级」（更平滑），reviewer 不知道偏离动机当 🔴 报。Builder 自主回复采纳/拒绝时多消耗一轮上下文反驳。频次：每次 builder 实施时遇到 spec 设计过激进 / 与现实冲突的场景都可能踩。
