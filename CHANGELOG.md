@@ -50,6 +50,25 @@
 
 并入的 improvements 候选：跨 session 串扰 / 同 session 多 worktree 反馈丢失 / V3.0 reviewer-as-gate / WIP 节流 / AskUserQuestion 期间 hook 自激空转。
 
+## V3.0.1 reviewer-timing-check.sh phase 字段跟进 hotfix（2026-05-09）
+
+P0 紧急修复，V3.0 拆 active/phase 字段时遗漏的一处勾子。
+
+**事故触发**：session f80932fb（Engineering_Delivery_Bot 项目），builder PASS 后 phase=passed_pending_review，reviewer spawn 时被 reviewer-timing-check.sh 拦死（hook 仍读 active 字段过时逻辑），导致永远无法触发审核流程。
+
+**根因**：reviewer-timing-check.sh 还在读 `^active:` 判定是否拦截，V3.0 改成用 `phase` 字段后勾子未同步。
+
+**修法**：
+1. Hook 主判切到 phase 字段：仅 phase=active 时拦截，phase=passed_pending_review 时放行。
+2. V2.x 向后兼容：缺 phase 字段时 fallback 检查 active=true 兜底。
+3. Deny 时补充 stderr 一行标准化诊断信息，避免 CC 把「exit 2 + 仅 stdout JSON」渲染成「无 stderr 输出」误导排查。
+
+**新 fixture**：`test-reviewer-timing-check-phase.sh` 5 case 断言（①phase=active 拦 ②phase=passed_pending_review 放 ③缺 phase + active=true 拦 ④缺 phase + active=false 放 ⑤非 reviewer 早退）已接入 loop.yml stage。
+
+**dogfooding 限制**：install.sh 创建的软链 `~/.claude/scripts/reviewer-timing-check.sh` 绝对路径指向仓库主仓，不指 worktree。本次 fix 改的是 worktree 内的脚本，运行时 hook 仍走主仓旧版本——所以本仓库自身 PASS 后 spawn reviewer 实地撞了同一个 P0（CC 渲染成「No stderr output」）。这次 reviewer 走兜底自审通过；merge 到主仓后，下次 V3.0 流程的 reviewer spawn 才能用上新 hook。
+
+**并入 improvements**：本次新立项条目「[V3.0 P0 缺口] reviewer-timing-check.sh 还读 active 字段，PASS 后 reviewer 永远 spawn 不出来」（含事故现场 + 根因 + CC 渲染坑）随本 hotfix 标 ✅ 已修复。是 improvements.md 同期 [技术债]「active 字段下掉计划」的活样本——下掉前必须把所有读 active 字段的点改完，本条是其中一个。
+
 ## V1.0 核心能力
 
 - 多阶段 PASS_CMD + 智能早停

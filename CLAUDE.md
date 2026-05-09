@@ -64,7 +64,7 @@ install.sh 创建以下软链，把仓库文件映射到 CC 运行时路径：
 | SubagentStop | `tester` | tester-lock-clear.sh | tester 结束时清锁 | 全部 |
 | PreToolUse | `Read\|Grep\|Glob` | tester-lock-check.sh | 拦截 tester 对 source_dirs 的读操作 | 全部 |
 | PreToolUse | `Write\|Edit\|MultiEdit` | tester-write-guard.sh | 拦截 tester 把文件写到 worktree 之外 | copilot 方案 |
-| PreToolUse | `Agent` | reviewer-timing-check.sh | 拦截 loop 活跃期的 reviewer spawn | 全部 |
+| PreToolUse | `Agent` | reviewer-timing-check.sh | 拦截 phase=active 期间的 reviewer spawn；phase=passed_pending_review 时放行 | 全部 |
 
 **方案说明**：install.sh 在运行时读 `ANTHROPIC_BASE_URL` env 识别方案 — localhost/127.0.0.1 → copilot（6 个 hook）；其他 → max（5 个 hook，不注册 tester-write-guard.sh）。
 

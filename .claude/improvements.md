@@ -21,7 +21,9 @@ V3.0 「reviewer-as-gate + 文件按 slug 拆 + 多层闸」一波重构（详�
 
 ---
 
-## 2026-05-09 [V3.0 P0 缺口] reviewer-timing-check.sh 还读 active 字段，PASS 后 reviewer 永远 spawn 不出来
+## ✅ 2026-05-09 [V3.0 P0 缺口] reviewer-timing-check.sh 还读 active 字段，PASS 后 reviewer 永远 spawn 不出来 — V3.0.1 hotfix 已修
+
+> 已修（CHANGELOG V3.0.1 段，2026-05-09 同日）。修法：reviewer-timing-check.sh 从读 active 切到读 phase（仅 phase=active 拦），缺 phase 时 fallback active=true 兼容 V2.x；deny 时 stderr 写一行避免「No stderr output」误判；新 fixture `test-reviewer-timing-check-phase.sh` 5 case 14 断言接入 PASS_CMD。本仓自身 PASS 后 spawn reviewer 撞主仓旧版 hook 实地验证 P0 必要性（CC 渲染成「No stderr output」复现），走兜底自审通过。
 
 - **触发上下文**：Engineering_Delivery_Bot 项目跑 V3.0 reviewer-as-gate（session f80932fb），builder PASS 后想 spawn reviewer subagent，PreToolUse hook（reviewer-timing-check.sh）直接拦下，CC 渲染成「PreToolUse:Agent hook error: No stderr output」。Builder 只能走兜底自审，整个 V3.0 设计的 reviewer 门禁被绕过。所有已接入 V3.0 的项目都会撞这一条。
 - **根因**：`scripts/reviewer-timing-check.sh` L45-46 还在 grep `^active:` 字段做拦截判定，V3.0 加的 `phase` 字段它根本不看。V3.0 时序：
