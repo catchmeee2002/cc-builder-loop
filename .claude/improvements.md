@@ -5,6 +5,95 @@
 
 ---
 
+## 2026-05-09 [V3.0.1 衍生] hook 软链注册指向主仓，worktree 内改 hook 不会在自己身上 dogfood
+
+- **触发上下文**：V3.0.1 reviewer-timing-check.sh hotfix 任务。worktree 内改完 hook + fixture（fixture 14/14 PASS 黑盒已验证），但 PASS 后主进程 spawn reviewer 仍撞主仓旧版 hook 拦死（CC 渲染成「No stderr output」）。原因：install.sh 创建的软链是 `~/.claude/scripts/<hook>.sh → /mnt/hongyu.liao_docker/cc-builder-loop/scripts/<hook>.sh` 绝对路径指主仓，不指 worktree。改任何 hook 类的任务都会撞，本次直接复现了事故现场 session f80932fb 的同款表现。
+- **建议方向**：
+  1. **install.sh 加 `--dev` flag（轻量方案）**：开发模式下软链改成跟随当前 worktree 的当前 cwd，跑 `./install.sh --dev` 就能把运行时 hook 切到 worktree 的脚本上自测；任务完成后跑 `./install.sh` 切回主仓。复杂度低、可控
+  2. **builder.md 步骤 5 加提示（轻量方案）**：「改 hook 类脚本（reviewer-timing-check / tester-* / builder-loop-stop / 等）的任务完成后，提示用户 dogfooding 局限——只能跑 fixture 黑盒验证，自己 spawn reviewer 仍走旧版本，需要等 merge 进主线后下次任务才能用上新版」
+  3. **fixture 框架补一类「hook 改动专用 fixture 标签」**：改 hook 的任务必须在 PASS_CMD 里加一条 fixture 黑盒覆盖新行为（不依赖运行时软链生效）
+- **优先级**：中（频次中等：hook 改动每月几次；危害是 builder 容易被误导以为 fix 没生效。本次踩到才意识到，写进文档让下次少走弯路）
+
+---
+
+## 2026-05-09 [V3.0.1 衍生] PreToolUse hook deny 时若不写 stderr，CC 渲染成「No stderr output」误导排查
+
+- **触发上下文**：V3.0.1 hotfix 现场两次实地复现（session f80932fb + 本次 worktree 自身 dogfood）。CC 在 PreToolUse:Agent hook 退出码 2（标准 deny 协议）+ 仅有 stdout JSON 而无 stderr 输出时，把整体渲染成 `PreToolUse:Agent hook error: No stderr output`，让人误以为脚本崩了。本次 fix 已在 reviewer-timing-check.sh 的 deny 路径加一行 stderr，但其他 PreToolUse hook（tester-lock-check.sh / tester-write-guard.sh）的 deny 路径有没有同样 stderr 还需 grep 一遍。
+- **建议方向**：
+  1. **loop hook 编写规约（写进 README 或 sync-checklist）**：所有 PreToolUse hook 的 `exit 2` deny 分支必须同时往 stderr 写一行 `[builder-loop] <hook名>: blocked <短描述>`，避免 CC 渲染歧义
+  2. **grep 全仓 PreToolUse hook 一致性**：
+     - `scripts/tester-lock-check.sh` 检查 deny 路径
+     - `scripts/tester-write-guard.sh` 检查 deny 路径
+     - 漏的补上同款一行 stderr
+  3. **fixture 加一条断言**：「所有 PreToolUse hook 在 deny 时必须 stderr 至少一行」——可以用统一脚本 grep 实现
+  4. **CC 平台层不可控**：CC 把 「exit 2 + 仅 stdout JSON」 渲染成 hook error 是 CC 自己的渲染策略，loop 侧改不了；规约 + 断言是唯一可控防御
+- **优先级**：高（误导排查成本大，每次撞都要花时间反推；规约简单，工作量小，能 grep 一致性扫描）
+
+---
+
+## 2026-05-09 [V3.0.1 衍生] merge-and-cleanup.sh ff merge 失败时不让 bystander dirty，错误信息没给 stash 建议
+
+- **触发上下文**：V3.0.1 hotfix 任务结尾调 `merge-and-cleanup.sh` ff merge，主仓 `.claude/improvements.md` 有别的 cross-session（BOT 项目）写的立项条目 dirty，ff merge 撞「Your local changes to the following files would be overwritten by merge」exit 3。错误信息让 builder 误以为本次改动跟主仓有冲突，实际是无关 bystander dirty。手动「git stash push -- .claude/improvements.md → 重跑 merge-and-cleanup → git stash pop」三步绕过。
+- **建议方向**：
+  1. **merge-and-cleanup.sh 在 ff merge 失败时**自动诊断：grep 失败错误信息里被 overwrite 的文件清单，对照本次 PASS commit 是否动过这些文件——
+     - 没动过 = bystander dirty → 输出 stash 建议命令（不自动 stash，让用户决定）
+     - 动过 = 真冲突 → 走 arbiter（已有路径）
+  2. **错误信息加 stash 模板**：「检测到主仓 N 个文件 dirty 阻挡 ff merge，本次 commit 未触及；建议：`git stash push -m bystander -- <files>` → 重跑本脚本 → `git stash pop`」
+  3. **更激进**：脚本直接 `git stash push -m "merge-and-cleanup-bystander"` 让开 → ff merge → unstash；但有副作用（user 改一半的 dirty 被 stash 可能不爽），建议先走 1+2 提示而非自动
+- **优先级**：中（频次中：跨 session 多任务并行时常见；当前手工绕过虽然可行但容易误判 + 多消耗一次排查）
+
+---
+
+## 2026-05-09 [V3.0.1 衍生] .gitignore 漏 reviewer-diff-*.txt 新格式（V3.0 文件按 slug 拆后未跟进）
+
+- **触发上下文**：V3.0.1 hotfix merge 完后主仓 `git status` 显示 `.claude/reviewer-diff-1778322888-reviewer-timing-chec.txt` untracked。`.gitignore` 里有 V2.x 的 `.claude/reviewer-diff.txt`（单文件），V3.0 reviewer-as-gate 把该文件改成按 slug 拆 `.claude/reviewer-diff-<slug>.txt` 但 .gitignore 没跟进。所有已接入 V3.0 项目都会撞——每跑一次 loop 留一个 untracked diff 文件。
+- **建议方向**：
+  1. **.gitignore 加一行**：`.claude/reviewer-diff-*.txt`（保留 `.claude/reviewer-diff.txt` 兼容老数据，新加 `*` 模式覆盖 V3.0 格式）
+  2. **fixture 验证**：在 V3.0 lifecycle fixture 末尾断言主仓 git status 不应残留 reviewer-diff-* untracked
+  3. **顺手扫**：grep V3.0 改动里所有「按 slug 拆」的文件名（`reviewer-diff-<slug>.txt` / `review_reports/<project>_<slug>_*.md` 等），跟 .gitignore 对一遍
+- **优先级**：低（不影响功能但污染 git status；接入 V3.0 项目都会踩，但只是噪音不是漏洞）
+
+---
+
+## 2026-05-09 builder 没有重判改动级别的硬闸，新模块/新签名容易被照搬方案预估漏 spawn tester
+
+- **触发上下文**：BOT 项目「上电自检告警每日封顶限频」任务，方案文件「预估改动级别」写的是 L2，但实际 diff 含新模块（`util/daily_alert_throttle.py`）+ 新公开类（`ThrottleDecision`）+ 新公开函数（`check_and_consume`），按 builder.md 应判 L3——L3 必须先 spawn tester（独立黑盒写测试），再进 loop。Builder（我）照搬方案预估按 L2 走，自己写了 15 个单测，跳过了 tester 隔离这层。功能上单测覆盖不差，但 tester 与 builder 严格隔离的设计意图是"看实现写测试 vs 看规格写测试"——builder 自测容易测实现细节而非需求规格。
+- **建议方向**：
+  1. `builder.md` 步骤"完成后改动分级"加一行明确："方案的预估只是锚点，**新建文件 / 新增公开 class 或函数 / 改返回结构** 任一命中即按 L3，不论方案怎么估"
+  2. PreToolUse hook 拦自动 commit：检查 `git diff --stat <start_head>..HEAD` 是否含「新增 .py 文件」或「新增 `^class \|^def [a-z]` 公开符号」；命中且本轮没 spawn 过 tester（state 里没 tester_spawned 字段），警告 builder 漏走 L3
+  3. setup-builder-loop.sh 在向 state 写入时，若方案预估 L2 但 diff 含新文件，stop hook 注入 stderr 提示"方案估 L2 但实际 diff 像 L3，确认是否漏 spawn tester"
+- **优先级**：高（builder 自测 + 跳过 tester 是 reward hacking 风险敞口——tester 严格隔离的核心机制被绕过；本次任务功能 OK 是运气，下次新模块带 tricky 边界条件就可能漏测）
+
+---
+
+## 2026-05-09 doc-maintainer 在 worktree 改动会被 PASS auto-commit 抢跑
+
+- **触发上下文**：BOT 项目「上电自检告警每日封顶限频」任务，PASS_CMD 通过后 stop hook 在 spawn doc-maintainer 之前已经把 worktree 改动 auto-commit（commit `b4b780d`）。doc-maintainer 之后在 worktree 内 Edit 了 `CLAUDE.md`（加一条核心约束条目），但这次 Edit 没有任何机制 commit；最终 `merge-and-cleanup.sh` fast-forward 主线时这一行 doc 改动**没合进来**。Builder 只能在主仓手动 Edit + commit 一次（`e341b31`）补救。
+- **建议方向**：
+  1. step 3.5 文档评估在 V3.0 reviewer-as-gate 路径下要明确"doc-maintainer 改完必须 builder 主动 amend 进上一个 PASS commit 或追一个 followup commit"，写进 `builder.md` step 3.5
+  2. 或者：`merge-and-cleanup.sh` 合主线前先 `git status --porcelain` 检查 worktree 是否有 uncommitted 改动，有则 stage + amend 进最近 commit，否则 fast-forward 会丢
+  3. 或者：doc-maintainer SKILL prompt 末尾加 "Edit/Write 完成后，自己用 `git add <files> && git commit --amend --no-edit` 把改动并入上一个 commit"
+- **优先级**：中（doc 漏 commit 不影响功能、能事后人肉补；但 silent loss 让人很难发现，比如这次是兜底自审顺手 grep 才发现 main 上没有那一行）
+
+## 2026-05-09 merge-and-cleanup.sh 末尾 cwd 被删导致 pwd 报错 exit 1
+
+- **触发上下文**：BOT 项目同上任务，builder cwd 在 worktree 时调 `merge-and-cleanup.sh`，脚本删 worktree 后末尾的 shell 报 `pwd: error retrieving current directory: getcwd: cannot access parent directories: No such file or directory` 并 exit 1。Fast-forward 实际成功（commit / branch 删除均完成），但 exit 1 让调用者（Builder）一开始误判失败。
+- **建议方向**：
+  1. `merge-and-cleanup.sh` 末尾添加 `cd "${MAIN_REPO}" 2>/dev/null || cd /tmp` 让 cwd 跳出被删的 worktree 后再 exit
+  2. 或者脚本入口先记录 `MAIN_REPO`，最后 `exec sh -c "cd '$MAIN_REPO' && exit 0"` 类似的兜底
+- **优先级**：低（仅是返回码误导，合并本身正确）
+
+## 2026-05-09 main-dirty stash apply 进 worktree 的语义需要在 setup 输出 / commit message 之外多一处显式提示
+
+- **触发上下文**：BOT 项目同上任务，主仓有 3 个 dirty 文件 + 1 个 untracked，setup-builder-loop.sh 通过 stash apply 把它们带进了 worktree，最终 `merge-and-cleanup.sh` fast-forward 时一并 commit 进主线（commit message 后缀 `[+3 main-dirty]`）。Builder 看 commit 文件列表时一开始疑惑"为什么 fs_webhook/preview_card.py 也在里面"，需要回看 setup 时的输出 / commit message 后缀才能定位。这是设计行为不是 bug，但 AI / 人在排查时容易误判为 loop 机制把无关文件偷偷塞进了 commit。
+- **建议方向**：
+  1. `builder.md` 的"前置 loop 检查"段加一条 hint："若主仓有 dirty，setup 会把它们 stash apply 到 worktree，最终 fast-forward 合主线时这些 dirty 也会一并 commit。Builder 的 changed_files 报告应清楚区分 task-related vs main-dirty。"
+  2. `setup-builder-loop.sh` 输出"⚠️ 主仓 dirty N 个，已 stash apply 到 worktree，将随本次任务一并 commit"加粗或加颜色
+  3. Reviewer 主体范围应自动按 `pre_loop_dirty_files` state 字段去除 main-dirty 文件
+- **优先级**：中（不影响功能但严重影响排查体验，AI 看 commit 容易误判）
+
+---
+
 ## ✅ 2026-05-09 V3.0 reviewer-as-gate 已落地，并入 5 条候选
 
 V3.0 「reviewer-as-gate + 文件按 slug 拆 + 多层闸」一波重构（详见 `CHANGELOG.md` V3.0 段）已并入下列 improvements 候选，**视为关闭**：
