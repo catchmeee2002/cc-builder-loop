@@ -59,6 +59,7 @@ ensure_gitignore_rules() {
   )
   local added=0
   for r in "${rules[@]}"; do
+    git -C "$PROJECT_ROOT" check-ignore -q "$r" 2>/dev/null && continue
     if [ ! -f "$gi" ] || ! grep -qFx "$r" "$gi" 2>/dev/null; then
       printf '%s\n' "$r" >> "$gi"
       echo "[setup-builder-loop] 🛡️  .gitignore 自愈追加：$r" >&2
