@@ -35,6 +35,18 @@
 
 ---
 
+## 2026-05-19 早停后重新 setup 丢失旧 worktree 未提交改动
+
+- **触发上下文**：V3.1 worktree 隔离加固任务。loop 在 iter 1 早停（suspected_test_tampering），state 归档，旧 worktree 保留但无活跃 state。想重新进 loop，从主仓调 `setup-builder-loop.sh` → 创建新 worktree（从 main HEAD）。新 worktree 是干净的 main 副本，**旧 worktree 中的十几个未提交文件（新建脚本、修改的 install/uninstall/fixture）全部丢失**。被迫手动 `cp` 逐个文件从旧 worktree 到新 worktree。
+- **根因**：setup 的 stash 机制只搬运"主仓 dirty"（setup 前主仓的未提交改动），不搬运旧 worktree 的改动。早停归档 state 后，旧 worktree 的改动跟新 loop 没有关联。
+- **建议方向**：
+  1. **setup 增加 `--reuse-worktree <path>` 参数**：检测到指定 worktree 存在且有未提交改动时，直接在该 worktree 上创建新 state（不新建 worktree），复用已有代码
+  2. **或者早停后提供 "resume" 路径**：早停归档 state 时在 stderr 额外输出 `resume 命令: setup-builder-loop.sh --reuse-worktree <旧path>`，让 builder 一键复用
+  3. **或者早停不归档 state，改为 pause**：早停后把 phase 设为 paused 而非归档到 legacy，stop hook 的 L3 闸（.pause 文件）静默不跑，但 state 和 worktree 关联保留。用户决定继续时删 pause 即可
+- **优先级**：中-高（任何早停后想继续修的场景都会踩；手动 cp 十几个文件极易遗漏）
+
+---
+
 ## 2026-05-10 stop hook 兜底激活在暂停项目反复空跑 NOOP 死循环
 
 - **触发上下文**：cc-dcp 项目（已暂停，无源码改动）。用户进入项目目录纯聊天，但 `.gitignore` 和 `.claude/loop.yml` 有 builder-loop 自愈追加的未提交 diff。每次用户发消息触发 stop hook → `builder-loop-stop.sh` 检测到「有 loop.yml + 有 diff」→ 兜底激活 → PASS_CMD 跑完发现 HEAD 没变 → 报 NOOP → 下一轮用户消息再触发 → 无限循环。连续触发 4 次 NOOP 后用户手动要求提交 diff 止血。
