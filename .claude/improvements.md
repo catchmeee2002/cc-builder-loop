@@ -5,6 +5,36 @@
 
 ---
 
+## 2026-05-19 setup-builder-loop.sh 在 worktree CWD 内调用时创建嵌套 worktree
+
+- **触发上下文**：V3.1 worktree 隔离加固任务。loop 早停后在旧 worktree 的 CWD 下调 `setup-builder-loop.sh` 想重新进 loop。setup 把旧 worktree 当作"主仓"（因为它也有 `.claude/loop.yml`），在其下再建 `.claude/worktrees/<slug>/`，产生嵌套 worktree。嵌套的 worktree 从旧 worktree 的 HEAD 创建，不包含未提交的代码改动。
+- **建议方向**：
+  1. **setup 检测是否已在 worktree 内**：`git rev-parse --is-inside-work-tree` + `git worktree list` 检查当前 CWD 是否在某个 worktree 子路径内，如果是则报错 + stderr 提示「请 cd 到主仓再跑 setup」
+  2. **或者 setup 自动追溯到主仓**：如果 CWD 在 worktree 内，沿 `main_repo_path`（from state）或 `.git` 文件的 `gitdir:` 追溯到真正的主仓，在那里创建 worktree
+- **优先级**：中（低频但一旦踩到很混乱，需要手动清理嵌套 worktree + abandon）
+
+---
+
+## 2026-05-19 早停 suspected_test_tampering 不理解「替换」语义
+
+- **触发上下文**：V3.1 删除 `test-tester-write-guard.sh` 并新建 `test-worktree-write-guard.sh` 作为替代。早停逻辑只看到"有 fixture 文件被删"就判定 `suspected_test_tampering`，没考虑"新增了同级替代 fixture"的情况。连续 2 次早停（iter 1），被迫手动绕过 loop。
+- **建议方向**：
+  1. **增加 net 文件数检查**：不仅看 test_dirs 下有无文件删除，还看 test_dirs 下有无新增文件。如果删除数 ≤ 新增数（净增 ≥ 0），不触发 suspected_test_tampering
+  2. **或者只看 loop.yml stage 引用的文件**：不扫整个 test_dirs，只检查 `pass_cmd` 各 stage 的 cmd 引用的文件是否存在。引用不存在的文件 = stage 必 fail = 非 tampering 而是 loop.yml 未更新
+- **优先级**：中-高（任何涉及 fixture 文件重命名/替换的改动都会触发，阻塞 loop 流程）
+
+---
+
+## 2026-05-19 worktree dogfooding 限制：diagnose fixture 在 worktree 内永远 fail
+
+- **触发上下文**：V3.1 修改 `diagnose-stop-hook.sh` 期望新 hook 名（subagent-start-guard.sh 等），但活跃系统 `~/.claude/settings.json` 仍注册旧 hook 名。`test-stop-hook-debug-log.sh` 的 A4 段跑 diagnose 检查活跃系统 → 必 fail。PASS_CMD stage `v25_stop_hook_observability` 因此永远过不了，直到 merge + install.sh。
+- **建议方向**：
+  1. **fixture A4 段改为 self-contained**：不查活跃系统 `~/.claude/`，改为在 temp HOME 下跑 install + diagnose（跟 test-plan-detection.sh 的做法一致）
+  2. **或者 fixture A4 跳过活跃系统检查**：检测到 CWD 在 worktree 内时，A4 只验证 diagnose 脚本语法正确 + dry-run，不验证活跃系统 hook 状态
+- **优先级**：中（每次改 hook 名/注册都会撞；workaround 是手动跑 PASS_CMD 确认只有这一条 fail）
+
+---
+
 ## 2026-05-10 stop hook 兜底激活在暂停项目反复空跑 NOOP 死循环
 
 - **触发上下文**：cc-dcp 项目（已暂停，无源码改动）。用户进入项目目录纯聊天，但 `.gitignore` 和 `.claude/loop.yml` 有 builder-loop 自愈追加的未提交 diff。每次用户发消息触发 stop hook → `builder-loop-stop.sh` 检测到「有 loop.yml + 有 diff」→ 兜底激活 → PASS_CMD 跑完发现 HEAD 没变 → 报 NOOP → 下一轮用户消息再触发 → 无限循环。连续触发 4 次 NOOP 后用户手动要求提交 diff 止血。
