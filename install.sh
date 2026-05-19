@@ -56,6 +56,12 @@ for f in "$REPO_DIR/scripts/"*.sh; do
   echo "✓ scripts/$bn → ~/.claude/scripts/$bn"
 done
 
+# ---- 3.5 清理 V3.1 废弃的旧软链 ----
+for f in tester-lock-write.sh tester-write-guard.sh; do
+  old_link="$CLAUDE_DIR/scripts/$f"
+  [ -L "$old_link" ] && rm "$old_link" && echo "✓ removed deprecated: $f"
+done
+
 # ---- 4. 软链 agents（逐文件）----
 for f in "$REPO_DIR/agents/"*.md; do
   [ -f "$f" ] || continue
@@ -125,12 +131,25 @@ def find_entry_status(arr, cmd_name, matcher):
 # 字符串，过滤逻辑改 `plan in plan_filter.split(',')` 即可保持兼容
 registrations = [
     ("Stop",           "builder-loop-stop.sh",      None,                    ""),
-    ("SubagentStart",  "tester-lock-write.sh",      "tester",                ""),
-    ("SubagentStop",   "tester-lock-clear.sh",      "tester",                ""),
+    ("SubagentStart",  "subagent-start-guard.sh",   None,                    ""),
+    ("SubagentStop",   "tester-lock-clear.sh",      None,                    ""),
     ("PreToolUse",     "tester-lock-check.sh",      "Read|Grep|Glob",        ""),
-    ("PreToolUse",     "tester-write-guard.sh",     "Write|Edit|MultiEdit",  "copilot"),
+    ("PreToolUse",     "worktree-write-guard.sh",   "Write|Edit|MultiEdit",  ""),
     ("PreToolUse",     "reviewer-timing-check.sh",  "Agent",                 ""),
 ]
+
+# V3.1: remove deprecated hooks from previous installs
+deprecated = [
+    ("SubagentStart", "tester-lock-write.sh"),
+    ("SubagentStop",  "tester-lock-clear.sh"),  # matcher changed, remove stale entry
+    ("PreToolUse",    "tester-write-guard.sh"),
+]
+for hook_type, old_cmd in deprecated:
+    arr = hooks.get(hook_type, [])
+    hooks[hook_type] = [
+        item for item in arr
+        if not any(old_cmd in h.get("command", "") for h in item.get("hooks", []))
+    ]
 
 added = 0
 updated = 0
@@ -187,5 +206,5 @@ fi
 echo ""
 echo "✅ cc-builder-loop 安装完成"
 echo "   skill: ~/.claude/skills/builder-loop/"
-echo "   scripts: ~/.claude/scripts/builder-loop-stop.sh + tester-lock-*.sh + tester-write-guard.sh + reviewer-timing-check.sh"
+echo "   scripts: ~/.claude/scripts/builder-loop-stop.sh + subagent-start-guard.sh + tester-lock-*.sh + worktree-write-guard.sh + reviewer-timing-check.sh"
 echo "   agents: ~/.claude/agents/tester.md + arbiter.md"

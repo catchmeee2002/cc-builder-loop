@@ -66,9 +66,9 @@ bl_count=$(python3 -c '
 import json, sys
 cfg = json.load(open(sys.argv[1]))
 hooks = cfg.get("hooks", {})
-bl_scripts = ["builder-loop-stop.sh", "tester-lock-write.sh",
+bl_scripts = ["builder-loop-stop.sh", "subagent-start-guard.sh",
               "tester-lock-check.sh", "tester-lock-clear.sh",
-              "tester-write-guard.sh", "reviewer-timing-check.sh"]
+              "worktree-write-guard.sh", "reviewer-timing-check.sh"]
 n = 0
 for arr in hooks.values():
     for item in arr:

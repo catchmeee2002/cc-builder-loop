@@ -1,47 +1,43 @@
 #!/usr/bin/env bash
-# tester-lock-write.sh — SubagentStart hook (matcher=tester)
+# subagent-start-guard.sh — SubagentStart hook (no matcher = all subagents)
 #
-# 在 tester subagent 启动时落锁，写入：
-#   - session_id（CC 提供）
-#   - source_dirs 绝对路径列表（从项目根 .claude/builder-loop.local.md 读）
-#   - 时间戳 + TTL（兜底锁遗留）
+# V3.1: replaces tester-lock-write.sh. Two responsibilities:
+#   1. Write lock file for ALL subagent types (worktree-write-guard.sh uses it to detect subagent context)
+#   2. Inject worktree boundary context via additionalContext JSON (Layer 1: soft guidance)
 #
-# 锁文件路径：${ISOLATION_LOCK_DIR:-/tmp}/cc-subagent-{session_id}.lock
-# 内容：YAML（tester-lock-check.sh 用 grep 解析）
+# Lock file: ${ISOLATION_LOCK_DIR:-/tmp}/cc-subagent-{session_id}.lock
+# Content: YAML (parsed by tester-lock-check.sh, worktree-write-guard.sh via grep)
 #
-# 行为：
-#   - 解析 stdin JSON 拿 session_id / cwd
-#   - 找最近 builder-loop.local.md（向上查 5 级）
-#   - 读 source_dirs（逗号分隔）+ project_root（state file 同级 .claude/.. 即项目根）
-#   - 全部转 abspath 写入锁
+# additionalContext injection:
+#   When worktree_path is set and phase=active, outputs JSON to stdout:
+#   {"additionalContext": "WORKTREE BOUNDARY: ..."}
+#   CC injects this text into the subagent's initial context.
 #
-# 退出码：始终 0（hook 失败不应阻断 subagent 启动）
-# 调试日志：~/.claude/logs/tester-lock-write.log（可选）
+# Exit code: always 0 (hook failure must not block subagent start)
 
 set -uo pipefail
 
 LOCK_DIR="${ISOLATION_LOCK_DIR:-/tmp}"
-LOG_FILE="${HOME}/.claude/logs/tester-lock-write.log"
+LOG_FILE="${HOME}/.claude/logs/subagent-start-guard.log"
 mkdir -p "$(dirname "$LOG_FILE")" 2>/dev/null || true
 
 log() { printf '[%s] %s\n' "$(date -Iseconds)" "$*" >> "$LOG_FILE" 2>/dev/null || true; }
 
-# 读 stdin JSON
 INPUT="$(cat || echo '{}')"
 SESSION_ID=$(printf '%s' "$INPUT" | jq -r '.session_id // empty' 2>/dev/null || echo "")
 CWD=$(printf '%s' "$INPUT" | jq -r '.cwd // empty' 2>/dev/null || echo "")
+SUBAGENT_TYPE=$(printf '%s' "$INPUT" | jq -r '.subagent_type // empty' 2>/dev/null || echo "")
 
 if [ -z "$SESSION_ID" ]; then
   log "no session_id in stdin, skip"
   exit 0
 fi
 
-# cwd fallback
 if [ -z "$CWD" ] || [ ! -d "$CWD" ]; then
   CWD="$(pwd)"
 fi
 
-# 用 locate-state.sh 按 CWD 定位 state（多状态并行模式）
+# Locate state via locate-state.sh
 SKILL_DIR="${HOME}/.claude/skills/builder-loop/scripts"
 LOCATE_SCRIPT="${SKILL_DIR}/locate-state.sh"
 if [ ! -f "$LOCATE_SCRIPT" ]; then
@@ -58,43 +54,35 @@ if [ -f "$LOCATE_SCRIPT" ]; then
 fi
 
 if [ -z "$STATE_FILE" ]; then
-  log "no state file found from cwd=$CWD, skip"
+  log "no state file from cwd=$CWD, type=$SUBAGENT_TYPE, skip"
   exit 0
 fi
 
-# state 在 <PROJECT_ROOT>/.claude/builder-loop/state/<slug>.yml → 回溯 4 层到 PROJECT_ROOT
-# V2.0 schema：project_root = 干活的地方（worktree 启用时 = worktree path / bare = 主仓）
-#              main_repo_path = 主仓（V2.0 新字段；老 state 缺失时按 project_root 兜底）
-#              worktree_path = worktree path（bare 模式为空字段）
-# || true 兜底：老 state 不含某字段时 grep exit 1 + pipefail + set -e 可能让脚本静默退出
+# Read state fields
 PROJECT_ROOT="$(grep -E '^project_root:' "$STATE_FILE" 2>/dev/null | head -1 | sed -E 's/^project_root:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' || true)"
 MAIN_REPO_PATH="$(grep -E '^main_repo_path:' "$STATE_FILE" 2>/dev/null | head -1 | sed -E 's/^main_repo_path:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' || true)"
 WORKTREE_PATH="$(grep -E '^worktree_path:' "$STATE_FILE" 2>/dev/null | head -1 | sed -E 's/^worktree_path:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' || true)"
+PHASE="$(grep -E '^phase:' "$STATE_FILE" 2>/dev/null | head -1 | sed -E 's/^phase:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' || true)"
 SLUG="$(basename "$STATE_FILE" .yml 2>/dev/null || echo "")"
 
 if [ -z "$PROJECT_ROOT" ] || [ ! -d "$PROJECT_ROOT" ]; then
-  # fallback: state/<slug>.yml → ../../.. = project_root
   PROJECT_ROOT="$(cd "$(dirname "$STATE_FILE")/../../.." 2>/dev/null && pwd -P || echo "")"
 fi
-# V1.x 兼容：缺 main_repo_path 字段时按"project_root 等于主仓"旧语义
 [ -z "$MAIN_REPO_PATH" ] && MAIN_REPO_PATH="$PROJECT_ROOT"
 
-# 解析 source_dirs（state file 中：source_dirs: "src,lib"）
+# source_dirs (tester-lock-check.sh reads this from lock)
 SRC_RAW=$(grep -E '^source_dirs:' "$STATE_FILE" | sed -E 's/^source_dirs:[[:space:]]*"?([^"]*)"?$/\1/' || echo "")
-
-# 转 abspath，每个一行
 SRC_ABS=""
 if [ -n "$SRC_RAW" ]; then
   IFS=',' read -ra DIRS <<< "$SRC_RAW"
   for d in "${DIRS[@]}"; do
     [ -z "$d" ] && continue
-    abs="${PROJECT_ROOT}/${d}"
-    SRC_ABS="${SRC_ABS}  - \"${abs}\"
+    SRC_ABS="${SRC_ABS}  - \"${PROJECT_ROOT}/${d}\"
 "
   done
 fi
 
-# TTL 从 loop.yml 读（可选），默认 30 分钟
+# TTL from loop.yml (optional, default 30 min)
 LOOP_YML="${PROJECT_ROOT}/.claude/loop.yml"
 TTL_MIN=30
 if [ -f "$LOOP_YML" ] && command -v python3 >/dev/null 2>&1; then
@@ -106,21 +94,13 @@ try:
 except Exception:
   print(30)
 " 2>/dev/null || echo 30)
-  if [ -n "$TTL_FROM_YML" ]; then
-    TTL_MIN="$TTL_FROM_YML"
-  fi
-else
-  log "loop.yml or python3 unavailable, TTL fallback=30min"
+  [ -n "$TTL_FROM_YML" ] && TTL_MIN="$TTL_FROM_YML"
 fi
 
+# Write lock for this subagent (all types, not just tester)
 LOCK_FILE="${LOCK_DIR}/cc-subagent-${SESSION_ID}.lock"
-
-# 写锁（YAML，tester-lock-check.sh 与 tester-write-guard.sh 用 grep 解析）
-# V2.2 新增字段：worktree_path / main_repo_path / slug
-#   - worktree_path 非空 → tester-write-guard.sh 拦截非 worktree 路径的 Write/Edit
-#   - worktree_path 为空（bare loop / V1.x 老 state）→ tester-write-guard.sh 放行所有 Write/Edit
 {
-  echo "agent_type: tester"
+  echo "agent_type: ${SUBAGENT_TYPE:-unknown}"
   echo "session_id: ${SESSION_ID}"
   echo "project_root: \"${PROJECT_ROOT}\""
   echo "main_repo_path: \"${MAIN_REPO_PATH}\""
@@ -136,5 +116,17 @@ LOCK_FILE="${LOCK_DIR}/cc-subagent-${SESSION_ID}.lock"
   fi
 } > "$LOCK_FILE"
 
-log "lock written: $LOCK_FILE | worktree=$WORKTREE_PATH | source_dirs=$SRC_RAW"
+log "lock written: $LOCK_FILE | type=$SUBAGENT_TYPE | worktree=$WORKTREE_PATH"
+
+# Layer 1: Inject worktree boundary context into subagent via additionalContext
+if [ -n "$WORKTREE_PATH" ] && [ -d "$WORKTREE_PATH" ] && [ "$PHASE" = "active" ]; then
+  CONTEXT_MSG="WORKTREE BOUNDARY: All file operations (Write/Edit) MUST target paths under ${WORKTREE_PATH}/. The main repo at ${MAIN_REPO_PATH} is read-only during active loop. Any write outside the worktree will be blocked by PreToolUse hook."
+  if command -v jq >/dev/null 2>&1; then
+    jq -n --arg ctx "$CONTEXT_MSG" '{"additionalContext": $ctx}'
+  else
+    CTX_MSG="$CONTEXT_MSG" python3 -c "import os,json; print(json.dumps({'additionalContext': os.environ['CTX_MSG']}))" 2>/dev/null || true
+  fi
+  log "injected worktree boundary context for $SUBAGENT_TYPE"
+fi
+
 exit 0

@@ -2,7 +2,7 @@
 # test-plan-detection.sh — E2E：install.sh / diagnose-stop-hook.sh 按 ANTHROPIC_BASE_URL 识别 max / copilot 方案
 #
 # 场景：
-#   - max env（unset ANTHROPIC_BASE_URL）：install 注册 5 条 hook（跳过 tester-write-guard.sh），diagnose [1/6] verdict=ok
+#   - max env（unset ANTHROPIC_BASE_URL）：install 注册 6 条 hook，diagnose [1/6] verdict=ok
 #   - copilot env（ANTHROPIC_BASE_URL=http://127.0.0.1:4141）：install 注册 6 条 hook，diagnose [1/6] verdict=ok
 #
 # 用法：bash test-plan-detection.sh
@@ -59,9 +59,9 @@ count_bl_hooks() {
 import json, sys
 cfg = json.load(open(sys.argv[1]))
 hooks = cfg.get("hooks", {})
-bl_scripts = ["builder-loop-stop.sh", "tester-lock-write.sh",
+bl_scripts = ["builder-loop-stop.sh", "subagent-start-guard.sh",
               "tester-lock-check.sh", "tester-lock-clear.sh",
-              "tester-write-guard.sh", "reviewer-timing-check.sh"]
+              "worktree-write-guard.sh", "reviewer-timing-check.sh"]
 n = 0
 for arr in hooks.values():
     for item in arr:
@@ -109,23 +109,23 @@ else
   fail "max install 输出缺 '检测方案=max'"
 fi
 
-if grep -qF '1 条跳过' "$INSTALL_OUT_FILE"; then
-  ok "max install 输出含 '1 条跳过'"
+if grep -qF '0 条跳过' "$INSTALL_OUT_FILE"; then
+  ok "max install 输出含 '0 条跳过'（V3.1 起所有 hook 均注册）"
 else
-  fail "max install 输出缺 '1 条跳过'"
+  fail "max install 输出缺 '0 条跳过'"
 fi
 
 n="$(count_bl_hooks "$TMPHOME/.claude/settings.json")"
-if [ "$n" = "5" ]; then
-  ok "max install 后 settings.json 含 5 条 builder-loop hook"
+if [ "$n" = "6" ]; then
+  ok "max install 后 settings.json 含 6 条 builder-loop hook"
 else
-  fail "max install 后 settings.json 含 $n 条 hook（期望 5）"
+  fail "max install 后 settings.json 含 $n 条 hook（期望 6）"
 fi
 
-if has_hook "$TMPHOME/.claude/settings.json" "tester-write-guard.sh"; then
-  fail "max install 后 tester-write-guard.sh 不该被注册"
+if has_hook "$TMPHOME/.claude/settings.json" "worktree-write-guard.sh"; then
+  ok "max install 后 worktree-write-guard.sh 已注册"
 else
-  ok "max install 后 tester-write-guard.sh 未注册（符合 max 方案）"
+  fail "max install 后 worktree-write-guard.sh 未注册"
 fi
 
 # ============================================================
@@ -228,10 +228,10 @@ else
   fail "copilot install 后 settings.json 含 $n 条 hook（期望 6）"
 fi
 
-if has_hook "$TMPHOME/.claude/settings.json" "tester-write-guard.sh"; then
-  ok "copilot install 后 tester-write-guard.sh 已注册"
+if has_hook "$TMPHOME/.claude/settings.json" "worktree-write-guard.sh"; then
+  ok "copilot install 后 worktree-write-guard.sh 已注册"
 else
-  fail "copilot install 后 tester-write-guard.sh 未注册"
+  fail "copilot install 后 worktree-write-guard.sh 未注册"
 fi
 
 # ============================================================

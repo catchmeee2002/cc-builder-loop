@@ -1,5 +1,27 @@
 # Builder-Loop 改进清单
 
+## 2026-05-19 step 3.5 删代码时文档过时引用未清理——#209 废弃 snapshot 后 3 个文档残留旧引用
+- 触发上下文：#209 删除 `_derive_chapter_snapshot` + `save_chapter_snapshot` + `get_previous_snapshot` 等方法（-239 行），merge 后 builder 输出 `📄 doc: skip（内部重构删死代码，无新接口/能力）`。用户追问"所有文档更新了吗"后发现 `novel_writer/CLAUDE.md`（不可逆属性段提 snapshot_prompt）、`docs/architecture.md`（mermaid 图 + 目录树 + 注入矩阵共 6 处）、`tests/CLAUDE.md`（2 处测试描述）均包含已废弃的 snapshot 引用。
+- builder 当时的判断过程：checklist 4 条逐项看——① SKILL.md 行为没变 ② 没新增对外文件 ③ CLAUDE.md 没有新能力要加 ④ 没新 TODO。全部不命中→skip。但 checklist 缺少"删除功能时检查现有文档是否有过时引用"这个维度。
+- 根因：step 3.5 checklist 面向"新增"设计（新脚本/新文件/新能力/新 TODO），没有"删除/废弃"维度。删代码时文档里的旧引用不触发任何 checklist 条目。这跟 2026-05-17 的"接口变了但判断为不改对外接口"不同——这次是 checklist 本身有盲区。
+- 累计犯次数：5 次（前 4 次 + 本次，但本次根因不同——不是偷懒 skip 而是 checklist 缺维度）
+- 建议方向：step 3.5 checklist 加第 5 条——「删除/废弃功能/方法时，grep 文档目录（CLAUDE.md / architecture.md / tests/CLAUDE.md）检查是否有过时引用」。或者更根本的：merge-and-cleanup.sh 在 diff 含 `-def ` 行（删除函数）时自动 grep docs/ 检查同名引用残留。
+- 优先级：高（checklist 结构性盲区，非行为问题）
+
+## 2026-05-17 step 3.5 doc skip 连续两次误判——同会话内 #181 和 #182 均跳过
+- 触发上下文：同一个 CC 会话连续完成 #181（engine.py 加 `_build_milestone_block` + `_build_locked_values_block` 2 个新方法）和 #182（extraction.py 加 `_match_fact_against_secrets` + 改 `apply_extraction` 签名加 story_spine 参数 + prompt.py 3 处文案追加）。两次 merge 后 builder 均输出 `📄 doc: skip（内部实现扩展，不改对外接口）`。实际命中 checklist 第 3 条（CLAUDE.md 的"已交付能力"应加版本条目）——novel_writer/CLAUDE.md 的 extraction.py 模块描述 + 架构决策"章间连续性架构"段需要更新。用户发现后 builder 手动补了文档。
+- builder 当时的判断过程（事实）：
+  1. #181 merge 后，builder 的原话是 `📄 doc: skip（内部实现扩展，不改对外接口/文档变更）`——把"新增 2 个 private 方法"等同于"不改对外接口"，但 private 方法改变了 engine 的架构能力，CLAUDE.md 应记录
+  2. #182 merge 后，builder 的原话是 `📄 doc: skip（prompt 文案 + 内部路由逻辑，不改对外接口）`——把"改了 apply_extraction 公开函数签名（加了 story_spine 参数）"忽略了，且 extraction.py 模块描述中没有 secret 路由能力
+  3. 两次判断间隔 < 30 分钟，第二次没有因为第一次的模式而警觉
+- 根因事实：与 2026-05-13 同一条目完全相同的根因——checklist 是自评、skip 成本低、merge 在 doc 之前。2026-05-13 记录该条目后未有任何代码层改动落地。
+- 累计犯次数：4 次（2026-05-11 × 1 + 2026-05-13 × 1 + 2026-05-17 × 2）
+- 建议方向：此条目已升级为必修。三个方向（按实施难度排序）：
+  1. （最小改动）builder prompt step 3.5 改为**每条 checklist 逐项输出判定理由**，不允许一句话 skip。reviewer 检查 skip 理由是否覆盖 4 条
+  2. （中等）merge-and-cleanup.sh 执行前插入 doc-lint：diff 中若含 `def ` 新增或签名变更（函数参数变化），且 CLAUDE.md 未在同一 diff 中更新 → 阻断 merge 并 stderr 提示
+  3. （重构）取消 builder 自评——每次 merge 前强制 spawn doc-maintainer，由 doc-maintainer 自行判断是否需要更新（返回"无需更新"也是合法结果，但判断权不在 builder 手上）
+- 优先级：高（4 次累犯，已证明纯 prompt 约束对此行为无效）
+
 ## 2026-05-13 step 3.5 doc-maintainer checklist 自评无强制力，builder 可偷懒 skip
 - 触发上下文：#150 V1/V2 数据协议大一统（L3，12 个源文件改动），builder 在 step 3.5 直接输出 `📄 doc: skip`，但实际命中了 checklist 第 1/3 条（接口签名变了 + CLAUDE.md 模块描述过时）。被用户发现后补 doc-maintainer
 - 根因：checklist 是自评，builder 在长流程末尾（代码→测试→loop×2→reviewer→merge）注意力在"收尾"而非"检查"；skip 成本太低（一句话理由即可）；merge 在 doc 检查之前发生（流程无门禁）
