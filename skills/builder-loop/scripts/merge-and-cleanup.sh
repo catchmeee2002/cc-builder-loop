@@ -164,9 +164,22 @@ if [ -z "$CLEANUP_PHASE" ]; then
   MAIN_BRANCH="$(git -C "$PROJECT_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")"
   CURRENT_HEAD="$(git -C "$PROJECT_ROOT" rev-parse --short HEAD 2>/dev/null || echo "")"
 
+  # 前置断言：主仓必须在分支上（detached HEAD 下 merge 只移 HEAD 不移 branch ref）
+  if [ -z "$MAIN_BRANCH" ] || [ "$MAIN_BRANCH" = "HEAD" ]; then
+    echo "[merge-and-cleanup] FATAL: 主仓处于 detached HEAD，merge 会静默丢代码" >&2
+    echo "ERROR main-repo-detached-head"
+    exit 3
+  fi
+
   # 路径 A：主干 HEAD 未变 → 直接 ff merge
   if [ "$CURRENT_HEAD" = "$START_HEAD" ] || git -C "$PROJECT_ROOT" merge-base --is-ancestor "$START_HEAD" HEAD 2>/dev/null; then
     if git -C "$PROJECT_ROOT" merge --ff-only "$BRANCH" >&2; then
+      POST_HEAD="$(git -C "$PROJECT_ROOT" rev-parse --short "$MAIN_BRANCH" 2>/dev/null || echo "")"
+      if [ "$POST_HEAD" = "$CURRENT_HEAD" ]; then
+        echo "[merge-and-cleanup] FATAL: ff merge 报成功但分支 ref 未移动（${MAIN_BRANCH} 仍在 ${CURRENT_HEAD}）" >&2
+        echo "ERROR branch-ref-not-advanced-after-ff"
+        exit 3
+      fi
       write_cleanup_phase "ff_merged"
       CLEANUP_PHASE="ff_merged"
     fi
@@ -176,6 +189,12 @@ if [ -z "$CLEANUP_PHASE" ]; then
   if [ -z "$CLEANUP_PHASE" ]; then
     if git -C "$WORKTREE_PATH" rebase "$MAIN_BRANCH" >&2; then
       if git -C "$PROJECT_ROOT" merge --ff-only "$BRANCH" >&2; then
+        POST_HEAD="$(git -C "$PROJECT_ROOT" rev-parse --short "$MAIN_BRANCH" 2>/dev/null || echo "")"
+        if [ "$POST_HEAD" = "$CURRENT_HEAD" ]; then
+          echo "[merge-and-cleanup] FATAL: ff merge 报成功但分支 ref 未移动（${MAIN_BRANCH} 仍在 ${CURRENT_HEAD}）" >&2
+          echo "ERROR branch-ref-not-advanced-after-ff"
+          exit 3
+        fi
         write_cleanup_phase "ff_merged"
         CLEANUP_PHASE="ff_merged"
       else
