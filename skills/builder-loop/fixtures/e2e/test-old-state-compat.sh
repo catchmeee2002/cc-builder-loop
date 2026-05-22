@@ -94,6 +94,13 @@ created_at: "2026-04-15T00:00:00+08:00"
 EOF
 STATE_A="$TMPA/.claude/builder-loop/state/${SLUG_A}.yml"
 
+# V3.2: local.md 指向 slug-A
+cat > "$TMPA/.claude/builder-loop.local.md" <<LOCALEOF
+slug: "${SLUG_A}"
+worktree_path: "${WT_A}"
+state_file: "$TMPA/.claude/builder-loop/state/${SLUG_A}.yml"
+LOCALEOF
+
 ERR_A="$(mktemp)"
 EC_A="$(run_hook "$WT_A" "$ERR_A")"
 
@@ -145,6 +152,13 @@ stopped_reason: ""
 cleanup_phase: ""
 created_at: "2026-05-09T00:00:00+08:00"
 EOF
+
+# V3.2: local.md 指向 slug-B
+cat > "$TMPB/.claude/builder-loop.local.md" <<LOCALEOF
+slug: "${SLUG_B}"
+worktree_path: "${WT_B}"
+state_file: "$TMPB/.claude/builder-loop/state/${SLUG_B}.yml"
+LOCALEOF
 
 ERR_B="$(mktemp)"
 EC_B="$(run_hook "$WT_B" "$ERR_B")"

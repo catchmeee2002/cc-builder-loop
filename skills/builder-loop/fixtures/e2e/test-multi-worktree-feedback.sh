@@ -100,6 +100,13 @@ echo "feature-a" > "$WT_A/feature.txt"
 write_state "$TMP" "$SLUG_A" "$HEAD1" "$WT_A"
 STATE_A="$TMP/.claude/builder-loop/state/${SLUG_A}.yml"
 
+# V3.2: local.md 指向 slug-A
+cat > "$TMP/.claude/builder-loop.local.md" <<LOCALEOF
+slug: "${SLUG_A}"
+worktree_path: "${WT_A}"
+state_file: "$TMP/.claude/builder-loop/state/${SLUG_A}.yml"
+LOCALEOF
+
 ERR_A="$(mktemp)"
 EC_A="$(run_hook "$WT_A" "$ERR_A")"
 
@@ -128,6 +135,13 @@ git -C "$TMP" worktree add -q "$WT_B"
 echo "feature-b" > "$WT_B/feature.txt"
 write_state "$TMP" "$SLUG_B" "$HEAD2" "$WT_B"
 STATE_B="$TMP/.claude/builder-loop/state/${SLUG_B}.yml"
+
+# V3.2: 切 local.md 到 slug-B
+cat > "$TMP/.claude/builder-loop.local.md" <<LOCALEOF
+slug: "${SLUG_B}"
+worktree_path: "${WT_B}"
+state_file: "$TMP/.claude/builder-loop/state/${SLUG_B}.yml"
+LOCALEOF
 
 ERR_B="$(mktemp)"
 EC_B="$(run_hook "$WT_B" "$ERR_B")"

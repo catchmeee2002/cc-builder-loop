@@ -218,6 +218,11 @@ STATEEOF
 {"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"已完成，所有改动已提交。"}]}}
 JSONLEOF
 
+  # V3.2: stop hook 通过 local.md 的 slug 字段精确定位 state（取代 CWD 猜测）
+  cat > "${dir}/.claude/builder-loop.local.md" <<LOCALEOF
+slug: ${slug}
+LOCALEOF
+
   echo "$slug"
 }
 

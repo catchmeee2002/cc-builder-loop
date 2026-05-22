@@ -89,6 +89,13 @@ cleanup_phase: ""
 created_at: "2026-05-09T00:00:00+08:00"
 EOF
 
+# V3.2: 创建 local.md 让 stop hook 能通过 slug 精确定位 state
+cat > "$TMP/.claude/builder-loop.local.md" <<LOCALEOF
+slug: "${SLUG}"
+worktree_path: "$TMP/.claude/worktrees/${SLUG}"
+state_file: "$TMP/.claude/builder-loop/state/${SLUG}.yml"
+LOCALEOF
+
 # 实际让 worktree 是个 git worktree（hook 内的 git -C 调用需要它是 git 仓）
 git -C "$TMP" worktree add -q "$TMP/.claude/worktrees/${SLUG}" 2>/dev/null || true
 # 让 worktree 内有 dirty 改动，确保 L2B 闸不命中（专测 L3 pause）

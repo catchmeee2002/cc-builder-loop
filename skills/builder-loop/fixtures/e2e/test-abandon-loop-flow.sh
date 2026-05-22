@@ -251,28 +251,24 @@ git -C "$WT_PATH_A10" config user.name "e2e-test"
 echo "wt-a10" > "$WT_PATH_A10/wt.txt"
 git -C "$WT_PATH_A10" add . && git -C "$WT_PATH_A10" commit -q -m "chore(test): [cr_id_skip] Wt-a10 init"
 
-# A10 reviewer hook 集成验证。依赖 locate-state.sh 路径解析的两个前提：
-#   1. cwd（$TMP）必须含 .claude/loop.yml — 策略 1 锚定 PROJECT_ROOT
-#      （fixture 顶部 init 段已写入；漏写则 hook fallthrough exit 0 → A10 BEFORE 假阳性 flaky）
-#   2. 临时仓 .claude/builder-loop/state/<slug>.yml 必须 active=true + worktree_path 目录存活
-#      — 策略 5 唯一 active worktree 自动绑定（V2.4）
-# 任一前提失效则 hook 走 exit 0 放行 → BEFORE 断言 flaky。下方 write_state + WT_PATH_A10 mkdir
-# 是处理前提 (2) 的实现。
-write_state "$STATE_DIR/a10.yml" "true" "clean" "$WT_PATH_A10" "" "$TMP"
+# A10 reviewer hook 集成验证。依赖 locate-state.sh 路径解析的前提：
+#   1. cwd 必须含 .claude/loop.yml — 策略 1 锚定 PROJECT_ROOT
+#   2. V3.2: 策略 5 已删除，主仓 CWD 不再自动绑定 worktree state。
+#      改用 worktree CWD（策略 2: cwd 在 .claude/worktrees/<slug>/ 下直接拼 state）
+# state 文件名必须与 worktree slug 一致（locate-state 策略 2 从路径提取 slug 拼 state/<slug>.yml）
+A10_SLUG="1777647748-test-a10"
+write_state "$STATE_DIR/${A10_SLUG}.yml" "true" "clean" "$WT_PATH_A10" "" "$TMP"
 
-# 在 worktree 的 .claude/builder-loop/state 下也放一份（locate-state 策略 1 查的是 CWD）
-mkdir -p "$WT_PATH_A10/.claude/builder-loop/state"
-
-# Step 1: abandon 之前 reviewer hook 拦截
+# Step 1: abandon 之前 reviewer hook 拦截（从 worktree CWD 调用，策略 2 命中）
 HOOK_INPUT='{"tool_input":{"subagent_type":"reviewer"}}'
-run_capture HOOK_BEFORE_OUT HOOK_BEFORE_EC bash -c "cd '$TMP' && echo '$HOOK_INPUT' | bash '$REVIEWER_HOOK'"
+run_capture HOOK_BEFORE_OUT HOOK_BEFORE_EC bash -c "cd '$WT_PATH_A10' && echo '$HOOK_INPUT' | bash '$REVIEWER_HOOK'"
 assert "abandon 之前 reviewer hook 拦截 (exit 2)" "[ '$HOOK_BEFORE_EC' -eq 2 ]"
 
 # Step 2: abandon
-bash "$ABANDON_SCRIPT" "$STATE_DIR/a10.yml" "hook integration test" >/dev/null 2>&1
+bash "$ABANDON_SCRIPT" "$STATE_DIR/${A10_SLUG}.yml" "hook integration test" >/dev/null 2>&1
 
-# Step 3: abandon 后再调 reviewer hook → 应放行
-run_capture HOOK_AFTER_OUT HOOK_AFTER_EC bash -c "cd '$TMP' && echo '$HOOK_INPUT' | bash '$REVIEWER_HOOK'"
+# Step 3: abandon 后再调 reviewer hook → 应放行（state 已归档，locate 找不到）
+run_capture HOOK_AFTER_OUT HOOK_AFTER_EC bash -c "cd '$WT_PATH_A10' && echo '$HOOK_INPUT' | bash '$REVIEWER_HOOK'"
 assert "abandon 之后 reviewer hook 放行 (exit 0)" "[ '$HOOK_AFTER_EC' -eq 0 ]"
 
 # ============================================================

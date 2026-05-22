@@ -80,6 +80,13 @@ stopped_reason: ""
 created_at: "$(date -Iseconds)"
 YMLEOF
 
+# V3.2: 创建 local.md 让 stop hook 能通过 slug 精确定位 state
+cat > "$TMP_A/.claude/builder-loop.local.md" <<LOCALEOF
+slug: "__main__"
+worktree_path: ""
+state_file: "$TMP_A/.claude/builder-loop/state/__main__.yml"
+LOCALEOF
+
 LOCK_FILE="$TMP_A/.claude/builder-loop/stop-hook-__main__.lock"
 
 # 后台进程持锁 8 秒

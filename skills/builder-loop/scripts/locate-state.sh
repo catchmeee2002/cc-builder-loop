@@ -110,30 +110,7 @@ if [ -f "$MAIN_STATE" ]; then
   exit 0
 fi
 
-# --- 5. V2.4：唯一 active worktree state 自动绑定 ---
-# 触发：策略 2/3/4 全部 miss（cwd 是主仓 / 任意非 worktree 子目录、且无 bare __main__.yml）。
-# 候选筛选：active=true AND worktree_path 非空 AND 目录存活 → 排除孤儿 / inactive / 死 worktree
-# 决策：恰好 1 个候选 → 输出；0 / ≥2 → 静默返回空（locate 静默契约；多 active 由调用方诊断）
-if [ -d "$STATE_DIR" ]; then
-  v24_match=""
-  v24_count=0
-  for sf in "$STATE_DIR"/*.yml; do
-    [ -e "$sf" ] || continue
-    active="$(grep -E '^active:' "$sf" 2>/dev/null | head -1 | awk '{print $2}' || true)"
-    [ "$active" != "true" ] && continue
-    wt="$(grep -E '^worktree_path:' "$sf" 2>/dev/null | head -1 | sed -E 's/^worktree_path:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' || true)"
-    [ -z "$wt" ] && continue                 # bare loop：策略 4 已接管
-    [ ! -d "$wt" ] && continue               # worktree 已删 → 孤儿，不绑
-    v24_count=$(( v24_count + 1 ))
-    v24_match="$sf"
-    [ "$v24_count" -ge 2 ] && break          # 早退：≥2 个候选确定不绑
-  done
-  # v24_match 在 break 时保留的是第 2 个候选路径，但下方判定 v24_count == 1 才使用，
-  # 多 active 路径不消费此变量；保留单一变量是为了不引入 array 维护成本（candidates[]）
-  if [ "$v24_count" -eq 1 ]; then
-    echo "$v24_match"
-    exit 0
-  fi
-fi
+# V3.2: 策略 5（V2.4 唯一 active worktree 自动绑定）已移除
+# stop hook 改用 local.md slug 精确定位，不再需要 CWD 猜测
 
 exit 1

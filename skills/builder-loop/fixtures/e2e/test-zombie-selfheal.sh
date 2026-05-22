@@ -76,6 +76,13 @@ stopped_reason: "manual-merge-completed"
 created_at: "2026-04-24T00:00:00+00:00"
 ZOMBIE
 
+# V3.2: local.md 指向 __main__ slug
+cat > "$TMP/.claude/builder-loop.local.md" <<LOCALEOF
+slug: "__main__"
+worktree_path: ""
+state_file: "$TMP/.claude/builder-loop/state/__main__.yml"
+LOCALEOF
+
 # 确认 state 存在
 assert "僵尸 state 预置成功" "[ -f '$STATE_FILE' ]"
 

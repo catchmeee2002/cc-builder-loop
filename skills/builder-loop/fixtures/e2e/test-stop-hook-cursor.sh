@@ -123,10 +123,9 @@ assert "第 3 次 exit 0（V2.2 不再因 HEAD 前进而激活）" "[ '$EC3' -eq
 assert "第 3 次 stderr 不含 '兜底激活'" "! grep -q '兜底激活' '$ERR3'"
 assert "游标文件仍未创建" "[ ! -f '$CURSOR' ]"
 
-# ---- Step 5: 非文档改动 → 触发 bootstrap + 写游标 ----
-# 注意：V2.2.1 起 README.md 等 *.md 命中文档白名单不触发，故必须改非白名单文件
-# 改动需 git add 进 staged 才被 git diff --cached --name-only 看见（untracked 不算 HAS_DIFF）
-echo "--- Step 5: 未提交非文档改动 → 触发 bootstrap，验证游标写入仍工作 ----"
+# ---- Step 5: V3.2 行为 — 非文档改动但无 local.md → 仍 exit 0（兜底激活已移除）----
+# V3.2 起没有 local.md 就直接 exit 0，不再因 HAS_DIFF 兜底激活
+echo "--- Step 5: 未提交非文档改动 + 无 local.md → V3.2 期望 exit 0（兜底激活已移除）----"
 echo "package main" > src/main.go
 git add src/main.go
 DIFF_STAT="$(git diff --cached --stat)"
@@ -136,30 +135,26 @@ ERR4="$(mktemp)"
 EC4=0
 call_stop_hook "$TMP" "$ERR4" || EC4=$?
 
-assert "第 4 次 exit 2（HAS_DIFF 触发兜底）" "[ '$EC4' -eq 2 ]"
-assert "第 4 次 stderr 含 '兜底激活'" "grep -q '兜底激活' '$ERR4'"
-assert "第 4 次 stderr 含 'PASS_CMD 全部阶段通过'" "grep -q 'PASS_CMD 全部阶段通过' '$ERR4'"
-# bootstrap → setup → PASS → write_processed_cursor → state 删除
-assert "游标文件已创建（V2.2 写入逻辑保留）" "[ -f '$CURSOR' ]"
-assert "游标内容 == HEAD2" "[ \"\$(cat '$CURSOR' 2>/dev/null | tr -d '[:space:]')\" = '$HEAD2' ]"
-assert "state 文件已被 rm（loop 结束）" "[ ! -f '$STATE_FILE' ]"
+assert "第 4 次 exit 0（V3.2 无 local.md 不兜底激活）" "[ '$EC4' -eq 0 ]"
+assert "第 4 次 stderr 不含 '兜底激活'（已移除）" "! grep -q '兜底激活' '$ERR4'"
+assert "游标文件未创建（未走 PASS 路径）" "[ ! -f '$CURSOR' ]"
+assert "state 文件未创建" "[ ! -f '$STATE_FILE' ]"
 
-# ---- Step 6: HAS_DIFF 空 + 游标损坏 → 仍 exit 0（不再降级激活）----
-echo "--- Step 6: 游标损坏 + 工作树干净 → V2.2 仍 exit 0（不再降级激活）----"
+# ---- Step 6: 游标损坏 + 无 local.md → 仍 exit 0 ----
+echo "--- Step 6: 游标损坏 + 无 local.md → V3.2 exit 0（无 local.md 直接放行）----"
 cd "$TMP"
-# step 5 的 src/main.go staged 在 bootstrap PASS 后未被 commit，需 reset 干净
 git reset -q HEAD src/main.go 2>/dev/null || true
 rm -f src/main.go
 git checkout -q -- README.md 2>/dev/null || true
+mkdir -p "$(dirname "$CURSOR")" 2>/dev/null || true
 echo "not-a-valid-sha" > "$CURSOR"
 
 ERR5="$(mktemp)"
 EC5=0
 call_stop_hook "$TMP" "$ERR5" || EC5=$?
 
-assert "第 5 次 exit 0（V2.2 工作树干净一律放行）" "[ '$EC5' -eq 0 ]"
+assert "第 5 次 exit 0（V3.2 无 local.md 放行）" "[ '$EC5' -eq 0 ]"
 assert "第 5 次 stderr 不含 '兜底激活'" "! grep -q '兜底激活' '$ERR5'"
-# 游标损坏不会被刷新（V2.2 不进 bootstrap 路径，无 PASS 出口写游标）
 assert "游标内容仍是损坏值（未走 PASS 写入）" "[ \"\$(cat '$CURSOR' 2>/dev/null | tr -d '[:space:]')\" = 'not-a-valid-sha' ]"
 
 # ---- Step 7: V2.2.1 纯文档改动（CLAUDE.md / docs/ / *.txt / LICENSE / .gitignore）→ 静默放行 ----
@@ -192,8 +187,8 @@ assert "第 6 次 exit 0（V2.2.1 纯文档放行）" "[ '$EC6' -eq 0 ]"
 assert "第 6 次 stderr 不含 '兜底激活'" "! grep -q '兜底激活' '$ERR6'"
 assert "第 6 次 未创建 state（doc-only 未触发 setup）" "[ ! -f '$STATE_FILE' ]"
 
-# ---- Step 8: V2.2.1 mixed 改动（doc + code）→ 仍触发 bootstrap ----
-echo "--- Step 8: mixed 改动（doc + code 混合）→ V2.2.1 期望仍触发 bootstrap ----"
+# ---- Step 8: V3.2 mixed 改动（doc + code）→ 无 local.md 仍 exit 0 ----
+echo "--- Step 8: mixed 改动（doc + code 混合）→ V3.2 无 local.md 仍 exit 0（兜底已移除）----"
 # 此时 step 7 的 4 个 doc 文件还 unstaged，新增 src/main.py（非白名单）让改动变 mixed
 echo "real code" > src/main.py
 git add src/main.py
@@ -205,8 +200,8 @@ ERR7="$(mktemp)"
 EC7=0
 call_stop_hook "$TMP" "$ERR7" || EC7=$?
 
-assert "第 7 次 exit 2（mixed 改动仍触发）" "[ '$EC7' -eq 2 ]"
-assert "第 7 次 stderr 含 '兜底激活'" "grep -q '兜底激活' '$ERR7'"
+assert "第 7 次 exit 0（V3.2 无 local.md 不兜底）" "[ '$EC7' -eq 0 ]"
+assert "第 7 次 stderr 不含 '兜底激活'（已移除）" "! grep -q '兜底激活' '$ERR7'"
 
 # Step 9 之前彻底 reset 工作树（避免 step 5/7/8 残余 staged/unstaged 影响判定）
 # 注意：fixture 临时仓未把 .claude/builder-loop/ 加进 .gitignore，前面 setup 写的游标可能被 git tracked，

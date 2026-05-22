@@ -87,6 +87,13 @@ cleanup_phase: ""
 created_at: "2026-05-09T00:00:00+08:00"
 EOF
 
+# V3.2: 创建 local.md 让 stop hook 能通过 slug 精确定位 state
+cat > "$TMP/.claude/builder-loop.local.md" <<LOCALEOF
+slug: "${SLUG}"
+worktree_path: "${WT}"
+state_file: "$TMP/.claude/builder-loop/state/${SLUG}.yml"
+LOCALEOF
+
 # ============================================================
 # Case 1: HEAD == last_iter_head + git status 空 → 静默
 # ============================================================
@@ -136,6 +143,7 @@ Y
 echo "seed" > README.md
 cat > .gitignore <<'G'
 .claude/builder-loop/
+.claude/builder-loop.local.md
 .claude/loop-runs/
 .claude/reviewer-*.txt
 .claude/review_reports/
@@ -170,6 +178,13 @@ stopped_reason: ""
 cleanup_phase: ""
 created_at: "2026-05-09T00:00:00+08:00"
 EOF
+
+# V3.2: 创建 local.md 让 stop hook 能通过 slug 精确定位 state
+cat > "$TMP_BARE/.claude/builder-loop.local.md" <<LOCALEOF
+slug: "__main__"
+worktree_path: ""
+state_file: "$TMP_BARE/.claude/builder-loop/state/__main__.yml"
+LOCALEOF
 
 ERR3="$(mktemp)"
 EC3="$(run_hook "$TMP_BARE" "$ERR3")"

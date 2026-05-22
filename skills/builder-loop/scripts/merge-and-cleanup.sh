@@ -171,6 +171,16 @@ if [ -z "$CLEANUP_PHASE" ]; then
     exit 3
   fi
 
+  # 前置断言：worktree 不能有未提交改动（merge 只合已 commit 的，remove --force 会丢未提交的）
+  WT_DIRTY="$(git -C "$WORKTREE_PATH" status --porcelain 2>/dev/null || true)"
+  if [ -n "$WT_DIRTY" ]; then
+    echo "[merge-and-cleanup] FATAL: worktree 有未提交改动，merge + cleanup 会丢失这些文件：" >&2
+    echo "$WT_DIRTY" | head -20 >&2
+    echo "[merge-and-cleanup] 请先在 worktree 内 commit 或 abandon-loop" >&2
+    echo "ERROR worktree-has-uncommitted-changes"
+    exit 3
+  fi
+
   # 路径 A：主干 HEAD 未变 → 直接 ff merge
   if [ "$CURRENT_HEAD" = "$START_HEAD" ] || git -C "$PROJECT_ROOT" merge-base --is-ancestor "$START_HEAD" HEAD 2>/dev/null; then
     if git -C "$PROJECT_ROOT" merge --ff-only "$BRANCH" >&2; then

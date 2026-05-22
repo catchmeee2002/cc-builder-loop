@@ -151,100 +151,61 @@ import os, json
 print(json.dumps({'cwd': os.environ.get('CWD_J',''), 'transcript_path': os.environ.get('TP','')}))
 " 2>/dev/null || echo '{}')"
 
-# ---- 定位 state file + project_root（多状态并行模式）----
-# 策略：
-#   1. 用 locate-state.sh 按 CWD 找对应 state：命中 → 走正常流程
-#   2. 未命中但向上 5 层能找到 .claude/loop.yml → 兜底激活（setup 一个 bare loop）
-#   3. 都找不到 → exit 0（未接入场景）
-LOCATE_SCRIPT="${SKILL_DIR}/locate-state.sh"
-[ ! -f "$LOCATE_SCRIPT" ] && LOCATE_SCRIPT="$HOME/.claude/skills/builder-loop/scripts/locate-state.sh"
-
-FOUND_LOOP_ONLY=false
+# ---- V3.2: 读 local.md slug 精确定位 state（取代 CWD 猜测）----
+# 从 CWD 向上找 .claude/builder-loop.local.md → 读 slug → 拼 state 路径
+# 无 local.md / 无 slug / state 不存在 → exit 0 放行（不兜底激活）
 PROJECT_ROOT=""
 STATE_FILE=""
+RUN_CWD=""
+_d="$CWD"
+for _i in 1 2 3 4 5; do
+  if [ -f "${_d}/.claude/builder-loop.local.md" ]; then
+    PROJECT_ROOT="$_d"
+    break
+  fi
+  [ "$_d" = "/" ] && break
+  _d="$(dirname "$_d")"
+done
 
-if [ -f "$LOCATE_SCRIPT" ]; then
-  STATE_FILE="$(bash "$LOCATE_SCRIPT" "$CWD" 2>/dev/null || echo "")"
+if [ -n "$PROJECT_ROOT" ]; then
+  _LOCAL_MD="${PROJECT_ROOT}/.claude/builder-loop.local.md"
+  _SLUG="$(grep -E '^slug:' "$_LOCAL_MD" 2>/dev/null | head -1 | sed -E 's/^slug:[[:space:]]*"?([^"]*)"?.*/\1/' || true)"
+  if [ -n "$_SLUG" ]; then
+    STATE_FILE="${PROJECT_ROOT}/.claude/builder-loop/state/${_SLUG}.yml"
+  fi
 fi
 
-# V2.5: locate_result phase（PROJECT_ROOT 此时还没赋值，仍可记 state_file 命中情况）
-debug_log "locate_result" "$(SF="$STATE_FILE" python3 -c "
+debug_log "locate_result" "$(SF="${STATE_FILE:-}" PR="${PROJECT_ROOT:-}" python3 -c "
 import os, json
-print(json.dumps({'state_file': os.environ.get('SF',''), 'matched': bool(os.environ.get('SF',''))}))
+print(json.dumps({'state_file': os.environ.get('SF',''), 'project_root': os.environ.get('PR',''), 'method': 'local_md_slug'}))
 " 2>/dev/null || echo '{}')"
 
-if [ -n "$STATE_FILE" ]; then
-  # V2.0 多状态 + 字段语义重构：
-  #   project_root  字段 = 干活的地方（worktree 模式 = worktree / bare = 主仓）
-  #   main_repo_path 字段 = 主仓（V2.0 新增；老 state 缺失，缺失时按旧语义把 project_root 当主仓）
-  # || true 兜底：老 state 不含 main_repo_path 时 grep exit 1 + pipefail + set -e 会让脚本静默退出
-  PROJECT_ROOT_FIELD="$(grep -E '^project_root:' "$STATE_FILE" 2>/dev/null | head -1 | sed -E 's/^project_root:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' || true)"
-  MAIN_REPO_PATH_FIELD="$(grep -E '^main_repo_path:' "$STATE_FILE" 2>/dev/null | head -1 | sed -E 's/^main_repo_path:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' || true)"
-  WORKTREE_PATH_FIELD="$(grep -E '^worktree_path:' "$STATE_FILE" 2>/dev/null | head -1 | sed -E 's/^worktree_path:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' || true)"
-  if [ -n "$MAIN_REPO_PATH_FIELD" ]; then
-    PROJECT_ROOT="$MAIN_REPO_PATH_FIELD"     # 主仓（git op）
-    RUN_CWD="$PROJECT_ROOT_FIELD"            # 干活的地方（PASS_CMD / loop.yml）
-  else
-    # V1.x 老 state 兼容：project_root 等于主仓；worktree 模式下让 PASS_CMD 也跑 worktree
-    PROJECT_ROOT="$PROJECT_ROOT_FIELD"
-    if [ -n "$WORKTREE_PATH_FIELD" ] && [ -d "$WORKTREE_PATH_FIELD" ]; then
-      RUN_CWD="$WORKTREE_PATH_FIELD"
-    else
-      RUN_CWD="$PROJECT_ROOT_FIELD"
-    fi
-  fi
-  # 兜底：路径无效时回溯 state 文件位置
-  if [ -z "$PROJECT_ROOT" ] || [ ! -d "$PROJECT_ROOT" ]; then
-    PROJECT_ROOT="$(cd "$(dirname "$STATE_FILE")/../../.." 2>/dev/null && pwd -P || echo "")"
-  fi
-  # 不能写 `[ ... ] || [ ... ] && X=...` — set -e 下两个测试都假时整行返回非 0 杀脚本，必须用显式 if
-  if [ -z "$RUN_CWD" ] || [ ! -d "$RUN_CWD" ]; then
-    RUN_CWD="$PROJECT_ROOT"
-  fi
+if [ -z "$PROJECT_ROOT" ] || [ -z "$STATE_FILE" ] || [ ! -f "$STATE_FILE" ]; then
+  debug_log "exit" '{"code":0,"reason":"no_local_md_or_no_state"}'
+  exit 0
+fi
+
+# 从 state 提取字段
+PROJECT_ROOT_FIELD="$(grep -E '^project_root:' "$STATE_FILE" 2>/dev/null | head -1 | sed -E 's/^project_root:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' || true)"
+MAIN_REPO_PATH_FIELD="$(grep -E '^main_repo_path:' "$STATE_FILE" 2>/dev/null | head -1 | sed -E 's/^main_repo_path:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' || true)"
+WORKTREE_PATH_FIELD="$(grep -E '^worktree_path:' "$STATE_FILE" 2>/dev/null | head -1 | sed -E 's/^worktree_path:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' || true)"
+if [ -n "$MAIN_REPO_PATH_FIELD" ]; then
+  PROJECT_ROOT="$MAIN_REPO_PATH_FIELD"
+  RUN_CWD="$PROJECT_ROOT_FIELD"
 else
-  # 没 state，看能否向上找到 loop.yml（兜底激活前提）
-  _d="$CWD"
-  for _i in 1 2 3 4 5; do
-    if [ -f "${_d}/.claude/loop.yml" ]; then
-      PROJECT_ROOT="$_d"
-      FOUND_LOOP_ONLY=true
-      break
-    fi
-    [ "$_d" = "/" ] && break
-    _d="$(dirname "$_d")"
-  done
-fi
-
-# ---- V2.4: locate 未命中诊断 stderr（条件：PROJECT_ROOT 已锚定 + STATE_DIR 有 active 候选）----
-# 触发：locate-state.sh 全部策略 miss（含 V2.4 策略 5 多 active 不绑场景）
-# 行为：扫 STATE_DIR active=true + worktree_path 存活的 state，列 worktree 路径让用户 cd
-# 限频：仅当扫描有 active 候选时打印（无 active 时静默，避免无 loop 项目 / 新接入项目刷屏）
-if [ -z "$STATE_FILE" ] && [ -n "$PROJECT_ROOT" ]; then
-  V24_STATE_DIR="${PROJECT_ROOT}/.claude/builder-loop/state"
-  if [ -d "$V24_STATE_DIR" ]; then
-    V24_DIAG=""
-    for _sf in "$V24_STATE_DIR"/*.yml; do
-      [ -e "$_sf" ] || continue
-      _act="$(grep -E '^active:' "$_sf" 2>/dev/null | head -1 | awk '{print $2}' || true)"
-      [ "$_act" != "true" ] && continue
-      _wt="$(grep -E '^worktree_path:' "$_sf" 2>/dev/null | head -1 | sed -E 's/^worktree_path:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' || true)"
-      [ -z "$_wt" ] && continue
-      [ ! -d "$_wt" ] && continue
-      V24_DIAG="${V24_DIAG}    - $(basename "$_sf"): worktree=${_wt}"$'\n'
-    done
-    if [ -n "$V24_DIAG" ]; then
-      # 注：本段触发表示 locate-state.sh 未输出 state path，可能是「多 active 候选」（V2.4 策略 5
-      # 拒绝绑定）或「单 active 但 cwd 不在其 worktree 子目录 + 没 __main__.yml」之类的边界。
-      # 后续 hook 流程仍会进 bootstrap 路径（worktree 守门检测到 loop/ worktree 时静默放行），
-      # 此 stderr 仅诊断提示用户 cd，不阻断 hook。
-      echo "[builder-loop] ⚠️  cwd=${CWD} 未唯一绑定 state（多 active 不绑 / 边界情况），现存 active worktree：" >&2
-      printf '%s' "$V24_DIAG" >&2
-      echo "[builder-loop]    若要让 stop hook 跟踪本 loop，请 cd 到对应 worktree" >&2
-    fi
+  PROJECT_ROOT="$PROJECT_ROOT_FIELD"
+  if [ -n "$WORKTREE_PATH_FIELD" ] && [ -d "$WORKTREE_PATH_FIELD" ]; then
+    RUN_CWD="$WORKTREE_PATH_FIELD"
+  else
+    RUN_CWD="$PROJECT_ROOT_FIELD"
   fi
 fi
-
-# 未接入场景 → 静默放行
+if [ -z "$PROJECT_ROOT" ] || [ ! -d "$PROJECT_ROOT" ]; then
+  PROJECT_ROOT="$(cd "$(dirname "$STATE_FILE")/../../.." 2>/dev/null && pwd -P || echo "")"
+fi
+if [ -z "$RUN_CWD" ] || [ ! -d "$RUN_CWD" ]; then
+  RUN_CWD="$PROJECT_ROOT"
+fi
 if [ -z "$PROJECT_ROOT" ]; then
   debug_log "exit" '{"code":0,"reason":"no_project_root"}'
   exit 0
@@ -278,105 +239,7 @@ import os, json
 print(json.dumps({'lock_file': os.environ.get('LF',''), 'acquired': True}))
 " 2>/dev/null || echo '{}')"
 
-# ---- 兜底激活：loop.yml 存在但无状态文件 ----
-if [ "$FOUND_LOOP_ONLY" = "true" ]; then
-  # 检测是否有代码改动（未提交 或 近 30 分钟内的 commit）
-  HAS_DIFF=""
-  HAS_RECENT_COMMIT=""
-  if ! git -C "$PROJECT_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    # 非 git 仓库 → 放行（无法判断改动）
-    debug_log "exit" '{"code":0,"reason":"not_git_repo"}'
-    exit 0
-  fi
-  # ---- 跨 session 污染守门（2026-04-24 新增）----
-  # 已存在 loop/ 前缀的 worktree → 说明别的 session 正在用 loop 或留下孤儿
-  # 兜底激活会误把当前 session 绑到别人的 plan / worktree 上，主仓 state file 被跨 session 污染
-  # 此时宁可放行不续接，让用户人工判断
-  EXISTING_LOOP_WORKTREES="$(git -C "$PROJECT_ROOT" worktree list 2>/dev/null | awk '{print $3}' | grep -c '^\[loop/' || true)"
-  if [ "${EXISTING_LOOP_WORKTREES:-0}" -gt 0 ]; then
-    echo "[builder-loop] ⚠️  检测到 ${EXISTING_LOOP_WORKTREES} 个已存在的 loop/ worktree，跳过兜底激活（避免跨 session 绑错 plan / worktree）" >&2
-    echo "[builder-loop]    如需清理：git -C '$PROJECT_ROOT' worktree list 查看 → git worktree remove <path> 移除" >&2
-    debug_log "bootstrap_check" "$(EW="$EXISTING_LOOP_WORKTREES" python3 -c "
-import os, json
-print(json.dumps({'found_loop_only': True, 'decision': 'skip_existing_worktree', 'existing_loop_worktrees': int(os.environ.get('EW','0') or 0)}))
-" 2>/dev/null || echo '{}')"
-    debug_log "exit" '{"code":0,"reason":"existing_loop_worktrees"}'
-    exit 0
-  fi
-  # V2.2.1: 收集改动文件列表（unstaged + staged 合并去重），供后续触发判定 + 文档白名单识别
-  CHANGED_FILES="$(
-    { git -C "$PROJECT_ROOT" diff --name-only 2>/dev/null
-      git -C "$PROJECT_ROOT" diff --cached --name-only 2>/dev/null
-    } | sort -u | grep -v '^$' || true
-  )"
-  # V2.2 议题 3：HAS_RECENT_COMMIT 不再作为兜底激活触发条件（仅保留供下方 L_TASK_FALLBACK 推断 task_desc）
-  # 旧行为（V2.1 及之前）：30 分钟内有 commit 也触发 → 用户/builder 主动 commit 收尾后空转
-  #   复现：session 283ee3b2 阶段 0 闭环、builder 手动 commit 02aec58+7feb39f 后连续两次 NOOP 兜底
-  # 新行为：只看未提交工作树改动；commit 完工作树干净 → 静默放行
-  # 损失场景：用户在主仓直接改代码 + commit + 关 CC（不经 loop） → 失去自动补 PASS_CMD 兜底
-  #         需手动 `bash ~/.claude/skills/builder-loop/scripts/setup-builder-loop.sh "<task>"` 起 loop
-  HAS_RECENT_COMMIT="$(git -C "$PROJECT_ROOT" log --since='30 minutes ago' --oneline 2>/dev/null | head -5)" || true
-  CHANGED_FILES_COUNT="$(printf '%s\n' "$CHANGED_FILES" | grep -c '.' || true)"
-  if [ -z "$CHANGED_FILES" ]; then
-    debug_log "bootstrap_check" "$(HRC="$HAS_RECENT_COMMIT" python3 -c "
-import os, json
-print(json.dumps({'found_loop_only': True, 'decision': 'skip_no_diff', 'changed_files_count': 0, 'has_recent_commit': bool(os.environ.get('HRC',''))}))
-" 2>/dev/null || echo '{}')"
-    debug_log "exit" '{"code":0,"reason":"no_diff"}'
-    exit 0
-  fi
-  # V2.2.1: 纯文档改动（*.md / docs/ / *.txt / LICENSE / .gitignore）跳过 bootstrap
-  # 避免改 CLAUDE.md / SKILL.md / docs/ 等触发 NOOP loop（fixture 跑 1-2 分钟 + cache miss）
-  # mixed 改动（文档 + 代码）→ 仍触发；纯文档 → 静默放行
-  DOC_PATTERN='\.md$|^docs/|/docs/|\.txt$|^LICENSE$|\.gitignore$'
-  NON_DOC_FILES="$(printf '%s\n' "$CHANGED_FILES" | grep -v -E "$DOC_PATTERN" || true)"
-  if [ -z "$NON_DOC_FILES" ]; then
-    debug_log "bootstrap_check" "$(CFC="$CHANGED_FILES_COUNT" python3 -c "
-import os, json
-print(json.dumps({'found_loop_only': True, 'decision': 'skip_doc_only', 'changed_files_count': int(os.environ.get('CFC','0') or 0), 'doc_only': True}))
-" 2>/dev/null || echo '{}')"
-    debug_log "exit" '{"code":0,"reason":"doc_only"}'
-    exit 0
-  fi
-  # V2.5: 触发 bootstrap → 记 phase（trigger 决策点）
-  debug_log "bootstrap_check" "$(CFC="$CHANGED_FILES_COUNT" python3 -c "
-import os, json
-print(json.dumps({'found_loop_only': True, 'decision': 'trigger', 'changed_files_count': int(os.environ.get('CFC','0') or 0), 'doc_only': False}))
-" 2>/dev/null || echo '{}')"
-  # V1.8.2 游标段已删（CHANGED_FILES 空场景在前面已静默放行，游标段不可达）
-  # write_processed_cursor 在 PASS / 异常 merge / EARLY_STOP 三处出口仍写入，作审计/排查辅助
-  # 推断 task_description
-  TASK_DESC="auto-activated-by-stop-hook"
-  PLAN_DIR="${PROJECT_ROOT}/.claude/plans"
-  if [ -d "$PLAN_DIR" ]; then
-    LATEST_PLAN="$(ls -1t "$PLAN_DIR"/*.md 2>/dev/null | head -n 1 || true)"
-    if [ -n "$LATEST_PLAN" ]; then
-      TASK_DESC="$(head -5 "$LATEST_PLAN" | grep -E '^# ' | head -1 | sed 's/^#[[:space:]]*//' || echo "$TASK_DESC")"
-      [ -z "$TASK_DESC" ] && TASK_DESC="auto-activated-by-stop-hook"
-    fi
-  fi
-  if [ "$TASK_DESC" = "auto-activated-by-stop-hook" ] && [ -n "$HAS_RECENT_COMMIT" ]; then
-    TASK_DESC="$(echo "$HAS_RECENT_COMMIT" | head -1 | sed 's/^[a-f0-9]\+[[:space:]]*//' || echo "$TASK_DESC")"
-  fi
-  echo "[builder-loop] ⚡ 兜底激活：检测到 loop.yml + 代码改动但无状态文件，自动启动 loop..." >&2
-  if ! bash "$SKILL_DIR/setup-builder-loop.sh" --no-worktree "$TASK_DESC" >&2; then
-    echo "[builder-loop] ⚠️  兜底激活 setup 失败，放行" >&2
-    debug_log "exit" '{"code":0,"reason":"bootstrap_setup_failed"}'
-    exit 0
-  fi
-  # setup 成功 → state 文件已在新目录创建（bare 模式 slug=__main__）
-  STATE_FILE="${PROJECT_ROOT}/.claude/builder-loop/state/__main__.yml"
-  # bootstrap 走 bare 模式，干活的地方 = 主仓
-  RUN_CWD="$PROJECT_ROOT"
-fi
-
-# state file 仍不存在 → 放行
-if [ ! -f "$STATE_FILE" ]; then
-  echo "[builder-loop] ⚠️  兜底激活后状态文件未出现在预期路径：${STATE_FILE}，放行" >&2
-  debug_log "exit" '{"code":0,"reason":"state_file_missing_after_bootstrap"}'
-  exit 0
-fi
-# 兜底：未命中 state 分支时 RUN_CWD 可能未设置
+# V3.2: 兜底激活已移除（V3.0 要求 builder 先 setup 再写代码，不依赖 hook 自动启动）
 RUN_CWD="${RUN_CWD:-$PROJECT_ROOT}"
 
 

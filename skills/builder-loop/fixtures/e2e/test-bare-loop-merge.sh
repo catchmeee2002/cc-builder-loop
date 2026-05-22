@@ -91,6 +91,13 @@ stopped_reason: ""
 created_at: "2026-04-01T00:00:00+08:00"
 EOF
 
+# V3.2: stop hook 需要 local.md 定位 slug
+cat > "$TMP1/.claude/builder-loop.local.md" <<LOCALEOF
+slug: "__main__"
+worktree_path: ""
+state_file: "$TMP1/.claude/builder-loop/state/__main__.yml"
+LOCALEOF
+
 ERR1="$(mktemp)"
 EC1=0
 call_stop_hook "$TMP1" "$ERR1" || EC1=$?

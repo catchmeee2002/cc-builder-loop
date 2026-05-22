@@ -168,6 +168,13 @@ stopped_reason: ""
 created_at: "2026-04-01T00:00:00+08:00"
 EOF
 
+# V3.2: 手写 local.md 让 stop hook 能通过 slug 精确定位 state
+cat > "$TMP/.claude/builder-loop.local.md" <<LOCALEOF
+slug: "legacy-task"
+worktree_path: "$LEGACY_WT"
+state_file: "$TMP/.claude/builder-loop/state/legacy-task.yml"
+LOCALEOF
+
 ERR2="$(mktemp)"
 EC2=0
 call_stop_hook "$LEGACY_WT" "$ERR2" || EC2=$?

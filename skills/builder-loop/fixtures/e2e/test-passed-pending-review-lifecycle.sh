@@ -83,6 +83,13 @@ stopped_reason: ""
 cleanup_phase: ""
 created_at: "2026-05-09T00:00:00+08:00"
 EOF
+  # V3.2: 创建 local.md 让 stop hook 能通过 slug 精确定位 state
+  cat > "$dir/.claude/builder-loop.local.md" <<LOCALEOF
+slug: "${slug}"
+worktree_path: "${WT}"
+state_file: "$dir/.claude/builder-loop/state/${slug}.yml"
+LOCALEOF
+
   # 让 worktree 内有 dirty 改动让 PASS_CMD 后 commit-only 能 commit 出 new HEAD
   echo "feature change" > "$WT/feature.txt"
 }

@@ -108,6 +108,13 @@ STATE_B="$TMP/.claude/builder-loop/state/${SLUG_B}.yml"
 # ============================================================
 echo ""
 echo "=== Case A: 从 worktree-A cwd 跑 hook ==="
+# V3.2: local.md slug 指向 A，hook 只处理 A
+cat > "$TMP/.claude/builder-loop.local.md" <<LOCALEOF
+slug: "${SLUG_A}"
+worktree_path: "${WT_A}"
+state_file: "$TMP/.claude/builder-loop/state/${SLUG_A}.yml"
+LOCALEOF
+
 ERR_A="$(mktemp)"
 EC_A="$(run_hook "$WT_A" "$ERR_A")"
 
@@ -123,6 +130,13 @@ assert "Case A state-B.phase 仍为 active（未被串扰）" "[ '$PHASE_B_AFTER
 # ============================================================
 echo ""
 echo "=== Case B: 从 worktree-B cwd 跑 hook ==="
+# V3.2: 切 local.md slug 到 B
+cat > "$TMP/.claude/builder-loop.local.md" <<LOCALEOF
+slug: "${SLUG_B}"
+worktree_path: "${WT_B}"
+state_file: "$TMP/.claude/builder-loop/state/${SLUG_B}.yml"
+LOCALEOF
+
 ERR_B="$(mktemp)"
 EC_B="$(run_hook "$WT_B" "$ERR_B")"
 
@@ -135,13 +149,17 @@ assert "Case B state-B.phase = passed_pending_review" "[ '$PHASE_B' = 'passed_pe
 assert "Case B state-A 未被串扰" "[ '$PHASE_A_AFTER_B' = 'passed_pending_review' ]"
 
 # ============================================================
-# Case C: 从主仓 cwd 跑 hook → 多 active 不绑定
+# Case C: 无 local.md → hook 静默 exit 0，两 state 都不动
+# V3.2: 不再靠 CWD 猜测 slug，无 local.md 就不处理任何 state
 # ============================================================
 echo ""
-echo "=== Case C: 主仓 cwd 多 active 不绑定 ==="
+echo "=== Case C: 无 local.md → 两 state 都不动 ==="
 # 重置 state-A / state-B 都为 active 测多 active 场景
 write_state "$TMP" "$SLUG_A" "$HEAD1" "$WT_A"
 write_state "$TMP" "$SLUG_B" "$HEAD1" "$WT_B"
+
+# 删掉 local.md，模拟"没有绑定任何 session"
+rm -f "$TMP/.claude/builder-loop.local.md"
 
 ERR_C="$(mktemp)"
 EC_C="$(run_hook "$TMP" "$ERR_C")"
@@ -149,9 +167,10 @@ EC_C="$(run_hook "$TMP" "$ERR_C")"
 PHASE_A_C="$(grep -E '^phase:' "$STATE_A" | head -1 | sed -E 's/^phase:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/')"
 PHASE_B_C="$(grep -E '^phase:' "$STATE_B" | head -1 | sed -E 's/^phase:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/')"
 
-# 主仓 cwd 多 active worktree → V2.4 策略 5 不绑（仍 phase=active）；hook 静默 exit 0 或 走 bootstrap NOOP
-assert "Case C state-A 仍为 active（未被多 active cwd 串扰）" "[ '$PHASE_A_C' = 'active' ]"
-assert "Case C state-B 仍为 active（未被多 active cwd 串扰）" "[ '$PHASE_B_C' = 'active' ]"
+# 无 local.md → hook exit 0 放行，两 state 都不受影响
+assert "Case C hook EC=0（无 local.md 静默放行）" "[ '$EC_C' -eq 0 ]"
+assert "Case C state-A 仍为 active" "[ '$PHASE_A_C' = 'active' ]"
+assert "Case C state-B 仍为 active" "[ '$PHASE_B_C' = 'active' ]"
 
 echo ""
 echo "=== 总计 ==="

@@ -20,16 +20,15 @@ LOOP_YML="${PROJECT_ROOT}/.claude/loop.yml"
 STATE_DIR="${PROJECT_ROOT}/.claude/builder-loop/state"
 LOG_DIR="${PROJECT_ROOT}/.claude/loop-runs"
 
-# 解析 --no-worktree / --no-stash flag（V2.3）
-#   --no-worktree: 跳过 worktree 创建（兜底激活 / 用户显式 bare）
-#   --no-stash   : 主仓 dirty 时跳过 stash 流程，直接走 bare（V2.3）。
-#                   仅 worktree 模式下有意义；--no-worktree 已 implicitly 等价于 no-stash
+# 解析 flags（V3.2: 默认不 stash，--touched-files 选择性带入）
 FORCE_NO_WORKTREE=0
 FORCE_NO_STASH=0
+TOUCHED_FILES=""
 while [ $# -gt 0 ]; do
   case "${1:-}" in
-    --no-worktree) FORCE_NO_WORKTREE=1; shift ;;
-    --no-stash)    FORCE_NO_STASH=1; shift ;;
+    --no-worktree)   FORCE_NO_WORKTREE=1; shift ;;
+    --no-stash)      FORCE_NO_STASH=1; shift ;;
+    --touched-files) TOUCHED_FILES="${2:-}"; shift; shift ;;
     *) break ;;
   esac
 done
@@ -198,15 +197,15 @@ if [ -f "$STATE_FILE" ]; then
   fi
 fi
 
-# ---- V2.3: 主仓 dirty 检测 + stash 副本（worktree 模式专用）----
-# 决定 WORKTREE_MODE_DETECTED；clean→走原 worktree 路径；dirty→stash 后再 worktree apply
-# bare（FORCE_NO_WORKTREE / WT_ENABLED=False）以及 --no-stash 直接跳过本段
+# ---- V3.2: 默认干净 worktree + 可选 selective stash ----
+# 默认：不 stash，worktree 从 HEAD 干净创建（V3.0 setup 在 builder 写代码前跑，dirty 必来自其他任务）
+# --touched-files a,b,c → 只 stash 指定文件（builder 已在主仓编辑后中途接入 loop 时用）
+# --no-stash → 显式跳过（V2.3 兼容，V3.2 等价于默认）
 DIRTY_FILES=""
 PRE_LOOP_STASH_REF=""
-WORKTREE_MODE_DETECTED="clean"  # 默认；后面根据 pre-flight 调整
+WORKTREE_MODE_DETECTED="clean"
 if [ "$FORCE_NO_WORKTREE" -eq 0 ] && [ "$WT_ENABLED" = "True" ] && \
-   [ "$START_HEAD" != "no-git" ] && [ "$FORCE_NO_STASH" -eq 0 ]; then
-  # pre-flight: 检测 git 特殊状态（rebase/merge/cherry-pick/revert）
+   [ "$START_HEAD" != "no-git" ] && [ -n "$TOUCHED_FILES" ] && [ "$FORCE_NO_STASH" -eq 0 ]; then
   GIT_DIR_REL="$(git -C "$PROJECT_ROOT" rev-parse --git-dir 2>/dev/null || echo "")"
   if [ -n "$GIT_DIR_REL" ]; then
     if [[ "$GIT_DIR_REL" = /* ]]; then
@@ -216,66 +215,48 @@ if [ "$FORCE_NO_WORKTREE" -eq 0 ] && [ "$WT_ENABLED" = "True" ] && \
     fi
     for _special in MERGE_HEAD CHERRY_PICK_HEAD REVERT_HEAD; do
       if [ -e "${GIT_DIR_ABS}/${_special}" ]; then
-        echo "❌ git 状态特殊（${_special} 存在），无法 dirty stash + worktree" >&2
-        echo "   请先结束 merge/cherry-pick/revert，或加 --no-stash 跳过 stash 流程" >&2
+        echo "❌ git 状态特殊（${_special} 存在），无法 stash" >&2
         exit 2
       fi
     done
     if [ -d "${GIT_DIR_ABS}/rebase-merge" ] || [ -d "${GIT_DIR_ABS}/rebase-apply" ]; then
-      echo "❌ git rebase 进行中，无法 dirty stash + worktree" >&2
-      echo "   请 git rebase --abort 或 --continue 后重试，或加 --no-stash 跳过" >&2
+      echo "❌ git rebase 进行中，无法 stash" >&2
       exit 2
     fi
-    # submodule dirty 检测（本期不支持）
-    SUBMOD_DIRTY="$(git -C "$PROJECT_ROOT" submodule foreach --quiet 'git status --porcelain 2>/dev/null | head -1' 2>/dev/null || true)"
-    if [ -n "$SUBMOD_DIRTY" ]; then
-      echo "❌ submodule 含未提交改动，本期 dirty stash 暂不支持" >&2
-      echo "   请 git submodule foreach git stash 后重试，或加 --no-stash 跳过" >&2
-      exit 2
-    fi
-    # 收集 dirty 文件清单（含 untracked，逗号分隔）
-    # V2.3: 排除 setup 自管理 / 不应进 stash 的路径：
-    #   .claude/builder-loop/ — setup 自身的 state/lock/log
-    #   .claude/loop-runs/ / .claude/loop-trace.jsonl — telemetry
-    #   .claude/worktrees/ — git worktree add 创建（setup 副产品）
-    #   .gitignore — V2.1.1 ensure_gitignore_rules 自愈写入；进 stash 会让 worktree 内缺规则撞 telemetry
-    DIRTY_FILES="$(git -C "$PROJECT_ROOT" status --porcelain 2>/dev/null \
-      | awk 'NF{print $NF}' \
-      | grep -v -E '^\.claude/builder-loop(/|$)' \
-      | grep -v -E '^\.claude/loop-runs(/|$)' \
-      | grep -v -E '^\.claude/loop-trace\.jsonl$' \
-      | grep -v -E '^\.claude/worktrees(/|$)' \
-      | grep -v -E '^\.gitignore$' \
-      | tr '\n' ',' | sed 's/,$//' || true)"
   fi
-  # dirty 非空 → 创建 stash 副本（commit hash 形式，多 builder 安全）
-  if [ -n "$DIRTY_FILES" ]; then
-    STASH_MSG="builder-loop:auto:slug=${SLUG}:ts=$(date +%s)"
-    # 用 git stash push -u -m 一步完成 create + store + working tree cleanup
-    # 注：git stash create -u 在"仅 untracked 无 tracked 改动"场景会返回空字符串，必须用 push
-    if ! git -C "$PROJECT_ROOT" stash push -u -m "$STASH_MSG" >/dev/null 2>&1; then
-      echo "❌ git stash push 失败（dirty 但 stash 创建不成功）" >&2
-      echo "   请人工 git stash 后再调用，或加 --no-stash 跳过" >&2
-      exit 2
+  TOUCH_ARGS="$(echo "$TOUCHED_FILES" | tr ',' ' ')"
+  STASH_MSG="builder-loop:auto:slug=${SLUG}:ts=$(date +%s)"
+  if ! eval git -C '"$PROJECT_ROOT"' stash push -u -m '"$STASH_MSG"' -- $TOUCH_ARGS >/dev/null 2>&1; then
+    echo "❌ git stash push --touched-files 失败" >&2
+    exit 2
+  fi
+  PRE_LOOP_STASH_REF="$(git -C "$PROJECT_ROOT" rev-parse 'stash@{0}^{commit}' 2>/dev/null || true)"
+  if [ -z "$PRE_LOOP_STASH_REF" ]; then
+    _stash_idx="$(git -C "$PROJECT_ROOT" stash list 2>/dev/null | grep -F "$STASH_MSG" | head -1 | grep -oE 'stash@\{[0-9]+\}' | head -1 || true)"
+    if [ -n "$_stash_idx" ]; then
+      PRE_LOOP_STASH_REF="$(git -C "$PROJECT_ROOT" rev-parse "${_stash_idx}^{commit}" 2>/dev/null || true)"
     fi
-    # 立即拿 commit hash（^{commit} 解析；多 builder race 时用 message 兜底匹配）
-    PRE_LOOP_STASH_REF="$(git -C "$PROJECT_ROOT" rev-parse 'stash@{0}^{commit}' 2>/dev/null || true)"
-    if [ -z "$PRE_LOOP_STASH_REF" ]; then
-      # message 兜底：从 stash list 找匹配 STASH_MSG 的条目
-      _stash_idx="$(git -C "$PROJECT_ROOT" stash list 2>/dev/null | grep -F "$STASH_MSG" | head -1 | grep -oE 'stash@\{[0-9]+\}' | head -1 || true)"
-      if [ -n "$_stash_idx" ]; then
-        PRE_LOOP_STASH_REF="$(git -C "$PROJECT_ROOT" rev-parse "${_stash_idx}^{commit}" 2>/dev/null || true)"
-      fi
-    fi
-    if [ -z "$PRE_LOOP_STASH_REF" ]; then
-      echo "❌ stash 已创建但拿不到 commit hash，回滚" >&2
-      git -C "$PROJECT_ROOT" stash pop 2>/dev/null || true
-      exit 2
-    fi
-    WORKTREE_MODE_DETECTED="dirty"
-    echo "[setup-builder-loop] 📦 主仓 dirty 已 stash → ${STASH_MSG}" >&2
-    echo "[setup-builder-loop]    hash=${PRE_LOOP_STASH_REF:0:12}, 主仓 working tree 已 clean" >&2
-    echo "[setup-builder-loop]    dirty 改动将在 worktree 内以 unstaged 形态可见" >&2
+  fi
+  if [ -z "$PRE_LOOP_STASH_REF" ]; then
+    echo "❌ stash 已创建但拿不到 commit hash，回滚" >&2
+    git -C "$PROJECT_ROOT" stash pop 2>/dev/null || true
+    exit 2
+  fi
+  DIRTY_FILES="$TOUCHED_FILES"
+  WORKTREE_MODE_DETECTED="selective"
+  echo "[setup-builder-loop] 📦 选择性 stash：${TOUCHED_FILES}" >&2
+  echo "[setup-builder-loop]    hash=${PRE_LOOP_STASH_REF:0:12}" >&2
+fi
+# V3.2: 无 --touched-files 时提示主仓 dirty（不阻断）
+if [ "$FORCE_NO_WORKTREE" -eq 0 ] && [ "$WT_ENABLED" = "True" ] && \
+   [ "$START_HEAD" != "no-git" ] && [ -z "$TOUCHED_FILES" ]; then
+  _dirty_count="$(git -C "$PROJECT_ROOT" status --porcelain 2>/dev/null \
+    | { grep -v -E '^.. \.claude/(builder-loop|loop-runs|worktrees)(/|$)' || true; } \
+    | { grep -v -E '^.. \.gitignore$' || true; } \
+    | wc -l)"
+  _dirty_count="$(echo "$_dirty_count" | tr -d ' ')"
+  if [ "${_dirty_count:-0}" -gt 0 ] 2>/dev/null; then
+    echo "[setup-builder-loop] ⚠️  主仓有 ${_dirty_count} 个未提交文件，不带入 worktree。如需带入请传 --touched-files" >&2
   fi
 fi
 
@@ -295,8 +276,8 @@ if [ "$FORCE_NO_WORKTREE" -eq 0 ] && [ "$WT_ENABLED" = "True" ] && [ "$START_HEA
   echo "[setup-builder-loop] 🌿 worktree 已创建：${WORKTREE_PATH} (branch=${WORKTREE_BRANCH})" >&2
 fi
 
-# ---- V2.3: dirty 模式 → 在 worktree 内 apply stash（不 pop，副本保留）----
-if [ "$WORKTREE_MODE_DETECTED" = "dirty" ] && [ -n "$PRE_LOOP_STASH_REF" ] && [ -n "$WORKTREE_PATH" ]; then
+# ---- stash apply（selective / dirty 模式时 apply 到 worktree）----
+if [ -n "$PRE_LOOP_STASH_REF" ] && [ -n "$WORKTREE_PATH" ]; then
   if ! git -C "$WORKTREE_PATH" stash apply "$PRE_LOOP_STASH_REF" >&2; then
     echo "❌ git stash apply 在 worktree 失败，回滚 worktree + 还原主仓" >&2
     # 回滚 worktree
@@ -361,6 +342,14 @@ stopped_reason: ""
 cleanup_phase: ""
 created_at: "$(date -Iseconds)"
 EOF
+
+# V3.2: 写 local.md 作为 session 指针（stop hook 用 slug 精确定位 state）
+LOCAL_MD="${PROJECT_ROOT}/.claude/builder-loop.local.md"
+cat > "$LOCAL_MD" <<LOCALEOF
+slug: "${SLUG}"
+worktree_path: "${WORKTREE_PATH}"
+state_file: "${STATE_FILE}"
+LOCALEOF
 
 echo "✅ builder-loop 已启动"
 if [ -n "$WORKTREE_PATH" ]; then
