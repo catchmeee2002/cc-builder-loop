@@ -2,6 +2,32 @@
 
 > 从 CLAUDE.md §5 外移。记录各版本交付的能力与关键实现细节。
 
+## V3.2 跨越界隔离 + 测试框架（2026-05-23）
+
+三类 worktree 越界污染的系统性修复 + fixture 基础设施重构。
+
+**1. stop hook slug 精确绑定**
+- setup 写 `.claude/builder-loop.local.md` 作为 session 指针（只存 slug）
+- stop hook 读 local.md 精确定位 state，取代 locate-state 策略 5（CWD 猜测）
+- 删除兜底激活（无 local.md = exit 0 放行，不自动启动 loop）
+- locate-state.sh 保留策略 1-4，删除策略 5
+
+**2. setup 默认干净 worktree**
+- 默认不 stash 主仓 dirty（V3.0 setup 在 builder 写代码前跑，dirty 必来自其他任务）
+- 新增 `--touched-files file1,file2` 选择性带入（中途接入 loop 时用）
+
+**3. merge-and-cleanup 防御加固**
+- worktree dirty check：未提交改动时 abort + 保留现场（防 worktree remove 丢代码）
+- detached HEAD 防御：merge 前断言主仓在分支上 + merge 后验证分支 ref 前移
+
+**4. harness.sh 测试框架**
+- `fixtures/e2e/harness.sh`：共享 create_test_env / run_hook / assert 系列 / harness_report
+- 41 个 fixture 全部迁移，代码量平均减 40%
+- 下次改机制实现只需改 harness，不用批量修 fixture
+
+**5. 设计哲学**
+- 新增 `docs/design-philosophy.md`：6 条原则（机器判据 / 数据唯一家 / 显式授权 / 改输入不改输出 / 三次即架构缺陷 / 契约先于实现）
+
 ## V3.0 reviewer-as-gate 重构（2026-05-09）
 
 把 hook 行为从「主动喊话 + 立即 merge」改成「挂牌子 + builder 主动拉取」。三件事同时落地：

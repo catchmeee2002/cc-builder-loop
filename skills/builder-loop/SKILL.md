@@ -45,13 +45,9 @@ bash ~/.claude/skills/builder-loop/scripts/setup-builder-loop.sh "$TASK_DESCRIPT
 - **bare 模式** → 保留 V2.x 行为：`merge-worktree-back.sh` NOOP + 写全局 `reviewer-params.json` + 删 state + builder 事后审 reviewer
 - **FAIL** → extract-error + early-stop-check → 写回状态文件 → 注入下轮
 
-### 兜底激活（硬门禁）
+### Session 指针（V3.2）
 
-当 builder 跳过激活流程（未调 setup-builder-loop.sh）时，Stop hook 提供最后防线：
-- **触发条件**：loop.yml 存在 + 有代码改动（git diff 或近 30 分钟 commit）+ 无状态文件
-- **行为**：自动调 `setup-builder-loop.sh --no-worktree` 创建状态文件，然后走正常 PASS_CMD 流程
-- **`--no-worktree`**：兜底激活时代码已在主干，跳过 worktree 创建以避免丢失改动
-- **安全兜底**：setup 失败 → 放行（不阻断 CC）；无改动 → 放行（不误触发）
+setup 写 `.claude/builder-loop.local.md`（只含 slug），stop hook 读它精确定位 state。无 local.md = 非本 session 的 loop = exit 0 放行。V3.2 起不再有兜底激活——builder 必须先 setup 再写代码。
 
 ## 状态文件 schema（`.claude/builder-loop/state/<slug>.yml`）
 
@@ -226,4 +222,4 @@ bash ~/.claude/skills/builder-loop/scripts/run-judge-agent.sh --self-check
 
 ## 版本交付历史
 
-详见 [`../../CHANGELOG.md`](../../CHANGELOG.md)（V1.0 ~ V3.0）。当前最新 **V3.0 reviewer-as-gate 重构**（拆 merge 时机 + 文件按 slug 拆 + 多层闸）。
+详见 [`../../CHANGELOG.md`](../../CHANGELOG.md)（V1.0 ~ V3.2）。当前最新 **V3.2 跨越界隔离**（slug 绑定 + 干净 worktree + merge 防御 + harness 测试框架）。

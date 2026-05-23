@@ -25,7 +25,8 @@
 
 | 文档 | 定位 | 何时读 |
 |------|------|--------|
-| [`CHANGELOG.md`](CHANGELOG.md) | 各版本交付能力（V1.0~V3.0） | 需要了解历史版本做了什么时 |
+| [`docs/design-philosophy.md`](docs/design-philosophy.md) | 设计哲学（6 条原则） | 做设计决策 / 评估方案时 |
+| [`CHANGELOG.md`](CHANGELOG.md) | 各版本交付能力（V1.0~V3.2） | 需要了解历史版本做了什么时 |
 | [`docs/troubleshooting.md`](skills/builder-loop/docs/troubleshooting.md) | 排查手册（§7.1~7.12） | stop hook / judge / worktree / state 出问题时 |
 | [`docs/sync-checklist.md`](skills/builder-loop/docs/sync-checklist.md) | 改动同步 checklist | 本仓 commit 后需同步操作时 |
 | [`docs/judge-agent.md`](skills/builder-loop/docs/judge-agent.md) | Judge agent 设计与配置 | judge 相关开发 / 排查时 |
