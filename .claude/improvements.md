@@ -3,19 +3,7 @@
 > 时间倒序。每条按 builder.md 步骤 5 模板（触发上下文 / 建议方向 / 优先级）。
 > 立项不等于本期实施——A 类候选清单，等独立任务挑出来落地。
 
----
-
-## ~~2026-05-19 三连 loop bug：stale worktree + phase 不一致 + stale state 挡 reviewer~~ [已修 V3.2 slug binding]
-
-- **触发上下文**：#210 + batch pre-exp033 两轮 builder 任务。三个 bug 连续出现：
-  1. **stale worktree 卡 setup**：旧 story-spine worktree 残留（`1778572012-story-spine`），setup-builder-loop.sh 不清理旧 worktree 也不报错，静默挂起。手动 `git worktree remove --force` + `git branch -D` 后才恢复
-  2. **phase/reviewer_pending 不一致**：stop hook 自动提交后 state 写了 `reviewer_pending` 段但 `phase` 仍为 `active`（应为 `passed_pending_review`）。builder 看到矛盾状态只能手动收尾
-  3. **stale state 挡 reviewer spawn**：batch 任务时 setup 在后台创建了 state 文件（`1779178417-exp-033.yml`），但 builder 已手动工作。reviewer-timing-check hook 看到 active state 拦截了 reviewer spawn
-- **建议方向**：
-  1. setup 脚本启动时扫描 `.claude/worktrees/` 和 `builder-loop/state/`，如有 orphan worktree（state 不存在或 active=false）自动清理
-  2. stop hook 写 `reviewer_pending` 时必须同步把 `phase` 改为 `passed_pending_review`，原子操作
-  3. reviewer-timing-check 增加 grace period 或 owner_cwd 匹配——只拦当前 CWD 匹配的 state，不误拦其他 slug 的 stale state
-- **优先级**：高（三个 bug 叠加直接废掉 loop 功能，builder 被迫全程手动）
+> 已关闭条目见 [CHANGELOG V3.2](CHANGELOG.md#v32-跨越界隔离--测试框架2026-05-23)
 
 ---
 
@@ -61,51 +49,6 @@
 
 ---
 
-## ~~2026-05-10 stop hook 兜底激活 NOOP 死循环~~ [已修 V3.2 删除兜底激活]
-
-- **触发上下文**：cc-dcp 项目（已暂停，无源码改动）。用户进入项目目录纯聊天，但 `.gitignore` 和 `.claude/loop.yml` 有 builder-loop 自愈追加的未提交 diff。每次用户发消息触发 stop hook → `builder-loop-stop.sh` 检测到「有 loop.yml + 有 diff」→ 兜底激活 → PASS_CMD 跑完发现 HEAD 没变 → 报 NOOP → 下一轮用户消息再触发 → 无限循环。连续触发 4 次 NOOP 后用户手动要求提交 diff 止血。
-- **Session ID**：`f0ceaf33-f5e8-4cae-adc4-0db7694b4f22`（cc-dcp 项目）
-- **根因分析**：
-  1. `builder-loop-stop.sh` 兜底激活条件是「有 loop.yml + 有代码改动（git diff 非空）+ 无状态文件」，但没区分"改动是否来自源码目录"——`.gitignore` 和 `.claude/loop.yml` 的变更也算"代码改动"。
-  2. NOOP 后状态文件被清理，下一轮 stop hook 再次满足激活条件，形成死循环。
-  3. 这些 diff 是 builder-loop 自己的自愈逻辑（setup 阶段追加 `.gitignore` 规则、worktree 配置段）产生的，但自愈后不会自动提交，导致 diff 持续存在。
-- **建议方向**：
-  1. **兜底激活增加 diff 来源过滤**：只看 `layout.source_dirs` + `layout.test_dirs` 路径下的文件改动，排除 `.gitignore`、`.claude/*` 等基础设施文件。如果过滤后 diff 为空则不激活。
-  2. **NOOP 后设冷却标记**：NOOP 结果时在状态目录写一个短 TTL 标记（如 `noop_cooldown`），下次 stop hook 看到标记时跳过兜底激活，避免反复空跑。
-  3. **自愈追加后自动提交**：setup 阶段的 `.gitignore` 自愈如果确实追加了规则，立刻 `git add .gitignore && git commit -m "chore: ..."` 提交掉，从源头消除残留 diff。
-- **优先级**：中-高（频次：任何有 loop.yml 的暂停项目或纯聊天场景都会触发；危害：每轮消息多跑一次 PASS_CMD 浪费时间 + 刷屏干扰用户对话 + 用户需手动介入止血）
-
----
-
-## ~~2026-05-10 abandon 后 stop hook 仍操作 worktree~~ [已修 V3.2 slug binding]
-
-- **触发上下文**：在小说生成器项目（generator）跑停 loop 的脚本（abandon-loop.sh）成功收尾。abandon-loop.sh stdout 输出 `[abandon-loop] ✅ Loop abandoned` + `state archived to: ...20260510-184654-abandon_worktree_state...bak` + `worktree kept: .../1778408181-3-bat` + `branch kept: loop/1778408181-3-bat`，明示当时 worktree HEAD = `0d3e6f8`。abandon 完成后用户继续在主对话发 message（讨论收尾、问 worktree 互踩根因），未再调用任何 builder-loop 脚本，未再 setup loop。后续诊断 `git worktree list` 看到 worktree HEAD 已涨到 `ee6a4f7`。
-- **现场事实**：
-  - state 归档时间：`2026-05-10 18:46:54`（来自 legacy/.bak 文件名时间戳）
-  - 归档后 `.claude/builder-loop/state/1778408181-3-bat.yml` 不存在；`.claude/builder-loop/state/` 目录扫了下没看到 active state
-  - 主仓位于 `feat/narrative-engine-v2` 分支 HEAD `7e6df51`，状态 clean 除一个跟本任务无关的 dirty 文件 `novels/exp-022-gemini-validate-v2/export/test-report.md`
-  - worktree 路径 `.claude/worktrees/1778408181-3-bat` 仍存活，分支 `loop/1778408181-3-bat` 仍存在
-  - worktree 内 `git log --oneline -3`：`ee6a4f7` → `0d3e6f8` → `ff3973c`；abandon 时是 `0d3e6f8`，多出 `ee6a4f7` 一条
-  - `ee6a4f7` 的 commit message：`chore(loop): [cr_id_skip] Auto-commit 落地 3 份方案：batch1 启动体验 + run-novel-exp 命令 + batch4 报告脚本修正 [+4 main-dirty]`，body 含「含主仓预存改动（V2.3 dirty stash apply）：CLAUDE.md / novel_writer/CLAUDE.md / CHANGELOG.md」——是 builder-loop 自动 commit 格式
-  - worktree 工作区当前还有 4 个 modified 文件未 commit：`novel_writer/workspace.py` / `scripts/deep_analysis_outline_overflow.py` / `tests/test_runtime.py` / `tests/test_workspace.py`
-  - 用户未看到任何 stop hook 输出（如果 hook 跑了 PASS_CMD，stderr 注入应在主对话出现），但 commit 客观存在
-  - dangling commit `fb8d227f`（abandon 时未还原的 stash 副本）仍在 reflog
-- **优先级**：高（abandon 是用户明示停 loop 的契约，hook 不该越过该契约继续操作；本次实测 abandon 后 worktree HEAD 仍在推进 + 仍在执行 V2.3 dirty stash apply 流程）
-
----
-
-## ~~2026-05-10 启 loop 跨任务 dirty 带入 worktree~~ [已修 V3.2 默认干净 worktree]
-
-- **触发上下文**：在小说生成器项目（generator）跑 doc-policy 改造任务（commit `7e6df51`）后，CC stop hook 自动 setup worktree 跑 PASS_CMD。结果 worktree 内 `0d3e6f8` 这条 commit 居然含 13 文件 / 870+ 插入——5 个是本次文档任务，**8 个是另一会话留下来还没 commit 的代码改动**（属另一任务 plan 文件 `20260510-batch4-deep-analysis-fixes.md`，含 `_runtime.py` / `cli/app.py` / `engine.py` / `workspace.py` / 一个深度分析脚本 / 三个测试）。worktree state 里的 `task_description` 也整段抄自那个 plan，跟实际本次任务（doc-policy）完全不符。差点跑 reviewer 全审 13 文件 + 跑合并脚本（merge-and-cleanup.sh）撞主仓的 `7e6df51`。abandon 后追溯定位到污染源：setup 阶段把主仓**全部** dirty 一起 stash + apply，没区分「本任务的收拾」和「主仓原本存在的跨任务 dirty」。
-- **建议方向**：
-  1. **启 loop 的脚本（setup-builder-loop.sh）stash 阶段加任务边界**：传入或推断「本任务的改动集合」，只 stash 这些；其他主仓 dirty 文件留在主仓不动（worktree 干净启动）。可参考构建角色调用前能感知到的 cwd dirty 列表，或者 setup 时由调用方明确传 `--touched-files <list>`。
-  2. **setup 时检测主仓存在跨任务 dirty 直接拒绝**：如果主仓有 dirty 但调用方没传 `--touched-files` 列表，setup 直接退出并提示用户「先处理跨任务 dirty（commit / stash / 加白名单忽略）再启 loop」。fail-loud 比静默污染好。
-  3. **state 写入加任务身份校验**：当 setup 复用旧 worktree（slug 已存在）时，必须比对当前 `task_description` / `plan_file` 跟现有 state 是否一致；不一致直接 fail 而不是覆盖。
-  4. **加 fixture 反例**：「主仓有 N 个文件无关 dirty + 构建角色改 M 个文件」场景，setup 后 worktree 应只含 M（不含 N），且 state 的任务描述跟传入参数一致。
-- **优先级**：高（频次中等：用户在主仓有遗留 dirty 时进 builder 模式不算少；危害严重——污染 worktree commit 内容、跨任务合主仓、冲突 rebase。本次靠构建角色自检 task_description 异常 + ls 8 文件实锤才识别出，自救成本高）
-
----
-
 ## 2026-05-10 审查角色看 diff 默认看工作树（不是已提交 baseline）
 
 - **触发上下文**：在小说生成器项目（generator）落 doc-policy v2 改造任务（commit `7e6df51`）。本次是纯文档改造，按分级判定属于 L1，跳过 loop 直接 spawn 审查角色。审查 subagent 跑了 `git diff main HEAD` 看本分支已提交 vs 主干 diff，**没看工作树改动**——本次改动尚未 commit 所以对它不可见。结果 4🔴 全报「文件不存在 / 段未挪走 / 忽略文件没改」，由文档维护 agent 用 ls + grep 独立验证后确认是误报，构建角色（builder）自主拒绝。多花一轮审查耗时 + 复述误判证据，差点被错误结论阻塞 commit。
@@ -147,21 +90,6 @@
   2. **builder.md 步骤 5 加提示（轻量方案）**：「改 hook 类脚本（reviewer-timing-check / tester-* / builder-loop-stop / 等）的任务完成后，提示用户 dogfooding 局限——只能跑 fixture 黑盒验证，自己 spawn reviewer 仍走旧版本，需要等 merge 进主线后下次任务才能用上新版」
   3. **fixture 框架补一类「hook 改动专用 fixture 标签」**：改 hook 的任务必须在 PASS_CMD 里加一条 fixture 黑盒覆盖新行为（不依赖运行时软链生效）
 - **优先级**：中（频次中等：hook 改动每月几次；危害是 builder 容易被误导以为 fix 没生效。本次踩到才意识到，写进文档让下次少走弯路）
-
----
-
-## ~~2026-05-09 PreToolUse hook deny 时 stderr 缺失~~ [已修 V3.2 全仓 exit 2 补 stderr]
-
-- **触发上下文**：V3.0.1 hotfix 现场两次实地复现（session f80932fb + 本次 worktree 自身 dogfood）。CC 在 PreToolUse:Agent hook 退出码 2（标准 deny 协议）+ 仅有 stdout JSON 而无 stderr 输出时，把整体渲染成 `PreToolUse:Agent hook error: No stderr output`，让人误以为脚本崩了。本次 fix 已在 reviewer-timing-check.sh 的 deny 路径加一行 stderr，但其他 PreToolUse hook（tester-lock-check.sh / tester-write-guard.sh）的 deny 路径有没有同样 stderr 还需 grep 一遍。
-- **建议方向**：
-  1. **loop hook 编写规约（写进 README 或 sync-checklist）**：所有 PreToolUse hook 的 `exit 2` deny 分支必须同时往 stderr 写一行 `[builder-loop] <hook名>: blocked <短描述>`，避免 CC 渲染歧义
-  2. **grep 全仓 PreToolUse hook 一致性**：
-     - `scripts/tester-lock-check.sh` 检查 deny 路径
-     - `scripts/tester-write-guard.sh` 检查 deny 路径
-     - 漏的补上同款一行 stderr
-  3. **fixture 加一条断言**：「所有 PreToolUse hook 在 deny 时必须 stderr 至少一行」——可以用统一脚本 grep 实现
-  4. **CC 平台层不可控**：CC 把 「exit 2 + 仅 stdout JSON」 渲染成 hook error 是 CC 自己的渲染策略，loop 侧改不了；规约 + 断言是唯一可控防御
-- **优先级**：高（误导排查成本大，每次撞都要花时间反推；规约简单，工作量小，能 grep 一致性扫描）
 
 ---
 
@@ -348,10 +276,6 @@
   4. **CLAUDE.md / SKILL.md 约束**：reviewer 报告里所有"建议确认 X"的句式必须先自我验证；如果验证后 X 实际不存在/不影响，应改为"已 ls 验证 X 不存在，原条目已合理内化"而不是"建议确认"
 - **优先级**：中（不修不会出严重事故，但 reviewer 报告会出现"凭印象的伪问题"，让 builder 每次都要花时间反驳验证。频次：跨 git/非 git 改动 + 用户重构类任务必现）
 
-## ~~2026-05-08 install.sh / diagnose-stop-hook.sh 不分 max / copilot 方案~~ [已修 V3.1]
-
-V3.1 统一 worktree-write-guard.sh 取代 copilot 专属 tester-write-guard.sh，两种方案注册相同 6 条 hook。
-
 ## 2026-05-08 V2.5 fixture A4 段 set -e + 命令替换吞退出码 → 测试静默 exit 看似 hang
 
 - **触发上下文**：同上 A 批 session。stop hook 反馈日志末尾停在 `--- A4: diagnose-stop-hook.sh 6 段 + 严格 dry-run ---` 后没任何 assert 行，看似 hang。手动加 90s/120s timeout 仍只输出到 A4 段就停。最后 bash -x trace 才发现：fixture `test-stop-hook-debug-log.sh` 第 233 行 `A4_OUT="$(bash "$DIAG_SCRIPT" "$TMP" 2>&1)"` 在顶部 `set -euo pipefail` 下，当 diagnose 因 [1/6] verdict=fail 返回非 0 时，`$()` 命令替换退出码传到外层赋值，set -e 直接杀 fixture，下一行 `A4_EC=$?` 来不及执行。fixture 设计本意是仅检查输出含 `[1/6]~[6/6]` 字面（与 verdict ok 无关），但 set -e 让它走不到 assert 行就 silent exit。A1/A2/A3 段类似调用都已有 `|| A?_EC=$?` 容错，A4 漏写。
@@ -387,13 +311,6 @@ V3.1 统一 worktree-write-guard.sh 取代 copilot 专属 tester-write-guard.sh�
   2. **优先用根 CLAUDE.md 内联折叠**：如行数臃肿，用 `<details><summary>` 折叠而非外移；或拆到 git tracked 的子模块 CLAUDE.md（如 `.claude/agents/builder.md` 是 tracked 的）。
   3. **e2e fixture**：项目 `.gitignore` 含 `.claude/*` 规则，doc-maintainer 试图新建 `.claude/foo.md` 时应被自检拦截。
 - **优先级**：中（本次 build-workflow.md/analyze-exp-workflow.md 在 generator 项目本地私有，对协作可见性零；同模式可能复发于其他 .gitignore 排除文档目录的项目）
-
-## 2026-04-30 builder-loop auto-commit 把 untracked 敏感文件（.env*/*.bak）一并推进 history，旧密钥泄漏风险
-
-- **触发上下文**：BOT 项目切 AI 网关 session（slug=`1777552592-fix-llm-client`）。改 .env 时用 `sed -i.bak` 留下 `.env.bak`（含旧 LLM_API_KEY/APP_SECRET/OTA_SK），主仓 `.gitignore` 只有 `.env` 没有 `*.bak`。loop PASS 阶段 V2.3 dirty stash apply 把 `.env.bak` 也带进 worktree，auto-commit 实际把它 add 进了 commit `bec4615`（commit message body 写「+1 main-dirty」暗示有意识到，但没拦下）。本地未 push 前才发现，用户授权 `git reset --soft HEAD~1` + `git restore --staged` + `rm` + 补 `.gitignore` 才修复，但 dangling commit `bec4615` 仍在 reflog 内 90 天，期间旧密钥可被 `git show bec4615:.env.bak` 取回。
-- **根因**：项目 .gitignore 不全（缺 `*.bak`），V2.3 stash apply 把 `.env.bak` 带进 worktree。
-- **结论 [V3.2 关闭]**：V3.2 默认干净 worktree（不 stash dirty）已从源头消除主仓 dirty 带入问题。auto-commit 的 `git add -A` 尊重 .gitignore，敏感文件是否被忽略是用户的 .gitignore 责任，loop 不做二次扫描。
-- **优先级**：高（旧密钥已部分泄漏 90 天回收期；此机制缺口在所有走 builder-loop + dirty stash 的项目都会复现）
 
 ## 2026-04-30 用户授权"绕 loop 提交"时缺少快速 abandon 路径，loop 反复跑 PASS_CMD 无法停
 
