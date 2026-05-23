@@ -5,7 +5,7 @@
 
 ---
 
-## 2026-05-19 三连 loop bug：stale worktree 卡 setup + phase/reviewer_pending 不一致 + stale state 挡 reviewer
+## ~~2026-05-19 三连 loop bug：stale worktree + phase 不一致 + stale state 挡 reviewer~~ [已修 V3.2 slug binding]
 
 - **触发上下文**：#210 + batch pre-exp033 两轮 builder 任务。三个 bug 连续出现：
   1. **stale worktree 卡 setup**：旧 story-spine worktree 残留（`1778572012-story-spine`），setup-builder-loop.sh 不清理旧 worktree 也不报错，静默挂起。手动 `git worktree remove --force` + `git branch -D` 后才恢复
@@ -61,7 +61,7 @@
 
 ---
 
-## 2026-05-10 stop hook 兜底激活在暂停项目反复空跑 NOOP 死循环
+## ~~2026-05-10 stop hook 兜底激活 NOOP 死循环~~ [已修 V3.2 删除兜底激活]
 
 - **触发上下文**：cc-dcp 项目（已暂停，无源码改动）。用户进入项目目录纯聊天，但 `.gitignore` 和 `.claude/loop.yml` 有 builder-loop 自愈追加的未提交 diff。每次用户发消息触发 stop hook → `builder-loop-stop.sh` 检测到「有 loop.yml + 有 diff」→ 兜底激活 → PASS_CMD 跑完发现 HEAD 没变 → 报 NOOP → 下一轮用户消息再触发 → 无限循环。连续触发 4 次 NOOP 后用户手动要求提交 diff 止血。
 - **Session ID**：`f0ceaf33-f5e8-4cae-adc4-0db7694b4f22`（cc-dcp 项目）
@@ -77,7 +77,7 @@
 
 ---
 
-## 2026-05-10 abandon-loop 完成后 stop hook 仍在操作 abandon 过的 worktree
+## ~~2026-05-10 abandon 后 stop hook 仍操作 worktree~~ [已修 V3.2 slug binding]
 
 - **触发上下文**：在小说生成器项目（generator）跑停 loop 的脚本（abandon-loop.sh）成功收尾。abandon-loop.sh stdout 输出 `[abandon-loop] ✅ Loop abandoned` + `state archived to: ...20260510-184654-abandon_worktree_state...bak` + `worktree kept: .../1778408181-3-bat` + `branch kept: loop/1778408181-3-bat`，明示当时 worktree HEAD = `0d3e6f8`。abandon 完成后用户继续在主对话发 message（讨论收尾、问 worktree 互踩根因），未再调用任何 builder-loop 脚本，未再 setup loop。后续诊断 `git worktree list` 看到 worktree HEAD 已涨到 `ee6a4f7`。
 - **现场事实**：
@@ -94,7 +94,7 @@
 
 ---
 
-## 2026-05-10 启 loop 时把主仓跨任务 dirty 一并带进 worktree，commit 跨任务污染
+## ~~2026-05-10 启 loop 跨任务 dirty 带入 worktree~~ [已修 V3.2 默认干净 worktree]
 
 - **触发上下文**：在小说生成器项目（generator）跑 doc-policy 改造任务（commit `7e6df51`）后，CC stop hook 自动 setup worktree 跑 PASS_CMD。结果 worktree 内 `0d3e6f8` 这条 commit 居然含 13 文件 / 870+ 插入——5 个是本次文档任务，**8 个是另一会话留下来还没 commit 的代码改动**（属另一任务 plan 文件 `20260510-batch4-deep-analysis-fixes.md`，含 `_runtime.py` / `cli/app.py` / `engine.py` / `workspace.py` / 一个深度分析脚本 / 三个测试）。worktree state 里的 `task_description` 也整段抄自那个 plan，跟实际本次任务（doc-policy）完全不符。差点跑 reviewer 全审 13 文件 + 跑合并脚本（merge-and-cleanup.sh）撞主仓的 `7e6df51`。abandon 后追溯定位到污染源：setup 阶段把主仓**全部** dirty 一起 stash + apply，没区分「本任务的收拾」和「主仓原本存在的跨任务 dirty」。
 - **建议方向**：
@@ -150,7 +150,7 @@
 
 ---
 
-## 2026-05-09 [V3.0.1 衍生] PreToolUse hook deny 时若不写 stderr，CC 渲染成「No stderr output」误导排查
+## ~~2026-05-09 PreToolUse hook deny 时 stderr 缺失~~ [已修 V3.2 全仓 exit 2 补 stderr]
 
 - **触发上下文**：V3.0.1 hotfix 现场两次实地复现（session f80932fb + 本次 worktree 自身 dogfood）。CC 在 PreToolUse:Agent hook 退出码 2（标准 deny 协议）+ 仅有 stdout JSON 而无 stderr 输出时，把整体渲染成 `PreToolUse:Agent hook error: No stderr output`，让人误以为脚本崩了。本次 fix 已在 reviewer-timing-check.sh 的 deny 路径加一行 stderr，但其他 PreToolUse hook（tester-lock-check.sh / tester-write-guard.sh）的 deny 路径有没有同样 stderr 还需 grep 一遍。
 - **建议方向**：
@@ -348,16 +348,9 @@
   4. **CLAUDE.md / SKILL.md 约束**：reviewer 报告里所有"建议确认 X"的句式必须先自我验证；如果验证后 X 实际不存在/不影响，应改为"已 ls 验证 X 不存在，原条目已合理内化"而不是"建议确认"
 - **优先级**：中（不修不会出严重事故，但 reviewer 报告会出现"凭印象的伪问题"，让 builder 每次都要花时间反驳验证。频次：跨 git/非 git 改动 + 用户重构类任务必现）
 
-## 2026-05-08 install.sh / diagnose-stop-hook.sh 不分 max / copilot 方案 → max 用户 fixture 永远报「少一条 hook」
+## ~~2026-05-08 install.sh / diagnose-stop-hook.sh 不分 max / copilot 方案~~ [已修 V3.1]
 
-- **触发上下文**：cc-builder-loop A 批 session（slug=`1778210210-a-install-sh-has-e`）。loop iter 1 PASS_CMD 在 stage `v25_stop_hook_observability` 挂掉 → A 批被 abandon。根因：fixture A4 段调 diagnose-stop-hook.sh 时输出 `[1/6] settings.json hook 注册 ❌ fail`，因为 ~/.claude/settings.json 缺 `tester-write-guard.sh` 这条 hook。但用户告知「edit/write 写入相关的 hook，在 max 方案里本来就不需要注册，只注册在 copilot 方案的配置里」—— 即 max 方案下 settings.json 缺这条是**正确状态**。当前 install.sh L103-110 的 `registrations` 列表写死 6 条无脑全注册；diagnose-stop-hook.sh 也写死 6 条期望，没有方案差异判别 → max 用户运行 fixture 必然撞「[1/6] verdict=fail」。
-- **建议方向**：
-  1. **install.sh 加方案识别**：检测 ENV `BUILDER_LOOP_PLAN`（值 max / copilot，默认 copilot）或读 settings.json 是否含 max OAuth 字段自动判定；max 方案下 `registrations` 表跳过 tester-write-guard.sh
-  2. **diagnose-stop-hook.sh 同步识别**：[1/6] 检查根据方案过滤期望列表，max 方案下少 tester-write-guard 视为 ok
-  3. **uninstall.sh 不动**：删一个不存在的 hook 本来就 no-op，已是该语义
-  4. **方案识别结果持久化**：写到 `<P>/.claude/builder-loop/plan` 文件或 state schema 加 `plan: max | copilot` 字段
-  5. **e2e fixture**：构造「max 方案 settings.json 缺 tester-write-guard」场景，断言 install.sh 跳过该条注册 + diagnose [1/6] verdict=ok
-- **优先级**：高（本次直接挡住 A 批 PASS_CMD；max 方案用户每次跑该 fixture 都会撞）
+V3.1 统一 worktree-write-guard.sh 取代 copilot 专属 tester-write-guard.sh，两种方案注册相同 6 条 hook。
 
 ## 2026-05-08 V2.5 fixture A4 段 set -e + 命令替换吞退出码 → 测试静默 exit 看似 hang
 

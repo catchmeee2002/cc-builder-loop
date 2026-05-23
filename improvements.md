@@ -1,6 +1,6 @@
 # Builder-Loop 改进清单
 
-## 2026-05-23 stop hook 输出串到其他 CC session——subagent 在主仓 CWD 触发 hook
+## ~~2026-05-23 stop hook 输出串到其他 CC session~~ [已修 V3.2 slug binding]
 - 触发上下文：#231 任务在 worktree 模式下工作。spawn tester subagent 时，subagent 继承主仓 CWD（/mnt/hongyu.liao_docker/generator）而非 worktree 路径。subagent 运行 pytest 触发 stop hook，hook 在主仓 CWD 下执行，无法定位 worktree 的 state 文件，输出被路由到另一个监听主仓的 CC session。
 - 根因：CC Bash tool 的 `cd` 跨调用不持久——builder 执行 `cd /worktree/path` 后，下一次 Bash 调用 CWD 仍回到主仓。subagent 更是完全独立的进程，CWD 必定是主仓。stop hook 靠 CWD 判断属于哪个 worktree，CWD 错了就串台。
 - 临时解法：用 pause 文件暂停 hook，手动在 worktree 里跑 PASS_CMD，跑完手动 merge。但 merge-and-cleanup.sh 在未 commit 的 worktree 上执行会丢失所有未提交改动（"Already up to date" + cleanup 删 worktree = 改动全丢），不得不在主仓重做全部代码改动。
@@ -11,7 +11,7 @@
   3. **stop hook 不依赖 CWD 定位 state**：改用 state 文件里的 worktree_path 字段反向匹配，或唯一 active state 时直接绑定（策略 5 当前实现可能有 bug）
 - 优先级：高（改动全丢 + 需要手动重做，且 worktree 模式下必然复现）
 
-## 2026-05-22 merge-and-cleanup.sh 在 detached HEAD 下 merge 导致代码静默丢失
+## ~~2026-05-22 merge-and-cleanup.sh 在 detached HEAD 下 merge 导致代码静默丢失~~ [已修 V3.2 detached HEAD guard]
 - 触发上下文：磁盘自检自动清理功能（7 文件 +926 行）在 worktree 中通过 reviewer，builder 调 merge-and-cleanup.sh 做 fast-forward merge。脚本输出 `Updating 39d344b..94bbdf1 Fast-forward` 看起来成功，但 exit code 1。builder 看到 fast-forward 输出就报了"合并成功"，没管 exit code。实际上 merge 在 detached HEAD 下执行，只移了 HEAD 指针没移 feature-main 分支。cleanup 阶段 `checkout feature-main` 直接跳回 39d344b，后续 blacklist 和 OTA 改动继续在旧基线上推进，自动清理代码从分支上消失。直到线上车辆报警才发现代码不在。
 - reflog 证据：`HEAD@{4}: merge loop/1779419801-task: Fast-forward → 94bbdf1` → `HEAD@{3}: checkout: moving from 94bbdf1 to feature-main → 39d344b`。从 94bbdf1 是 hash 而非 branch name 可见当时是 detached HEAD。
 - 根因：merge-and-cleanup.sh 没有前置检查「当前 HEAD 是否在目标分支上」。worktree checkout 到某个 commit 后可能进入 detached 状态，脚本盲目 `git merge` 不会报错但不移动 branch ref。exit code 1（可能来自 cleanup 阶段）被 builder 忽视——builder 只看 stdout 里的 "Fast-forward" 就判定成功。
@@ -21,7 +21,7 @@
   2. **builder 对 exit code 非零必须当失败处理**：脚本返回非零时不能光看 stdout 里有 "Fast-forward" 就报成功，必须标红告知用户 merge 失败并保留 worktree 供排查。
 - 优先级：高（P0，代码丢失 + 生产事故）
 
-## 2026-05-19 step 3.5 删代码时文档过时引用未清理——#209 废弃 snapshot 后 3 个文档残留旧引用
+## ~~2026-05-19 step 3.5 删代码时文档过时引用未清理~~ [已修 V3.2 doc-lint.sh PASS_CMD stage]
 - 触发上下文：#209 删除 `_derive_chapter_snapshot` + `save_chapter_snapshot` + `get_previous_snapshot` 等方法（-239 行），merge 后 builder 输出 `📄 doc: skip（内部重构删死代码，无新接口/能力）`。用户追问"所有文档更新了吗"后发现 `novel_writer/CLAUDE.md`（不可逆属性段提 snapshot_prompt）、`docs/architecture.md`（mermaid 图 + 目录树 + 注入矩阵共 6 处）、`tests/CLAUDE.md`（2 处测试描述）均包含已废弃的 snapshot 引用。
 - builder 当时的判断过程：checklist 4 条逐项看——① SKILL.md 行为没变 ② 没新增对外文件 ③ CLAUDE.md 没有新能力要加 ④ 没新 TODO。全部不命中→skip。但 checklist 缺少"删除功能时检查现有文档是否有过时引用"这个维度。
 - 根因：step 3.5 checklist 面向"新增"设计（新脚本/新文件/新能力/新 TODO），没有"删除/废弃"维度。删代码时文档里的旧引用不触发任何 checklist 条目。这跟 2026-05-17 的"接口变了但判断为不改对外接口"不同——这次是 checklist 本身有盲区。
@@ -43,7 +43,7 @@
   3. （重构）取消 builder 自评——每次 merge 前强制 spawn doc-maintainer，由 doc-maintainer 自行判断是否需要更新（返回"无需更新"也是合法结果，但判断权不在 builder 手上）
 - 优先级：高（4 次累犯，已证明纯 prompt 约束对此行为无效）
 
-## 2026-05-13 step 3.5 doc-maintainer checklist 自评无强制力，builder 可偷懒 skip
+## ~~2026-05-13 step 3.5 doc-maintainer checklist 自评无强制力~~ [已修 V3.2 doc-lint.sh 机器检测取代自评]
 - 触发上下文：#150 V1/V2 数据协议大一统（L3，12 个源文件改动），builder 在 step 3.5 直接输出 `📄 doc: skip`，但实际命中了 checklist 第 1/3 条（接口签名变了 + CLAUDE.md 模块描述过时）。被用户发现后补 doc-maintainer
 - 根因：checklist 是自评，builder 在长流程末尾（代码→测试→loop×2→reviewer→merge）注意力在"收尾"而非"检查"；skip 成本太低（一句话理由即可）；merge 在 doc 检查之前发生（流程无门禁）
 - 建议方向：

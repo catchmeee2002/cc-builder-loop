@@ -94,6 +94,7 @@ done < <(awk '/^source_dirs_abs:/{flag=1; next} flag && /^[a-z_]+:/{flag=0} flag
 
 if [ -n "$DENIED_BY" ]; then
   log "DENY: $TOOL_NAME target=$ABS_TARGET hit=$DENIED_BY"
+  echo "[builder-loop] tester-lock-check: blocked ${TOOL_NAME} on ${ABS_TARGET} (hit ${DENIED_BY})" >&2
   printf '%s\n' "{\"action\":\"deny\",\"message\":\"tester 禁读 source_dirs（命中 ${DENIED_BY}）。需要查接口请只读 interface_dirs/*.md/test 目录。如需详细规格请在 TESTER_SUMMARY 标注'规格不足'。\"}"
   exit 2
 fi
