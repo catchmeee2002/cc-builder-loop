@@ -13,7 +13,7 @@
 #     run-apply-arbitration.sh 在 rebase 冲突由 arbiter 解决后调本脚本（"立即合"语义），
 #     此时 commit 直接 ff 进主线，**跳过了 reviewer gate**。这是 V3.0 落地的已知缺口：
 #     冲突解决场景下 reviewer 看不到合并后的代码，无法发挥门禁作用。
-#     跟踪在 .claude/improvements.md「arbiter 续路径迁移到 reviewer-as-gate」候选条目。
+#     跟踪在 improvements.md「arbiter 续路径迁移到 reviewer-as-gate」候选条目。
 #     建议修法：run-apply-arbitration.sh 改调 merge-and-cleanup.sh（V3.0 拆 merge 路径）。
 #
 # 用法：bash merge-worktree-back.sh <state_file>
