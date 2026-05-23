@@ -48,7 +48,8 @@ assert "stderr 不含 '正在跑 PASS_CMD'" "! grep -q '正在跑 PASS_CMD' '$(e
 wait "$BG_PID" 2>/dev/null || true
 sleep 1
 
-# 锁释放后再调 hook，应进入正常流程
+# 锁释放后，造一个 dirty 文件（防 L2B 静默：HEAD==last_iter_head + 空 status）
+echo "dirty" >> "$envA/README.md"
 rA2=$(run_hook "$envA")
 assert_stderr_contains "锁释放后 stderr 含 iter" "$rA2" "iter"
 
@@ -187,7 +188,7 @@ YMLEOF
   git -c core.hooksPath=/dev/null commit -q -m "chore(test): [cr_id_skip] Add loop.yml" 2>/dev/null || true
 )
 
-bash "$SKILL_SCRIPTS_DIR/setup-builder-loop.sh" "E2E stop hook PASS with cleanup" >/dev/null 2>&1
+(cd "$TMP_D" && bash "$SKILL_SCRIPTS_DIR/setup-builder-loop.sh" "E2E stop hook PASS with cleanup" >/dev/null 2>&1)
 
 WT_PATH_D="$(ls -d "$TMP_D/.claude/worktrees/"*/ 2>/dev/null | head -1)"
 [ -n "$WT_PATH_D" ] && WT_PATH_D="${WT_PATH_D%/}"

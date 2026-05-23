@@ -1,0 +1,6 @@
+.claude/builder-loop/
+.claude/loop-runs/
+.claude/loop-trace.jsonl
+.claude/reviewer-params.json
+.claude/reviewer-diff.txt
+*.bak

@@ -54,8 +54,8 @@ env2=$(create_test_env --slug "__main__")
 merge_result2=$(run_merge_cleanup "$(state_file "$env2" "__main__")")
 merge_last2=$(result_last "$merge_result2")
 
-assert "Case 2 merge 输出非空（防 grep 静默退出回归）" "[ -n '$merge_last2' ]"
-assert "Case 2 merge 末行 = NOOP" "[ '$merge_last2' = 'NOOP' ]"
+assert "Case 2 merge 输出非空" "[ -n '$merge_last2' ]"
+assert "Case 2 merge 拒绝 bare mode" "echo '$merge_last2' | grep -q 'ERROR bare-mode-not-supported'"
 
 # ============================================================
 # Case 3: 老 V1.x bare state（无 main_repo_path 字段，project_root=主仓）
@@ -76,6 +76,6 @@ merge_result3=$(run_merge_cleanup "$env3/.claude/builder-loop/state/__main__.yml
 merge_last3=$(result_last "$merge_result3")
 
 assert "Case 3 merge 输出非空" "[ -n '$merge_last3' ]"
-assert "Case 3 merge 末行 = NOOP（用 project_root 兜底为主仓）" "[ '$merge_last3' = 'NOOP' ]"
+assert "Case 3 merge 拒绝 bare mode" "echo '$merge_last3' | grep -q 'ERROR bare-mode-not-supported'"
 
 harness_report
