@@ -165,6 +165,7 @@ choice JSON 含 pass_cmd / max_iterations / layout / worktree。
 ```json
 {
   "pass_cmd": [
+    {"stage": "doc-lint", "cmd": "bash ~/.claude/skills/builder-loop/scripts/doc-lint.sh . HEAD~1", "timeout": 10},
     {"stage": "lint", "cmd": "ruff check src/", "timeout": 60},
     {"stage": "test", "cmd": "pytest tests/ -x", "timeout": 300}
   ],

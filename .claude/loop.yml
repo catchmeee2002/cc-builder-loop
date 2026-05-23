@@ -1,6 +1,7 @@
 # 由 builder-loop init 向导生成；可手动编辑
 
 pass_cmd:
+  - { stage: "doc-lint", cmd: "bash ~/.claude/skills/builder-loop/scripts/doc-lint.sh . HEAD~1", timeout: 10 }
   - { stage: "e2e", cmd: "bash skills/builder-loop/fixtures/e2e/test-new-repo-loop.sh", timeout: 120 }
   - { stage: "parallel", cmd: "bash skills/builder-loop/fixtures/e2e/test-parallel-loop.sh", timeout: 120 }
   - { stage: "zombie_selfheal", cmd: "bash skills/builder-loop/fixtures/e2e/test-zombie-selfheal.sh", timeout: 30 }

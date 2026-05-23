@@ -15,7 +15,7 @@ pass_cmd:
   required: true
   min_items: 1
   item_schema:
-    stage: { type: string, required: true, examples: [lint, typecheck, test, build] }
+    stage: { type: string, required: true, examples: [doc-lint, lint, typecheck, test, build] }
     cmd:   { type: string, required: true }
     timeout: { type: integer, default: 300, unit: seconds }
 
@@ -236,6 +236,7 @@ judge:
 # ============================================================
 
 # pass_cmd:
+#   - { stage: doc-lint, cmd: "bash ~/.claude/skills/builder-loop/scripts/doc-lint.sh . HEAD~1", timeout: 10 }
 #   - { stage: test, cmd: "pytest -x", timeout: 300 }
 #
 # layout:
