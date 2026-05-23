@@ -391,8 +391,8 @@ V3.1 统一 worktree-write-guard.sh 取代 copilot 专属 tester-write-guard.sh�
 ## 2026-04-30 builder-loop auto-commit 把 untracked 敏感文件（.env*/*.bak）一并推进 history，旧密钥泄漏风险
 
 - **触发上下文**：BOT 项目切 AI 网关 session（slug=`1777552592-fix-llm-client`）。改 .env 时用 `sed -i.bak` 留下 `.env.bak`（含旧 LLM_API_KEY/APP_SECRET/OTA_SK），主仓 `.gitignore` 只有 `.env` 没有 `*.bak`。loop PASS 阶段 V2.3 dirty stash apply 把 `.env.bak` 也带进 worktree，auto-commit 实际把它 add 进了 commit `bec4615`（commit message body 写「+1 main-dirty」暗示有意识到，但没拦下）。本地未 push 前才发现，用户授权 `git reset --soft HEAD~1` + `git restore --staged` + `rm` + 补 `.gitignore` 才修复，但 dangling commit `bec4615` 仍在 reflog 内 90 天，期间旧密钥可被 `git show bec4615:.env.bak` 取回。
-- **根因**：auto-commit 缺少敏感文件名过滤。stash apply 把 dirty/untracked 一并塞进 worktree 是 V2.3 dirty 兼容设计的初衷，但没在 commit 边界做"敏感文件名"二次过滤。`[+1 main-dirty]` 这种 commit message 注脚说明 auto-commit 对此情形有感知，但只是被动记录而非主动阻断。
-- **建议方向**：① auto-commit 前对 `git diff --cached --name-only` 做模式匹配（`.env*` / `*.bak` / `credentials*` / `*secret*` / `*.key` / `*.pem` / `id_rsa*` / `id_ed25519*`）→ 命中即 abort，提示用户「检测到疑似敏感文件 X，请决定：加 .gitignore / 删除 / 强制 commit」；② stash apply 阶段同样对疑似 secret 文件名只 warning + 跳过带入 worktree（让 builder 显式看到这些文件需要单独处理）；③ 兜底：commit message 的 `[+N main-dirty]` 加上文件清单（给用户看到带进来了什么）。
+- **根因**：项目 .gitignore 不全（缺 `*.bak`），V2.3 stash apply 把 `.env.bak` 带进 worktree。
+- **结论 [V3.2 关闭]**：V3.2 默认干净 worktree（不 stash dirty）已从源头消除主仓 dirty 带入问题。auto-commit 的 `git add -A` 尊重 .gitignore，敏感文件是否被忽略是用户的 .gitignore 责任，loop 不做二次扫描。
 - **优先级**：高（旧密钥已部分泄漏 90 天回收期；此机制缺口在所有走 builder-loop + dirty stash 的项目都会复现）
 
 ## 2026-04-30 用户授权"绕 loop 提交"时缺少快速 abandon 路径，loop 反复跑 PASS_CMD 无法停
