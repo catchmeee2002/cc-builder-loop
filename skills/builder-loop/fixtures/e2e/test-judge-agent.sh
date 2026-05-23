@@ -9,64 +9,40 @@
 #
 # 预期耗时：~20 秒（C3 API 超时 case 需等 timeout=2s 到期）
 
-set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/harness.sh"
+harness_init "单元测试：run-judge-agent.sh（mock API）"
 
-THIS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$THIS_DIR/../../../.." && pwd)"
-JUDGE_SCRIPT="${REPO_ROOT}/skills/builder-loop/scripts/run-judge-agent.sh"
+JUDGE_SCRIPT="${HARNESS_REPO_ROOT}/skills/builder-loop/scripts/run-judge-agent.sh"
 
-PASS=0
-FAIL=0
 MOCK_PORT=18999
 MOCK_PID=""
-TMP=""
 
-# ---- 颜色 ----
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m'
-
-pass() { echo -e "  ${GREEN}PASS${NC} $1"; PASS=$(( PASS + 1 )); }
-fail() { echo -e "  ${RED}FAIL${NC} $1"; FAIL=$(( FAIL + 1 )); }
-
-assert() {
-  local desc="$1" cond="$2"
-  if eval "$cond" 2>/dev/null; then pass "$desc"; else fail "$desc  [cond: $cond]"; fi
-}
-
-assert_json_field() {
-  # assert_json_field <desc> <json_string> <field> <expected_value>
-  local desc="$1" json="$2" field="$3" expected="$4"
-  local actual
-  actual="$(python3 -c "import json,sys; d=json.loads(sys.argv[1]); print(d.get('${field}','__MISSING__'))" "$json" 2>/dev/null || echo '__PARSE_ERROR__')"
-  if [ "$actual" = "$expected" ]; then
-    pass "$desc (${field}=${expected})"
-  else
-    fail "$desc (${field}: expected=${expected}, actual=${actual})"
-  fi
-}
-
-# ---- Cleanup ----
-cleanup() {
+# ---- Mock server cleanup (supplement harness cleanup) ----
+_judge_agent_cleanup() {
   if [ -n "$MOCK_PID" ] && kill -0 "$MOCK_PID" 2>/dev/null; then
     kill "$MOCK_PID" 2>/dev/null || true
     wait "$MOCK_PID" 2>/dev/null || true
   fi
-  [ -n "$TMP" ] && rm -rf "$TMP"
+  _harness_cleanup
 }
-trap cleanup EXIT
+trap _judge_agent_cleanup EXIT
 
-# ---- 创建临时工作目录 ----
 TMP="$(mktemp -d)"
-
-echo "=== 单元测试：run-judge-agent.sh（mock API）==="
-echo "    被测脚本：${JUDGE_SCRIPT}"
-echo "    Mock 端口：${MOCK_PORT}"
-echo "    临时目录：${TMP}"
-echo ""
+_HARNESS_TMPDIRS+=("$TMP")
 
 assert "被测脚本存在" "[ -f '${JUDGE_SCRIPT}' ]"
+
+# ---- 自定义断言：JSON 字段 ----
+assert_json_field() {
+  local desc="$1" json="$2" field="$3" expected="$4"
+  local actual
+  actual="$(python3 -c "import json,sys; d=json.loads(sys.argv[1]); print(d.get('${field}','__MISSING__'))" "$json" 2>/dev/null || echo '__PARSE_ERROR__')"
+  if [ "$actual" = "$expected" ]; then
+    assert "$desc (${field}=${expected})" "true"
+  else
+    assert "$desc (${field}: expected=${expected}, actual=${actual})" "false"
+  fi
+}
 
 # ---- Mock server 辅助函数 ----
 
@@ -294,8 +270,7 @@ call_judge_no_creds() {
 # =============================================================
 # C1: env 路径凭证 + PASS + 正常 builder → stop_done, downgraded=false
 # =============================================================
-echo ""
-echo "=== CASE C1: env 凭证 + PASS + 正常 builder → stop_done ==="
+section "C1: env 凭证 + PASS + 正常 builder → stop_done"
 {
   PROJ="${TMP}/proj_c1"
   mkdir -p "$PROJ/src"
@@ -329,8 +304,7 @@ echo "=== CASE C1: env 凭证 + PASS + 正常 builder → stop_done ==="
 # =============================================================
 # C2: env 路径 + PASS + diff 为空 + builder 声称完成 → continue_nudge
 # =============================================================
-echo ""
-echo "=== CASE C2: env 凭证 + PASS + builder 声称完成 → continue_nudge ==="
+section "C2: env 凭证 + PASS + builder 声称完成 → continue_nudge"
 {
   PROJ="${TMP}/proj_c2"
   mkdir -p "$PROJ/src"
@@ -358,8 +332,7 @@ echo "=== CASE C2: env 凭证 + PASS + builder 声称完成 → continue_nudge =
 # =============================================================
 # C3: API 超时（api_timeout_sec=2，mock sleep 8s）→ downgraded=true, reason=timeout
 # =============================================================
-echo ""
-echo "=== CASE C3: API 超时 → downgraded=true, downgrade_reason=timeout ==="
+section "C3: API 超时 → downgraded=true, downgrade_reason=timeout"
 {
   PROJ="${TMP}/proj_c3"
   mkdir -p "$PROJ/src"
@@ -391,8 +364,7 @@ echo "=== CASE C3: API 超时 → downgraded=true, downgrade_reason=timeout ==="
 # =============================================================
 # C4: API 返回 500 → downgraded=true, downgrade_reason=http_500
 # =============================================================
-echo ""
-echo "=== CASE C4: API 500 → downgraded=true, downgrade_reason=http_500 ==="
+section "C4: API 500 → downgraded=true, downgrade_reason=http_500"
 {
   PROJ="${TMP}/proj_c4"
   mkdir -p "$PROJ/src"
@@ -420,8 +392,7 @@ echo "=== CASE C4: API 500 → downgraded=true, downgrade_reason=http_500 ==="
 # =============================================================
 # C5: API 返回非法 JSON（plain text）→ downgraded=true, reason=parse_error
 # =============================================================
-echo ""
-echo "=== CASE C5: API 返回非法 JSON → downgraded=true, downgrade_reason=parse_error ==="
+section "C5: API 返回非法 JSON → downgraded=true, downgrade_reason=parse_error"
 {
   PROJ="${TMP}/proj_c5"
   mkdir -p "$PROJ/src"
@@ -449,8 +420,7 @@ echo "=== CASE C5: API 返回非法 JSON → downgraded=true, downgrade_reason=p
 # =============================================================
 # C6: API 返回 confidence=0.3（低于阈值 0.5）→ downgraded=true, reason=low_confidence
 # =============================================================
-echo ""
-echo "=== CASE C6: confidence=0.3（低于阈值）→ downgraded=true, downgrade_reason=low_confidence ==="
+section "C6: confidence=0.3（低于阈值）→ downgraded=true, downgrade_reason=low_confidence"
 {
   PROJ="${TMP}/proj_c6"
   mkdir -p "$PROJ/src"
@@ -479,8 +449,7 @@ echo "=== CASE C6: confidence=0.3（低于阈值）→ downgraded=true, downgrad
 # =============================================================
 # C7: 凭证全缺（无 ANTHROPIC_API_KEY + HOME 下无 .claude.json）→ missing_credentials
 # =============================================================
-echo ""
-echo "=== CASE C7: 凭证全缺 → downgraded=true, downgrade_reason=missing_credentials ==="
+section "C7: 凭证全缺 → downgraded=true, downgrade_reason=missing_credentials"
 {
   PROJ="${TMP}/proj_c7"
   mkdir -p "$PROJ/src"
@@ -510,8 +479,7 @@ echo "=== CASE C7: 凭证全缺 → downgraded=true, downgrade_reason=missing_cr
 # =============================================================
 # C8: judge.enabled=false（loop.yml 中设置）→ downgraded=true, reason=disabled
 # =============================================================
-echo ""
-echo "=== CASE C8: judge.enabled=false → downgraded=true, downgrade_reason=disabled ==="
+section "C8: judge.enabled=false → downgraded=true, downgrade_reason=disabled"
 {
   PROJ="${TMP}/proj_c8"
   mkdir -p "$PROJ/src"
@@ -541,8 +509,7 @@ echo "=== CASE C8: judge.enabled=false → downgraded=true, downgrade_reason=dis
 # C9: 模型 ID 含 dot（ANTHROPIC_DEFAULT_HAIKU_MODEL=claude-haiku-4.5）
 #     → API 调用收到的 payload.model = claude-haiku-4-5（dash 规范化）
 # =============================================================
-echo ""
-echo "=== CASE C9: 模型 ID dot 规范化为 dash（claude-haiku-4.5 → claude-haiku-4-5）==="
+section "C9: 模型 ID dot 规范化为 dash（claude-haiku-4.5 → claude-haiku-4-5）"
 {
   PROJ="${TMP}/proj_c9"
   mkdir -p "$PROJ/src"
@@ -590,22 +557,4 @@ echo "=== CASE C9: 模型 ID dot 规范化为 dash（claude-haiku-4.5 → claude
     "[ '${RECEIVED_MODEL}' = 'claude-haiku-4-5' ]"
 }
 
-# =============================================================
-# 汇总
-# =============================================================
-echo ""
-echo "=============================="
-echo "单元测试结果汇总"
-echo "=============================="
-echo -e "  ${GREEN}PASS: ${PASS}${NC}"
-if [ "${FAIL}" -gt 0 ]; then
-  echo -e "  ${RED}FAIL: ${FAIL}${NC}"
-  echo ""
-  echo "退出码 1（有失败）"
-  exit 1
-else
-  echo -e "  ${GREEN}FAIL: ${FAIL}${NC}"
-  echo ""
-  echo "全部通过"
-  exit 0
-fi
+harness_report

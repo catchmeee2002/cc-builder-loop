@@ -5,33 +5,16 @@
 # - Subagent strict mode (tester, doc-maintainer)
 # - Background agent passthrough (reviewer)
 # - Whitelist paths (/tmp, review_reports, reviewer-diff, state, pause)
-# - TTL expiry
-# - Bare mode (empty worktree_path)
-# - Builder mode (no lock → always pass)
+# - TTL expiry, bare mode, builder mode (no lock)
 
-set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/harness.sh"
+harness_init "worktree-write-guard"
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/../../../.." && pwd)"
-GUARD_SCRIPT="$REPO_ROOT/scripts/worktree-write-guard.sh"
-
-[ -f "$GUARD_SCRIPT" ] || { echo "FATAL: guard script not found: $GUARD_SCRIPT" >&2; exit 1; }
-
-PASS=0; FAIL=0; TOTAL=0
-assert_exit() {
-  local desc="$1" expected="$2" actual="$3"
-  TOTAL=$((TOTAL + 1))
-  if [ "$actual" -eq "$expected" ]; then
-    PASS=$((PASS + 1))
-    echo "  ✅ $desc (exit=$actual)"
-  else
-    FAIL=$((FAIL + 1))
-    echo "  ❌ $desc (expected=$expected got=$actual)"
-  fi
-}
+GUARD_SCRIPT="$HARNESS_REPO_ROOT/scripts/worktree-write-guard.sh"
+assert_file_exists "guard script exists" "$GUARD_SCRIPT"
 
 TMPDIR="$(mktemp -d)"
-trap 'rm -rf "$TMPDIR"' EXIT
+_HARNESS_TMPDIRS+=("$TMPDIR")
 
 WORKTREE="$TMPDIR/worktree"
 MAIN_REPO="$TMPDIR/main"
@@ -65,80 +48,48 @@ EOF
 }
 
 make_input() {
-  local tool="$1" path="$2"
-  printf '{"session_id":"%s","tool_name":"%s","tool_input":{"file_path":"%s"}}' "$SESSION_ID" "$tool" "$path"
+  printf '{"session_id":"%s","tool_name":"%s","tool_input":{"file_path":"%s"}}' "$SESSION_ID" "$1" "$2"
 }
 
-echo "=== worktree-write-guard.sh fixture ==="
-
-# ---- Case 1: No lock, no state → pass ----
-echo "Case 1: No lock, no state"
+section "Case 1: No lock → pass"
 rm -f "$LOCK_FILE"
 EC=$(run_guard "$(make_input Write /some/random/path.txt)")
-assert_exit "no lock no state → pass" 0 "$EC"
+assert "no lock → pass" "[ '$EC' -eq 0 ]"
 
-# ---- Case 2: Tester lock, file in worktree → pass ----
-echo "Case 2: Tester in worktree"
+section "Case 2-3: Tester in/out worktree"
 write_lock "tester"
 EC=$(run_guard "$(make_input Write "$WORKTREE/src/foo.py")")
-assert_exit "tester inside worktree → pass" 0 "$EC"
-
-# ---- Case 3: Tester lock, file outside worktree → deny ----
-echo "Case 3: Tester outside worktree"
-write_lock "tester"
+assert "tester inside worktree → pass" "[ '$EC' -eq 0 ]"
 EC=$(run_guard "$(make_input Edit "$MAIN_REPO/src/bar.py")")
-assert_exit "tester outside worktree → deny" 2 "$EC"
+assert "tester outside worktree → deny" "[ '$EC' -eq 2 ]"
 
-# ---- Case 4: Tester lock, /tmp → pass ----
-echo "Case 4: Tester writes /tmp"
+section "Case 4-8: Tester whitelist paths"
 write_lock "tester"
 EC=$(run_guard "$(make_input Write /tmp/some-temp.txt)")
-assert_exit "tester /tmp → pass" 0 "$EC"
-
-# ---- Case 5: Tester lock, whitelist review_reports → pass ----
-echo "Case 5: Tester whitelist review_reports"
-write_lock "tester"
+assert "tester /tmp → pass" "[ '$EC' -eq 0 ]"
 EC=$(run_guard "$(make_input Write "$MAIN_REPO/.claude/review_reports/report.md")")
-assert_exit "tester review_reports → pass" 0 "$EC"
-
-# ---- Case 6: Tester lock, whitelist reviewer-diff → pass ----
-echo "Case 6: Tester whitelist reviewer-diff"
-write_lock "tester"
+assert "tester review_reports → pass" "[ '$EC' -eq 0 ]"
 EC=$(run_guard "$(make_input Write "$MAIN_REPO/.claude/reviewer-diff-some-slug.txt")")
-assert_exit "tester reviewer-diff → pass" 0 "$EC"
-
-# ---- Case 7: Tester lock, whitelist state file → pass ----
-echo "Case 7: Tester whitelist state"
-write_lock "tester"
+assert "tester reviewer-diff → pass" "[ '$EC' -eq 0 ]"
 EC=$(run_guard "$(make_input Write "$MAIN_REPO/.claude/builder-loop/state/test.yml")")
-assert_exit "tester state file → pass" 0 "$EC"
-
-# ---- Case 8: Tester lock, whitelist pause file → pass ----
-echo "Case 8: Tester whitelist pause"
-write_lock "tester"
+assert "tester state file → pass" "[ '$EC' -eq 0 ]"
 EC=$(run_guard "$(make_input Write "$MAIN_REPO/.claude/builder-loop/test-slug.pause")")
-assert_exit "tester pause file → pass" 0 "$EC"
+assert "tester pause file → pass" "[ '$EC' -eq 0 ]"
 
-# ---- Case 9: Reviewer lock (background agent) → pass ----
-echo "Case 9: Reviewer lock, outside worktree"
+section "Case 9: Reviewer (background agent) → pass"
 write_lock "reviewer"
 EC=$(run_guard "$(make_input Write "$MAIN_REPO/outside.txt")")
-assert_exit "reviewer outside → pass (background)" 0 "$EC"
+assert "reviewer outside → pass (background)" "[ '$EC' -eq 0 ]"
 
-# ---- Case 10: Doc-maintainer lock (sync agent) → deny ----
-echo "Case 10: Doc-maintainer outside worktree"
+section "Case 10-11: Sync agents → deny"
 write_lock "doc-maintainer"
 EC=$(run_guard "$(make_input Write "$MAIN_REPO/docs/readme.md")")
-assert_exit "doc-maintainer outside → deny" 2 "$EC"
-
-# ---- Case 11: Arbiter lock (sync agent) → deny ----
-echo "Case 11: Arbiter outside worktree"
+assert "doc-maintainer outside → deny" "[ '$EC' -eq 2 ]"
 write_lock "arbiter"
 EC=$(run_guard "$(make_input Edit "$MAIN_REPO/conflict.txt")")
-assert_exit "arbiter outside → deny" 2 "$EC"
+assert "arbiter outside → deny" "[ '$EC' -eq 2 ]"
 
-# ---- Case 12: Expired lock → pass ----
-echo "Case 12: Expired lock"
+section "Case 12: Expired lock → pass"
 cat > "$LOCK_FILE" <<EOF
 agent_type: tester
 session_id: $SESSION_ID
@@ -149,10 +100,9 @@ ttl_min: 1
 source_dirs_abs: []
 EOF
 EC=$(run_guard "$(make_input Write "$MAIN_REPO/outside.txt")")
-assert_exit "expired lock → pass" 0 "$EC"
+assert "expired lock → pass" "[ '$EC' -eq 0 ]"
 
-# ---- Case 13: Bare mode (empty worktree_path) → pass ----
-echo "Case 13: Bare mode"
+section "Case 13: Bare mode → pass"
 cat > "$LOCK_FILE" <<EOF
 agent_type: tester
 session_id: $SESSION_ID
@@ -163,20 +113,14 @@ ttl_min: 30
 source_dirs_abs: []
 EOF
 EC=$(run_guard "$(make_input Write "$MAIN_REPO/outside.txt")")
-assert_exit "bare mode → pass" 0 "$EC"
+assert "bare mode → pass" "[ '$EC' -eq 0 ]"
 
-# ---- Case 14: Empty session_id → pass ----
-echo "Case 14: Empty session_id"
+section "Case 14-15: Edge cases"
 rm -f "$LOCK_FILE"
 EC=$(run_guard '{"session_id":"","tool_name":"Write","tool_input":{"file_path":"/x"}}')
-assert_exit "empty session_id → pass" 0 "$EC"
-
-# ---- Case 15: Empty file_path → pass ----
-echo "Case 15: Empty file_path"
+assert "empty session_id → pass" "[ '$EC' -eq 0 ]"
 write_lock "tester"
-EC=$(run_guard '{"session_id":"'"$SESSION_ID"'","tool_name":"Write","tool_input":{"file_path":""}}')
-assert_exit "empty file_path → pass" 0 "$EC"
+EC=$(run_guard "{\"session_id\":\"$SESSION_ID\",\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"\"}}")
+assert "empty file_path → pass" "[ '$EC' -eq 0 ]"
 
-echo ""
-echo "=== worktree-write-guard: $PASS/$TOTAL passed, $FAIL failed ==="
-[ "$FAIL" -eq 0 ] || exit 1
+harness_report

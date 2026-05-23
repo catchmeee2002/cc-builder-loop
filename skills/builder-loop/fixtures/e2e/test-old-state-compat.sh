@@ -5,81 +5,30 @@
 #   Case A: state 含 active 但缺 phase 字段 → hook stderr warning + 不阻断 + PASS 后自动写 phase
 #   Case B: state 含 active + phase=active（V3.0 标准）→ 无 warning（不重复提示）
 
-set -uo pipefail
-
-THIS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$THIS_DIR/../../../.." && pwd)"
-HOOK_SCRIPT="${REPO_ROOT}/scripts/builder-loop-stop.sh"
-
-PASS=0
-FAIL=0
-assert() {
-  local desc="$1" cond="$2"
-  if eval "$cond"; then echo "  ✅ $desc"; PASS=$(( PASS + 1 ))
-  else echo "  ❌ $desc (cond: $cond)"; FAIL=$(( FAIL + 1 )); fi
-}
-
-run_hook() {
-  local cwd="$1" err_file="$2" ec=0
-  printf '{"cwd": "%s"}' "$cwd" | bash "$HOOK_SCRIPT" 2>"$err_file" >/dev/null || ec=$?
-  echo "$ec"
-}
-
-setup_repo() {
-  local dir="$1"
-  cd "$dir"
-  git init -q
-  git config user.email "e2e@test.local"
-  git config user.name "e2e-test"
-  mkdir -p .claude
-  cat > .claude/loop.yml <<'Y'
-pass_cmd:
-  - stage: smoke
-    cmd: "true"
-    timeout: 10
-worktree:
-  enabled: false
-Y
-  echo "seed" > README.md
-  cat > .gitignore <<'G'
-.claude/builder-loop/
-.claude/loop-runs/
-.claude/reviewer-*.txt
-.claude/review_reports/
-G
-  git add -A
-  git commit -q -m "chore(test): [cr_id_skip] Old-state compat fixture seed"
-}
-
-echo "=== V3.0 老 state（无 phase 字段）兼容 fixture ==="
+source "$(dirname "${BASH_SOURCE[0]}")/harness.sh"
+harness_init "old-state-compat"
 
 # ============================================================
-# Case A: state 缺 phase 字段 → warning + 不阻断 + 自动升级
+# Case A: V2.x 老 state（无 phase 字段）
 # ============================================================
-echo ""
-echo "=== Case A: V2.x 老 state（无 phase 字段） ==="
-TMPA="$(mktemp -d)"
-trap 'rm -rf "${TMPA:-}" "${TMPB:-}"' EXIT
-setup_repo "$TMPA"
-HEAD1="$(git -C "$TMPA" rev-parse --short HEAD)"
+section "Case A: V2.x 老 state（无 phase 字段）"
+envA=$(create_test_env --slug "old-state-fixture-a" --worktree --no-state --wt-dirty "feature.txt")
+sfA=$(state_file "$envA" "old-state-fixture-a")
+wtA="$envA/.claude/worktrees/old-state-fixture-a"
+headA=$(git -C "$envA" rev-parse --short HEAD)
 
-SLUG_A="old-state-fixture-a"
-WT_A="$TMPA/.claude/worktrees/${SLUG_A}"
-git -C "$TMPA" worktree add -q "$WT_A"
-echo "feature" > "$WT_A/feature.txt"
-
-mkdir -p "$TMPA/.claude/builder-loop/state"
-# V2.x state — 无 phase / last_iter_head / cleanup_phase 字段
-cat > "$TMPA/.claude/builder-loop/state/${SLUG_A}.yml" <<EOF
+# 手工写 V2.x 格式 state（无 phase/last_iter_head/cleanup_phase）
+mkdir -p "$envA/.claude/builder-loop/state"
+cat > "$sfA" <<STEOF
 active: true
-slug: "${SLUG_A}"
-owner_cwd: "$TMPA"
+slug: "old-state-fixture-a"
+owner_cwd: "$envA"
 iter: 0
 max_iter: 5
-project_root: "${WT_A}"
-main_repo_path: "$TMPA"
-start_head: "${HEAD1}"
-worktree_path: "${WT_A}"
+project_root: "$wtA"
+main_repo_path: "$envA"
+start_head: "$headA"
+worktree_path: "$wtA"
 worktree_mode: "clean"
 plan_file: ""
 task_description: |
@@ -91,85 +40,34 @@ last_error_hash: ""
 last_error_count: 0
 stopped_reason: ""
 created_at: "2026-04-15T00:00:00+08:00"
-EOF
-STATE_A="$TMPA/.claude/builder-loop/state/${SLUG_A}.yml"
+STEOF
 
-# V3.2: local.md 指向 slug-A
-cat > "$TMPA/.claude/builder-loop.local.md" <<LOCALEOF
-slug: "${SLUG_A}"
-worktree_path: "${WT_A}"
-state_file: "$TMPA/.claude/builder-loop/state/${SLUG_A}.yml"
-LOCALEOF
+# 写 local.md 指向 slug
+cat > "$envA/.claude/builder-loop.local.md" <<LMEOF
+slug: "old-state-fixture-a"
+worktree_path: "$wtA"
+state_file: $sfA
+LMEOF
 
-ERR_A="$(mktemp)"
-EC_A="$(run_hook "$WT_A" "$ERR_A")"
-
-assert "Case A hook 不阻断（EC=2 PASS 续接）" "[ '$EC_A' -eq 2 ]"
-assert "Case A stderr 含老 state warning" "grep -q '检测到 V2.x 老 state' '$ERR_A'"
-assert "Case A stderr 含自动升级提示" "grep -q '已自动升级到 V3.0 schema' '$ERR_A'"
-# PASS 跑完后 hook 进 V3.0 worktree 模式分支自动写 phase
-PHASE_AFTER="$(grep -E '^phase:' "$STATE_A" | head -1 | sed -E 's/^phase:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/')"
+resultA=$(run_hook "$wtA")
+assert_ec "Case A hook 不阻断（EC=2 PASS 续接）" "$resultA" 2
+assert_stderr_contains "Case A stderr 含老 state warning" "$resultA" "检测到 V2.x 老 state"
+assert_stderr_contains "Case A stderr 含自动升级提示" "$resultA" "已自动升级到 V3.0 schema"
+phaseAfter=$(read_state_field "$sfA" "phase")
 assert "Case A PASS 后 state 已自动升级（phase=passed_pending_review）" \
-  "[ '$PHASE_AFTER' = 'passed_pending_review' ]"
+  "[ '$phaseAfter' = 'passed_pending_review' ]"
 
 # ============================================================
-# Case B: state 含 phase 字段 → 无重复 warning
+# Case B: V3.0 标准 state（含 phase 字段）→ 无重复 warning
 # ============================================================
-echo ""
-echo "=== Case B: V3.0 标准 state（含 phase 字段） ==="
-TMPB="$(mktemp -d)"
-setup_repo "$TMPB"
-HEAD1B="$(git -C "$TMPB" rev-parse --short HEAD)"
+section "Case B: V3.0 标准 state（含 phase 字段）"
+envB=$(create_test_env --slug "old-state-fixture-b" --worktree --phase active --wt-dirty "feature.txt")
+sfB=$(state_file "$envB" "old-state-fixture-b")
+wtB="$envB/.claude/worktrees/old-state-fixture-b"
 
-SLUG_B="old-state-fixture-b"
-WT_B="$TMPB/.claude/worktrees/${SLUG_B}"
-git -C "$TMPB" worktree add -q "$WT_B"
-echo "feature" > "$WT_B/feature.txt"
+resultB=$(run_hook "$wtB")
+assert_ec "Case B hook 正常（EC=2）" "$resultB" 2
+assert "Case B stderr 不含老 state warning" \
+  "! grep -q '检测到 V2.x 老 state' '$resultB/stderr' 2>/dev/null"
 
-mkdir -p "$TMPB/.claude/builder-loop/state"
-cat > "$TMPB/.claude/builder-loop/state/${SLUG_B}.yml" <<EOF
-active: true
-phase: "active"
-slug: "${SLUG_B}"
-owner_cwd: "$TMPB"
-iter: 0
-max_iter: 5
-project_root: "${WT_B}"
-main_repo_path: "$TMPB"
-start_head: "${HEAD1B}"
-last_iter_head: "${HEAD1B}"
-worktree_path: "${WT_B}"
-worktree_mode: "clean"
-plan_file: ""
-task_description: |
-  v3-state-test
-source_dirs: ""
-test_dirs: ""
-last_pass_stage: ""
-last_error_hash: ""
-last_error_count: 0
-stopped_reason: ""
-cleanup_phase: ""
-created_at: "2026-05-09T00:00:00+08:00"
-EOF
-
-# V3.2: local.md 指向 slug-B
-cat > "$TMPB/.claude/builder-loop.local.md" <<LOCALEOF
-slug: "${SLUG_B}"
-worktree_path: "${WT_B}"
-state_file: "$TMPB/.claude/builder-loop/state/${SLUG_B}.yml"
-LOCALEOF
-
-ERR_B="$(mktemp)"
-EC_B="$(run_hook "$WT_B" "$ERR_B")"
-
-assert "Case B hook 正常（EC=2）" "[ '$EC_B' -eq 2 ]"
-assert "Case B stderr 不含老 state warning（V3.0 标准 state 不重复提示）" \
-  "! grep -q '检测到 V2.x 老 state' '$ERR_B'"
-
-echo ""
-echo "=== 总计 ==="
-echo "  ✅ PASS: $PASS"
-echo "  ❌ FAIL: $FAIL"
-[ "$FAIL" -eq 0 ] || exit 1
-exit 0
+harness_report

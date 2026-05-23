@@ -14,31 +14,27 @@
 #
 # 用法：bash test-install-matcher-update.sh
 
-set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/harness.sh"
+harness_init "install-matcher-update"
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/../../../.." && pwd)"
-INSTALL_SCRIPT="$REPO_ROOT/install.sh"
+INSTALL_SCRIPT="$HARNESS_REPO_ROOT/install.sh"
 
-if [ ! -f "$INSTALL_SCRIPT" ]; then
-  echo "❌ FAIL: install.sh 不存在: $INSTALL_SCRIPT" >&2
-  exit 1
-fi
+assert "install.sh 存在" "[ -f '$INSTALL_SCRIPT' ]"
 
 if ! command -v python3 &>/dev/null; then
-  echo "❌ SKIP: python3 不可用，跳过 fixture" >&2
+  echo "SKIP: python3 不可用"
   exit 0
 fi
 
 TMPHOME="$(mktemp -d -t builder-loop-matcher-home-XXXXXX)"
 TMPREPO="$(mktemp -d -t builder-loop-matcher-repo-XXXXXX)"
-trap 'rm -rf "$TMPHOME" "$TMPREPO"' EXIT
+_HARNESS_TMPDIRS+=("$TMPHOME" "$TMPREPO")
 
-# ---- 1. 准备临时仓：复制 install.sh 副本（其它目录留空，软链段会跳过空目录） ----
+# ---- 1. 准备临时仓：复制 install.sh 副本 ----
 cp "$INSTALL_SCRIPT" "$TMPREPO/install.sh"
 chmod +x "$TMPREPO/install.sh"
 
-# ---- 2. 准备 TMPHOME/.claude/settings.json（空 hooks，允许 install.sh 注册） ----
+# ---- 2. 准备 TMPHOME/.claude/settings.json ----
 mkdir -p "$TMPHOME/.claude"
 cat > "$TMPHOME/.claude/settings.json" <<'JSON'
 {
@@ -48,14 +44,14 @@ cat > "$TMPHOME/.claude/settings.json" <<'JSON'
 JSON
 
 # ---- 3. 第一次 install ----
-if ! HOME="$TMPHOME" bash "$TMPREPO/install.sh" >/tmp/install-matcher-1.log 2>&1; then
-  ec=$?
-  echo "❌ FAIL: 第一次 install exit=$ec" >&2
-  cat /tmp/install-matcher-1.log >&2
-  exit 1
-fi
+section "第一次 install"
+INSTALL1_LOG="$(mktemp)"
+_HARNESS_TMPDIRS+=("$INSTALL1_LOG")
+INSTALL1_EC=0
+HOME="$TMPHOME" bash "$TMPREPO/install.sh" >"$INSTALL1_LOG" 2>&1 || INSTALL1_EC=$?
+assert "第一次 install 退出码=0" "[ '$INSTALL1_EC' -eq 0 ]"
 
-# ---- 4. 断言：tester-lock-check.sh 的 matcher = "Read|Grep|Glob" ----
+# ---- 4. 断言：matcher = "Read|Grep|Glob" ----
 matcher_before=$(python3 -c '
 import json, sys
 cfg = json.load(open(sys.argv[1]))
@@ -66,39 +62,27 @@ for item in cfg.get("hooks", {}).get("PreToolUse", []):
             sys.exit(0)
 sys.exit(1)
 ' "$TMPHOME/.claude/settings.json")
+assert "第一次 install 后 matcher=Read|Grep|Glob" "[ '$matcher_before' = 'Read|Grep|Glob' ]"
 
-if [ "$matcher_before" != "Read|Grep|Glob" ]; then
-  echo "❌ FAIL: 第一次 install 后 tester-lock-check.sh matcher='$matcher_before'，期望 'Read|Grep|Glob'" >&2
-  exit 1
-fi
-
-# ---- 5. sed 改临时副本：tester-lock-check.sh matcher 加 |WebFetch ----
+# ---- 5. sed 改临时副本：matcher 加 |WebFetch ----
+section "sed 改 matcher 后第二次 install"
 sed -i 's#"tester-lock-check.sh",      "Read|Grep|Glob"#"tester-lock-check.sh",      "Read|Grep|Glob|WebFetch"#' "$TMPREPO/install.sh"
-
-# 验证 sed 真改成了
-if ! grep -q 'Read|Grep|Glob|WebFetch' "$TMPREPO/install.sh"; then
-  echo "❌ FAIL: sed 未能改 install.sh 副本的 matcher" >&2
-  grep -n 'tester-lock-check' "$TMPREPO/install.sh" >&2 || true
-  exit 1
-fi
+assert "sed 改成功" "grep -q 'Read|Grep|Glob|WebFetch' '$TMPREPO/install.sh'"
 
 # ---- 6. 第二次 install ----
-if ! HOME="$TMPHOME" bash "$TMPREPO/install.sh" >/tmp/install-matcher-2.log 2>&1; then
-  ec=$?
-  echo "❌ FAIL: 第二次 install exit=$ec" >&2
-  cat /tmp/install-matcher-2.log >&2
-  exit 1
-fi
+INSTALL2_LOG="$(mktemp)"
+_HARNESS_TMPDIRS+=("$INSTALL2_LOG")
+INSTALL2_EC=0
+HOME="$TMPHOME" bash "$TMPREPO/install.sh" >"$INSTALL2_LOG" 2>&1 || INSTALL2_EC=$?
+assert "第二次 install 退出码=0" "[ '$INSTALL2_EC' -eq 0 ]"
 
 # ---- 7. 断言：install 输出含 "1 条更新" ----
-if ! grep -q '1 条更新' /tmp/install-matcher-2.log; then
-  echo "❌ FAIL: 第二次 install 输出未含 '1 条更新'" >&2
-  cat /tmp/install-matcher-2.log >&2
-  exit 1
-fi
+assert_contains "install 输出含 '1 条更新'" "$INSTALL2_LOG" '1 条更新'
 
-# ---- 8. 断言：tester-lock-check.sh 的 matcher 已变成新值 + 数组里只有一条 ----
-result=$(python3 -c '
+# ---- 8. 断言：matcher 已更新 + 只有一条 ----
+section "验证 matcher 更新结果"
+matcher_check_ok=0
+python3 -c '
 import json, sys
 cfg = json.load(open(sys.argv[1]))
 arr = cfg.get("hooks", {}).get("PreToolUse", [])
@@ -107,16 +91,9 @@ for item in arr:
     for h in item.get("hooks", []):
         if "tester-lock-check.sh" in h.get("command", ""):
             matched.append(item.get("matcher", ""))
-print(f"count={len(matched)} matchers={matched}")
-' "$TMPHOME/.claude/settings.json")
+assert len(matched) == 1, f"expected 1 entry, got {len(matched)}"
+assert matched[0] == "Read|Grep|Glob|WebFetch", f"unexpected matcher: {matched[0]}"
+' "$TMPHOME/.claude/settings.json" && matcher_check_ok=1
+assert "stale 条目被删 + 新条目写入（count=1, matcher=Read|Grep|Glob|WebFetch）" "[ '$matcher_check_ok' -eq 1 ]"
 
-expected='count=1 matchers=['"'"'Read|Grep|Glob|WebFetch'"'"']'
-if [ "$result" != "$expected" ]; then
-  echo "❌ FAIL: 期望 $expected" >&2
-  echo "  实际: $result" >&2
-  cat "$TMPHOME/.claude/settings.json" >&2
-  exit 1
-fi
-
-echo "✅ PASS: install.sh 识别 matcher 字面变化，stale 条目被删 + 新条目写入"
-exit 0
+harness_report

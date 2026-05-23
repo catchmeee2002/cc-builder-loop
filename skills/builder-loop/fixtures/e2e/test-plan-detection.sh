@@ -8,29 +8,27 @@
 # 用法：bash test-plan-detection.sh
 # 退出码：0=全部通过 / 1=有失败
 
-set -uo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/harness.sh"
+harness_init "plan-detection"
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/../../../.." && pwd)"
-INSTALL_SCRIPT="$REPO_ROOT/install.sh"
-UNINSTALL_SCRIPT="$REPO_ROOT/uninstall.sh"
-DIAG_SCRIPT="$REPO_ROOT/skills/builder-loop/scripts/diagnose-stop-hook.sh"
+INSTALL_SCRIPT="$HARNESS_REPO_ROOT/install.sh"
+UNINSTALL_SCRIPT="$HARNESS_REPO_ROOT/uninstall.sh"
+DIAG_SCRIPT="$HARNESS_REPO_ROOT/skills/builder-loop/scripts/diagnose-stop-hook.sh"
 
-if [ ! -f "$INSTALL_SCRIPT" ] || [ ! -f "$UNINSTALL_SCRIPT" ] || [ ! -f "$DIAG_SCRIPT" ]; then
-  echo "❌ FAIL: install.sh / uninstall.sh / diagnose 不全" >&2
-  exit 1
-fi
+assert "install.sh 存在" "[ -f '$INSTALL_SCRIPT' ]"
+assert "uninstall.sh 存在" "[ -f '$UNINSTALL_SCRIPT' ]"
+assert "diagnose 脚本存在" "[ -f '$DIAG_SCRIPT' ]"
 
 if ! command -v python3 &>/dev/null; then
-  echo "❌ SKIP: python3 不可用" >&2
+  echo "SKIP: python3 不可用"
   exit 0
 fi
 
 TMPHOME="$(mktemp -d -t builder-loop-plan-XXXXXX)"
 TMPREPO="$(mktemp -d -t builder-loop-plan-repo-XXXXXX)"
-trap 'rm -rf "$TMPHOME" "$TMPREPO"' EXIT
+_HARNESS_TMPDIRS+=("$TMPHOME" "$TMPREPO")
 
-# ---- 1. 准备临时仓（含 .claude/loop.yml 让 diagnose 能找到 PROJECT_ROOT） ----
+# ---- 准备临时仓（含 .claude/loop.yml 让 diagnose 能找到 PROJECT_ROOT） ----
 mkdir -p "$TMPREPO/.claude"
 cat > "$TMPREPO/.claude/loop.yml" <<'YML'
 pass_cmd:
@@ -38,7 +36,7 @@ pass_cmd:
     cmd: "true"
 YML
 
-# ---- 2. 准备 baseline settings.json ----
+# ---- 准备 baseline settings.json ----
 mkdir -p "$TMPHOME/.claude"
 cat > "$TMPHOME/.claude/settings.json" <<'JSON'
 {
@@ -47,13 +45,7 @@ cat > "$TMPHOME/.claude/settings.json" <<'JSON'
 }
 JSON
 
-PASS=0
-FAIL=0
-
-# 直接 if 结构断言，避开 eval（install/diagnose 输出含中文括号 / 单引号会让 eval 炸）
-ok()   { echo "  ✅ $1"; PASS=$(( PASS + 1 )); }
-fail() { echo "  ❌ $1"; FAIL=$(( FAIL + 1 )); }
-
+# 辅助：统计 builder-loop hook 条数
 count_bl_hooks() {
   python3 -c '
 import json, sys
@@ -72,6 +64,7 @@ print(n)
 ' "$1"
 }
 
+# 辅助：检查某 hook 是否已注册
 has_hook() {
   python3 -c '
 import json, sys
@@ -85,211 +78,131 @@ sys.exit(1)
 ' "$1" "$2"
 }
 
-echo "=== E2E: 方案识别（max / copilot）==="
+# 辅助：跑命令返回 handle（通用，传入完整命令参数）
+# 用法：run_cmd_with_env env_args... -- cmd args...
+run_cmd() {
+  local handle
+  handle="$(mktemp -d -t harness-result-XXXXXX)"
+  _HARNESS_TMPDIRS+=("$handle")
+  local ec=0
+  "$@" >"$handle/stdout" 2>"$handle/stderr" || ec=$?
+  echo "$ec" > "$handle/ec"
+  echo "$handle"
+}
 
 # ============================================================
 # Case 1: max env install（unset ANTHROPIC_BASE_URL）
 # ============================================================
-echo ""
-echo "--- Case 1: max env install ---"
-INSTALL_OUT_FILE="$(mktemp)"
-INSTALL_EC=0
-env -u ANTHROPIC_BASE_URL HOME="$TMPHOME" bash "$INSTALL_SCRIPT" >"$INSTALL_OUT_FILE" 2>&1 || INSTALL_EC=$?
-
-if [ "$INSTALL_EC" != "0" ]; then
-  fail "max env install 退出码 0（实际=$INSTALL_EC）"
-  cat "$INSTALL_OUT_FILE" >&2
-  exit 1
-fi
-ok "max env install 退出码 0"
-
-if grep -qF '检测方案=max' "$INSTALL_OUT_FILE"; then
-  ok "max install 输出含 '检测方案=max'"
-else
-  fail "max install 输出缺 '检测方案=max'"
-fi
-
-if grep -qF '0 条跳过' "$INSTALL_OUT_FILE"; then
-  ok "max install 输出含 '0 条跳过'（V3.1 起所有 hook 均注册）"
-else
-  fail "max install 输出缺 '0 条跳过'"
-fi
+section "Case 1: max env install"
+RES_I1="$(run_cmd env -u ANTHROPIC_BASE_URL HOME="$TMPHOME" bash "$INSTALL_SCRIPT")"
+assert_ec "max env install 退出码 0" "$RES_I1" 0
+assert_stdout_contains "max install 输出含 '检测方案=max'" "$RES_I1" '检测方案=max'
+assert_stdout_contains "max install 输出含 '0 条跳过'" "$RES_I1" '0 条跳过'
 
 n="$(count_bl_hooks "$TMPHOME/.claude/settings.json")"
-if [ "$n" = "6" ]; then
-  ok "max install 后 settings.json 含 6 条 builder-loop hook"
-else
-  fail "max install 后 settings.json 含 $n 条 hook（期望 6）"
-fi
-
+assert "max install 后 settings.json 含 6 条 builder-loop hook（实际=$n）" "[ '$n' = '6' ]"
 if has_hook "$TMPHOME/.claude/settings.json" "worktree-write-guard.sh"; then
-  ok "max install 后 worktree-write-guard.sh 已注册"
+  assert "max install 后 worktree-write-guard.sh 已注册" "true"
 else
-  fail "max install 后 worktree-write-guard.sh 未注册"
+  assert "max install 后 worktree-write-guard.sh 已注册" "false"
 fi
 
 # ============================================================
 # Case 2: max env diagnose
 # ============================================================
-echo ""
-echo "--- Case 2: max env diagnose ---"
-DIAG_OUT_FILE="$(mktemp)"
-DIAG_EC=0
-env -u ANTHROPIC_BASE_URL HOME="$TMPHOME" bash "$DIAG_SCRIPT" "$TMPREPO" >"$DIAG_OUT_FILE" 2>&1 || DIAG_EC=$?
+section "Case 2: max env diagnose"
+RES_D1="$(run_cmd env -u ANTHROPIC_BASE_URL HOME="$TMPHOME" bash "$DIAG_SCRIPT" "$TMPREPO")"
+assert_stdout_contains "max diagnose 输出含 'plan: max'" "$RES_D1" 'plan: max'
 
-if grep -qF 'plan: max' "$DIAG_OUT_FILE"; then
-  ok "max diagnose 输出含 'plan: max'"
+# [1/6] + [2/6] verdict=ok 需要在合并的 stdout+stderr 中找
+DIAG_OUT1="$(cat "$RES_D1/stdout" "$RES_D1/stderr" 2>/dev/null)"
+if echo "$DIAG_OUT1" | grep -E '^\[1/6\]' | grep -qF 'ok'; then
+  assert "max diagnose [1/6] verdict=ok" "true"
 else
-  fail "max diagnose 输出缺 'plan: max'"
+  assert "max diagnose [1/6] verdict=ok" "false"
 fi
 
-if grep -E '^\[1/6\]' "$DIAG_OUT_FILE" | grep -qF 'ok'; then
-  ok "max diagnose [1/6] verdict=ok"
+if echo "$DIAG_OUT1" | grep -E '^\[2/6\]' | grep -qF 'ok'; then
+  assert "max diagnose [2/6] verdict=ok" "true"
 else
-  fail "max diagnose [1/6] verdict 不是 ok"
+  assert "max diagnose [2/6] verdict=ok" "false"
 fi
 
-# [2/6] 软链段：max 方案下软链全装（install.sh 软链循环不分方案），verdict 应 ok
-if grep -E '^\[2/6\]' "$DIAG_OUT_FILE" | grep -qF 'ok'; then
-  ok "max diagnose [2/6] verdict=ok（软链全 9 条均存在，install.sh 软链循环不分方案）"
-else
-  fail "max diagnose [2/6] verdict 不是 ok"
-fi
+DIAG_EC1="$(result_ec "$RES_D1")"
+assert "max diagnose 退出码 != 2（实际=$DIAG_EC1）" "[ '$DIAG_EC1' -ne 2 ]"
 
-# diagnose 退出码语义：0=全 ok / 1=有 warn / 2=有 fail
-# 临时仓 trace 必然为空，[5/6] warn 是合理的，断言不能=2 即 [1/6]/[2/6] 等都没 fail
-if [ "$DIAG_EC" -ne 2 ]; then
-  ok "max diagnose 退出码 != 2（[1/6]/[2/6] 等关键段无 fail，实际=$DIAG_EC，warn 来自空 trace 合理）"
-else
-  fail "max diagnose 退出码 = 2（有 fail 段）"
-  cat "$DIAG_OUT_FILE" >&2
-fi
-
-# --json 模式 plan 字段
+# --json 模式
 DIAG_JSON_OUT="$(env -u ANTHROPIC_BASE_URL HOME="$TMPHOME" bash "$DIAG_SCRIPT" "$TMPREPO" --json 2>/dev/null || true)"
-if echo "$DIAG_JSON_OUT" | python3 -c '
+JSON_PLAN_OK=0
+echo "$DIAG_JSON_OUT" | python3 -c '
 import sys, json
 try:
     d = json.load(sys.stdin)
     sys.exit(0 if d.get("plan") == "max" else 1)
 except Exception:
     sys.exit(1)
-' 2>/dev/null; then
-  ok "max diagnose --json 输出 plan='max'"
-else
-  fail "max diagnose --json 输出 plan 字段缺失或非 max"
-fi
+' 2>/dev/null && JSON_PLAN_OK=1
+assert "max diagnose --json 输出 plan='max'" "[ '$JSON_PLAN_OK' -eq 1 ]"
 
 # ============================================================
-# Case 3: uninstall + 还原
+# Case 3: uninstall
 # ============================================================
-echo ""
-echo "--- Case 3: uninstall ---"
+section "Case 3: uninstall"
 HOME="$TMPHOME" bash "$UNINSTALL_SCRIPT" >/dev/null 2>&1 || true
 n="$(count_bl_hooks "$TMPHOME/.claude/settings.json")"
-if [ "$n" = "0" ]; then
-  ok "uninstall 后 settings.json 含 0 条 builder-loop hook"
-else
-  fail "uninstall 后 settings.json 含 $n 条 hook（期望 0）"
-fi
+assert "uninstall 后 settings.json 含 0 条 builder-loop hook" "[ '$n' = '0' ]"
 
 # ============================================================
 # Case 4: copilot env install
 # ============================================================
-echo ""
-echo "--- Case 4: copilot env install ---"
-INSTALL_OUT_FILE2="$(mktemp)"
-INSTALL_EC2=0
-ANTHROPIC_BASE_URL=http://127.0.0.1:4141 HOME="$TMPHOME" bash "$INSTALL_SCRIPT" >"$INSTALL_OUT_FILE2" 2>&1 || INSTALL_EC2=$?
-
-if [ "$INSTALL_EC2" != "0" ]; then
-  fail "copilot env install 退出码 0（实际=$INSTALL_EC2）"
-  cat "$INSTALL_OUT_FILE2" >&2
-  exit 1
-fi
-ok "copilot env install 退出码 0"
-
-if grep -qF '检测方案=copilot' "$INSTALL_OUT_FILE2"; then
-  ok "copilot install 输出含 '检测方案=copilot'"
-else
-  fail "copilot install 输出缺 '检测方案=copilot'"
-fi
-
-if grep -qF '0 条跳过' "$INSTALL_OUT_FILE2"; then
-  ok "copilot install 输出含 '0 条跳过'"
-else
-  fail "copilot install 输出缺 '0 条跳过'"
-fi
+section "Case 4: copilot env install"
+RES_I2="$(run_cmd env ANTHROPIC_BASE_URL=http://127.0.0.1:4141 HOME="$TMPHOME" bash "$INSTALL_SCRIPT")"
+assert_ec "copilot env install 退出码 0" "$RES_I2" 0
+assert_stdout_contains "copilot install 输出含 '检测方案=copilot'" "$RES_I2" '检测方案=copilot'
+assert_stdout_contains "copilot install 输出含 '0 条跳过'" "$RES_I2" '0 条跳过'
 
 n="$(count_bl_hooks "$TMPHOME/.claude/settings.json")"
-if [ "$n" = "6" ]; then
-  ok "copilot install 后 settings.json 含 6 条 builder-loop hook"
-else
-  fail "copilot install 后 settings.json 含 $n 条 hook（期望 6）"
-fi
-
+assert "copilot install 后 settings.json 含 6 条 builder-loop hook（实际=$n）" "[ '$n' = '6' ]"
 if has_hook "$TMPHOME/.claude/settings.json" "worktree-write-guard.sh"; then
-  ok "copilot install 后 worktree-write-guard.sh 已注册"
+  assert "copilot install 后 worktree-write-guard.sh 已注册" "true"
 else
-  fail "copilot install 后 worktree-write-guard.sh 未注册"
+  assert "copilot install 后 worktree-write-guard.sh 已注册" "false"
 fi
 
 # ============================================================
 # Case 5: copilot env diagnose
 # ============================================================
-echo ""
-echo "--- Case 5: copilot env diagnose ---"
-DIAG_OUT_FILE2="$(mktemp)"
-DIAG_EC2=0
-ANTHROPIC_BASE_URL=http://127.0.0.1:4141 HOME="$TMPHOME" bash "$DIAG_SCRIPT" "$TMPREPO" >"$DIAG_OUT_FILE2" 2>&1 || DIAG_EC2=$?
+section "Case 5: copilot env diagnose"
+RES_D2="$(run_cmd env ANTHROPIC_BASE_URL=http://127.0.0.1:4141 HOME="$TMPHOME" bash "$DIAG_SCRIPT" "$TMPREPO")"
+assert_stdout_contains "copilot diagnose 输出含 'plan: copilot'" "$RES_D2" 'plan: copilot'
 
-if grep -qF 'plan: copilot' "$DIAG_OUT_FILE2"; then
-  ok "copilot diagnose 输出含 'plan: copilot'"
+DIAG_OUT2="$(cat "$RES_D2/stdout" "$RES_D2/stderr" 2>/dev/null)"
+if echo "$DIAG_OUT2" | grep -E '^\[1/6\]' | grep -qF 'ok'; then
+  assert "copilot diagnose [1/6] verdict=ok" "true"
 else
-  fail "copilot diagnose 输出缺 'plan: copilot'"
+  assert "copilot diagnose [1/6] verdict=ok" "false"
 fi
 
-if grep -E '^\[1/6\]' "$DIAG_OUT_FILE2" | grep -qF 'ok'; then
-  ok "copilot diagnose [1/6] verdict=ok"
+if echo "$DIAG_OUT2" | grep -E '^\[2/6\]' | grep -qF 'ok'; then
+  assert "copilot diagnose [2/6] verdict=ok" "true"
 else
-  fail "copilot diagnose [1/6] verdict 不是 ok"
+  assert "copilot diagnose [2/6] verdict=ok" "false"
 fi
 
-if grep -E '^\[2/6\]' "$DIAG_OUT_FILE2" | grep -qF 'ok'; then
-  ok "copilot diagnose [2/6] verdict=ok"
-else
-  fail "copilot diagnose [2/6] verdict 不是 ok"
-fi
+DIAG_EC2="$(result_ec "$RES_D2")"
+assert "copilot diagnose 退出码 != 2（实际=$DIAG_EC2）" "[ '$DIAG_EC2' -ne 2 ]"
 
-if [ "$DIAG_EC2" -ne 2 ]; then
-  ok "copilot diagnose 退出码 != 2（实际=$DIAG_EC2）"
-else
-  fail "copilot diagnose 退出码 = 2"
-  cat "$DIAG_OUT_FILE2" >&2
-fi
-
-# --json 模式 plan 字段
-DIAG_JSON_OUT2="$(ANTHROPIC_BASE_URL=http://127.0.0.1:4141 HOME="$TMPHOME" bash "$DIAG_SCRIPT" "$TMPREPO" --json 2>/dev/null || true)"
-if echo "$DIAG_JSON_OUT2" | python3 -c '
+# --json 模式
+DIAG_JSON_OUT2="$(env ANTHROPIC_BASE_URL=http://127.0.0.1:4141 HOME="$TMPHOME" bash "$DIAG_SCRIPT" "$TMPREPO" --json 2>/dev/null || true)"
+JSON_PLAN_OK2=0
+echo "$DIAG_JSON_OUT2" | python3 -c '
 import sys, json
 try:
     d = json.load(sys.stdin)
     sys.exit(0 if d.get("plan") == "copilot" else 1)
 except Exception:
     sys.exit(1)
-' 2>/dev/null; then
-  ok "copilot diagnose --json 输出 plan='copilot'"
-else
-  fail "copilot diagnose --json 输出 plan 字段缺失或非 copilot"
-fi
+' 2>/dev/null && JSON_PLAN_OK2=1
+assert "copilot diagnose --json 输出 plan='copilot'" "[ '$JSON_PLAN_OK2' -eq 1 ]"
 
-# ============================================================
-rm -f "$INSTALL_OUT_FILE" "$INSTALL_OUT_FILE2" "$DIAG_OUT_FILE" "$DIAG_OUT_FILE2"
-
-echo ""
-if [ "$FAIL" -gt 0 ]; then
-  echo "❌ FAIL: $FAIL 个断言失败（PASS=$PASS）"
-  exit 1
-fi
-echo "✅ PASS: $PASS 个断言全部通过"
-exit 0
+harness_report

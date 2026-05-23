@@ -21,52 +21,27 @@
 # 用法：bash test-nudge-max-reads-worktree.sh
 # 退出码：0=全部通过 / 1=有失败
 
-set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/harness.sh"
+harness_init "nudge-max-reads-worktree"
 
-THIS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$THIS_DIR/../../../.." && pwd)"
-HOOK_SCRIPT="${REPO_ROOT}/scripts/builder-loop-stop.sh"
-SETUP_SCRIPT="${REPO_ROOT}/skills/builder-loop/scripts/setup-builder-loop.sh"
+assert "stop hook 脚本存在" "[ -f '$HARNESS_HOOK' ]"
+assert "setup 脚本存在" "[ -f '$HARNESS_SETUP' ]"
 
-PASS=0
-FAIL=0
 MOCK_PORT=19198
 MOCK_PID=""
-TMP=""
+TMP="$(mktemp -d)"
+_HARNESS_TMPDIRS+=("$TMP")
 
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-NC='\033[0m'
-
-pass() { echo -e "  ${GREEN}PASS${NC} $1"; PASS=$(( PASS + 1 )); }
-fail() { echo -e "  ${RED}FAIL${NC} $1  [cond: $2]"; FAIL=$(( FAIL + 1 )); }
-
-assert() {
-  local desc="$1" cond="$2"
-  if eval "$cond" 2>/dev/null; then pass "$desc"; else fail "$desc" "$cond"; fi
-}
-
-# ---- Cleanup ----
-cleanup() {
+# ---- Mock server 清理（额外 trap 处理 mock PID）----
+_nudge_cleanup() {
   if [ -n "$MOCK_PID" ] && kill -0 "$MOCK_PID" 2>/dev/null; then
     kill "$MOCK_PID" 2>/dev/null || true
     wait "$MOCK_PID" 2>/dev/null || true
     MOCK_PID=""
   fi
-  [ -n "$TMP" ] && rm -rf "$TMP"
 }
-trap cleanup EXIT
-
-TMP="$(mktemp -d)"
-
-echo "=== V2.0 E2E: stop hook nudge 上限优先读 worktree loop.yml ==="
-echo "    Stop hook：${HOOK_SCRIPT}"
-echo "    Mock 端口：${MOCK_PORT}"
-echo "    临时目录：${TMP}"
-echo ""
-
-assert "stop hook 脚本存在" "[ -f '${HOOK_SCRIPT}' ]"
-assert "setup 脚本存在" "[ -f '${SETUP_SCRIPT}' ]"
+# 叠加到 harness 的 EXIT trap
+trap '_nudge_cleanup; _harness_cleanup' EXIT
 
 # ---- Mock server 管理 ----
 # 始终返回 continue_nudge（让 stop hook 走 judge 路径，由 max_consecutive_nudges 决定最终行为）
@@ -140,10 +115,13 @@ except:
 
 # 调用 stop hook（注入 mock env）
 # $1 = cwd（worktree 路径）
-# $2 = 输出 stderr 到文件
-# 返回 exit code
-call_stop_hook() {
-  local proj="$1" err_file="$2"
+# 返回 handle 路径
+call_stop_hook_mock() {
+  local proj="$1"
+  local handle
+  handle="$(mktemp -d -t harness-result-XXXXXX)"
+  _HARNESS_TMPDIRS+=("$handle")
+
   local ec=0
   printf '{"cwd": "%s", "transcript_path": "%s"}' \
     "$proj" \
@@ -153,16 +131,17 @@ call_stop_hook() {
       PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
       ANTHROPIC_API_KEY="test" \
       ANTHROPIC_BASE_URL="http://127.0.0.1:${MOCK_PORT}" \
-      bash "${HOOK_SCRIPT}" \
-    2>"$err_file" >/dev/null \
+      bash "${HARNESS_HOOK}" \
+    >"$handle/stdout" 2>"$handle/stderr" \
   || ec=$?
-  return "$ec"
+  echo "$ec" > "$handle/ec"
+  echo "$handle"
 }
 
 # 创建主仓（worktree 启用 + judge 段）并调 setup 创建 worktree
 # $1 = 目录名（在 TMP 下）
 # $2 = judge 段 YAML（缩进 2 空格的 judge: 块）
-# 输出 WORKTREE_PATH 和 STATE_FILE 到两个全局变量（_WT 和 _SF 后缀）
+# 输出到全局变量：REPO_PATH / WORKTREE_PATH / STATE_FILE
 make_worktree_repo() {
   local dir_name="$1"
   local judge_yaml="$2"
@@ -182,7 +161,6 @@ worktree:
 ${judge_yaml}
 YMLEOF
   echo "seed" > "${repo}/README.md"
-  # .gitignore：排除 builder-loop 运行时文件，防止 merge-worktree-back 时 untracked 冲突
   cat > "${repo}/.gitignore" <<'IGNEOF'
 .claude/builder-loop/
 .claude/loop-runs/
@@ -196,13 +174,11 @@ IGNEOF
   local old_cwd
   old_cwd="$(pwd)"
   cd "${repo}"
-  # 走临时日志解耦（防 head 关 pipe 触发 SIGPIPE 让 setup 中途死，setup 输出量随版本会增长）
   local setup_log="${TMP}/setup-${dir_name}.log"
-  bash "${SETUP_SCRIPT}" "${dir_name}-slug" > "${setup_log}" 2>&1 || true
+  bash "${HARNESS_SETUP}" "${dir_name}-slug" > "${setup_log}" 2>&1 || true
   head -5 "${setup_log}" || true
   cd "${old_cwd}"
 
-  # 输出到带前缀的全局变量（bash 无引用传 hack，用 eval）
   local sf
   sf="$(find "${repo}/.claude/builder-loop/state" -maxdepth 1 -name "*-${dir_name}-slug.yml" 2>/dev/null | head -1 || true)"
   local wt
@@ -224,10 +200,8 @@ mkdir -p "${TMP}/fakehome"
 
 # ============================================================
 # Case 1：worktree max=1 + state nudge_count=1 → max_nudge_reached 分支
-#          （主仓 max=99，worktree 覆盖为 max=1）
 # ============================================================
-echo ""
-echo "=== Case 1: worktree max=1 + nudge_count=1 → 强制 stop_done（防脱缰）==="
+section "Case 1: worktree max=1 + nudge_count=1 → 强制 stop_done（防脱缰）"
 
 make_worktree_repo "c1" "judge:
   enabled: true
@@ -242,7 +216,7 @@ assert "C1: worktree 已创建" "[ -n '${C1_WT}' ] && [ -d '${C1_WT}' ]"
 assert "C1: 主仓 loop.yml max=99" \
   "grep -q 'max_consecutive_nudges: 99' '${C1_REPO}/.claude/loop.yml'"
 
-# 把 worktree 内 loop.yml 改为 max=1（不需要 commit）
+# 把 worktree 内 loop.yml 改为 max=1
 cat > "${C1_WT}/.claude/loop.yml" <<'YMLEOF'
 pass_cmd:
   - stage: smoke
@@ -263,7 +237,7 @@ assert "C1: worktree loop.yml 已改为 max=1" \
 assert "C1: 主仓 loop.yml 仍是 max=99（未被修改）" \
   "grep -q 'max_consecutive_nudges: 99' '${C1_REPO}/.claude/loop.yml'"
 
-# 设 state.consecutive_nudge_count=1（已达 worktree max=1）
+# 设 state.consecutive_nudge_count=1
 python3 - <<PYEOF
 import re
 
@@ -279,30 +253,18 @@ with open(sf, 'w') as f:
 print("C1 state: consecutive_nudge_count=1")
 PYEOF
 
-# 启动 mock server（始终 continue_nudge）
 start_mock_server
 
-ERR_C1="${TMP}/err_c1.txt"
-EC_C1=0
-call_stop_hook "${C1_WT}" "${ERR_C1}" || EC_C1=$?
+RES_C1="$(call_stop_hook_mock "${C1_WT}")"
 
-# 断言：max_nudge_reached → fall-through merge → PASS 路径 → exit 2
-assert "C1: exit code=2（走 PASS/merge 路径）" "[ '${EC_C1}' = '2' ]"
-# 应含强制 stop_done 文案（consecutive_nudge_count >= max）
-assert "C1: stderr 含强制 stop_done 文案（max_nudge_reached）" \
-  "grep -qiE '强制 stop_done|consecutive_nudge_count.*>=.*max|max.*nudge.*防脱缰' '${ERR_C1}'"
-# PASS 后的"请继续执行后续流程"是正常 PASS 路径输出，不是 nudge 推进文案
-# 验证：不含 continue_nudge 后跟随的 nudge 推进词句（"请确认"是 nudge 推进询问）
-assert "C1: stderr 不含 nudge 推进文案（请确认...是否完成）" \
-  "! grep -qi '请确认：是确实完成' '${ERR_C1}'"
+assert_ec "C1: exit code=2（走 PASS/merge 路径）" "$RES_C1" 2
+assert_stderr_contains "C1: stderr 含强制 stop_done 文案" "$RES_C1" '强制 stop_done\|consecutive_nudge_count.*>=.*max\|max.*nudge.*防脱缰'
+assert "C1: stderr 不含 nudge 推进文案" "! grep -qi '请确认：是确实完成' '$RES_C1/stderr'"
 
 # ============================================================
 # Case 2：反向验证 — 删掉 worktree loop.yml（fallback 主仓 max=99）
-#          使用独立主仓（REPO_C2），consecutive_nudge_count=1（< 99）
-#          → 应走 nudge 分支（exit 2 + nudge 文案）
 # ============================================================
-echo ""
-echo "=== Case 2: 无 worktree loop.yml（fallback 主仓 max=99）→ nudge 分支 ==="
+section "Case 2: 无 worktree loop.yml（fallback 主仓 max=99）→ nudge 分支"
 
 make_worktree_repo "c2" "judge:
   enabled: true
@@ -317,11 +279,9 @@ assert "C2: worktree 已创建" "[ -n '${C2_WT}' ] && [ -d '${C2_WT}' ]"
 assert "C2: 主仓 loop.yml max=99" \
   "grep -q 'max_consecutive_nudges: 99' '${C2_REPO}/.claude/loop.yml'"
 
-# 删掉 worktree 内 loop.yml（模拟 worktree 内 loop.yml 不存在 → fallback 主仓）
 rm -f "${C2_WT}/.claude/loop.yml"
 assert "C2: worktree loop.yml 已删除" "[ ! -f '${C2_WT}/.claude/loop.yml' ]"
 
-# 设 state.consecutive_nudge_count=1（< 主仓 max=99，应走 nudge 分支）
 python3 - <<PYEOF
 import re
 
@@ -337,33 +297,11 @@ with open(sf, 'w') as f:
 print("C2 state: consecutive_nudge_count=1")
 PYEOF
 
-ERR_C2="${TMP}/err_c2.txt"
-EC_C2=0
-call_stop_hook "${C2_WT}" "${ERR_C2}" || EC_C2=$?
+RES_C2="$(call_stop_hook_mock "${C2_WT}")"
 
-# 断言：nudge 分支 → exit 2 + nudge 推进文案
-assert "C2: exit code=2（nudge 分支）" "[ '${EC_C2}' = '2' ]"
-assert "C2: stderr 含 [builder-loop judge 前缀（nudge 注入）" \
-  "grep -q '\[builder-loop judge' '${ERR_C2}'"
-# nudge 推进文案：judge 输出中包含"请确认"或"判定 agent"相关词
-assert "C2: stderr 含 nudge 推进询问文案（请确认...）" \
-  "grep -qi '请确认' '${ERR_C2}'"
-# 不应含 max_nudge_reached（1 < 99）
-assert "C2: stderr 不含 max_nudge_reached（未触发上限）" \
-  "! grep -qi 'max_nudge_reached' '${ERR_C2}'"
+assert_ec "C2: exit code=2（nudge 分支）" "$RES_C2" 2
+assert_stderr_contains "C2: stderr 含 [builder-loop judge 前缀" "$RES_C2" '\[builder-loop judge'
+assert_stderr_contains "C2: stderr 含 nudge 推进询问文案" "$RES_C2" '请确认'
+assert "C2: stderr 不含 max_nudge_reached" "! grep -qi 'max_nudge_reached' '$RES_C2/stderr'"
 
-# ============================================================
-# 汇总
-# ============================================================
-echo ""
-echo "=============================="
-echo "测试结果汇总"
-echo "=============================="
-echo -e "  ${GREEN}PASS: ${PASS}${NC}"
-if [ "${FAIL}" -gt 0 ]; then
-  echo -e "  ${RED}FAIL: ${FAIL}${NC}"
-  exit 1
-else
-  echo -e "  ${GREEN}FAIL: 0${NC}"
-  exit 0
-fi
+harness_report

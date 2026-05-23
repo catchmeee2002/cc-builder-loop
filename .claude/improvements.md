@@ -5,6 +5,20 @@
 
 ---
 
+## 2026-05-19 三连 loop bug：stale worktree 卡 setup + phase/reviewer_pending 不一致 + stale state 挡 reviewer
+
+- **触发上下文**：#210 + batch pre-exp033 两轮 builder 任务。三个 bug 连续出现：
+  1. **stale worktree 卡 setup**：旧 story-spine worktree 残留（`1778572012-story-spine`），setup-builder-loop.sh 不清理旧 worktree 也不报错，静默挂起。手动 `git worktree remove --force` + `git branch -D` 后才恢复
+  2. **phase/reviewer_pending 不一致**：stop hook 自动提交后 state 写了 `reviewer_pending` 段但 `phase` 仍为 `active`（应为 `passed_pending_review`）。builder 看到矛盾状态只能手动收尾
+  3. **stale state 挡 reviewer spawn**：batch 任务时 setup 在后台创建了 state 文件（`1779178417-exp-033.yml`），但 builder 已手动工作。reviewer-timing-check hook 看到 active state 拦截了 reviewer spawn
+- **建议方向**：
+  1. setup 脚本启动时扫描 `.claude/worktrees/` 和 `builder-loop/state/`，如有 orphan worktree（state 不存在或 active=false）自动清理
+  2. stop hook 写 `reviewer_pending` 时必须同步把 `phase` 改为 `passed_pending_review`，原子操作
+  3. reviewer-timing-check 增加 grace period 或 owner_cwd 匹配——只拦当前 CWD 匹配的 state，不误拦其他 slug 的 stale state
+- **优先级**：高（三个 bug 叠加直接废掉 loop 功能，builder 被迫全程手动）
+
+---
+
 ## 2026-05-19 setup-builder-loop.sh 在 worktree CWD 内调用时创建嵌套 worktree
 
 - **触发上下文**：V3.1 worktree 隔离加固任务。loop 早停后在旧 worktree 的 CWD 下调 `setup-builder-loop.sh` 想重新进 loop。setup 把旧 worktree 当作"主仓"（因为它也有 `.claude/loop.yml`），在其下再建 `.claude/worktrees/<slug>/`，产生嵌套 worktree。嵌套的 worktree 从旧 worktree 的 HEAD 创建，不包含未提交的代码改动。

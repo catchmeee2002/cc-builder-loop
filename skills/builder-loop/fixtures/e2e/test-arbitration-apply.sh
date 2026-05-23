@@ -8,48 +8,48 @@
 #
 # 用法：bash test-arbitration-apply.sh
 
-set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/harness.sh"
+harness_init "run-apply-arbitration 三种场景"
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-APPLY_SCRIPT="${SCRIPT_DIR}/../../scripts/run-apply-arbitration.sh"
-
-[ -f "$APPLY_SCRIPT" ] || { echo "FAIL: run-apply-arbitration.sh not found" >&2; exit 1; }
+APPLY_SCRIPT="${HARNESS_REPO_ROOT}/skills/builder-loop/scripts/run-apply-arbitration.sh"
+assert "run-apply-arbitration.sh 存在" "[ -f '$APPLY_SCRIPT' ]"
 
 TMPDIR="$(mktemp -d -t builder-loop-arb-XXXXXX)"
-trap 'rm -rf "$TMPDIR"' EXIT
-
-PASS_COUNT=0
-FAIL_COUNT=0
+_HARNESS_TMPDIRS+=("$TMPDIR")
 
 # === 构建基础临时仓（三个场景共享） ===
 setup_repo() {
   local repo="$1"
   mkdir -p "$repo"
-  cd "$repo"
-  git init -q
-  git -c core.hooksPath=/dev/null commit -q --allow-empty -m "root"
-  echo "line1-original" > shared.txt
-  git add shared.txt
-  git -c core.hooksPath=/dev/null commit -q -m "add shared.txt"
-  MAIN_HEAD="$(git rev-parse --short HEAD)"
+  (
+    cd "$repo"
+    git init -q
+    git config user.email "harness@test.local"
+    git config user.name "harness"
+    git -c core.hooksPath=/dev/null commit -q --allow-empty -m "chore(test): [cr_id_skip] Root"
+    echo "line1-original" > shared.txt
+    git add shared.txt
+    git -c core.hooksPath=/dev/null commit -q -m "chore(test): [cr_id_skip] Add shared.txt"
+  )
+  MAIN_HEAD="$(git -C "$repo" rev-parse --short HEAD)"
 
   # 创建 worktree
-  mkdir -p .claude/worktrees
-  git worktree add -q .claude/worktrees/test-wt -b loop/test-wt
+  mkdir -p "$repo/.claude/worktrees"
+  git -C "$repo" worktree add -q "$repo/.claude/worktrees/test-wt" -b loop/test-wt
 
   # worktree 改文件
-  echo "worktree-change" > .claude/worktrees/test-wt/shared.txt
-  git -C .claude/worktrees/test-wt add shared.txt
-  git -C .claude/worktrees/test-wt -c core.hooksPath=/dev/null commit -q -m "wt edit"
+  echo "worktree-change" > "$repo/.claude/worktrees/test-wt/shared.txt"
+  git -C "$repo/.claude/worktrees/test-wt" add shared.txt
+  git -C "$repo/.claude/worktrees/test-wt" -c core.hooksPath=/dev/null commit -q -m "chore(test): [cr_id_skip] Wt edit"
 
   # 主干也改文件（制造冲突）
-  echo "main-change" > shared.txt
-  git add shared.txt
-  git -c core.hooksPath=/dev/null commit -q -m "main edit"
+  echo "main-change" > "$repo/shared.txt"
+  git -C "$repo" add shared.txt
+  git -C "$repo" -c core.hooksPath=/dev/null commit -q -m "chore(test): [cr_id_skip] Main edit"
 
-  # 写 loop.yml（auto_apply_confidence: medium）
-  mkdir -p .claude
-  cat > .claude/loop.yml <<'LYML'
+  # 写 loop.yml
+  mkdir -p "$repo/.claude"
+  cat > "$repo/.claude/loop.yml" <<'LYML'
 pass_cmd:
   - { stage: test, cmd: "echo ok", timeout: 30 }
 arbitration:
@@ -58,8 +58,8 @@ arbitration:
 LYML
 
   # 写 state file
-  mkdir -p .claude/builder-loop/state
-  cat > .claude/builder-loop/state/test-wt.yml <<STEOF
+  mkdir -p "$repo/.claude/builder-loop/state"
+  cat > "$repo/.claude/builder-loop/state/test-wt.yml" <<STEOF
 active: true
 slug: "test-wt"
 iter: 1
@@ -82,14 +82,12 @@ STEOF
 # =============================================
 # 场景 1：信心 high + 有效 patch → APPLIED
 # =============================================
-echo "=== 场景 1：信心 high + 有效 patch ==="
+section "场景 1: 信心 high + 有效 patch"
 REPO1="${TMPDIR}/repo1"
 setup_repo "$REPO1" > /dev/null
 STATE1="${REPO1}/.claude/builder-loop/state/test-wt.yml"
 ARB_OUT1="${TMPDIR}/arb-out-1.txt"
 
-# 构造 mock arbiter 输出：信心 high + 有效 patch
-# patch 内容：把 shared.txt 从冲突态改为 resolved
 cat > "$ARB_OUT1" <<'ARBEOF'
 # 仲裁报告
 
@@ -113,18 +111,12 @@ ARBEOF
 EC=0
 RESULT="$(bash "$APPLY_SCRIPT" "$STATE1" "$ARB_OUT1" 2>/dev/null)" || EC=$?
 LAST="$(echo "$RESULT" | tail -1)"
-if [ "$EC" -eq 0 ] && [ "$LAST" = "APPLIED" ]; then
-  echo "  ✓ PASS: exit=$EC, result=$LAST"
-  PASS_COUNT=$((PASS_COUNT + 1))
-else
-  echo "  ✗ FAIL: 期望 exit=0/APPLIED，实际 exit=$EC/$LAST"
-  FAIL_COUNT=$((FAIL_COUNT + 1))
-fi
+assert "场景1: exit=0, result=APPLIED" "[ '$EC' -eq 0 ] && [ '$LAST' = 'APPLIED' ]"
 
 # =============================================
 # 场景 2：信心 low → LOW_CONFIDENCE
 # =============================================
-echo "=== 场景 2：信心 low → LOW_CONFIDENCE ==="
+section "场景 2: 信心 low"
 REPO2="${TMPDIR}/repo2"
 setup_repo "$REPO2" > /dev/null
 STATE2="${REPO2}/.claude/builder-loop/state/test-wt.yml"
@@ -144,24 +136,17 @@ ARBEOF
 EC=0
 RESULT="$(bash "$APPLY_SCRIPT" "$STATE2" "$ARB_OUT2" 2>/dev/null)" || EC=$?
 LAST="$(echo "$RESULT" | tail -1)"
-if [ "$EC" -eq 1 ] && [ "$LAST" = "LOW_CONFIDENCE" ]; then
-  echo "  ✓ PASS: exit=$EC, result=$LAST"
-  PASS_COUNT=$((PASS_COUNT + 1))
-else
-  echo "  ✗ FAIL: 期望 exit=1/LOW_CONFIDENCE，实际 exit=$EC/$LAST"
-  FAIL_COUNT=$((FAIL_COUNT + 1))
-fi
+assert "场景2: exit=1, result=LOW_CONFIDENCE" "[ '$EC' -eq 1 ] && [ '$LAST' = 'LOW_CONFIDENCE' ]"
 
 # =============================================
 # 场景 3：信心 high + 坏 patch → APPLY_FAILED
 # =============================================
-echo "=== 场景 3：信心 high + 坏 patch ==="
+section "场景 3: 信心 high + 坏 patch"
 REPO3="${TMPDIR}/repo3"
 setup_repo "$REPO3" > /dev/null
 STATE3="${REPO3}/.claude/builder-loop/state/test-wt.yml"
 ARB_OUT3="${TMPDIR}/arb-out-3.txt"
 
-# 构造无效 patch（引用不存在的文件）
 cat > "$ARB_OUT3" <<'ARBEOF'
 # 仲裁报告
 ARBITER_PATCH_BEGIN
@@ -178,22 +163,6 @@ ARBEOF
 EC=0
 RESULT="$(bash "$APPLY_SCRIPT" "$STATE3" "$ARB_OUT3" 2>/dev/null)" || EC=$?
 LAST="$(echo "$RESULT" | tail -1)"
-if [ "$EC" -eq 2 ] && [ "$LAST" = "APPLY_FAILED" ]; then
-  echo "  ✓ PASS: exit=$EC, result=$LAST"
-  PASS_COUNT=$((PASS_COUNT + 1))
-else
-  echo "  ✗ FAIL: 期望 exit=2/APPLY_FAILED，实际 exit=$EC/$LAST"
-  FAIL_COUNT=$((FAIL_COUNT + 1))
-fi
+assert "场景3: exit=2, result=APPLY_FAILED" "[ '$EC' -eq 2 ] && [ '$LAST' = 'APPLY_FAILED' ]"
 
-# =============================================
-# 汇总
-# =============================================
-echo ""
-echo "--- 汇总: ${PASS_COUNT} PASS / ${FAIL_COUNT} FAIL ---"
-if [ "$FAIL_COUNT" -gt 0 ]; then
-  echo "❌ FAIL: 有 ${FAIL_COUNT} 个场景未通过"
-  exit 1
-fi
-echo "✅ PASS: 全部 3 个场景通过"
-exit 0
+harness_report

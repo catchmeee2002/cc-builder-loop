@@ -9,65 +9,36 @@
 #   - setup-builder-loop.sh exit 0
 #   - state file .claude/builder-loop/state/__main__.yml 被生成（bare 模式，无 git commit 走 no-git 路径）
 #   - source_dirs / test_dirs 字段值为空字符串（不报错）
-#
-# 用法：bash test-empty-repo.sh
 
-set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/harness.sh"
+harness_init "empty-repo"
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SETUP_SCRIPT="${SCRIPT_DIR}/../../scripts/setup-builder-loop.sh"
-
-if [ ! -f "$SETUP_SCRIPT" ]; then
-  echo "❌ FAIL: setup-builder-loop.sh 不存在: $SETUP_SCRIPT" >&2
-  exit 1
-fi
-
-TMPDIR="$(mktemp -d -t builder-loop-empty-XXXXXX)"
-trap 'rm -rf "$TMPDIR"' EXIT
-
-cd "$TMPDIR"
-git init -q
-mkdir -p .claude
-cat > .claude/loop.yml <<'EOF'
+section "初始化空仓（无 commit、无标准目录结构）"
+TMP="$(mktemp -d -t builder-loop-empty-XXXXXX)"
+_HARNESS_TMPDIRS+=("$TMP")
+(
+  cd "$TMP"
+  git init -q
+  mkdir -p .claude
+  cat > .claude/loop.yml <<'EOF'
 pass_cmd:
   - stage: test
     cmd: "true"
 EOF
+)
 
-# 跑 setup-builder-loop.sh，捕获 exit code
-if ! bash "$SETUP_SCRIPT" "test-empty-repo-task" >/tmp/setup-empty.log 2>&1; then
-  ec=$?
-  echo "❌ FAIL: setup-builder-loop.sh exit=$ec（期望 0）" >&2
-  echo "--- 输出 ---" >&2
-  cat /tmp/setup-empty.log >&2
-  exit 1
-fi
+section "setup-builder-loop.sh exit 0"
+SETUP_EC=0
+(cd "$TMP" && bash "$HARNESS_SETUP" "test-empty-repo-task" >/dev/null 2>&1) || SETUP_EC=$?
+assert "setup exit 0" "[ '$SETUP_EC' -eq 0 ]"
 
-STATE_FILE=".claude/builder-loop/state/__main__.yml"
-if [ ! -f "$STATE_FILE" ]; then
-  echo "❌ FAIL: state file 未生成: $STATE_FILE" >&2
-  exit 1
-fi
+STATE_FILE="$TMP/.claude/builder-loop/state/__main__.yml"
+assert_file_exists "state file 已生成" "$STATE_FILE"
 
-# 校验 source_dirs / test_dirs 字段为空字符串（不存在该字段也算失败）
-src_line=$(grep -E '^source_dirs:' "$STATE_FILE" || echo "")
-test_line=$(grep -E '^test_dirs:' "$STATE_FILE" || echo "")
+section "source_dirs / test_dirs 字段为空字符串"
+src_val="$(read_state_field "$STATE_FILE" source_dirs)"
+test_val="$(read_state_field "$STATE_FILE" test_dirs)"
+assert "source_dirs 含空引号" "grep -q '\"\"' <<< '$(grep -E '^source_dirs:' "$STATE_FILE")'"
+assert "test_dirs 含空引号" "grep -q '\"\"' <<< '$(grep -E '^test_dirs:' "$STATE_FILE")'"
 
-if [ -z "$src_line" ] || [ -z "$test_line" ]; then
-  echo "❌ FAIL: state file 缺 source_dirs/test_dirs 字段" >&2
-  cat "$STATE_FILE" >&2
-  exit 1
-fi
-
-# 字段值期望为 "" （引号内为空）
-if ! echo "$src_line" | grep -q '""'; then
-  echo "❌ FAIL: source_dirs 期望空字符串，实际：$src_line" >&2
-  exit 1
-fi
-if ! echo "$test_line" | grep -q '""'; then
-  echo "❌ FAIL: test_dirs 期望空字符串，实际：$test_line" >&2
-  exit 1
-fi
-
-echo "✅ PASS: setup-builder-loop.sh 在空仓正常完成，state file 字段空值符合预期"
-exit 0
+harness_report

@@ -4,199 +4,48 @@
 # 验证：
 #   Case 1: state.last_iter_head == worktree HEAD + 工作树 clean → hook 静默 exit 0
 #   Case 2: 在 worktree 内改一个文件（dirty 出现）→ hook 进 PASS_CMD 路径
+#   Case 3: bare 模式 L2B（worktree_path 空，主仓 cwd，无改动）→ 静默
 
-set -uo pipefail
-
-THIS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$THIS_DIR/../../../.." && pwd)"
-HOOK_SCRIPT="${REPO_ROOT}/scripts/builder-loop-stop.sh"
-
-PASS=0
-FAIL=0
-assert() {
-  local desc="$1" cond="$2"
-  if eval "$cond"; then echo "  ✅ $desc"; PASS=$(( PASS + 1 ))
-  else echo "  ❌ $desc (cond: $cond)"; FAIL=$(( FAIL + 1 )); fi
-}
-
-run_hook() {
-  local cwd="$1" err_file="$2" ec=0
-  printf '{"cwd": "%s"}' "$cwd" | bash "$HOOK_SCRIPT" 2>"$err_file" >/dev/null || ec=$?
-  echo "$ec"
-}
-
-echo "=== V3.0 L2B 闸 — worktree 无改动 fixture ==="
-TMP="$(mktemp -d)"
-trap 'rm -rf "${TMP:-}"' EXIT
-
-cd "$TMP"
-git init -q
-git config user.email "e2e@test.local"
-git config user.name "e2e-test"
-mkdir -p .claude
-cat > .claude/loop.yml <<'Y'
-pass_cmd:
-  - stage: smoke
-    cmd: "true"
-    timeout: 10
-worktree:
-  enabled: false
-Y
-echo "seed" > README.md
-# .gitignore 排除 hook / loop 副作用产物，避免 worktree git status 因这些文件非空触发误判
-cat > .gitignore <<'GIT'
-.claude/builder-loop/
-.claude/loop-runs/
-.claude/reviewer-*.txt
-.claude/reviewer-*.json
-.claude/review_reports/
-GIT
-git add -A
-git commit -q -m "chore(test): [cr_id_skip] No-diff silence fixture seed"
-HEAD1="$(git -C "$TMP" rev-parse --short HEAD)"
-
-SLUG="nodiff-fixture"
-WT="$TMP/.claude/worktrees/${SLUG}"
-git -C "$TMP" worktree add -q "$WT" 2>/dev/null
-WT_HEAD="$(git -C "$WT" rev-parse --short HEAD)"
-
-mkdir -p "$TMP/.claude/builder-loop/state"
-cat > "$TMP/.claude/builder-loop/state/${SLUG}.yml" <<EOF
-active: true
-phase: "active"
-slug: "${SLUG}"
-owner_cwd: "$TMP"
-iter: 1
-max_iter: 5
-project_root: "${WT}"
-main_repo_path: "$TMP"
-start_head: "${HEAD1}"
-last_iter_head: "${WT_HEAD}"
-worktree_path: "${WT}"
-worktree_mode: "clean"
-plan_file: ""
-task_description: |
-  no-diff-silence
-source_dirs: ""
-test_dirs: ""
-last_pass_stage: ""
-last_error_hash: ""
-last_error_count: 0
-stopped_reason: ""
-cleanup_phase: ""
-created_at: "2026-05-09T00:00:00+08:00"
-EOF
-
-# V3.2: 创建 local.md 让 stop hook 能通过 slug 精确定位 state
-cat > "$TMP/.claude/builder-loop.local.md" <<LOCALEOF
-slug: "${SLUG}"
-worktree_path: "${WT}"
-state_file: "$TMP/.claude/builder-loop/state/${SLUG}.yml"
-LOCALEOF
+source "$(dirname "${BASH_SOURCE[0]}")/harness.sh"
+harness_init "no-diff-silence"
 
 # ============================================================
 # Case 1: HEAD == last_iter_head + git status 空 → 静默
 # ============================================================
-echo ""
-echo "=== Case 1: worktree 无改动 ==="
-ERR1="$(mktemp)"
-EC1="$(run_hook "$WT" "$ERR1")"
+section "Case 1: worktree 无改动"
+# iter=1 让 last_iter_head 等于当前 HEAD（create_test_env 默认 iter=0 但 last_iter_head 已等于 HEAD）
+env1=$(create_test_env --slug "nodiff-fixture" --worktree --phase active)
+sf1=$(state_file "$env1" "nodiff-fixture")
+wt1="$env1/.claude/worktrees/nodiff-fixture"
+# 把 iter 改为 1（模拟非首轮，L2B 需要 iter>0 或 HEAD==last_iter_head）
+sed -i 's/^iter: 0/iter: 1/' "$sf1"
 
-assert "Case 1 hook EC=0（静默）" "[ '$EC1' -eq 0 ]"
-assert "Case 1 PASS_CMD 未跑（stderr 不含 'iter ' + 跑 PASS_CMD）" "! grep -q '正在跑 PASS_CMD' '$ERR1'"
-ITER1="$(grep -E '^iter:' "$TMP/.claude/builder-loop/state/${SLUG}.yml" | awk '{print $2}')"
-assert "Case 1 iter 不变（=1）" "[ '$ITER1' = '1' ]"
+result1=$(run_hook "$wt1")
+assert_ec "Case 1 hook EC=0（静默）" "$result1" 0
+assert "Case 1 PASS_CMD 未跑" "! grep -q '正在跑 PASS_CMD' '$result1/stderr' 2>/dev/null"
+iter1=$(read_state_field "$sf1" "iter")
+assert "Case 1 iter 不变（=1）" "[ '$iter1' = '1' ]"
 
 # ============================================================
 # Case 2: worktree 出现 dirty → 不再静默
 # ============================================================
-echo ""
-echo "=== Case 2: worktree 内改文件 ==="
-echo "new content" > "$WT/dirty-file.txt"
+section "Case 2: worktree 内改文件"
+echo "new content" > "$wt1/dirty-file.txt"
 
-ERR2="$(mktemp)"
-EC2="$(run_hook "$WT" "$ERR2")"
-
-# Case 2 期望 hook 进 PASS_CMD 路径（不再因 L2B 静默）
-assert "Case 2 hook 不再因 L2B 静默（stderr 有 PASS_CMD 跑或写入相关迹象）" \
-  "grep -q '正在跑 PASS_CMD\|PASS_CMD\|phase=passed_pending_review\|已 commit' '$ERR2'"
+result2=$(run_hook "$wt1")
+assert "Case 2 hook 不再因 L2B 静默" \
+  "grep -q '正在跑 PASS_CMD\|PASS_CMD\|phase=passed_pending_review\|已 commit' '$result2/stderr' 2>/dev/null"
 
 # ============================================================
 # Case 3: bare 模式 L2B（worktree_path 空，主仓 cwd，无改动）
 # ============================================================
-echo ""
-echo "=== Case 3: bare 模式 L2B 静默 ==="
-TMP_BARE="$(mktemp -d)"
-cd "$TMP_BARE"
-git init -q
-git config user.email "e2e@test.local"
-git config user.name "e2e-test"
-mkdir -p .claude
-cat > .claude/loop.yml <<'Y'
-pass_cmd:
-  - stage: smoke
-    cmd: "true"
-    timeout: 10
-worktree:
-  enabled: false
-Y
-echo "seed" > README.md
-cat > .gitignore <<'G'
-.claude/builder-loop/
-.claude/builder-loop.local.md
-.claude/loop-runs/
-.claude/reviewer-*.txt
-.claude/review_reports/
-G
-git add -A
-git commit -q -m "chore(test): [cr_id_skip] Bare L2B fixture seed"
-HEAD_BARE="$(git -C "$TMP_BARE" rev-parse --short HEAD)"
+section "Case 3: bare 模式 L2B 静默"
+env3=$(create_test_env --slug "__main__" --phase active)
+sf3=$(state_file "$env3" "__main__")
+sed -i 's/^iter: 0/iter: 1/' "$sf3"
 
-mkdir -p "$TMP_BARE/.claude/builder-loop/state"
-cat > "$TMP_BARE/.claude/builder-loop/state/__main__.yml" <<EOF
-active: true
-phase: "active"
-slug: "__main__"
-owner_cwd: "$TMP_BARE"
-iter: 1
-max_iter: 5
-project_root: "$TMP_BARE"
-main_repo_path: "$TMP_BARE"
-start_head: "${HEAD_BARE}"
-last_iter_head: "${HEAD_BARE}"
-worktree_path: ""
-worktree_mode: "bare"
-plan_file: ""
-task_description: |
-  bare-no-diff-test
-source_dirs: ""
-test_dirs: ""
-last_pass_stage: ""
-last_error_hash: ""
-last_error_count: 0
-stopped_reason: ""
-cleanup_phase: ""
-created_at: "2026-05-09T00:00:00+08:00"
-EOF
+result3=$(run_hook "$env3")
+assert_ec "Case 3 bare 模式 hook EC=0（L2B 静默）" "$result3" 0
+assert "Case 3 bare 模式 PASS_CMD 未跑" "! grep -q '正在跑 PASS_CMD' '$result3/stderr' 2>/dev/null"
 
-# V3.2: 创建 local.md 让 stop hook 能通过 slug 精确定位 state
-cat > "$TMP_BARE/.claude/builder-loop.local.md" <<LOCALEOF
-slug: "__main__"
-worktree_path: ""
-state_file: "$TMP_BARE/.claude/builder-loop/state/__main__.yml"
-LOCALEOF
-
-ERR3="$(mktemp)"
-EC3="$(run_hook "$TMP_BARE" "$ERR3")"
-
-assert "Case 3 bare 模式 hook EC=0（L2B 用 PROJECT_ROOT 静默）" "[ '$EC3' -eq 0 ]"
-assert "Case 3 bare 模式 PASS_CMD 未跑" "! grep -q '正在跑 PASS_CMD' '$ERR3'"
-
-rm -rf "$TMP_BARE"
-
-echo ""
-echo "=== 总计 ==="
-echo "  ✅ PASS: $PASS"
-echo "  ❌ FAIL: $FAIL"
-[ "$FAIL" -eq 0 ] || exit 1
-exit 0
+harness_report

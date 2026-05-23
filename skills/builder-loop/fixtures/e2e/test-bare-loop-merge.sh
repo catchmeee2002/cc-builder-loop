@@ -11,46 +11,21 @@
 # 用法：bash test-bare-loop-merge.sh
 # 退出码：0=全部通过 / 1=有失败
 
-set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/harness.sh"
+harness_init "bare-loop-merge"
 
-THIS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$THIS_DIR/../../../.." && pwd)"
-HOOK_SCRIPT="${REPO_ROOT}/scripts/builder-loop-stop.sh"
-MERGE_SCRIPT="${REPO_ROOT}/skills/builder-loop/scripts/merge-worktree-back.sh"
+MERGE_SCRIPT="${HARNESS_REPO_ROOT}/skills/builder-loop/scripts/merge-worktree-back.sh"
 
-PASS=0
-FAIL=0
-
-assert() {
-  local desc="$1" cond="$2"
-  if eval "$cond"; then echo "  ✅ $desc"; PASS=$(( PASS + 1 ));
-  else echo "  ❌ $desc (cond: $cond)"; FAIL=$(( FAIL + 1 )); fi
-}
-
-call_stop_hook() {
-  local proj="$1" err_file="$2" ec=0
-  printf '{"cwd": "%s"}' "$proj" | bash "$HOOK_SCRIPT" 2>"$err_file" >/dev/null || ec=$?
-  return "$ec"
-}
-
-echo "=== E2E: Bare loop 完整 stop hook + merge 路径回归测试 ==="
-assert "stop hook 存在" "[ -f '$HOOK_SCRIPT' ]"
-assert "merge 脚本存在" "[ -f '$MERGE_SCRIPT' ]"
+assert_file_exists "stop hook 存在" "$HARNESS_HOOK"
+assert_file_exists "merge 脚本存在" "$MERGE_SCRIPT"
 
 # ============================================================
 # Case 1: bare loop 完整 PASS 路径（locate-state.sh slug=__main__ 兜底）
 # ============================================================
-echo ""
-echo "=== Case 1: bare loop 完整 PASS 路径 ==="
-TMP1="$(mktemp -d)"
-# TMP1/TMP2 都加 :- 兜底，case 1 异常退出时 TMP2 可能未赋值，避免 unset var 杀 trap
-trap 'rm -rf "${TMP1:-}" "${TMP2:-}"' EXIT
-cd "$TMP1"
-git init -q
-git config user.email "e2e@test.local"
-git config user.name "e2e-test"
-mkdir -p .claude src
-cat > .claude/loop.yml <<'YMLEOF'
+section "Case 1: bare loop 完整 PASS 路径"
+env1=$(create_test_env --slug "__main__" --pass-cmd "true")
+# 覆盖 loop.yml 加 bare 模式配置
+cat > "$env1/.claude/loop.yml" <<'YMLEOF'
 pass_cmd:
   - stage: smoke
     cmd: "true"
@@ -61,101 +36,46 @@ layout:
 worktree:
   enabled: false
 YMLEOF
-echo "seed" > README.md
-git add -A
-git commit -q -m "chore(test): [cr_id_skip] Bare loop seed"
+mkdir -p "$env1/src"
 
-mkdir -p .claude/builder-loop/state
-HEAD1="$(git rev-parse --short HEAD)"
-# 写 bare loop state（slug=__main__，无 worktree_path）
-cat > .claude/builder-loop/state/__main__.yml <<EOF
-# builder-loop state file (do NOT manually edit while loop is active)
-active: true
-slug: "__main__"
-owner_cwd: "$TMP1"
-iter: 0
-max_iter: 5
-project_root: "$TMP1"
-main_repo_path: "$TMP1"
-start_head: "$HEAD1"
-worktree_path: ""
-plan_file: ""
-task_description: |
-  bare-loop-test
-source_dirs: "src"
-test_dirs: ""
-last_pass_stage: ""
-last_error_hash: ""
-last_error_count: 0
-stopped_reason: ""
-created_at: "2026-04-01T00:00:00+08:00"
-EOF
-
-# V3.2: stop hook 需要 local.md 定位 slug
-cat > "$TMP1/.claude/builder-loop.local.md" <<LOCALEOF
-slug: "__main__"
-worktree_path: ""
-state_file: "$TMP1/.claude/builder-loop/state/__main__.yml"
-LOCALEOF
-
-ERR1="$(mktemp)"
-EC1=0
-call_stop_hook "$TMP1" "$ERR1" || EC1=$?
-
-assert "Case 1 stop hook EC=2（PASS 续接）" "[ '$EC1' -eq 2 ]"
-assert "Case 1 stderr 含 PASS_CMD 全部阶段通过" "grep -q 'PASS_CMD 全部阶段通过' '$ERR1'"
-assert "Case 1 state 已被 rm（PASS 后 cleanup）" "[ ! -f '$TMP1/.claude/builder-loop/state/__main__.yml' ]"
-assert "Case 1 cursor 已写" "[ -f '$TMP1/.claude/builder-loop/last_processed_head' ]"
+result1=$(run_hook "$env1")
+assert_ec "Case 1 stop hook EC=2（PASS 续接）" "$result1" 2
+assert_stderr_contains "Case 1 stderr 含 PASS_CMD 全部阶段通过" "$result1" "PASS_CMD 全部阶段通过"
+sf1=$(state_file "$env1" "__main__")
+assert_file_missing "Case 1 state 已被 rm（PASS 后 cleanup）" "$sf1"
+assert_file_exists "Case 1 cursor 已写" "$env1/.claude/builder-loop/last_processed_head"
 
 # ============================================================
 # Case 2: 直接调 merge-worktree-back.sh，bare loop state（无 worktree_path）→ NOOP
 # 防 V1.9.1 修过的 read_field 静默退出回归
 # ============================================================
-echo ""
-echo "=== Case 2: merge-worktree-back.sh 在 bare state 下应输出 NOOP ==="
-TMP2="$(mktemp -d)"
-mkdir -p "$TMP2/.claude/builder-loop/state"
-cat > "$TMP2/.claude/builder-loop/state/__main__.yml" <<EOF
-active: true
-slug: "__main__"
-project_root: "$TMP2"
-main_repo_path: "$TMP2"
-start_head: "deadbeef"
-worktree_path: ""
-EOF
+section "Case 2: merge-worktree-back.sh 在 bare state 下应输出 NOOP"
+env2=$(create_test_env --slug "__main__")
+merge_result2=$(run_merge_cleanup "$(state_file "$env2" "__main__")")
+merge_last2=$(result_last "$merge_result2")
 
-MERGE_OUT="$(bash "$MERGE_SCRIPT" "$TMP2/.claude/builder-loop/state/__main__.yml" 2>&1 || true)"
-MERGE_LAST="$(echo "$MERGE_OUT" | tail -1)"
-
-assert "Case 2 merge 输出非空（防 grep 静默退出回归）" "[ -n '$MERGE_LAST' ]"
-assert "Case 2 merge 末行 = NOOP" "[ '$MERGE_LAST' = 'NOOP' ]"
+assert "Case 2 merge 输出非空（防 grep 静默退出回归）" "[ -n '$merge_last2' ]"
+assert "Case 2 merge 末行 = NOOP" "[ '$merge_last2' = 'NOOP' ]"
 
 # ============================================================
 # Case 3: 老 V1.x bare state（无 main_repo_path 字段，project_root=主仓）
 # merge-worktree-back.sh 兼容性
 # ============================================================
-echo ""
-echo "=== Case 3: 老 V1.x bare state（缺 main_repo_path）兼容 ==="
-cat > "$TMP2/.claude/builder-loop/state/__main__.yml" <<EOF
+section "Case 3: 老 V1.x bare state（缺 main_repo_path）兼容"
+env3=$(create_test_env --slug "__main__" --no-state)
+mkdir -p "$env3/.claude/builder-loop/state"
+cat > "$env3/.claude/builder-loop/state/__main__.yml" <<EOF
 active: true
 slug: "__main__"
-project_root: "$TMP2"
+project_root: "$env3"
 start_head: "deadbeef"
 worktree_path: ""
 EOF
 
-MERGE_OUT3="$(bash "$MERGE_SCRIPT" "$TMP2/.claude/builder-loop/state/__main__.yml" 2>&1 || true)"
-MERGE_LAST3="$(echo "$MERGE_OUT3" | tail -1)"
+merge_result3=$(run_merge_cleanup "$env3/.claude/builder-loop/state/__main__.yml")
+merge_last3=$(result_last "$merge_result3")
 
-assert "Case 3 merge 输出非空" "[ -n '$MERGE_LAST3' ]"
-assert "Case 3 merge 末行 = NOOP（用 project_root 兜底为主仓）" "[ '$MERGE_LAST3' = 'NOOP' ]"
+assert "Case 3 merge 输出非空" "[ -n '$merge_last3' ]"
+assert "Case 3 merge 末行 = NOOP（用 project_root 兜底为主仓）" "[ '$merge_last3' = 'NOOP' ]"
 
-# ============================================================
-# 总结
-# ============================================================
-echo ""
-echo "=== 总计 ==="
-echo "  ✅ PASS: $PASS"
-echo "  ❌ FAIL: $FAIL"
-[ "$FAIL" -eq 0 ] || exit 1
-exit 0
+harness_report

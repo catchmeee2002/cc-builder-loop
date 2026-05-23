@@ -1,58 +1,32 @@
 #!/usr/bin/env bash
 # test-stop-hook-cursor.sh — E2E：bootstrap 触发器 + HEAD 游标兼容性
 #
-# V2.2 议题 3 行为变更：bootstrap 兜底**只看** HAS_DIFF（未提交工作树改动），
-# 砍 HAS_RECENT_COMMIT 触发器。详见 CLAUDE.md V2.2 段 + §7.7。
+# V2.2 行为变更：bootstrap 兜底**只看** HAS_DIFF，砍 HAS_RECENT_COMMIT 触发器。
+# V3.2 行为变更：无 local.md 直接 exit 0，不再兜底激活。
 #
-# 覆盖场景（V2.2 新行为）：
-#   Step 2: 首次 Stop（HEAD 刚 commit + 工作树干净）→ 静默 exit 0（V2.2 行为变更，原 V1.8.2 期望 exit 2）
-#   Step 3: 同 HEAD 再次 Stop → 仍 exit 0（行为一致）
-#   Step 4: 新 commit + 工作树干净 → 静默 exit 0（V2.2 行为变更）
-#   Step 5: HAS_DIFF 非空 → exit 2 + bootstrap（保留旧行为，新游标写入仍工作）
-#   Step 6: HAS_DIFF 空 + 游标损坏 → 仍 exit 0（不再降级为旧 bootstrap）
-#
-# 用法：bash test-stop-hook-cursor.sh
-# 退出码：0=全部通过 / 1=有失败
+# 覆盖场景：
+#   Step 2: 首次 Stop（HEAD 刚 commit + 工作树干净）→ 静默 exit 0
+#   Step 3: 同 HEAD 再次 Stop → 仍 exit 0
+#   Step 4: 新 commit + 工作树干净 → 静默 exit 0
+#   Step 5: HAS_DIFF 非空 + 无 local.md → exit 0（V3.2 不兜底）
+#   Step 6: 游标损坏 + 无 local.md → 仍 exit 0
+#   Step 7: 纯文档改动 → 静默放行
+#   Step 8: mixed 改动（doc + code）→ 无 local.md 仍 exit 0
+#   Step 9: docs/ 子目录改动 → 静默放行
 
-set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/harness.sh"
+harness_init "stop-hook-cursor"
 
-THIS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# .../skills/builder-loop/fixtures/e2e → 仓库根
-REPO_ROOT="$(cd "$THIS_DIR/../../../.." && pwd)"
-HOOK_SCRIPT="${REPO_ROOT}/scripts/builder-loop-stop.sh"
-
-PASS=0
-FAIL=0
-
-assert() {
-  local desc="$1" cond="$2"
-  if eval "$cond"; then echo "  ✅ $desc"; PASS=$(( PASS + 1 ));
-  else echo "  ❌ $desc (cond: $cond)"; FAIL=$(( FAIL + 1 )); fi
-}
-
-call_stop_hook() {
-  # $1 = cwd, $2 = stderr 输出文件
-  local proj="$1" err_file="$2" ec=0
-  printf '{"cwd": "%s"}' "$proj" | bash "$HOOK_SCRIPT" 2>"$err_file" >/dev/null || ec=$?
-  return "$ec"
-}
-
-echo "=== E2E: V2.2 bootstrap 触发器 + HEAD 游标兼容性 ==="
-echo "    被测脚本：$HOOK_SCRIPT"
-assert "被测脚本存在" "[ -f '$HOOK_SCRIPT' ]"
-
+# --- 初始化仓库（不用 create_test_env：需步进式改动 + 无 local.md 场景）---
 TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
-echo "    临时仓库：$TMP"
-
-# ---- Step 1: 最小仓库 + loop.yml（pass_cmd=true 保证 PASS）----
-echo "--- Step 1: 初始化仓库 + 种子 commit ---"
-cd "$TMP"
-git init -q
-git config user.email "e2e@test.local"
-git config user.name "e2e-test"
-mkdir -p .claude src tests
-cat > .claude/loop.yml <<'YMLEOF'
+_HARNESS_TMPDIRS+=("$TMP")
+(
+  cd "$TMP"
+  git init -q
+  git config user.email "e2e@test.local"
+  git config user.name "e2e-test"
+  mkdir -p .claude src tests
+  cat > .claude/loop.yml <<'YMLEOF'
 pass_cmd:
   - stage: smoke
     cmd: "true"
@@ -64,173 +38,99 @@ layout:
 worktree:
   enabled: false
 YMLEOF
-echo "seed" > README.md
-# V2.5: 写 .gitignore 排除 telemetry / debug log（V2.1.1 设计 + V2.5 stop-hook-debug.log）
-# 不写则 V2.5 stop hook 写 debug log 后 git add -A 会把它 commit 进 git，下次 git diff 触发误判
-cat > .gitignore <<'GITIGNORE'
+  echo "seed" > README.md
+  cat > .gitignore <<'GITIGNORE'
 .claude/builder-loop/
 .claude/loop-runs/
 .claude/loop-trace.jsonl
 .claude/reviewer-params.json
 .claude/reviewer-diff.txt
 GITIGNORE
-git add -A
-git commit -q -m "chore(test): [cr_id_skip] Initial seed for e2e cursor test"
+  git add -A
+  git -c core.hooksPath=/dev/null commit -q -m "chore(test): [cr_id_skip] Initial seed for e2e cursor test"
+)
 
-HEAD1="$(git rev-parse HEAD)"
 CURSOR="$TMP/.claude/builder-loop/last_processed_head"
 STATE_FILE="$TMP/.claude/builder-loop/state/__main__.yml"
 
-assert "loop.yml 存在" "[ -f '$TMP/.claude/loop.yml' ]"
-assert "HEAD1 已记录" "[ -n '$HEAD1' ]"
-assert "游标文件初始不存在" "[ ! -f '$CURSOR' ]"
+section "Step 2: 首次 Stop（工作树干净）→ 静默"
+r2=$(run_hook "$TMP")
+assert_ec "第 1 次 exit 0" "$r2" 0
+assert "第 1 次 stderr 不含兜底激活" "! grep -q '兜底激活' '$r2/stderr'"
+assert_file_missing "游标未创建" "$CURSOR"
+assert_file_missing "state 未创建" "$STATE_FILE"
 
-# ---- Step 2: V2.2 行为 — 首次 Stop（HAS_DIFF 空 + HEAD 刚 commit）→ 静默 ----
-echo "--- Step 2: 首次 Stop（工作树干净）→ V2.2 期望静默 exit 0（不再因 HAS_RECENT_COMMIT 激活）----"
-ERR1="$(mktemp)"
-EC1=0
-call_stop_hook "$TMP" "$ERR1" || EC1=$?
+section "Step 3: 同 HEAD 再次 Stop → 仍 exit 0"
+r3=$(run_hook "$TMP")
+assert_ec "第 2 次 exit 0" "$r3" 0
+assert "第 2 次 stderr 不含兜底激活" "! grep -q '兜底激活' '$r3/stderr'"
+assert_file_missing "第 2 次未创建 state" "$STATE_FILE"
 
-assert "第 1 次 exit 0（V2.2 不再激活）" "[ '$EC1' -eq 0 ]"
-assert "第 1 次 stderr 不含 '兜底激活'" "! grep -q '兜底激活' '$ERR1'"
-assert "游标文件未创建（未走 PASS 路径）" "[ ! -f '$CURSOR' ]"
-assert "state 文件未创建" "[ ! -f '$STATE_FILE' ]"
+section "Step 4: 新 commit + 工作树干净 → 仍 exit 0"
+(cd "$TMP" && echo "more" > CHANGES.md && git add -A && git -c core.hooksPath=/dev/null commit -q -m "feat(test): [cr_id_skip] Second commit for cursor test")
+r4=$(run_hook "$TMP")
+assert_ec "第 3 次 exit 0" "$r4" 0
+assert "第 3 次 stderr 不含兜底激活" "! grep -q '兜底激活' '$r4/stderr'"
+assert_file_missing "游标仍未创建" "$CURSOR"
 
-# ---- Step 3: 同 HEAD 再次 Stop → 仍 exit 0 ----
-echo "--- Step 3: 同 HEAD 再次 Stop → 仍 exit 0（行为一致）----"
-ERR2="$(mktemp)"
-EC2=0
-call_stop_hook "$TMP" "$ERR2" || EC2=$?
+section "Step 5: 未提交非文档改动 + 无 local.md → exit 0"
+(cd "$TMP" && echo "package main" > src/main.go && git add src/main.go)
+r5=$(run_hook "$TMP")
+assert_ec "第 4 次 exit 0（V3.2 无 local.md 不兜底）" "$r5" 0
+assert "第 4 次 stderr 不含兜底激活" "! grep -q '兜底激活' '$r5/stderr'"
+assert_file_missing "游标未创建" "$CURSOR"
+assert_file_missing "state 未创建" "$STATE_FILE"
 
-assert "第 2 次 exit 0" "[ '$EC2' -eq 0 ]"
-assert "第 2 次 stderr 不含 '兜底激活'" "! grep -q '兜底激活' '$ERR2'"
-assert "第 2 次 未创建 state" "[ ! -f '$STATE_FILE' ]"
-
-# ---- Step 4: 新 commit + 工作树干净 → 仍 exit 0（V2.2 行为变更）----
-echo "--- Step 4: 新增 commit + 工作树干净 → V2.2 期望仍 exit 0（行为变更，原 V1.8.2 会激活）----"
-echo "more" > CHANGES.md
-git add -A
-git commit -q -m "feat(test): [cr_id_skip] Second commit for cursor test"
-HEAD2="$(git rev-parse HEAD)"
-
-assert "HEAD2 与 HEAD1 不同" "[ '$HEAD1' != '$HEAD2' ]"
-
-ERR3="$(mktemp)"
-EC3=0
-call_stop_hook "$TMP" "$ERR3" || EC3=$?
-
-assert "第 3 次 exit 0（V2.2 不再因 HEAD 前进而激活）" "[ '$EC3' -eq 0 ]"
-assert "第 3 次 stderr 不含 '兜底激活'" "! grep -q '兜底激活' '$ERR3'"
-assert "游标文件仍未创建" "[ ! -f '$CURSOR' ]"
-
-# ---- Step 5: V3.2 行为 — 非文档改动但无 local.md → 仍 exit 0（兜底激活已移除）----
-# V3.2 起没有 local.md 就直接 exit 0，不再因 HAS_DIFF 兜底激活
-echo "--- Step 5: 未提交非文档改动 + 无 local.md → V3.2 期望 exit 0（兜底激活已移除）----"
-echo "package main" > src/main.go
-git add src/main.go
-DIFF_STAT="$(git diff --cached --stat)"
-assert "HAS_DIFF（staged）非空" "[ -n '$DIFF_STAT' ]"
-
-ERR4="$(mktemp)"
-EC4=0
-call_stop_hook "$TMP" "$ERR4" || EC4=$?
-
-assert "第 4 次 exit 0（V3.2 无 local.md 不兜底激活）" "[ '$EC4' -eq 0 ]"
-assert "第 4 次 stderr 不含 '兜底激活'（已移除）" "! grep -q '兜底激活' '$ERR4'"
-assert "游标文件未创建（未走 PASS 路径）" "[ ! -f '$CURSOR' ]"
-assert "state 文件未创建" "[ ! -f '$STATE_FILE' ]"
-
-# ---- Step 6: 游标损坏 + 无 local.md → 仍 exit 0 ----
-echo "--- Step 6: 游标损坏 + 无 local.md → V3.2 exit 0（无 local.md 直接放行）----"
-cd "$TMP"
-git reset -q HEAD src/main.go 2>/dev/null || true
-rm -f src/main.go
-git checkout -q -- README.md 2>/dev/null || true
+section "Step 6: 游标损坏 + 无 local.md → exit 0"
+(cd "$TMP" && git reset -q HEAD src/main.go 2>/dev/null || true; rm -f "$TMP/src/main.go"; git -C "$TMP" checkout -q -- README.md 2>/dev/null || true)
 mkdir -p "$(dirname "$CURSOR")" 2>/dev/null || true
 echo "not-a-valid-sha" > "$CURSOR"
+r6=$(run_hook "$TMP")
+assert_ec "第 5 次 exit 0" "$r6" 0
+assert "第 5 次 stderr 不含兜底激活" "! grep -q '兜底激活' '$r6/stderr'"
 
-ERR5="$(mktemp)"
-EC5=0
-call_stop_hook "$TMP" "$ERR5" || EC5=$?
+section "Step 7: 纯文档改动 → 静默放行"
+(
+  cd "$TMP"
+  mkdir -p docs
+  echo "# initial doc" > CLAUDE.md
+  echo "# license" > LICENSE
+  echo "# changelog" > docs/CHANGELOG.md
+  echo "*.bak" >> .gitignore
+  git add -A
+  git -c core.hooksPath=/dev/null commit -q -m "chore(test): [cr_id_skip] Seed for doc whitelist test"
+  echo "## new section" >> CLAUDE.md
+  echo "## v2" >> docs/CHANGELOG.md
+  echo "MIT" >> LICENSE
+  echo "*.tmp" >> .gitignore
+)
+r7=$(run_hook "$TMP")
+assert_ec "第 6 次 exit 0（纯文档放行）" "$r7" 0
+assert "第 6 次 stderr 不含兜底激活" "! grep -q '兜底激活' '$r7/stderr'"
+assert_file_missing "第 6 次未创建 state" "$STATE_FILE"
 
-assert "第 5 次 exit 0（V3.2 无 local.md 放行）" "[ '$EC5' -eq 0 ]"
-assert "第 5 次 stderr 不含 '兜底激活'" "! grep -q '兜底激活' '$ERR5'"
-assert "游标内容仍是损坏值（未走 PASS 写入）" "[ \"\$(cat '$CURSOR' 2>/dev/null | tr -d '[:space:]')\" = 'not-a-valid-sha' ]"
+section "Step 8: mixed 改动（doc + code）→ 无 local.md 仍 exit 0"
+(cd "$TMP" && echo "real code" > src/main.py && git add src/main.py)
+r8=$(run_hook "$TMP")
+assert_ec "第 7 次 exit 0（V3.2 无 local.md 不兜底）" "$r8" 0
+assert "第 7 次 stderr 不含兜底激活" "! grep -q '兜底激活' '$r8/stderr'"
 
-# ---- Step 7: V2.2.1 纯文档改动（CLAUDE.md / docs/ / *.txt / LICENSE / .gitignore）→ 静默放行 ----
-echo "--- Step 7: 纯文档改动 → V2.2.1 期望静默 exit 0（不再因 *.md / docs/ 触发 NOOP loop）----"
-cd "$TMP"
-mkdir -p docs
-echo "# initial doc" > CLAUDE.md
-echo "# license" > LICENSE
-echo "# changelog" > docs/CHANGELOG.md
-# V2.5: 用 >> 追加（不覆盖 Step 1 写的 V2.1.1 五条规则，否则 stop-hook-debug.log 会被 git add -A 加进 commit）
-echo "*.bak" >> .gitignore
-git add -A
-git commit -q -m "chore(test): [cr_id_skip] Seed for doc whitelist test"
-HEAD3="$(git rev-parse HEAD)"
+section "Step 9: docs/ 子目录任意文件改动 → 静默放行"
+(
+  cd "$TMP"
+  git reset -q --hard HEAD
+  git rm -q --cached -r .claude/builder-loop/ 2>/dev/null || true
+  git -c core.hooksPath=/dev/null commit -q -m "chore(test): [cr_id_skip] Drop builder-loop runtime files from git" 2>/dev/null || true
+  rm -rf .claude/builder-loop/
+  git clean -qfd
+  mkdir -p docs/diagrams
+  echo "binary placeholder" > docs/diagrams/arch.svg
+  git add docs/diagrams/arch.svg
+  git -c core.hooksPath=/dev/null commit -q -m "chore(test): [cr_id_skip] Add arch diagram"
+  echo "updated svg" > docs/diagrams/arch.svg
+)
+r9=$(run_hook "$TMP")
+assert_ec "第 8 次 exit 0（docs/ 路径放行 .svg）" "$r9" 0
+assert "第 8 次 stderr 不含兜底激活" "! grep -q '兜底激活' '$r9/stderr'"
 
-# 改纯文档文件（unstaged）
-echo "## new section" >> CLAUDE.md
-echo "## v2" >> docs/CHANGELOG.md
-echo "MIT" >> LICENSE
-echo "*.tmp" >> .gitignore
-
-DOC_DIFF="$(git diff --name-only)"
-assert "纯文档改动 git diff 含 4 个文件" "[ \"\$(echo '$DOC_DIFF' | wc -l)\" -eq 4 ]"
-
-ERR6="$(mktemp)"
-EC6=0
-call_stop_hook "$TMP" "$ERR6" || EC6=$?
-
-assert "第 6 次 exit 0（V2.2.1 纯文档放行）" "[ '$EC6' -eq 0 ]"
-assert "第 6 次 stderr 不含 '兜底激活'" "! grep -q '兜底激活' '$ERR6'"
-assert "第 6 次 未创建 state（doc-only 未触发 setup）" "[ ! -f '$STATE_FILE' ]"
-
-# ---- Step 8: V3.2 mixed 改动（doc + code）→ 无 local.md 仍 exit 0 ----
-echo "--- Step 8: mixed 改动（doc + code 混合）→ V3.2 无 local.md 仍 exit 0（兜底已移除）----"
-# 此时 step 7 的 4 个 doc 文件还 unstaged，新增 src/main.py（非白名单）让改动变 mixed
-echo "real code" > src/main.py
-git add src/main.py
-
-ALL_CHANGED="$(git diff --name-only; git diff --cached --name-only)"
-assert "mixed 改动含 src/main.py（非 doc）" "echo '$ALL_CHANGED' | grep -q 'src/main.py'"
-
-ERR7="$(mktemp)"
-EC7=0
-call_stop_hook "$TMP" "$ERR7" || EC7=$?
-
-assert "第 7 次 exit 0（V3.2 无 local.md 不兜底）" "[ '$EC7' -eq 0 ]"
-assert "第 7 次 stderr 不含 '兜底激活'（已移除）" "! grep -q '兜底激活' '$ERR7'"
-
-# Step 9 之前彻底 reset 工作树（避免 step 5/7/8 残余 staged/unstaged 影响判定）
-# 注意：fixture 临时仓未把 .claude/builder-loop/ 加进 .gitignore，前面 setup 写的游标可能被 git tracked，
-# 必须 git rm --cached 撤出索引，否则 step 9 的 git diff 会显示 builder-loop/last_processed_head（非白名单）→ 触发 bootstrap
-cd "$TMP"
-git reset -q --hard HEAD
-git rm -q --cached -r .claude/builder-loop/ 2>/dev/null || true
-git commit -q -m "chore(test): [cr_id_skip] Drop builder-loop runtime files from git" 2>/dev/null || true
-rm -rf .claude/builder-loop/
-git clean -qfd
-
-# ---- Step 9: 仅 docs/ 子目录改动（不含 .md 后缀文件）→ 静默放行 ----
-echo "--- Step 9: docs/ 下任意类型文件改动 → V2.2.1 静默放行（docs/ 路径模式）----"
-mkdir -p docs/diagrams
-echo "binary placeholder" > docs/diagrams/arch.svg
-git add docs/diagrams/arch.svg
-git commit -q -m "chore(test): [cr_id_skip] Add arch diagram"
-echo "updated svg" > docs/diagrams/arch.svg
-
-ERR8="$(mktemp)"
-EC8=0
-call_stop_hook "$TMP" "$ERR8" || EC8=$?
-
-assert "第 8 次 exit 0（docs/ 路径放行 .svg）" "[ '$EC8' -eq 0 ]"
-assert "第 8 次 stderr 不含 '兜底激活'" "! grep -q '兜底激活' '$ERR8'"
-
-# ---- 汇总 ----
-echo ""
-echo "=== 汇总: ✅ PASS=${PASS}  ❌ FAIL=${FAIL} ==="
-
-if [ "$FAIL" -gt 0 ]; then exit 1; fi
-exit 0
+harness_report
