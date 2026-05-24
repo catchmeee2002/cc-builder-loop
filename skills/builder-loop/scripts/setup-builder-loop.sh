@@ -11,7 +11,7 @@
 #   5. 提示用户「自闭环已启动，下一次 Stop 会自动跑 PASS_CMD」
 #
 # 输出：状态文件路径 + 后续提示
-# 退出码：0=成功 / 1=配置缺失 / 2=worktree 失败 / 3=探测失败
+# 退出码：0=成功 / 1=配置缺失 / 2=worktree 失败 / 3=探测失败 / 6=孤儿 worktree 需用户决策
 
 set -euo pipefail
 
@@ -20,15 +20,19 @@ LOOP_YML="${PROJECT_ROOT}/.claude/loop.yml"
 STATE_DIR="${PROJECT_ROOT}/.claude/builder-loop/state"
 LOG_DIR="${PROJECT_ROOT}/.claude/loop-runs"
 
-# 解析 flags（V3.2: 默认不 stash，--touched-files 选择性带入）
+# 解析 flags
 FORCE_NO_WORKTREE=0
 FORCE_NO_STASH=0
 TOUCHED_FILES=""
+REUSE_WORKTREE=""
+IGNORE_ORPHANS=0
 while [ $# -gt 0 ]; do
   case "${1:-}" in
-    --no-worktree)   FORCE_NO_WORKTREE=1; shift ;;
-    --no-stash)      FORCE_NO_STASH=1; shift ;;
-    --touched-files) TOUCHED_FILES="${2:-}"; shift; shift ;;
+    --no-worktree)     FORCE_NO_WORKTREE=1; shift ;;
+    --no-stash)        FORCE_NO_STASH=1; shift ;;
+    --touched-files)   TOUCHED_FILES="${2:-}"; shift; shift ;;
+    --reuse-worktree)  REUSE_WORKTREE="${2:-}"; shift; shift ;;
+    --ignore-orphans)  IGNORE_ORPHANS=1; shift ;;
     *) break ;;
   esac
 done
@@ -138,17 +142,25 @@ except Exception:
 PY
 )"
 WT_ENABLED="$(echo "$WT_CFG" | python3 -c "import sys,json; print(json.load(sys.stdin).get('enabled', False))" 2>/dev/null || echo "False")"
+WT_BASE_DIR="$(echo "$WT_CFG" | python3 -c "import sys,json; print(json.load(sys.stdin).get('base_dir','.claude/worktrees'))" 2>/dev/null || echo '.claude/worktrees')"
+WT_PREFIX="$(echo "$WT_CFG" | python3 -c "import sys,json; print(json.load(sys.stdin).get('branch_prefix','loop/'))" 2>/dev/null || echo 'loop/')"
 
-# ---- 计算 slug（不管 worktree 模式如何都需要，state 文件名就是 slug）----
-# worktree 模式：slug = <timestamp>-<task-slug>，天然 unique，并发安全
-# bare 模式（--no-worktree 或 worktree.enabled=false）：slug = __main__，固定
-if [ "$FORCE_NO_WORKTREE" -eq 0 ] && [ "$WT_ENABLED" = "True" ] && [ "$START_HEAD" != "no-git" ]; then
+# ---- 计算 slug（state 文件名就是 slug）----
+if [ -n "$REUSE_WORKTREE" ]; then
+  # --reuse-worktree: 从已有 worktree 路径反推 slug
+  if [ ! -d "$REUSE_WORKTREE" ] || [ ! -f "$REUSE_WORKTREE/.git" ]; then
+    echo "❌ --reuse-worktree 路径无效或不是 git worktree：$REUSE_WORKTREE" >&2
+    exit 2
+  fi
+  WORKTREE_PATH="$(cd "$REUSE_WORKTREE" && pwd -P)"
+  SLUG="$(basename "$WORKTREE_PATH")"
+  WORKTREE_BRANCH="$(git -C "$WORKTREE_PATH" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "${WT_PREFIX}${SLUG}")"
+  echo "[setup-builder-loop] ♻️  复用孤儿 worktree：${WORKTREE_PATH} (branch=${WORKTREE_BRANCH})" >&2
+elif [ "$FORCE_NO_WORKTREE" -eq 0 ] && [ "$WT_ENABLED" = "True" ] && [ "$START_HEAD" != "no-git" ]; then
   TASK_SLUG="$(echo "$TASK_DESC" | head -c 24 | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' '-' | sed -E 's/-+/-/g; s/^-|-$//g')"
   [ -z "$TASK_SLUG" ] && TASK_SLUG="task"
   TASK_ID="$(date +%s)-${TASK_SLUG}"
   SLUG="$TASK_ID"
-  WT_BASE_DIR="$(echo "$WT_CFG" | python3 -c "import sys,json; print(json.load(sys.stdin).get('base_dir','.claude/worktrees'))")"
-  WT_PREFIX="$(echo "$WT_CFG" | python3 -c "import sys,json; print(json.load(sys.stdin).get('branch_prefix','loop/'))")"
   WORKTREE_BRANCH="${WT_PREFIX}${TASK_ID}"
   WORKTREE_PATH="${PROJECT_ROOT}/${WT_BASE_DIR}/${TASK_ID}"
 else
@@ -181,6 +193,54 @@ if [ -d "$STATE_DIR" ]; then
   done
 fi
 
+# ---- 孤儿 worktree 检测（V3.3: worktree 目录存在但无对应 active state）----
+if [ -z "$REUSE_WORKTREE" ] && [ "$IGNORE_ORPHANS" -eq 0 ] && \
+   [ "$FORCE_NO_WORKTREE" -eq 0 ] && [ "$WT_ENABLED" = "True" ] && [ "$START_HEAD" != "no-git" ]; then
+  _wt_base="${PROJECT_ROOT}/${WT_BASE_DIR}"
+  if [ -d "$_wt_base" ]; then
+    _orphan_count=0
+    for _odir in "$_wt_base"/*/; do
+      [ -d "$_odir" ] || continue
+      [ -f "${_odir}.git" ] || continue
+      _odir_clean="${_odir%/}"
+      _has_state=0
+      for _sf in "$STATE_DIR"/*.yml; do
+        [ -e "$_sf" ] || continue
+        _sf_wt="$(grep -E '^worktree_path:' "$_sf" 2>/dev/null | head -1 | sed -E 's/^worktree_path:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' || true)"
+        if [ "$_sf_wt" = "$_odir_clean" ]; then
+          _has_state=1
+          break
+        fi
+      done
+      if [ "$_has_state" -eq 0 ]; then
+        if [ "$_orphan_count" -eq 0 ]; then
+          echo "[setup-builder-loop] 🔍 发现孤儿 worktree（目录存在但无 active state）：" >&2
+        fi
+        _orphan_count=$(( _orphan_count + 1 ))
+        _o_branch="$(git -C "$_odir_clean" rev-parse --abbrev-ref HEAD 2>/dev/null || echo 'unknown')"
+        _o_dirty="$(git -C "$_odir_clean" status --porcelain 2>/dev/null | wc -l | tr -d ' ')"
+        _main_head="$(git -C "$PROJECT_ROOT" rev-parse HEAD 2>/dev/null || echo '')"
+        _o_ahead="0"
+        if [ -n "$_main_head" ]; then
+          _o_ahead="$(git -C "$_odir_clean" rev-list HEAD --not "$_main_head" 2>/dev/null | wc -l | tr -d ' ' || echo '?')"
+        fi
+        _o_last="$(git -C "$_odir_clean" log --oneline -1 2>/dev/null || echo 'no commits')"
+        echo "  ORPHAN: ${_odir_clean}" >&2
+        echo "    branch: ${_o_branch} | dirty: ${_o_dirty} files | ahead: ${_o_ahead} commits" >&2
+        echo "    last: ${_o_last}" >&2
+      fi
+    done
+    if [ "$_orphan_count" -gt 0 ]; then
+      echo "" >&2
+      echo "[setup-builder-loop] 💡 可选操作：" >&2
+      echo "  复用：bash setup-builder-loop.sh --reuse-worktree <ORPHAN_PATH> \"<task>\"" >&2
+      echo "  忽略（新建 worktree）：bash setup-builder-loop.sh --ignore-orphans \"<task>\"" >&2
+      echo "  清理：git worktree remove --force <path> && git branch -D <branch>" >&2
+      exit 6
+    fi
+  fi
+fi
+
 # ---- 若同 slug state 已 active 且对应 worktree 还在 → 拒绝 ----
 if [ -f "$STATE_FILE" ]; then
   EXIST_ACTIVE="$(grep -E '^active:' "$STATE_FILE" | head -1 | awk '{print $2}')"
@@ -204,7 +264,7 @@ fi
 DIRTY_FILES=""
 PRE_LOOP_STASH_REF=""
 WORKTREE_MODE_DETECTED="clean"
-if [ "$FORCE_NO_WORKTREE" -eq 0 ] && [ "$WT_ENABLED" = "True" ] && \
+if [ -z "$REUSE_WORKTREE" ] && [ "$FORCE_NO_WORKTREE" -eq 0 ] && [ "$WT_ENABLED" = "True" ] && \
    [ "$START_HEAD" != "no-git" ] && [ -n "$TOUCHED_FILES" ] && [ "$FORCE_NO_STASH" -eq 0 ]; then
   GIT_DIR_REL="$(git -C "$PROJECT_ROOT" rev-parse --git-dir 2>/dev/null || echo "")"
   if [ -n "$GIT_DIR_REL" ]; then
@@ -247,8 +307,7 @@ if [ "$FORCE_NO_WORKTREE" -eq 0 ] && [ "$WT_ENABLED" = "True" ] && \
   echo "[setup-builder-loop] 📦 选择性 stash：${TOUCHED_FILES}" >&2
   echo "[setup-builder-loop]    hash=${PRE_LOOP_STASH_REF:0:12}" >&2
 fi
-# V3.2: 无 --touched-files 时提示主仓 dirty（不阻断）
-if [ "$FORCE_NO_WORKTREE" -eq 0 ] && [ "$WT_ENABLED" = "True" ] && \
+if [ -z "$REUSE_WORKTREE" ] && [ "$FORCE_NO_WORKTREE" -eq 0 ] && [ "$WT_ENABLED" = "True" ] && \
    [ "$START_HEAD" != "no-git" ] && [ -z "$TOUCHED_FILES" ]; then
   _dirty_count="$(git -C "$PROJECT_ROOT" status --porcelain 2>/dev/null \
     | { grep -v -E '^.. \.claude/(builder-loop|loop-runs|worktrees)(/|$)' || true; } \
@@ -260,8 +319,8 @@ if [ "$FORCE_NO_WORKTREE" -eq 0 ] && [ "$WT_ENABLED" = "True" ] && \
   fi
 fi
 
-# ---- worktree 真接入 ----
-if [ "$FORCE_NO_WORKTREE" -eq 0 ] && [ "$WT_ENABLED" = "True" ] && [ "$START_HEAD" != "no-git" ]; then
+# ---- worktree 真接入（--reuse-worktree 跳过，worktree 已存在）----
+if [ -z "$REUSE_WORKTREE" ] && [ "$FORCE_NO_WORKTREE" -eq 0 ] && [ "$WT_ENABLED" = "True" ] && [ "$START_HEAD" != "no-git" ]; then
   mkdir -p "${PROJECT_ROOT}/${WT_BASE_DIR}"
   if ! git -C "$PROJECT_ROOT" worktree add -b "$WORKTREE_BRANCH" "$WORKTREE_PATH" HEAD >&2; then
     echo "❌ git worktree add 失败，worktree_path=${WORKTREE_PATH} branch=${WORKTREE_BRANCH}" >&2
@@ -304,16 +363,21 @@ fi
 # Step 1 仅写默认值；Step 2 实施 dirty stash 时填非空值
 if [ -n "$WORKTREE_PATH" ]; then
   RUNTIME_ROOT="$WORKTREE_PATH"
-  # V2.3: WORKTREE_MODE_DETECTED 由前置 pre-flight 决定（clean / dirty）
-  # 注：用户显式 --no-stash 时 WORKTREE_MODE_DETECTED 保持 "clean"，dirty 留主仓不进 stash
-  #     这种"看似 clean 实则用户主仓 dirty"的语义对维护者可能 confusing；EARLY_STOP 路径
-  #     按 worktree_mode=clean 不还原 stash 也是预期（无 stash 可还原）
-  WORKTREE_MODE="${WORKTREE_MODE_DETECTED:-clean}"
+  if [ -n "$REUSE_WORKTREE" ]; then
+    WORKTREE_MODE="reuse"
+  else
+    WORKTREE_MODE="${WORKTREE_MODE_DETECTED:-clean}"
+  fi
 else
   RUNTIME_ROOT="$PROJECT_ROOT"
   WORKTREE_MODE="bare"
 fi
 OWNER_CWD="$(pwd -P)"
+if [ -n "$REUSE_WORKTREE" ]; then
+  LAST_ITER_HEAD="$(git -C "$WORKTREE_PATH" rev-parse --short HEAD 2>/dev/null || echo "$START_HEAD")"
+else
+  LAST_ITER_HEAD="$START_HEAD"
+fi
 cat > "$STATE_FILE" <<EOF
 # builder-loop state file (do NOT manually edit while loop is active)
 active: true
@@ -325,7 +389,7 @@ max_iter: 5
 project_root: "${RUNTIME_ROOT}"
 main_repo_path: "${PROJECT_ROOT}"
 start_head: "${START_HEAD}"
-last_iter_head: "${START_HEAD}"
+last_iter_head: "${LAST_ITER_HEAD}"
 worktree_path: "${WORKTREE_PATH}"
 worktree_mode: "${WORKTREE_MODE}"
 pre_loop_stash_ref: "${PRE_LOOP_STASH_REF}"
@@ -352,7 +416,9 @@ state_file: "${STATE_FILE}"
 LOCALEOF
 
 echo "✅ builder-loop 已启动"
-if [ -n "$WORKTREE_PATH" ]; then
+if [ -n "$REUSE_WORKTREE" ]; then
+  echo "   模式：worktree（♻️ 复用已有 — reviewer-as-gate）"
+elif [ -n "$WORKTREE_PATH" ]; then
   echo "   模式：worktree（reviewer-as-gate — PASS 后挂牌等审，reviewer 通过才合主线）"
 else
   echo "   模式：bare（事后审 — PASS 后立即 commit 主仓，reviewer 事后审查）"
