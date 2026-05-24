@@ -46,9 +46,10 @@
 
 ---
 
-## 2026-05-19 早停后重新 setup 丢失旧 worktree 未提交改动
+## 2026-05-19 早停后 setup 应检测孤儿 worktree 并提示复用
 
-- **触发上下文**：V3.1 worktree 隔离加固任务。loop 在 iter 1 早停（suspected_test_tampering），state 归档，旧 worktree 保留但无活跃 state。想重新进 loop，从主仓调 `setup-builder-loop.sh` → 创建新 worktree（从 main HEAD）。新 worktree 是干净的 main 副本，**旧 worktree 中的十几个未提交文件（新建脚本、修改的 install/uninstall/fixture）全部丢失**。被迫手动 `cp` 逐个文件从旧 worktree 到新 worktree。
+- **触发上下文**：早停后旧 worktree 保留（含改动），但 state 归档。重新 setup 创建新 worktree，旧改动丢失。根因：setup 每次按 timestamp 生成新 slug，不检查已存在的可复用 worktree。
+- **方案（2026-05-23 对齐）**：setup 开头扫 worktree 目录，发现孤儿（worktree 存在但无对应 active state）→ 提示用户"复用 / 新建"。复用 = 写新 state 指向已有 worktree + reset iter=0。
 - **根因**：setup 的 stash 机制只搬运"主仓 dirty"（setup 前主仓的未提交改动），不搬运旧 worktree 的改动。早停归档 state 后，旧 worktree 的改动跟新 loop 没有关联。
 - **建议方向**：
   1. **setup 增加 `--reuse-worktree <path>` 参数**：检测到指定 worktree 存在且有未提交改动时，直接在该 worktree 上创建新 state（不新建 worktree），复用已有代码
