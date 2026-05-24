@@ -22,6 +22,7 @@ pass_cmd:
   - { stage: "v25_stop_hook_observability", cmd: "bash skills/builder-loop/fixtures/e2e/test-stop-hook-debug-log.sh", timeout: 90 }
   - { stage: "v26_abandon_loop_flow", cmd: "bash skills/builder-loop/fixtures/e2e/test-abandon-loop-flow.sh", timeout: 60 }
   - { stage: "v30_reviewer_timing_check_phase", cmd: "bash skills/builder-loop/fixtures/e2e/test-reviewer-timing-check-phase.sh", timeout: 30 }
+  - { stage: "v32_early_stop_tampering", cmd: "bash skills/builder-loop/fixtures/e2e/test-early-stop-tampering.sh", timeout: 60 }
 
 max_iterations: 5
 

@@ -83,9 +83,9 @@ if [ -n "$TEST_DIRS_CSV" ]; then
     # 信号 1: 测试文件被删除
     n_deleted=$(git -C "$PROJECT_ROOT" diff --diff-filter=D --name-only HEAD -- "$d" 2>/dev/null | wc -l)
     TAMPERING_SIGNALS=$(( TAMPERING_SIGNALS + n_deleted ))
-    # 信号 2: 断言被弱化（assert 行被删 或 skip/xfail 被加）
-    n_weakened=$(git -C "$PROJECT_ROOT" diff HEAD -- "$d" 2>/dev/null \
-      | grep -E '^-.*\bassert|^\+.*(pytest\.mark\.(skip|xfail|skipif)|@unittest\.skip|\bxfail\(|\bskip\()' 2>/dev/null | wc -l)
+    # 信号 2: 断言被弱化（assert 行被删 或 skip/xfail 被加，只看修改的文件，删除的已在信号 1 计数）
+    n_weakened=$(git -C "$PROJECT_ROOT" diff --diff-filter=M HEAD -- "$d" 2>/dev/null \
+      | grep -E '^-.*\bassert|^\+.*(pytest\.mark\.(skip|xfail|skipif)|@unittest\.skip|\bxfail\(|\bskip\()' 2>/dev/null | wc -l || true)
     TAMPERING_SIGNALS=$(( TAMPERING_SIGNALS + n_weakened ))
   done
   if [ "$TAMPERING_SIGNALS" -ge 3 ]; then
