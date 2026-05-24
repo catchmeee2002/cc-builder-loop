@@ -2,6 +2,17 @@
 
 > 时间倒序。每条按 builder.md 步骤 5 模板（触发上下文 / 建议方向 / 优先级）。
 > 立项不等于本期实施——A 类候选清单，等独立任务挑出来落地。
+> 已关闭条目见 [CHANGELOG V3.2](CHANGELOG.md#v32-跨越界隔离--测试框架2026-05-23)
+
+## 2026-05-23 tester 角色重构：A+D 模式（加厚输入 + builder 合法修测试）
+
+- **触发上下文**：builder 几乎每天都在修 tester 写的测试。test_tampering 早停连续误判（L3 适配 + fixture 替换两次）。调研确认纯 spec 写可执行测试业界无成功案例，最小可行信息 = spec + 签名 + 类型 + mock 目标。
+- **根因**：tester 黑盒隔离的输入不够（缺 mock 目标、数据结构、错误类型），产出的测试不可用，builder 被迫白盒修补，tampering 检测误判。
+- **方案（A+D 组合）**：
+  1. **A 加厚输入**：builder spawn tester 时增加 `mock_targets`（外部调用方式）、`data_contracts`（关键数据结构）、`error_types`（异常类型清单），保留黑盒精神但给够信息
+  2. **D 改 tampering 判据**：从"测试文件被改 = 可疑"改成"测试被删 / 断言被弱化（去 assert / 加 skip/xfail）= 可疑"。builder 修测试是正常流程
+- **涉及文件**：builder.md（spawn tester 段）、tester.md（agent prompt）、builder-loop-stop.sh（早停逻辑）
+- **优先级**：高（每天踩 + 设计哲学原则 4「改输入条件」）
 
 > 已关闭条目见 [CHANGELOG V3.2](CHANGELOG.md#v32-跨越界隔离--测试框架2026-05-23)
 
@@ -16,14 +27,6 @@
 - **优先级**：中（低频但一旦踩到很混乱，需要手动清理嵌套 worktree + abandon）
 
 ---
-
-## 2026-05-19 早停 suspected_test_tampering 不理解「替换」语义
-
-- **触发上下文**：V3.1 删除 `test-tester-write-guard.sh` 并新建 `test-worktree-write-guard.sh` 作为替代。早停逻辑只看到"有 fixture 文件被删"就判定 `suspected_test_tampering`，没考虑"新增了同级替代 fixture"的情况。连续 2 次早停（iter 1），被迫手动绕过 loop。
-- **建议方向**：
-  1. **增加 net 文件数检查**：不仅看 test_dirs 下有无文件删除，还看 test_dirs 下有无新增文件。如果删除数 ≤ 新增数（净增 ≥ 0），不触发 suspected_test_tampering
-  2. **或者只看 loop.yml stage 引用的文件**：不扫整个 test_dirs，只检查 `pass_cmd` 各 stage 的 cmd 引用的文件是否存在。引用不存在的文件 = stage 必 fail = 非 tampering 而是 loop.yml 未更新
-- **优先级**：中-高（任何涉及 fixture 文件重命名/替换的改动都会触发，阻塞 loop 流程）
 
 ---
 
@@ -69,24 +72,6 @@
 - 建议方向：区分任务规模——小改动（单条 #N）→ 一行标记；P0 专项或含内部状态表格的条目 → Read 对应段落 → 列出哪些状态列需更新 → 逐项 Edit
 - 优先级：中
 
-## 2026-05-12 suspected_test_tampering 早停在 L3 改动中是误判
-- 触发上下文：novel-writer Story Spine L3 架构改动（~25 文件 ~1800 行），删除了 MemoryContext 的 facts_context/constants/previous_snapshot/memory_context 四个旧字段，改了 draft_prompt/chapter_plan_prompt 等函数签名。测试中引用旧字段/旧签名的 fixture 必须适配，属于 L3 正常操作。但 stop hook 检测到测试文件被修改后判定 suspected_test_tampering 并早停，导致 loop 在 iter=1 就归档。
-- 根因：stop hook 的 test_tampering 检测逻辑没有区分「改测试以绕过 PASS_CMD」和「L3 数据合同变更后适配测试 fixture」。后者是方案文件明确规定的 Phase E（测试修复），builder 流程中 tester subagent 也会改测试。
-- 建议方向：test_tampering 检测应增加豁免条件——当方案文件标注 L3 且 changed_files 同时包含源码和测试时，视为合法适配不触发早停。或者更简单：只在「仅改测试不改源码」时才判定 tampering（如果源码也改了大量文件，测试跟着改是正常的）
-- 优先级：高
-- 事故现场：
-  - legacy state bak: `/mnt/hongyu.liao_docker/generator/.claude/builder-loop/legacy/20260512-160925-early_stop_suspected_test_tampering.bak`
-  - legacy info: `/mnt/hongyu.liao_docker/generator/.claude/builder-loop/legacy/20260512-160925-early_stop_suspected_test_tampering.info`
-  - worktree 保留（含全部 dirty 改动）: `/mnt/hongyu.liao_docker/generator/.claude/worktrees/1778572012-story-spine`
-  - worktree branch: `loop/1778572012-story-spine`（HEAD=1134bf1，无 commit，全部改动 unstaged）
-  - stash ref: `53a45be350c03fa1b6a272ec59e3ae444d41c95c`（主仓 dirty 已 restore）
-  - slug: `1778572012-story-spine`，iter=1 即早停，plan_file 指向 `.claude/plans/20260512-story-spine-implementation.md`
-  - 实际失败测试 12/933：根因全部是 L3 签名变更后测试 fixture 未适配（draft_prompt 删 constants_md 参数 3 个 + MemoryContext 删 facts_context/memory_context 字段 4 个 + workshop STORY_SPINE 替代 CONSTANTS_LOCK 5 个）
-
-## 2026-05-11 tester prompt 需标注源码的 subprocess 调用方式，否则 mock 目标全偏
-- 触发上下文：Personal_Assistant_Bot 项目健康巡检 Agent 任务中，tester 写的 5 个测试文件全部 mock `subprocess.run`，但源码实际用 `subprocess.check_output`；同样 mock 不存在的 `_make_client` 而非 `httpx.Client`。reviewer 两轮才抓出（第一轮通过核心代码，第二轮发现测试 mock 失效），浪费两个 loop 迭代
-- 建议方向：builder spawn tester 时在 interface_signatures 里显式标注每个模块用的 subprocess 调用方式（check_output / run / Popen）和 HTTP 客户端库（httpx.Client / requests.Session 等），让 tester 不用猜 mock 目标
-- 优先级：中
 
 ## 2026-05-11 builder 步骤 3.5 doc-maintainer 漏触发两处文档更新
 - 触发上下文：#127/#128/#129 三个 deep-analysis 工具快修合入后，builder 输出 `📄 doc: skip`，但实际有两处文档需要更新：①scripts/CLAUDE.md（outline_overflow 行为从只查 characters 变成查 characters + factions，命中触发条件第一条「脚本行为变了」，属 builder 误判）；②CHANGELOG.md（exp-024 代码合入后应追加条目，但 doc-maintainer 触发 checklist 四条均不覆盖 CHANGELOG，属流程缺陷）。最终由用户在交接环节发现，builder 手动补更新
