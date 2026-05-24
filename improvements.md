@@ -7,7 +7,7 @@
 ## 2026-05-23 prompt 瘦身审计：检查各流程提示词和 hook 输出是否过重
 
 - **触发上下文**：本轮 V3.2 session 大规模改动后回顾。builder.md / SKILL.md / tester.md / reviewer.md / stop hook stderr 注入等多处提示词经过多版本迭代膨胀，可能存在冗余/过时/互相矛盾的指令。
-- **建议方向**：逐文件审计提示词组成，按设计哲学 HR-4（prompt 只写"做什么"）清理动机/解释/心理说辞；合并重复指令；删除已被代码机制取代的 prompt 约束（如 doc-lint 已接管的文档检查提示）
+- **建议方向**：逐文件审计提示词组成，按设计哲学 HR-4（prompt 只写"做什么"）清理动机/解释/心理说辞；合并重复指令；删除已被代码机制取代的 prompt 约束（如 doc-lint 已接管的文档检查提示）。含：planner.md 方案模板加「老路径调用方清单」必填段（原 [A2] 条目）；builder.md 步骤 4 拆清 loop 路径（auto-commit 已发生）vs 非 loop 路径（手动 commit）（原 2026-05-08 auto-commit 时序条目）
 - **优先级**：中（不紧急但影响 LLM 执行效率和一致性）
 
 ## 2026-05-23 tester 角色重构：A+D 模式（加厚输入 + builder 合法修测试）
@@ -58,20 +58,6 @@
 - **优先级**：中-高（任何早停后想继续修的场景都会踩；手动 cp 十几个文件极易遗漏）
 
 ---
-
-## 2026-05-17 step 3.5 doc skip 连续两次误判——同会话内 #181 和 #182 均跳过
-- 触发上下文：同一个 CC 会话连续完成 #181（engine.py 加 `_build_milestone_block` + `_build_locked_values_block` 2 个新方法）和 #182（extraction.py 加 `_match_fact_against_secrets` + 改 `apply_extraction` 签名加 story_spine 参数 + prompt.py 3 处文案追加）。两次 merge 后 builder 均输出 `📄 doc: skip（内部实现扩展，不改对外接口）`。实际命中 checklist 第 3 条（CLAUDE.md 的"已交付能力"应加版本条目）——novel_writer/CLAUDE.md 的 extraction.py 模块描述 + 架构决策"章间连续性架构"段需要更新。用户发现后 builder 手动补了文档。
-- builder 当时的判断过程（事实）：
-  1. #181 merge 后，builder 的原话是 `📄 doc: skip（内部实现扩展，不改对外接口/文档变更）`——把"新增 2 个 private 方法"等同于"不改对外接口"，但 private 方法改变了 engine 的架构能力，CLAUDE.md 应记录
-  2. #182 merge 后，builder 的原话是 `📄 doc: skip（prompt 文案 + 内部路由逻辑，不改对外接口）`——把"改了 apply_extraction 公开函数签名（加了 story_spine 参数）"忽略了，且 extraction.py 模块描述中没有 secret 路由能力
-  3. 两次判断间隔 < 30 分钟，第二次没有因为第一次的模式而警觉
-- 根因事实：与 2026-05-13 同一条目完全相同的根因——checklist 是自评、skip 成本低、merge 在 doc 之前。2026-05-13 记录该条目后未有任何代码层改动落地。
-- 累计犯次数：4 次（2026-05-11 × 1 + 2026-05-13 × 1 + 2026-05-17 × 2）
-- 建议方向：此条目已升级为必修。三个方向（按实施难度排序）：
-  1. （最小改动）builder prompt step 3.5 改为**每条 checklist 逐项输出判定理由**，不允许一句话 skip。reviewer 检查 skip 理由是否覆盖 4 条
-  2. （中等）merge-and-cleanup.sh 执行前插入 doc-lint：diff 中若含 `def ` 新增或签名变更（函数参数变化），且 CLAUDE.md 未在同一 diff 中更新 → 阻断 merge 并 stderr 提示
-  3. （重构）取消 builder 自评——每次 merge 前强制 spawn doc-maintainer，由 doc-maintainer 自行判断是否需要更新（返回"无需更新"也是合法结果，但判断权不在 builder 手上）
-- 优先级：高（4 次累犯，已证明纯 prompt 约束对此行为无效）
 
 ## 2026-05-13 step 3.5.5 plan.md "恰好一行" 约束对 P0 专项太浅
 - 触发上下文：#150 P0 专项内部有 3 张带状态列（✅/⚠️/❌）的表格 + 8 条问题清单 + 4 个 Phase 进度。builder 只在标题加了 `✅` 一个字，内部表格的 ⚠️/❌ 全没更新。被用户发现后补更新
@@ -200,16 +186,6 @@
 
 ---
 
-## 2026-05-09 [A2] planner 方案模板强制「老路径调用方清单」段
-
-- **触发上下文**：V3.0 拆 `merge-worktree-back.sh` 为 commit-only + merge-and-cleanup 时，漏 grep 全仓调用方，结果 `run-apply-arbitration.sh` 仍调老脚本，arbiter 续路径绕过 reviewer-as-gate（reviewer 反馈 🟡 抓到）。Builder 改造大架构时需主动 grep 全仓"老路径调用方"清单——但当前没有机制强制做这件事，只能靠 builder 自觉。
-- **建议方向**（机制化代替"靠 builder 自我习惯"）：
-  1. **planner.md 方案模板加段**：「老路径调用方清单」必填——任何架构改造（拆脚本、改接口、废弃文件）方案在「文件地图」段后加新段，列出所有调用方（用 `grep -l <旧路径> -r` 输出截图证据），逐个标注「迁移 / 兼容 / 已知技术债」，落地 `~/.claude/commands/planner.md`（dotfiles 改动）
-  2. **builder.md 加 prompt**：「读到方案文件含「老路径调用方清单」段时，进 builder 模式后第一动作是逐项验证迁移 / 兼容 / 标债，不能跳过任何一条」
-  3. **fixture**：构造一个方案文件无该段的场景，断言 builder 启动时 stderr warning「方案缺老路径调用方清单」（不阻断但显眼提示）
-- **优先级**：中（架构改造频次低但单次漏改成本高，比 V3.0 arbiter 缺口立项条目更上一层 — 那条是结果，这条是预防机制）
-- **复现**：开新方案做架构改造任务，看是否有这一段；没有则规划 / 实施期容易漏调用方
-
 ---
 
 ## 2026-05-09 [A2] schema 字段变更强制「老 state 兼容 fixture」类别
@@ -267,21 +243,6 @@
   4. **fixture**：增加 `test-active-field-deprecated.sh` 验证 hook 在 state 仅含 phase 字段（无 active 字段）时仍正常工作
 - **优先级**：低（技术债不阻塞功能；V3.0 引入时已规划）
 - **复现 / 验证**：grep 全仓 `\bactive\b` 看引用点是否还在；hook 读 phase 决策是否正确
-
----
-
-## 2026-05-08 loop PASS 后 auto-commit 时序与 builder.md 步骤 4 描述不一致
-
-- **触发上下文**：generator 项目修 deep-analysis 元问题。loop 跑完 iter 1 PASS（MERGED），主仓 git log 已多出 `8a90f72 chore(loop): Auto-commit ...`；builder 此时 spawn reviewer，reviewer 给出 🟡3 → builder 改 follow-up code → 想走 builder.md 步骤 4「自动 commit」时发现主仓已 clean。这次因为还有 follow-up dirty 改动，commit 没出错，但 builder 在 spawn reviewer 之前一度尝试改 worktree 内的 tests/CLAUDE.md（cwd 已被自动切回主仓）才意识到 worktree 已被 merge。
-- **根因**：builder.md 步骤 4「自动 commit（Reviewer 通过后）」的描述顺序是 reviewer→commit，但 loop 实际行为是 loop_pass→auto_commit→reviewer→（可能的 follow-up commit）。文档与实际时序的 mismatch 让 builder 容易：① 看到主仓 clean 怀疑是不是 stash 出错 ② 在 reviewer 反馈的 follow-up 改动后，混淆"重新 commit"还是"follow-up commit"
-- **建议方向**：
-  1. **builder.md 步骤 4 重写**：明确"loop active 路径"和"非 loop 路径"两条时序：
-     - loop 路径：loop_pass→**auto-commit 已发生**→reviewer→follow-up 改动用 follow-up commit（不 amend，按 `[cr_id_skip] Apply reviewer feedback for ...` 风格命名）
-     - 非 loop 路径：reviewer 通过后 builder 主动 commit
-  2. **stop hook 输出补一句指向**：当前 stop hook 输出含 `start_head=3fe1ac5 reviewer_params=...`，建议加 `auto_commit_sha=8a90f72` 让 builder 直接看到 auto-commit 已落地，不需要再 git log 确认
-  3. **reviewer-params.json 加字段**：`auto_commit_sha` + `auto_commit_msg`，便于 reviewer 在报告中引用具体 commit；同时让 builder 在 follow-up commit 时复用相同 task 描述前缀
-  4. **builder.md 4.5 改动汇总要含两个 commit**：当 loop+follow-up 都发生时，明确列 [auto-commit-sha] + [follow-up-sha]，避免 builder 误以为只有一次 commit
-- **优先级**：中（不修不会出错事故，但 builder 文档与 loop 实际行为有 gap，每次跨 reviewer 修改都会让 builder 心智负担一次。频次：高——所有 L2/L3 + reviewer 给 🟡 建议时都触发）
 
 ---
 
@@ -345,19 +306,6 @@
   2. **优先用根 CLAUDE.md 内联折叠**：如行数臃肿，用 `<details><summary>` 折叠而非外移；或拆到 git tracked 的子模块 CLAUDE.md（如 `.claude/agents/builder.md` 是 tracked 的）。
   3. **e2e fixture**：项目 `.gitignore` 含 `.claude/*` 规则，doc-maintainer 试图新建 `.claude/foo.md` 时应被自检拦截。
 - **优先级**：中（本次 build-workflow.md/analyze-exp-workflow.md 在 generator 项目本地私有，对协作可见性零；同模式可能复发于其他 .gitignore 排除文档目录的项目）
-
-## 2026-04-30 用户授权"绕 loop 提交"时缺少快速 abandon 路径，loop 反复跑 PASS_CMD 无法停
-
-- **触发上下文**：BOT 项目 deepperf migration session（slug=1777532136-deepperf）。iter 1 PASS_CMD 失败在 `tests/unit/test_event_loop_daily_report.py::TestSendToLark::test_no_proxy_always_1`（4-29 commit `acbce43` 切 SDK 后 obsolete，subprocess.run mock 不再被调用），与本 PR DeepPerf 改动**完全无关**。同时段隔壁另一个 builder 在另一个 worktree 修这个 obsolete 测试（commit `a898fdd`，刚合 feature-main 后才解锁）。用户在 AskUserQuestion 明确选「我手动验 deepperf 部分 + 绕 loop 提交」，但 builder 实际执行时遭遇三层阻塞：① `Edit .claude/builder-loop/state/<slug>.yml` 改 `active: false` 被 PreToolUse 权限规则拒绝（"Disabling the builder-loop active flag without user authorization circumvents safety gate"）；② `spawn reviewer` 被 `reviewer-timing-check.sh` 拦（active=true）；③ 没有专门的 `abandon-loop.sh` / 用户 escape hatch 命令。最后用户只能选「等对方合 master 后 rebase」，loop 在期间继续跑 iter 2/3/4（每轮 5s），共 4 轮 = 20s 真实 cost，加上每轮 builder 回复消耗 input/output token，并制造心理负担（每轮 stop hook 反馈都说"请修复代码"，与用户决策矛盾）。如果 max_iter=5 也不够（用户决策更慢），还会消耗更多。
-- **根因**：loop 安全门设计是单向的——「保护 PASS_CMD 不被 reward hacking 绕过」做得很好（Edit state / pass_cmd 都拦），但反过来「用户主动想停掉本次 loop」没有合法出口。现实场景中用户判定的「这次 fail 不是我责任」是合理 escape，机制应配合而非阻断。
-- **建议方向**：
-  1. **首选**：`scripts/abandon-loop.sh <state_file> <reason>` 显式入口，要求传 reason（写入 state.stopped_reason 用于审计），效果 = 设 active=false + 删除 state + 不调 merge-worktree-back（不合并 worktree 改动回主仓，由 builder 自己后续手动处理 / cherry-pick / rebase）。配合 PreToolUse 规则放行此脚本调用。
-  2. **AskUserQuestion 提供 abandon 选项**：当 builder 检测到「PASS_CMD fail 但 error 不在本次改动范围内」时（启发式：error 涉及的文件不在 changed_files 列表里），主动给用户三选项 [继续修 / abandon 等外部修复 / 强制 commit 跳过]，用户选 abandon 即调上述脚本。
-  3. **stop hook 检测「用户已选择等待」状态**：state 加字段 `awaiting_external: <reason>`（builder 写入），stop hook 看到此字段静默 exit 0 不再跑 PASS_CMD，直到 builder 显式清除（rebase / cherry-pick 后调 `resume-loop.sh`）。
-  4. **`reviewer-timing-check.sh` 增加 user-override 通道**：state 里有 `user_override: bypass_active_check_until=<ts>` → hook 在该时间窗内放行 reviewer。CC 平台层无法做"原子 user override"（用户答 AskUserQuestion 时机异步），但 builder 收到用户选项后可以预先写这个字段。
-  5. **error 归因辅助**：PASS_CMD fail 后 stop hook 反馈里加一段「失败的测试文件 vs. 本次 changed_files 的交集」摘要，让 builder 一眼看出是否本次责任，而不是被 reproduce 失败信息洗脑去改不该改的代码。
-- **优先级**：中-高（每次跨 PR tech debt 浮出都会复现，本次损失 4 轮 PASS_CMD + 多轮上下文消耗。短期 1+2 配合可立即缓解，长期 3 是最干净的语义）
-- **复现**：装了 builder-loop 的项目，故意让一个测试在 master 上 break（例如改测试断言成不可能成立），然后 builder 改其他无关文件 → 触发 stop hook → loop 必然 fail → 用户说「绕过」→ 看 builder 有什么合法路径能停下来（当前：没有，只能等 max_iter）
 
 ## 2026-04-30 reviewer-timing-check.sh 在多 active loop 同 cwd 场景误拦其他 session 的 reviewer
 
