@@ -96,7 +96,7 @@ section "A2: --reuse-worktree → 成功复用"
 # ============================================================
 r2=$(run_setup "$envA1" --reuse-worktree "$wtA1" "a2-reuse-task")
 assert_ec "A2 reuse setup 成功" "$r2" 0
-assert_stdout_contains "A2 输出含复用模式" "$r2" "复用"
+assert_stdout_contains "A2 输出含复用模式" "$r2" "复用已有"
 
 stateA2=$(ls "$envA1"/.claude/builder-loop/state/*.yml 2>/dev/null | head -1)
 assert_file_exists "A2 新 state 存在" "$stateA2"
@@ -172,5 +172,21 @@ r6_detect=$(run_setup "$envA6" "a6-detect-multiple")
 assert_ec "A6 检测到多孤儿 exit 6" "$r6_detect" 6
 _a6_orphan_count=$(grep -c "ORPHAN:" "$r6_detect/stderr" || echo "0")
 assert "A6 stderr 报出 2 个 ORPHAN" "[ '$_a6_orphan_count' -ge 2 ]"
+
+# ============================================================
+section "A7: --reuse-worktree 相对路径 → exit 2"
+# ============================================================
+envA7=$(mk_orphan_repo)
+r7=$(run_setup "$envA7" --reuse-worktree "relative/path" "a7-relative-path")
+assert_ec "A7 相对路径 exit 2" "$r7" 2
+assert_stderr_contains "A7 stderr 含绝对路径提示" "$r7" "绝对路径"
+
+# ============================================================
+section "A8: --reuse-worktree + --no-worktree 互斥 → exit 2"
+# ============================================================
+envA8=$(mk_orphan_repo)
+r8=$(run_setup "$envA8" --reuse-worktree "/tmp/whatever" --no-worktree "a8-mutex")
+assert_ec "A8 互斥 flag exit 2" "$r8" 2
+assert_stderr_contains "A8 stderr 含互斥提示" "$r8" "互斥"
 
 harness_report

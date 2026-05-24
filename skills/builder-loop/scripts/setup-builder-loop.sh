@@ -38,6 +38,12 @@ while [ $# -gt 0 ]; do
 done
 TASK_DESC="${1:-untitled-task}"
 
+# ---- flag 互斥校验 ----
+if [ -n "$REUSE_WORKTREE" ] && [ "$FORCE_NO_WORKTREE" -eq 1 ]; then
+  echo "❌ --reuse-worktree 和 --no-worktree 互斥，不能同时使用" >&2
+  exit 2
+fi
+
 # ---- 校验配置 ----
 if [ ! -f "$LOOP_YML" ]; then
   echo "❌ 项目根缺少 .claude/loop.yml，无法启动自闭环。请先按 schema 创建配置。" >&2
@@ -147,7 +153,14 @@ WT_PREFIX="$(echo "$WT_CFG" | python3 -c "import sys,json; print(json.load(sys.s
 
 # ---- 计算 slug（state 文件名就是 slug）----
 if [ -n "$REUSE_WORKTREE" ]; then
-  # --reuse-worktree: 从已有 worktree 路径反推 slug
+  # --reuse-worktree: 从已有 worktree 路径反推 slug（必须是绝对路径）
+  case "$REUSE_WORKTREE" in
+    /*) ;; # 绝对路径 OK
+    *)
+      echo "❌ --reuse-worktree 必须传绝对路径（孤儿检测输出的 ORPHAN 路径可直接复制）：$REUSE_WORKTREE" >&2
+      exit 2
+      ;;
+  esac
   if [ ! -d "$REUSE_WORKTREE" ] || [ ! -f "$REUSE_WORKTREE/.git" ]; then
     echo "❌ --reuse-worktree 路径无效或不是 git worktree：$REUSE_WORKTREE" >&2
     exit 2
@@ -233,8 +246,8 @@ if [ -z "$REUSE_WORKTREE" ] && [ "$IGNORE_ORPHANS" -eq 0 ] && \
     if [ "$_orphan_count" -gt 0 ]; then
       echo "" >&2
       echo "[setup-builder-loop] 💡 可选操作：" >&2
-      echo "  复用：bash setup-builder-loop.sh --reuse-worktree <ORPHAN_PATH> \"<task>\"" >&2
-      echo "  忽略（新建 worktree）：bash setup-builder-loop.sh --ignore-orphans \"<task>\"" >&2
+      echo "  复用：bash $0 --reuse-worktree <ORPHAN_PATH> \"<task>\"" >&2
+      echo "  忽略（新建 worktree）：bash $0 --ignore-orphans \"<task>\"" >&2
       echo "  清理：git worktree remove --force <path> && git branch -D <branch>" >&2
       exit 6
     fi
@@ -359,7 +372,7 @@ fi
 # V2.3 schema 新增三字段：
 #   - pre_loop_stash_ref     : git stash commit hash（worktree-dirty 模式才填，否则空）
 #   - pre_loop_dirty_files   : 进 stash 的文件列表（逗号分隔，merge commit message 用）
-#   - worktree_mode          : clean | dirty | bare（语义清晰化）
+#   - worktree_mode          : clean | selective | bare | reuse
 # Step 1 仅写默认值；Step 2 实施 dirty stash 时填非空值
 if [ -n "$WORKTREE_PATH" ]; then
   RUNTIME_ROOT="$WORKTREE_PATH"
