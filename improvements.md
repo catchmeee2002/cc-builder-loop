@@ -4,6 +4,12 @@
 > 立项不等于本期实施——A 类候选清单，等独立任务挑出来落地。
 > 已关闭条目见 [CHANGELOG V3.2](CHANGELOG.md#v32-跨越界隔离--测试框架2026-05-23)
 
+## 2026-05-23 prompt 瘦身审计：检查各流程提示词和 hook 输出是否过重
+
+- **触发上下文**：本轮 V3.2 session 大规模改动后回顾。builder.md / SKILL.md / tester.md / reviewer.md / stop hook stderr 注入等多处提示词经过多版本迭代膨胀，可能存在冗余/过时/互相矛盾的指令。
+- **建议方向**：逐文件审计提示词组成，按设计哲学 HR-4（prompt 只写"做什么"）清理动机/解释/心理说辞；合并重复指令；删除已被代码机制取代的 prompt 约束（如 doc-lint 已接管的文档检查提示）
+- **优先级**：中（不紧急但影响 LLM 执行效率和一致性）
+
 ## 2026-05-23 tester 角色重构：A+D 模式（加厚输入 + builder 合法修测试）
 
 - **触发上下文**：builder 几乎每天都在修 tester 写的测试。test_tampering 早停连续误判（L3 适配 + fixture 替换两次）。调研确认纯 spec 写可执行测试业界无成功案例，最小可行信息 = spec + 签名 + 类型 + mock 目标。
@@ -380,16 +386,6 @@
   2. e2e fixture：构造「worktree_path 字段缺失」的 state 文件验证策略 3 跳过该 state 不报错
   3. 顺路检查策略 4 / 5 的 grep 是否同样脆弱（V2.4 策略 5 已显式 `|| true`，但策略 3-4 未审）
 - **优先级**：低（pre-existing 多版本未触发实质 bug；脆弱性属于代码风格而非功能正确性）
-
-## 2026-04-29 worktree PASS merge 后清理时丢失 untracked 白名单外文件，核心产出消失
-
-- **触发上下文**：novel-writer 项目 meta-analysis skill 实现任务（commit `db9f7bc` / `7632807`）。项目 `.gitignore` 排除 `.claude/commands/*`（白名单仅 `.claude/agents/`），但 `.claude/commands/meta-analysis.md`（新建 slash command）和 `.claude/commands/analyze-exp.md`（追加 Step 5）是本任务的核心产出。Builder 在 worktree 内创建/修改这两个文件，loop iter 1 PASS_CMD 通过后 worktree 自动 merge + 清理 → **untracked 改动随 worktree 目录被删除一并丢失**。主仓只看到 git tracked 的 meta-analyzer.md / CLAUDE.md / cli/app.py 已 merge，但无关键 skill 产出。Builder 必须根据上下文记忆在主仓重建这两个文件（本次靠对话上下文有完整内容，但若上下文压缩或会话断开则数据永久丢失）。
-- **建议方向**：
-  1. setup-builder-loop 时识别项目 `.gitignore` 中被排除但物理存在于 worktree 的非空文件 → 在 builder-loop.local.md 或 state yml 中记录这些路径
-  2. merge-worktree-back.sh 在清理 worktree 前，先 `cp -r` 这些 untracked 路径到主仓（非 git 同步，纯文件系统拷贝）
-  3. 或更稳：让 setup-builder-loop 加 `untracked_sync_paths:` 配置项（loop.yml），用户显式声明哪些路径需要从 worktree 复制回主仓（白名单制，避免误同步 venv 等）
-  4. 兜底：worktree 清理前先 `find <worktree> -newer <start_head_time> -not -path '.git/*'` 列出所有新建/改动的 untracked 文件，警告用户「以下文件不在 git 中，merge 不同步，请手动同步」
-- **优先级**：中（高发面：任何项目 `.gitignore` 排除核心文件目录的场景都会踩；本次靠记忆兜底但不可持续）
 
 ## 2026-04-29 reviewer-params.json changed_files 含 loop hook 一并 commit 的无关 untracked 累积，reviewer 焦点被噪音稀释
 

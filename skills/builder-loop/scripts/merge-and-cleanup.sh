@@ -232,6 +232,17 @@ if [ "$CLEANUP_PHASE" = "ff_merged" ]; then
   else
     WT_BRANCH=""
   fi
+  # V3.2: warn about gitignored files that will be lost
+  if [ -d "$WORKTREE_PATH" ]; then
+    _ignored="$(git -C "$WORKTREE_PATH" ls-files --others --ignored --exclude-standard 2>/dev/null \
+      | grep -v -E '^\.(claude/builder-loop|claude/loop-runs|claude/worktrees)(/|$)' \
+      | head -10 || true)"
+    if [ -n "$_ignored" ]; then
+      echo "[merge-and-cleanup] ⚠️  worktree 内有 gitignored 文件将随 worktree 删除丢失：" >&2
+      echo "$_ignored" | sed 's/^/  /' >&2
+      echo "[merge-and-cleanup]    如需保留请先手动 cp 到主仓" >&2
+    fi
+  fi
   git -C "$PROJECT_ROOT" worktree remove --force "$WORKTREE_PATH" 2>/dev/null || \
     rm -rf "$WORKTREE_PATH" 2>/dev/null || true
   git -C "$PROJECT_ROOT" worktree prune 2>/dev/null || true
