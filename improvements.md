@@ -387,15 +387,6 @@
   4. e2e fixture：`test-doc-maintainer-write-guard.sh` 模拟 doc-maintainer 试图写主仓 → exit 2 + 精确诊断 stderr
 - **优先级**：中（doc 漏审风险跟 tester 同等级；本次手动补但易遗漏）
 
-## 2026-04-29 loop 哑火手动收尾路径下 stash apply 撞重叠 conflict 未文档化
-
-- **触发上下文**：V2.4 落地 session 因 c1（stop hook 没触发）走手动收尾路径 — worktree 内手动 commit 7+1 个本期文件 → 主仓 ff merge → 主仓 stash apply 还原非本期 dirty。但 stash 内 CLAUDE.md / improvements.md 的"旧 dirty 改动"已经被本期 commit 叠加进 worktree commit（worktree 是从 stash apply 来的状态 + 本期 Edit）→ ff merge 后主仓 HEAD 已含旧 dirty + 本期改动 → stash apply 想再叠一次必撞 conflict。本次手动 Edit 删冲突标记 + git reset 解决，但操作链路长且文档无说明。`merge-worktree-back.sh` 走的自动化路径已设计「PASS 后 drop stash 副本」（V2.3）所以走得通，**手动收尾这条路径未覆盖**。
-- **建议方向**：
-  1. 提供 `skills/builder-loop/scripts/manual-cleanup-after-loop-failure.sh` 辅助脚本：参数 = state file path → 自动跑 worktree commit + ff merge 主仓 + 智能还原非本期 stash 文件（partial apply 排除 commit 已含路径）+ drop stash + cleanup worktree + rm state
-  2. 文档补 §7.10 排查段尾部追加「loop 哑火时如何手动收尾」步骤指南（含撞 conflict 时的解决套路）
-  3. setup-builder-loop 写 state 时增加 stash apply path 列表元数据，让 manual-cleanup 能精确知道哪些文件能被 worktree commit 安全覆盖
-- **优先级**：低（依赖 c1 loop 哑火问题；c1 修了之后这个收尾路径低频）
-
 ## 2026-04-29 locate-state.sh 策略 3 grep-sed 管道缺 `|| true` + set -e 缺失（pre-existing）
 
 - **触发上下文**：V2.4 reviewer 反馈（🟡）— `locate-state.sh:24` 用 `set -uo pipefail` 缺 `-e`（与同项目其他脚本不一致，外部静默契约下吞错）；策略 3 的 `wt="$(grep -E '^worktree_path:' "$sf" 2>/dev/null | head -1 | sed -E '...')"`（L83）grep 未命中时 + pipefail 让子 shell 退出非 0，外层 `wt=...` 命令替换实际接受空字符串后续 `[ -z "$wt" ] && continue` 兜过去，但这种写法依赖 `set -e` 缺失才不杀脚本，写法脆弱（迁移到 `set -euo pipefail` 时会暴露）。本期按"bug fix 不带周边清理"原则不改。
@@ -404,22 +395,6 @@
   2. e2e fixture：构造「worktree_path 字段缺失」的 state 文件验证策略 3 跳过该 state 不报错
   3. 顺路检查策略 4 / 5 的 grep 是否同样脆弱（V2.4 策略 5 已显式 `|| true`，但策略 3-4 未审）
 - **优先级**：低（pre-existing 多版本未触发实质 bug；脆弱性属于代码风格而非功能正确性）
-
-## 2026-04-29 V2.4 落地 session stop hook 未触发跑 PASS_CMD（loop 哑火活样本）
-
-- **触发上下文**：本仓自身 V2.4 实施 session（slug=`1777457315-v2-4-locate-state-sh`）— builder reply 结束后等了 ~9 min，state 文件仍在（active=true、iter=0 未变），`.claude/loop-trace.jsonl` 最后一行是 2026-04-27 的（昨天的 PASS），今天没新条目；`.claude/loop-runs/` 也没新 iter 日志。证据指向 stop hook 这次根本没跑 PASS_CMD（而不是跑了但走早退 path —— 那会留 trace / 写 lock / 至少 stderr 有日志）。讽刺：本期就是修「主仓 cwd 时 stop hook 找不到 state」的盲区，而修复的 loop 自己没起来。
-- **可能原因（待独立 task 定位）**：
-  1. CC stop hook 注册条目本身丢了 / 被覆盖（settings.json 改动？install.sh 某次半执行？）
-  2. flock 文件残留 → stop hook 抢锁失败静默 exit 0（`.claude/builder-loop/stop-hook-<slug>.lock` 检查）
-  3. CC 主进程内部 stop 事件传播挂掉（CC 升级 / 重启 / hook timeout 调度问题）
-  4. CC stop hook 触发条件变化（比如本会话有未应答 AskUserQuestion / 进入 dynamic loop / 后台 agent 未结束阻塞 stop 事件）
-  5. cwd 跨主仓 / worktree 时 hook 注册脚本路径解析挂掉（`~/.claude/scripts/builder-loop-stop.sh` 软链断 / 主仓 .git 目录因 worktree branch 切换跨链路）
-- **建议方向**：
-  1. 加一个轻量自检脚本 `bash skills/builder-loop/scripts/diagnose-stop-hook.sh`：列 settings.json hooks 段 / 软链状态 / state 目录 / lock 目录 / 最近 trace；一键看为什么没触发
-  2. setup-builder-loop.sh 末尾追加一次 hook 自检（hooks 段含 builder-loop-stop.sh + 软链有效），缺则 stderr 醒目报警提示用户重跑 install.sh
-  3. stop hook 顶部加 debug log（`.claude/builder-loop/stop-hook-debug.log` 滚动，记每次触发的 ts / cwd / locate 结果 / 早退原因），出问题时直接 tail 看
-  4. e2e fixture：构造「stop hook 软链断」场景验证 setup 自检能识别
-- **优先级**：高（loop 触发本身是机制最底层契约，触发不到所有上层修复都白搭；本任务 9 分钟空等是直接证据）
 
 ## 2026-04-29 worktree PASS merge 后清理时丢失 untracked 白名单外文件，核心产出消失
 
