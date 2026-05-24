@@ -71,18 +71,24 @@ if [ -n "${LAST_COUNT:-}" ] && [ "${LAST_COUNT:-0}" -gt 0 ]; then
   fi
 fi
 
-# ---- 5. 保护路径作弊检测 ----
-# 检查本轮 git diff 是否大量修改了测试文件
+# ---- 5. 保护路径作弊检测（V3.2 A+D: 只抓删除/弱化，修测试不算） ----
+# builder 修 tester 写的测试是正常流程
+# 可疑信号：测试文件被删 / assert 被移除 / skip/xfail 被添加
 TEST_DIRS_CSV="$(get_field test_dirs || echo '')"
 if [ -n "$TEST_DIRS_CSV" ]; then
   IFS=',' read -ra TEST_DIRS <<< "$TEST_DIRS_CSV"
-  CHANGED_TESTS=0
+  TAMPERING_SIGNALS=0
   for d in "${TEST_DIRS[@]}"; do
     [ -z "$d" ] && continue
-    n=$(git -C "$PROJECT_ROOT" diff --name-only HEAD -- "$d" 2>/dev/null | wc -l)
-    CHANGED_TESTS=$(( CHANGED_TESTS + n ))
+    # 信号 1: 测试文件被删除
+    n_deleted=$(git -C "$PROJECT_ROOT" diff --diff-filter=D --name-only HEAD -- "$d" 2>/dev/null | wc -l)
+    TAMPERING_SIGNALS=$(( TAMPERING_SIGNALS + n_deleted ))
+    # 信号 2: 断言被弱化（assert 行被删 或 skip/xfail 被加）
+    n_weakened=$(git -C "$PROJECT_ROOT" diff HEAD -- "$d" 2>/dev/null \
+      | grep -E '^-.*\bassert|^\+.*(pytest\.mark\.(skip|xfail|skipif)|@unittest\.skip|\bxfail\(|\bskip\()' 2>/dev/null | wc -l)
+    TAMPERING_SIGNALS=$(( TAMPERING_SIGNALS + n_weakened ))
   done
-  if [ "$CHANGED_TESTS" -ge 3 ]; then
+  if [ "$TAMPERING_SIGNALS" -ge 3 ]; then
     echo "STOP suspected_test_tampering"
     exit 0
   fi
