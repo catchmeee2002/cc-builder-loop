@@ -2,6 +2,33 @@
 
 > 从 CLAUDE.md §5 外移。记录各版本交付的能力与关键实现细节。
 
+## V3.3 孤儿 worktree 检测与复用（2026-05-25）
+
+早停/abandon 后遗留的 worktree 不再丢失——setup 自动检测并提示复用。
+
+**1. 孤儿 worktree 检测**
+- setup 在 flock 之后、worktree 创建之前扫描 WT_BASE_DIR
+- worktree 目录存在但 STATE_DIR 无对应 state → 报为孤儿（exit 6）
+- stderr 输出每个孤儿的 branch / dirty 文件数 / ahead commit 数 / 最近 commit
+
+**2. `--reuse-worktree <path>` 复用**
+- 跳过 worktree 创建和 stash，复用已有 worktree
+- 从目录名反推 slug，写新 state（iter=0），worktree_mode="reuse"
+- last_iter_head 设为 worktree 当前 HEAD（stop hook L2B 正确静默直到有新改动）
+- 必须传绝对路径（孤儿检测输出可直接复制）
+
+**3. `--ignore-orphans` 跳过检测**
+- 有孤儿但想新建 worktree 时使用，不报 exit 6
+
+**4. 防御加固**
+- `--reuse-worktree` + `--no-worktree` 互斥校验（exit 2）
+- 相对路径拒绝 + 明确错误提示
+
+**5. fixture**
+- `test-orphan-worktree-reuse.sh`：8 个 case / 38 assertions（检测、复用、忽略、无效路径、dirty 保留、多孤儿、相对路径、互斥 flag）
+
+---
+
 ## V3.2 跨越界隔离 + 测试框架 + prompt 瘦身（2026-05-23 ~ 2026-05-24）
 
 三类 worktree 越界污染的系统性修复 + fixture 基础设施重构 + prompt/hook 审计瘦身。

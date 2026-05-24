@@ -4,6 +4,18 @@
 > 立项不等于本期实施——A 类候选清单，等独立任务挑出来落地。
 > 已关闭条目见 [CHANGELOG V3.2](CHANGELOG.md#v32-跨越界隔离--测试框架2026-05-23)
 
+## 2026-05-24 doc-lint 误报：函数加参数被判为"已删除"
+
+- **触发上下文**：#262 给 `build_entity_registry` 加了 `visible_characters` optional 参数（函数没删）。doc-lint 对比 diff 时把旧签名行被替换识别为"删除"，然后扫到 tests/CLAUDE.md 引用了这个函数名，标为"过时文档引用"。连续 2 轮 PASS_CMD 卡在 doc-lint stage，触发 no_progress 早停。
+- **事故现场**：改 tests/CLAUDE.md 描述文字无效（函数名字面量仍在），lint 继续报同一条。最终手动合并绕过。
+- **优先级**：中
+
+## 2026-05-24 步骤 3.5 doc 评估误判：新增子流程被 skip
+
+- **触发上下文**：#258 outline review 合入主线后，builder 在步骤 3.5 输出 `📄 doc: skip（内部子步骤不需要单独列条目）`。实际 novel_writer/CLAUDE.md 的 workshop.py 描述行需要加 #258 条目（B 类第一条"已交付能力应加版本条目"命中）。用户事后追问"所有文档还有啥需要更新的"才补上。
+- **事故现场**：builder 把"workshop 内部的 outline_review_loop 子步骤"主观判断为"不算新能力"，否决了 B 类清单的命中，输出了 skip。prompt 清单本身够明确，是主观裁量错误。
+- **优先级**：低
+
 ## ~~2026-05-23 tester 角色重构：A+D 模式~~ ✅ 已关闭（2026-05-24 落地，见 [CHANGELOG V3.2 §8](CHANGELOG.md#v32-跨越界隔离--测试框架2026-05-23)）
 
 > 已关闭条目见 [CHANGELOG V3.2](CHANGELOG.md#v32-跨越界隔离--测试框架2026-05-23)
@@ -32,12 +44,14 @@
 
 ---
 
-## 2026-05-19 早停后 setup 应检测孤儿 worktree 并提示复用
+## ~~2026-05-19 早停后 setup 应检测孤儿 worktree 并提示复用~~ ✅ 已关闭（2026-05-25 落地，V3.3）
 
-- **触发上下文**：早停后旧 worktree 保留（含改动），但 state 归档。重新 setup 创建新 worktree，旧改动丢失。根因：setup 每次按 timestamp 生成新 slug，不检查已存在的可复用 worktree。
-- **方案（2026-05-23 对齐）**：setup 开头扫 worktree 目录，发现孤儿（worktree 存在但无对应 active state）→ 提示用户"复用 / 新建"。复用 = 写新 state 指向已有 worktree + reset iter=0。
-- **根因**：setup 的 stash 机制只搬运"主仓 dirty"（setup 前主仓的未提交改动），不搬运旧 worktree 的改动。早停归档 state 后，旧 worktree 的改动跟新 loop 没有关联。
-- **建议方向**：
+> 已落地：setup-builder-loop.sh 新增孤儿 worktree 检测（exit 6）+ `--reuse-worktree <path>` 复用 + `--ignore-orphans` 跳过。fixture test-orphan-worktree-reuse.sh 38 assertions 覆盖。
+
+- ~~**触发上下文**~~：早停后旧 worktree 保留（含改动），但 state 归档。重新 setup 创建新 worktree，旧改动丢失。根因：setup 每次按 timestamp 生成新 slug，不检查已存在的可复用 worktree。
+- ~~**方案（2026-05-23 对齐）**~~：setup 开头扫 worktree 目录，发现孤儿（worktree 存在但无对应 active state）→ 提示用户"复用 / 新建"。复用 = 写新 state 指向已有 worktree + reset iter=0。
+- ~~**根因**~~：setup 的 stash 机制只搬运"主仓 dirty"（setup 前主仓的未提交改动），不搬运旧 worktree 的改动。早停归档 state 后，旧 worktree 的改动跟新 loop 没有关联。
+- ~~**建议方向**~~：
   1. **setup 增加 `--reuse-worktree <path>` 参数**：检测到指定 worktree 存在且有未提交改动时，直接在该 worktree 上创建新 state（不新建 worktree），复用已有代码
   2. **或者早停后提供 "resume" 路径**：早停归档 state 时在 stderr 额外输出 `resume 命令: setup-builder-loop.sh --reuse-worktree <旧path>`，让 builder 一键复用
   3. **或者早停不归档 state，改为 pause**：早停后把 phase 设为 paused 而非归档到 legacy，stop hook 的 L3 闸（.pause 文件）静默不跑，但 state 和 worktree 关联保留。用户决定继续时删 pause 即可

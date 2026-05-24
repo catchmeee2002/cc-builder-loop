@@ -24,6 +24,33 @@ bash ~/.claude/skills/builder-loop/scripts/setup-builder-loop.sh "$TASK_DESCRIPT
 
 **多状态并行**：每个 worktree loop 独占一份 state 文件，文件名 = branch slug（如 `1777040807-task-alpha.yml`）。bare loop（无 worktree）固定 `__main__.yml`。同项目可并行多个 loop 互不干扰，hook 按当前 CWD 通过 `locate-state.sh` 找到对应 state。
 
+### setup-builder-loop.sh 选项与退出码
+
+**选项**（均可选）：
+
+| 选项 | 说明 | 默认 |
+|------|------|------|
+| `--no-worktree` | 强制 bare 模式（无 git worktree） | 读 loop.yml.worktree.enabled |
+| `--no-stash` | 跳过主仓 dirty stash（V2.3+） | 仅当 --touched-files 才 stash |
+| `--touched-files <a,b,c>` | 仅 stash 指定文件（逗号分隔）到 worktree | 不 stash |
+| `--reuse-worktree <path>` | 复用已有孤儿 worktree（V3.3+）；`<path>` 必须绝对路径 | 新建 worktree |
+| `--ignore-orphans` | 跳过孤儿 worktree 检测，直接新建（V3.3+） | 检测孤儿 |
+| `<TASK_DESCRIPTION>` | 任务描述（用作 branch slug / state 文件名）| 必须 |
+
+**互斥校验**：`--reuse-worktree` 和 `--no-worktree` 不能同时使用。
+
+**退出码**：
+
+| 码 | 含义 |
+|----|------|
+| 0 | 成功，状态文件已生成，首次 PASS_CMD 待执行 |
+| 1 | 配置错误：项目根缺 `.claude/loop.yml` 或格式无效 |
+| 2 | worktree 操作失败（git worktree add 失败 / --reuse-worktree 路径无效 / flag 互斥冲突 / git 特殊状态） |
+| 3 | 探测失败（配置项无法解析） |
+| 4 | 同 slug 已有 active loop（state 文件存在且 active=true）；手动 `rm <state_file>` 后重试 |
+| 5 | Lock 超时（10s 内无法获取 setup lock，可能另一 setup 在运行） |
+| 6 | 孤儿 worktree 检测（V3.3+）：目录存在但无对应 active state；stderr 列出选项：`--reuse-worktree <path>` / `--ignore-orphans` / 手动清理 |
+
 ## Stop Hook
 
 `~/.claude/scripts/builder-loop-stop.sh`：按 CWD 调用 `locate-state.sh` 找本 worktree 对应 state → 检测 active=true → 多层闸过滤非目标场景 → 跑 PASS_CMD。
@@ -65,10 +92,11 @@ main_repo_path: /path/to/main    # V2.0 起新增；永远是主仓（git merge 
                                  # 老 V1.x state 缺该字段时下游脚本按"project_root 等于主仓"的旧语义兜底
 start_head: abc1234              # setup 时主仓 HEAD
 worktree_path: /path/...         # worktree 启用时 = project_root；bare 时为空
-worktree_mode: clean             # V2.3 新增：clean / dirty / bare
-                                 #   clean = worktree from HEAD（无 stash）
-                                 #   dirty = 主仓 dirty 已 stash 并 apply 到 worktree（V2.3 dirty stash 流程）
-                                 #   bare  = --no-worktree（直接跑主仓）
+worktree_mode: clean             # V2.3 新增：clean / selective / bare / reuse
+                                 #   clean    = worktree from HEAD（无 stash）
+                                 #   selective = 主仓 dirty 已 stash 并 apply 到 worktree（V3.2+ 替代 dirty）
+                                 #   bare     = --no-worktree（直接跑主仓）
+                                 #   reuse    = 复用已有孤儿 worktree（V3.3+ --reuse-worktree）
 pre_loop_stash_ref: ""           # V2.3 新增：worktree_mode=dirty 时的 git stash commit hash
                                  # 用 commit hash 不用 stash@{N} index — 多 builder 并行安全
                                  # PASS 路径 merge 后自动 drop / EARLY_STOP 路径 apply 还原主仓
@@ -223,4 +251,4 @@ bash ~/.claude/skills/builder-loop/scripts/run-judge-agent.sh --self-check
 
 ## 版本交付历史
 
-详见 [`../../CHANGELOG.md`](../../CHANGELOG.md)（V1.0 ~ V3.2）。当前最新 **V3.2 跨越界隔离**（slug 绑定 + 干净 worktree + merge 防御 + harness 测试框架）。
+详见 [`../../CHANGELOG.md`](../../CHANGELOG.md)（V1.0 ~ V3.3）。当前最新 **V3.3 孤儿 worktree 检测与复用**（`--reuse-worktree` / `--ignore-orphans` / exit 6 / worktree_mode=reuse）。
