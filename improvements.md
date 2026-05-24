@@ -4,21 +4,7 @@
 > 立项不等于本期实施——A 类候选清单，等独立任务挑出来落地。
 > 已关闭条目见 [CHANGELOG V3.2](CHANGELOG.md#v32-跨越界隔离--测试框架2026-05-23)
 
-## 2026-05-23 prompt 瘦身审计：检查各流程提示词和 hook 输出是否过重
-
-- **触发上下文**：本轮 V3.2 session 大规模改动后回顾。builder.md / SKILL.md / tester.md / reviewer.md / stop hook stderr 注入等多处提示词经过多版本迭代膨胀，可能存在冗余/过时/互相矛盾的指令。
-- **建议方向**：逐文件审计提示词组成，按设计哲学 HR-4（prompt 只写"做什么"）清理动机/解释/心理说辞；合并重复指令；删除已被代码机制取代的 prompt 约束（如 doc-lint 已接管的文档检查提示）。含：planner.md 方案模板加「老路径调用方清单」必填段（原 [A2] 条目）；builder.md 步骤 4 拆清 loop 路径（auto-commit 已发生）vs 非 loop 路径（手动 commit）（原 2026-05-08 auto-commit 时序条目）
-- **优先级**：中（不紧急但影响 LLM 执行效率和一致性）
-
-## 2026-05-23 tester 角色重构：A+D 模式（加厚输入 + builder 合法修测试）
-
-- **触发上下文**：builder 几乎每天都在修 tester 写的测试。test_tampering 早停连续误判（L3 适配 + fixture 替换两次）。调研确认纯 spec 写可执行测试业界无成功案例，最小可行信息 = spec + 签名 + 类型 + mock 目标。
-- **根因**：tester 黑盒隔离的输入不够（缺 mock 目标、数据结构、错误类型），产出的测试不可用，builder 被迫白盒修补，tampering 检测误判。
-- **方案（A+D 组合）**：
-  1. **A 加厚输入**：builder spawn tester 时增加 `mock_targets`（外部调用方式）、`data_contracts`（关键数据结构）、`error_types`（异常类型清单），保留黑盒精神但给够信息
-  2. **D 改 tampering 判据**：从"测试文件被改 = 可疑"改成"测试被删 / 断言被弱化（去 assert / 加 skip/xfail）= 可疑"。builder 修测试是正常流程
-- **涉及文件**：builder.md（spawn tester 段）、tester.md（agent prompt）、builder-loop-stop.sh（早停逻辑）
-- **优先级**：高（每天踩 + 设计哲学原则 4「改输入条件」）
+## ~~2026-05-23 tester 角色重构：A+D 模式~~ ✅ 已关闭（2026-05-24 落地，见 [CHANGELOG V3.2 §8](CHANGELOG.md#v32-跨越界隔离--测试框架2026-05-23)）
 
 > 已关闭条目见 [CHANGELOG V3.2](CHANGELOG.md#v32-跨越界隔离--测试框架2026-05-23)
 

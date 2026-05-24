@@ -2,9 +2,9 @@
 
 > 从 CLAUDE.md §5 外移。记录各版本交付的能力与关键实现细节。
 
-## V3.2 跨越界隔离 + 测试框架（2026-05-23）
+## V3.2 跨越界隔离 + 测试框架 + prompt 瘦身（2026-05-23 ~ 2026-05-24）
 
-三类 worktree 越界污染的系统性修复 + fixture 基础设施重构。
+三类 worktree 越界污染的系统性修复 + fixture 基础设施重构 + prompt/hook 审计瘦身。
 
 **1. stop hook slug 精确绑定**
 - setup 写 `.claude/builder-loop.local.md` 作为 session 指针（只存 slug）
@@ -27,6 +27,26 @@
 
 **5. 设计哲学**
 - 新增 `docs/design-philosophy.md`：6 条原则（机器判据 / 数据唯一家 / 显式授权 / 改输入不改输出 / 三次即架构缺陷 / 契约先于实现）
+
+**6. prompt 瘦身审计**
+- builder.md 290→271 行：删反例教学 / 5 问释义 / 老 state 兼容说明 / 错误示例 / worktree 动机解释，合并 3 处 worktree_path 为统一声明
+- tester.md 109→73 行：删角色模式对比 / hook 实现解释 / fixture 特化段
+- stop hook stderr：PASS 消息 14→5 行、仲裁消息 24→9 行、早停消息 14→4 行（纯机器字段，流程由 builder.md 驱动）
+- reviewer.md / arbiter.md：删重复声明和心理说辞
+
+**7. doc-lint 误报修复**
+- `git rm --cached` 文件（仍在磁盘）不再被判为"已删除"：文件层 + 符号层双重过滤
+- 新增 fixture Case 5 防回归
+
+**8. tester A+D 重构**
+- A 加厚输入：tester spawn 时新增 `mock_targets` / `data_contracts` / `error_types` 三个可选字段，减少 tester 猜测外部依赖的盲区
+- D 改 tampering 判据：从"测试文件被改 ≥3"改成"测试被删 / 断言被弱化（assert 删除 / skip·xfail 添加）≥3"，builder 修测试不再误触发早停
+- 修复 `early-stop-check.sh` pipefail bug：`grep | wc -l` 在 grep 未匹配时通过 pipefail 杀脚本，加 `|| true` 兜底
+- 修复双重计数：删除的文件同时被信号 1（删除数）和信号 2（assert 行数）计算，改为信号 2 只扫修改文件（`--diff-filter=M`）
+- 新增 `test-early-stop-tampering.sh` fixture 5 个 case 覆盖新判据
+
+**8. 文档评估分流（doc-maintainer A/B 分类）**
+- builder.md 步骤 3.5 拆 A/B 两类：A 类机械同步（签名/对外文件）走 doc-maintainer subagent，B 类设计文档（版本条目/哲学/架构/CHANGELOG）builder 亲自写
 
 ## V3.0 reviewer-as-gate 重构（2026-05-09）
 
