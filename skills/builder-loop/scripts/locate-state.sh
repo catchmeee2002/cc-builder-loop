@@ -16,10 +16,11 @@
 #      其他 session cwd 不在 worktrees 子目录 → 走策略 3-5，自然不会绑到本 slug。
 #   3. 否则遍历 <PROJECT_ROOT>/.claude/builder-loop/state/*.yml，
 #      比对 worktree_path 字段是否等于 cwd（或 cwd 落在其下）
-#   4. 兜底 <PROJECT_ROOT>/.claude/builder-loop/state/__main__.yml（bare loop 场景）
-#   5. V2.4：cwd 既不在 worktree 子目录、又无 __main__.yml → 扫 state/*.yml 找
-#      active=true 且 worktree_path 目录存活的 state，**恰好 1 个时**自动绑定（主仓 cwd
-#      自动跟唯一 active worktree loop）；≥2 个时仍返回空（保 V1.8 多状态隔离精神）
+#   4. V3.4: bare 模式 owner_cwd 精确匹配（worktree_path 空 + owner_cwd == cwd）
+#   4b. 兜底 <PROJECT_ROOT>/.claude/builder-loop/state/__main__.yml（bare loop）
+#   5. V3.4 恢复：cwd 不在 worktree 子目录 → 扫 state/*.yml 找
+#      phase=active 且 worktree_path 目录存活的 state，**恰好 1 个时**自动绑定；
+#      ≥2 个时返回空（保多状态隔离）
 #
 # 输出：state 文件绝对路径（stdout，单行）；未找到 → 空 + exit 1。
 #
