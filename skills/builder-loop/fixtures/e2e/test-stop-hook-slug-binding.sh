@@ -15,7 +15,7 @@ r1=$(run_hook "$env1")
 assert_ec "A1 hook 正常操作" "$r1" 2
 
 section "A2: state 存在 + 无 local.md → EC=2（V3.4 不依赖 local.md）"
-env2=$(create_test_env --slug "slug-a2" --no-local-md --dirty "README.md")
+env2=$(create_test_env --slug "slug-a2" --dirty "README.md")
 r2=$(run_hook "$env2")
 assert_ec "A2 locate-state.sh 找到 state" "$r2" 2
 

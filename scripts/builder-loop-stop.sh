@@ -159,6 +159,7 @@ print(json.dumps({'cwd': os.environ.get('CWD_J',''), 'transcript_path': os.envir
 #   策略 5: 恰好 1 个 active worktree → 自动绑定
 # 无 state → exit 0 放行
 STATE_FILE="$(bash "$SKILL_DIR/locate-state.sh" "$CWD" 2>/dev/null || echo "")"
+# PROJECT_ROOT / RUN_CWD 在下方从 state 字段提取（非 locate-state.sh 返回）
 PROJECT_ROOT=""
 RUN_CWD=""
 

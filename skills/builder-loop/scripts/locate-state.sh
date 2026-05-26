@@ -103,14 +103,7 @@ if [ -d "$STATE_DIR" ]; then
   done
 fi
 
-# --- 4. 兜底 __main__.yml（bare loop） ---
-MAIN_STATE="${STATE_DIR}/__main__.yml"
-if [ -f "$MAIN_STATE" ]; then
-  echo "$MAIN_STATE"
-  exit 0
-fi
-
-# --- 4b. V3.4: bare 模式 owner_cwd 匹配 ---
+# --- 4. V3.4: bare 模式 owner_cwd 精确匹配（优先于 __main__.yml 兜底）---
 # worktree_path 为空 + owner_cwd == CWD → bare 模式的 state
 if [ -d "$STATE_DIR" ]; then
   for sf in "$STATE_DIR"/*.yml; do
@@ -125,8 +118,16 @@ if [ -d "$STATE_DIR" ]; then
   done
 fi
 
+# --- 4b. 兜底 __main__.yml（bare loop，owner_cwd 无匹配时）---
+MAIN_STATE="${STATE_DIR}/__main__.yml"
+if [ -f "$MAIN_STATE" ]; then
+  echo "$MAIN_STATE"
+  exit 0
+fi
+
 # --- 5. V3.4 恢复：唯一 active worktree 自动绑定 ---
 # CWD 在主仓但有 worktree loop 时兜底。恰好 1 个 active → 绑定；≥2 个 → 不绑（保隔离）
+# 注意：只匹配 phase=active 的 state；老 V2.x state 无 phase 字段会被跳过（由 hook 的老 state 升级路径兜底）
 if [ -d "$STATE_DIR" ]; then
   _active_count=0
   _active_sf=""

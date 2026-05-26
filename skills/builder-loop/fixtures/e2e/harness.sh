@@ -64,7 +64,7 @@ create_test_env() {
       --worktree)    worktree=1; shift ;;
       --phase)       phase="$2"; shift 2 ;;
       --dirty)       dirty="$2"; shift 2 ;;
-      --no-local-md) shift ;;
+      --no-local-md) shift ;;  # V3.4: deprecated no-op, kept for old callers
       --no-state)    no_state=1; shift ;;
       --pass-cmd)    pass_cmd="$2"; shift 2 ;;
       --wt-dirty)    wt_dirty="$2"; shift 2 ;;

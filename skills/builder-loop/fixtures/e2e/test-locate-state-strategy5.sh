@@ -69,7 +69,7 @@ STEOF
 }
 
 # ============================================================
-# A1: 主仓 cwd + 1 active worktree state → 返回空（策略 5 已删）
+# A1: 主仓 cwd + 1 active worktree state → 策略 5 命中（V3.4 恢复）
 # ============================================================
 section "A1: 主仓 cwd + 1 active → 策略 5 命中"
 WT_A1="$TMP/.claude/worktrees/1700000001-foo"
