@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# test-locate-state-strategy5.sh — E2E：V3.2 策略 5 已删除 + locate-state 回退行为验证
+# test-locate-state-strategy5.sh — E2E：locate-state 全策略验证
 #
-# V3.2 变更：
-#   - locate-state.sh 策略 5（V2.4 唯一 active worktree 自动绑定）已删除
-#   - stop hook 改用 local.md slug 精确定位，不再 CWD 猜测
+# V3.4 变更：
+#   - 策略 5（唯一 active worktree 自动绑定）已恢复（V3.2 曾删除）
+#   - local.md 已移除，locate-state.sh 是唯一定位机制
 #
 # 覆盖 case：
-#   A1: 主仓 cwd + 1 active worktree state（目录存活）→ locate 返回空（策略 5 已删）
-#   A2: 主仓 cwd + 2 active worktree state → locate 返回空
-#   A3: worktree cwd → locate 策略 2 命中
-#   A4: __main__.yml 存在 → locate 策略 4 兜底命中
+#   A1: 主仓 cwd + 1 active worktree state（目录存活）→ 策略 5 命中
+#   A2: 主仓 cwd + 2 active worktree state → 返回空（保隔离）
+#   A3: worktree cwd → 策略 2 命中
+#   A4: __main__.yml 存在 → 策略 4 兜底命中
 #   A5: 策略 3 worktree_path 匹配 cwd → 命中
 
 source "$(dirname "${BASH_SOURCE[0]}")/harness.sh"
@@ -71,15 +71,15 @@ STEOF
 # ============================================================
 # A1: 主仓 cwd + 1 active worktree state → 返回空（策略 5 已删）
 # ============================================================
-section "A1: 主仓 cwd + 1 active → 返回空"
+section "A1: 主仓 cwd + 1 active → 策略 5 命中"
 WT_A1="$TMP/.claude/worktrees/1700000001-foo"
 mkdir -p "$WT_A1"
 write_ls_state "$STATE_DIR/1700000001-foo.yml" "true" "$WT_A1" "1700000001-foo"
 
 resultA1=$(run_locate "$TMP")
-assert_ec "A1 locate exit 1（策略 5 已删）" "$resultA1" 1
+assert_ec "A1 locate exit 0（策略 5 恢复）" "$resultA1" 0
 a1out=$(result_stdout "$resultA1")
-assert "A1 stdout 空" "[ -z '$a1out' ]"
+assert "A1 stdout = state 文件路径" "[ '$a1out' = '$STATE_DIR/1700000001-foo.yml' ]"
 # locate 静默契约
 a1err=$(result_stderr "$resultA1")
 assert "A1 stderr 为空（静默契约）" "[ -z '$a1err' ]"

@@ -20,8 +20,8 @@
 #
 # 行为：
 #   1. 读 stdin 拿 cwd（hook 可能在不同 CC 工作目录运行）
-#   2. 检测 cwd/.claude/builder-loop.local.md 是否存在且 active=true
-#      - 不存在或 active=false → exit 0 立即放行
+#   2. 调 locate-state.sh 用 CWD→state 匹配定位 state 文件
+#      - 未找到 → exit 0 立即放行
 #   3. 跑 run-pass-cmd.sh
 #      - PASS → 删状态文件、exit 2 让 CC 继续执行 reviewer/commit pipeline
 #      - FAIL → 调 extract-error.sh + early-stop-check.sh
@@ -151,37 +151,24 @@ import os, json
 print(json.dumps({'cwd': os.environ.get('CWD_J',''), 'transcript_path': os.environ.get('TP','')}))
 " 2>/dev/null || echo '{}')"
 
-# ---- V3.2: 读 local.md slug 精确定位 state（取代 CWD 猜测）----
-# 从 CWD 向上找 .claude/builder-loop.local.md → 读 slug → 拼 state 路径
-# 无 local.md / 无 slug / state 不存在 → exit 0 放行（不兜底激活）
+# ---- V3.4: locate-state.sh CWD→state 直接匹配（取代 V3.2 local.md 读取）----
+# 调 locate-state.sh 的 5 级策略定位 state：
+#   策略 2: CWD 在 .claude/worktrees/<slug>/ 下 → 直接拼 slug（精确）
+#   策略 3: 遍历 state/*.yml 比对 worktree_path
+#   策略 4: 兜底 __main__.yml（bare 模式）
+#   策略 5: 恰好 1 个 active worktree → 自动绑定
+# 无 state → exit 0 放行
+STATE_FILE="$(bash "$SKILL_DIR/locate-state.sh" "$CWD" 2>/dev/null || echo "")"
 PROJECT_ROOT=""
-STATE_FILE=""
 RUN_CWD=""
-_d="$CWD"
-for _i in 1 2 3 4 5; do
-  if [ -f "${_d}/.claude/builder-loop.local.md" ]; then
-    PROJECT_ROOT="$_d"
-    break
-  fi
-  [ "$_d" = "/" ] && break
-  _d="$(dirname "$_d")"
-done
 
-if [ -n "$PROJECT_ROOT" ]; then
-  _LOCAL_MD="${PROJECT_ROOT}/.claude/builder-loop.local.md"
-  _SLUG="$(grep -E '^slug:' "$_LOCAL_MD" 2>/dev/null | head -1 | sed -E 's/^slug:[[:space:]]*"?([^"]*)"?.*/\1/' || true)"
-  if [ -n "$_SLUG" ]; then
-    STATE_FILE="${PROJECT_ROOT}/.claude/builder-loop/state/${_SLUG}.yml"
-  fi
-fi
-
-debug_log "locate_result" "$(SF="${STATE_FILE:-}" PR="${PROJECT_ROOT:-}" python3 -c "
+debug_log "locate_result" "$(SF="${STATE_FILE:-}" python3 -c "
 import os, json
-print(json.dumps({'state_file': os.environ.get('SF',''), 'project_root': os.environ.get('PR',''), 'method': 'local_md_slug'}))
+print(json.dumps({'state_file': os.environ.get('SF',''), 'method': 'locate_state_sh'}))
 " 2>/dev/null || echo '{}')"
 
-if [ -z "$PROJECT_ROOT" ] || [ -z "$STATE_FILE" ] || [ ! -f "$STATE_FILE" ]; then
-  debug_log "exit" '{"code":0,"reason":"no_local_md_or_no_state"}'
+if [ -z "$STATE_FILE" ] || [ ! -f "$STATE_FILE" ]; then
+  debug_log "exit" '{"code":0,"reason":"no_state_via_locate"}'
   exit 0
 fi
 

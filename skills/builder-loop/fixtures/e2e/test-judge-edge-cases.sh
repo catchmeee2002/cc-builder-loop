@@ -177,10 +177,6 @@ STATEEOF
 {"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"已完成，所有改动已提交。"}]}}
 JSONLEOF
 
-  cat > "${dir}/.claude/builder-loop.local.md" <<LOCALEOF
-slug: ${slug}
-LOCALEOF
-
   echo "$slug"
 }
 

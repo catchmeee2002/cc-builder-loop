@@ -7,7 +7,7 @@
 #   1. 校验项目根 .claude/loop.yml 存在
 #   2. 自动探测 layout（源码目录/测试目录），写回 loop.yml 缺省字段
 #   3. （可选）EnterWorktree 进入隔离分支 — V1 先用 git worktree CLI
-#   4. 生成 .claude/builder-loop.local.md 状态文件
+#   4. (V3.4 移除) 原 local.md 已取消，stop hook 用 locate-state.sh CWD 匹配
 #   5. 提示用户「自闭环已启动，下一次 Stop 会自动跑 PASS_CMD」
 #
 # 输出：状态文件路径 + 后续提示
@@ -420,13 +420,7 @@ cleanup_phase: ""
 created_at: "$(date -Iseconds)"
 EOF
 
-# V3.2: 写 local.md 作为 session 指针（stop hook 用 slug 精确定位 state）
-LOCAL_MD="${PROJECT_ROOT}/.claude/builder-loop.local.md"
-cat > "$LOCAL_MD" <<LOCALEOF
-slug: "${SLUG}"
-worktree_path: "${WORKTREE_PATH}"
-state_file: "${STATE_FILE}"
-LOCALEOF
+# V3.4: local.md 已移除。stop hook 通过 locate-state.sh CWD→state 匹配定位。
 
 echo "✅ builder-loop 已启动"
 if [ -n "$REUSE_WORKTREE" ]; then

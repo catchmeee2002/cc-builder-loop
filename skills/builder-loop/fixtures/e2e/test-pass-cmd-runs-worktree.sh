@@ -135,12 +135,6 @@ stopped_reason: ""
 created_at: "2026-04-01T00:00:00+08:00"
 EOF
 
-cat > "$TMP/.claude/builder-loop.local.md" <<LOCALEOF
-slug: "legacy-task"
-worktree_path: "$LEGACY_WT"
-state_file: "$TMP/.claude/builder-loop/state/legacy-task.yml"
-LOCALEOF
-
 RES2="$(run_hook "$LEGACY_WT")"
 
 LEGACY_LOG="$TMP/.claude/loop-runs/iter-1-legacy_marker.log"

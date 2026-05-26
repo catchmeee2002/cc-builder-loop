@@ -51,13 +51,12 @@ _harness_cleanup() {
 #   --worktree           创建 worktree（默认 bare）
 #   --phase PHASE        state.phase（默认 active）
 #   --dirty FILE1,FILE2  在 worktree/主仓创建 dirty 文件
-#   --no-local-md        不创建 local.md
 #   --no-state           不创建 state 文件
 #   --pass-cmd CMD       loop.yml pass_cmd（默认 true）
 #   --wt-dirty FILE      在 worktree 内创建 dirty 文件（不 commit）
 # ==================================================================
 create_test_env() {
-  local slug="" worktree=0 phase="active" dirty="" no_local_md=0 no_state=0
+  local slug="" worktree=0 phase="active" dirty="" no_state=0
   local pass_cmd="true" wt_dirty=""
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -65,7 +64,7 @@ create_test_env() {
       --worktree)    worktree=1; shift ;;
       --phase)       phase="$2"; shift 2 ;;
       --dirty)       dirty="$2"; shift 2 ;;
-      --no-local-md) no_local_md=1; shift ;;
+      --no-local-md) shift ;;
       --no-state)    no_state=1; shift ;;
       --pass-cmd)    pass_cmd="$2"; shift 2 ;;
       --wt-dirty)    wt_dirty="$2"; shift 2 ;;
@@ -96,7 +95,6 @@ YMLEOF
     cat > .gitignore <<'GIEOF'
 .claude/builder-loop/
 .claude/loop-runs/
-.claude/builder-loop.local.md
 GIEOF
     git add -A
     git -c core.hooksPath=/dev/null commit -q -m "chore(test): [cr_id_skip] Harness seed"
@@ -155,14 +153,6 @@ stopped_reason: ""
 cleanup_phase: ""
 created_at: "$(date -Iseconds)"
 STEOF
-  fi
-
-  if [ "$no_local_md" -eq 0 ] && [ "$no_state" -eq 0 ]; then
-    cat > "$dir/.claude/builder-loop.local.md" <<LMEOF
-slug: "${slug}"
-worktree_path: "${wt_path}"
-state_file: "$dir/.claude/builder-loop/state/${slug}.yml"
-LMEOF
   fi
 
   echo "$dir"

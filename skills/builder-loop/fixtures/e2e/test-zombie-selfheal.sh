@@ -40,13 +40,6 @@ stopped_reason: "manual-merge-completed"
 created_at: "2026-04-24T00:00:00+00:00"
 ZOMBIE
 
-# V3.2: local.md 指向 __main__ slug
-cat > "$env/.claude/builder-loop.local.md" <<LOCALEOF
-slug: "__main__"
-worktree_path: ""
-state_file: "$env/.claude/builder-loop/state/__main__.yml"
-LOCALEOF
-
 assert_file_exists "僵尸 state 预置成功" "$STATE_FILE"
 
 r1=$(run_hook "$env")

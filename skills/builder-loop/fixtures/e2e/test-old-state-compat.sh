@@ -42,13 +42,6 @@ stopped_reason: ""
 created_at: "2026-04-15T00:00:00+08:00"
 STEOF
 
-# 写 local.md 指向 slug
-cat > "$envA/.claude/builder-loop.local.md" <<LMEOF
-slug: "old-state-fixture-a"
-worktree_path: "$wtA"
-state_file: $sfA
-LMEOF
-
 resultA=$(run_hook "$wtA")
 assert_ec "Case A hook 不阻断（EC=2 PASS 续接）" "$resultA" 2
 assert_stderr_contains "Case A stderr 含老 state warning" "$resultA" "检测到 V2.x 老 state"

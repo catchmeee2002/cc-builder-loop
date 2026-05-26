@@ -81,12 +81,6 @@ echo "feature-a" > "$WT_A/feature.txt"
 write_mw_state "$TMP" "$SLUG_A" "$HEAD1" "$WT_A"
 STATE_A="$TMP/.claude/builder-loop/state/${SLUG_A}.yml"
 
-cat > "$TMP/.claude/builder-loop.local.md" <<LOCALEOF
-slug: "${SLUG_A}"
-worktree_path: "${WT_A}"
-state_file: "$TMP/.claude/builder-loop/state/${SLUG_A}.yml"
-LOCALEOF
-
 r_a=$(run_hook "$WT_A")
 assert_ec "第一轮 hook EC=2" "$r_a" 2
 assert "第一轮 state-A 含 reviewer_pending 段" "grep -q '^reviewer_pending:' '$STATE_A'"
@@ -110,12 +104,6 @@ git -C "$TMP" worktree add -q "$WT_B"
 echo "feature-b" > "$WT_B/feature.txt"
 write_mw_state "$TMP" "$SLUG_B" "$HEAD2" "$WT_B"
 STATE_B="$TMP/.claude/builder-loop/state/${SLUG_B}.yml"
-
-cat > "$TMP/.claude/builder-loop.local.md" <<LOCALEOF
-slug: "${SLUG_B}"
-worktree_path: "${WT_B}"
-state_file: "$TMP/.claude/builder-loop/state/${SLUG_B}.yml"
-LOCALEOF
 
 r_b=$(run_hook "$WT_B")
 assert_ec "第二轮 hook EC=2" "$r_b" 2

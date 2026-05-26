@@ -73,12 +73,6 @@ EOF
 # ============================================================
 section "A1: 基础写入 + phase 顺序"
 write_state_yml "${STATE_DIR}/__main__.yml" "true" "" "__main__"
-# V3.2: 需要 local.md 让 hook 通过 slug 精确定位 state
-cat > "$TMP/.claude/builder-loop.local.md" <<LOCALEOF
-slug: "__main__"
-worktree_path: ""
-state_file: "$TMP/.claude/builder-loop/state/__main__.yml"
-LOCALEOF
 
 printf '{"cwd":"%s","session_id":"a1session"}' "$TMP" | bash "$HARNESS_HOOK" >/dev/null 2>&1 || true
 
@@ -130,11 +124,6 @@ rm -f "${STATE_DIR}"/*.yml
 # ============================================================
 section "A2: IO 失败容忍"
 write_state_yml "${STATE_DIR}/__main__.yml" "true" "" "__main__"
-cat > "$TMP/.claude/builder-loop.local.md" <<LOCALEOF
-slug: "__main__"
-worktree_path: ""
-state_file: "$TMP/.claude/builder-loop/state/__main__.yml"
-LOCALEOF
 
 mkdir -p "$(dirname "$DEBUG_LOG")"
 touch "$DEBUG_LOG"
@@ -156,11 +145,6 @@ rm -f "${STATE_DIR}"/*.yml
 # ============================================================
 section "A3: rotate 触发（log > 1 MB → .1 出现）"
 write_state_yml "${STATE_DIR}/__main__.yml" "true" "" "__main__"
-cat > "$TMP/.claude/builder-loop.local.md" <<LOCALEOF
-slug: "__main__"
-worktree_path: ""
-state_file: "$TMP/.claude/builder-loop/state/__main__.yml"
-LOCALEOF
 
 mkdir -p "$(dirname "$DEBUG_LOG")"
 python3 -c "

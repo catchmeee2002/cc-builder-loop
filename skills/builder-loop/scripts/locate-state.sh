@@ -110,7 +110,40 @@ if [ -f "$MAIN_STATE" ]; then
   exit 0
 fi
 
-# V3.2: 策略 5（V2.4 唯一 active worktree 自动绑定）已移除
-# stop hook 改用 local.md slug 精确定位，不再需要 CWD 猜测
+# --- 4b. V3.4: bare 模式 owner_cwd 匹配 ---
+# worktree_path 为空 + owner_cwd == CWD → bare 模式的 state
+if [ -d "$STATE_DIR" ]; then
+  for sf in "$STATE_DIR"/*.yml; do
+    [ -e "$sf" ] || continue
+    _wt="$(grep -E '^worktree_path:' "$sf" 2>/dev/null | head -1 | sed -E 's/^worktree_path:[[:space:]]*"?([^"]*)"?.*/\1/' || true)"
+    [ -n "$_wt" ] && continue
+    _oc="$(grep -E '^owner_cwd:' "$sf" 2>/dev/null | head -1 | sed -E 's/^owner_cwd:[[:space:]]*"?([^"]*)"?.*/\1/' || true)"
+    if [ "$_oc" = "$CWD" ]; then
+      echo "$sf"
+      exit 0
+    fi
+  done
+fi
+
+# --- 5. V3.4 恢复：唯一 active worktree 自动绑定 ---
+# CWD 在主仓但有 worktree loop 时兜底。恰好 1 个 active → 绑定；≥2 个 → 不绑（保隔离）
+if [ -d "$STATE_DIR" ]; then
+  _active_count=0
+  _active_sf=""
+  for sf in "$STATE_DIR"/*.yml; do
+    [ -e "$sf" ] || continue
+    _phase="$(grep -E '^phase:' "$sf" 2>/dev/null | head -1 | sed -E 's/^phase:[[:space:]]*"?([^"]*)"?.*/\1/' || true)"
+    [ "$_phase" != "active" ] && continue
+    _wt="$(grep -E '^worktree_path:' "$sf" 2>/dev/null | head -1 | sed -E 's/^worktree_path:[[:space:]]*"?([^"]*)"?.*/\1/' || true)"
+    [ -z "$_wt" ] && continue
+    [ ! -d "$_wt" ] && continue
+    _active_count=$(( _active_count + 1 ))
+    _active_sf="$sf"
+  done
+  if [ "$_active_count" -eq 1 ]; then
+    echo "$_active_sf"
+    exit 0
+  fi
+fi
 
 exit 1

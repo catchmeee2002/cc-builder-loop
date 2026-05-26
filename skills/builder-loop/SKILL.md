@@ -72,9 +72,9 @@ bash ~/.claude/skills/builder-loop/scripts/setup-builder-loop.sh "$TASK_DESCRIPT
 - **bare 模式** → 保留 V2.x 行为：`merge-worktree-back.sh` NOOP + 写全局 `reviewer-params.json` + 删 state + builder 事后审 reviewer
 - **FAIL** → extract-error + early-stop-check → 写回状态文件 → 注入下轮
 
-### Session 指针（V3.2）
+### CWD→state 匹配（V3.4）
 
-setup 写 `.claude/builder-loop.local.md`（只含 slug），stop hook 读它精确定位 state。无 local.md = 非本 session 的 loop = exit 0 放行。V3.2 起不再有兜底激活——builder 必须先 setup 再写代码。
+stop hook 通过 `locate-state.sh` 用 CWD 匹配 state 文件（策略 2: worktree 路径推 slug → 策略 3: worktree_path 字段匹配 → 策略 4: bare 模式 `__main__.yml` → 策略 5: 唯一 active 自动绑定）。无匹配 = exit 0 放行。V3.4 起 `.claude/builder-loop.local.md` 已移除，多 session 并发各用各的 worktree CWD 天然隔离。
 
 ## 状态文件 schema（`.claude/builder-loop/state/<slug>.yml`）
 
@@ -135,13 +135,13 @@ judge_consecutive_failures: 0                # primary 模型连续失败计数�
 
 ### 旧 schema 迁移
 
-如果项目里还有旧版 `.claude/builder-loop.local.md`（V1.6 之前），一次性跑：
+V1.6 之前的旧 state 或残留的 `.claude/builder-loop.local.md` 可一次性迁移：
 
 ```bash
 bash ~/.claude/skills/builder-loop/scripts/migrate-state.sh <project_root>
 ```
 
-脚本会把旧 state 搬到新目录（worktree_path 仍在 → `state/<slug>.yml`；已失效 → `builder-loop/legacy/*.bak`）。
+脚本会把旧 state 搬到新目录。V3.4 起 `local.md` 已移除（stop hook 改用 CWD→state 匹配），残留文件被静默忽略。
 
 ## 与其他 loop 类 skill 共存
 
