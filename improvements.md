@@ -4,6 +4,10 @@
 > 立项不等于本期实施——A 类候选清单，等独立任务挑出来落地。
 > 已关闭条目见 [CHANGELOG V3.2](CHANGELOG.md#v32-跨越界隔离--测试框架2026-05-23)
 
+## ~~2026-05-25 多 session 并发时 builder-loop.local.md 无隔离，新 session 可误杀他人 loop~~ ✅ 已关闭（2026-05-26 落地，V3.4）
+
+> 已落地：彻底移除 `builder-loop.local.md`，stop hook 改用 `locate-state.sh` CWD→state 匹配。多 session 并发各用各的 worktree CWD 天然隔离。fixture `test-cross-session-isolation.sh` 14 assertions 覆盖 5 个并发场景。
+
 ## 2026-05-24 doc-lint 误报：函数加参数被判为"已删除"
 
 - **触发上下文**：#262 给 `build_entity_registry` 加了 `visible_characters` optional 参数（函数没删）。doc-lint 对比 diff 时把旧签名行被替换识别为"删除"，然后扫到 tests/CLAUDE.md 引用了这个函数名，标为"过时文档引用"。连续 2 轮 PASS_CMD 卡在 doc-lint stage，触发 no_progress 早停。
