@@ -132,4 +132,18 @@ EC4=$?
 assert "Case 4 exit 1" "[ '$EC4' -eq 1 ]"
 assert "Case 4 输出含 engine.py" "echo '$OUT4' | grep -q 'engine.py'"
 
+# ============================================================
+# Case 5: git rm --cached（文件仍在磁盘）→ exit 0（不误报）
+# ============================================================
+section "Case 5: git rm --cached 文件仍在磁盘 → exit 0"
+env5=$(mk_lint_repo)
+(
+  cd "$env5"
+  git rm --cached src/engine.py -q
+  git -c core.hooksPath=/dev/null commit -q -m "chore(test): [cr_id_skip] Untrack engine.py"
+)
+OUT5=$(bash "$DOC_LINT" "$env5" "HEAD~1" 2>/dev/null)
+EC5=$?
+assert "Case 5 exit 0" "[ '$EC5' -eq 0 ]"
+
 harness_report

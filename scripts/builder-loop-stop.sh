@@ -685,19 +685,11 @@ PY
         write_trace "PASS"
 
         cat >&2 <<PASS_MSG
-[builder-loop] ✅ PASS_CMD 全部阶段通过（iter ${NEXT_ITER}）。已在 worktree 内 commit，等待 reviewer 通过后才合主线。
+[builder-loop] ✅ PASS_CMD 全部阶段通过（iter ${NEXT_ITER}）。
 phase=passed_pending_review
 slug=${SLUG_PASS}
 state_file=${STATE_FILE}
 worktree_path=${WORKTREE_PATH_PASS}
-
-请继续 Builder 后续流程：
-1. Read state.yml 拿 reviewer_pending 段（含 reviewer_files / report_path / diff_file）
-2. spawn reviewer subagent 评审
-3. 反馈分支：
-   - 0🔴 通过       → bash ${SKILL_DIR}/merge-and-cleanup.sh ${STATE_FILE}
-   - 🟡/🔵 非阻塞   → 在 worktree 内 Edit/Write 修复 → 下一轮 PASS_CMD（hook 自动检测 dirty 改回 active）
-   - 🔴 阻塞        → AskUserQuestion 让用户选 [继续修 / abandon-loop.sh]
 PASS_MSG
 
         debug_log "exit" "$(IT="$NEXT_ITER" python3 -c "
@@ -819,28 +811,14 @@ except Exception:
 " 2>/dev/null || echo "(parse failed)")"
       # exit 2 让 CC 继续，stderr 注入仲裁指令
       cat >&2 <<ARBITER_MSG
-[builder-loop] PASS_CMD 通过，但 worktree rebase 主干时发生冲突。
-
-请执行以下仲裁流程：
-1. spawn arbiter subagent（同步），参数如下：
-   subagent_type: arbiter
-   worktree_path: ${WT_PATH}
-   main_branch: ${MAIN_BR}
-   conflict_files: ${CONFLICT_FILES}
-   task_context: ${TASK_CTX}
-   their_commits:
+[builder-loop] NEED_ARBITRATION: rebase 冲突。Read arbiter-flow.md 按其执行。
+worktree_path=${WT_PATH}
+main_branch=${MAIN_BR}
+conflict_files=${CONFLICT_FILES}
+task_context=${TASK_CTX}
+state_file=${STATE_FILE}
+their_commits:
 ${THEIR_COMMITS_TEXT}
-
-2. 保存 arbiter 输出到 /tmp/arbiter-output.txt
-
-3. 调用后处理脚本：
-   bash ${SKILL_DIR}/run-apply-arbitration.sh ${STATE_FILE} /tmp/arbiter-output.txt
-
-4. 根据退出码决策：
-   APPLIED (exit 0) → 继续 Reviewer/commit 流程
-   LOW_CONFIDENCE (exit 1) → AskUserQuestion 让用户决策
-   APPLY_FAILED (exit 2) → 重试（max_attempts=${MAX_ATT}）或交用户
-   MERGE_FAILED (exit 3) → 同上
 ARBITER_MSG
       debug_log "exit" '{"code":2,"reason":"need_arbitration"}'
       exit 2
@@ -967,17 +945,9 @@ print(json.dumps({'iter': int(os.environ.get('IT','0') or 0), 'reason': os.envir
 
   cat >&2 <<EARLY_STOP_MSG
 [builder-loop] ⛔ Auto-loop 早停 (iter=${NEXT_ITER}, reason=${REASON})。状态已归档到 legacy/。
-现场保留：worktree=${WORKTREE_PATH_ES:-<bare>} | dirty stash 副本=${PRE_LOOP_STASH_REF_ES:0:8}（restored=${STASH_RESTORED}）
-注：dirty 模式下主仓 stash 副本不会自动 drop（仅 PASS 路径 drop）。继续 / 放弃 / 重新进 loop 后请视情况手动 git stash drop 清理。
-请立即用 AskUserQuestion 询问用户下一步：
-  - 继续手动调试（loop 已停，代码仍在当前 worktree，主仓 dirty 已还原；事后清理 git stash drop）
-  - 放弃本次任务（后续可 git worktree remove + git stash drop）
-  - 重新进 loop（调 setup-builder-loop.sh 起新 slug）
-早停原因说明：
-  max_iter                 — 达最大迭代上限
-  no_progress              — 连续多轮错误 hash 完全一致，builder 无进展
-  error_growth             — 错误数持续增长
-  suspected_test_tampering — 疑似修改测试绕 PASS_CMD
+worktree=${WORKTREE_PATH_ES:-<bare>}
+stash=${PRE_LOOP_STASH_REF_ES:0:8} (restored=${STASH_RESTORED})
+请立即用 AskUserQuestion 询问用户下一步：继续手动调试 / 放弃 / 重新进 loop。
 EARLY_STOP_MSG
   debug_log "exit" "$(R="$REASON" python3 -c "
 import os, json

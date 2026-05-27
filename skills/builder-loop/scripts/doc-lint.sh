@@ -17,8 +17,22 @@ if [ ! -d "$PROJECT_ROOT/.git" ] && ! git -C "$PROJECT_ROOT" rev-parse --is-insi
   exit 0
 fi
 
-# ---- 1. 提取删除的文件 ----
-DELETED_FILES="$(git -C "$PROJECT_ROOT" diff "$DIFF_BASE" --diff-filter=D --name-only 2>/dev/null || true)"
+# ---- 1. 提取删除的文件（git rm --cached 仅取消追踪，文件仍在磁盘则不算已删除）----
+_raw_deleted="$(git -C "$PROJECT_ROOT" diff "$DIFF_BASE" --diff-filter=D --name-only 2>/dev/null || true)"
+DELETED_FILES=""
+_untracked_but_exists=""
+if [ -n "$_raw_deleted" ]; then
+  while IFS= read -r _f; do
+    [ -z "$_f" ] && continue
+    if [ -f "$PROJECT_ROOT/$_f" ]; then
+      _untracked_but_exists="${_untracked_but_exists}${_f}
+"
+      continue
+    fi
+    DELETED_FILES="${DELETED_FILES}${_f}
+"
+  done <<< "$_raw_deleted"
+fi
 
 # ---- 2. 提取删除的函数/方法名 ----
 DELETED_SYMBOLS=""
@@ -33,6 +47,25 @@ if [ -n "$DIFF_OUTPUT" ]; then
         -e 's/^-\([a-zA-Z_][a-zA-Z0-9_]*\)()[[:space:]]*{.*/\1/p' \
         -e 's/^-[[:space:]]*function \([a-zA-Z_][a-zA-Z0-9_]*\).*/\1/p' \
     | sort -u || true)"
+  # 过滤：从 git 移除但仍在磁盘的文件里的符号不算真删除
+  if [ -n "$_untracked_but_exists" ] && [ -n "$DELETED_SYMBOLS" ]; then
+    _filtered_syms=""
+    while IFS= read -r _sym; do
+      [ -z "$_sym" ] && continue
+      _found_on_disk=false
+      while IFS= read -r _uf; do
+        [ -z "$_uf" ] && continue
+        if [ -f "$PROJECT_ROOT/$_uf" ] && grep -q "$_sym" "$PROJECT_ROOT/$_uf" 2>/dev/null; then
+          _found_on_disk=true
+          break
+        fi
+      done <<< "$_untracked_but_exists"
+      [ "$_found_on_disk" = true ] && continue
+      _filtered_syms="${_filtered_syms}${_sym}
+"
+    done <<< "$DELETED_SYMBOLS"
+    DELETED_SYMBOLS="$_filtered_syms"
+  fi
 fi
 
 # ---- 3. 过滤太短/太通用的符号（≤3 字符大概率误报）----
