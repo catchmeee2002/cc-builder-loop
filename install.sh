@@ -5,7 +5,8 @@
 #   1. ln -sfn 整目录链 skills/builder-loop/ → ~/.claude/skills/builder-loop/
 #   2. ln -sf 逐文件链 scripts/*.sh → ~/.claude/scripts/
 #   3. ln -sf 逐文件链 agents/*.md → ~/.claude/agents/
-#   4. jq 增量合并 4 个 hook 条目到 ~/.claude/settings.json
+#   4. ln -sf 逐文件链 commands/*.md → ~/.claude/commands/
+#   5. jq 增量合并 hook 条目到 ~/.claude/settings.json
 #
 # 幂等：重复跑不报错，已存在的软链会被 -f 覆盖
 # 依赖：jq（hook 注册用）
@@ -42,7 +43,7 @@ else
 fi
 
 # ---- 1. 创建必要目录 ----
-mkdir -p "$CLAUDE_DIR/skills" "$CLAUDE_DIR/scripts" "$CLAUDE_DIR/agents"
+mkdir -p "$CLAUDE_DIR/skills" "$CLAUDE_DIR/scripts" "$CLAUDE_DIR/agents" "$CLAUDE_DIR/commands"
 
 # ---- 2. 软链 skill 整目录 ----
 ln -sfn "$REPO_DIR/skills/builder-loop" "$CLAUDE_DIR/skills/builder-loop"
@@ -70,7 +71,15 @@ for f in "$REPO_DIR/agents/"*.md; do
   echo "✓ agents/$bn → ~/.claude/agents/$bn"
 done
 
-# ---- 5. 注册 hooks 到 settings.json（jq 增量合并）----
+# ---- 5. 软链 commands（slash commands，逐文件）----
+for f in "$REPO_DIR/commands/"*.md; do
+  [ -f "$f" ] || continue
+  bn="$(basename "$f")"
+  ln -sf "$f" "$CLAUDE_DIR/commands/$bn"
+  echo "✓ commands/$bn → ~/.claude/commands/$bn"
+done
+
+# ---- 6. 注册 hooks 到 settings.json（jq 增量合并）----
 if [ "$JQ_AVAILABLE" = true ]; then
   SETTINGS="$CLAUDE_DIR/settings.json"
   if [ ! -f "$SETTINGS" ]; then
@@ -207,4 +216,5 @@ echo ""
 echo "✅ cc-builder-loop 安装完成"
 echo "   skill: ~/.claude/skills/builder-loop/"
 echo "   scripts: ~/.claude/scripts/builder-loop-stop.sh + subagent-start-guard.sh + tester-lock-*.sh + worktree-write-guard.sh + reviewer-timing-check.sh"
-echo "   agents: ~/.claude/agents/tester.md + arbiter.md"
+echo "   agents: ~/.claude/agents/tester.md + arbiter.md + reviewer.md + doc-maintainer.md"
+echo "   commands: ~/.claude/commands/builder.md + planner.md"

@@ -1,0 +1,275 @@
+---
+description: "进入 Builder 模式 — 复杂任务先计划后动手，完成后自动触发 reviewer/doc/commit 流水线。覆盖前序角色约束。"
+---
+
+> **已进入 Builder 模式**。前序角色约束（如有）即时作废，以下规则全量生效。
+
+# Builder 模式
+
+## 默认行为规范
+
+1. **先计划，后动手**：复杂任务先输出计划（文件、思路、风险），确认后再动手。
+2. **完成后主动报告**：汇报改动范围（哪些文件、改了什么、未改什么）。
+3. **模糊需求先澄清**：不脑补，先提问再动手。
+4. **小步提交**：优先做小而完整的改动。
+
+---
+
+## 读方案文件时按角色视图过滤
+
+读 `.claude/plans/*.md` 前，检查 `.claude/builder-loop.local.md` 的 `plan_file` 字段：
+- 有 → `bash ~/.claude/skills/builder-loop/scripts/split-plan-by-role.sh <plan_file> builder > /tmp/plan-builder-view.md`，Read 过滤后文件
+- 无 → 直接 Read 原方案
+
+---
+
+## 前置 loop 检查（读方案之后、写代码之前）
+
+进入 Builder 模式后，**在写任何代码之前**执行：
+
+1. 检查项目根 `.claude/loop.yml` 是否存在
+2. **存在** → `bash ~/.claude/skills/builder-loop/scripts/setup-builder-loop.sh "<任务描述>"`
+   - setup 输出含 `🌿 worktree 已创建` → Read `.claude/builder-loop.local.md` 拿 `worktree_path` 并 **cd 进 worktree**
+   - 告知：`✅ builder-loop 已启动，后续代码将在 worktree 中编写。`
+   - 之后所有文件操作（Write/Edit）都在 worktree 内进行
+   - **V3.2 dirty 隔离**：setup 默认不带主仓 dirty 进 worktree（干净启动）。如果 builder 已在主仓编辑了文件**再**接入 loop，调用时传 `--touched-files file1,file2,...`（逗号分隔）只带这些文件
+3. **不存在** → 见 builder-loop SKILL.md「智能提示」段（代码写完后询问是否接入）
+
+---
+
+## 完成后：改动分级 → 评估是否进入 Builder Auto-Loop
+
+记录 changed_files 列表（汇总留到 commit 后输出），判断改动级别：
+
+| 级别 | 定义 | loop 行为 |
+|------|------|----------|
+| **L1 纯文案** | 只改注释/文档/配置文案/prompt，无逻辑变化 | 跳过 loop，直接走 Reviewer |
+| **L2 实现改动** | 签名不变，内部逻辑改 | 进 loop |
+| **L3 新接口/模块** | 新增签名/改返回结构/新模块 | 先 spawn tester → 再进 loop |
+
+防误判：向上保守。方案有「预估改动级别」时作为参考锚点。
+
+**改动级别机械检测（V3.2）**：代码写完后、进 loop 前，跑 `bash ~/.claude/skills/builder-loop/scripts/diff-level-check.sh`。
+- exit 0 → 无 L3 信号，按方案预估级别继续
+- exit 1 → 输出含新增签名列表（JSON）。builder 必须**逐项回应**每个签名："L3 对外接口" 或 "L2 内部 helper（理由）"。有任何一个判 L3 → 必须 spawn tester。全判 L2 → 必须给理由。**不允许跳过或一句话概括**
+
+- **L1**：跳过 loop.yml 检查，直接走 Reviewer
+- **L2**：走下方 loop.yml 检查
+- **L3**：先 spawn tester（同步，参数同步骤 3a+ 格式），完成后进 loop，**等 loop PASS 后再 spawn reviewer**（不要在 tester 之后立即 spawn reviewer）。本轮已 spawn 过 tester 则 reviewer TESTER_HINT 触发时跳过
+
+---
+
+## 检查 loop.yml（L2/L3 才走）
+
+> 如果前置 loop 检查已经 setup 过（`builder-loop.local.md` 存在且 `active: true`），跳过此段。
+
+- **已 setup**（`builder-loop.local.md` active=true）→ 直接告知 `✅ loop 已活跃`
+  - 之后由 Stop hook 接管：PASS→Reviewer / FAIL→注入继续修 / 早停→问用户
+  - PASS 后 rebase 冲突 → Read `~/.claude/skills/builder-loop/docs/arbiter-flow.md` 按其执行
+- **loop.yml 存在但未 setup** → `bash ~/.claude/skills/builder-loop/scripts/setup-builder-loop.sh "<任务描述>"`
+  - 告知：`✅ builder-loop 已启动，回复结束后自动跑测试，失败自动修复，通过后审查+提交。`
+  - setup 输出含 `🌿 worktree 已创建` → 从 `builder-loop.local.md` 读 `worktree_path` 并 cd 进去
+- **不存在** → 见 builder-loop SKILL.md「智能提示」段
+
+> **⛔ 硬规则**：state.phase=active 期间绝对不 spawn reviewer/doc-maintainer/commit。等 Stop hook 返回 PASS 消息后才走 Reviewer 流程。phase=passed_pending_review 时 spawn reviewer 不算违规。
+
+> **⛔ Reward hacking 警戒（V2.3）**：修 `loop.yml.pass_cmd` 命令字符串或加 `--reruns`/`xfail`/`skip`/`@pytest.mark.flaky` 等关键词时，必须 AskUserQuestion 列三选项（quarantine / 修测试 / 保留 cmd）让用户选，禁止单方面继续 commit。
+
+> **⛔ Abandon loop 关键词识别（V2.6）**：仅在收到 stop hook `[builder-loop ...]` stderr 注入后的**下一轮** user reply 中识别。白名单：「停下loop / 停掉loop / 停止loop / 中止loop / abandon loop」（必须含 "loop" 或 "abandon" 锚词；单独「停了」不识别）。命中 → AskUserQuestion 单确认 reason → 用户确认后调 `bash ~/.claude/skills/builder-loop/scripts/abandon-loop.sh "<state_file>" "<reason>"`。归档后 worktree + branch 保留供用户手动 cherry-pick。
+
+> **长对话 pause hook**：
+> ```
+> touch .claude/builder-loop/<slug>.pause   # 暂停 hook
+> rm    .claude/builder-loop/<slug>.pause   # 恢复
+> ```
+
+---
+
+> **V3.2 subagent 统一约束**：所有 spawn（reviewer / tester / doc-maintainer）worktree 模式时必传 `worktree_path`（从 state 读），非 worktree 传空。
+
+## 完成后触发 Reviewer Subagent
+
+**步骤 1：构造报告路径**（零 Bash）
+拼接：`{项目目录}/.claude/review_reports/{项目名}_{YYYYMMDD_HHMMSS}.md`
+
+**步骤 2：获取 diff + spawn reviewer**
+
+- 获取 diff + reviewer 参数（按 Stop hook stderr 文案识别路径）：
+  - **V3.0 worktree 模式 PASS**（Stop hook 消息含 `phase=passed_pending_review` + `state_file=<path>`）→ Read state.yml 拿 reviewer_pending 段（含 reviewer_files / report_path / diff_file / pass_start_head）。reviewer 通过后由 builder 主动调 `bash ~/.claude/skills/builder-loop/scripts/merge-and-cleanup.sh <state_file>` 才合主线
+  - **V2.x 立即合 PASS / bare 模式 PASS**（Stop hook 消息含 `reviewer_params=<path>`）→ Read 该 JSON 文件，内含 changed_files / report_path / diff_file / start_head。diff 内容从 diff_file 读取或 `git diff <start_head>..HEAD`
+  - **非 loop 场景** → `git diff HEAD` 获取 diff（过大用 `--stat`）；自行拼 changed_files / report_path
+- changed_files 中不在 diff 里的 → `wc -l` 补全为新建文件
+- plan_file 存在时：`split-plan-by-role.sh <plan_file> shared > /tmp/spec-shared.md`
+- spawn：`subagent_type: "reviewer", run_in_background: true`，传 changed_files / diff_summary / report_path / spec_shared / worktree_path
+- 告知："✅ 任务完成，reviewer 已在后台启动。"
+
+**V3.0 reviewer 反馈分支**（仅 phase=passed_pending_review 路径）：
+
+| reviewer 反馈 | 动作 |
+|---|---|
+| 0 🔴 通过 | `bash ~/.claude/skills/builder-loop/scripts/merge-and-cleanup.sh <state_file>` 才合主线 + 删 worktree + 删 state |
+| 🟡 / 🔵 非阻塞 | 在 worktree 内 Edit/Write 修复 → dirty 出现 → 下一轮 stop hook L1 闸自愈回 phase=active → 重跑 PASS_CMD |
+| 🔴 阻塞 | AskUserQuestion 让用户选 [继续修 / abandon-loop.sh] |
+
+**步骤 3：收到通知后处理**
+
+重试：默认 sonnet（兼容 max / copilot 双路径）。首次 API 错误时先按下述策略分类，最多 2 次全败走兜底。失败时 `⚠️ Reviewer 失败（原因:<短描述>），正在重试...`
+
+错误分类（根据返回消息关键词匹配）：
+- `effort|reasoning|not supported|unsupported_parameter|invalid_request` → 视为内核配置问题，跳重试直接走兜底（3c）
+- `rate_limit|overloaded|timeout|5\d\d` → 标准重试（3b），间隔 ≥10s
+- 其他 → 标准重试（3b）
+
+**3a 成功**（含 `REVIEW_SUMMARY:`）：
+
+| 结论 | 行为 |
+|---|---|
+| 通过（0个🔴） | 汇报完成 |
+| 需修改（🔴非架构级） | 自主判断：采纳→修复，拒绝→记理由 |
+| 阻塞（架构/安全/数据风险） | 上报用户 |
+
+汇报：`🔍 审查完成：🔴X 🟡Y 🔵Z` + 采纳/拒绝明细。拒绝必须给具体理由。`报告:INLINE` 时从 message 提取。
+
+**3a+ TESTER_HINT**：解析 `<!-- BEGIN_TESTER_HINT -->` JSON，无论 loop 是否活跃都处理
+
+前置：`need_tester=true` + `missing_cases` 非空 → 否则跳 3.5
+
+分支：
+- **loop 活跃**（`builder-loop.local.md` active=true / multi-state 下有本 worktree 对应 state）：
+  1. 过滤 tester 视图（`split-plan-by-role.sh <plan_file> tester`），spawn tester（同步），传 spec_view / interface_signatures / target_test_dirs / missing_cases / mock_targets / data_contracts / error_types / worktree_path
+  2. Edit state 的 `iter:` 为 `0`
+  3. 告知 `🧪 tester 已补充，iter 已重置`（下一轮 Stop hook 会重跑 PASS_CMD 验证新测试）
+- **loop 已结束（或从未活跃）**：
+  1. 同样 spawn tester（同步）补测，传参同上；**worktree_path: ""**（loop 已结束，tester 在主仓 cwd 工作，无 worktree 边界）
+  2. tester 写完新测试后，手动跑一次 PASS_CMD 或对应测试目录
+  3. 测试通过 → 单独 commit 测试文件（`test(...): [cr_id_skip] Add missing cases from reviewer hint`）
+  4. 测试不过 → 按"需修改"决策路径处理，不再进 loop 避免死循环套娃
+  5. 告知 `🧪 tester 补测 loop 结束后执行：N 个测试 已/未 通过`
+
+此步骤与仲裁互斥：先仲裁再 reviewer/tester。
+
+**3b 重试**：直接重新 spawn reviewer。若第 1 次失败已被分类为"内核配置问题"，跳过 3b 直接 3c。
+
+**3c 兜底**：Read `~/.claude/skills/builder-loop/docs/reviewer-fallback.md` 按其执行。不阻断工作流。
+
+---
+
+## 步骤 3.5：文档评估（独立判断，不依赖 reviewer 结果）
+
+逐项检查，按分流规则处理：
+
+**A 类（机械同步）→ spawn doc-maintainer**：
+- [ ] `SKILL.md` / `README.md` 里声明的脚本 / 函数 / hook 的行为或输出格式变了
+- [ ] 新增对外文件（新脚本 / 新配置字段 / 新 state 目录 / 新消息格式）
+
+**B 类（需要设计上下文）→ builder 亲自 Edit**：
+- [ ] `CLAUDE.md` 的"已交付能力"应加版本条目
+- [ ] 新增 TODO / 排查手册 / 项目记忆条目
+- [ ] 设计文档变更（哲学 / 架构 / 原则 / 新概念解释 / CHANGELOG 语义段）
+
+A 类命中 → spawn doc-maintainer（同步）。B 类命中 → builder 直接 Read doc-policy.md 后自行更新。A+B 同时命中 → 先 builder 写 B 类，再 spawn doc-maintainer 处理 A 类。全部未命中 → **必须显式输出** `📄 doc: skip (<一句理由>)`。
+
+> ⛔ 不允许静默跳过。即使 reviewer 走到 3c 兜底、或者任务是异常收尾，3.5 仍必须走一次。
+
+---
+
+## 步骤 3.5.5：plan.md 同步检查
+
+`docs/plan.md` 不存在 → `📋 plan.md: skip` 进入步骤 4。
+
+存在 → Read 后输出**恰好一行**：
+- `📋 plan.md: 更新 #X (✅/🚧/作废)`（找到条目并 Edit 标记）
+- `📋 plan.md: #X 已同步`（找到且状态正确）
+- `📋 plan.md: 范围外`（无对应条目）
+
+⛔ 不允许 spawn doc-maintainer 维护 plan.md。
+⛔ 不允许静默跳过，即便 L1 / reviewer 兜底 / loop 异常收尾。
+
+---
+
+## 步骤 4：自动 commit（Reviewer 通过后）
+
+1. `git remote get-url origin` — 失败或含 luna6/app → `⚠️ 跳过自动 commit`
+2. `git check-ignore <changed_files>` 过滤掉被 `.gitignore` 忽略的文件（如 CLAUDE.md、`.claude/`），仅 `git add` 未被忽略的文件 + `git add -u`
+3. HEREDOC 格式 commit：`type(scope): [cr_id_skip] 描述`，hook 拦截→修正重试
+4. `✅ 已自动 commit` + `git log --oneline -1`
+
+**4.5 改动汇总**：
+
+按"做了哪几件事"罗列，不是逐文件 diff 复述。跨多个文件的相邻改动合并成一件事；一件事一句话写明做了什么；文件作为附注。事数典型 1~5 件，超过说明颗粒度太细需要再合并。
+
+```
+📋 本次改动（共 N 件事）：
+1. <一句话讲做了什么>
+   涉及：<file1>, <file2>
+2. <一句话>
+   涉及：<file3>
+
+📌 本次需求：<用户视角一句话，说做成了什么事而非复述代码改动>
+```
+
+---
+
+## 步骤 5：任务回顾与知识沉淀
+
+> 这步是复盘——把本次踩到/学到的东西要么写代码防住下次，要么自己记住。
+
+触发条件（任一命中）：loop ≥2 轮 / 仲裁 / tester / reviewer 🔴 / 候选知识。全不命中 → `📝 本次任务无需回顾`。
+
+**1. 列本次踩到 / 学到的事**（标号 c1/c2/c3...，每条一句话写明在哪一步怎么发现的）
+
+**2. 每件事挑一个去向**（三选一，分不清看下面判据）：
+
+| 去向 | 什么时候选 | 落到哪 |
+|------|-----------|--------|
+| **改代码防住** | 能写成 检查/断言/fixture/hook/prompt 防住下次再撞 | 写进 improvements.md。业务码写 CWD 项目根的 `improvements.md`；loop 机制写 cc-builder-loop 仓库根的 `improvements.md`（同一个文件，不是 `.claude/` 下的） |
+| **只能记住** | 代码改不了——CC 平台行为 / 工具隐式约定 / 业务事实 / 必须调试过才知道的根因，下次只能靠 Claude 自己记得 | 走下方 5 问筛，过的进 `/memory` |
+| **都做** | 既能改代码也值得记住（比如 loop 改进要 N 周才落地，期间靠记得绕过） | 各写一处；memory 条目里注明「代码已/待固化于 X」 |
+
+**业务码 vs loop 码 怎么分**：踩坑产生在哪一层——loop 机制（hook / agent / SKILL prompt / cc-builder-loop 仓库脚本 / fixture）写 cc-builder-loop 仓库；当前业务代码 / 测试 / 项目流程写 CWD 项目根。涉及两层拆开各落一处。CWD 本身就是 cc-builder-loop 项目时不区分。
+
+**cc-builder-loop 仓库根定位**：`readlink ~/.claude/skills/builder-loop` 取软链目标，向上两层即仓库根。
+
+**输出格式**（四档并列，没东西也得显式写「无 + 一句话理由」，不许跳过）：
+
+```
+改代码-业务：c?, c? / 无（理由：本次没动业务码）
+改代码-loop：c?, c? / 无（理由：...）
+只能记住：c?, c? / 无（理由：...）
+都做：c?, c? / 无（理由：本次候选没有「改代码 + 记住」双重属性的）
+```
+
+**3. 「只能记住」和「都做」的候选走 5 问自检**（「改代码」直接落 improvements.md 不走 5 问）：
+
+```
+| 知识点 | ①源码不直观？ | ②用户/debug 教的？ | ③未来反复用？ | ④帮排查前提？ | ⑤比已有更稳定？ | 结论 |
+|--------|------------|------------------|------------|------------|-------------|------|
+| <简述> | ✅/❌ 理由 | ✅/❌ 理由 | ✅/❌ 理由 | ✅/❌ 理由 | ✅/❌ 理由   | N/5 |
+```
+
+
+**≥4/5** 推荐；**3/5** 标「边界」说明哪项不满足；**≤2/5** 直接排除不呈现。
+
+**4. 提审**（一次 AskUserQuestion 多选解决，选项前缀强制带去向标识）：
+
+| 前缀 | 含义 |
+|------|------|
+| `[业务改进]` | 写到业务项目根 improvements.md |
+| `[loop 改进]` | 写到 cc-builder-loop 仓库根 `improvements.md`（定位：`readlink ~/.claude/skills/builder-loop` 向上两层） |
+| `[记住]` | 进 `/memory` |
+
+「都做」候选拆成两个选项分别打前缀（如 `[loop 改进] c1: ...` + `[记住] c1: ...`）。附 5 问表格 / improvements 模板让用户看到判据。
+
+**5. 落盘**：
+- `[业务改进]` / `[loop 改进]` 选项 → Edit/Write 对应的 improvements.md
+- `[记住]` 选项 → 调 `/memory` 命令
+- 全部为空 → `📝 本次任务无需回顾`
+
+improvements.md 立项条目模板（无文件则新建，时间倒序）：
+
+```
+## YYYY-MM-DD <一句标题>
+- 触发上下文：<这次任务里怎么发现的>
+- 建议方向：<改哪个文件 / 加什么 fixture / 补什么硬门禁>
+- 优先级：高 / 中 / 低
+```
