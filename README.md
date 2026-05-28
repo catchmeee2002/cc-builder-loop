@@ -110,14 +110,9 @@ In Claude Code, type `/builder-loop` and describe your task. The loop takes over
 
 ## Design Philosophy
 
-> This is an LLM-driven divergent system — Claude Code's behavior is non-deterministic, middleware layers are coupled, and patching snowballs. These 6 principles are the decision criteria for all design choices.
+The core principle is **layered verdicts** — machine verdicts (test exit codes) form the ground-truth foundation that can't be argued with, while LLM verdicts cover the semantic layer on top. The stronger LLM judges get, the more they need an external anchor they can't talk their way past; this project is that anchor.
 
-1. **Machine verdicts, not LLM opinions** — State transitions use objectively verifiable signals only
-2. **Every piece of data has exactly one home** — No caching copies on the consumer side; redundancy drifts
-3. **Explicit authorization, default deny** — Unknown state is not touched; unknown worktrees are not written to
-4. **Change input conditions, not output constraints** — Fix the data structures so correct behavior emerges naturally
-5. **Three occurrences = architectural defect** — Find the shared root cause and fix it once
-6. **Contract before implementation** — Define input/output/side-effect contracts first, then implement
+Full principles (single source of truth): [`docs/design-philosophy.md`](docs/design-philosophy.md).
 
 ## Version Highlights
 
@@ -200,11 +195,8 @@ git clone https://github.com/catchmeee2002/cc-builder-loop.git
 
 ### 设计哲学
 
-1. **机器判据，不是 LLM 意见** — 状态转移只靠客观可验证的信号
-2. **每份数据有且只有一个家** — 冗余必漂移，漂移必出事
-3. **显式授权，默认拒绝** — 不认识的东西不碰
-4. **改输入条件，不改输出约束** — 让正确行为自然发生
-5. **同一问题出现三次就是架构缺陷** — 找共同根因一次修掉
-6. **契约先于实现** — 先定义契约，测试验证契约
+核心是**判据分层**——机器判据（测试退出码）做不可被说服的 ground truth 地基，LLM 判据补语义层。LLM 判官越强，越需要一个说服不了的外部锚点，本项目就是这个锚点。
+
+完整原则（唯一来源）：[`docs/design-philosophy.md`](docs/design-philosophy.md)。
 
 </details>

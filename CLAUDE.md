@@ -4,20 +4,15 @@
 > 项目接入只需在项目根放 `.claude/loop.yml`，定义 `pass_cmd`（lint/test 等通过条件），
 > builder 改完代码会自动跑 PASS_CMD，失败自动喂回让 builder 再改，直到 PASS 或达到上限。
 
-> **与 CC 官方 `/loop` skill 的边界**：本仓库 = 机器判据驱动的**代码迭代闭环**（PASS_CMD 客观判据 + worktree 隔离 + reward hacking 防御）；官方 `/loop`（v2.1.121+）= `ScheduleWakeup` 驱动的**通用步频再触发器**（LLM 主观判停）。判据维度不同，**不要叠用**。版本跟踪见 [`skills/builder-loop/docs/cc-loop-tracking.md`](skills/builder-loop/docs/cc-loop-tracking.md)。
+> **与 CC 官方自动化能力的边界**：本仓库 = 机器判据驱动的**纵向收敛闭环**（PASS_CMD 客观判据 + worktree 隔离 + reward hacking 防御）；官方 `/loop` = **通用步频再触发器**、dynamic workflow = **横向 fan-out 编排层**，二者判停均 LLM 主观。维度正交，**不要叠用**（尤其 builder-loop active 时勿在同会话开 inline workflow）。跟踪与互斥防御见 [`skills/builder-loop/docs/cc-loop-tracking.md`](skills/builder-loop/docs/cc-loop-tracking.md)。
 
 ---
 
 ## 设计哲学
 
-本项目是 LLM 驱动的发散系统——Claude Code 的行为不确定，中间件层互相耦合，打补丁会滚雪球。以下 6 条原则是所有设计决策的判据，详见 [`docs/design-philosophy.md`](docs/design-philosophy.md)。
+本项目是 LLM 驱动的发散系统，所有设计决策的判据是一组原则，**唯一来源**见 [`docs/design-philosophy.md`](docs/design-philosophy.md)。核心：**判据分层**——机器判据做 ground truth 地基、LLM 判据补语义层；项目定位为给自动化系统提供「LLM 说服不了的」外部锚点。
 
-1. **机器判据，不是 LLM 意见**——状态转移只靠客观可验证的信号，不靠 LLM 的主观判断
-2. **每份数据有且只有一个家**——同一个事实不存两个地方，冗余必漂移
-3. **显式授权，默认拒绝**——不认识的东西不碰，宁可多一步显式声明
-4. **改输入条件，不改输出约束**——改数据结构让正确行为自然发生，不在末端堆特判
-5. **同一个问题出现三次就是架构缺陷**——找共同根因一次修掉，不单点修
-6. **契约先于实现**——先定义输入/输出/副作用契约，测试验证契约不验证实现
+> 原则正文只在 design-philosophy.md 维护，此处与 README 一律不复制全文（落实原则二「每份数据一个家」+ 原则七 dogfooding）。
 
 ---
 
@@ -25,13 +20,13 @@
 
 | 文档 | 定位 | 何时读 |
 |------|------|--------|
-| [`docs/design-philosophy.md`](docs/design-philosophy.md) | 设计哲学（6 条原则） | 做设计决策 / 评估方案时 |
+| [`docs/design-philosophy.md`](docs/design-philosophy.md) | 设计哲学（判据分层等原则，SSOT 唯一来源） | 做设计决策 / 评估方案时 |
 | [`CHANGELOG.md`](CHANGELOG.md) | 各版本交付能力（V1.0~V3.2） | 需要了解历史版本做了什么时 |
 | [`docs/troubleshooting.md`](skills/builder-loop/docs/troubleshooting.md) | 排查手册（§7.1~7.12） | stop hook / judge / worktree / state 出问题时 |
 | [`docs/sync-checklist.md`](skills/builder-loop/docs/sync-checklist.md) | 改动同步 checklist | 本仓 commit 后需同步操作时 |
 | [`docs/judge-agent.md`](skills/builder-loop/docs/judge-agent.md) | Judge agent 设计与配置 | judge 相关开发 / 排查时 |
 | [`docs/arbiter-flow.md`](skills/builder-loop/docs/arbiter-flow.md) | Rebase 冲突仲裁流程 | merge 冲突时 |
-| [`docs/cc-loop-tracking.md`](skills/builder-loop/docs/cc-loop-tracking.md) | CC 官方 /loop 版本跟踪 | 评估官方能力是否可替代时 |
+| [`docs/cc-loop-tracking.md`](skills/builder-loop/docs/cc-loop-tracking.md) | CC 官方自动化能力跟踪（/loop + dynamic workflow） | 评估官方能力 / 互斥防御时 |
 | [`skills/builder-loop/README.md`](skills/builder-loop/README.md) | SKILL 使用说明 | 了解用户侧接入流程时 |
 
 ---
