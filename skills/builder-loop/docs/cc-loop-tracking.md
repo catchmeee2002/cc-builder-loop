@@ -24,7 +24,7 @@
 
 要点：
 - **半临时**：脚本默认即用即弃，落盘 session 目录（返回 scriptPath）；可 `resumeFromRunId`（journal 缓存未变前缀）/ 存 named workflow（`.claude/workflows/`）复用
-- **隔离**：支持 `isolation:'worktree'`（per-agent worktree，slug `wf_<runId>-<idx>`，防并行写冲突）
+- **隔离**：支持 `isolation:'worktree'`（per-agent worktree，slug `wf_<runId>-<idx>`，runId=`randomUUID().slice(0,12)`=`8hex-3hex`，正则 `^wf_[0-9a-f]{8}-[0-9a-f]{3}-\d+$`，防并行写冲突）
 - **资源**：token budget 感知（`budget.remaining()`）、并发 cap `min(16, cores-2)`
 - **可用性**：研究预览，Max/Team/Enterprise + API/Bedrock/Vertex/Foundry（企业默认关）
 
