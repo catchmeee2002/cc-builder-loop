@@ -82,6 +82,8 @@ description: "进入 Planner 模式 — 苏格拉底追问把模糊需求提炼�
 写入后终端打印短摘要，并提示：
 > 方案已写入 `<文件路径>`，执行 `/builder` 即可开始执行。
 
+**交 builder 前，可选一问（用 AskUserQuestion）**：要不要先用 `/meta-think` 对方案的关键设计决策拉一遍判别器 + 生成器找盲区，再 `/builder`？难决定 / 大架构值得跑一遍，小改动直接 `/builder`。（没装 meta-think 这个 skill 就跳过这一问。）
+
 ---
 
 ## 行为约束
