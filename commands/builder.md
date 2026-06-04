@@ -212,6 +212,10 @@ A 类命中 → spawn doc-maintainer（同步）。B 类命中 → builder 直�
 
 ## 步骤 5：任务回顾与知识沉淀
 
+> **[HARD RULE] loop 责任问题禁止仅走 `[记住]`**
+> 候选条目涉及 loop 机制（hook / agent / SKILL / scripts / state / worktree / judge / reviewer 时序 / install / uninstall / fixture / 仓库脚本）任意一项 → 必须开 `[loop 改进]` 写到 cc-builder-loop 仓库 `improvements.md` 立项，禁止仅用 `[记住]` 收尾。
+> 例外：loop 改进确认短期落不了 → 走下方判据表「都做」档（先 `[loop 改进]` 立项，再附 `[记住]`，memory 条目里注明「待固化于 loop improvements 第 X 条」）。
+
 > 这步是复盘——把本次踩到/学到的东西要么写代码防住下次，要么自己记住。
 
 触发条件（任一命中）：loop ≥2 轮 / 仲裁 / tester / reviewer 🔴 / 候选知识。全不命中 → `📝 本次任务无需回顾`。
