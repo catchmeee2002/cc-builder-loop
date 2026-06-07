@@ -1,7 +1,7 @@
 ---
 name: doc-maintainer
 description: "由 Builder 在 Reviewer 通过后、commit 前自动调用，根据代码变更维护项目文档。规则全部走 doc-policy.md，本 agent 只负责按规则执行。Builder 调用时需在 prompt 中传入 changed_files 和 diff_summary 两个字段。"
-model: haiku
+model: sonnet
 color: cyan
 ---
 
