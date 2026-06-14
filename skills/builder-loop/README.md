@@ -90,20 +90,32 @@ pass_cmd:
 5. commit 进 my-dotfiles：chore(skills): [cr_id_skip] Update builder-loop XXX
 ```
 
-### 5.1 调试 hook 锁（V1.1+）
+### 5.1 调试 hook 锁（V1.1+，V3.5 更新）
 
-tester 强隔离通过 3 个 hook 脚本 + 锁文件实现。排查时可查阅：
+subagent 强隔离通过多个 hook 脚本 + per-agent-type 锁文件实现。排查时可查阅：
 
 ```bash
-# 锁文件位置（TTL 30 分钟内未被 SubagentStop 清理的遗留）
+# 锁文件位置（V3.5+ 按 agent_type 分离）
 ls -la /tmp/cc-subagent-*.lock
+# 示例：/tmp/cc-subagent-abc1234def-tester.lock （session_id-agent_type）
+
+# 查看锁文件内容
+cat /tmp/cc-subagent-<session_id>-<agent_type>.lock
+# 输出字段：session_id / agent_type / start_ts / pid
 
 # 锁写入日志（SubagentStart 时记录）
-tail -f ~/.claude/logs/tester-lock-write-*.log
+tail -f ~/.claude/logs/subagent-start-*.log
 
 # 锁检查日志（PreToolUse 时记录 block/allow 决策）
 tail -f ~/.claude/logs/tester-lock-check-*.log
 ```
+
+**V3.5 变更说明**：
+- 锁文件从 `cc-subagent-{sid}.lock` 改为 `cc-subagent-{sid}-{agent_type}.lock`
+- 支持 tester/doc-maintainer/arbiter/reviewer 并发各落各的锁
+- 非白名单 agent（如 inline workflow）不写锁
+- 向后兼容旧格式（TTL 自动清理）
+- 公共函数库：`source ~/.claude/scripts/lock-utils.sh`
 
 ### 5.2 空仓 fixture 验证
 

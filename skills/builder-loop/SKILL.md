@@ -51,6 +51,33 @@ bash ~/.claude/skills/builder-loop/scripts/setup-builder-loop.sh "$TASK_DESCRIPT
 | 5 | Lock 超时（10s 内无法获取 setup lock，可能另一 setup 在运行） |
 | 6 | 孤儿 worktree 检测（V3.3+）：目录存在但无对应 active state；stderr 列出选项：`--reuse-worktree <path>` / `--ignore-orphans` / 手动清理 |
 
+## Subagent lifecycle hooks（V3.5 来源身份层）
+
+V3.5 引入 subagent 白名单管理，确保只有预期的 agent 类型能落隔离锁。
+
+**SubagentStart hook** (`~/.claude/scripts/subagent-start-guard.sh`)：
+- 触发时机：任何 subagent 启动（无论哪个 session / agent_type）
+- 行为：检查 `agent_type` 是否在白名单 `[tester, doc-maintainer, arbiter, reviewer]` 内 **且** `state.phase=active`
+  - 白名单内 ✅ + active ✅ → 写 per-agent-type 锁文件 (`cc-subagent-{session_id}-{agent_type}.lock`)
+  - 白名单内但非 active（如 `phase=passed_pending_review`） → 静默跳过（reviewer 等待中不落锁）
+  - 非白名单 agent（如 inline workflow / unknown type） → 静默跳过（不受管）
+  - 同时注入 worktree 边界上下文（source_dirs / test_dirs 隔离）
+
+**SubagentStop hook** (`~/.claude/scripts/subagent-lock-clear.sh`)：
+- 触发时机：任何 subagent 结束
+- 行为：扫当前 session 的所有活跃锁（新旧格式），清除匹配当前 `agent_type` 的锁
+  - 采用 TTL 1800s（30min）防止陈旧锁累积
+  - 识别并清理旧锁格式 `cc-subagent-{session_id}.lock`（向后兼容）
+
+**V3.5 前后对比**：
+
+| 维度 | V3.4- | V3.5+ |
+|------|-------|-------|
+| 锁文件命名 | `cc-subagent-{session_id}.lock`（全局单锁） | `cc-subagent-{session_id}-{agent_type}.lock`（按类型分离） |
+| SubagentStart 条件 | 无条件落锁 | 白名单 + active state 双条件 |
+| SubagentStop 覆盖范围 | 仅 tester | 所有 managed agents |
+| 支持场景 | 单 session 单 agent 类型 | 单 session 多 agent 类型并发（如 doc-maintainer + tester 同时跑） |
+
 ## Stop Hook
 
 `~/.claude/scripts/builder-loop-stop.sh`：按 CWD 调用 `locate-state.sh` 找本 worktree 对应 state → 检测 active=true → 多层闸过滤非目标场景 → 跑 PASS_CMD。
@@ -132,6 +159,34 @@ consecutive_nudge_count: 1
 judge_active_model: "claude-sonnet-4-6"      # 当前活跃模型；连续 fallback_after_failures 次失败后切 fallback_model
 judge_consecutive_failures: 0                # primary 模型连续失败计数（5xx/timeout/parse_error 计数；401/429 不计数）
 ```
+
+### Subagent 锁文件 schema（V3.5+）
+
+文件路径：`/tmp/cc-subagent-{session_id}-{agent_type}.lock`（或 `$ISOLATION_LOCK_DIR` 若已设定）
+
+文件格式（YAML）：
+```yaml
+session_id: "abc1234def"              # CC session ID
+agent_type: "tester"                  # managed agent 类型（tester / doc-maintainer / arbiter / reviewer）
+start_ts: 1718374800                  # 锁创建时间戳（秒）
+pid: 12345                            # hook 进程 ID
+```
+
+**V3.5 主要变更**：
+
+- **旧格式**（V3.4-）：`/tmp/cc-subagent-{session_id}.lock`（单一锁文件，所有 agent 共用）
+- **新格式**（V3.5+）：`/tmp/cc-subagent-{session_id}-{agent_type}.lock`（按 agent_type 分离，支持并发不同 agent）
+- **后向兼容**：subagent-lock-check.sh 和清理脚本都识别旧格式，不强制迁移；旧 lock 文件 TTL 1800s（30min）自动清理
+
+**Managed agent 白名单**（仅这些类型落锁）：`tester`, `doc-maintainer`, `arbiter`, `reviewer`
+
+**公共函数库**：`~/.claude/scripts/lock-utils.sh`（V3.5 新增）提供：
+- `bl_lock_path <session_id> <agent_type>` — 新锁文件路径
+- `bl_legacy_lock_path <session_id>` — 旧锁文件路径（兼容）
+- `bl_find_active_locks <session_id>` — 查找一个 session 的所有活跃锁（新旧格式）
+- `bl_read_lock_field <lock_file> <field>` — 读锁文件字段
+- `bl_cleanup_stale_locks <session_id> [ttl_sec]` — 清理超期锁
+- `bl_is_managed_agent <agent_type>` — 检查是否白名单内 agent
 
 ### 旧 schema 迁移
 
@@ -251,4 +306,4 @@ bash ~/.claude/skills/builder-loop/scripts/run-judge-agent.sh --self-check
 
 ## 版本交付历史
 
-详见 [`../../CHANGELOG.md`](../../CHANGELOG.md)（V1.0 ~ V3.3）。当前最新 **V3.3 孤儿 worktree 检测与复用**（`--reuse-worktree` / `--ignore-orphans` / exit 6 / worktree_mode=reuse）。
+详见 [`../../CHANGELOG.md`](../../CHANGELOG.md)（V1.0 ~ V3.5）。当前最新 **V3.5 Subagent 来源身份层**（per-agent-type lock / 白名单双条件 / 通用清锁 / lock-utils 公共库）。

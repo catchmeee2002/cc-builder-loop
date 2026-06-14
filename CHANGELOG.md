@@ -2,6 +2,26 @@
 
 > 从 CLAUDE.md §5 外移。记录各版本交付的能力与关键实现细节。
 
+## V3.5 Subagent 来源身份层（2026-06-14）
+
+解决 9 条同根因——subagent 写落点错 / hook 撞错 session / 非 builder-loop agent 误触发。
+
+**1. Per-agent-type lock 文件**
+- 锁文件从 `cc-subagent-{sid}.lock` 改为 `cc-subagent-{sid}-{agent_type}.lock`，并发 subagent 不再互覆盖
+- 新建 `lock-utils.sh` 公共函数库（7 个函数 + 白名单常量），6 个 hook 脚本统一 source
+
+**2. 白名单 + active state 双条件**
+- SubagentStart 只给白名单内 agent（tester/doc-maintainer/arbiter/reviewer）且有 active state 时写锁
+- workflow / Explore / general-purpose 等非 builder-loop agent 完全不写锁，不触发任何 guard
+
+**3. 通用清锁**
+- `tester-lock-clear.sh` → `subagent-lock-clear.sh`，所有 managed agent 结束时按 session_id + agent_type 精确清锁
+- SubagentStop hook 去掉 matcher 限制（原 matcher=tester）
+- 旧格式锁向后兼容（legacy fallback）
+
+**4. 5 个 e2e fixture**
+- 并发锁隔离、白名单过滤、各类型清锁、TTL 过期、旧锁兼容
+
 ## V3.3 孤儿 worktree 检测与复用（2026-05-25）
 
 早停/abandon 后遗留的 worktree 不再丢失——setup 自动检测并提示复用。
