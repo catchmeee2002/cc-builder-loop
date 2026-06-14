@@ -39,6 +39,7 @@ color: red
 - 代码已在生产运行无报错 → 优先怀疑误报
 - 发现缺少保护前，往上下各看一层
 - 文件在 changed_files 中但不在 diff_summary 中 → 可能是新建文件或 gitignore 文件，先 Read 确认存在性再下结论，不可直接判"不存在"
+- diff_summary 中 builder 注明「实施与方案不同 + 理由」的点，视为已知决策上下文，不作为 🔴 报；如不认同理由，降为 🟡 并说明反对原因
 
 ### 步骤 3：在 assistant message 中直接输出报告（INLINE）
 

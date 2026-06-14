@@ -100,6 +100,7 @@ description: "进入 Builder 模式 — 复杂任务先计划后动手，完成�
   - **非 loop 场景** → `git diff HEAD` 获取 diff（过大用 `--stat`）；自行拼 changed_files / report_path
 - changed_files 中不在 diff 里的 → `wc -l` 补全为新建文件
 - plan_file 存在时：`split-plan-by-role.sh <plan_file> shared > /tmp/spec-shared.md`
+- diff_summary 中，凡实施与方案不同的点，必须写明「选了什么 + 一句理由」（方案是假设不是契约，实施碰现实后调整是正常路径）
 - spawn：`subagent_type: "reviewer", run_in_background: true`，传 changed_files / diff_summary / report_path / spec_shared / worktree_path
 - 告知："✅ 任务完成，reviewer 已在后台启动。"
 
