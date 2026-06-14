@@ -55,10 +55,14 @@ bl_find_active_locks() {
   local legacy="${_BL_LOCK_DIR}/cc-subagent-${session_id}.lock"
   local found=()
 
+  local _old_nullglob
+  _old_nullglob="$(shopt -p nullglob 2>/dev/null || true)"
+  shopt -s nullglob
   local f
   for f in $new_pattern; do
-    [ -f "$f" ] && found+=("$f")
+    found+=("$f")
   done
+  eval "$_old_nullglob" 2>/dev/null || true
 
   [ -f "$legacy" ] && found+=("$legacy")
 
@@ -70,7 +74,7 @@ bl_find_active_locks() {
 bl_read_lock_field() {
   local lock_file="${1:?bl_read_lock_field: lock_file required}"
   local field="${2:?bl_read_lock_field: field required}"
-  grep -E "^${field}:" "$lock_file" 2>/dev/null | head -1 | sed -E "s/^${field}:[[:space:]]*\"?([^\"]*)\"?[[:space:]]*$/\1/" || true
+  grep -E "^${field}:" "$lock_file" 2>/dev/null | head -1 | sed -E "s/^${field}:[[:space:]]*\"?([^\"]*)\"?[[:space:]]*$/\1/" | sed 's/[[:space:]]*$//' || true
 }
 
 bl_cleanup_stale_locks() {
