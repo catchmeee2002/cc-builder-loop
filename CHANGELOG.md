@@ -2,6 +2,24 @@
 
 > 从 CLAUDE.md §5 外移。记录各版本交付的能力与关键实现细节。
 
+## V3.5-B Step 3.5 机械化检测 + doc-lint 修复（2026-06-14）
+
+消化 ≥6 条同根因——step 3.5 doc 评估 4 次漏触发 + doc-lint 签名变更误判 + 黑名单漏词。
+
+**1. builder.md step 3.5 结构化输出**
+- 输出格式从自由文本改为强制两行并列（doc-A + doc-B），缺任何一行 = 违规
+- 同模式参照步骤 5 四档并列，已验证有效
+
+**2. doc-lint 双向过滤**
+- 从 diff `+` 行提取 ADDED_SYMBOLS，过滤掉签名变更（两边都出现的符号不算删除）
+- 修复 sed BRE `^\+` → `^+` 的正则错误
+
+**3. 黑名单补词**
+- 通用词黑名单加 `append|clear`（6-03 误判根因）
+
+**4. fixture**
+- Case 6：签名变更不误判；Case 7：append/clear 过滤
+
 ## V3.5 Subagent 来源身份层（2026-06-14）
 
 解决 9 条同根因——subagent 写落点错 / hook 撞错 session / 非 builder-loop agent 误触发。
