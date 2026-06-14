@@ -1,25 +1,18 @@
 #!/usr/bin/env bash
 # tester-lock-check.sh — PreToolUse hook (matcher=Read|Grep|Glob)
 #
-# tester subagent 上下文期间，物理拦截对 source_dirs 的读操作。
+# V3.5: uses lock-utils.sh for per-agent-type lock lookup.
+# Only activates when a tester lock exists for this session.
 #
-# 决策流：
-#   1. 读 stdin JSON 拿 session_id + tool_name + tool_input.{file_path,path,pattern}
-#   2. 读锁文件 ${ISOLATION_LOCK_DIR:-/tmp}/cc-subagent-{session_id}.lock
-#      不存在 → 非 tester 上下文，放行（exit 0）
-#   3. 锁过期（now - start_ts > ttl_min*60）→ 删锁 + 放行
-#   4. 提取目标路径，转 abspath
-#   5. 白名单优先：路径含 /test, /tests, /spec, /__tests__ 或以 .md 结尾 → 放行
-#   6. 路径前缀匹配 source_dirs_abs → exit 2 + JSON deny
-#   7. 否则放行
-#
-# 退出码：
-#   0  = 放行
-#   2  = 拒绝（CC 硬约定：PreToolUse exit 2 + stderr/stdout JSON deny → 阻断工具调用）
+# Exit codes:
+#   0  = allow
+#   2  = deny (CC: PreToolUse exit 2 → block tool call)
 
 set -uo pipefail
 
-LOCK_DIR="${ISOLATION_LOCK_DIR:-/tmp}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "${SCRIPT_DIR}/lock-utils.sh"
+
 LOG_FILE="${HOME}/.claude/logs/tester-lock-check.log"
 mkdir -p "$(dirname "$LOG_FILE")" 2>/dev/null || true
 log() { printf '[%s] %s\n' "$(date -Iseconds)" "$*" >> "$LOG_FILE" 2>/dev/null || true; }
@@ -30,18 +23,24 @@ TOOL_NAME=$(printf '%s' "$INPUT" | jq -r '.tool_name // empty' 2>/dev/null || ec
 
 [ -z "$SESSION_ID" ] && exit 0
 
-LOCK_FILE="${LOCK_DIR}/cc-subagent-${SESSION_ID}.lock"
-[ ! -f "$LOCK_FILE" ] && exit 0
+# V3.5: find tester-specific lock (new format first, legacy fallback)
+LOCK_FILE="$(bl_lock_path "$SESSION_ID" "tester")"
+if [ ! -f "$LOCK_FILE" ]; then
+  # Legacy fallback: old single-file format
+  LOCK_FILE="$(bl_legacy_lock_path "$SESSION_ID")"
+  if [ ! -f "$LOCK_FILE" ]; then
+    exit 0
+  fi
+  _atype="$(bl_read_lock_field "$LOCK_FILE" "agent_type")"
+  [ "$_atype" != "tester" ] && exit 0
+fi
 
-# 锁是否 tester
-AGENT_TYPE=$(grep -E '^agent_type:' "$LOCK_FILE" | sed -E 's/^agent_type:[[:space:]]*//' || echo "")
-[ "$AGENT_TYPE" != "tester" ] && exit 0
-
-# TTL 兜底
-START_TS=$(grep -E '^start_ts:' "$LOCK_FILE" | sed -E 's/^start_ts:[[:space:]]*//' || echo 0)
-TTL_MIN=$(grep -E '^ttl_min:' "$LOCK_FILE" | sed -E 's/^ttl_min:[[:space:]]*//' || echo 30)
+# TTL check
+START_TS="$(bl_read_lock_field "$LOCK_FILE" "start_ts")"
+TTL_MIN="$(bl_read_lock_field "$LOCK_FILE" "ttl_min")"
+[ -z "$TTL_MIN" ] && TTL_MIN=30
 NOW=$(date +%s)
-AGE=$(( NOW - START_TS ))
+AGE=$(( NOW - ${START_TS:-0} ))
 TTL_SEC=$(( TTL_MIN * 60 ))
 if [ "$AGE" -gt "$TTL_SEC" ]; then
   log "lock expired (age=${AGE}s ttl=${TTL_SEC}s), removing & passing"

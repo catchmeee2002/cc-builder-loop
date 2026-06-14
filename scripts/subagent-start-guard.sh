@@ -1,23 +1,20 @@
 #!/usr/bin/env bash
 # subagent-start-guard.sh — SubagentStart hook (no matcher = all subagents)
 #
-# V3.1: replaces tester-lock-write.sh. Two responsibilities:
-#   1. Write lock file for ALL subagent types (worktree-write-guard.sh uses it to detect subagent context)
+# V3.5: per-agent-type lock files + whitelist + active state dual-condition.
+#   1. Only write lock for managed agent types (whitelist) AND when active state exists
 #   2. Inject worktree boundary context via additionalContext JSON (Layer 1: soft guidance)
 #
-# Lock file: ${ISOLATION_LOCK_DIR:-/tmp}/cc-subagent-{session_id}.lock
-# Content: YAML (parsed by tester-lock-check.sh, worktree-write-guard.sh via grep)
-#
-# additionalContext injection:
-#   When worktree_path is set and phase=active, outputs JSON to stdout:
-#   {"additionalContext": "WORKTREE BOUNDARY: ..."}
-#   CC injects this text into the subagent's initial context.
+# Lock file: ${ISOLATION_LOCK_DIR:-/tmp}/cc-subagent-{session_id}-{agent_type}.lock (V3.5+)
+# Content: YAML (parsed by downstream hooks via lock-utils.sh)
 #
 # Exit code: always 0 (hook failure must not block subagent start)
 
 set -uo pipefail
 
-LOCK_DIR="${ISOLATION_LOCK_DIR:-/tmp}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "${SCRIPT_DIR}/lock-utils.sh"
+
 LOG_FILE="${HOME}/.claude/logs/subagent-start-guard.log"
 mkdir -p "$(dirname "$LOG_FILE")" 2>/dev/null || true
 
@@ -54,7 +51,13 @@ if [ -f "$LOCATE_SCRIPT" ]; then
 fi
 
 if [ -z "$STATE_FILE" ]; then
-  log "no state file from cwd=$CWD, type=$SUBAGENT_TYPE, skip"
+  log "no state file from cwd=$CWD, type=$SUBAGENT_TYPE, skip (no active loop)"
+  exit 0
+fi
+
+# V3.5: whitelist check — only managed agent types get a lock
+if ! bl_is_managed_agent "$SUBAGENT_TYPE"; then
+  log "agent_type=$SUBAGENT_TYPE not in whitelist, skip lock"
   exit 0
 fi
 
@@ -97,8 +100,8 @@ except Exception:
   [ -n "$TTL_FROM_YML" ] && TTL_MIN="$TTL_FROM_YML"
 fi
 
-# Write lock for this subagent (all types, not just tester)
-LOCK_FILE="${LOCK_DIR}/cc-subagent-${SESSION_ID}.lock"
+# V3.5: per-agent-type lock file
+LOCK_FILE="$(bl_lock_path "$SESSION_ID" "$SUBAGENT_TYPE")"
 {
   echo "agent_type: ${SUBAGENT_TYPE:-unknown}"
   echo "session_id: ${SESSION_ID}"

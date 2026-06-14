@@ -17,7 +17,7 @@ if [ -L "$CLAUDE_DIR/skills/builder-loop" ]; then
 fi
 
 # ---- 2. 删除 companion scripts 软链 ----
-for f in builder-loop-stop.sh subagent-start-guard.sh tester-lock-write.sh tester-lock-check.sh tester-lock-clear.sh worktree-write-guard.sh tester-write-guard.sh reviewer-timing-check.sh; do
+for f in builder-loop-stop.sh subagent-start-guard.sh subagent-lock-clear.sh lock-utils.sh tester-lock-write.sh tester-lock-check.sh tester-lock-clear.sh worktree-write-guard.sh tester-write-guard.sh reviewer-timing-check.sh; do
   target="$CLAUDE_DIR/scripts/$f"
   if [ -L "$target" ]; then
     rm "$target"
@@ -47,6 +47,7 @@ with open(settings_path) as f:
 
 hooks = cfg.get("hooks", {})
 bl_scripts = ["builder-loop-stop.sh", "subagent-start-guard.sh",
+              "subagent-lock-clear.sh", "lock-utils.sh",
               "tester-lock-write.sh", "tester-lock-check.sh",
               "tester-lock-clear.sh", "worktree-write-guard.sh",
               "tester-write-guard.sh", "reviewer-timing-check.sh"]

@@ -1,26 +1,25 @@
 #!/usr/bin/env bash
 # worktree-write-guard.sh — PreToolUse hook (matcher=Write|Edit|MultiEdit)
 #
-# V3.1 unified write boundary guard. Replaces tester-write-guard.sh.
+# V3.5: uses lock-utils.sh for per-agent-type lock files.
 # Two modes based on subagent lock:
 #
-# SUBAGENT MODE (lock exists, sync agent type: tester/doc-maintainer/arbiter):
+# SUBAGENT MODE (any sync agent lock exists for this session):
 #   Strict whitelist — file_path must be in worktree or whitelisted paths.
 #   Violation → exit 2 (block + stderr diagnosis).
 #
-# BUILDER MODE (no lock, or background agent like reviewer):
+# BUILDER MODE (no sync lock):
 #   Always pass (exit 0). Writes outside worktree are logged for debugging.
 #
 # Exit codes:
 #   0 = allow
 #   2 = deny (CC: PreToolUse exit 2 → block tool + inject stderr into LLM context)
-#
-# Performance: subagent mode reads lock file only (fast). Builder mode calls
-# locate-state.sh (slower, but builder Write/Edit calls are infrequent).
 
 set -uo pipefail
 
-LOCK_DIR="${ISOLATION_LOCK_DIR:-/tmp}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "${SCRIPT_DIR}/lock-utils.sh"
+
 LOG_FILE="${HOME}/.claude/logs/worktree-write-guard.log"
 mkdir -p "$(dirname "$LOG_FILE")" 2>/dev/null || true
 log() { printf '[%s] %s\n' "$(date -Iseconds)" "$*" >> "$LOG_FILE" 2>/dev/null || true; }
@@ -55,68 +54,63 @@ TARGET="$(parse_field '.tool_input.file_path')"
 
 ABS_TARGET="$(readlink -f "$TARGET" 2>/dev/null || echo "$TARGET")"
 
-# ---- Check lock file → subagent or builder? ----
-LOCK_FILE="${LOCK_DIR}/cc-subagent-${SESSION_ID}.lock"
+# ---- V3.5: Check per-agent-type lock files → subagent or builder? ----
+SYNC_LOCK=""
+ACTIVE_AGENT_TYPE=""
 
-if [ -f "$LOCK_FILE" ]; then
-  AGENT_TYPE="$(grep -E '^agent_type:' "$LOCK_FILE" 2>/dev/null | head -1 | sed -E 's/^agent_type:[[:space:]]*//' || true)"
+while IFS= read -r _lock; do
+  [ -z "$_lock" ] && continue
+  _atype="$(bl_read_lock_field "$_lock" "agent_type")"
+  if bl_is_sync_agent "$_atype"; then
+    # TTL check
+    _start="$(bl_read_lock_field "$_lock" "start_ts")"
+    _ttl_min="$(bl_read_lock_field "$_lock" "ttl_min")"
+    [ -z "$_ttl_min" ] && _ttl_min=30
+    _now="$(date +%s)"
+    _age=$(( _now - ${_start:-0} ))
+    _ttl_sec=$(( _ttl_min * 60 ))
+    if [ "$_age" -gt "$_ttl_sec" ]; then
+      log "lock expired (age=${_age}s ttl=${_ttl_sec}s), removing: $_lock"
+      rm -f "$_lock"
+      continue
+    fi
+    SYNC_LOCK="$_lock"
+    ACTIVE_AGENT_TYPE="$_atype"
+    break
+  fi
+done < <(bl_find_active_locks "$SESSION_ID")
 
-  # Sync agents block the builder → all writes are from the subagent → strict mode.
-  # Background agents (reviewer): builder continues working → pass through.
-  case "$AGENT_TYPE" in
-    tester|doc-maintainer|arbiter)
-      # ---- SUBAGENT STRICT MODE ----
+if [ -n "$SYNC_LOCK" ]; then
+  # ---- SUBAGENT STRICT MODE ----
+  WORKTREE_PATH="$(bl_read_lock_field "$SYNC_LOCK" "worktree_path")"
+  MAIN_REPO_PATH="$(bl_read_lock_field "$SYNC_LOCK" "main_repo_path")"
 
-      START_TS="$(grep -E '^start_ts:' "$LOCK_FILE" 2>/dev/null | head -1 | sed -E 's/^start_ts:[[:space:]]*//' || echo 0)"
-      TTL_MIN="$(grep -E '^ttl_min:' "$LOCK_FILE" 2>/dev/null | head -1 | sed -E 's/^ttl_min:[[:space:]]*//' || echo 30)"
-      NOW="$(date +%s)"
-      AGE=$(( NOW - START_TS ))
-      TTL_SEC=$(( TTL_MIN * 60 ))
-      if [ "$AGE" -gt "$TTL_SEC" ]; then
-        log "lock expired (age=${AGE}s ttl=${TTL_SEC}s), removing & passing"
-        rm -f "$LOCK_FILE"
-        exit 0
-      fi
+  [ -z "$WORKTREE_PATH" ] && exit 0
 
-      WORKTREE_PATH="$(grep -E '^worktree_path:' "$LOCK_FILE" 2>/dev/null | head -1 | sed -E 's/^worktree_path:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' || true)"
-      MAIN_REPO_PATH="$(grep -E '^main_repo_path:' "$LOCK_FILE" 2>/dev/null | head -1 | sed -E 's/^main_repo_path:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' || true)"
+  ABS_WORKTREE="$(readlink -f "$WORKTREE_PATH" 2>/dev/null || echo "$WORKTREE_PATH")"
+  ABS_MAIN="$(readlink -f "$MAIN_REPO_PATH" 2>/dev/null || echo "$MAIN_REPO_PATH")"
 
-      [ -z "$WORKTREE_PATH" ] && exit 0
+  case "$ABS_TARGET" in
+    "$ABS_WORKTREE"/*)                              exit 0 ;;
+    "$ABS_MAIN"/.claude/builder-loop/state/*)        exit 0 ;;
+    "$ABS_MAIN"/.claude/reviewer-diff-*)             exit 0 ;;
+    "$ABS_MAIN"/.claude/review_reports/*)            exit 0 ;;
+    "$ABS_MAIN"/.claude/builder-loop/*.pause)        exit 0 ;;
+    "$ABS_MAIN"/*)                                   ;;
+    /tmp/*)                                          exit 0 ;;
+  esac
 
-      ABS_WORKTREE="$(readlink -f "$WORKTREE_PATH" 2>/dev/null || echo "$WORKTREE_PATH")"
-      ABS_MAIN="$(readlink -f "$MAIN_REPO_PATH" 2>/dev/null || echo "$MAIN_REPO_PATH")"
+  log "DENY: $ACTIVE_AGENT_TYPE target=$ABS_TARGET worktree=$ABS_WORKTREE main=$ABS_MAIN"
 
-      # Whitelist: paths subagents may write outside worktree.
-      # Order matters: worktree first, then main_repo whitelisted sub-paths,
-      # then main_repo catch-all (fall through to deny), then /tmp last
-      # (prevents /tmp/* from falsely matching when main_repo is under /tmp).
-      case "$ABS_TARGET" in
-        "$ABS_WORKTREE"/*)                              exit 0 ;;
-        "$ABS_MAIN"/.claude/builder-loop/state/*)        exit 0 ;;
-        "$ABS_MAIN"/.claude/reviewer-diff-*)             exit 0 ;;
-        "$ABS_MAIN"/.claude/review_reports/*)            exit 0 ;;
-        "$ABS_MAIN"/.claude/builder-loop/*.pause)        exit 0 ;;
-        "$ABS_MAIN"/*)                                   ;;
-        /tmp/*)                                          exit 0 ;;
-      esac
-
-      log "DENY: $AGENT_TYPE target=$ABS_TARGET worktree=$ABS_WORKTREE main=$ABS_MAIN"
-
-      cat >&2 <<DENY_MSG
-[builder-loop] worktree-write-guard: ${AGENT_TYPE} write blocked
+  cat >&2 <<DENY_MSG
+[builder-loop] worktree-write-guard: ${ACTIVE_AGENT_TYPE} write blocked
    target:  ${TARGET}
    resolved: ${ABS_TARGET}
    allowed: ${ABS_WORKTREE}/*
    main:    ${ABS_MAIN} (subagent writes outside worktree are blocked)
    fix:     use ${ABS_WORKTREE}/<relative-path> instead
 DENY_MSG
-      exit 2
-      ;;
-    *)
-      log "background-agent lock ($AGENT_TYPE), pass: $ABS_TARGET"
-      exit 0
-      ;;
-  esac
+  exit 2
 fi
 
 # ---- BUILDER MODE (no lock) ----

@@ -58,7 +58,7 @@ for f in "$REPO_DIR/scripts/"*.sh; do
 done
 
 # ---- 3.5 清理 V3.1 废弃的旧软链 ----
-for f in tester-lock-write.sh tester-write-guard.sh; do
+for f in tester-lock-write.sh tester-write-guard.sh tester-lock-clear.sh; do
   old_link="$CLAUDE_DIR/scripts/$f"
   [ -L "$old_link" ] && rm "$old_link" && echo "✓ removed deprecated: $f"
 done
@@ -141,7 +141,7 @@ def find_entry_status(arr, cmd_name, matcher):
 registrations = [
     ("Stop",           "builder-loop-stop.sh",      None,                    ""),
     ("SubagentStart",  "subagent-start-guard.sh",   None,                    ""),
-    ("SubagentStop",   "tester-lock-clear.sh",      None,                    ""),
+    ("SubagentStop",   "subagent-lock-clear.sh",     None,                    ""),
     ("PreToolUse",     "tester-lock-check.sh",      "Read|Grep|Glob",        ""),
     ("PreToolUse",     "worktree-write-guard.sh",   "Write|Edit|MultiEdit",  ""),
     ("PreToolUse",     "reviewer-timing-check.sh",  "Agent",                 ""),
@@ -150,7 +150,7 @@ registrations = [
 # V3.1: remove deprecated hooks from previous installs
 deprecated = [
     ("SubagentStart", "tester-lock-write.sh"),
-    ("SubagentStop",  "tester-lock-clear.sh"),  # matcher changed, remove stale entry
+    ("SubagentStop",  "tester-lock-clear.sh"),  # V3.5: replaced by subagent-lock-clear.sh
     ("PreToolUse",    "tester-write-guard.sh"),
 ]
 for hook_type, old_cmd in deprecated:
@@ -215,6 +215,6 @@ fi
 echo ""
 echo "✅ cc-builder-loop 安装完成"
 echo "   skill: ~/.claude/skills/builder-loop/"
-echo "   scripts: ~/.claude/scripts/builder-loop-stop.sh + subagent-start-guard.sh + tester-lock-*.sh + worktree-write-guard.sh + reviewer-timing-check.sh"
+echo "   scripts: ~/.claude/scripts/builder-loop-stop.sh + subagent-start-guard.sh + subagent-lock-clear.sh + lock-utils.sh + tester-lock-check.sh + worktree-write-guard.sh + reviewer-timing-check.sh"
 echo "   agents: ~/.claude/agents/tester.md + arbiter.md + reviewer.md + doc-maintainer.md"
 echo "   commands: ~/.claude/commands/builder.md + planner.md"
