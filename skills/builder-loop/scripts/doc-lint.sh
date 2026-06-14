@@ -47,6 +47,28 @@ if [ -n "$DIFF_OUTPUT" ]; then
         -e 's/^-\([a-zA-Z_][a-zA-Z0-9_]*\)()[[:space:]]*{.*/\1/p' \
         -e 's/^-[[:space:]]*function \([a-zA-Z_][a-zA-Z0-9_]*\).*/\1/p' \
     | sort -u || true)"
+  # V3.5-B: 双向过滤——从 + 行提取 ADDED_SYMBOLS，过滤掉签名变更（两边都出现的符号）
+  ADDED_SYMBOLS="$(echo "$DIFF_OUTPUT" \
+    | grep -E '^[+]' \
+    | grep -v '^[+][+][+]' \
+    | sed -n \
+        -e 's/^+[[:space:]]*def \([a-zA-Z_][a-zA-Z0-9_]*\).*/\1/p' \
+        -e 's/^+[[:space:]]*class \([a-zA-Z_][a-zA-Z0-9_]*\).*/\1/p' \
+        -e 's/^+\([a-zA-Z_][a-zA-Z0-9_]*\)()[[:space:]]*{.*/\1/p' \
+        -e 's/^+[[:space:]]*function \([a-zA-Z_][a-zA-Z0-9_]*\).*/\1/p' \
+    | sort -u || true)"
+  if [ -n "$ADDED_SYMBOLS" ] && [ -n "$DELETED_SYMBOLS" ]; then
+    _sig_filtered=""
+    while IFS= read -r _ds; do
+      [ -z "$_ds" ] && continue
+      if echo "$ADDED_SYMBOLS" | grep -qxF "$_ds"; then
+        continue
+      fi
+      _sig_filtered="${_sig_filtered}${_ds}
+"
+    done <<< "$DELETED_SYMBOLS"
+    DELETED_SYMBOLS="$_sig_filtered"
+  fi
   # 过滤：从 git 移除但仍在磁盘的文件里的符号不算真删除
   if [ -n "$_untracked_but_exists" ] && [ -n "$DELETED_SYMBOLS" ]; then
     _filtered_syms=""
@@ -83,7 +105,7 @@ if [ -n "$DELETED_SYMBOLS" ]; then
     [ -z "$s" ] && continue
     [ ${#s} -le 3 ] && continue
     # 排除太通用的名字
-    case "$s" in main|test|setup|init|run|get|set|put|delete|update|read|write|open|close|help|info|data|args|self|name|path|file|line|node|item|list|text|body|head|tail|keys|sort|load|save|send|recv|exec|call|done|next|step|stop|exit|true|pass|fail|skip|type|mode|size|code|hash|push|pull|drop|copy|move|find|show|hide|make|each|join|trim|lock|free|wait|kill) continue ;; esac
+    case "$s" in main|test|setup|init|run|get|set|put|delete|update|read|write|open|close|help|info|data|args|self|name|path|file|line|node|item|list|text|body|head|tail|keys|sort|load|save|send|recv|exec|call|done|next|step|stop|exit|true|pass|fail|skip|type|mode|size|code|hash|push|pull|drop|copy|move|find|show|hide|make|each|join|trim|lock|free|wait|kill|append|clear) continue ;; esac
     PATTERNS="${PATTERNS}${s}\n"
   done <<< "$DELETED_SYMBOLS"
 fi

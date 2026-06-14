@@ -146,4 +146,75 @@ OUT5=$(bash "$DOC_LINT" "$env5" "HEAD~1" 2>/dev/null)
 EC5=$?
 assert "Case 5 exit 0" "[ '$EC5' -eq 0 ]"
 
+# ============================================================
+# Case 6: 签名变更（函数仍在）→ exit 0（不误判）
+# ============================================================
+section "Case 6: 签名变更不误判"
+env6=$(mk_lint_repo)
+(
+  cd "$env6"
+  cat > docs/architecture.md <<'MD'
+# Architecture
+
+Use `save_chapter_snapshot()` to persist state.
+MD
+  git add -A
+  git -c core.hooksPath=/dev/null commit -q -m "chore(test): [cr_id_skip] Add ref to save_chapter_snapshot"
+  cat > src/engine.py <<'PY'
+def save_chapter_snapshot(extra_param=None):
+    pass
+
+def load_config():
+    pass
+PY
+  git add -A
+  git -c core.hooksPath=/dev/null commit -q -m "chore(test): [cr_id_skip] Change signature of save_chapter_snapshot"
+)
+OUT6=$(bash "$DOC_LINT" "$env6" "HEAD~1" 2>/dev/null)
+EC6=$?
+assert "Case 6 exit 0 (signature change not false positive)" "[ '$EC6' -eq 0 ]"
+
+# ============================================================
+# Case 7: append/clear 黑名单过滤
+# ============================================================
+section "Case 7: append/clear 黑名单过滤"
+env7=$(mk_lint_repo)
+(
+  cd "$env7"
+  cat > src/engine.py <<'PY'
+def save_chapter_snapshot():
+    pass
+
+def load_config():
+    pass
+
+def append(data):
+    pass
+
+def clear():
+    pass
+PY
+  git add -A
+  git -c core.hooksPath=/dev/null commit -q -m "chore(test): [cr_id_skip] Add append and clear"
+  cat > docs/architecture.md <<'MD'
+# Architecture
+
+Use sheets +append to add rows. Call clear to reset.
+MD
+  git add -A
+  git -c core.hooksPath=/dev/null commit -q -m "chore(test): [cr_id_skip] Add docs with append/clear refs"
+  cat > src/engine.py <<'PY'
+def save_chapter_snapshot():
+    pass
+
+def load_config():
+    pass
+PY
+  git add -A
+  git -c core.hooksPath=/dev/null commit -q -m "chore(test): [cr_id_skip] Remove append and clear functions"
+)
+OUT7=$(bash "$DOC_LINT" "$env7" "HEAD~1" 2>/dev/null)
+EC7=$?
+assert "Case 7 exit 0 (append/clear blacklisted)" "[ '$EC7' -eq 0 ]"
+
 harness_report

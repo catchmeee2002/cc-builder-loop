@@ -167,7 +167,16 @@ description: "进入 Builder 模式 — 复杂任务先计划后动手，完成�
 - [ ] 新增 TODO / 排查手册 / 项目记忆条目
 - [ ] 设计文档变更（哲学 / 架构 / 原则 / 新概念解释 / CHANGELOG 语义段）
 
-A 类命中 → spawn doc-maintainer（同步）。B 类命中 → builder 直接 Read doc-policy.md 后自行更新。A+B 同时命中 → 先 builder 写 B 类，再 spawn doc-maintainer 处理 A 类。全部未命中 → **必须显式输出** `📄 doc: skip (<一句理由>)`。
+A 类命中 → spawn doc-maintainer（同步）。B 类命中 → builder 直接 Read doc-policy.md 后自行更新。A+B 同时命中 → 先 builder 写 B 类，再 spawn doc-maintainer 处理 A 类。
+
+**⛔ 输出格式（强制两行并列，缺任何一行 = 违规）**：
+
+```
+📄 doc-A: 命中 → spawn doc-maintainer / 未命中（<一句理由>）
+📄 doc-B: 命中 → builder 亲自写 / 未命中（<一句理由>）
+```
+
+两行都必须写，包括未命中的（写理由）。不允许合并成一行、不允许只写命中的那一类。
 
 > ⛔ 不允许静默跳过。即使 reviewer 走到 3c 兜底、或者任务是异常收尾，3.5 仍必须走一次。
 
