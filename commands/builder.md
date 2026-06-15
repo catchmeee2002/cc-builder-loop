@@ -29,7 +29,7 @@ description: "进入 Builder 模式 — 复杂任务先计划后动手，完成�
 
 1. 检查项目根 `.claude/loop.yml` 是否存在
 2. **存在** → `bash ~/.claude/skills/builder-loop/scripts/setup-builder-loop.sh "<任务描述>"`
-   - setup 输出含 `🌿 worktree 已创建` → Read `.claude/builder-loop.local.md` 拿 `worktree_path` 并 **cd 进 worktree**
+   - setup 输出含 `🌿 worktree 已创建` → 从 setup 输出的「状态文件」路径 Read 该状态文件拿 `worktree_path` 并 **cd 进 worktree**
    - 告知：`✅ builder-loop 已启动，后续代码将在 worktree 中编写。`
    - 之后所有文件操作（Write/Edit）都在 worktree 内进行
    - **V3.2 dirty 隔离**：setup 默认不带主仓 dirty 进 worktree（干净启动）。如果 builder 已在主仓编辑了文件**再**接入 loop，调用时传 `--touched-files file1,file2,...`（逗号分隔）只带这些文件
@@ -61,14 +61,14 @@ description: "进入 Builder 模式 — 复杂任务先计划后动手，完成�
 
 ## 检查 loop.yml（L2/L3 才走）
 
-> 如果前置 loop 检查已经 setup 过（`builder-loop.local.md` 存在且 `active: true`），跳过此段。
+> 如果前置 loop 检查已经 setup 过（`bash ~/.claude/skills/builder-loop/scripts/locate-state.sh` 找到 `phase: "active"` 的 state），跳过此段。
 
-- **已 setup**（`builder-loop.local.md` active=true）→ 直接告知 `✅ loop 已活跃`
+- **已 setup**（`locate-state.sh` 找到 `phase: "active"`）→ 直接告知 `✅ loop 已活跃`
   - 之后由 Stop hook 接管：PASS→Reviewer / FAIL→注入继续修 / 早停→问用户
   - PASS 后 rebase 冲突 → Read `~/.claude/skills/builder-loop/docs/arbiter-flow.md` 按其执行
 - **loop.yml 存在但未 setup** → `bash ~/.claude/skills/builder-loop/scripts/setup-builder-loop.sh "<任务描述>"`
   - 告知：`✅ builder-loop 已启动，回复结束后自动跑测试，失败自动修复，通过后审查+提交。`
-  - setup 输出含 `🌿 worktree 已创建` → 从 `builder-loop.local.md` 读 `worktree_path` 并 cd 进去
+  - setup 输出含 `🌿 worktree 已创建` → 从 setup 输出的「状态文件」路径 Read 该状态文件拿 `worktree_path` 并 cd 进去
 - **不存在** → 见 builder-loop SKILL.md「智能提示」段
 
 > **⛔ 硬规则**：state.phase=active 期间绝对不 spawn reviewer/doc-maintainer/commit。等 Stop hook 返回 PASS 消息后才走 Reviewer 流程。phase=passed_pending_review 时 spawn reviewer 不算违规。
@@ -136,7 +136,7 @@ description: "进入 Builder 模式 — 复杂任务先计划后动手，完成�
 前置：`need_tester=true` + `missing_cases` 非空 → 否则跳 3.5
 
 分支：
-- **loop 活跃**（`builder-loop.local.md` active=true / multi-state 下有本 worktree 对应 state）：
+- **loop 活跃**（`bash ~/.claude/skills/builder-loop/scripts/locate-state.sh` 找到 `phase: "active"`）：
   1. 对话中有方案路径时过滤 tester 视图（`split-plan-by-role.sh <方案路径> tester`），spawn tester（同步），传 spec_view / interface_signatures / target_test_dirs / missing_cases / mock_targets / data_contracts / error_types / worktree_path
   2. Edit state 的 `iter:` 为 `0`
   3. 告知 `🧪 tester 已补充，iter 已重置`（下一轮 Stop hook 会重跑 PASS_CMD 验证新测试）
