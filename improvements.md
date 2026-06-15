@@ -84,7 +84,7 @@
   1. **no_progress 早停判据放宽**：当前看 `last_iter_head == HEAD`，但 worktree 模式下"是否有进展"应该看 worktree 内有没有 dirty 改动（`git -C <worktree_path> status --porcelain` 非空）而不是 HEAD。判据改成 `HEAD 未变 AND worktree 全 clean` 才算无进展
   2. **setup 完直接打印一个 `cd <worktree>` 提示 + 自动写入 .claude/builder-loop.local.md 让 stop hook 优先用 state 文件里的 worktree_path 而不是 cwd**（实际上 state 已经有 worktree_path 字段；stop hook 是不是没用？）
   3. **stop hook 行为兜底**：能从 builder-loop.local.md 或 state/*.yml 找出唯一 active worktree 时自动绑定（V2.4 策略 5 据说已实现，但本次没生效——值得排查 hook 是不是认了 owner_cwd 没去查 state）
-- 优先级：高（worktree 模式属于推荐路径，no_progress 早停直接让 loop 不可用）
+- 优先级：低（2026-06-15 验证：当前 CC 版本 L2B 闸已正确检查 worktree dirty；无法复现 CC 拦截 .claude/worktrees/ 路径。降级，复现时再修）
 
 
 ## 2026-05-31 reviewer 对方法名存在性无校验能力，需项目侧基建兜底
@@ -112,7 +112,7 @@
 
 - 触发上下文：generator 项目 #269 secret 知识隔离，builder-loop setup 创建 worktree 到 `.claude/worktrees/` 下。builder 尝试用绝对路径 Read/Edit/Bash(head/ls/cd) 访问 worktree 内文件，全部被 CC 拦截（"File is in a directory that is denied by your permission settings"），即使 settings.json allow=["*"] 且用户确认没有弹窗（自动拒绝）。最终用 `EnterWorktree(path=...)` 工具切入已有 worktree 后才能正常读写。
 - 建议方向：① 排查 CC 对 `.claude/` 子目录的内置 deny 规则边界（skills/commands/agents/plans 似乎可访问，worktrees 不行）② setup-builder-loop.sh 输出中建议用户使用 `EnterWorktree` 而非 `cd` ③ 或考虑将 worktree 创建到 `.claude/` 外部（如项目根的 `.worktrees/`）绕开安全机制
-- 优先级：高（每次 worktree 模式都会踩）
+- 优先级：低（2026-06-15 验证：当前 CC 版本 Read/Write .claude/worktrees/ 路径无拦截。疑为旧版本行为或项目特定配置。降级，复现时再修）
 
 ## 2026-05-26 巨型 diff（8000+ 行）下 reviewer subagent 审查深度不足
 
