@@ -11,17 +11,6 @@
 - 根因：worktree 继承主仓 Python 环境的 site-packages，但 pytest-html 依赖的 `py` 包与 worktree 内某个同名模块/包冲突。PASS_CMD 没有加 `-p no:html` 之类的插件隔离。test_tampering 检测逻辑把"pytest 启动失败"等同于"测试被篡改"。
 - 优先级：中（环境特定，但误判导致整个 loop 流程作废）
 
-## 2026-06-08 reviewer subagent prompt 硬约束三件套：必须 Write 报告 + 必须打 REVIEW_SUMMARY + 工作节奏限制
-
-- 触发上下文：BOT 项目 OTA 分流 DZ9278 二审 spawn reviewer 后，agent 在中途说「现在读 worktree 里的关键源文件进行交叉验证」就 status=completed 返回，但**没有 Write 报告到 report_path、没有打 REVIEW_SUMMARY 行**。builder 检测到 report 文件不存在 → 走重试路径（按 3b）→ 重新 spawn reviewer。重试 prompt 里 builder 主动加了三段硬约束「必须 Write report_path / 末尾必须 REVIEW_SUMMARY / 工作节奏建议防无限交叉验证」，重试 agent 一次过出完整报告 + 落盘。说明：reviewer subagent 自己的 SKILL prompt 没有把这三件设为前置必做条件，靠 builder 每次重试 prompt 临时加。这种 trace 跑偏不出报告的失败模式可能反复出现。
-- 建议方向：
-  1. **改 reviewer.md / reviewer subagent 系统 prompt 顶部加三段硬约束**（不是 builder 调用时传 prompt 加，是 SKILL 本体加）：
-     - 强制：报告必须 Write 到入参 `report_path`（不止 INLINE 在最终消息）
-     - 强制：最终消息末尾必须有 `REVIEW_SUMMARY: 🔴X 🟡Y 🔵Z | 结论:... | 报告:<path|INLINE>` 一行
-     - 节奏限制：读 diff 后选关键文件直接 Read 一次完成判断，**禁止以「再交叉验证一下」为由反复 Read 同一文件**；交叉验证靠 grep 单次确认而非反复阅读
-  2. **builder.md 步骤 3a 兜底分类增加**：检测到 reviewer 返回了 `status=completed` 但**报告未落盘 + 无 REVIEW_SUMMARY** → 直接走 3b 重试（不当 success 处理），重试 prompt 自动注入三段硬约束（builder 不用临时拼）
-  3. **reviewer subagent 完成消息模板**：要求最后一段必须以 `REVIEW_SUMMARY:` 起始的整行作为收尾标志；缺失则 builder 视为"未完成"
-- 优先级：中（一次失败成本就是一次重试 + builder 额外 prompt 工程时间；高频任务里频率不低，加硬约束收益清楚）
 
 ## 2026-06-08 planner SKILL「文件地图」段加硬约束——不允许估算数字
 
@@ -105,14 +94,6 @@
   3. **stop hook 行为兜底**：能从 builder-loop.local.md 或 state/*.yml 找出唯一 active worktree 时自动绑定（V2.4 策略 5 据说已实现，但本次没生效——值得排查 hook 是不是认了 owner_cwd 没去查 state）
 - 优先级：高（worktree 模式属于推荐路径，no_progress 早停直接让 loop 不可用）
 
-## 2026-06-03 builder 接受 reviewer 建议前没自己推导反向 case 导致反复返工
-
-- 触发上下文：M2 batch C 跑了 3 轮 reviewer。**第 1 轮**：reviewer 建议「death_chapter 改成取最后一条死亡 delta（last-write-wins）」——理由听起来合理（与 fold_entity_state 同语义、一致性好）。builder 直接采纳改了。**第 2 轮**：reviewer 自己发现这改法在 ch3 真死 + ch4 死后 realm 变化 + ch5 重复写死亡的场景下会让 ch4 漏检（chapter>5 过滤掉了），打 🟡 让 builder 改回 first-seen。**第 3 轮**：终于改对。**根因**：builder 接到 reviewer 建议时把它当「直接采纳的指令」，没自己推导「这建议在哪些反向 case 下会失效？」就改了。reviewer 自己也是事后才发现 — 说明双方都没在第 1 轮就跑完所有 case 的脑内推演。
-- 建议方向：
-  1. **builder.md 步骤 3a 加 boilerplate**：「接到 reviewer 建议时，先在心里跑至少 3 个反向 case（建议提的现象 + 现象的对立面 + 边界值），确认每个 case 在新写法下结论都对，再动手改」
-  2. **reviewer 报告模板加自检栏**：reviewer 给出修改建议时，自己先列「我推荐这个修法因为它在场景 A/B/C 下都对」。这把推演责任前置给 reviewer，builder 接到的就是已过推演的建议
-  3. 极端方案：reviewer 给的建议 + builder 实施前先 spawn 一轮独立 judger 跑反向 case 推演——但这会让 loop 每轮多 1-2 分钟，性价比不高，先用 1+2 软规则
-- 优先级：高（M2 batch C 多跑 2 轮 reviewer = 多耗 10+ 分钟 + 2 次 stop hook + 用户分心；同类模式下次还会再来）
 
 ## 2026-05-31 reviewer 对方法名存在性无校验能力，需项目侧基建兜底
 
