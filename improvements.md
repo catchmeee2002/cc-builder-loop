@@ -4,12 +4,6 @@
 > 立项不等于本期实施——A 类候选清单，等独立任务挑出来落地。
 > 已关闭条目见 [CHANGELOG V3.2](CHANGELOG.md#v32-跨越界隔离--测试框架2026-05-23)
 
-## 2026-06-15 builder.md 仍有 5 处引用已废弃的 builder-loop.local.md（V3.4 遗留）
-
-- 触发场景：删 plan_file 启发式时 reviewer 审出 builder.md L32/64/66/71/139 引用 `builder-loop.local.md`（V3.4 已移除该文件），builder 按 prompt 行事会 Read 不存在的文件
-- 现象：builder.md 的 plan 视图过滤段原写「检查 builder-loop.local.md 的 plan_file 字段」，本次已修为对话上下文；但其余 5 处（worktree_path 读取、loop 活跃判断等）仍引用 local.md
-- 根因：V3.4 移除 local.md 时未全量 grep 更新 builder.md
-- 优先级：中（builder 实际运行时可能走 locate-state.sh 兜底不报错，但 prompt 与实际机制不一致会误导 LLM 行为）
 
 ## 2026-06-11 worktree pytest-html 插件冲突导致 PASS_CMD 失败被误判 test_tampering
 
