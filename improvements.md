@@ -4,6 +4,13 @@
 > 立项不等于本期实施——A 类候选清单，等独立任务挑出来落地。
 > 已关闭条目见 [CHANGELOG V3.2](CHANGELOG.md#v32-跨越界隔离--测试框架2026-05-23)
 
+## 2026-06-15 builder.md 仍有 5 处引用已废弃的 builder-loop.local.md（V3.4 遗留）
+
+- 触发场景：删 plan_file 启发式时 reviewer 审出 builder.md L32/64/66/71/139 引用 `builder-loop.local.md`（V3.4 已移除该文件），builder 按 prompt 行事会 Read 不存在的文件
+- 现象：builder.md 的 plan 视图过滤段原写「检查 builder-loop.local.md 的 plan_file 字段」，本次已修为对话上下文；但其余 5 处（worktree_path 读取、loop 活跃判断等）仍引用 local.md
+- 根因：V3.4 移除 local.md 时未全量 grep 更新 builder.md
+- 优先级：中（builder 实际运行时可能走 locate-state.sh 兜底不报错，但 prompt 与实际机制不一致会误导 LLM 行为）
+
 ## 2026-06-11 worktree pytest-html 插件冲突导致 PASS_CMD 失败被误判 test_tampering
 
 - 触发场景：Engineering_Delivery_Bot 项目 worktree 内跑 PASS_CMD（stage=test），pytest 启动阶段 pytest-html 插件 import `py.xml` 失败（`ModuleNotFoundError: No module named 'py.xml'; 'py' is not a package`），所有测试未执行。loop 将此判为 `suspected_test_tampering` 触发早停。
@@ -57,15 +64,6 @@
   3. 长期：reviewer 二轮发现自己一轮提的建议引入副作用时，自动追加一条 meta 反思「我下次类似建议前应先做副作用检查」喂回本 improvements
 - 优先级：中（reviewer 的"修建议"质量直接决定 builder 的工作量和回归风险）
 
-## 2026-06-06 setup-builder-loop 启发式抓 plan_file 可能抓到无关 plan，支持 --no-plan / --plan=<path> 显式参数
-
-- 触发上下文：同上任务。setup-builder-loop.sh 自动给本次任务关联了 `.claude/plans/20260601-single-vehicle-online-query.md` 作为 `plan_file`，但本次任务是 script_ota 下载进度量化，跟 single-vehicle-online-query 八竿子打不着。setup 大概是按 `.claude/plans/` 最新文件抓的，没做任务描述匹配度判断。后果是 step 3a+ TESTER_HINT 处理时 builder 纠结要不要 spawn tester——按规则 spawn 要走 `split-plan-by-role.sh <plan_file> tester` 但 plan_file 内容跟任务无关，tester 会拿到错的 spec_view。最终 builder 跳过 spawn tester 自补，违反了硬规则但没办法
-- 建议方向：
-  1. **setup-builder-loop.sh 加 `--no-plan` 参数**：显式跳过 plan_file 关联，state.plan_file 写空字符串，后续流程不走 split-plan
-  2. **setup-builder-loop.sh 加 `--plan=<path>` 参数**：显式指定 plan_file 路径，绕过启发式
-  3. **启发式抓 plan 时做任务描述 vs plan 标题的关键词低匹配度警告**：当任务描述跟 plan 文件名 / 第一行标题完全无共同 keyword 时 stderr 打 WARNING 「⚠️ 启发式抓到的 plan 与任务描述匹配度低，建议 `--no-plan` 或 `--plan=<correct_path>` 显式指定」
-  4. **builder.md「读方案文件时按角色视图过滤」段补一条**：若 builder 发现 plan_file 与任务描述无关，应在 state.plan_file 字段写空字符串自我修正（不能默默用错的 plan 跑 tester）
-- 优先级：中（每次 setup 时如果 .claude/plans/ 里有不相关的最新文件就会踩；BOT 这类老项目 plans/ 累计了多个历史 plan，命中概率高）
 
 ## 2026-06-05 tester 应主动用 `@pytest.mark.xfail(strict=False)` 当缺陷探针，让黑盒发现"实现 ↔ 契约不符"既明示又不阻塞 loop
 
