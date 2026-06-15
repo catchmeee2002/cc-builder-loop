@@ -169,8 +169,8 @@ V3.5 内部目标周期 4-6 周；V4.0 同。总周期 ≈ 2-3 个月（按一�
 - 应对：schema-out 落地前同步 dotfiles 仓的对应 agent 文件；写 sync-checklist 加一条"agent prompt schema 改造时双仓同步"。
 
 **identity 落地后 5+ 条同根因消化的对账风险**：
-- identity 落地后必须显式标记 improvements.md 对应条目状态（promoted to 架构改造 + V3.5 关闭），否则下一轮翻牌还会看到。
-- 应对：identity 完成时一次性扫 improvements.md grep 关键词（"subagent 落点 / hook 撞 session / worktree 写错"）逐条标记。schema-out/B/C 完成时同样扫一次。
+- identity 落地后必须从 improvements.md 删除已消化条目（按 doc-policy：修完即删，代码是 ground truth）。
+- 应对：identity 完成时一次性扫 improvements.md grep 关键词（"subagent 落点 / hook 撞 session / worktree 写错"），确认已被代码消化的条目直接删除。schema-out/doc-gate/lsp-lint 完成时同样扫一次。
 
 ### 7.3 退路
 
@@ -236,7 +236,7 @@ V3.5 内部目标周期 4-6 周；V4.0 同。总周期 ≈ 2-3 个月（按一�
 3. 改 `worktree-write-guard.sh` / `tester-lock-check.sh` / `reviewer-timing-check.sh` 跟进 lock 命名
 4. 写 fixture 覆盖：单 session 内并发 N 个 subagent 各落各的锁 / 非白名单 agent skip
 5. 跑全套 e2e fixture 确认 V3.0/V3.3/V3.4 既有行为不破
-6. 标记 `improvements.md` 9+ 条对应同根因为 "promoted to 架构改造 V3.5/identity"
+6. 从 `improvements.md` 删除已消化的 9+ 条同根因
 
 **schema-out · StructuredOutput**（M-L 量级）：
 1. 设计 4 套 agent 公共 schema 基础设施（`skills/builder-loop/schema/agent-output/`）
@@ -244,7 +244,7 @@ V3.5 内部目标周期 4-6 周；V4.0 同。总周期 ≈ 2-3 个月（按一�
 3. dotfiles 仓同步 `~/.claude/agents/reviewer.md`
 4. 扩展到 doc-maintainer / tester / judge 三套（各自 schema + dotfiles 同步）
 5. 在主循环引入 schema 校验失败的重试逻辑（带最大次数兜底）
-6. 标记 `improvements.md` 3+ 条对应同根因（[A2] DEVIATION_FROM_SPEC / [A2] schema 字段变更 / reviewer 长 diff 误读）
+6. 从 `improvements.md` 删除已消化的 3+ 条同根因（[A2] DEVIATION_FROM_SPEC / [A2] schema 字段变更 / reviewer 长 diff 误读）
 
 **doc-gate · step 3.5 机械化**（S-M 量级）：
 1. 列出当前主观裁量点清单（doc skip 判定 / commit-before-merge 判定 / plan.md 更新触发）
@@ -252,7 +252,7 @@ V3.5 内部目标周期 4-6 周；V4.0 同。总周期 ≈ 2-3 个月（按一�
 3. 写 `scripts/doc-trigger-detect.sh` 实现规则
 4. 改 dotfiles 的 `~/.claude/commands/builder.md` step 3.5 改用脚本输出
 5. fixture 覆盖三类场景（应触发 doc 更新 / 应触发 commit-before-merge / 应触发 plan.md 更新）
-6. 标记 `improvements.md` 4+ 条对应同根因
+6. 从 `improvements.md` 删除已消化的 4+ 条同根因
 
 ### 9.2 V4.0（待 V3.5 收尾时各件事 /planner）
 
@@ -274,7 +274,7 @@ V4.0 各件事的高层骨架（不展开 step 细节，V3.5 收尾时再 /plann
 
 机械化（CI 可跑）：
 - identity/schema-out/doc-gate 三件事各自 fixture 全 PASS
-- `improvements.md` 至少 16 条同根因条目（identity 9+ / schema-out 3+ / doc-gate 4+）被标记 "promoted to 架构改造 V3.5"
+- `improvements.md` 中 identity 9+ / schema-out 3+ / doc-gate 4+ 条同根因已从清单删除（代码已消化 = ground truth）
 - V3.0/V3.3/V3.4 既有 fixture 全套不退化（兼容性 fixture 100% PASS）
 
 人工兜底（不可机械化）：
@@ -286,7 +286,7 @@ V4.0 各件事的高层骨架（不展开 step 细节，V3.5 收尾时再 /plann
 
 机械化：
 - C/no-barrier/resume/budget 各自 fixture 全 PASS
-- `improvements.md` lsp-lint 类同根因（6+ 条）被标记 "promoted to 架构改造 V4.0"
+- `improvements.md` 中 lsp-lint 类同根因（6+ 条）已从清单删除
 - V3.5 既有 fixture 不退化
 
 人工兜底：
