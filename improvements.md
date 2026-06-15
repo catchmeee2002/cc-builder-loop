@@ -13,14 +13,6 @@
 - 优先级：中（环境特定，但误判导致整个 loop 流程作废）
 
 
-## 2026-06-08 planner SKILL「文件地图」段加硬约束——不允许估算数字
-
-- 触发上下文：BOT 项目 OTA 分流 DZ9278 plan 写「**11 个函数**改造」，进 builder 实施后 grep 实际是 **12 个函数 / 14 处 client.post 调用**。原因是 planner 写文件地图时 grep 不严谨——只数了 service/ota_service.py 顶层公开函数没数 `search_devices_and_versions` 内部三处 client.post + `poll_upgrade_progress`。Builder 阶段补 grep 后才发现，差点漏改。更严重的是：plan §4「不动调用方」表也没列 `util/upgrade_poller.py` —— 这是 `poll_upgrade_progress` 的唯一 caller，builder 没漏改但 reviewer 一审抓 🔴 漏传 `_car_hint`。根因是 planner 在写文件地图时只看了 vehicle_agent 的几个 tool，没 grep 公开函数的所有 caller。
-- 建议方向：
-  1. **planner SKILL.md 加硬约束**：方案文件「文件地图」段写"N 个函数 / N 处调用 / N 个 caller" **必须** 是 grep 结果而非估算。具体可加一句「凡写数字 N 必须背后是一条 grep 命令；不允许"约 X" / "大概 X" / "至少 X"；不确定就实际跑 grep 拼数字」
-  2. **planner SKILL.md「文件地图」补充扫描步骤**：除了改动文件，必须 grep 每个公开函数的所有 caller，列入「调用方影响面」子表。本次 `poll_upgrade_progress` 漏列 caller `upgrade_poller.start_polling` 就是这种漏扫
-  3. **builder「准计划」阶段交叉校验**：builder 拿到 plan 后第一动作 = 对 plan 里的每个"N 处"用 grep 反查，对不上直接回 planner 修；这是机械化校验，1 分钟内完成。可加到 builder.md「读方案文件时按角色视图过滤」之后
-- 优先级：中（每次 plan 写得不精确，builder 都得补 grep + 可能漏改 caller → reviewer 抓 🔴 → 多一轮回合；落地后 plan 质量稳定提升）
 
 ## 2026-06-06 复杂 prompt 改造时 reviewer 多轮（2-4 轮）是必要而非冗余，不要因为多轮怀疑流程
 
@@ -31,32 +23,6 @@
   3. **轻量替代**：reviewer-fallback.md 加一句「PASS_CMD 通过 + 4 轮 reviewer 收口 + 全集 1300+ 测试绿 = 健康路径，不要焦虑」
 - 优先级：低（流程本身没问题，是 builder 心智模型问题；不修也能正常工作，只是 builder 信心可能波动）
 
-## 2026-06-06 builder spawn reviewer 前必须主动列「边界穷举矩阵」让 reviewer 不靠运气抓边界
-
-- 触发上下文：generator P7 Phase D 4 轮 reviewer——每轮 🟡 都是「边界配置」抓的（chapters_count=1 / first_n_chapters=0 / first_n_chapters=负数 / op_n ≥ chapters_count）。builder 在 Round 1/2 spawn reviewer 时没主动列边界穷举清单，reviewer 抓到 🟡 全靠它自己想边界场景。如果 builder 在 spawn prompt 里写明「请验证以下边界：op_n=0 / op_n=负数 / op_n>=chapters_count / chapters_count=1 / opening_pacing=空 dict」，reviewer 可以一轮命中两到三个边界 🟡，少 1-2 轮回合。
-- 建议方向：
-  1. **builder.md「触发 Reviewer Subagent」段加默认 prompt 字段「边界穷举」**：明示 builder spawn 前要列改动函数所有参数的极端值（0 / 负数 / None / 空 dict / 远大于 / 边界相等）穷举矩阵；reviewer 收到后逐项 verify。这与同日「重点关注 N 项」立项条目互补——「重点关注」是 builder 心里有数的逻辑怀疑点，「边界穷举」是参数边界机械化清单
-  2. **builder「准计划」阶段引导**：写「边界穷举」时强制 builder 在 Edit 完代码后、commit 前**先 grep 调用方拿到所有参数 dict** + **列每个参数的极端值** + **手动跑 1-2 个边界用例**，把「自己心里没穷举的边界」结构化外化
-  3. **配套 reviewer.md**：reviewer prompt 拿到「边界穷举」段后强制 Read 函数实现 + 逐参数模拟极端值看 prompt 输出是否合理（不只是看代码是否处理，而是看渲染产物是否自洽）
-- 优先级：中（与「重点关注 N 项」立项条目同等级，两者搭配可显著降低 reviewer 轮次）
-
-## 2026-06-06 builder spawn reviewer 时应在 prompt 默认明列「重点关注 N 项」让 reviewer 命中预怀疑盲区
-
-- 触发上下文：Engineering_Delivery_Bot script_ota 下载字节进度量化任务（A2 watcher）一轮 reviewer。builder 在 spawn reviewer 的 prompt 里手工写了「重点关注 4：watcher 起点 vs phase 默认是否冲突造成进度条倒退」，reviewer 才命中 🔴。如果没写这条，watcher 跑 5–50% 段 / phase_progress["pkg_download"]=40 这种「双方默认值不一致」的隐患很可能漏审，等用户实际用刷包再撞才发现。spawn 同期还跟着写了重点关注 1-6 共 6 项，最后 reviewer 命中的 🔴/🟡/🔵 几乎全部命中我预先怀疑的点
-- 建议方向：
-  1. **builder.md「完成后触发 Reviewer Subagent」段加默认 prompt 字段「重点关注（builder 心里有数的 N 项）」**：明示 builder spawn 前要列 1-5 个具体怀疑点（不是泛泛的"测覆盖"或"代码质量"，而是「函数 X 与函数 Y 的状态字段是否对齐」「修了 A 是否影响 B」这种点对点怀疑）；reviewer 收到后逐项 verify
-  2. **reviewer.md agent prompt 加节「prompt 含『重点关注』时优先逐项验证后再做自由发挥审查」**：避免 reviewer 拿到重点关注列表后还按通用模板全扫，浪费 token
-  3. **配套 builder「准计划」阶段引导**：写「重点关注」时强制 builder 自问「我现在最担心的 3 个出错点是什么」，把这种「自己心里的怀疑」结构化外化，不让 reviewer 靠运气
-- 优先级：中（每次 spawn reviewer 都能用上，对 reviewer 命中率提升显著；但需要改 SKILL prompt + agent prompt 两处）
-
-## 2026-06-06 reviewer 建议前应自检「这个修复会不会引入反向副作用」防一轮 well-meaning 二轮翻车
-
-- 触发上下文：同上任务。一轮 reviewer 看到 watcher `stop()` 只 set event 不 join，提 🔵 建议「加 join 防 completed 后还多推一帧字节%」。builder 按建议加了 `self._thread.join(timeout=self.interval + 5)`。二轮同一个 reviewer 自己又抓出 🟡：「这个 join 在 `_wrapped_cb` 同步调用链里执行，extracting 关键词命中时会阻塞 stdout 读取循环最多 15s」。也就是 reviewer 一轮提的"看似稳妥的修复"自己二轮就发现引入了新的同步阻塞副作用——这条要是上线就是一次回归
-- 建议方向：
-  1. **reviewer.md agent prompt 加自检步骤**：每条 🟡 / 🔵 建议在最终输出前自问「我建议的这个修复是否会引入：① 新的同步阻塞 / ② 死锁 / ③ 资源泄漏 / ④ 跨模块语义破坏？如果会，是 demote 到「仅观察」还是给完整修法（含副作用规避）」。三档输出：「建议+修法+副作用清单」「仅观察」「彻底拒绝原方案」
-  2. **builder.md 步骤 3a 决策表加分支**：reviewer 给 🟡 / 🔵 时 builder 必须复核「建议的修复会不会引入新副作用」，引入即视为「拒绝原方案 + 反馈给 reviewer 让它出更稳的修法」而非闷头改
-  3. 长期：reviewer 二轮发现自己一轮提的建议引入副作用时，自动追加一条 meta 反思「我下次类似建议前应先做副作用检查」喂回本 improvements
-- 优先级：中（reviewer 的"修建议"质量直接决定 builder 的工作量和回归风险）
 
 
 ## 2026-06-05 tester 应主动用 `@pytest.mark.xfail(strict=False)` 当缺陷探针，让黑盒发现"实现 ↔ 契约不符"既明示又不阻塞 loop
