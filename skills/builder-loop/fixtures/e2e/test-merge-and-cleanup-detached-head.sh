@@ -35,7 +35,6 @@ start_head: "$head1"
 last_iter_head: "$(git -C "$wt" rev-parse --short HEAD)"
 worktree_path: "$wt"
 worktree_mode: "clean"
-plan_file: ""
 task_description: |
   detached-head-test
 source_dirs: ""

@@ -139,7 +139,6 @@ start_head: "${head1}"
 last_iter_head: "${wt_head}"
 worktree_path: "${wt_path}"
 worktree_mode: "$([ -n "$wt_path" ] && echo "clean" || echo "bare")"
-plan_file: ""
 task_description: |
   harness-test
 source_dirs: ""

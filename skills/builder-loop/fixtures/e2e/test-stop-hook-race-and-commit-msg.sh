@@ -83,7 +83,6 @@ max_iter: 5
 project_root: "$TMP_B"
 start_head: "$START_HEAD_B"
 worktree_path: "$WT_PATH_B"
-plan_file: ""
 task_description: |
   $TASK_DESC_B
 source_dirs: "src"
@@ -136,7 +135,6 @@ max_iter: 5
 project_root: "$TMP_C"
 start_head: "$START_HEAD_C"
 worktree_path: "$WT_PATH_C"
-plan_file: ""
 task_description: |
 
 source_dirs: "src"

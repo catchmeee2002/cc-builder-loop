@@ -28,7 +28,6 @@ project_root: "$env"
 main_repo_path: "$env"
 start_head: "init"
 worktree_path: ""
-plan_file: ""
 task_description: |
   zombie test
 source_dirs: "src"
@@ -64,7 +63,6 @@ project_root: "$env"
 main_repo_path: "$env"
 start_head: "init"
 worktree_path: ""
-plan_file: ""
 task_description: |
   early stop test
 source_dirs: "src"

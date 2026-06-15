@@ -30,7 +30,6 @@ main_repo_path: "$envA"
 start_head: "$headA"
 worktree_path: "$wtA"
 worktree_mode: "clean"
-plan_file: ""
 task_description: |
   old-state-test
 source_dirs: ""

@@ -47,7 +47,6 @@ start_head: "$head1"
 last_iter_head: "$wt_head"
 worktree_path: "$wt"
 worktree_mode: "clean"
-plan_file: ""
 task_description: |
   idempotent-test
 source_dirs: ""

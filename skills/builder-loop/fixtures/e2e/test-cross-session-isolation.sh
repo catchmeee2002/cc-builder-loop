@@ -64,7 +64,6 @@ start_head: "$HEAD1"
 last_iter_head: "$HEAD1"
 worktree_path: "$wt"
 worktree_mode: "clean"
-plan_file: ""
 task_description: |
   cross-session-test-$slug
 source_dirs: ""

@@ -117,14 +117,9 @@ DETECTED_TEST="${CONFIGURED_TEST:-$(detect_dirs test | tr '\n' ',' | sed 's/,$//
 # ---- 起始 HEAD ----
 START_HEAD="$(git -C "$PROJECT_ROOT" rev-parse --short HEAD 2>/dev/null || echo 'no-git')"
 
-# ---- 自动找当前任务对应的方案文件（最近修改的 .claude/plans/*.md）----
-# 用于 split-plan-by-role 过滤（builder 自身/spawn reviewer/spawn tester 时按 role 拿对应视图）
-PLAN_DIR="${PROJECT_ROOT}/.claude/plans"
-PLAN_FILE=""
-if [ -d "$PLAN_DIR" ]; then
-  # shellcheck disable=SC2012  # ls -t 用 mtime 排序，find -printf 不便携，文件名约定 .md 不含特殊字符
-  PLAN_FILE="$(ls -1t "$PLAN_DIR"/*.md 2>/dev/null | head -n 1 || echo '')"
-fi
+# ---- plan_file 已移除（V3.6）----
+# 方案文件路径由 builder 对话上下文持有（/planner 产出或用户指定），不再由 setup 启发式猜测。
+# split-plan-by-role.sh 仍可用，builder 直接传对话中已知的路径调用。
 
 # ---- worktree 真接入（V1.1 T2.2）----
 # 读 loop.yml.worktree.enabled（缺省 false）→ true 则 git worktree add
@@ -407,7 +402,6 @@ worktree_path: "${WORKTREE_PATH}"
 worktree_mode: "${WORKTREE_MODE}"
 pre_loop_stash_ref: "${PRE_LOOP_STASH_REF}"
 pre_loop_dirty_files: "${DIRTY_FILES}"
-plan_file: "${PLAN_FILE}"
 task_description: |
   ${TASK_DESC}
 source_dirs: "${DETECTED_SRC}"
@@ -435,7 +429,6 @@ PASS_CNT=$(python3 -c "import yaml; print(len(yaml.safe_load(open('$LOOP_YML')).
 echo "   PASS_CMD 阶段数：${PASS_CNT}"
 echo "   状态文件：${STATE_FILE}"
 echo "   起始 HEAD：${START_HEAD}"
-echo "   方案文件：${PLAN_FILE:-<未找到 .claude/plans/*.md>}"
 echo "   探测 source_dirs：${DETECTED_SRC:-<空>}"
 echo "   探测 test_dirs：${DETECTED_TEST:-<空>}"
 echo ""

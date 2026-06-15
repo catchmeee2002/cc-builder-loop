@@ -133,7 +133,6 @@ task_description: |
   ...
 source_dirs: "src,lib"
 test_dirs: "tests,spec"
-plan_file: ".claude/plans/..."
 last_pass_stage: test
 last_error_hash: deadbeef
 last_error_count: 7

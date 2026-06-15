@@ -58,7 +58,6 @@ max_iter: 3
 project_root: "${TMPDIR}"
 start_head: "${MAIN_HEAD}"
 worktree_path: "${TMPDIR}/.claude/worktrees/test-wt"
-plan_file: ""
 task_description: "conflict test"
 source_dirs: ""
 test_dirs: ""

@@ -123,7 +123,6 @@ max_iter: 5
 project_root: "$TMP"
 start_head: "$LEGACY_HEAD"
 worktree_path: "$LEGACY_WT"
-plan_file: ""
 task_description: |
   legacy-v1-state-test
 source_dirs: "src"

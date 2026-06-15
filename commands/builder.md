@@ -17,9 +17,9 @@ description: "进入 Builder 模式 — 复杂任务先计划后动手，完成�
 
 ## 读方案文件时按角色视图过滤
 
-读 `.claude/plans/*.md` 前，检查 `.claude/builder-loop.local.md` 的 `plan_file` 字段：
-- 有 → `bash ~/.claude/skills/builder-loop/scripts/split-plan-by-role.sh <plan_file> builder > /tmp/plan-builder-view.md`，Read 过滤后文件
-- 无 → 直接 Read 原方案
+读 `.claude/plans/*.md` 时，如果对话中持有方案文件路径（/planner 产出或用户指定），且项目接入了 builder-loop（`.claude/loop.yml` 存在）：
+- `bash ~/.claude/skills/builder-loop/scripts/split-plan-by-role.sh <方案路径> builder > /tmp/plan-builder-view.md`，Read 过滤后文件
+- 无方案文件 → 直接 Read 原方案（不做视图过滤）
 
 ---
 
@@ -99,7 +99,7 @@ description: "进入 Builder 模式 — 复杂任务先计划后动手，完成�
   - **V2.x 立即合 PASS / bare 模式 PASS**（Stop hook 消息含 `reviewer_params=<path>`）→ Read 该 JSON 文件，内含 changed_files / report_path / diff_file / start_head。diff 内容从 diff_file 读取或 `git diff <start_head>..HEAD`
   - **非 loop 场景** → `git diff HEAD` 获取 diff（过大用 `--stat`）；自行拼 changed_files / report_path
 - changed_files 中不在 diff 里的 → `wc -l` 补全为新建文件
-- plan_file 存在时：`split-plan-by-role.sh <plan_file> shared > /tmp/spec-shared.md`
+- 对话中有方案路径时：`split-plan-by-role.sh <方案路径> shared > /tmp/spec-shared.md`
 - diff_summary 中，凡实施与方案不同的点，必须写明「选了什么 + 一句理由」（方案是假设不是契约，实施碰现实后调整是正常路径）
 - spawn：`subagent_type: "reviewer", run_in_background: true`，传 changed_files / diff_summary / report_path / spec_shared / worktree_path
 - 告知："✅ 任务完成，reviewer 已在后台启动。"
@@ -137,7 +137,7 @@ description: "进入 Builder 模式 — 复杂任务先计划后动手，完成�
 
 分支：
 - **loop 活跃**（`builder-loop.local.md` active=true / multi-state 下有本 worktree 对应 state）：
-  1. 过滤 tester 视图（`split-plan-by-role.sh <plan_file> tester`），spawn tester（同步），传 spec_view / interface_signatures / target_test_dirs / missing_cases / mock_targets / data_contracts / error_types / worktree_path
+  1. 对话中有方案路径时过滤 tester 视图（`split-plan-by-role.sh <方案路径> tester`），spawn tester（同步），传 spec_view / interface_signatures / target_test_dirs / missing_cases / mock_targets / data_contracts / error_types / worktree_path
   2. Edit state 的 `iter:` 为 `0`
   3. 告知 `🧪 tester 已补充，iter 已重置`（下一轮 Stop hook 会重跑 PASS_CMD 验证新测试）
 - **loop 已结束（或从未活跃）**：

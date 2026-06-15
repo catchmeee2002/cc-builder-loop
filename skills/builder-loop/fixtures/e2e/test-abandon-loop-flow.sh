@@ -54,7 +54,6 @@ worktree_path: "$4"
 worktree_mode: "$3"
 pre_loop_stash_ref: "$5"
 pre_loop_dirty_files: ""
-plan_file: ""
 task_description: |
   test fixture
 source_dirs: ""
@@ -305,7 +304,6 @@ worktree_path: "$WT_PATH_A13"
 worktree_mode: "dirty"
 pre_loop_stash_ref: "${STASH_REF_A13}  "
 pre_loop_dirty_files: "src/trailing-dirty.txt"
-plan_file: ""
 task_description: |
   trailing space stash ref test
 source_dirs: ""

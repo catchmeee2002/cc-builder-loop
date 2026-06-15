@@ -56,7 +56,6 @@ start_head: "${head}"
 last_iter_head: "${head}"
 worktree_path: "${wt}"
 worktree_mode: "clean"
-plan_file: ""
 task_description: |
   multi-wt-test-${slug}
 source_dirs: ""
