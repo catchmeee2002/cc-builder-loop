@@ -15,6 +15,7 @@
 |---------|------|------|---------|------|
 | v2.1.79 | 静态 cron | `CronCreate` | cron 服务定时唤醒 | LLM 主观 |
 | v2.1.121 | + 动态 self-pace | `ScheduleWakeup` | LLM 自填 prompt + delaySeconds∈[60, 3600] | LLM 主观（不调即结束） |
+| v2.1.177 | 无变化 | — | — | — |
 
 ### 1.2 dynamic workflow（编排层）
 
@@ -44,10 +45,11 @@ strings $(which claude)*.exe 2>/dev/null | tr ';' '\n' | grep -iE 'ScheduleWakeu
 | `delaySeconds` 上下界 clamp | `ScheduleWakeup` runtime | 待评估 | judge agent timeout / 重试间隔参数化 |
 | 凭证三层 fallback + env file | 自研早于官方 | 已采纳（V1.9/V2.1） | `run-judge-agent.sh` |
 | 静态 cron 路径 | `CronCreate` | 不采纳 | 与 PASS_CMD 硬门禁冲突 |
-| **schema 强制结构化输出**（工具层校验+重试） | workflow `StructuredOutput` | 待评估（P0） | judge/reviewer 输出契约，替正则解析（呼应原则六契约）|
-| **token budget 感知**（动态迭代上限） | workflow `budget.remaining()` | 待评估（P0） | `max_iterations` 死数字 → budget 感知上限 |
-| **pipeline 无 barrier 流水线** | workflow `pipeline()` | 待评估（P0） | 多任务并行时 item 各自流动，不卡 barrier |
-| **resume journal**（缓存未变前缀） | workflow `resumeFromRunId` | 待评估（P0） | 崩溃恢复，比 V3.3 orphan 检测更干净 |
+| **schema 强制结构化输出**（工具层校验+重试） | workflow `StructuredOutput` | ⏸ 搁置（v2.1.177 Agent tool 仍无 schema 参数，仅 Workflow `agent()` 支持） | judge/reviewer 输出契约，替正则解析（呼应原则六契约）|
+| **token budget 感知**（动态迭代上限） | workflow `budget.remaining()` | 待评估（P0，Workflow only） | `max_iterations` 死数字 → budget 感知上限 |
+| **pipeline 无 barrier 流水线** | workflow `pipeline()` | 待评估（P0，Workflow only） | 多任务并行时 item 各自流动，不卡 barrier |
+| **resume journal**（缓存未变前缀） | workflow `resumeFromRunId` | 待评估（P0，Workflow only） | 崩溃恢复，比 V3.3 orphan 检测更干净 |
+| **EnterWorktree/ExitWorktree** | CC 内置工具 | 已稳定（v2.1.177） | worktree 模式下 builder 切换 session CWD 的正确方式 |
 
 > P0 四项来源于 dynamic workflow，方向是**强化上层 LLM 判据 / 工程化**，不替换地基层 PASS_CMD（见 design-philosophy 原则一「判据分层」）。
 
@@ -101,3 +103,48 @@ strings $(which claude)*.exe 2>/dev/null | tr ';' '\n' | grep -iE 'ScheduleWakeu
 - 每次 cc-builder-loop 大版本：复盘借鉴清单状态变迁
 - 用户反馈撞车 case → 立即在 §3 对应小节补条目 + 同步 known-risks
 - CC 在 `SubagentStart` 补 `agent_transcript_path` → §3.2 实现层防御转「可做」
+- CC Agent tool 补 `schema` 参数 → §2 schema 行转「可做」，roadmap schema-out 解封
+
+## 6. 长期演化方向
+
+> 2026-06-15 meta-think 攻防产物。5 个候选方案经判别器打靶后的收敛结论。
+
+### 6.1 收敛根因（最重要的发现）
+
+三个候选方案（arbiter 总调度 / hook+arbiter 扩权 / 声明式意图）的致命伤砍在同一处：**把 LLM 放在「决定什么时候/是否用机器判据」的位置上**。
+
+- arbiter（LLM）决定流程走向 → 骑到 PASS_CMD 之上
+- arbiter（LLM）判断「这个 🔴 是不是架构级」→ 判据分层的入口是 LLM
+- 谁决定「声明覆盖不了，该通知用户了」→ 还是 LLM
+
+**原则一推论**：选择什么时候启用机器判据这件事本身也必须是机器判据。meta-decision 交给 LLM = 判据分层被架空。
+
+### 6.2 存活方向
+
+**Ground truth 强化（spec contract）**：plan 阶段产出 spec.yml（fixture / assertion / 行为期望），编译注入 PASS_CMD。用户意图直接变成机器判据。鸿沟没消灭只是前移——但前移到 plan 时用户在场，可 review + dry-run 确认。
+
+**自动衔接**：当前 planner→builder 是手动断点（用户跑 `/builder`）。CC 架构限制 planner 无法 spawn builder（都是 /commands/），但未来 CC 支持 command chaining 时可自动衔接。
+
+**Dashboard 可观测**：只展示不决策。用户从「被 push 中断」变「主动 pull 查看」。
+
+### 6.3 终极形态骨架
+
+```
+用户 ──→ planner ──→ spec.yml（用户确认即锁定）
+                         │
+                    setup 编译注入 PASS_CMD
+                         │
+              ┌──────────┴──────────┐
+              │  convergence loop   │
+              │  criteria:          │
+              │   1. PASS_CMD pass  │  ← 机器判据（含 spec-derived tests）
+              │   2. reviewer 0 🔴  │  ← LLM 判据（schema-validated）
+              │  iterate until both │
+              └──────────┬──────────┘
+                         │
+                    dashboard ──→ 用户（pull, 不 push）
+                         │
+                    merge ──→ done
+```
+
+**约束**：凡 meta-decision（该不该跑 PASS_CMD、该不该通知用户、reviewer 结论是否架构级）必须走机器判据或用户显式声明，不交给 LLM。
