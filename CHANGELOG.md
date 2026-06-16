@@ -2,6 +2,31 @@
 
 > 从 CLAUDE.md §5 外移。记录各版本交付的能力与关键实现细节。
 
+## V3.6 Reviewer 轮次优化 + Plan 假设化（2026-06-15）
+
+降低 reviewer 平均轮次 + 把 plan 从「权威」frame 转为「假设」frame。
+
+**1. Reviewer 轮次优化**
+- builder.md：reviewer 建议 = 假设，builder 采纳前必须独立推导失效场景
+- reviewer.md：硬性约束 #4——步骤 1 后禁止开放式补读，只允许防误报定点 Read/grep
+- builder.md：spawn reviewer 时新增 `review_focus` 必填字段（参数边界值 + 具体怀疑点），reviewer 优先逐项验证
+- reviewer.md：报告表格拆「问题」和「建议修法（hypothesis）」两栏，分离高/低置信度输出
+- reviewer.md：报 🔴/🟡 前必须 Read/grep 实际 file:line 确认断言（V3.5 已部分落地，V3.6 补全）
+
+**2. Plan 假设化**
+- setup-builder-loop.sh：删除 plan_file 启发式猜测——方案路径由 builder 对话上下文持有，不再由脚本从 mtime 最新文件推测
+- state schema：移除 plan_file 字段（11 个 fixture 同步清理）
+- builder.md：新增「文件地图校验」步骤——读方案后 grep 校验 plan 数字 + 扫改动函数 caller，就地修正不回 planner
+- builder.md：diff_summary 中实施与方案不同的点必须写明决策理由（方案是假设不是契约）
+- planner.md：Phase 依赖检查从用户追问环节移至 pre-write 自检
+
+**3. Prompt 清理**
+- builder.md：修复 5 处对已废弃 `builder-loop.local.md` 的引用（V3.4 遗留），统一改为 `locate-state.sh` + state.yml
+
+**4. 战略规划**
+- cc-loop-tracking.md 刷新至 CC v2.1.177：Agent tool 仍无 schema（schema-out 继续搁置）、EnterWorktree 已稳定
+- 新增 §6 长期演化方向：meta-think 攻防产出——spec contract / reviewer 并列收敛 / dashboard 三方向 + meta-decision 必须机器判据约束
+
 ## V3.5-B Step 3.5 机械化检测 + doc-lint 修复（2026-06-14）
 
 消化 ≥6 条同根因——step 3.5 doc 评估 4 次漏触发 + doc-lint 签名变更误判 + 黑名单漏词。

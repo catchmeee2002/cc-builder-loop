@@ -21,7 +21,7 @@
 | 文档 | 定位 | 何时读 |
 |------|------|--------|
 | [`docs/design-philosophy.md`](docs/design-philosophy.md) | 设计哲学（判据分层等原则，SSOT 唯一来源） | 做设计决策 / 评估方案时 |
-| [`CHANGELOG.md`](CHANGELOG.md) | 各版本交付能力（V1.0~V3.2） | 需要了解历史版本做了什么时 |
+| [`CHANGELOG.md`](CHANGELOG.md) | 各版本交付能力（V1.0~V3.6） | 需要了解历史版本做了什么时 |
 | [`docs/troubleshooting.md`](skills/builder-loop/docs/troubleshooting.md) | 排查手册（§7.1~7.12） | stop hook / judge / worktree / state 出问题时 |
 | [`docs/sync-checklist.md`](skills/builder-loop/docs/sync-checklist.md) | 改动同步 checklist | 本仓 commit 后需同步操作时 |
 | [`docs/judge-agent.md`](skills/builder-loop/docs/judge-agent.md) | Judge agent 设计与配置 | judge 相关开发 / 排查时 |
@@ -119,7 +119,7 @@ ls -la ~/.claude/skills/builder-loop/SKILL.md  # 应指向本仓库
 cc-builder-loop/
 ├── install.sh / uninstall.sh   # 部署/卸载
 ├── CLAUDE.md                   # 本文件
-├── CHANGELOG.md                # 版本历史（V1.0~V2.6）
+├── CHANGELOG.md                # 版本历史（V1.0~V3.6）
 ├── skills/builder-loop/        # CC skill（含 SKILL.md、scripts/、fixtures/e2e/、schema/、docs/）
 ├── scripts/                    # Stop hook + subagent 启动守卫 + lock 公共库 + subagent 清锁 + tester 读隔离 + worktree 写边界守卫 + reviewer 时序检查（7 个 .sh）
 └── agents/                     # tester.md + arbiter.md
