@@ -1,9 +1,16 @@
 # Builder-Loop 改进清单
 
-> 时间倒序。每条按 builder.md 步骤 5 模板（触发上下文 / 建议方向 / 优先级）。
-> 立项不等于本期实施——A 类候选清单，等独立任务挑出来落地。
-> 已关闭条目见 [CHANGELOG V3.2](CHANGELOG.md#v32-跨越界隔离--测试框架2026-05-23)
+> 时间倒序。每条按 builder.md 步骤 5 模板：`## YYYY-MM-DD <标题>` + 触发场景 / 现象 / 根因 / 优先级。
+> **只记事实，不写建议方向**——loop 侧开发者拿到事实自己判断怎么修。
+> 已消化条目直接删除（代码是 ground truth），不标 ✅。已关闭条目见 [CHANGELOG](CHANGELOG.md)。
 
+
+## 2026-06-15 tester subagent 在 worktree 模式下写文件到主仓
+
+- 触发场景：builder-loop worktree 模式下 spawn tester（传了 worktree_path），tester 的 Write/Edit 操作落到主仓而非 worktree。本 session 复现 3 次：① #294 tester 在主仓改了 scripts/deep_analysis_outline_overflow.py ② BlueprintView tester 在主仓创建 tests/test_blueprint_view.py 和 novel_writer/view/*.py ③ E1c-b tester 在主仓改了 tests/test_detect_revealed_secrets.py
+- 现象：worktree 无变化，主仓出现 untracked/modified 文件。每次需手动 cp 到 worktree + git checkout 清主仓
+- 根因：tester subagent 启动时 cwd 为主仓，Write/Edit 用项目根相对路径解析到主仓绝对路径，worktree_path 参数未被用于重定位文件操作
+- 优先级：高（每次 tester + worktree 组合必触发，手动搬文件耗时且易漏）
 
 ## 2026-06-11 worktree pytest-html 插件冲突导致 PASS_CMD 失败被误判 test_tampering
 
