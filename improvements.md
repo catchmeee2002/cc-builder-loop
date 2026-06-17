@@ -5,6 +5,37 @@
 > 已消化条目直接删除（代码是 ground truth），不标 ✅。已关闭条目见 [CHANGELOG](CHANGELOG.md)。
 
 
+## 2026-06-17 已 merge 的 worktree 仍被其他 session 的 stop hook 触发 PASS_CMD
+
+- 触发场景：session A 在 worktree `1781679481-deepperf` 完成改动 → 手动跑 PASS_CMD 全过 → state 切 `passed_pending_review` → reviewer 通过 → `merge-and-cleanup.sh` 合回主线并删除 worktree + 归档 state。之后另一个 session B 的 stop hook 触发，仍然检测到了该 worktree 的 slug，跑了一次 PASS_CMD 并输出 `phase=passed_pending_review`，通知推到了 session B 的对话中。
+- 现象：session B 收到了一段与自己无关的 stop hook 输出：`[builder-loop] ✅ PASS at iter 1 ... slug=1781679481-deepperf`。该 worktree 实际已被 session A 合并删除。本次无实际损害（worktree 已不存在），但如果 cleanup 时序稍有不同（state 归档慢于 hook 触发），可能导致 session B 误处理已合入的 state。
+- 根因：stop hook 是进程级的，不区分 session。`merge-and-cleanup.sh` 删 worktree + 归档 state 不是原子操作，存在时间窗口让其他 session 的 stop hook 在 cleanup 完成前读到 state 文件并执行 PASS_CMD。
+- 优先级：低（本次无实际损害，但与上一条"并发 worktree stop hook 截获"属同一类问题的另一种表现）
+
+
+## 2026-06-17 test-dirty-stash-flow fixture 清理挂起导致 PASS_CMD 超时
+
+- 触发场景：builder-loop PASS_CMD 跑 test-dirty-stash-flow.sh，18/18 assert 全过，但 harness EXIT trap 的 `rm -rf` 清理挂住，120s 超时后被 kill
+- 现象：fixture 输出 `PASS=18 FAIL=0` 后进程不退出，直到 timeout
+- 根因：fixture 通过 setup-builder-loop.sh 创建 4 个含 git worktree + rebase 状态的临时仓库，EXIT trap 的 `rm -rf` 可能卡在清理这些目录（NFS/锁/worktree 注册残留）
+- 优先级：中（不影响功能但阻塞 PASS_CMD 流水线，当前靠手动 merge 绕过）
+
+## 2026-06-17 --reuse-worktree 把 state 创建在 worktree 内部而非主仓 state 目录
+
+- 触发场景：loop 早停后用 `setup-builder-loop.sh --reuse-worktree <path>` 重新进入，state 文件被创建在 worktree 的 `.claude/builder-loop/state/` 目录下（而非主仓的）
+- 现象：stop hook 用主仓 CWD 调 locate-state.sh → 只扫主仓 state 目录 → 找不到 → exit 0 静默放行。需手动 cp state 到主仓才能恢复 hook
+- 根因：--reuse-worktree 的 PROJECT_ROOT 解析指向 worktree 自身（worktree 内有 .claude/loop.yml），state 目录也跟着创建在 worktree 内
+- 优先级：中（每次 --reuse-worktree 都会踩，当前靠手动 cp 绕过）
+
+
+## 2026-06-17 builder 步骤 5 确认记忆后调 /memory 导致用户被重复确认同一条知识
+
+- 触发场景：builder 步骤 5 任务回顾中，用户通过 AskUserQuestion 确认了 `[记住] c1`（跳板机 script_ota 可能全程静默执行）。builder 随后调用 `/memory` skill 写入，但 `/memory` skill 有自己的完整流程（读→提炼→AskUserQuestion 确认→写入），等于同一条知识让用户确认了两次，且第二次的候选内容和第一次一模一样。
+- 现象：用户反馈"这事不是刚问过我一模一样的吗"。
+- 根因：builder.md 步骤 5 的 `[记住]` 路径指示"调 `/memory` 命令走完整流程"，但 `/memory` 的完整流程包含独立的确认环节，与步骤 5 的 AskUserQuestion 确认环节重复。两层确认机制叠加，用户体验为"问了两遍"。
+- 优先级：低（不影响功能，但用户体验差；每次步骤 5 有 `[记住]` 候选都会触发）
+
+
 ## 2026-06-15 tester subagent 在 worktree 模式下写文件到主仓
 
 - 触发场景：builder-loop worktree 模式下 spawn tester（传了 worktree_path），tester 的 Write/Edit 操作落到主仓而非 worktree。本 session 复现 3 次：① #294 tester 在主仓改了 scripts/deep_analysis_outline_overflow.py ② BlueprintView tester 在主仓创建 tests/test_blueprint_view.py 和 novel_writer/view/*.py ③ E1c-b tester 在主仓改了 tests/test_detect_revealed_secrets.py
