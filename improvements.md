@@ -5,13 +5,6 @@
 > 已消化条目直接删除（代码是 ground truth），不标 ✅。已关闭条目见 [CHANGELOG](CHANGELOG.md)。
 
 
-## 2026-06-17 已 merge 的 worktree 仍被其他 session 的 stop hook 触发 PASS_CMD
-
-- 触发场景：session A 在 worktree `1781679481-deepperf` 完成改动 → 手动跑 PASS_CMD 全过 → state 切 `passed_pending_review` → reviewer 通过 → `merge-and-cleanup.sh` 合回主线并删除 worktree + 归档 state。之后另一个 session B 的 stop hook 触发，仍然检测到了该 worktree 的 slug，跑了一次 PASS_CMD 并输出 `phase=passed_pending_review`，通知推到了 session B 的对话中。
-- 现象：session B 收到了一段与自己无关的 stop hook 输出：`[builder-loop] ✅ PASS at iter 1 ... slug=1781679481-deepperf`。该 worktree 实际已被 session A 合并删除。本次无实际损害（worktree 已不存在），但如果 cleanup 时序稍有不同（state 归档慢于 hook 触发），可能导致 session B 误处理已合入的 state。
-- 根因：stop hook 是进程级的，不区分 session。`merge-and-cleanup.sh` 删 worktree + 归档 state 不是原子操作，存在时间窗口让其他 session 的 stop hook 在 cleanup 完成前读到 state 文件并执行 PASS_CMD。
-- 优先级：低（本次无实际损害，但与上一条"并发 worktree stop hook 截获"属同一类问题的另一种表现）
-
 
 ## 2026-06-17 test-dirty-stash-flow fixture 清理挂起导致 PASS_CMD 超时
 
