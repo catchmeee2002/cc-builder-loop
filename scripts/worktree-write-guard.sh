@@ -57,9 +57,11 @@ ABS_TARGET="$(readlink -f "$TARGET" 2>/dev/null || echo "$TARGET")"
 # ---- V3.5: Check per-agent-type lock files → subagent or builder? ----
 SYNC_LOCK=""
 ACTIVE_AGENT_TYPE=""
+_LOCK_COUNT=0
 
 while IFS= read -r _lock; do
   [ -z "$_lock" ] && continue
+  _LOCK_COUNT=$(( _LOCK_COUNT + 1 ))
   _atype="$(bl_read_lock_field "$_lock" "agent_type")"
   if bl_is_sync_agent "$_atype"; then
     # TTL check
@@ -80,12 +82,16 @@ while IFS= read -r _lock; do
   fi
 done < <(bl_find_active_locks "$SESSION_ID")
 
+# V3.7 diagnostic: log lock resolution for tester-write-to-main-repo investigation
+log "lock-resolve: sid=${SESSION_ID:0:8} locks_found=${_LOCK_COUNT} sync_lock=${SYNC_LOCK:-NONE} agent=${ACTIVE_AGENT_TYPE:-NONE} target=${ABS_TARGET}"
+
 if [ -n "$SYNC_LOCK" ]; then
   # ---- SUBAGENT STRICT MODE ----
   WORKTREE_PATH="$(bl_read_lock_field "$SYNC_LOCK" "worktree_path")"
   MAIN_REPO_PATH="$(bl_read_lock_field "$SYNC_LOCK" "main_repo_path")"
 
-  [ -z "$WORKTREE_PATH" ] && exit 0
+  log "strict-mode: wt=${WORKTREE_PATH:-EMPTY} main=${MAIN_REPO_PATH:-EMPTY}"
+  [ -z "$WORKTREE_PATH" ] && { log "wt-empty→allow"; exit 0; }
 
   ABS_WORKTREE="$(readlink -f "$WORKTREE_PATH" 2>/dev/null || echo "$WORKTREE_PATH")"
   ABS_MAIN="$(readlink -f "$MAIN_REPO_PATH" 2>/dev/null || echo "$MAIN_REPO_PATH")"
