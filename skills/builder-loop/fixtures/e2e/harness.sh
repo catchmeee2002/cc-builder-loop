@@ -162,12 +162,20 @@ STEOF
 # ==================================================================
 run_hook() {
   local cwd="$1"
+  local session_id="${2:-}"
   local handle
   handle="$(mktemp -d -t harness-result-XXXXXX)"
   _HARNESS_TMPDIRS+=("$handle")
 
+  local input_json
+  if [ -n "$session_id" ]; then
+    input_json="{\"cwd\": \"$cwd\", \"session_id\": \"$session_id\"}"
+  else
+    input_json="{\"cwd\": \"$cwd\"}"
+  fi
+
   local ec=0
-  printf '{"cwd": "%s"}' "$cwd" \
+  printf '%s' "$input_json" \
     | bash "$HARNESS_HOOK" \
     >"$handle/stdout" 2>"$handle/stderr" || ec=$?
   echo "$ec" > "$handle/ec"

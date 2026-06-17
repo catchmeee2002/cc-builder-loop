@@ -173,6 +173,32 @@ if [ -z "$STATE_FILE" ] || [ ! -f "$STATE_FILE" ]; then
   exit 0
 fi
 
+# ---- V3.7: owner_session_id 校验（防并发 session 越界）----
+# 首次绑定时写入 session_id；后续校验匹配，不匹配 → 警告 + skip
+STATE_OWNER="$(grep -E '^owner_session_id:' "$STATE_FILE" 2>/dev/null | head -1 | sed -E 's/^owner_session_id:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' || echo "")"
+if [ -z "$STATE_OWNER" ] && [ -n "$HOOK_SESSION_ID" ]; then
+  # 首次绑定：写入 owner_session_id
+  python3 -c "
+import sys
+text = open(sys.argv[1]).read()
+# 插在 phase: 行之后
+lines = text.split('\n')
+out = []
+for l in lines:
+    out.append(l)
+    if l.startswith('phase:'):
+        out.append('owner_session_id: \"' + sys.argv[2] + '\"')
+open(sys.argv[1], 'w').write('\n'.join(out))
+" "$STATE_FILE" "$HOOK_SESSION_ID" 2>/dev/null || true
+  debug_log "owner_bind" "$(SID="$HOOK_SESSION_ID" python3 -c "
+import os, json; print(json.dumps({'session_id': os.environ['SID']}))" 2>/dev/null || echo '{}')"
+elif [ -n "$STATE_OWNER" ] && [ -n "$HOOK_SESSION_ID" ] && [ "$STATE_OWNER" != "$HOOK_SESSION_ID" ]; then
+  echo "[builder-loop] ⚠️ session mismatch: state owner=${STATE_OWNER:0:8} current=${HOOK_SESSION_ID:0:8}, skip（非本 session 的 state）" >&2
+  debug_log "exit" "$(SO="$STATE_OWNER" CS="$HOOK_SESSION_ID" python3 -c "
+import os, json; print(json.dumps({'code':0,'reason':'session_mismatch','owner':os.environ['SO'][:8],'current':os.environ['CS'][:8]}))" 2>/dev/null || echo '{}')"
+  exit 0
+fi
+
 # 从 state 提取字段
 PROJECT_ROOT_FIELD="$(grep -E '^project_root:' "$STATE_FILE" 2>/dev/null | head -1 | sed -E 's/^project_root:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' || true)"
 MAIN_REPO_PATH_FIELD="$(grep -E '^main_repo_path:' "$STATE_FILE" 2>/dev/null | head -1 | sed -E 's/^main_repo_path:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' || true)"

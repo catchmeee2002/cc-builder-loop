@@ -157,4 +157,48 @@ assert "Case E state-B 被操作" "[ '$phaseBE' = 'passed_pending_review' ]"
 
 rm -f "$TMP/.claude/builder-loop.local.md"
 
+# ============================================================
+# Case F: owner_session_id 不匹配 → 策略 5 不绑定
+# ============================================================
+section "Case F: owner_session_id 不匹配 → exit 0"
+write_cs_state "$SLUG_A" "$WT_A"
+rm -f "$STATE_B"
+# 给 state-A 设 owner_session_id = session-AAAA
+sed -i '/^phase:/a owner_session_id: "session-AAAA"' "$STATE_A"
+
+# 用 session-BBBB 从主仓触发 → 策略 5 找到唯一 active 但 owner 不匹配
+resultF=$(run_hook "$TMP" "session-BBBB")
+phaseAF=$(read_state_field "$STATE_A" "phase")
+
+assert_ec "Case F hook EC=0（owner mismatch skip）" "$resultF" 0
+assert "Case F state-A.phase 仍为 active（未被处理）" "[ '$phaseAF' = 'active' ]"
+assert_stderr_contains "Case F stderr 含 session mismatch" "$resultF" "session mismatch"
+
+# ============================================================
+# Case G: owner_session_id 匹配 → 策略 5 正常绑定
+# ============================================================
+section "Case G: owner_session_id 匹配 → 正常处理"
+write_cs_state "$SLUG_A" "$WT_A"
+rm -f "$STATE_B"
+sed -i '/^phase:/a owner_session_id: "session-CCCC"' "$STATE_A"
+
+resultG=$(run_hook "$TMP" "session-CCCC")
+phaseAG=$(read_state_field "$STATE_A" "phase")
+
+assert_ec "Case G hook EC=2（owner match 正常处理）" "$resultG" 2
+assert "Case G state-A.phase = passed_pending_review" "[ '$phaseAG' = 'passed_pending_review' ]"
+
+# ============================================================
+# Case H: 无 owner_session_id → 首次绑定写入
+# ============================================================
+section "Case H: 首次绑定写入 owner_session_id"
+write_cs_state "$SLUG_A" "$WT_A"
+rm -f "$STATE_B"
+
+resultH=$(run_hook "$TMP" "session-DDDD")
+ownerH=$(read_state_field "$STATE_A" "owner_session_id")
+
+assert_ec "Case H hook EC=2" "$resultH" 2
+assert "Case H owner_session_id 被写入" "[ '$ownerH' = 'session-DDDD' ]"
+
 harness_report

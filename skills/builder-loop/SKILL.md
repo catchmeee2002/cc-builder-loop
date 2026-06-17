@@ -110,6 +110,8 @@ active: true                     # V3.x 后渐进下掉（仅写不读做新决�
 phase: "active"                  # V3.0 新增：active / passed_pending_review；hook 主判用此字段
 slug: "1777040807-task-alpha"    # = 文件名；bare loop 时 slug="__main__"
 owner_cwd: "/path/to/main-repo"  # setup 时所在 CWD（一般 = main_repo_path）
+owner_session_id: "abc123..."    # V3.7 新增：stop hook 首次绑定时写入的 CC session_id
+                                 # 后续 stop hook 校验匹配，不匹配 → 静默跳过（防并发 session 越界）
 iter: 3
 max_iter: 5
 last_iter_head: abc1234          # V3.0 新增：上一轮 PASS_CMD 后 worktree HEAD short sha；L2B 闸用
