@@ -4,6 +4,13 @@
 > **只记事实，不写建议方向**——loop 侧开发者拿到事实自己判断怎么修。
 > 已消化条目直接删除（代码是 ground truth），不标 ✅。已关闭条目见 [CHANGELOG](CHANGELOG.md)。
 
+## 2026-06-18 suspected_test_tampering 早停误判「需求翻转」场景
+
+- 触发场景：恢复 /mnt/mcap 自动清理能力（之前 commit 删除了该功能），Case 7 测试断言需从"不清理"翻转为"清理且验证参数正确性"——实际是**加强**断言（新增 3 条 assert 验证 output_dir/max_age_days/target_pct），非削弱
+- 现象：diff-level-check 或 PASS_CMD 阶段检测到 test 文件 assert 行被修改，触发 `suspected_test_tampering` 早停（iter 1），状态直接归档到 legacy/
+- 根因：tampering 检测粒度为"test 文件中 assert 行有变动"，不区分断言加强（新增/收紧条件）vs 断言削弱（删除/放宽条件）；也无法识别"需求反转导致的合法翻转"
+- 优先级：中
+
 ## 2026-06-18 [观察期] tester 写主仓 — 策略 5 phase 过滤已修，待验证两周不复现
 
 - 修复：locate-state.sh 策略 5 从只匹配 `phase=active` 扩展为 `active + passed_pending_review`；subagent-start-guard additionalContext 注入同步扩展
@@ -12,12 +19,6 @@
 - 优先级：观察（已修，等验证）
 
 
-## 2026-06-17 test-dirty-stash-flow fixture 清理挂起导致 PASS_CMD 超时
-
-- 触发场景：builder-loop PASS_CMD 跑 test-dirty-stash-flow.sh，18/18 assert 全过，但 harness EXIT trap 的 `rm -rf` 清理挂住，120s 超时后被 kill
-- 现象：fixture 输出 `PASS=18 FAIL=0` 后进程不退出，直到 timeout
-- 根因：fixture 通过 setup-builder-loop.sh 创建 4 个含 git worktree + rebase 状态的临时仓库，EXIT trap 的 `rm -rf` 可能卡在清理这些目录（NFS/锁/worktree 注册残留）
-- 优先级：中（不影响功能但阻塞 PASS_CMD 流水线，当前靠手动 merge 绕过）
 
 ## 2026-06-17 --reuse-worktree 把 state 创建在 worktree 内部而非主仓 state 目录
 
