@@ -6,6 +6,7 @@
 
 
 
+
 ## 2026-06-17 test-dirty-stash-flow fixture 清理挂起导致 PASS_CMD 超时
 
 - 触发场景：builder-loop PASS_CMD 跑 test-dirty-stash-flow.sh，18/18 assert 全过，但 harness EXIT trap 的 `rm -rf` 清理挂住，120s 超时后被 kill
@@ -29,12 +30,6 @@
 - 优先级：低（不影响功能，但用户体验差；每次步骤 5 有 `[记住]` 候选都会触发）
 
 
-## 2026-06-15 tester subagent 在 worktree 模式下写文件到主仓
-
-- 触发场景：builder-loop worktree 模式下 spawn tester（传了 worktree_path），tester 的 Write/Edit 操作落到主仓而非 worktree。本 session 复现 3 次：① #294 tester 在主仓改了 scripts/deep_analysis_outline_overflow.py ② BlueprintView tester 在主仓创建 tests/test_blueprint_view.py 和 novel_writer/view/*.py ③ E1c-b tester 在主仓改了 tests/test_detect_revealed_secrets.py
-- 现象：worktree 无变化，主仓出现 untracked/modified 文件。每次需手动 cp 到 worktree + git checkout 清主仓
-- 根因：tester subagent 启动时 cwd 为主仓，Write/Edit 用项目根相对路径解析到主仓绝对路径，worktree_path 参数未被用于重定位文件操作
-- 优先级：高（每次 tester + worktree 组合必触发，手动搬文件耗时且易漏）
 
 ## 2026-06-11 worktree pytest-html 插件冲突导致 PASS_CMD 失败被误判 test_tampering
 
