@@ -39,6 +39,13 @@ harness_init() {
 
 _harness_cleanup() {
   for _d in "${_HARNESS_TMPDIRS[@]+"${_HARNESS_TMPDIRS[@]}"}"; do
+    # V3.7: prune git worktrees before rm to avoid hanging on NFS/lock
+    if [ -d "$_d/.git" ] || [ -f "$_d/.git" ]; then
+      git -C "$_d" worktree prune 2>/dev/null || true
+      for _wt in "$_d"/.claude/worktrees/*/; do
+        [ -d "$_wt" ] && git -C "$_d" worktree remove --force "$_wt" 2>/dev/null || true
+      done
+    fi
     rm -rf "$_d" 2>/dev/null || true
   done
 }
