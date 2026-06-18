@@ -122,7 +122,7 @@ LOCK_FILE="$(bl_lock_path "$SESSION_ID" "$SUBAGENT_TYPE")"
 log "lock written: $LOCK_FILE | type=$SUBAGENT_TYPE | worktree=$WORKTREE_PATH"
 
 # Layer 1: Inject worktree boundary context into subagent via additionalContext
-if [ -n "$WORKTREE_PATH" ] && [ -d "$WORKTREE_PATH" ] && [ "$PHASE" = "active" ]; then
+if [ -n "$WORKTREE_PATH" ] && [ -d "$WORKTREE_PATH" ] && { [ "$PHASE" = "active" ] || [ "$PHASE" = "passed_pending_review" ]; }; then
   CONTEXT_MSG="WORKTREE BOUNDARY: All file operations (Write/Edit) MUST target paths under ${WORKTREE_PATH}/. The main repo at ${MAIN_REPO_PATH} is read-only during active loop. Any write outside the worktree will be blocked by PreToolUse hook."
   if command -v jq >/dev/null 2>&1; then
     jq -n --arg ctx "$CONTEXT_MSG" '{"additionalContext": $ctx}'
