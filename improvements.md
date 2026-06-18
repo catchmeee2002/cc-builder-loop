@@ -4,7 +4,12 @@
 > **只记事实，不写建议方向**——loop 侧开发者拿到事实自己判断怎么修。
 > 已消化条目直接删除（代码是 ground truth），不标 ✅。已关闭条目见 [CHANGELOG](CHANGELOG.md)。
 
+## 2026-06-18 [观察期] tester 写主仓 — 策略 5 phase 过滤已修，待验证两周不复现
 
+- 修复：locate-state.sh 策略 5 从只匹配 `phase=active` 扩展为 `active + passed_pending_review`；subagent-start-guard additionalContext 注入同步扩展
+- 根因：tester 在 `passed_pending_review` 阶段 spawn 时，locate-state.sh 策略 5 不匹配 → SubagentStart 不写 lock → write-guard 无锁走 builder 宽松模式
+- 验证条件：**2026-07-02 前无复现 → 删除本条目**。复现 → 重新立项排查
+- 优先级：观察（已修，等验证）
 
 
 ## 2026-06-17 test-dirty-stash-flow fixture 清理挂起导致 PASS_CMD 超时
