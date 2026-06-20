@@ -12,7 +12,7 @@ if [ -z "${PLAN_FILE}" ] || [ ! -f "${PLAN_FILE}" ]; then
     exit 1
 fi
 
-CONTENT=$(sed -n '/^<!-- e2e-cases -->/,/^<!-- \/e2e-cases -->/{ /^<!-- \/*e2e-cases -->/d; p; }' "${PLAN_FILE}")
+CONTENT=$(sed -n '/^[[:space:]]*<!-- e2e-cases -->/,/^[[:space:]]*<!-- \/e2e-cases -->/{ /^[[:space:]]*<!-- \/*e2e-cases -->/d; p; }' "${PLAN_FILE}" | tr -d '\r')
 
 if [ -z "${CONTENT}" ]; then
     exit 1

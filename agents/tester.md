@@ -129,7 +129,7 @@ TESTER_SUMMARY: 已写测试但发现疑似缺陷 | 缺陷: {file:line 描述} |
 ### ⚠️ 隔离约束
 
 1. **只看 `e2e_cases` 文本和 app 运行时状态**
-2. **禁止 Read 实现源码**（复用写测试模式的 source_dirs 隔离规则）
+2. **禁止 Read 实现源码**（复用写测试模式的 source_dirs 隔离规则；Bash 启动 app 是例外放行，不受 source_dirs lock 拦截）
 3. **禁止读 builder transcript 或 git log**
 4. **禁止 Write/Edit 任何源码或测试文件**——本模式只验证不写入
 

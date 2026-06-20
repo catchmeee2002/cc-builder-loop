@@ -90,4 +90,16 @@ assert "special chars exits 0" "[ $? -eq 0 ]"
 assert_contains "preserves curl" "$TMPDIR/out7.txt" "curl"
 assert_contains "preserves nested indent" "$TMPDIR/out7.txt" "应返回"
 
+# ---- 8. Indented tags → extracted ----
+cat > "$TMPDIR/plan-indent.md" <<'EOF'
+## 验收
+  <!-- e2e-cases -->
+  - 检查缩进标签
+  <!-- /e2e-cases -->
+EOF
+
+run_extract "$TMPDIR/plan-indent.md" "$TMPDIR/out8.txt"
+assert "indented tags exits 0" "[ $? -eq 0 ]"
+assert_contains "indented tag content" "$TMPDIR/out8.txt" "缩进标签"
+
 harness_report

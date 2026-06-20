@@ -541,10 +541,7 @@ if [ "$LAST_LINE" = "PASS" ]; then
     CURRENT_HEAD="$(git -C "$RUN_CWD" rev-parse HEAD 2>/dev/null || echo "")"
 
     if [ "$E2E_VERIFIED_HEAD" != "$CURRENT_HEAD" ] && [ -f "$E2E_PLAN_FULL" ]; then
-      EXTRACT_SCRIPT="${HARNESS_REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}/scripts/extract-e2e-cases.sh"
-      if [ ! -f "$EXTRACT_SCRIPT" ]; then
-        EXTRACT_SCRIPT="$(dirname "${BASH_SOURCE[0]}")/extract-e2e-cases.sh"
-      fi
+      EXTRACT_SCRIPT="$(dirname "${BASH_SOURCE[0]}")/extract-e2e-cases.sh"
 
       E2E_CASES=""
       if [ -f "$EXTRACT_SCRIPT" ]; then
