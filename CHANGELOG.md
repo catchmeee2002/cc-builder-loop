@@ -2,6 +2,27 @@
 
 > 从 CLAUDE.md §5 外移。记录各版本交付的能力与关键实现细节。
 
+## V3.7 并发 Session 隔离 + Tester 写路径修复（2026-06-17~18）
+
+修复并发 session 越界 + tester 写主仓 + fixture 清理挂起三条实战 bug。
+
+**1. owner_session_id 防并发越界**
+- stop hook 首次定位 state 时写入 `owner_session_id`，后续校验匹配，不匹配 → stderr 警告 + exit 0 skip
+- 消化 2 条并发 session case（stop hook 被非 owner session 截获 + merge 后 cleanup 非原子窗口）
+- state schema 新增 `owner_session_id` 字段
+
+**2. tester 写主仓根因修复**
+- 根因：`locate-state.sh` 策略 5 只匹配 `phase=active`，tester 在 `passed_pending_review` 阶段 spawn 时找不到 state → SubagentStart 不写 lock → write-guard 无锁走 builder 宽松模式
+- 修复：策略 5 扩展为 `active + passed_pending_review`；subagent-start-guard additionalContext 注入条件同步扩展
+- write-guard 加诊断日志（lock-resolve / strict-mode / wt-empty），定位断裂点用
+
+**3. fixture 清理挂起修复**
+- harness cleanup 在 `rm -rf` 前加 `git worktree prune` + `worktree remove --force`，解决含 worktree 注册的临时目录清理卡住
+
+**4. cross-session e2e fixture 扩展**
+- harness `run_hook` 支持可选 session_id 参数
+- 新增 Case F/G/H：owner_session_id 不匹配 skip / 匹配正常处理 / 首次绑定写入
+
 ## V3.6 Reviewer 轮次优化 + Plan 假设化（2026-06-15）
 
 降低 reviewer 平均轮次 + 把 plan 从「权威」frame 转为「假设」frame。
