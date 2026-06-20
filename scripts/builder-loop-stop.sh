@@ -527,6 +527,55 @@ if [ "$LAST_LINE" = "PASS" ]; then
   # 安全性：进入此分支前 STATE_FILE 已通过 L200 + L203 的 `[ -f "$STATE_FILE" ]` 检查，`set -u` 不会抢先触发
   PASS_START_HEAD_PREREAD="$(grep -E '^start_head:' "$STATE_FILE" 2>/dev/null | head -1 | sed -E 's/^start_head:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' || echo "")"
 
+  # ---- V3.8: e2e behavioral verification (before judge) ----
+  E2E_PLAN_PATH="$(grep -E '^e2e_plan_path:' "$STATE_FILE" 2>/dev/null | head -1 | sed -E 's/^e2e_plan_path:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' || echo "")"
+  if [ -n "$E2E_PLAN_PATH" ]; then
+    # resolve relative path against PROJECT_ROOT
+    if [ "${E2E_PLAN_PATH#/}" = "$E2E_PLAN_PATH" ]; then
+      E2E_PLAN_FULL="${PROJECT_ROOT}/${E2E_PLAN_PATH}"
+    else
+      E2E_PLAN_FULL="$E2E_PLAN_PATH"
+    fi
+
+    E2E_VERIFIED_HEAD="$(grep -E '^e2e_verified_head:' "$STATE_FILE" 2>/dev/null | head -1 | sed -E 's/^e2e_verified_head:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' || echo "")"
+    CURRENT_HEAD="$(git -C "$RUN_CWD" rev-parse HEAD 2>/dev/null || echo "")"
+
+    if [ "$E2E_VERIFIED_HEAD" != "$CURRENT_HEAD" ] && [ -f "$E2E_PLAN_FULL" ]; then
+      EXTRACT_SCRIPT="${HARNESS_REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}/scripts/extract-e2e-cases.sh"
+      if [ ! -f "$EXTRACT_SCRIPT" ]; then
+        EXTRACT_SCRIPT="$(dirname "${BASH_SOURCE[0]}")/extract-e2e-cases.sh"
+      fi
+
+      E2E_CASES=""
+      if [ -f "$EXTRACT_SCRIPT" ]; then
+        E2E_CASES="$(bash "$EXTRACT_SCRIPT" "$E2E_PLAN_FULL" 2>/dev/null || echo "")"
+      fi
+
+      if [ -n "$E2E_CASES" ]; then
+        debug_log "e2e_inject" "cases found, injecting verification request (iter=$NEXT_ITER)"
+        cat >&2 <<E2EEOF
+
+[builder-loop] ✅ PASS_CMD 全过（iter ${NEXT_ITER}）。检测到端到端验收用例。
+
+请执行端到端验收：
+1. spawn tester subagent（e2e 模式），传入：
+   - e2e_cases（以下用例文本）
+   - worktree_path: ${RUN_CWD}
+2. tester 报 E2E_SUMMARY: all_pass → 用 python3 写 e2e_verified_head 到 state 文件：
+   STATE_FILE=${STATE_FILE}
+   写入字段：e2e_verified_head: "${CURRENT_HEAD}"
+3. tester 报 E2E_SUMMARY: has_failure → 根据失败用例修改代码
+
+端到端验收用例：
+${E2E_CASES}
+E2EEOF
+        exit 2
+      fi
+    else
+      debug_log "e2e_skip" "already verified at HEAD=$CURRENT_HEAD"
+    fi
+  fi
+
   # ---- V1.9: judge agent 调用（PASS_CMD 通过后语义判定） ----
   # 任何故障路径（脚本缺失 / API 失败 / JSON 解析失败 / confidence 低）都通过 downgraded=true 表达
   # 降级时本段不阻断，fall through 走原 PASS 路径（merge-worktree-back + reviewer）

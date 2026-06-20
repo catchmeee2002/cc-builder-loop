@@ -159,6 +159,10 @@ consecutive_nudge_count: 1
 # V2.1 judge agent 模型降级链字段（仅 judge 已开启时填充）
 judge_active_model: "claude-sonnet-4-6"      # 当前活跃模型；连续 fallback_after_failures 次失败后切 fallback_model
 judge_consecutive_failures: 0                # primary 模型连续失败计数（5xx/timeout/parse_error 计数；401/429 不计数）
+
+# V3.8 e2e behavioral verification 段（仅 plan 含 <!-- e2e-cases --> 标签时存在）
+e2e_plan_path: ".claude/plans/20260620-xxx.md"  # plan 文件路径（setup 时写入）
+e2e_verified_head: "abc1234"                    # e2e 验收通过时的 HEAD commit；与当前 HEAD 一致则跳过 e2e
 ```
 
 ### Subagent 锁文件 schema（V3.5+）
