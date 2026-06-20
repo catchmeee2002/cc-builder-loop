@@ -1,16 +1,16 @@
 # cc-builder-loop — Builder 自闭环迭代
 
-> 把 builder 模式从「单次执行」升级为「机器判定的多轮自闭环」。
+> 把 builder 模式从「单次执行」升级为「独立判据驱动的多轮自闭环」。
 > 项目接入只需在项目根放 `.claude/loop.yml`，定义 `pass_cmd`（lint/test 等通过条件），
 > builder 改完代码会自动跑 PASS_CMD，失败自动喂回让 builder 再改，直到 PASS 或达到上限。
 
-> **与 CC 官方自动化能力的边界**：本仓库 = 机器判据驱动的**纵向收敛闭环**（PASS_CMD 客观判据 + worktree 隔离 + reward hacking 防御）；官方 `/loop` = **通用步频再触发器**、dynamic workflow = **横向 fan-out 编排层**，二者判停均 LLM 主观。维度正交，**不要叠用**（尤其 builder-loop active 时勿在同会话开 inline workflow）。跟踪与互斥防御见 [`skills/builder-loop/docs/cc-loop-tracking.md`](skills/builder-loop/docs/cc-loop-tracking.md)。
+> **与 CC 官方自动化能力的边界**：本仓库 = 独立判据驱动的**纵向收敛闭环**（PASS_CMD 客观判据 + 独立 agent 行为验证 + worktree 隔离 + reward hacking 防御）；官方 `/loop` = **通用步频再触发器**、dynamic workflow = **横向 fan-out 编排层**，二者判停均 LLM 主观。维度正交，**不要叠用**（尤其 builder-loop active 时勿在同会话开 inline workflow）。跟踪与互斥防御见 [`skills/builder-loop/docs/cc-loop-tracking.md`](skills/builder-loop/docs/cc-loop-tracking.md)。
 
 ---
 
 ## 设计哲学
 
-本项目是 LLM 驱动的发散系统，所有设计决策的判据是一组原则，**唯一来源**见 [`docs/design-philosophy.md`](docs/design-philosophy.md)。核心：**判据分层**——机器判据做 ground truth 地基、LLM 判据补语义层；项目定位为给自动化系统提供「LLM 说服不了的」外部锚点。
+本项目是 LLM 驱动的发散系统，所有设计决策的判据是一组原则，**唯一来源**见 [`docs/design-philosophy.md`](docs/design-philosophy.md)。核心：**判据按独立性分层**——纯机器判据（人定义+机器执行）做 ground truth 地基、独立 agent 判据（独立定义+独立执行）做行为验证层、同会话 LLM 判据补语义层；判据可信度的关键属性是独立性，不是「机器 vs LLM」。
 
 > 原则正文只在 design-philosophy.md 维护，此处与 README 一律不复制全文（落实原则二「每份数据一个家」+ 原则七 dogfooding）。
 
