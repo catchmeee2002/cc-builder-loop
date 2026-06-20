@@ -2,6 +2,30 @@
 
 > 从 CLAUDE.md §5 外移。记录各版本交付的能力与关键实现细节。
 
+## V3.8 E2E 行为验收 stage（2026-06-20）
+
+在 PASS_CMD 全过后、judge 之前，加入独立 tester subagent 驱动的端到端行为验证阶段。
+
+**1. 设计哲学升级：判据按独立性分层**
+- 原则零从「机器判据驱动」升级为「独立判据驱动」——判据可信度的关键属性是独立性（定义者和执行者都独立于被审计者），不是机器 vs LLM
+- 三层：纯机器判据（人定义+机器执行）→ 独立 agent 判据（独立定义+独立执行）→ 同会话 LLM 判据
+
+**2. E2E 验收机制**
+- Plan 中用 `<!-- e2e-cases -->` 标签包裹行为验收用例（自然语言步骤列表）
+- State 新增 `e2e_plan_path`（plan 指针）和 `e2e_verified_head`（通过时的 HEAD）
+- Stop hook PASS 路径：judge 之前检查 state，提取用例，注入验证请求消息（exit 2）
+- Builder 收到消息后 spawn tester（e2e 模式），tester 驱动浏览器/CLI/API 逐条验证
+- Tester 全 pass → builder 写 `e2e_verified_head` 到 state → 下轮 stop hook 跳过 e2e 走 judge
+
+**3. Tester 双模式**
+- 写测试模式（原有）：收到 `spec_view` + `interface_signatures` → 写 pytest 文件
+- E2E 执行模式（新增）：收到 `e2e_cases` → 驱动 app 验证行为，报 `E2E_SUMMARY`
+- 隔离约束：只看用例文本 + app 运行态，禁止读源码/transcript/diff
+
+**4. 新增文件**
+- `scripts/extract-e2e-cases.sh`：从 plan 提取 e2e-cases 标签内容
+- 2 个 fixture（22 assertions）：extract 提取 + stop hook e2e 分支
+
 ## V3.7 并发 Session 隔离 + Tester 写路径修复（2026-06-17~18）
 
 修复并发 session 越界 + tester 写主仓 + fixture 清理挂起三条实战 bug。
