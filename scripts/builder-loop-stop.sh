@@ -534,7 +534,7 @@ E2EEOF
   if [ -n "$RH_CONFIG_HIT" ]; then
     RH_CONTENT="$(git -C "$RUN_CWD" diff "${PASS_START_HEAD_PREREAD}..HEAD" -- "$RH_CONFIG_HIT" 2>/dev/null || echo "")"
     RH_KEYWORD_HIT=""
-    for rh_kw in '--reruns' '@pytest.mark.flaky' 'xfail' 'pytest.skip' '@unittest.skip' '-k "not'; do
+    for rh_kw in '--reruns' '@pytest.mark.flaky' 'xfail' 'pytest.skip' 'pytest.mark.skip' '@unittest.skip' '.skipTest(' '-k "not'; do
       case "$RH_CONTENT" in
         *"$rh_kw"*) RH_KEYWORD_HIT="$rh_kw"; break ;;
       esac
@@ -788,7 +788,7 @@ LOG_PATH="$(echo "$LAST_LINE" | awk '{print $3}')"
 # grep pass_cmd 错误日志中的瞬态关键词，命中则重跑（不喂回 builder）
 if [ -f "$LOG_PATH" ]; then
   RETRY_HIT=""
-  for rt_kw in 'API truncation' 'connection reset' 'ETIMEDOUT' 'socket hang up' 'ECONNRESET' 'read ECONNRESET'; do
+  for rt_kw in 'API truncation' 'connection reset' 'ETIMEDOUT' 'socket hang up' 'ECONNRESET' 'ENOTFOUND'; do
     if grep -qi "$rt_kw" "$LOG_PATH" 2>/dev/null; then
       RETRY_HIT="$rt_kw"
       break

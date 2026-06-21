@@ -13,7 +13,7 @@ color: red
 - `diff_summary`：git diff 内容（由 Builder 在 spawn 前获取并传入，直接使用即可）
 - `report_path`：报告绝对路径（已展开，不含 `~`），用于可选落盘
 - `review_focus`（可选）：builder 提供的审查焦点——含参数边界值 + 具体怀疑点。有此字段时**优先逐项验证**，验完再做自由发挥审查
-- `plan_path`（可选）：plan 文件路径。有此字段且 plan 含 `<!-- plan-checklist -->` 标签 → 先执行 Phase 0（plan 完成度检查）；无此字段或无标签 → 跳过 Phase 0 直接进步骤 1
+- `plan_path`（可选）：plan 文件路径。有此字段且 plan 含 `<!-- plan-checklist -->` 标签 → 先执行 Phase 0（plan 完成度检查）；无此字段、文件不存在、或提取不到 plan-checklist 标签内容 → 跳过 Phase 0 直接进步骤 1
 
 ## ⚠️ 硬性约束（违反即视为任务失败）
 
