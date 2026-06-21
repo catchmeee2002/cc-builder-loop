@@ -275,63 +275,7 @@ print(json.dumps({'code':0,'reason':'zombie_inactive','active': os.environ.get('
   exit 0
 fi
 
-# ---- V1.9: outcome 后置补标（回溯标注上一轮 judge 结果） ----
-# 仅当上一轮 action=continue_nudge 时自动标 nudge_was_correct / nudge_likely_false_positive
-# stop_done / retry_transient 类需要更复杂判据（或人工标），这里跳过
-#
-# 局限：本逻辑只在「同一 task 内多轮 loop」严格成立——start_head 与 jsonl 末尾的 nudge
-#       同源（同一 setup-builder-loop.sh 调用）。跨 task 场景（上一 task PASS+stop_done
-#       已 cleanup state，新 task setup 创建新 state.start_head）下，jsonl 末尾通常是
-#       上 task 的 stop_done（不会触发 outcome 标记）；理论边界：上 task 末轮 nudge
-#       后未到 stop_done 就被外部中断 → 新 task 进场可能误标。当前接受此小概率边界。
-JUDGE_TRACE_FILE="${PROJECT_ROOT}/.claude/builder-loop/judge-trace.jsonl"
-if [ -f "$JUDGE_TRACE_FILE" ]; then
-  BACKFILL_START_HEAD="$(grep -E '^start_head:' "$STATE_FILE" 2>/dev/null | head -1 | sed -E 's/^start_head:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' || echo "")"
-  BACKFILL_DIFF_NE=""
-  if [ -n "$BACKFILL_START_HEAD" ] && git -C "$PROJECT_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    if git -C "$PROJECT_ROOT" diff --quiet "${BACKFILL_START_HEAD}..HEAD" 2>/dev/null; then
-      BACKFILL_DIFF_NE="false"
-    else
-      BACKFILL_DIFF_NE="true"
-    fi
-  fi
-  TRACE_FILE="$JUDGE_TRACE_FILE" DIFF_NE="$BACKFILL_DIFF_NE" python3 - <<'PY' 2>/dev/null || true
-import os, json
-trace = os.environ['TRACE_FILE']
-diff_ne = os.environ.get('DIFF_NE', '')
-try:
-    with open(trace) as f:
-        lines = f.readlines()
-except Exception:
-    raise SystemExit
-if not lines:
-    raise SystemExit
-idx = len(lines) - 1
-while idx >= 0 and not lines[idx].strip():
-    idx -= 1
-if idx < 0:
-    raise SystemExit
-try:
-    obj = json.loads(lines[idx])
-except Exception:
-    raise SystemExit
-if obj.get('outcome') is not None:
-    raise SystemExit
-last_action = obj.get('judge', {}).get('action', '')
-outcome = None
-if last_action == 'continue_nudge':
-    if diff_ne == 'true':
-        outcome = 'nudge_was_correct'
-    elif diff_ne == 'false':
-        outcome = 'nudge_likely_false_positive'
-if outcome is None:
-    raise SystemExit
-obj['outcome'] = outcome
-lines[idx] = json.dumps(obj, ensure_ascii=False) + '\n'
-with open(trace, 'w') as f:
-    f.writelines(lines)
-PY
-fi
+# ---- (V4.0 removed) judge outcome backfill — judge 已被 reviewer Phase 0 吸收 ----
 
 # ---- 2. 取当前 iter ----
 ITER=$(grep -E '^iter:' "$STATE_FILE" | head -1 | awk '{print $2}')
@@ -527,8 +471,14 @@ if [ "$LAST_LINE" = "PASS" ]; then
   # 安全性：进入此分支前 STATE_FILE 已通过 L200 + L203 的 `[ -f "$STATE_FILE" ]` 检查，`set -u` 不会抢先触发
   PASS_START_HEAD_PREREAD="$(grep -E '^start_head:' "$STATE_FILE" 2>/dev/null | head -1 | sed -E 's/^start_head:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' || echo "")"
 
-  # ---- V3.8: e2e behavioral verification (before judge) ----
-  E2E_PLAN_PATH="$(grep -E '^e2e_plan_path:' "$STATE_FILE" 2>/dev/null | head -1 | sed -E 's/^e2e_plan_path:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' || echo "")"
+  # ---- V4.0: read plan_path (fallback e2e_plan_path for old state files) ----
+  PLAN_PATH="$(grep -E '^plan_path:' "$STATE_FILE" 2>/dev/null | head -1 | sed -E 's/^plan_path:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' || echo "")"
+  if [ -z "$PLAN_PATH" ]; then
+    PLAN_PATH="$(grep -E '^e2e_plan_path:' "$STATE_FILE" 2>/dev/null | head -1 | sed -E 's/^e2e_plan_path:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' || echo "")"
+  fi
+
+  # ---- V3.8: e2e behavioral verification ----
+  E2E_PLAN_PATH="$PLAN_PATH"
   if [ -n "$E2E_PLAN_PATH" ]; then
     # resolve relative path against PROJECT_ROOT
     if [ "${E2E_PLAN_PATH#/}" = "$E2E_PLAN_PATH" ]; then
@@ -573,120 +523,33 @@ E2EEOF
     fi
   fi
 
-  # ---- V1.9: judge agent 调用（PASS_CMD 通过后语义判定） ----
-  # 任何故障路径（脚本缺失 / API 失败 / JSON 解析失败 / confidence 低）都通过 downgraded=true 表达
-  # 降级时本段不阻断，fall through 走原 PASS 路径（merge-worktree-back + reviewer）
-  if [ -f "${SKILL_DIR}/run-judge-agent.sh" ]; then
-    # V2.0: --project-root 传 RUN_CWD（干活的地方），让 judge 读 worktree 内 loop.yml + git diff worktree
-    JUDGE_RESULT="$(bash "${SKILL_DIR}/run-judge-agent.sh" \
-        --state-file "$STATE_FILE" \
-        --project-root "$RUN_CWD" \
-        --transcript-path "$TRANSCRIPT_PATH" \
-        --pass-cmd-status "PASS" 2>/dev/null || echo '{"action":"stop_done","downgraded":true,"downgrade_reason":"script_error","confidence":0.0,"reason":"","model_used":"","credential_path":"none"}')"
-  else
-    JUDGE_RESULT='{"action":"stop_done","downgraded":true,"downgrade_reason":"script_missing","confidence":0.0,"reason":"","model_used":"","credential_path":"none"}'
-  fi
-  JUDGE_ACTION="$(echo "$JUDGE_RESULT" | python3 -c "import sys,json; print(json.loads(sys.stdin.read()).get('action','stop_done'))" 2>/dev/null || echo "stop_done")"
-  JUDGE_DOWNGRADED="$(echo "$JUDGE_RESULT" | python3 -c "import sys,json; print(str(json.loads(sys.stdin.read()).get('downgraded',False)).lower())" 2>/dev/null || echo "true")"
-  JUDGE_CONF_OUT="$(echo "$JUDGE_RESULT" | python3 -c "import sys,json; print(json.loads(sys.stdin.read()).get('confidence',0))" 2>/dev/null || echo "0")"
-  JUDGE_REASON_OUT="$(echo "$JUDGE_RESULT" | python3 -c "import sys,json; print(json.loads(sys.stdin.read()).get('reason',''))" 2>/dev/null || echo "")"
-
-  # 仅在 PASS 分支才会到这里，run-judge-agent.sh 的 FAIL→PASS 错调用由本块所在的 PASS 段位置保证；
-  # 这里不再检查 pass_cmd_status——纯 action 路由
-  if [ "$JUDGE_ACTION" = "continue_nudge" ] && [ "$JUDGE_DOWNGRADED" = "false" ]; then
-    # 连续 nudge 上限保护（防 LLM 判据脱缰）
-    CUR_NUDGE="$(grep -E '^consecutive_nudge_count:' "$STATE_FILE" 2>/dev/null | head -1 | awk '{print $2}')"
-    CUR_NUDGE="${CUR_NUDGE:-0}"
-    MAX_NUDGE="2"
-    # V2.0：与 PASS_CMD 一致从 RUN_CWD（worktree）读 loop.yml，让 worktree 内改 judge 配置立即生效；
-    # 文件缺失时（worktree 未 commit loop.yml 的极少数场景）fallback 主仓
-    NUDGE_LOOP_YML="${RUN_CWD}/.claude/loop.yml"
-    [ ! -f "$NUDGE_LOOP_YML" ] && NUDGE_LOOP_YML="${PROJECT_ROOT}/.claude/loop.yml"
-    if [ -f "$NUDGE_LOOP_YML" ]; then
-      MAX_NUDGE_RAW="$(grep -E '^[[:space:]]+max_consecutive_nudges:' "$NUDGE_LOOP_YML" 2>/dev/null | head -1 | awk '{print $2}' || echo "")"
-      [ -n "$MAX_NUDGE_RAW" ] && MAX_NUDGE="$MAX_NUDGE_RAW"
-    fi
-    MAX_ITER_FOR_MSG="$(grep -E '^max_iter:' "$STATE_FILE" 2>/dev/null | head -1 | awk '{print $2}')"
-    MAX_ITER_FOR_MSG="${MAX_ITER_FOR_MSG:-5}"
-    if [ "$CUR_NUDGE" -lt "$MAX_NUDGE" ]; then
-      NEW_NUDGE=$((CUR_NUDGE + 1))
-      STATE_FILE="$STATE_FILE" NEXT_ITER="$NEXT_ITER" \
-        JUDGE_CF="$JUDGE_CONF_OUT" JUDGE_TS="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo '1970-01-01T00:00:00Z')" \
-        NUDGE_CNT="$NEW_NUDGE" python3 - <<'PY'
-import os, re
-sf = os.environ['STATE_FILE']
-text = open(sf).read()
-text = re.sub(r'^iter:.*$', f'iter: {os.environ["NEXT_ITER"]}', text, flags=re.M)
-def upsert(text, key, value):
-    pat = re.compile(rf'^{key}:.*$', re.M)
-    if pat.search(text):
-        return pat.sub(f'{key}: {value}', text)
-    if not text.endswith('\n'):
-        text += '\n'
-    return text + f'{key}: {value}\n'
-text = upsert(text, 'last_judge_action', '"continue_nudge"')
-text = upsert(text, 'last_judge_confidence', os.environ['JUDGE_CF'])
-text = upsert(text, 'last_judge_ts', f'"{os.environ["JUDGE_TS"]}"')
-text = upsert(text, 'consecutive_nudge_count', os.environ['NUDGE_CNT'])
-open(sf, 'w').write(text)
-PY
-      write_trace "JUDGE_NUDGE" "judge" "" "$JUDGE_REASON_OUT"
-      cat >&2 <<NUDGE_MSG
-[builder-loop judge | iter=${NEXT_ITER}/${MAX_ITER_FOR_MSG} | judge=continue_nudge | conf=${JUDGE_CONF_OUT}]
-原因：${JUDGE_REASON_OUT}
-请确认：是确实完成了无需更多改动，还是漏了什么？
-
-(PASS_CMD 状态：通过)
-本消息来自 builder-loop 自动判定 agent，非用户输入。如果你认为判定错误，请在回复中说明理由继续操作。
-NUDGE_MSG
-      # V2.3: reward hacking 命中 → 加三选项二次确认提示
-      case "$JUDGE_REASON_OUT" in
-        *suspected_reward_hack*)
-          cat >&2 <<'RH_MSG'
-[builder-loop reward-hack-guard] PASS_CMD 配置改动疑似 reward hacking。
+  # ---- V4.0: reward hacking regex check (from judge Layer 2, now mechanical) ----
+  RH_DIFF="$(git -C "$RUN_CWD" diff "${PASS_START_HEAD_PREREAD}..HEAD" --name-only 2>/dev/null || echo "")"
+  RH_CONFIG_HIT=""
+  for rh_f in $RH_DIFF; do
+    case "$rh_f" in
+      *loop.yml|*pyproject.toml|*pytest.ini|*setup.cfg|*conftest.py|tests*/*.py|test_*) RH_CONFIG_HIT="$rh_f"; break ;;
+    esac
+  done
+  if [ -n "$RH_CONFIG_HIT" ]; then
+    RH_CONTENT="$(git -C "$RUN_CWD" diff "${PASS_START_HEAD_PREREAD}..HEAD" -- "$RH_CONFIG_HIT" 2>/dev/null || echo "")"
+    RH_KEYWORD_HIT=""
+    for rh_kw in '--reruns' '@pytest.mark.flaky' 'xfail' 'pytest.skip' '@unittest.skip' '-k "not'; do
+      case "$RH_CONTENT" in
+        *"$rh_kw"*) RH_KEYWORD_HIT="$rh_kw"; break ;;
+      esac
+    done
+    if [ -n "$RH_KEYWORD_HIT" ]; then
+      debug_log "reward_hack_guard" "file=$RH_CONFIG_HIT keyword=$RH_KEYWORD_HIT"
+      cat >&2 <<RH_MSG
+[builder-loop reward-hack-guard] PASS_CMD 配置改动疑似 reward hacking（file=$RH_CONFIG_HIT, keyword=$RH_KEYWORD_HIT）。
 立即用 AskUserQuestion 列三选项让用户决策：
   ① quarantine 该测试（pytest.mark.skip / --ignore=... / xfail）+ 留 followup issue
   ② 修测试根因（race / sleep / 共享状态 改成同步原语）
   ③ 保留 cmd 改动（需在回复中给出必要性理由）
 禁止单方面继续完成 commit 流程。
 RH_MSG
-          ;;
-      esac
-      debug_log "judge_result" "$(JA="continue_nudge" JD="false" JC="$JUDGE_CONF_OUT" JR="$JUDGE_REASON_OUT" python3 -c "
-import os, json
-print(json.dumps({'action': os.environ.get('JA',''), 'downgraded': os.environ.get('JD','false') == 'true', 'confidence': float(os.environ.get('JC','0') or 0), 'reason': os.environ.get('JR','')[:200]}))
-" 2>/dev/null || echo '{}')"
-      debug_log "exit" '{"code":2,"reason":"judge_continue_nudge"}'
       exit 2
-    else
-      echo "[builder-loop judge | iter=${NEXT_ITER}] consecutive_nudge_count=${CUR_NUDGE} >= max=${MAX_NUDGE}，强制 stop_done（防脱缰）" >&2
-      # V1.9 fix: 强制 stop_done 也要写 telemetry，标记 max_nudge_reached（reviewer 反馈）
-      MAX_NUDGE_TRACE="${PROJECT_ROOT}/.claude/builder-loop/judge-trace.jsonl"
-      MAX_NUDGE_SLUG="$(basename "$STATE_FILE" .yml 2>/dev/null || echo "")"
-      TRACE_FILE="$MAX_NUDGE_TRACE" SLUG="$MAX_NUDGE_SLUG" NEXT_ITER="$NEXT_ITER" \
-        CUR_NUDGE="$CUR_NUDGE" MAX_NUDGE="$MAX_NUDGE" JUDGE_CONF_OUT="$JUDGE_CONF_OUT" \
-        python3 - <<'PY' 2>/dev/null || true
-import os, json, datetime
-line = {
-    "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-    "slug": os.environ.get('SLUG', ''),
-    "iter": int(os.environ.get('NEXT_ITER') or 0),
-    "action": "stop_done",
-    "judge": {
-        "action": "stop_done",
-        "confidence": float(os.environ.get('JUDGE_CONF_OUT') or 0),
-        "reason": f"max_nudge_reached: {os.environ.get('CUR_NUDGE','')} >= {os.environ.get('MAX_NUDGE','')}",
-    },
-    "downgraded": True,
-    "downgrade_reason": "max_nudge_reached",
-    "outcome": None,
-}
-try:
-    with open(os.environ['TRACE_FILE'], 'a') as f:
-        f.write(json.dumps(line, ensure_ascii=False) + '\n')
-except Exception:
-    pass
-PY
     fi
   fi
 
@@ -720,6 +583,7 @@ print(json.dumps({'commit_action': os.environ.get('CA',''), 'commit_last_line': 
         STATE_FILE="$STATE_FILE" NEW_HEAD="$NEW_HEAD_SHORT" \
           PASS_SH_PASS="$PASS_START_HEAD_PREREAD" RFILES_PASS="$REVIEWER_FILES_PASS" \
           DFILE_PASS="$DIFF_FILE_PASS" RPATH_PASS="$REPORT_PATH_PASS" \
+          PLAN_PATH_PASS="$PLAN_PATH" \
           WAT_PASS="$(date -Iseconds 2>/dev/null || date +%s)" python3 - <<'PY' 2>/dev/null || true
 import os, re
 sf = os.environ['STATE_FILE']
@@ -746,6 +610,7 @@ pending_block = (
     f'  reviewer_files: "{os.environ["RFILES_PASS"]}"\n'
     f'  diff_file: "{os.environ["DFILE_PASS"]}"\n'
     f'  report_path: "{os.environ["RPATH_PASS"]}"\n'
+    f'  plan_path: "{os.environ.get("PLAN_PATH_PASS", "")}"\n'
     f'  written_at: "{os.environ["WAT_PASS"]}"\n'
 )
 text += pending_block
@@ -919,52 +784,25 @@ echo "[builder-loop] ❌ iter ${NEXT_ITER}: PASS_CMD 在 stage=$(echo "$LAST_LIN
 STAGE="$(echo "$LAST_LINE" | awk '{print $2}')"
 LOG_PATH="$(echo "$LAST_LINE" | awk '{print $3}')"
 
-# ---- V1.9: judge agent retry_transient 检测（FAIL 分支） ----
-# 仅识别"上轮回复异常截断（API 抖动）"，其他 FAIL 全部走原路径（extract-error + early-stop）
-if [ -f "${SKILL_DIR}/run-judge-agent.sh" ]; then
-  JUDGE_RESULT_FAIL="$(bash "${SKILL_DIR}/run-judge-agent.sh" \
-      --state-file "$STATE_FILE" \
-      --project-root "$RUN_CWD" \
-      --transcript-path "$TRANSCRIPT_PATH" \
-      --pass-cmd-status "FAIL" \
-      --pass-cmd-stage "$STAGE" \
-      --pass-cmd-log "$LOG_PATH" 2>/dev/null || echo '{"action":"continue_strict","downgraded":true,"confidence":0.0,"reason":""}')"
-  JUDGE_ACTION_FAIL="$(echo "$JUDGE_RESULT_FAIL" | python3 -c "import sys,json; print(json.loads(sys.stdin.read()).get('action','continue_strict'))" 2>/dev/null || echo "continue_strict")"
-  JUDGE_DOWNGRADED_FAIL="$(echo "$JUDGE_RESULT_FAIL" | python3 -c "import sys,json; print(str(json.loads(sys.stdin.read()).get('downgraded',False)).lower())" 2>/dev/null || echo "true")"
-  JUDGE_CONF_FAIL="$(echo "$JUDGE_RESULT_FAIL" | python3 -c "import sys,json; print(json.loads(sys.stdin.read()).get('confidence',0))" 2>/dev/null || echo "0")"
-  JUDGE_REASON_FAIL="$(echo "$JUDGE_RESULT_FAIL" | python3 -c "import sys,json; print(json.loads(sys.stdin.read()).get('reason',''))" 2>/dev/null || echo "")"
-  if [ "$JUDGE_ACTION_FAIL" = "retry_transient" ] && [ "$JUDGE_DOWNGRADED_FAIL" = "false" ]; then
-    STATE_FILE="$STATE_FILE" NEXT_ITER="$NEXT_ITER" \
-      JUDGE_CF="$JUDGE_CONF_FAIL" JUDGE_TS="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo '1970-01-01T00:00:00Z')" python3 - <<'PY'
-import os, re
-sf = os.environ['STATE_FILE']
-text = open(sf).read()
-text = re.sub(r'^iter:.*$', f'iter: {os.environ["NEXT_ITER"]}', text, flags=re.M)
-def upsert(text, key, value):
-    pat = re.compile(rf'^{key}:.*$', re.M)
-    if pat.search(text):
-        return pat.sub(f'{key}: {value}', text)
-    if not text.endswith('\n'):
-        text += '\n'
-    return text + f'{key}: {value}\n'
-text = upsert(text, 'last_judge_action', '"retry_transient"')
-text = upsert(text, 'last_judge_confidence', os.environ['JUDGE_CF'])
-text = upsert(text, 'last_judge_ts', f'"{os.environ["JUDGE_TS"]}"')
-open(sf, 'w').write(text)
-PY
-    write_trace "JUDGE_RETRY" "judge" "" "$JUDGE_REASON_FAIL"
+# ---- V4.0: retry_transient 机械检测（FAIL 分支，原 judge Layer 简化） ----
+# grep pass_cmd 错误日志中的瞬态关键词，命中则重跑（不喂回 builder）
+if [ -f "$LOG_PATH" ]; then
+  RETRY_HIT=""
+  for rt_kw in 'API truncation' 'connection reset' 'ETIMEDOUT' 'socket hang up' 'ECONNRESET' 'read ECONNRESET'; do
+    if grep -qi "$rt_kw" "$LOG_PATH" 2>/dev/null; then
+      RETRY_HIT="$rt_kw"
+      break
+    fi
+  done
+  if [ -n "$RETRY_HIT" ]; then
+    debug_log "retry_transient" "keyword=$RETRY_HIT"
+    write_trace "RETRY_TRANSIENT" "$STAGE" "" "$RETRY_HIT"
     cat >&2 <<RETRY_MSG
-[builder-loop judge | iter=${NEXT_ITER} | judge=retry_transient | conf=${JUDGE_CONF_FAIL}]
-原因：${JUDGE_REASON_FAIL}（疑似上轮 API 中断 / 网络抖动）
+[builder-loop | iter=${NEXT_ITER} | retry_transient]
+原因：pass_cmd 日志含瞬态关键词「${RETRY_HIT}」，疑似 API 中断 / 网络抖动。
 请重新执行同一任务，不要重做已经完成的部分。
-
-本消息来自 builder-loop 自动判定 agent，非用户输入。
 RETRY_MSG
-    debug_log "judge_result" "$(JA='retry_transient' JD='false' JC="$JUDGE_CONF_FAIL" JR="$JUDGE_REASON_FAIL" python3 -c "
-import os, json
-print(json.dumps({'action': os.environ.get('JA',''), 'downgraded': os.environ.get('JD','false') == 'true', 'confidence': float(os.environ.get('JC','0') or 0), 'reason': os.environ.get('JR','')[:200]}))
-" 2>/dev/null || echo '{}')"
-    debug_log "exit" '{"code":2,"reason":"judge_retry_transient"}'
+    debug_log "exit" '{"code":2,"reason":"retry_transient"}'
     exit 2
   fi
 fi

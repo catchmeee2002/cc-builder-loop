@@ -150,19 +150,18 @@ reviewer_pending:
   report_path: ".../review_reports/<proj>_<slug>_<ts>.md"
   written_at: "2026-05-09T..."
 
-# V1.9 judge agent 字段（仅 judge 已开启时填充）
-last_judge_action: "continue_nudge"
-last_judge_confidence: 0.8
-last_judge_ts: "2026-04-26T..."
-consecutive_nudge_count: 1
+# V4.0 plan 路径（plan 含 <!-- plan-checklist --> 或 <!-- e2e-cases --> 标签时写入）
+plan_path: ".claude/plans/20260620-xxx.md"      # 通用 plan 文件路径（setup 时写入）
 
-# V2.1 judge agent 模型降级链字段（仅 judge 已开启时填充）
-judge_active_model: "claude-sonnet-4-6"      # 当前活跃模型；连续 fallback_after_failures 次失败后切 fallback_model
-judge_consecutive_failures: 0                # primary 模型连续失败计数（5xx/timeout/parse_error 计数；401/429 不计数）
-
-# V3.8 e2e behavioral verification 段（仅 plan 含 <!-- e2e-cases --> 标签时存在）
-e2e_plan_path: ".claude/plans/20260620-xxx.md"  # plan 文件路径（setup 时写入）
+# V3.8 e2e behavioral verification 段
 e2e_verified_head: "abc1234"                    # e2e 验收通过时的 HEAD commit；与当前 HEAD 一致则跳过 e2e
+
+# (V4.0 废弃) e2e_plan_path — 改用 plan_path，stop hook 读时 fallback
+# e2e_plan_path: ".claude/plans/20260620-xxx.md"
+
+# (V4.0 废弃) V1.9 judge agent 字段 — judge 已被 reviewer Phase 0 吸收
+# last_judge_action / last_judge_confidence / last_judge_ts / consecutive_nudge_count
+# judge_active_model / judge_consecutive_failures
 ```
 
 ### Subagent 锁文件 schema（V3.5+）

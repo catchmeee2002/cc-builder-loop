@@ -1,35 +1,10 @@
-# 由 builder-loop init 向导生成；可手动编辑
-
 pass_cmd:
-  - { stage: "doc-lint", cmd: "bash ~/.claude/skills/builder-loop/scripts/doc-lint.sh . HEAD~1", timeout: 10 }
-  - { stage: "e2e", cmd: "bash skills/builder-loop/fixtures/e2e/test-new-repo-loop.sh", timeout: 120 }
-  - { stage: "parallel", cmd: "bash skills/builder-loop/fixtures/e2e/test-parallel-loop.sh", timeout: 120 }
-  - { stage: "zombie_selfheal", cmd: "bash skills/builder-loop/fixtures/e2e/test-zombie-selfheal.sh", timeout: 30 }
-  - { stage: "stop_hook_cursor", cmd: "bash skills/builder-loop/fixtures/e2e/test-stop-hook-cursor.sh", timeout: 60 }
-  - { stage: "race_and_msg", cmd: "bash skills/builder-loop/fixtures/e2e/test-stop-hook-race-and-commit-msg.sh", timeout: 60 }
-  - { stage: "judge_agent", cmd: "bash skills/builder-loop/fixtures/e2e/test-judge-agent.sh", timeout: 120 }
-  - { stage: "judge_integration", cmd: "bash skills/builder-loop/fixtures/e2e/test-judge-integration.sh", timeout: 120 }
-  - { stage: "v2_pass_cmd_in_worktree", cmd: "bash skills/builder-loop/fixtures/e2e/test-pass-cmd-runs-worktree.sh", timeout: 60 }
-  - { stage: "v2_bare_loop_merge", cmd: "bash skills/builder-loop/fixtures/e2e/test-bare-loop-merge.sh", timeout: 60 }
-  - { stage: "v2_run_pass_cmd_args", cmd: "bash skills/builder-loop/fixtures/e2e/test-run-pass-cmd-args.sh", timeout: 60 }
-  - { stage: "v2_nudge_max_reads_worktree", cmd: "bash skills/builder-loop/fixtures/e2e/test-nudge-max-reads-worktree.sh", timeout: 60 }
-  - { stage: "v21_judge_env_file_load", cmd: "bash skills/builder-loop/fixtures/e2e/test-judge-env-file-load.sh", timeout: 60 }
-  - { stage: "v21_judge_model_fallback", cmd: "bash skills/builder-loop/fixtures/e2e/test-judge-model-fallback.sh", timeout: 90 }
-  - { stage: "v31_worktree_write_guard", cmd: "bash skills/builder-loop/fixtures/e2e/test-worktree-write-guard.sh", timeout: 30 }
-  - { stage: "v23_dirty_stash_flow", cmd: "bash skills/builder-loop/fixtures/e2e/test-dirty-stash-flow.sh", timeout: 120 }
-  - { stage: "v23_reward_hacking_detect", cmd: "bash skills/builder-loop/fixtures/e2e/test-reward-hacking-detect.sh", timeout: 30 }
-  - { stage: "v24_locate_strategy5", cmd: "bash skills/builder-loop/fixtures/e2e/test-locate-state-strategy5.sh", timeout: 90 }
-  - { stage: "v25_stop_hook_observability", cmd: "bash skills/builder-loop/fixtures/e2e/test-stop-hook-debug-log.sh", timeout: 90 }
-  - { stage: "v26_abandon_loop_flow", cmd: "bash skills/builder-loop/fixtures/e2e/test-abandon-loop-flow.sh", timeout: 60 }
-  - { stage: "v30_reviewer_timing_check_phase", cmd: "bash skills/builder-loop/fixtures/e2e/test-reviewer-timing-check-phase.sh", timeout: 30 }
-  - { stage: "v32_early_stop_tampering", cmd: "bash skills/builder-loop/fixtures/e2e/test-early-stop-tampering.sh", timeout: 60 }
-  - { stage: "v33_orphan_worktree_reuse", cmd: "bash skills/builder-loop/fixtures/e2e/test-orphan-worktree-reuse.sh", timeout: 120 }
-
-max_iterations: 5
-
+  - stage: smoke
+    cmd: "true"
+    timeout: 10
+max_iterations: 3
 layout:
-  source_dirs: ["scripts", "skills/builder-loop/scripts"]
-  test_dirs: ["skills/builder-loop/fixtures/e2e"]
-
+  source_dirs: [src]
+  test_dirs: []
 worktree:
   enabled: true

@@ -1,4 +1,6 @@
-# Judge Agent (V1.9+ / V2.1 / V2.3 升级)
+# [V4.0 DEPRECATED] Judge Agent (V1.9-V3.x)
+
+> **V4.0 废弃**：Judge 已被 reviewer Phase 0 吸收。Reward hacking 正则下沉到 stop hook 机械层，retry_transient 简化为机械关键词检测。以下内容保留供历史参考。
 
 LLM 语义判据，用于补 PASS_CMD 二值判据看不见的盲区（假完成 / 求助 / 偷懒 / 网络中断 / **reward hacking 配置改动**）。
 

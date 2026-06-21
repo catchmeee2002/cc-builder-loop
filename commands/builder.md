@@ -39,7 +39,7 @@ description: "进入 Builder 模式 — 复杂任务先计划后动手，完成�
    - 告知：`✅ builder-loop 已启动，后续代码将在 worktree 中编写。`
    - 之后所有文件操作（Write/Edit）都在 worktree 内进行
    - **V3.2 dirty 隔离**：setup 默认不带主仓 dirty 进 worktree（干净启动）。如果 builder 已在主仓编辑了文件**再**接入 loop，调用时传 `--touched-files file1,file2,...`（逗号分隔）只带这些文件
-   - **V3.8 e2e plan 注册**：setup 后如果对话中有方案文件路径，检查方案文件是否含 `<!-- e2e-cases -->` 标签。有 → 用 python3 往 state 文件追加 `e2e_plan_path: "<plan 相对路径>"`。stop hook 后续每轮 PASS 自动检测并拉 tester 做端到端验收。
+   - **V4.0 plan 注册**：setup 后如果对话中有方案文件路径，检查方案文件是否含 `<!-- plan-checklist -->` 或 `<!-- e2e-cases -->` 标签（任一即可）。有 → 用 python3 往 state 文件写入 `plan_path: "<plan 相对路径>"`。stop hook 后续每轮 PASS 自动检测：有 plan-checklist → reviewer Phase 0 做 plan 完成度检查；有 e2e-cases → 拉 tester 做端到端验收。
 3. **不存在** → 见 builder-loop SKILL.md「智能提示」段（代码写完后询问是否接入）
 
 ---
@@ -87,7 +87,7 @@ description: "进入 Builder 模式 — 复杂任务先计划后动手，完成�
 > **V3.8 E2E 验证请求处理**：stop hook 消息含 `端到端验收用例` 时：
 > 1. 从消息中提取 `e2e_cases`（`端到端验收用例：` 之后的全部文本）和 `worktree_path`
 > 2. spawn tester subagent（同步），传 `e2e_cases` 和 `worktree_path`（不传 spec_view / interface_signatures，tester 按输入区分模式）
-> 3. tester 输出 `E2E_SUMMARY: all_pass` → 从消息中提取 STATE_FILE 和 e2e_verified_head 值，用 python3 写入 state（不修改代码，让 stop hook 下轮跳过 e2e 直接走 judge）
+> 3. tester 输出 `E2E_SUMMARY: all_pass` → 从消息中提取 STATE_FILE 和 e2e_verified_head 值，用 python3 写入 state（不修改代码，让 stop hook 下轮跳过 e2e 直接进 reviewer）
 > 4. tester 输出 `E2E_SUMMARY: has_failure` → 根据 `E2E_RESULT` 中的 `[FAIL]` 条目修改代码
 
 > **长对话 pause hook**：

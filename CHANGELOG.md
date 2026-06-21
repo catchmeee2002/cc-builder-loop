@@ -2,6 +2,32 @@
 
 > 从 CLAUDE.md §5 外移。记录各版本交付的能力与关键实现细节。
 
+## V4.0 Reviewer 吸收 Judge — plan 完成度检查 + 判据层统一（2026-06-21）
+
+Reviewer 成为唯一的独立 agent 判据层，Judge 作为独立组件废弃。
+
+**1. Reviewer Phase 0: plan 完成度检查**
+- Reviewer 新增 Phase 0（plan 完成度检查 + early exit），接受 plan_path 输入
+- Plan 中用 `<!-- plan-checklist -->` 标签包裹执行任务列表+文件地图，Reviewer 逐步骤语义验证
+- Phase 0 不过 → 🔴 打回 builder（不进 Phase 1 代码审查）；过了 → 进 Phase 1
+
+**2. Judge 废弃**
+- Stop hook PASS 分支删除 judge 调用（~90 行），judge trace backfill 删除
+- Reward hacking Layer 2 正则检测下沉到 stop hook 机械层（不依赖 LLM）
+- FAIL 分支 retry_transient 简化为机械关键词 grep（不调 run-judge-agent.sh）
+
+**3. State 字段变更**
+- 新增 `plan_path`：通用 plan 文件路径（替代 `e2e_plan_path`）
+- `e2e_plan_path` 废弃（stop hook 读时 fallback）
+- Judge 相关 6 字段废弃：last_judge_action / last_judge_confidence / last_judge_ts / consecutive_nudge_count / judge_active_model / judge_consecutive_failures
+- reviewer_pending 段新增 plan_path 字段
+
+**4. 流程变更**
+- 旧：PASS_CMD → e2e → judge → phase=passed_pending_review → reviewer → merge
+- 新：PASS_CMD → reward_hacking_regex → e2e → phase=passed_pending_review → reviewer(Phase 0 + Phase 1) → merge
+
+---
+
 ## V3.8 E2E 行为验收 stage（2026-06-20）
 
 在 PASS_CMD 全过后、judge 之前，加入独立 tester subagent 驱动的端到端行为验证阶段。

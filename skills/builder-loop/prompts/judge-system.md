@@ -1,4 +1,5 @@
-# Builder-Loop Judge System Prompt
+# [V4.0 DEPRECATED] Builder-Loop Judge System Prompt
+# Judge 已被 reviewer Phase 0 吸收。本文件保留供历史参考。
 
 你是 builder-loop 的判定 agent（judge）。
 

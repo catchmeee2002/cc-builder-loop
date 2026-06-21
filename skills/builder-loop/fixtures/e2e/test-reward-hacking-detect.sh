@@ -16,31 +16,21 @@
 source "$(dirname "${BASH_SOURCE[0]}")/harness.sh"
 harness_init "reward-hacking-detect"
 
-JUDGE_SCRIPT="${HARNESS_REPO_ROOT}/skills/builder-loop/scripts/run-judge-agent.sh"
-JUDGE_PROMPT="${HARNESS_REPO_ROOT}/skills/builder-loop/prompts/judge-system.md"
 STOP_HOOK="${HARNESS_REPO_ROOT}/scripts/builder-loop-stop.sh"
 
-# ---- 配置 lint ----
-section "配置 lint：关键代码段未被误删"
-assert "judge-system.md 存在" "[ -f '$JUDGE_PROMPT' ]"
-assert "judge-system.md 含 V2.3 reward hacking 段" "grep -q 'V2.3 reward hacking' '$JUDGE_PROMPT'"
-assert "judge-system.md 含 suspected_reward_hack 关键字" "grep -q 'suspected_reward_hack' '$JUDGE_PROMPT'"
-assert "judge-system.md 含三选项关键字 quarantine" "grep -q 'quarantine' '$JUDGE_PROMPT'"
-
-assert "run-judge-agent.sh 存在" "[ -f '$JUDGE_SCRIPT' ]"
-assert "run-judge-agent.sh 含 reward_hacking_detection 配置字段" "grep -q 'reward_hacking_detection' '$JUDGE_SCRIPT'"
-assert "run-judge-agent.sh 含 RH_FILE_PATTERN" "grep -q 'RH_FILE_PATTERN' '$JUDGE_SCRIPT'"
-assert "run-judge-agent.sh 含 RH_DIFF_PATTERN" "grep -q 'RH_DIFF_PATTERN' '$JUDGE_SCRIPT'"
-assert "run-judge-agent.sh 写 reason=suspected_reward_hack" "grep -q 'suspected_reward_hack' '$JUDGE_SCRIPT'"
-
+# ---- 配置 lint（V4.0: reward hacking 正则已下沉到 stop hook 机械层） ----
+section "配置 lint：stop hook 含 V4.0 reward hacking 机械检测"
 assert "stop hook 存在" "[ -f '$STOP_HOOK' ]"
 assert "stop hook 含 reward-hack-guard 注入文案" "grep -q 'reward-hack-guard' '$STOP_HOOK'"
 assert "stop hook 含三选项内容（quarantine）" "grep -q 'quarantine' '$STOP_HOOK'"
-assert "stop hook 注入文案识别 suspected_reward_hack reason" "grep -q 'suspected_reward_hack' '$STOP_HOOK'"
+assert "stop hook 含文件匹配模式 loop.yml" "grep -q 'loop.yml' '$STOP_HOOK'"
+assert "stop hook 含文件匹配模式 conftest.py" "grep -q 'conftest.py' '$STOP_HOOK'"
+assert "stop hook 含关键词 --reruns" "grep -q 'reruns' '$STOP_HOOK'"
+assert "stop hook 含关键词 xfail" "grep -q 'xfail' '$STOP_HOOK'"
 
 # ---- 关键词检测算法验证 ----
-# 使用与 run-judge-agent.sh 完全一致的两个正则
-section "关键词检测算法验证（与 run-judge-agent.sh 同清单）"
+# V4.0: 使用与 stop hook 机械检测一致的文件和关键词清单
+section "关键词检测算法验证（与 stop hook V4.0 同清单）"
 RH_FILE_PATTERN='\.claude/loop\.yml$|pyproject\.toml$|pytest\.ini$|setup\.cfg$|conftest\.py$|^tests?/.*\.py$|/tests?/.*\.py$'
 RH_DIFF_PATTERN='--reruns|@pytest\.mark\.flaky|@flaky|xfail|pytest\.skip|@unittest\.skip|-k +['"'"'"]not '
 

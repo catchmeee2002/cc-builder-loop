@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
-# run-judge-agent.sh — Judge agent (V1.9+)
+# [V4.0 DEPRECATED] run-judge-agent.sh — Judge agent (V1.9-V3.x)
+# Judge 已被 reviewer Phase 0 吸收。本文件保留供历史参考，不再被 stop hook 调用。
+# Reward hacking Layer 2 正则已下沉到 stop hook 机械层。
+# FAIL 分支 retry_transient 已简化为 stop hook 内机械关键词检测。
 #
-# 职责：在 stop hook PASS_CMD 判据之上叠加一道 LLM 语义判定，识别 PASS_CMD 二值判据看不见的盲区
+# 原职责：在 stop hook PASS_CMD 判据之上叠加一道 LLM 语义判定，识别 PASS_CMD 二值判据看不见的盲区
 # （假完成 / 求助 / 偷懒 / 网络中断）。
 #
 # 调用约定：

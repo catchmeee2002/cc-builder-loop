@@ -21,10 +21,10 @@
 | 文档 | 定位 | 何时读 |
 |------|------|--------|
 | [`docs/design-philosophy.md`](docs/design-philosophy.md) | 设计哲学（判据分层等原则，SSOT 唯一来源） | 做设计决策 / 评估方案时 |
-| [`CHANGELOG.md`](CHANGELOG.md) | 各版本交付能力（V1.0~V3.7） | 需要了解历史版本做了什么时 |
-| [`docs/troubleshooting.md`](skills/builder-loop/docs/troubleshooting.md) | 排查手册（§7.1~7.12） | stop hook / judge / worktree / state 出问题时 |
+| [`CHANGELOG.md`](CHANGELOG.md) | 各版本交付能力（V1.0~V4.0） | 需要了解历史版本做了什么时 |
+| [`docs/troubleshooting.md`](skills/builder-loop/docs/troubleshooting.md) | 排查手册（§7.1~7.12） | stop hook / worktree / state 出问题时 |
 | [`docs/sync-checklist.md`](skills/builder-loop/docs/sync-checklist.md) | 改动同步 checklist | 本仓 commit 后需同步操作时 |
-| [`docs/judge-agent.md`](skills/builder-loop/docs/judge-agent.md) | Judge agent 设计与配置 | judge 相关开发 / 排查时 |
+| [`docs/judge-agent.md`](skills/builder-loop/docs/judge-agent.md) | ~~Judge agent~~（V4.0 废弃，已被 reviewer Phase 0 吸收） | 仅供历史参考 |
 | [`docs/arbiter-flow.md`](skills/builder-loop/docs/arbiter-flow.md) | Rebase 冲突仲裁流程 | merge 冲突时 |
 | [`docs/cc-loop-tracking.md`](skills/builder-loop/docs/cc-loop-tracking.md) | CC 官方自动化能力跟踪（/loop + dynamic workflow） | 评估官方能力 / 互斥防御时 |
 | [`skills/builder-loop/README.md`](skills/builder-loop/README.md) | SKILL 使用说明 | 了解用户侧接入流程时 |
