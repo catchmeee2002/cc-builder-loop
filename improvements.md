@@ -4,6 +4,30 @@
 > **只记事实，不写建议方向**——loop 侧开发者拿到事实自己判断怎么修。
 > 已消化条目直接删除（代码是 ground truth），不标 ✅。已关闭条目见 [CHANGELOG](CHANGELOG.md)。
 
+## 2026-06-22 E2E 行为测试无法在 worktree 内闭环——bot 进程跑在主仓
+- 触发场景：Personal Assistant Bot 项目接入 e2e-agent PASS_CMD 阶段。e2e 需要重启 bot 进程并通过飞书消息验证行为。builder-loop 的 PASS_CMD 在 worktree 内执行
+- 现象：e2e harness 只能重启主仓的 bot（因为 bot 进程依赖主仓的 data/、.env、log/ 等运行时目录），worktree 里改的代码（prompts/system.txt、runtime/agent.py 等）不会生效。e2e 测的是旧代码
+- 根因：worktree 模式下，pass_cmd 的 syntax/test 阶段只需 import/compile，不依赖运行中的进程，所以 worktree 隔离没问题。但 e2e 行为测试需要一个**用新代码运行的活进程**，这在 worktree 隔离模型下无法实现——进程的 cwd、配置文件、数据目录都绑定在主仓
+- 优先级：高
+
+## 2026-06-21 Builder PASS 后声称"Phase 完成"但 plan 文件清单完成率仅 33%（重复发生）
+- 触发场景：divine-word v2 全量重写，plan 有 4 Phase 共 ~40 个文件操作。Builder 写了后端（Phase 1/2/4）+ 前端部分文件后，pass_cmd（py_compile + import + 163 单元测试）全过。Builder 声称"全部 4 Phase 完成"并进入 reviewer 流程
+- 现象：用户手动对照 plan Phase 3 文件清单，发现 15 个文件操作中只完成 5 个（33%）。9 个文件未创建/未修改：TimelineSidebar.ts、CrisisOverlay.ts、FollowerDetail.ts、CausalHighlight.ts、EventAnimator.ts 全部缺失；OracleInput.ts、Follower.ts、gameState.ts、generate_sprites.py 未按计划修改。核心循环从"观赏模式+危机打断"变成了"v1 每轮交互套 v2 数据"——设计意图完全未落地。WebSocket 后端有 endpoint 但前端从未调用 connect()
+- 根因：pass_cmd 只管代码正确性（编译+测试），不管 plan 完整性（文件是否全部创建、功能是否全部实现）。Builder 在 pass_cmd 通过后跳过了"回头逐行对照 plan 文件清单"这一步。与 2026-06-20 session resume 记录的事故（"Phase 2 有两个 step 完全没写"）完全相同模式——**同一个 failure mode 第二次发生**
+- 优先级：高
+
+## 2026-06-21 Builder 步骤 3.5 文档评估允许自证、无机械校验
+- 触发场景：divine-word 像素美术升级任务，新增 tools/、PreloadScene、config/spriteConfig、public/assets/ 四个目录/文件。Builder 在步骤 3.5 输出 `doc-A: 命中但已更新，无需 doc-maintainer`，实际 CLAUDE.md 项目结构未包含这些新条目
+- 现象：commit 后用户手动检查发现 CLAUDE.md 缺失新增模块，builder 的"已更新"声明与文件实际内容不符
+- 根因：步骤 3.5 的"逐项检查"由 builder 自行声称结果，没有机械验证（如 diff changed_files 与 CLAUDE.md 项目结构段做交叉比对）。与 pass_cmd（代码跑出结果不可假）形成对比，doc 评估是纯主观判断，可错且无纠错手段
+- 优先级：中
+
+## 2026-06-20 Planner Round 7 追问不完整——漏问 e2e 验证和测试深度
+- 触发场景：divine-word 项目 /planner 走完整流程 7 轮追问，Round 7 只问了"EndingScene 验证方式"，未按规定追问"是否需要测试计划+深度偏好"和"是否需要端到端行为验证"
+- 现象：用户发现 e2e 用例直接写进方案没经过确认，手动打断要求补 Round 7
+- 根因：Round 7 规定三件事（验收方式 & 测试计划 & e2e 验证），planner 只问了第一件就认为完成
+- 优先级：中
+
 ## 2026-06-18 suspected_test_tampering 早停误判「需求翻转」场景
 
 - 触发场景：恢复 /mnt/mcap 自动清理能力（之前 commit 删除了该功能），Case 7 测试断言需从"不清理"翻转为"清理且验证参数正确性"——实际是**加强**断言（新增 3 条 assert 验证 output_dir/max_age_days/target_pct），非削弱

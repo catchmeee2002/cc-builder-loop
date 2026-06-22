@@ -1,0 +1,460 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 900ed31..83f1721 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -2,6 +2,30 @@
+ 
+ > 从 CLAUDE.md §5 外移。记录各版本交付的能力与关键实现细节。
+ 
++## V3.8 E2E 行为验收 stage（2026-06-20）
++
++在 PASS_CMD 全过后、judge 之前，加入独立 tester subagent 驱动的端到端行为验证阶段。
++
++**1. 设计哲学升级：判据按独立性分层**
++- 原则零从「机器判据驱动」升级为「独立判据驱动」——判据可信度的关键属性是独立性（定义者和执行者都独立于被审计者），不是机器 vs LLM
++- 三层：纯机器判据（人定义+机器执行）→ 独立 agent 判据（独立定义+独立执行）→ 同会话 LLM 判据
++
++**2. E2E 验收机制**
++- Plan 中用 `<!-- e2e-cases -->` 标签包裹行为验收用例（自然语言步骤列表）
++- State 新增 `e2e_plan_path`（plan 指针）和 `e2e_verified_head`（通过时的 HEAD）
++- Stop hook PASS 路径：judge 之前检查 state，提取用例，注入验证请求消息（exit 2）
++- Builder 收到消息后 spawn tester（e2e 模式），tester 驱动浏览器/CLI/API 逐条验证
++- Tester 全 pass → builder 写 `e2e_verified_head` 到 state → 下轮 stop hook 跳过 e2e 走 judge
++
++**3. Tester 双模式**
++- 写测试模式（原有）：收到 `spec_view` + `interface_signatures` → 写 pytest 文件
++- E2E 执行模式（新增）：收到 `e2e_cases` → 驱动 app 验证行为，报 `E2E_SUMMARY`
++- 隔离约束：只看用例文本 + app 运行态，禁止读源码/transcript/diff
++
++**4. 新增文件**
++- `scripts/extract-e2e-cases.sh`：从 plan 提取 e2e-cases 标签内容
++- 2 个 fixture（22 assertions）：extract 提取 + stop hook e2e 分支
++
+ ## V3.7 并发 Session 隔离 + Tester 写路径修复（2026-06-17~18）
+ 
+ 修复并发 session 越界 + tester 写主仓 + fixture 清理挂起三条实战 bug。
+diff --git a/agents/tester.md b/agents/tester.md
+index ce0b4dc..4f4b018 100644
+--- a/agents/tester.md
++++ b/agents/tester.md
+@@ -1,13 +1,23 @@
+ ---
+ name: tester
+-description: "由 Builder Auto-Loop 在 reviewer 报「测试覆盖不足」时自动调用，根据需求规格独立编写测试用例。与 builder 严格隔离，禁止读取实现源码以保证黑盒测试。Builder 调用时需在 prompt 中传入 spec_view（方案的 tester 视图）、interface_signatures（API 签名）、target_test_dirs（测试落地目录）、mock_targets（外部依赖 mock 方式）、data_contracts（关键数据结构）、error_types（异常类型清单）。"
++description: "由 Builder Auto-Loop 调用。两种模式：(1) 写测试模式——reviewer 报测试覆盖不足时，根据 spec_view 编写黑盒测试用例；(2) e2e 验收模式——PASS_CMD 全过后，根据 e2e_cases 驱动浏览器/CLI/API 验证 app 运行时行为。两种模式由输入字段区分。与 builder 严格隔离。"
+ model: sonnet
+ color: green
+ ---
+ 
+-你是测试编写 subagent，用中文输出，由 Builder Auto-Loop 自动调用。
++你是测试 subagent，用中文输出，由 Builder Auto-Loop 自动调用。
+ 
+-## 输入
++## 模式判定
++
++根据输入字段区分模式：
++- 收到 `e2e_cases` → **e2e 验收模式**（跳到「E2E 验收模式」段）
++- 收到 `spec_view` + `interface_signatures` → **写测试模式**（继续下方流程）
++
++---
++
++## 写测试模式
++
++### 输入
+ 
+ - `spec_view`：方案文件的 tester 视图（`split-plan-by-role.sh` 处理后），含需求/验收标准/关键测试场景
+ - `interface_signatures`：被测代码的对外接口签名（函数签名、类签名、API schema），不含实现细节
+@@ -104,3 +114,50 @@ TESTER_SUMMARY: 已写测试但发现疑似缺陷 | 缺陷: {file:line 描述} |
+ ```
+ 
+ > **TESTER_SUMMARY 必须出现在最后一行。这是唯一的成功标记。**
++
++---
++
++## E2E 验收模式
++
++当输入包含 `e2e_cases` 字段时进入此模式。
++
++### 输入
++
++- `e2e_cases`：行为验收用例文本（markdown 列表，从 plan 的 `<!-- e2e-cases -->` 标签提取）
++- `worktree_path`：工作目录绝对路径（app 在此启动），bare loop 时为空
++
++### ⚠️ 隔离约束
++
++1. **只看 `e2e_cases` 文本和 app 运行时状态**
++2. **禁止 Read 实现源码**（复用写测试模式的 source_dirs 隔离规则；Bash 启动 app 是例外放行，不受 source_dirs lock 拦截）
++3. **禁止读 builder transcript 或 git log**
++4. **禁止 Write/Edit 任何源码或测试文件**——本模式只验证不写入
++
++### 执行流程
++
++1. **解析用例**：读 `e2e_cases`，按 `-` 条目拆分为逐条用例
++2. **按顺序执行**：每条用例做对应操作（启动 app、打开浏览器、curl、CLI 命令等），观察结果
++3. **逐条判定**：PASS / FAIL / SKIP（前置用例失败时跳过依赖用例）
++4. **清理**：执行完毕后杀掉本次启动的 app 进程
++5. **输出结果**
++
++### 输出格式
++
++全部通过：
++```
++E2E_SUMMARY: all_pass | total: N, pass: N, fail: 0, skip: 0
++```
++
++有失败：
++```
++E2E_RESULT:
++[PASS] 启动 app (python main.py --port 8080)
++[PASS] 打开浏览器访问 localhost:8080
++[FAIL] 应能看到至少1个 rival 文明
++  → 主界面未发现 rival 相关元素
++[SKIP] 点击 rival 图标（依赖前一步）
++
++E2E_SUMMARY: has_failure | total: N, pass: X, fail: Y, skip: Z
++```
++
++> **E2E_SUMMARY 必须出现在最后一行。这是 stop hook 判定 e2e 通过/失败的唯一标记。**
+diff --git a/commands/builder.md b/commands/builder.md
+index 170b033..f18c3ab 100644
+--- a/commands/builder.md
++++ b/commands/builder.md
+@@ -39,6 +39,7 @@ description: "进入 Builder 模式 — 复杂任务先计划后动手，完成
+    - 告知：`✅ builder-loop 已启动，后续代码将在 worktree 中编写。`
+    - 之后所有文件操作（Write/Edit）都在 worktree 内进行
+    - **V3.2 dirty 隔离**：setup 默认不带主仓 dirty 进 worktree（干净启动）。如果 builder 已在主仓编辑了文件**再**接入 loop，调用时传 `--touched-files file1,file2,...`（逗号分隔）只带这些文件
++   - **V3.8 e2e plan 注册**：setup 后如果对话中有方案文件路径，检查方案文件是否含 `<!-- e2e-cases -->` 标签。有 → 用 python3 往 state 文件追加 `e2e_plan_path: "<plan 相对路径>"`。stop hook 后续每轮 PASS 自动检测并拉 tester 做端到端验收。
+ 3. **不存在** → 见 builder-loop SKILL.md「智能提示」段（代码写完后询问是否接入）
+ 
+ ---
+@@ -83,6 +84,12 @@ description: "进入 Builder 模式 — 复杂任务先计划后动手，完成
+ 
+ > **⛔ Abandon loop 关键词识别（V2.6）**：仅在收到 stop hook `[builder-loop ...]` stderr 注入后的**下一轮** user reply 中识别。白名单：「停下loop / 停掉loop / 停止loop / 中止loop / abandon loop」（必须含 "loop" 或 "abandon" 锚词；单独「停了」不识别）。命中 → AskUserQuestion 单确认 reason → 用户确认后调 `bash ~/.claude/skills/builder-loop/scripts/abandon-loop.sh "<state_file>" "<reason>"`。归档后 worktree + branch 保留供用户手动 cherry-pick。
+ 
++> **V3.8 E2E 验证请求处理**：stop hook 消息含 `端到端验收用例` 时：
++> 1. 从消息中提取 `e2e_cases`（`端到端验收用例：` 之后的全部文本）和 `worktree_path`
++> 2. spawn tester subagent（同步），传 `e2e_cases` 和 `worktree_path`（不传 spec_view / interface_signatures，tester 按输入区分模式）
++> 3. tester 输出 `E2E_SUMMARY: all_pass` → 从消息中提取 STATE_FILE 和 e2e_verified_head 值，用 python3 写入 state（不修改代码，让 stop hook 下轮跳过 e2e 直接走 judge）
++> 4. tester 输出 `E2E_SUMMARY: has_failure` → 根据 `E2E_RESULT` 中的 `[FAIL]` 条目修改代码
++
+ > **长对话 pause hook**：
+ > ```
+ > touch .claude/builder-loop/<slug>.pause   # 暂停 hook
+diff --git a/commands/planner.md b/commands/planner.md
+index d223f24..05110ef 100644
+--- a/commands/planner.md
++++ b/commands/planner.md
+@@ -38,7 +38,7 @@ description: "进入 Planner 模式 — 苏格拉底追问把模糊需求提炼
+ | 4 | 风险 & 退路 |
+ | 5★ | 模块边界 & 接口 |
+ | 6★ | 演进路径 & 扩展预留 |
+-| 7★ | 验收方式 & 是否需要测试计划（若需要，追问关键场景和深度偏好） |
++| 7★ | 验收方式 & 是否需要测试计划（若需要，追问关键场景和深度偏好）& 是否需要端到端行为验证 |
+ 
+ ★ 大方案专属。
+ 
+@@ -60,6 +60,7 @@ description: "进入 Planner 模式 — 苏格拉底追问把模糊需求提炼
+ - **执行任务列表**：Builder 可直接执行的步骤，每步明确"改哪个文件/做什么"。多 Phase 时每个 Phase 注明消费的前置产物；产物不存在于更早 Phase → 调整顺序
+ - **验收标准**：怎么确认做完了
+ - **测试计划**（可选）：测试目标 / 关键测试场景 / 测试深度（快速/深度）
++- **端到端行为验证**（可选）：用户在 Round 7 选择"需要端到端验证"时，将行为验收用例写入 `<!-- e2e-cases -->` 标签（可置于验收标准段内）。用例为自然语言步骤列表，描述启动方式、操作流程和可观察的预期结果。builder-loop stop hook 自动检测此标签并在 PASS_CMD 通过后拉 tester subagent 验证。
+ 
+ **3 视图区块约定（接入了 builder-loop 的项目要求）**：
+ 
+diff --git a/scripts/builder-loop-stop.sh b/scripts/builder-loop-stop.sh
+index d4391ca..7287c66 100755
+--- a/scripts/builder-loop-stop.sh
++++ b/scripts/builder-loop-stop.sh
+@@ -527,6 +527,52 @@ if [ "$LAST_LINE" = "PASS" ]; then
+   # 安全性：进入此分支前 STATE_FILE 已通过 L200 + L203 的 `[ -f "$STATE_FILE" ]` 检查，`set -u` 不会抢先触发
+   PASS_START_HEAD_PREREAD="$(grep -E '^start_head:' "$STATE_FILE" 2>/dev/null | head -1 | sed -E 's/^start_head:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' || echo "")"
+ 
++  # ---- V3.8: e2e behavioral verification (before judge) ----
++  E2E_PLAN_PATH="$(grep -E '^e2e_plan_path:' "$STATE_FILE" 2>/dev/null | head -1 | sed -E 's/^e2e_plan_path:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' || echo "")"
++  if [ -n "$E2E_PLAN_PATH" ]; then
++    # resolve relative path against PROJECT_ROOT
++    if [ "${E2E_PLAN_PATH#/}" = "$E2E_PLAN_PATH" ]; then
++      E2E_PLAN_FULL="${PROJECT_ROOT}/${E2E_PLAN_PATH}"
++    else
++      E2E_PLAN_FULL="$E2E_PLAN_PATH"
++    fi
++
++    E2E_VERIFIED_HEAD="$(grep -E '^e2e_verified_head:' "$STATE_FILE" 2>/dev/null | head -1 | sed -E 's/^e2e_verified_head:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' || echo "")"
++    CURRENT_HEAD="$(git -C "$RUN_CWD" rev-parse HEAD 2>/dev/null || echo "")"
++
++    if [ "$E2E_VERIFIED_HEAD" != "$CURRENT_HEAD" ] && [ -f "$E2E_PLAN_FULL" ]; then
++      EXTRACT_SCRIPT="$(dirname "${BASH_SOURCE[0]}")/extract-e2e-cases.sh"
++
++      E2E_CASES=""
++      if [ -f "$EXTRACT_SCRIPT" ]; then
++        E2E_CASES="$(bash "$EXTRACT_SCRIPT" "$E2E_PLAN_FULL" 2>/dev/null || echo "")"
++      fi
++
++      if [ -n "$E2E_CASES" ]; then
++        debug_log "e2e_inject" "cases found, injecting verification request (iter=$NEXT_ITER)"
++        cat >&2 <<E2EEOF
++
++[builder-loop] ✅ PASS_CMD 全过（iter ${NEXT_ITER}）。检测到端到端验收用例。
++
++请执行端到端验收：
++1. spawn tester subagent（e2e 模式），传入：
++   - e2e_cases（以下用例文本）
++   - worktree_path: ${RUN_CWD}
++2. tester 报 E2E_SUMMARY: all_pass → 用 python3 写 e2e_verified_head 到 state 文件：
++   STATE_FILE=${STATE_FILE}
++   写入字段：e2e_verified_head: "${CURRENT_HEAD}"
++3. tester 报 E2E_SUMMARY: has_failure → 根据失败用例修改代码
++
++端到端验收用例：
++${E2E_CASES}
++E2EEOF
++        exit 2
++      fi
++    else
++      debug_log "e2e_skip" "already verified at HEAD=$CURRENT_HEAD"
++    fi
++  fi
++
+   # ---- V1.9: judge agent 调用（PASS_CMD 通过后语义判定） ----
+   # 任何故障路径（脚本缺失 / API 失败 / JSON 解析失败 / confidence 低）都通过 downgraded=true 表达
+   # 降级时本段不阻断，fall through 走原 PASS 路径（merge-worktree-back + reviewer）
+diff --git a/scripts/extract-e2e-cases.sh b/scripts/extract-e2e-cases.sh
+new file mode 100755
+index 0000000..2849dc0
+--- /dev/null
++++ b/scripts/extract-e2e-cases.sh
+@@ -0,0 +1,21 @@
++#!/usr/bin/env bash
++set -euo pipefail
++
++# Extract e2e test cases from plan file.
++# Input: plan file path (arg 1)
++# Output: stdout — markdown list between <!-- e2e-cases --> tags
++# Exit: 0 = extracted, 1 = no tags or file missing
++
++PLAN_FILE="${1:-}"
++
++if [ -z "${PLAN_FILE}" ] || [ ! -f "${PLAN_FILE}" ]; then
++    exit 1
++fi
++
++CONTENT=$(sed -n '/^[[:space:]]*<!-- e2e-cases -->/,/^[[:space:]]*<!-- \/e2e-cases -->/{ /^[[:space:]]*<!-- \/*e2e-cases -->/d; p; }' "${PLAN_FILE}" | tr -d '\r')
++
++if [ -z "${CONTENT}" ]; then
++    exit 1
++fi
++
++printf '%s\n' "${CONTENT}"
+diff --git a/skills/builder-loop/SKILL.md b/skills/builder-loop/SKILL.md
+index 85bb48f..89be378 100644
+--- a/skills/builder-loop/SKILL.md
++++ b/skills/builder-loop/SKILL.md
+@@ -159,6 +159,10 @@ consecutive_nudge_count: 1
+ # V2.1 judge agent 模型降级链字段（仅 judge 已开启时填充）
+ judge_active_model: "claude-sonnet-4-6"      # 当前活跃模型；连续 fallback_after_failures 次失败后切 fallback_model
+ judge_consecutive_failures: 0                # primary 模型连续失败计数（5xx/timeout/parse_error 计数；401/429 不计数）
++
++# V3.8 e2e behavioral verification 段（仅 plan 含 <!-- e2e-cases --> 标签时存在）
++e2e_plan_path: ".claude/plans/20260620-xxx.md"  # plan 文件路径（setup 时写入）
++e2e_verified_head: "abc1234"                    # e2e 验收通过时的 HEAD commit；与当前 HEAD 一致则跳过 e2e
+ ```
+ 
+ ### Subagent 锁文件 schema（V3.5+）
+diff --git a/skills/builder-loop/fixtures/e2e/test-e2e-verification-stage.sh b/skills/builder-loop/fixtures/e2e/test-e2e-verification-stage.sh
+new file mode 100755
+index 0000000..1f94308
+--- /dev/null
++++ b/skills/builder-loop/fixtures/e2e/test-e2e-verification-stage.sh
+@@ -0,0 +1,81 @@
++#!/usr/bin/env bash
++# test-e2e-verification-stage.sh — fixture for stop hook e2e verification branch
++source "$(dirname "${BASH_SOURCE[0]}")/harness.sh"
++harness_init "test-e2e-verification-stage"
++
++# ---- 1. PASS + e2e_plan_path → e2e message injected, exit 2 ----
++section "Case 1: e2e cases trigger verification request"
++env1=$(create_test_env --slug "e2e-trigger" --worktree --phase active --wt-dirty "feature.txt")
++wt1="$env1/.claude/worktrees/e2e-trigger"
++sf1=$(state_file "$env1" "e2e-trigger")
++
++mkdir -p "$env1/.claude/plans"
++cat > "$env1/.claude/plans/test-plan.md" <<'EOF'
++## Plan
++<!-- e2e-cases -->
++- 启动 app
++- 检查首页
++<!-- /e2e-cases -->
++EOF
++printf '\ne2e_plan_path: ".claude/plans/test-plan.md"\n' >> "$sf1"
++
++result1=$(run_hook "$wt1")
++assert_ec "e2e cases present → exit 2" "$result1" 2
++assert_stderr_contains "injects e2e message" "$result1" "端到端验收用例"
++assert_stderr_contains "includes case 1" "$result1" "启动 app"
++assert_stderr_contains "includes case 2" "$result1" "检查首页"
++
++# ---- 2. PASS + e2e_plan_path + verified HEAD → skip e2e ----
++section "Case 2: verified HEAD skips e2e"
++env2=$(create_test_env --slug "e2e-skip" --worktree --phase active --wt-dirty "feature.txt")
++wt2="$env2/.claude/worktrees/e2e-skip"
++sf2=$(state_file "$env2" "e2e-skip")
++
++mkdir -p "$env2/.claude/plans"
++cat > "$env2/.claude/plans/test-plan.md" <<'EOF'
++<!-- e2e-cases -->
++- 启动 app
++<!-- /e2e-cases -->
++EOF
++CURRENT_HEAD2="$(git -C "$wt2" rev-parse HEAD)"
++printf '\ne2e_plan_path: ".claude/plans/test-plan.md"\n' >> "$sf2"
++printf 'e2e_verified_head: "%s"\n' "$CURRENT_HEAD2" >> "$sf2"
++
++result2=$(run_hook "$wt2")
++assert "verified HEAD → no e2e injection" "! grep -q '端到端验收用例' '$result2/stderr' 2>/dev/null"
++
++# ---- 3. PASS + no e2e_plan_path → normal flow ----
++section "Case 3: no e2e_plan_path → normal"
++env3=$(create_test_env --slug "e2e-none" --worktree --phase active --wt-dirty "feature.txt")
++wt3="$env3/.claude/worktrees/e2e-none"
++
++result3=$(run_hook "$wt3")
++assert "no e2e_plan_path → no e2e injection" "! grep -q '端到端验收用例' '$result3/stderr' 2>/dev/null"
++
++# ---- 4. PASS + e2e_plan_path but plan file missing → skip ----
++section "Case 4: missing plan file → skip"
++env4=$(create_test_env --slug "e2e-nofile" --worktree --phase active --wt-dirty "feature.txt")
++wt4="$env4/.claude/worktrees/e2e-nofile"
++sf4=$(state_file "$env4" "e2e-nofile")
++printf '\ne2e_plan_path: ".claude/plans/nonexistent.md"\n' >> "$sf4"
++
++result4=$(run_hook "$wt4")
++assert "missing plan file → no e2e injection" "! grep -q '端到端验收用例' '$result4/stderr' 2>/dev/null"
++
++# ---- 5. PASS + e2e_plan_path but no e2e-cases tags → skip ----
++section "Case 5: no tags in plan → skip"
++env5=$(create_test_env --slug "e2e-notag" --worktree --phase active --wt-dirty "feature.txt")
++wt5="$env5/.claude/worktrees/e2e-notag"
++sf5=$(state_file "$env5" "e2e-notag")
++
++mkdir -p "$env5/.claude/plans"
++cat > "$env5/.claude/plans/test-plan.md" <<'EOF'
++## Plan
++No e2e cases here.
++EOF
++printf '\ne2e_plan_path: ".claude/plans/test-plan.md"\n' >> "$sf5"
++
++result5=$(run_hook "$wt5")
++assert "no tags → no e2e injection" "! grep -q '端到端验收用例' '$result5/stderr' 2>/dev/null"
++
++harness_report
+diff --git a/skills/builder-loop/fixtures/e2e/test-extract-e2e-cases.sh b/skills/builder-loop/fixtures/e2e/test-extract-e2e-cases.sh
+new file mode 100755
+index 0000000..12a9950
+--- /dev/null
++++ b/skills/builder-loop/fixtures/e2e/test-extract-e2e-cases.sh
+@@ -0,0 +1,105 @@
++#!/usr/bin/env bash
++# test-extract-e2e-cases.sh — fixture for scripts/extract-e2e-cases.sh
++source "$(dirname "${BASH_SOURCE[0]}")/harness.sh"
++harness_init "test-extract-e2e-cases"
++
++SCRIPT="${HARNESS_REPO_ROOT}/scripts/extract-e2e-cases.sh"
++TMPDIR="$(mktemp -d -t "e2e-extract-XXXXXX")"
++_HARNESS_TMPDIRS+=("$TMPDIR")
++
++# Helper: run script, capture stdout to file, return exit code
++run_extract() {
++  local input="$1" outfile="$2"
++  "$SCRIPT" "$input" > "$outfile" 2>/dev/null
++  return $?
++}
++
++# ---- 1. Happy path: plan with e2e-cases tag ----
++cat > "$TMPDIR/plan-with-cases.md" <<'EOF'
++## 验收标准
++
++<!-- e2e-cases -->
++- 启动 app (python main.py --port 8080)
++- 打开浏览器访问 localhost:8080
++- 应能看到至少1个 rival 文明
++<!-- /e2e-cases -->
++
++其他内容
++EOF
++
++run_extract "$TMPDIR/plan-with-cases.md" "$TMPDIR/out1.txt"
++assert "happy path exits 0" "[ $? -eq 0 ]"
++assert_contains "extracts first case" "$TMPDIR/out1.txt" "启动 app"
++assert_contains "extracts last case" "$TMPDIR/out1.txt" "rival"
++assert "excludes opening tag" "! grep -q 'e2e-cases' '$TMPDIR/out1.txt'"
++
++# ---- 2. No tags → exit 1 ----
++cat > "$TMPDIR/plan-no-tag.md" <<'EOF'
++## 验收标准
++普通内容，没有 e2e 标签
++EOF
++
++run_extract "$TMPDIR/plan-no-tag.md" "$TMPDIR/out2.txt" || true
++assert "no tags exits 1" "[ $? -ne 0 ] || [ ! -s '$TMPDIR/out2.txt' ]"
++
++# ---- 3. Empty tags → exit 1 ----
++cat > "$TMPDIR/plan-empty-tag.md" <<'EOF'
++<!-- e2e-cases -->
++<!-- /e2e-cases -->
++EOF
++
++run_extract "$TMPDIR/plan-empty-tag.md" "$TMPDIR/out3.txt" || true
++assert "empty tags exits non-zero or empty output" "[ ! -s '$TMPDIR/out3.txt' ]"
++
++# ---- 4. Multiple tag segments → all extracted ----
++cat > "$TMPDIR/plan-multi.md" <<'EOF'
++## Phase 1
++<!-- e2e-cases -->
++- 检查首页加载
++<!-- /e2e-cases -->
++
++## Phase 2
++<!-- e2e-cases -->
++- 检查 rival 面板
++<!-- /e2e-cases -->
++EOF
++
++run_extract "$TMPDIR/plan-multi.md" "$TMPDIR/out4.txt"
++assert "multi segments exits 0" "[ $? -eq 0 ]"
++assert_contains "first segment present" "$TMPDIR/out4.txt" "首页加载"
++assert_contains "second segment present" "$TMPDIR/out4.txt" "rival 面板"
++
++# ---- 5. Missing file → exit 1 ----
++"$SCRIPT" "$TMPDIR/nonexistent.md" > /dev/null 2>&1 || true
++assert "missing file exits non-zero" "! '$SCRIPT' '$TMPDIR/nonexistent.md' > /dev/null 2>&1"
++
++# ---- 6. No argument → exit 1 ----
++assert "no argument exits non-zero" "! '$SCRIPT' > /dev/null 2>&1"
++
++# ---- 7. Tag content preserves special chars ----
++cat > "$TMPDIR/plan-special.md" <<'EOF'
++<!-- e2e-cases -->
++- 执行 curl http://localhost:8080/api/status
++  - 应返回 JSON 包含 status ok
++- 检查链接可访问
++<!-- /e2e-cases -->
++EOF
++
++run_extract "$TMPDIR/plan-special.md" "$TMPDIR/out7.txt"
++assert "special chars exits 0" "[ $? -eq 0 ]"
++assert_contains "preserves curl" "$TMPDIR/out7.txt" "curl"
++assert_contains "preserves nested indent" "$TMPDIR/out7.txt" "应返回"
++
++# ---- 8. Indented tags → extracted ----
++cat > "$TMPDIR/plan-indent.md" <<'EOF'
++## 验收
++  <!-- e2e-cases -->
++  - 检查缩进标签
++  <!-- /e2e-cases -->
++EOF
++
++run_extract "$TMPDIR/plan-indent.md" "$TMPDIR/out8.txt"
++assert "indented tags exits 0" "[ $? -eq 0 ]"
++assert_contains "indented tag content" "$TMPDIR/out8.txt" "缩进标签"
++
++harness_report

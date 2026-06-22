@@ -2,9 +2,5 @@ pass_cmd:
   - stage: smoke
     cmd: "true"
     timeout: 10
-max_iterations: 3
-layout:
-  source_dirs: [src]
-  test_dirs: []
 worktree:
   enabled: true

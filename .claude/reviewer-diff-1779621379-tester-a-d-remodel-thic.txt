@@ -1,0 +1,306 @@
+diff --git a/.claude/loop.yml b/.claude/loop.yml
+index c015ddd..5cac548 100644
+--- a/.claude/loop.yml
++++ b/.claude/loop.yml
+@@ -22,6 +22,7 @@ pass_cmd:
+   - { stage: "v25_stop_hook_observability", cmd: "bash skills/builder-loop/fixtures/e2e/test-stop-hook-debug-log.sh", timeout: 90 }
+   - { stage: "v26_abandon_loop_flow", cmd: "bash skills/builder-loop/fixtures/e2e/test-abandon-loop-flow.sh", timeout: 60 }
+   - { stage: "v30_reviewer_timing_check_phase", cmd: "bash skills/builder-loop/fixtures/e2e/test-reviewer-timing-check-phase.sh", timeout: 30 }
++  - { stage: "v32_early_stop_tampering", cmd: "bash skills/builder-loop/fixtures/e2e/test-early-stop-tampering.sh", timeout: 60 }
+ 
+ max_iterations: 5
+ 
+diff --git a/agents/tester.md b/agents/tester.md
+index 452a7df..7f9c819 100644
+--- a/agents/tester.md
++++ b/agents/tester.md
+@@ -1,6 +1,6 @@
+ ---
+ name: tester
+-description: "由 Builder Auto-Loop 在 reviewer 报「测试覆盖不足」时自动调用，根据需求规格独立编写测试用例。与 builder 严格隔离，禁止读取实现源码以保证黑盒测试。Builder 调用时需在 prompt 中传入 spec_view（方案的 tester 视图）、interface_signatures（API 签名）、target_test_dirs（测试落地目录）。"
++description: "由 Builder Auto-Loop 在 reviewer 报「测试覆盖不足」时自动调用，根据需求规格独立编写测试用例。与 builder 严格隔离，禁止读取实现源码以保证黑盒测试。Builder 调用时需在 prompt 中传入 spec_view（方案的 tester 视图）、interface_signatures（API 签名）、target_test_dirs（测试落地目录）、mock_targets（外部依赖 mock 方式）、data_contracts（关键数据结构）、error_types（异常类型清单）。"
+ model: sonnet
+ color: green
+ ---
+@@ -20,6 +20,9 @@ color: green
+ - `interface_signatures`：被测代码的对外接口签名（函数签名、类签名、API schema），不含实现细节
+ - `target_test_dirs`：测试文件落地目录（如 `tests/`、`spec/`），从项目 `.claude/loop.yml` 的 `layout.test_dirs` 取
+ - `worktree_path`：worktree 启用时为 worktree 绝对路径（如 `/path/to/worktrees/<slug>`），bare loop 时为空。**所有 Write/Edit 必须以此为根的绝对路径前缀**
++- `mock_targets`（可选）：外部依赖的 mock 方式（如 `{"db": "sqlite in-memory", "http_api": "responses library"}`），告知该 mock 什么、怎么 mock
++- `data_contracts`（可选）：关键数据结构定义（如 `{"Config": {"fields": ["name: str", "timeout: int"]}}`），用于构造合法测试数据
++- `error_types`（可选）：被测代码会抛的异常类型清单（如 `["ValidationError", "TimeoutError"]`），用于覆盖异常分支
+ - `existing_test_files`（可选）：已存在的测试文件路径列表，避免重复
+ 
+ ## ⚠️ 硬性约束（违反即视为任务失败）
+@@ -43,6 +46,10 @@ color: green
+ - 关键边界条件（空输入、超大输入、并发、异常）
+ - 验收标准里的"必须通过"项
+ 
++有 `mock_targets` 时：按其指定的 mock 方式构造桩，不自己猜外部依赖的 mock 方法。
++有 `data_contracts` 时：按其字段定义构造测试数据，不自己猜数据结构。
++有 `error_types` 时：每种异常类型至少写一个边界用例。
++
+ 如有疑问，**不要 Read 源码尝试反推**，而是在 TESTER_SUMMARY 里标注「规格不足」让 Builder/用户补充。
+ 
+ ### 步骤 2：扫描现有测试
+@@ -55,12 +62,13 @@ color: green
+ - 函数名清晰描述场景（`test_<功能>_<场景>_<期望>`）
+ - Arrange-Act-Assert 三段式
+ - 断言用 pytest 风格（或对应语言惯用）
++- mock 外部依赖时优先用 `mock_targets` 指定的方式；未指定则只 mock DB/网络/文件系统等标准外部依赖
+ 
+ ### 步骤 4：自检
+ 
+ - 测试文件路径必须在 `target_test_dirs` 内
+ - 没有 import 任何 `source_dirs` 下的实现细节（只 import 公开接口）
+-- 没有 mock 实现细节（只 mock 外部依赖如 DB/API）
++- 没有 mock 实现细节（只 mock `mock_targets` 指定的外部依赖，未指定时只 mock DB/API/文件系统）
+ - `worktree_path` 非空时：所有 Write/Edit 的 `file_path` 都以 `${worktree_path}/` 开头
+ - 不通过 Bash `cp` / `mv` / `ln` 搬运文件入 worktree（应一开始就用 worktree 绝对路径 Write）
+ 
+diff --git a/skills/builder-loop/fixtures/e2e/test-early-stop-tampering.sh b/skills/builder-loop/fixtures/e2e/test-early-stop-tampering.sh
+new file mode 100644
+index 0000000..3d465e2
+--- /dev/null
++++ b/skills/builder-loop/fixtures/e2e/test-early-stop-tampering.sh
+@@ -0,0 +1,205 @@
++#!/usr/bin/env bash
++# test-early-stop-tampering.sh — V3.2 tampering 检测新判据（只抓删除/弱化，修测试不算）
++#
++# 覆盖：
++#   Case 1: test_dirs 未配置 → 第 5 段整体跳过 → CONTINUE
++#   Case 2: 删除 1 个测试文件 + 添加 2 行 skip/xfail 标记 → 总信号=3 → STOP
++#   Case 3: 删除 3 个测试文件 → 总信号=3 → STOP
++#   Case 4: 只删 2 个文件（信号=2），低于阈值 → STOP 不触发 → CONTINUE
++#   Case 5: 只改注释/格式（diff 有内容但无 tampering 信号）→ CONTINUE
++#
++# 用法：bash test-early-stop-tampering.sh
++
++source "$(dirname "${BASH_SOURCE[0]}")/harness.sh"
++harness_init "early-stop-tampering"
++
++EARLY_STOP="${HARNESS_REPO_ROOT}/skills/builder-loop/scripts/early-stop-check.sh"
++
++# ==================================================================
++# 辅助：建临时 git 仓，含 tests/ 和 src/ 目录 + 初始文件
++# 返回：仓库根路径（stdout）
++# ==================================================================
++mk_test_repo() {
++  local dir
++  dir="$(mktemp -d -t "tampering-XXXXXX")"
++  _HARNESS_TMPDIRS+=("$dir")
++  (
++    cd "$dir"
++    git init -q
++    git config user.email "harness@test.local"
++    git config user.name "harness"
++    mkdir -p tests src
++    cat > tests/test_alpha.py <<'PY'
++def test_add():
++    assert 1 + 1 == 2
++
++def test_sub():
++    assert 3 - 1 == 2
++PY
++    cat > tests/test_beta.py <<'PY'
++def test_mul():
++    assert 2 * 3 == 6
++PY
++    cat > tests/test_gamma.py <<'PY'
++def test_div():
++    assert 10 / 2 == 5
++PY
++    cat > src/app.py <<'PY'
++def hello():
++    return "hello"
++PY
++    git add -A
++    git -c core.hooksPath=/dev/null commit -q -m "chore(test): [cr_id_skip] Init test files"
++  )
++  echo "$dir"
++}
++
++# ==================================================================
++# 辅助：写 state 文件，返回 state 文件路径
++# 参数：project_root  test_dirs（可为空字符串）
++# ==================================================================
++mk_state_file() {
++  local project_root="$1"
++  local test_dirs="$2"
++  local state_dir
++  state_dir="$(mktemp -d -t "state-XXXXXX")"
++  _HARNESS_TMPDIRS+=("$state_dir")
++  local state_file="${state_dir}/state.yml"
++  cat > "$state_file" <<STEOF
++iter: 0
++max_iter: 5
++project_root: "${project_root}"
++test_dirs: "${test_dirs}"
++last_error_hash: ""
++last_error_count: 0
++STEOF
++  echo "$state_file"
++}
++
++# ==================================================================
++# 辅助：写空日志文件（不含 FAILED/ERROR，确保 CUR_COUNT=0）
++# ==================================================================
++mk_empty_log() {
++  local f
++  f="$(mktemp -t "log-XXXXXX")"
++  _HARNESS_TMPDIRS+=("$f")
++  printf '' > "$f"
++  echo "$f"
++}
++
++# ==============================================================
++section "Case 1: test_dirs 未配置 → 跳过第 5 段 → CONTINUE"
++# ==============================================================
++# 场景：state 里 test_dirs="" 时，脚本第 5 段 [ -n "$TEST_DIRS_CSV" ] 为假，
++#        直接输出 CONTINUE（测试 A+D 重构的 guard 条件）
++
++repo1="$(mk_test_repo)"
++
++# 工作区有测试文件改动，但 test_dirs 未配置，第 5 段不应触发
++rm "$repo1/tests/test_alpha.py"
++rm "$repo1/tests/test_beta.py"
++rm "$repo1/tests/test_gamma.py"
++
++state1="$(mk_state_file "$repo1" "")"
++log1="$(mk_empty_log)"
++
++out1="$(bash "$EARLY_STOP" "$state1" "$log1" 2>/dev/null)"
++assert "Case 1 test_dirs 空 → 不触发 tampering 检测 → 输出 CONTINUE" \
++  "echo '$out1' | grep -q '^CONTINUE'"
++
++# ==============================================================
++section "Case 2: 删 1 个测试文件 + 加 2 行 skip/xfail 标记 → 信号=3 → STOP"
++# ==============================================================
++# 场景：删 test_gamma.py（信号+1），在 test_beta.py 加 pytest.mark.skip（信号+1），
++#        在 test_alpha.py 加 pytest.mark.xfail（信号+1），总计 3 → 触发早停
++
++repo2="$(mk_test_repo)"
++
++# 删除 1 个测试文件
++rm "$repo2/tests/test_gamma.py"
++
++# 加 skip 标记（工作区改动，不 commit）
++cat > "$repo2/tests/test_beta.py" <<'PY'
++import pytest
++
++@pytest.mark.skip(reason="builder skipped this")
++def test_mul():
++    assert 2 * 3 == 6
++PY
++
++# 加 xfail 标记
++cat > "$repo2/tests/test_alpha.py" <<'PY'
++import pytest
++
++@pytest.mark.xfail
++def test_add():
++    assert 1 + 1 == 2
++
++def test_sub():
++    assert 3 - 1 == 2
++PY
++
++state2="$(mk_state_file "$repo2" "tests")"
++log2="$(mk_empty_log)"
++
++out2="$(bash "$EARLY_STOP" "$state2" "$log2" 2>/dev/null)"
++assert "Case 2 总信号=3 → 输出 STOP suspected_test_tampering" \
++  "[ '$out2' = 'STOP suspected_test_tampering' ]"
++
++# ==============================================================
++section "Case 3: 删 3 个测试文件 → 信号=3 → STOP"
++# ==============================================================
++
++repo3="$(mk_test_repo)"
++
++rm "$repo3/tests/test_alpha.py"
++rm "$repo3/tests/test_beta.py"
++rm "$repo3/tests/test_gamma.py"
++
++state3="$(mk_state_file "$repo3" "tests")"
++log3="$(mk_empty_log)"
++
++out3="$(bash "$EARLY_STOP" "$state3" "$log3" 2>/dev/null)"
++assert "Case 3 删 3 个文件 → 总信号=3 → 输出 STOP suspected_test_tampering" \
++  "[ '$out3' = 'STOP suspected_test_tampering' ]"
++
++# ==============================================================
++section "Case 4: 只删 2 个测试文件，信号=2 → 不触发早停 → CONTINUE"
++# ==============================================================
++
++repo4="$(mk_test_repo)"
++
++rm "$repo4/tests/test_alpha.py"
++rm "$repo4/tests/test_beta.py"
++
++state4="$(mk_state_file "$repo4" "tests")"
++log4="$(mk_empty_log)"
++
++out4="$(bash "$EARLY_STOP" "$state4" "$log4" 2>/dev/null)"
++assert "Case 4 信号=2 未达阈值 → 输出 CONTINUE" \
++  "echo '$out4' | grep -q '^CONTINUE'"
++
++# ==============================================================
++section "Case 5: 只改注释/格式（diff 有内容但无 tampering 信号）→ CONTINUE"
++# ==============================================================
++
++repo5="$(mk_test_repo)"
++
++# 只在 test_alpha.py 加一行注释（diff 有内容，但不含 tampering 信号）
++cat > "$repo5/tests/test_alpha.py" <<'PY'
++def test_add():
++    # updated by builder: add tolerance note
++    assert 1 + 1 == 2
++
++def test_sub():
++    assert 3 - 1 == 2
++PY
++
++state5="$(mk_state_file "$repo5" "tests")"
++log5="$(mk_empty_log)"
++
++out5="$(bash "$EARLY_STOP" "$state5" "$log5" 2>/dev/null)"
++assert "Case 5 只改注释不弱化断言 → 输出 CONTINUE" \
++  "echo '$out5' | grep -q '^CONTINUE'"
++
++harness_report
+diff --git a/skills/builder-loop/scripts/early-stop-check.sh b/skills/builder-loop/scripts/early-stop-check.sh
+index b2796ef..9ba36cc 100755
+--- a/skills/builder-loop/scripts/early-stop-check.sh
++++ b/skills/builder-loop/scripts/early-stop-check.sh
+@@ -71,18 +71,24 @@ if [ -n "${LAST_COUNT:-}" ] && [ "${LAST_COUNT:-0}" -gt 0 ]; then
+   fi
+ fi
+ 
+-# ---- 5. 保护路径作弊检测 ----
+-# 检查本轮 git diff 是否大量修改了测试文件
++# ---- 5. 保护路径作弊检测（V3.2 A+D: 只抓删除/弱化，修测试不算） ----
++# builder 修 tester 写的测试是正常流程
++# 可疑信号：测试文件被删 / assert 被移除 / skip/xfail 被添加
+ TEST_DIRS_CSV="$(get_field test_dirs || echo '')"
+ if [ -n "$TEST_DIRS_CSV" ]; then
+   IFS=',' read -ra TEST_DIRS <<< "$TEST_DIRS_CSV"
+-  CHANGED_TESTS=0
++  TAMPERING_SIGNALS=0
+   for d in "${TEST_DIRS[@]}"; do
+     [ -z "$d" ] && continue
+-    n=$(git -C "$PROJECT_ROOT" diff --name-only HEAD -- "$d" 2>/dev/null | wc -l)
+-    CHANGED_TESTS=$(( CHANGED_TESTS + n ))
++    # 信号 1: 测试文件被删除
++    n_deleted=$(git -C "$PROJECT_ROOT" diff --diff-filter=D --name-only HEAD -- "$d" 2>/dev/null | wc -l)
++    TAMPERING_SIGNALS=$(( TAMPERING_SIGNALS + n_deleted ))
++    # 信号 2: 断言被弱化（assert 行被删 或 skip/xfail 被加，只看修改的文件，删除的已在信号 1 计数）
++    n_weakened=$(git -C "$PROJECT_ROOT" diff --diff-filter=M HEAD -- "$d" 2>/dev/null \
++      | grep -E '^-.*\bassert|^\+.*(pytest\.mark\.(skip|xfail|skipif)|@unittest\.skip|\bxfail\(|\bskip\()' 2>/dev/null | wc -l || true)
++    TAMPERING_SIGNALS=$(( TAMPERING_SIGNALS + n_weakened ))
+   done
+-  if [ "$CHANGED_TESTS" -ge 3 ]; then
++  if [ "$TAMPERING_SIGNALS" -ge 3 ]; then
+     echo "STOP suspected_test_tampering"
+     exit 0
+   fi

@@ -1,0 +1,1008 @@
+diff --git a/CLAUDE.md b/CLAUDE.md
+index db99236..5b01cab 100644
+--- a/CLAUDE.md
++++ b/CLAUDE.md
+@@ -56,8 +56,9 @@ install.sh 创建以下软链，把仓库文件映射到 CC 运行时路径：
+ | `skills/builder-loop/` | `~/.claude/skills/builder-loop/` | `ln -sfn` 整目录 | CC 自动发现 SKILL.md |
+ | `scripts/builder-loop-stop.sh` | `~/.claude/scripts/builder-loop-stop.sh` | `ln -sf` 逐文件 | Stop hook 入口 |
+ | `scripts/subagent-start-guard.sh` | `~/.claude/scripts/subagent-start-guard.sh` | `ln -sf` 逐文件 | SubagentStart hook |
++| `scripts/lock-utils.sh` | `~/.claude/scripts/lock-utils.sh` | `ln -sf` 逐文件 | subagent lock 公共函数库 |
+ | `scripts/tester-lock-check.sh` | `~/.claude/scripts/tester-lock-check.sh` | `ln -sf` 逐文件 | PreToolUse hook |
+-| `scripts/tester-lock-clear.sh` | `~/.claude/scripts/tester-lock-clear.sh` | `ln -sf` 逐文件 | SubagentStop hook |
++| `scripts/subagent-lock-clear.sh` | `~/.claude/scripts/subagent-lock-clear.sh` | `ln -sf` 逐文件 | SubagentStop hook |
+ | `scripts/worktree-write-guard.sh` | `~/.claude/scripts/worktree-write-guard.sh` | `ln -sf` 逐文件 | PreToolUse hook（Write\|Edit\|MultiEdit）|
+ | `scripts/reviewer-timing-check.sh` | `~/.claude/scripts/reviewer-timing-check.sh` | `ln -sf` 逐文件 | PreToolUse hook（Agent） |
+ | `agents/tester.md` | `~/.claude/agents/tester.md` | `ln -sf` 逐文件 | tester subagent |
+@@ -69,8 +70,8 @@ install.sh 创建以下软链，把仓库文件映射到 CC 运行时路径：
+ | Hook 类型 | Matcher | 脚本 | 作用 | 方案 |
+ |-----------|---------|------|------|------|
+ | Stop | 无（全局） | builder-loop-stop.sh | 每次 CC Stop 时检查是否需要继续循环 | 全部 |
+-| SubagentStart | 无（全局） | subagent-start-guard.sh | 所有 subagent 启动时落锁 + 注入 worktree 边界上下文 | 全部 |
+-| SubagentStop | 无（全局） | tester-lock-clear.sh | subagent 结束时清锁 | 全部 |
++| SubagentStart | 无（全局） | subagent-start-guard.sh | 白名单内 agent + active state 时写 per-type 锁 + 注入 worktree 边界上下文 | 全部 |
++| SubagentStop | 无（全局） | subagent-lock-clear.sh | 所有 managed subagent 结束时按 agent_type 精确清锁 | 全部 |
+ | PreToolUse | `Read\|Grep\|Glob` | tester-lock-check.sh | 拦截 tester 对 source_dirs 的读操作 | 全部 |
+ | PreToolUse | `Write\|Edit\|MultiEdit` | worktree-write-guard.sh | 分级写路径防护：subagent 严格白名单 / builder 宽松放行+日志 | 全部 |
+ | PreToolUse | `Agent` | reviewer-timing-check.sh | 拦截 phase=active 期间的 reviewer spawn；phase=passed_pending_review 时放行 | 全部 |
+@@ -120,7 +121,7 @@ cc-builder-loop/
+ ├── CLAUDE.md                   # 本文件
+ ├── CHANGELOG.md                # 版本历史（V1.0~V2.6）
+ ├── skills/builder-loop/        # CC skill（含 SKILL.md、scripts/、fixtures/e2e/、schema/、docs/）
+-├── scripts/                    # Stop hook + subagent 启动守卫 + tester 读隔离 + tester 锁清理 + worktree 写边界守卫 + reviewer 时序检查（6 个 .sh）
++├── scripts/                    # Stop hook + subagent 启动守卫 + lock 公共库 + subagent 清锁 + tester 读隔离 + worktree 写边界守卫 + reviewer 时序检查（7 个 .sh）
+ └── agents/                     # tester.md + arbiter.md
+ ```
+ 
+diff --git a/install.sh b/install.sh
+index e7ee3b6..084a8ab 100755
+--- a/install.sh
++++ b/install.sh
+@@ -58,7 +58,7 @@ for f in "$REPO_DIR/scripts/"*.sh; do
+ done
+ 
+ # ---- 3.5 清理 V3.1 废弃的旧软链 ----
+-for f in tester-lock-write.sh tester-write-guard.sh; do
++for f in tester-lock-write.sh tester-write-guard.sh tester-lock-clear.sh; do
+   old_link="$CLAUDE_DIR/scripts/$f"
+   [ -L "$old_link" ] && rm "$old_link" && echo "✓ removed deprecated: $f"
+ done
+@@ -141,7 +141,7 @@ def find_entry_status(arr, cmd_name, matcher):
+ registrations = [
+     ("Stop",           "builder-loop-stop.sh",      None,                    ""),
+     ("SubagentStart",  "subagent-start-guard.sh",   None,                    ""),
+-    ("SubagentStop",   "tester-lock-clear.sh",      None,                    ""),
++    ("SubagentStop",   "subagent-lock-clear.sh",     None,                    ""),
+     ("PreToolUse",     "tester-lock-check.sh",      "Read|Grep|Glob",        ""),
+     ("PreToolUse",     "worktree-write-guard.sh",   "Write|Edit|MultiEdit",  ""),
+     ("PreToolUse",     "reviewer-timing-check.sh",  "Agent",                 ""),
+@@ -150,7 +150,7 @@ registrations = [
+ # V3.1: remove deprecated hooks from previous installs
+ deprecated = [
+     ("SubagentStart", "tester-lock-write.sh"),
+-    ("SubagentStop",  "tester-lock-clear.sh"),  # matcher changed, remove stale entry
++    ("SubagentStop",  "tester-lock-clear.sh"),  # V3.5: replaced by subagent-lock-clear.sh
+     ("PreToolUse",    "tester-write-guard.sh"),
+ ]
+ for hook_type, old_cmd in deprecated:
+@@ -215,6 +215,6 @@ fi
+ echo ""
+ echo "✅ cc-builder-loop 安装完成"
+ echo "   skill: ~/.claude/skills/builder-loop/"
+-echo "   scripts: ~/.claude/scripts/builder-loop-stop.sh + subagent-start-guard.sh + tester-lock-*.sh + worktree-write-guard.sh + reviewer-timing-check.sh"
++echo "   scripts: ~/.claude/scripts/builder-loop-stop.sh + subagent-start-guard.sh + subagent-lock-clear.sh + lock-utils.sh + tester-lock-check.sh + worktree-write-guard.sh + reviewer-timing-check.sh"
+ echo "   agents: ~/.claude/agents/tester.md + arbiter.md + reviewer.md + doc-maintainer.md"
+ echo "   commands: ~/.claude/commands/builder.md + planner.md"
+diff --git a/scripts/lock-utils.sh b/scripts/lock-utils.sh
+new file mode 100755
+index 0000000..62d476d
+--- /dev/null
++++ b/scripts/lock-utils.sh
+@@ -0,0 +1,92 @@
++#!/usr/bin/env bash
++# lock-utils.sh — subagent lock 公共函数库
++#
++# V3.5: 所有 hook 脚本 source 本文件，统一 lock 文件的路径规则 / 读写 / 查找 / 清理。
++# 锁文件格式：cc-subagent-{session_id}-{agent_type}.lock（V3.5+）
++# 旧格式兼容：cc-subagent-{session_id}.lock（V3.4-）
++#
++# 用法：
++#   SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
++#   source "${SCRIPT_DIR}/lock-utils.sh"
++
++# ---- 常量 ----
++
++BL_AGENT_WHITELIST="tester doc-maintainer arbiter reviewer"
++BL_SYNC_AGENTS="tester doc-maintainer arbiter"
++
++_BL_LOCK_DIR="${ISOLATION_LOCK_DIR:-/tmp}"
++
++# ---- 公共函数 ----
++
++bl_is_managed_agent() {
++  local agent_type="${1:-}"
++  [ -z "$agent_type" ] && return 1
++  local a
++  for a in $BL_AGENT_WHITELIST; do
++    [ "$a" = "$agent_type" ] && return 0
++  done
++  return 1
++}
++
++bl_is_sync_agent() {
++  local agent_type="${1:-}"
++  [ -z "$agent_type" ] && return 1
++  local a
++  for a in $BL_SYNC_AGENTS; do
++    [ "$a" = "$agent_type" ] && return 0
++  done
++  return 1
++}
++
++bl_lock_path() {
++  local session_id="${1:?bl_lock_path: session_id required}"
++  local agent_type="${2:?bl_lock_path: agent_type required}"
++  printf '%s/cc-subagent-%s-%s.lock' "$_BL_LOCK_DIR" "$session_id" "$agent_type"
++}
++
++bl_legacy_lock_path() {
++  local session_id="${1:?bl_legacy_lock_path: session_id required}"
++  printf '%s/cc-subagent-%s.lock' "$_BL_LOCK_DIR" "$session_id"
++}
++
++bl_find_active_locks() {
++  local session_id="${1:?bl_find_active_locks: session_id required}"
++  local new_pattern="${_BL_LOCK_DIR}/cc-subagent-${session_id}-*.lock"
++  local legacy="${_BL_LOCK_DIR}/cc-subagent-${session_id}.lock"
++  local found=()
++
++  local f
++  for f in $new_pattern; do
++    [ -f "$f" ] && found+=("$f")
++  done
++
++  [ -f "$legacy" ] && found+=("$legacy")
++
++  if [ ${#found[@]} -gt 0 ]; then
++    printf '%s\n' "${found[@]}"
++  fi
++}
++
++bl_read_lock_field() {
++  local lock_file="${1:?bl_read_lock_field: lock_file required}"
++  local field="${2:?bl_read_lock_field: field required}"
++  grep -E "^${field}:" "$lock_file" 2>/dev/null | head -1 | sed -E "s/^${field}:[[:space:]]*\"?([^\"]*)\"?[[:space:]]*$/\1/" || true
++}
++
++bl_cleanup_stale_locks() {
++  local session_id="${1:?bl_cleanup_stale_locks: session_id required}"
++  local ttl_sec="${2:-1800}"
++  local now
++  now="$(date +%s)"
++
++  local f start_ts age
++  while IFS= read -r f; do
++    [ -z "$f" ] && continue
++    start_ts="$(bl_read_lock_field "$f" "start_ts")"
++    [ -z "$start_ts" ] && continue
++    age=$(( now - start_ts ))
++    if [ "$age" -gt "$ttl_sec" ]; then
++      rm -f "$f"
++    fi
++  done < <(bl_find_active_locks "$session_id")
++}
+diff --git a/scripts/subagent-lock-clear.sh b/scripts/subagent-lock-clear.sh
+new file mode 100755
+index 0000000..308b264
+--- /dev/null
++++ b/scripts/subagent-lock-clear.sh
+@@ -0,0 +1,50 @@
++#!/usr/bin/env bash
++# subagent-lock-clear.sh — SubagentStop hook (no matcher = all subagents)
++#
++# V3.5: replaces tester-lock-clear.sh. Clears lock for any managed agent type.
++# Lock path: cc-subagent-{session_id}-{agent_type}.lock
++# Fallback: if agent_type is empty, glob-delete all locks for this session.
++#
++# Exit code: always 0
++
++set -uo pipefail
++
++SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
++source "${SCRIPT_DIR}/lock-utils.sh"
++
++LOG_FILE="${HOME}/.claude/logs/subagent-lock-clear.log"
++mkdir -p "$(dirname "$LOG_FILE")" 2>/dev/null || true
++
++log() { printf '[%s] %s\n' "$(date -Iseconds)" "$*" >> "$LOG_FILE" 2>/dev/null || true; }
++
++INPUT="$(cat || echo '{}')"
++SESSION_ID=$(printf '%s' "$INPUT" | jq -r '.session_id // empty' 2>/dev/null || echo "")
++SUBAGENT_TYPE=$(printf '%s' "$INPUT" | jq -r '.subagent_type // empty' 2>/dev/null || echo "")
++
++[ -z "$SESSION_ID" ] && exit 0
++
++if [ -n "$SUBAGENT_TYPE" ]; then
++  LOCK_FILE="$(bl_lock_path "$SESSION_ID" "$SUBAGENT_TYPE")"
++  if [ -f "$LOCK_FILE" ]; then
++    rm -f "$LOCK_FILE"
++    log "cleared: $LOCK_FILE"
++  fi
++  # Also clean legacy lock if it matches this agent_type
++  LEGACY="$(bl_legacy_lock_path "$SESSION_ID")"
++  if [ -f "$LEGACY" ]; then
++    LEGACY_TYPE="$(bl_read_lock_field "$LEGACY" "agent_type")"
++    if [ "$LEGACY_TYPE" = "$SUBAGENT_TYPE" ]; then
++      rm -f "$LEGACY"
++      log "cleared legacy: $LEGACY (type=$LEGACY_TYPE)"
++    fi
++  fi
++else
++  # Fallback: agent_type unknown, clean all locks for this session
++  while IFS= read -r f; do
++    [ -z "$f" ] && continue
++    rm -f "$f"
++    log "cleared (fallback): $f"
++  done < <(bl_find_active_locks "$SESSION_ID")
++fi
++
++exit 0
+diff --git a/scripts/subagent-start-guard.sh b/scripts/subagent-start-guard.sh
+index 10402c9..73e26c8 100755
+--- a/scripts/subagent-start-guard.sh
++++ b/scripts/subagent-start-guard.sh
+@@ -1,23 +1,20 @@
+ #!/usr/bin/env bash
+ # subagent-start-guard.sh — SubagentStart hook (no matcher = all subagents)
+ #
+-# V3.1: replaces tester-lock-write.sh. Two responsibilities:
+-#   1. Write lock file for ALL subagent types (worktree-write-guard.sh uses it to detect subagent context)
++# V3.5: per-agent-type lock files + whitelist + active state dual-condition.
++#   1. Only write lock for managed agent types (whitelist) AND when active state exists
+ #   2. Inject worktree boundary context via additionalContext JSON (Layer 1: soft guidance)
+ #
+-# Lock file: ${ISOLATION_LOCK_DIR:-/tmp}/cc-subagent-{session_id}.lock
+-# Content: YAML (parsed by tester-lock-check.sh, worktree-write-guard.sh via grep)
+-#
+-# additionalContext injection:
+-#   When worktree_path is set and phase=active, outputs JSON to stdout:
+-#   {"additionalContext": "WORKTREE BOUNDARY: ..."}
+-#   CC injects this text into the subagent's initial context.
++# Lock file: ${ISOLATION_LOCK_DIR:-/tmp}/cc-subagent-{session_id}-{agent_type}.lock (V3.5+)
++# Content: YAML (parsed by downstream hooks via lock-utils.sh)
+ #
+ # Exit code: always 0 (hook failure must not block subagent start)
+ 
+ set -uo pipefail
+ 
+-LOCK_DIR="${ISOLATION_LOCK_DIR:-/tmp}"
++SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
++source "${SCRIPT_DIR}/lock-utils.sh"
++
+ LOG_FILE="${HOME}/.claude/logs/subagent-start-guard.log"
+ mkdir -p "$(dirname "$LOG_FILE")" 2>/dev/null || true
+ 
+@@ -54,7 +51,13 @@ if [ -f "$LOCATE_SCRIPT" ]; then
+ fi
+ 
+ if [ -z "$STATE_FILE" ]; then
+-  log "no state file from cwd=$CWD, type=$SUBAGENT_TYPE, skip"
++  log "no state file from cwd=$CWD, type=$SUBAGENT_TYPE, skip (no active loop)"
++  exit 0
++fi
++
++# V3.5: whitelist check — only managed agent types get a lock
++if ! bl_is_managed_agent "$SUBAGENT_TYPE"; then
++  log "agent_type=$SUBAGENT_TYPE not in whitelist, skip lock"
+   exit 0
+ fi
+ 
+@@ -97,8 +100,8 @@ except Exception:
+   [ -n "$TTL_FROM_YML" ] && TTL_MIN="$TTL_FROM_YML"
+ fi
+ 
+-# Write lock for this subagent (all types, not just tester)
+-LOCK_FILE="${LOCK_DIR}/cc-subagent-${SESSION_ID}.lock"
++# V3.5: per-agent-type lock file
++LOCK_FILE="$(bl_lock_path "$SESSION_ID" "$SUBAGENT_TYPE")"
+ {
+   echo "agent_type: ${SUBAGENT_TYPE:-unknown}"
+   echo "session_id: ${SESSION_ID}"
+diff --git a/scripts/tester-lock-check.sh b/scripts/tester-lock-check.sh
+index b2d4bab..9612102 100755
+--- a/scripts/tester-lock-check.sh
++++ b/scripts/tester-lock-check.sh
+@@ -1,25 +1,18 @@
+ #!/usr/bin/env bash
+ # tester-lock-check.sh — PreToolUse hook (matcher=Read|Grep|Glob)
+ #
+-# tester subagent 上下文期间，物理拦截对 source_dirs 的读操作。
++# V3.5: uses lock-utils.sh for per-agent-type lock lookup.
++# Only activates when a tester lock exists for this session.
+ #
+-# 决策流：
+-#   1. 读 stdin JSON 拿 session_id + tool_name + tool_input.{file_path,path,pattern}
+-#   2. 读锁文件 ${ISOLATION_LOCK_DIR:-/tmp}/cc-subagent-{session_id}.lock
+-#      不存在 → 非 tester 上下文，放行（exit 0）
+-#   3. 锁过期（now - start_ts > ttl_min*60）→ 删锁 + 放行
+-#   4. 提取目标路径，转 abspath
+-#   5. 白名单优先：路径含 /test, /tests, /spec, /__tests__ 或以 .md 结尾 → 放行
+-#   6. 路径前缀匹配 source_dirs_abs → exit 2 + JSON deny
+-#   7. 否则放行
+-#
+-# 退出码：
+-#   0  = 放行
+-#   2  = 拒绝（CC 硬约定：PreToolUse exit 2 + stderr/stdout JSON deny → 阻断工具调用）
++# Exit codes:
++#   0  = allow
++#   2  = deny (CC: PreToolUse exit 2 → block tool call)
+ 
+ set -uo pipefail
+ 
+-LOCK_DIR="${ISOLATION_LOCK_DIR:-/tmp}"
++SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
++source "${SCRIPT_DIR}/lock-utils.sh"
++
+ LOG_FILE="${HOME}/.claude/logs/tester-lock-check.log"
+ mkdir -p "$(dirname "$LOG_FILE")" 2>/dev/null || true
+ log() { printf '[%s] %s\n' "$(date -Iseconds)" "$*" >> "$LOG_FILE" 2>/dev/null || true; }
+@@ -30,18 +23,24 @@ TOOL_NAME=$(printf '%s' "$INPUT" | jq -r '.tool_name // empty' 2>/dev/null || ec
+ 
+ [ -z "$SESSION_ID" ] && exit 0
+ 
+-LOCK_FILE="${LOCK_DIR}/cc-subagent-${SESSION_ID}.lock"
+-[ ! -f "$LOCK_FILE" ] && exit 0
+-
+-# 锁是否 tester
+-AGENT_TYPE=$(grep -E '^agent_type:' "$LOCK_FILE" | sed -E 's/^agent_type:[[:space:]]*//' || echo "")
+-[ "$AGENT_TYPE" != "tester" ] && exit 0
++# V3.5: find tester-specific lock (new format first, legacy fallback)
++LOCK_FILE="$(bl_lock_path "$SESSION_ID" "tester")"
++if [ ! -f "$LOCK_FILE" ]; then
++  # Legacy fallback: old single-file format
++  LOCK_FILE="$(bl_legacy_lock_path "$SESSION_ID")"
++  if [ ! -f "$LOCK_FILE" ]; then
++    exit 0
++  fi
++  _atype="$(bl_read_lock_field "$LOCK_FILE" "agent_type")"
++  [ "$_atype" != "tester" ] && exit 0
++fi
+ 
+-# TTL 兜底
+-START_TS=$(grep -E '^start_ts:' "$LOCK_FILE" | sed -E 's/^start_ts:[[:space:]]*//' || echo 0)
+-TTL_MIN=$(grep -E '^ttl_min:' "$LOCK_FILE" | sed -E 's/^ttl_min:[[:space:]]*//' || echo 30)
++# TTL check
++START_TS="$(bl_read_lock_field "$LOCK_FILE" "start_ts")"
++TTL_MIN="$(bl_read_lock_field "$LOCK_FILE" "ttl_min")"
++[ -z "$TTL_MIN" ] && TTL_MIN=30
+ NOW=$(date +%s)
+-AGE=$(( NOW - START_TS ))
++AGE=$(( NOW - ${START_TS:-0} ))
+ TTL_SEC=$(( TTL_MIN * 60 ))
+ if [ "$AGE" -gt "$TTL_SEC" ]; then
+   log "lock expired (age=${AGE}s ttl=${TTL_SEC}s), removing & passing"
+diff --git a/scripts/tester-lock-clear.sh b/scripts/tester-lock-clear.sh
+deleted file mode 100755
+index 8101cab..0000000
+--- a/scripts/tester-lock-clear.sh
++++ /dev/null
+@@ -1,26 +0,0 @@
+-#!/usr/bin/env bash
+-# tester-lock-clear.sh — SubagentStop hook (matcher=tester)
+-#
+-# tester subagent 结束时清锁。
+-# 锁路径：${ISOLATION_LOCK_DIR:-/tmp}/cc-subagent-{session_id}.lock
+-#
+-# 退出码：始终 0
+-
+-set -uo pipefail
+-
+-LOCK_DIR="${ISOLATION_LOCK_DIR:-/tmp}"
+-LOG_FILE="${HOME}/.claude/logs/tester-lock-clear.log"
+-mkdir -p "$(dirname "$LOG_FILE")" 2>/dev/null || true
+-
+-INPUT="$(cat || echo '{}')"
+-SESSION_ID=$(printf '%s' "$INPUT" | jq -r '.session_id // empty' 2>/dev/null || echo "")
+-
+-[ -z "$SESSION_ID" ] && exit 0
+-
+-LOCK_FILE="${LOCK_DIR}/cc-subagent-${SESSION_ID}.lock"
+-if [ -f "$LOCK_FILE" ]; then
+-  rm -f "$LOCK_FILE"
+-  printf '[%s] cleared: %s\n' "$(date -Iseconds)" "$LOCK_FILE" >> "$LOG_FILE" 2>/dev/null || true
+-fi
+-
+-exit 0
+diff --git a/scripts/worktree-write-guard.sh b/scripts/worktree-write-guard.sh
+index adef1b6..052b62d 100755
+--- a/scripts/worktree-write-guard.sh
++++ b/scripts/worktree-write-guard.sh
+@@ -1,26 +1,25 @@
+ #!/usr/bin/env bash
+ # worktree-write-guard.sh — PreToolUse hook (matcher=Write|Edit|MultiEdit)
+ #
+-# V3.1 unified write boundary guard. Replaces tester-write-guard.sh.
++# V3.5: uses lock-utils.sh for per-agent-type lock files.
+ # Two modes based on subagent lock:
+ #
+-# SUBAGENT MODE (lock exists, sync agent type: tester/doc-maintainer/arbiter):
++# SUBAGENT MODE (any sync agent lock exists for this session):
+ #   Strict whitelist — file_path must be in worktree or whitelisted paths.
+ #   Violation → exit 2 (block + stderr diagnosis).
+ #
+-# BUILDER MODE (no lock, or background agent like reviewer):
++# BUILDER MODE (no sync lock):
+ #   Always pass (exit 0). Writes outside worktree are logged for debugging.
+ #
+ # Exit codes:
+ #   0 = allow
+ #   2 = deny (CC: PreToolUse exit 2 → block tool + inject stderr into LLM context)
+-#
+-# Performance: subagent mode reads lock file only (fast). Builder mode calls
+-# locate-state.sh (slower, but builder Write/Edit calls are infrequent).
+ 
+ set -uo pipefail
+ 
+-LOCK_DIR="${ISOLATION_LOCK_DIR:-/tmp}"
++SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
++source "${SCRIPT_DIR}/lock-utils.sh"
++
+ LOG_FILE="${HOME}/.claude/logs/worktree-write-guard.log"
+ mkdir -p "$(dirname "$LOG_FILE")" 2>/dev/null || true
+ log() { printf '[%s] %s\n' "$(date -Iseconds)" "$*" >> "$LOG_FILE" 2>/dev/null || true; }
+@@ -55,68 +54,63 @@ TARGET="$(parse_field '.tool_input.file_path')"
+ 
+ ABS_TARGET="$(readlink -f "$TARGET" 2>/dev/null || echo "$TARGET")"
+ 
+-# ---- Check lock file → subagent or builder? ----
+-LOCK_FILE="${LOCK_DIR}/cc-subagent-${SESSION_ID}.lock"
+-
+-if [ -f "$LOCK_FILE" ]; then
+-  AGENT_TYPE="$(grep -E '^agent_type:' "$LOCK_FILE" 2>/dev/null | head -1 | sed -E 's/^agent_type:[[:space:]]*//' || true)"
+-
+-  # Sync agents block the builder → all writes are from the subagent → strict mode.
+-  # Background agents (reviewer): builder continues working → pass through.
+-  case "$AGENT_TYPE" in
+-    tester|doc-maintainer|arbiter)
+-      # ---- SUBAGENT STRICT MODE ----
+-
+-      START_TS="$(grep -E '^start_ts:' "$LOCK_FILE" 2>/dev/null | head -1 | sed -E 's/^start_ts:[[:space:]]*//' || echo 0)"
+-      TTL_MIN="$(grep -E '^ttl_min:' "$LOCK_FILE" 2>/dev/null | head -1 | sed -E 's/^ttl_min:[[:space:]]*//' || echo 30)"
+-      NOW="$(date +%s)"
+-      AGE=$(( NOW - START_TS ))
+-      TTL_SEC=$(( TTL_MIN * 60 ))
+-      if [ "$AGE" -gt "$TTL_SEC" ]; then
+-        log "lock expired (age=${AGE}s ttl=${TTL_SEC}s), removing & passing"
+-        rm -f "$LOCK_FILE"
+-        exit 0
+-      fi
+-
+-      WORKTREE_PATH="$(grep -E '^worktree_path:' "$LOCK_FILE" 2>/dev/null | head -1 | sed -E 's/^worktree_path:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' || true)"
+-      MAIN_REPO_PATH="$(grep -E '^main_repo_path:' "$LOCK_FILE" 2>/dev/null | head -1 | sed -E 's/^main_repo_path:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' || true)"
+-
+-      [ -z "$WORKTREE_PATH" ] && exit 0
+-
+-      ABS_WORKTREE="$(readlink -f "$WORKTREE_PATH" 2>/dev/null || echo "$WORKTREE_PATH")"
+-      ABS_MAIN="$(readlink -f "$MAIN_REPO_PATH" 2>/dev/null || echo "$MAIN_REPO_PATH")"
+-
+-      # Whitelist: paths subagents may write outside worktree.
+-      # Order matters: worktree first, then main_repo whitelisted sub-paths,
+-      # then main_repo catch-all (fall through to deny), then /tmp last
+-      # (prevents /tmp/* from falsely matching when main_repo is under /tmp).
+-      case "$ABS_TARGET" in
+-        "$ABS_WORKTREE"/*)                              exit 0 ;;
+-        "$ABS_MAIN"/.claude/builder-loop/state/*)        exit 0 ;;
+-        "$ABS_MAIN"/.claude/reviewer-diff-*)             exit 0 ;;
+-        "$ABS_MAIN"/.claude/review_reports/*)            exit 0 ;;
+-        "$ABS_MAIN"/.claude/builder-loop/*.pause)        exit 0 ;;
+-        "$ABS_MAIN"/*)                                   ;;
+-        /tmp/*)                                          exit 0 ;;
+-      esac
+-
+-      log "DENY: $AGENT_TYPE target=$ABS_TARGET worktree=$ABS_WORKTREE main=$ABS_MAIN"
+-
+-      cat >&2 <<DENY_MSG
+-[builder-loop] worktree-write-guard: ${AGENT_TYPE} write blocked
++# ---- V3.5: Check per-agent-type lock files → subagent or builder? ----
++SYNC_LOCK=""
++ACTIVE_AGENT_TYPE=""
++
++while IFS= read -r _lock; do
++  [ -z "$_lock" ] && continue
++  _atype="$(bl_read_lock_field "$_lock" "agent_type")"
++  if bl_is_sync_agent "$_atype"; then
++    # TTL check
++    _start="$(bl_read_lock_field "$_lock" "start_ts")"
++    _ttl_min="$(bl_read_lock_field "$_lock" "ttl_min")"
++    [ -z "$_ttl_min" ] && _ttl_min=30
++    _now="$(date +%s)"
++    _age=$(( _now - ${_start:-0} ))
++    _ttl_sec=$(( _ttl_min * 60 ))
++    if [ "$_age" -gt "$_ttl_sec" ]; then
++      log "lock expired (age=${_age}s ttl=${_ttl_sec}s), removing: $_lock"
++      rm -f "$_lock"
++      continue
++    fi
++    SYNC_LOCK="$_lock"
++    ACTIVE_AGENT_TYPE="$_atype"
++    break
++  fi
++done < <(bl_find_active_locks "$SESSION_ID")
++
++if [ -n "$SYNC_LOCK" ]; then
++  # ---- SUBAGENT STRICT MODE ----
++  WORKTREE_PATH="$(bl_read_lock_field "$SYNC_LOCK" "worktree_path")"
++  MAIN_REPO_PATH="$(bl_read_lock_field "$SYNC_LOCK" "main_repo_path")"
++
++  [ -z "$WORKTREE_PATH" ] && exit 0
++
++  ABS_WORKTREE="$(readlink -f "$WORKTREE_PATH" 2>/dev/null || echo "$WORKTREE_PATH")"
++  ABS_MAIN="$(readlink -f "$MAIN_REPO_PATH" 2>/dev/null || echo "$MAIN_REPO_PATH")"
++
++  case "$ABS_TARGET" in
++    "$ABS_WORKTREE"/*)                              exit 0 ;;
++    "$ABS_MAIN"/.claude/builder-loop/state/*)        exit 0 ;;
++    "$ABS_MAIN"/.claude/reviewer-diff-*)             exit 0 ;;
++    "$ABS_MAIN"/.claude/review_reports/*)            exit 0 ;;
++    "$ABS_MAIN"/.claude/builder-loop/*.pause)        exit 0 ;;
++    "$ABS_MAIN"/*)                                   ;;
++    /tmp/*)                                          exit 0 ;;
++  esac
++
++  log "DENY: $ACTIVE_AGENT_TYPE target=$ABS_TARGET worktree=$ABS_WORKTREE main=$ABS_MAIN"
++
++  cat >&2 <<DENY_MSG
++[builder-loop] worktree-write-guard: ${ACTIVE_AGENT_TYPE} write blocked
+    target:  ${TARGET}
+    resolved: ${ABS_TARGET}
+    allowed: ${ABS_WORKTREE}/*
+    main:    ${ABS_MAIN} (subagent writes outside worktree are blocked)
+    fix:     use ${ABS_WORKTREE}/<relative-path> instead
+ DENY_MSG
+-      exit 2
+-      ;;
+-    *)
+-      log "background-agent lock ($AGENT_TYPE), pass: $ABS_TARGET"
+-      exit 0
+-      ;;
+-  esac
++  exit 2
+ fi
+ 
+ # ---- BUILDER MODE (no lock) ----
+diff --git a/skills/builder-loop/fixtures/e2e/test-install-uninstall-roundtrip.sh b/skills/builder-loop/fixtures/e2e/test-install-uninstall-roundtrip.sh
+index 6ed0542..627b249 100755
+--- a/skills/builder-loop/fixtures/e2e/test-install-uninstall-roundtrip.sh
++++ b/skills/builder-loop/fixtures/e2e/test-install-uninstall-roundtrip.sh
+@@ -64,7 +64,7 @@ import json, sys
+ cfg = json.load(open(sys.argv[1]))
+ hooks = cfg.get("hooks", {})
+ bl_scripts = ["builder-loop-stop.sh", "subagent-start-guard.sh",
+-              "tester-lock-check.sh", "tester-lock-clear.sh",
++              "tester-lock-check.sh", "subagent-lock-clear.sh",
+               "worktree-write-guard.sh", "reviewer-timing-check.sh"]
+ n = 0
+ for arr in hooks.values():
+diff --git a/skills/builder-loop/fixtures/e2e/test-subagent-identity-clear-all-types.sh b/skills/builder-loop/fixtures/e2e/test-subagent-identity-clear-all-types.sh
+new file mode 100755
+index 0000000..6e7e361
+--- /dev/null
++++ b/skills/builder-loop/fixtures/e2e/test-subagent-identity-clear-all-types.sh
+@@ -0,0 +1,69 @@
++#!/usr/bin/env bash
++# test-subagent-identity-clear-all-types.sh — V3.5 lock clear for all managed agent types
++#
++# Verifies subagent-lock-clear.sh correctly removes locks per agent_type.
++
++source "$(dirname "${BASH_SOURCE[0]}")/harness.sh"
++harness_init "subagent-identity-clear-all-types"
++
++CLEAR_SCRIPT="$HARNESS_REPO_ROOT/scripts/subagent-lock-clear.sh"
++assert_file_exists "lock-clear exists" "$CLEAR_SCRIPT"
++
++TMPDIR="$(mktemp -d)"
++_HARNESS_TMPDIRS+=("$TMPDIR")
++
++LOCK_DIR="$TMPDIR/locks"
++mkdir -p "$LOCK_DIR"
++
++SESSION_ID="test-clear-$$"
++
++write_lock() {
++  local atype="$1"
++  local lock_file="$LOCK_DIR/cc-subagent-${SESSION_ID}-${atype}.lock"
++  cat > "$lock_file" <<EOF
++agent_type: $atype
++session_id: $SESSION_ID
++start_ts: $(date +%s)
++ttl_min: 30
++EOF
++}
++
++make_stop() {
++  printf '{"session_id":"%s","subagent_type":"%s"}' "$SESSION_ID" "$1"
++}
++
++# ---- Case 1: Clear each type individually ----
++for atype in tester doc-maintainer arbiter reviewer; do
++  section "Case: Clear $atype"
++  write_lock tester
++  write_lock doc-maintainer
++  write_lock arbiter
++  write_lock reviewer
++
++  printf '%s' "$(make_stop "$atype")" | ISOLATION_LOCK_DIR="$LOCK_DIR" bash "$CLEAR_SCRIPT" >/dev/null 2>&1
++
++  CLEARED="$LOCK_DIR/cc-subagent-${SESSION_ID}-${atype}.lock"
++  assert_file_missing "$atype lock cleared" "$CLEARED"
++
++  # Others should still exist
++  for other in tester doc-maintainer arbiter reviewer; do
++    [ "$other" = "$atype" ] && continue
++    OTHER_LOCK="$LOCK_DIR/cc-subagent-${SESSION_ID}-${other}.lock"
++    assert_file_exists "$other lock still exists after clearing $atype" "$OTHER_LOCK"
++  done
++
++  # Cleanup for next iteration
++  rm -f "$LOCK_DIR"/cc-subagent-*.lock
++done
++
++# ---- Case 2: Fallback — empty agent_type clears all ----
++section "Case: Empty agent_type fallback clears all"
++write_lock tester
++write_lock doc-maintainer
++
++printf '%s' "$(printf '{"session_id":"%s"}' "$SESSION_ID")" | ISOLATION_LOCK_DIR="$LOCK_DIR" bash "$CLEAR_SCRIPT" >/dev/null 2>&1
++
++assert_file_missing "tester cleared by fallback" "$LOCK_DIR/cc-subagent-${SESSION_ID}-tester.lock"
++assert_file_missing "doc-maintainer cleared by fallback" "$LOCK_DIR/cc-subagent-${SESSION_ID}-doc-maintainer.lock"
++
++harness_report
+diff --git a/skills/builder-loop/fixtures/e2e/test-subagent-identity-concurrent-locks.sh b/skills/builder-loop/fixtures/e2e/test-subagent-identity-concurrent-locks.sh
+new file mode 100755
+index 0000000..62d552d
+--- /dev/null
++++ b/skills/builder-loop/fixtures/e2e/test-subagent-identity-concurrent-locks.sh
+@@ -0,0 +1,79 @@
++#!/usr/bin/env bash
++# test-subagent-identity-concurrent-locks.sh — V3.5 per-agent-type lock isolation
++#
++# Verifies that tester and doc-maintainer locks don't overwrite each other.
++
++source "$(dirname "${BASH_SOURCE[0]}")/harness.sh"
++harness_init "subagent-identity-concurrent-locks"
++
++GUARD_SCRIPT="$HARNESS_REPO_ROOT/scripts/subagent-start-guard.sh"
++CLEAR_SCRIPT="$HARNESS_REPO_ROOT/scripts/subagent-lock-clear.sh"
++assert_file_exists "start-guard exists" "$GUARD_SCRIPT"
++assert_file_exists "lock-clear exists" "$CLEAR_SCRIPT"
++
++TMPDIR="$(mktemp -d)"
++_HARNESS_TMPDIRS+=("$TMPDIR")
++
++LOCK_DIR="$TMPDIR/locks"
++mkdir -p "$LOCK_DIR"
++
++# Create a minimal project with state
++PROJECT="$TMPDIR/project"
++mkdir -p "$PROJECT/.claude/builder-loop/state" "$PROJECT/.claude/worktrees/test-slug" "$PROJECT/src"
++cat > "$PROJECT/.claude/loop.yml" <<'YML'
++pass_cmd: "true"
++YML
++cat > "$PROJECT/.claude/builder-loop/state/test-slug.yml" <<STATEEOF
++phase: active
++project_root: "$PROJECT"
++main_repo_path: "$PROJECT"
++worktree_path: "$PROJECT/.claude/worktrees/test-slug"
++source_dirs: "src"
++active: true
++STATEEOF
++
++SESSION_ID="test-concurrent-$$"
++
++make_start_input() {
++  printf '{"session_id":"%s","cwd":"%s","subagent_type":"%s"}' "$SESSION_ID" "$PROJECT/.claude/worktrees/test-slug" "$1"
++}
++
++make_stop_input() {
++  printf '{"session_id":"%s","subagent_type":"%s"}' "$SESSION_ID" "$1"
++}
++
++# ---- Case 1: Two different agent types create separate lock files ----
++section "Case 1: tester + doc-maintainer create separate locks"
++printf '%s' "$(make_start_input tester)" | ISOLATION_LOCK_DIR="$LOCK_DIR" bash "$GUARD_SCRIPT" >/dev/null 2>&1
++TESTER_LOCK="$LOCK_DIR/cc-subagent-${SESSION_ID}-tester.lock"
++assert_file_exists "tester lock created" "$TESTER_LOCK"
++
++printf '%s' "$(make_start_input doc-maintainer)" | ISOLATION_LOCK_DIR="$LOCK_DIR" bash "$GUARD_SCRIPT" >/dev/null 2>&1
++DM_LOCK="$LOCK_DIR/cc-subagent-${SESSION_ID}-doc-maintainer.lock"
++assert_file_exists "doc-maintainer lock created" "$DM_LOCK"
++assert_file_exists "tester lock still exists after doc-maintainer start" "$TESTER_LOCK"
++
++# ---- Case 2: Each lock has correct agent_type ----
++section "Case 2: Lock content correctness"
++TESTER_TYPE="$(grep '^agent_type:' "$TESTER_LOCK" | sed 's/agent_type: //')"
++DM_TYPE="$(grep '^agent_type:' "$DM_LOCK" | sed 's/agent_type: //')"
++assert "tester lock has correct type" "[ '$TESTER_TYPE' = 'tester' ]"
++assert "dm lock has correct type" "[ '$DM_TYPE' = 'doc-maintainer' ]"
++
++# ---- Case 3: Clearing tester lock doesn't affect doc-maintainer ----
++section "Case 3: Selective lock clear"
++printf '%s' "$(make_stop_input tester)" | ISOLATION_LOCK_DIR="$LOCK_DIR" bash "$CLEAR_SCRIPT" >/dev/null 2>&1
++assert_file_missing "tester lock cleared" "$TESTER_LOCK"
++assert_file_exists "doc-maintainer lock untouched" "$DM_LOCK"
++
++# ---- Case 4: Clear doc-maintainer ----
++section "Case 4: Clear remaining lock"
++printf '%s' "$(make_stop_input doc-maintainer)" | ISOLATION_LOCK_DIR="$LOCK_DIR" bash "$CLEAR_SCRIPT" >/dev/null 2>&1
++assert_file_missing "doc-maintainer lock cleared" "$DM_LOCK"
++
++# ---- Case 5: No old-format lock created ----
++section "Case 5: No legacy lock created"
++OLD_LOCK="$LOCK_DIR/cc-subagent-${SESSION_ID}.lock"
++assert_file_missing "no legacy lock" "$OLD_LOCK"
++
++harness_report
+diff --git a/skills/builder-loop/fixtures/e2e/test-subagent-identity-old-lock-compat.sh b/skills/builder-loop/fixtures/e2e/test-subagent-identity-old-lock-compat.sh
+new file mode 100755
+index 0000000..1301212
+--- /dev/null
++++ b/skills/builder-loop/fixtures/e2e/test-subagent-identity-old-lock-compat.sh
+@@ -0,0 +1,79 @@
++#!/usr/bin/env bash
++# test-subagent-identity-old-lock-compat.sh — V3.5 backward compat with V3.4 lock format
++#
++# Verifies that old-format locks (cc-subagent-{sid}.lock) are still handled by
++# worktree-write-guard.sh and tester-lock-check.sh.
++
++source "$(dirname "${BASH_SOURCE[0]}")/harness.sh"
++harness_init "subagent-identity-old-lock-compat"
++
++GUARD_SCRIPT="$HARNESS_REPO_ROOT/scripts/worktree-write-guard.sh"
++ISO_SCRIPT="$HARNESS_REPO_ROOT/scripts/tester-lock-check.sh"
++CLEAR_SCRIPT="$HARNESS_REPO_ROOT/scripts/subagent-lock-clear.sh"
++assert_file_exists "write-guard exists" "$GUARD_SCRIPT"
++assert_file_exists "tester-lock-check exists" "$ISO_SCRIPT"
++assert_file_exists "lock-clear exists" "$CLEAR_SCRIPT"
++
++TMPDIR="$(mktemp -d)"
++_HARNESS_TMPDIRS+=("$TMPDIR")
++
++LOCK_DIR="$TMPDIR/locks"
++WORKTREE="$TMPDIR/worktree"
++MAIN_REPO="$TMPDIR/main"
++mkdir -p "$LOCK_DIR" "$WORKTREE/src" "$MAIN_REPO/.claude/builder-loop/state" "$TMPDIR/project/src" "$TMPDIR/project/tests"
++
++SESSION_ID="test-compat-$$"
++
++# Write old-format lock (V3.4 style)
++LEGACY_LOCK="$LOCK_DIR/cc-subagent-${SESSION_ID}.lock"
++cat > "$LEGACY_LOCK" <<EOF
++agent_type: tester
++session_id: $SESSION_ID
++project_root: "$WORKTREE"
++main_repo_path: "$MAIN_REPO"
++worktree_path: "$WORKTREE"
++slug: "test-slug"
++start_ts: $(date +%s)
++ttl_min: 30
++source_dirs_abs:
++  - "$TMPDIR/project/src"
++EOF
++
++# ---- Case 1: worktree-write-guard still enforces old lock ----
++section "Case 1: Old lock triggers write guard"
++run_guard() {
++  local ec=0
++  printf '%s' "$1" | ISOLATION_LOCK_DIR="$LOCK_DIR" bash "$GUARD_SCRIPT" >/dev/null 2>/dev/null || ec=$?
++  echo "$ec"
++}
++make_write_input() {
++  printf '{"session_id":"%s","tool_name":"Write","tool_input":{"file_path":"%s"}}' "$SESSION_ID" "$1"
++}
++
++EC=$(run_guard "$(make_write_input "$MAIN_REPO/src/bad.py")")
++assert "old lock → deny main repo write" "[ '$EC' -eq 2 ]"
++
++EC=$(run_guard "$(make_write_input "$WORKTREE/src/ok.py")")
++assert "old lock → allow worktree write" "[ '$EC' -eq 0 ]"
++
++# ---- Case 2: tester-lock-check still reads old lock ----
++section "Case 2: Old lock triggers read isolation"
++run_iso() {
++  local ec=0
++  local input="{\"session_id\":\"${SESSION_ID}\",\"tool_name\":\"Read\",\"tool_input\":{\"file_path\":\"$1\"}}"
++  printf '%s' "$input" | ISOLATION_LOCK_DIR="$LOCK_DIR" bash "$ISO_SCRIPT" >/dev/null 2>&1 || ec=$?
++  echo "$ec"
++}
++
++EC=$(run_iso "$TMPDIR/project/src/foo.py")
++assert "old lock → deny source read" "[ '$EC' -eq 2 ]"
++
++EC=$(run_iso "$TMPDIR/project/tests/test_foo.py")
++assert "old lock → allow test read" "[ '$EC' -eq 0 ]"
++
++# ---- Case 3: subagent-lock-clear cleans legacy lock when type matches ----
++section "Case 3: Clear script handles legacy lock"
++printf '%s' "$(printf '{"session_id":"%s","subagent_type":"tester"}' "$SESSION_ID")" | ISOLATION_LOCK_DIR="$LOCK_DIR" bash "$CLEAR_SCRIPT" >/dev/null 2>&1
++assert_file_missing "legacy lock cleaned by clear script" "$LEGACY_LOCK"
++
++harness_report
+diff --git a/skills/builder-loop/fixtures/e2e/test-subagent-identity-ttl-expiry.sh b/skills/builder-loop/fixtures/e2e/test-subagent-identity-ttl-expiry.sh
+new file mode 100755
+index 0000000..07c8400
+--- /dev/null
++++ b/skills/builder-loop/fixtures/e2e/test-subagent-identity-ttl-expiry.sh
+@@ -0,0 +1,89 @@
++#!/usr/bin/env bash
++# test-subagent-identity-ttl-expiry.sh — V3.5 TTL expiry of per-agent-type locks
++#
++# Verifies that expired locks are ignored/removed by worktree-write-guard.
++
++source "$(dirname "${BASH_SOURCE[0]}")/harness.sh"
++harness_init "subagent-identity-ttl-expiry"
++
++GUARD_SCRIPT="$HARNESS_REPO_ROOT/scripts/worktree-write-guard.sh"
++assert_file_exists "write-guard exists" "$GUARD_SCRIPT"
++
++TMPDIR="$(mktemp -d)"
++_HARNESS_TMPDIRS+=("$TMPDIR")
++
++LOCK_DIR="$TMPDIR/locks"
++WORKTREE="$TMPDIR/worktree"
++MAIN_REPO="$TMPDIR/main"
++mkdir -p "$LOCK_DIR" "$WORKTREE/src" "$MAIN_REPO/.claude/builder-loop/state"
++
++SESSION_ID="test-ttl-$$"
++
++run_guard() {
++  local ec=0
++  printf '%s' "$1" | ISOLATION_LOCK_DIR="$LOCK_DIR" bash "$GUARD_SCRIPT" >/dev/null 2>/dev/null || ec=$?
++  echo "$ec"
++}
++
++make_input() {
++  printf '{"session_id":"%s","tool_name":"Write","tool_input":{"file_path":"%s"}}' "$SESSION_ID" "$1"
++}
++
++# ---- Case 1: Fresh lock → deny write to main repo ----
++section "Case 1: Fresh tester lock denies main repo write"
++LOCK_FILE="$LOCK_DIR/cc-subagent-${SESSION_ID}-tester.lock"
++cat > "$LOCK_FILE" <<EOF
++agent_type: tester
++session_id: $SESSION_ID
++project_root: "$WORKTREE"
++main_repo_path: "$MAIN_REPO"
++worktree_path: "$WORKTREE"
++slug: "test-slug"
++start_ts: $(date +%s)
++ttl_min: 1
++source_dirs_abs:
++  - "$WORKTREE/src"
++EOF
++
++EC=$(run_guard "$(make_input "$MAIN_REPO/src/bad.py")")
++assert "fresh lock → deny main repo write" "[ '$EC' -eq 2 ]"
++
++# ---- Case 2: Expired lock → allow write (lock removed) ----
++section "Case 2: Expired lock allows write"
++EXPIRED_TS=$(( $(date +%s) - 120 ))
++cat > "$LOCK_FILE" <<EOF
++agent_type: tester
++session_id: $SESSION_ID
++project_root: "$WORKTREE"
++main_repo_path: "$MAIN_REPO"
++worktree_path: "$WORKTREE"
++slug: "test-slug"
++start_ts: $EXPIRED_TS
++ttl_min: 1
++source_dirs_abs:
++  - "$WORKTREE/src"
++EOF
++
++EC=$(run_guard "$(make_input "$MAIN_REPO/src/ok.py")")
++assert "expired lock → pass" "[ '$EC' -eq 0 ]"
++assert_file_missing "expired lock removed" "$LOCK_FILE"
++
++# ---- Case 3: Write to worktree always passes regardless of TTL ----
++section "Case 3: Worktree write always passes"
++cat > "$LOCK_FILE" <<EOF
++agent_type: tester
++session_id: $SESSION_ID
++project_root: "$WORKTREE"
++main_repo_path: "$MAIN_REPO"
++worktree_path: "$WORKTREE"
++slug: "test-slug"
++start_ts: $(date +%s)
++ttl_min: 1
++source_dirs_abs: []
++EOF
++
++EC=$(run_guard "$(make_input "$WORKTREE/src/good.py")")
++assert "worktree write → pass" "[ '$EC' -eq 0 ]"
++rm -f "$LOCK_FILE"
++
++harness_report
+diff --git a/skills/builder-loop/fixtures/e2e/test-subagent-identity-whitelist.sh b/skills/builder-loop/fixtures/e2e/test-subagent-identity-whitelist.sh
+new file mode 100755
+index 0000000..2866124
+--- /dev/null
++++ b/skills/builder-loop/fixtures/e2e/test-subagent-identity-whitelist.sh
+@@ -0,0 +1,77 @@
++#!/usr/bin/env bash
++# test-subagent-identity-whitelist.sh — V3.5 agent type whitelist + active state dual-condition
++#
++# Verifies that non-builder-loop agents (workflow, Explore) don't get lock files,
++# and that whitelisted agents without active state also don't get locks.
++
++source "$(dirname "${BASH_SOURCE[0]}")/harness.sh"
++harness_init "subagent-identity-whitelist"
++
++GUARD_SCRIPT="$HARNESS_REPO_ROOT/scripts/subagent-start-guard.sh"
++assert_file_exists "start-guard exists" "$GUARD_SCRIPT"
++
++TMPDIR="$(mktemp -d)"
++_HARNESS_TMPDIRS+=("$TMPDIR")
++
++LOCK_DIR="$TMPDIR/locks"
++mkdir -p "$LOCK_DIR"
++
++# Project with active state
++PROJECT="$TMPDIR/project"
++mkdir -p "$PROJECT/.claude/builder-loop/state" "$PROJECT/.claude/worktrees/test-slug" "$PROJECT/src"
++cat > "$PROJECT/.claude/loop.yml" <<'YML'
++pass_cmd: "true"
++YML
++cat > "$PROJECT/.claude/builder-loop/state/test-slug.yml" <<STATEEOF
++phase: active
++project_root: "$PROJECT"
++main_repo_path: "$PROJECT"
++worktree_path: "$PROJECT/.claude/worktrees/test-slug"
++source_dirs: "src"
++active: true
++STATEEOF
++
++SESSION_ID="test-whitelist-$$"
++WT_CWD="$PROJECT/.claude/worktrees/test-slug"
++
++make_input() {
++  printf '{"session_id":"%s","cwd":"%s","subagent_type":"%s"}' "$SESSION_ID" "$WT_CWD" "$1"
++}
++
++# ---- Case 1: Non-whitelist agents don't produce locks ----
++section "Case 1: workflow agent → no lock"
++printf '%s' "$(make_input Explore)" | ISOLATION_LOCK_DIR="$LOCK_DIR" bash "$GUARD_SCRIPT" >/dev/null 2>&1
++EXPLORE_LOCK="$LOCK_DIR/cc-subagent-${SESSION_ID}-Explore.lock"
++assert_file_missing "Explore lock not created" "$EXPLORE_LOCK"
++
++section "Case 2: general-purpose agent → no lock"
++printf '%s' "$(make_input general-purpose)" | ISOLATION_LOCK_DIR="$LOCK_DIR" bash "$GUARD_SCRIPT" >/dev/null 2>&1
++GP_LOCK="$LOCK_DIR/cc-subagent-${SESSION_ID}-general-purpose.lock"
++assert_file_missing "general-purpose lock not created" "$GP_LOCK"
++
++section "Case 3: claude agent → no lock"
++printf '%s' "$(make_input claude)" | ISOLATION_LOCK_DIR="$LOCK_DIR" bash "$GUARD_SCRIPT" >/dev/null 2>&1
++CL_LOCK="$LOCK_DIR/cc-subagent-${SESSION_ID}-claude.lock"
++assert_file_missing "claude lock not created" "$CL_LOCK"
++
++# ---- Case 4: Whitelisted agent with active state → lock created ----
++section "Case 4: tester + active state → lock created"
++printf '%s' "$(make_input tester)" | ISOLATION_LOCK_DIR="$LOCK_DIR" bash "$GUARD_SCRIPT" >/dev/null 2>&1
++T_LOCK="$LOCK_DIR/cc-subagent-${SESSION_ID}-tester.lock"
++assert_file_exists "tester lock created with active state" "$T_LOCK"
++rm -f "$T_LOCK"
++
++# ---- Case 5: Whitelisted agent without state → no lock (dual-condition) ----
++section "Case 5: tester + no state → no lock"
++SESSION_ID2="test-whitelist-nostate-$$"
++# Use a CWD that has no state file
++printf '%s' "$(printf '{"session_id":"%s","cwd":"/tmp","subagent_type":"tester"}' "$SESSION_ID2")" | ISOLATION_LOCK_DIR="$LOCK_DIR" bash "$GUARD_SCRIPT" >/dev/null 2>&1
++NS_LOCK="$LOCK_DIR/cc-subagent-${SESSION_ID2}-tester.lock"
++assert_file_missing "tester lock not created without state" "$NS_LOCK"
++
++# ---- Case 6: No glob noise ----
++section "Case 6: No stray lock files"
++STRAY_COUNT="$(find "$LOCK_DIR" -maxdepth 1 -name 'cc-subagent-*.lock' 2>/dev/null | wc -l)"
++assert "no stray locks" "[ '$STRAY_COUNT' -eq 0 ]"
++
++harness_report
+diff --git a/uninstall.sh b/uninstall.sh
+index 151bc84..60dcbe6 100755
+--- a/uninstall.sh
++++ b/uninstall.sh
+@@ -17,7 +17,7 @@ if [ -L "$CLAUDE_DIR/skills/builder-loop" ]; then
+ fi
+ 
+ # ---- 2. 删除 companion scripts 软链 ----
+-for f in builder-loop-stop.sh subagent-start-guard.sh tester-lock-write.sh tester-lock-check.sh tester-lock-clear.sh worktree-write-guard.sh tester-write-guard.sh reviewer-timing-check.sh; do
++for f in builder-loop-stop.sh subagent-start-guard.sh subagent-lock-clear.sh lock-utils.sh tester-lock-write.sh tester-lock-check.sh tester-lock-clear.sh worktree-write-guard.sh tester-write-guard.sh reviewer-timing-check.sh; do
+   target="$CLAUDE_DIR/scripts/$f"
+   if [ -L "$target" ]; then
+     rm "$target"
+@@ -47,6 +47,7 @@ with open(settings_path) as f:
+ 
+ hooks = cfg.get("hooks", {})
+ bl_scripts = ["builder-loop-stop.sh", "subagent-start-guard.sh",
++              "subagent-lock-clear.sh", "lock-utils.sh",
+               "tester-lock-write.sh", "tester-lock-check.sh",
+               "tester-lock-clear.sh", "worktree-write-guard.sh",
+               "tester-write-guard.sh", "reviewer-timing-check.sh"]
