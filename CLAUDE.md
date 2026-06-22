@@ -33,12 +33,12 @@
 
 ## V3.0 reviewer-as-gate 关键事实
 
-**V3.0 行为**：worktree 模式下 hook PASS 后**只 commit 不 merge**，等 reviewer 通过才合主线（详见 [CHANGELOG V3.0](CHANGELOG.md#v30-reviewer-as-gate-重构2026-05-09)）。bare 模式行为不变。
+**V3.0 行为**：hook PASS 后**只 commit 不 merge**，等 reviewer 通过才合主线（详见 [CHANGELOG V3.0](CHANGELOG.md#v30-reviewer-as-gate-重构2026-05-09)）。V4.1 起 bare 模式行为对齐 worktree（统一 `loop-commit.sh` + reviewer-as-gate）。
 
 **关键 state 字段**：`phase`（active / passed_pending_review）+ `last_iter_head` + `reviewer_pending` 段 + `cleanup_phase`。详见 SKILL.md 「状态文件 schema」段。
 
 **Hook 闸顺序**（PASS_CMD 之前命中即静默 exit 0）：
-- L1 `phase=passed_pending_review` → 静默（worktree 改动时自愈回 active）
+- L1 `phase=passed_pending_review` → 静默（worktree/主仓出现改动时自愈回 active）
 - L2A 末尾 pending AskUserQuestion → 静默
 - L2B HEAD == last_iter_head + git status 空 → 静默
 - L3 `.claude/builder-loop/<slug>.pause` 存在 → 静默
