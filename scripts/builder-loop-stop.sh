@@ -304,18 +304,20 @@ fi
 # L1: phase 闸 + worktree 改动兜底自愈
 if [ "$PHASE_FIELD" = "passed_pending_review" ]; then
   WT_PATH_GATE="$(grep -E '^worktree_path:' "$STATE_FILE" 2>/dev/null | head -1 | sed -E 's/^worktree_path:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' || echo "")"
-  WT_HAS_CHANGES=0
-  if [ -n "$WT_PATH_GATE" ] && [ -d "$WT_PATH_GATE" ]; then
+  # bare 模式 fallback：worktree_path 空时用 PROJECT_ROOT（主仓）做 dirty 检测
+  CHECK_PATH_GATE="${WT_PATH_GATE:-$PROJECT_ROOT}"
+  HAS_CHANGES=0
+  if [ -n "$CHECK_PATH_GATE" ] && [ -d "$CHECK_PATH_GATE" ]; then
     LIH_GATE="$(grep -E '^last_iter_head:' "$STATE_FILE" 2>/dev/null | head -1 | sed -E 's/^last_iter_head:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' || echo "")"
-    CUR_HEAD_GATE="$(git -C "$WT_PATH_GATE" rev-parse --short HEAD 2>/dev/null || echo "")"
-    WT_STATUS_GATE="$(git -C "$WT_PATH_GATE" status --porcelain 2>/dev/null || echo "")"
-    if [ -n "$WT_STATUS_GATE" ]; then
-      WT_HAS_CHANGES=1
+    CUR_HEAD_GATE="$(git -C "$CHECK_PATH_GATE" rev-parse --short HEAD 2>/dev/null || echo "")"
+    STATUS_GATE="$(git -C "$CHECK_PATH_GATE" status --porcelain 2>/dev/null || echo "")"
+    if [ -n "$STATUS_GATE" ]; then
+      HAS_CHANGES=1
     elif [ -n "$LIH_GATE" ] && [ -n "$CUR_HEAD_GATE" ] && [ "$LIH_GATE" != "$CUR_HEAD_GATE" ]; then
-      WT_HAS_CHANGES=1
+      HAS_CHANGES=1
     fi
   fi
-  if [ "$WT_HAS_CHANGES" = "1" ]; then
+  if [ "$HAS_CHANGES" = "1" ]; then
     STATE_FILE="$STATE_FILE" python3 -c "
 import os, re
 sf = os.environ['STATE_FILE']
@@ -323,7 +325,7 @@ text = open(sf).read()
 text = re.sub(r'^phase:.*\$', 'phase: \"active\"', text, flags=re.M)
 open(sf, 'w').write(text)
 " 2>/dev/null || true
-    echo "[builder-loop] L1 phase 自愈：worktree 检测到改动，phase passed_pending_review → active" >&2
+    echo "[builder-loop] L1 phase 自愈：检测到改动，phase passed_pending_review → active" >&2
     debug_log "phase_self_heal" '{"from":"passed_pending_review","to":"active","reason":"worktree_changed"}'
   else
     debug_log "exit" '{"code":0,"reason":"l1_phase_passed_pending_review"}'
@@ -553,12 +555,9 @@ RH_MSG
     fi
   fi
 
-  # ---- V3.0 reviewer-as-gate: worktree 模式分支 ----
-  # 判定 worktree 模式 → 调 worktree-commit-only.sh 只 commit 不 merge
-  # bare 模式（worktree_path 空）fall-through 到下面 V2.x 路径（merge-worktree-back NOOP）
+  # ---- V3.0 reviewer-as-gate: 统一 bare/worktree 路径 ----
   WORKTREE_PATH_PASS="$(grep -E '^worktree_path:' "$STATE_FILE" 2>/dev/null | head -1 | sed -E 's/^worktree_path:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' || echo "")"
-  if [ -n "$WORKTREE_PATH_PASS" ] && [ -d "$WORKTREE_PATH_PASS" ]; then
-    COMMIT_OUT="$(bash "${SKILL_DIR}/worktree-commit-only.sh" "$STATE_FILE" 2>&1 || true)"
+  COMMIT_OUT="$(bash "${SKILL_DIR}/loop-commit.sh" "$STATE_FILE" 2>&1 || true)"
     COMMIT_LAST="$(echo "$COMMIT_OUT" | tail -1)"
     COMMIT_ACTION="$(echo "$COMMIT_LAST" | awk '{print $1}')"
     debug_log "commit_only_result" "$(CA="$COMMIT_ACTION" CL="$COMMIT_LAST" python3 -c "
@@ -569,15 +568,15 @@ print(json.dumps({'commit_action': os.environ.get('CA',''), 'commit_last_line': 
     case "$COMMIT_ACTION" in
       COMMIT_DONE|NOOP)
         NEW_HEAD_SHORT="$(echo "$COMMIT_LAST" | awk '{print $2}')"
-        [ -z "$NEW_HEAD_SHORT" ] && NEW_HEAD_SHORT="$(git -C "$WORKTREE_PATH_PASS" rev-parse --short HEAD 2>/dev/null || echo "")"
+        [ -z "$NEW_HEAD_SHORT" ] && NEW_HEAD_SHORT="$(git -C "$RUN_CWD" rev-parse --short HEAD 2>/dev/null || echo "")"
         SLUG_PASS="$(grep -E '^slug:' "$STATE_FILE" 2>/dev/null | head -1 | sed -E 's/^slug:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' || echo "")"
         DIFF_FILE_PASS="${PROJECT_ROOT}/.claude/reviewer-diff-${SLUG_PASS}.txt"
         PROJ_NAME_PASS="$(basename "$PROJECT_ROOT")"
         mkdir -p "${PROJECT_ROOT}/.claude/review_reports" 2>/dev/null || true
         REPORT_TS_PASS="$(date +%Y%m%d_%H%M%S)"
         REPORT_PATH_PASS="${PROJECT_ROOT}/.claude/review_reports/${PROJ_NAME_PASS}_${SLUG_PASS}_${REPORT_TS_PASS}.md"
-        REVIEWER_FILES_PASS="$(git -C "$WORKTREE_PATH_PASS" diff --name-only "${PASS_START_HEAD_PREREAD}..HEAD" 2>/dev/null | tr '\n' ',' | sed 's/,$//' || echo "")"
-        git -C "$WORKTREE_PATH_PASS" diff "${PASS_START_HEAD_PREREAD}..HEAD" > "$DIFF_FILE_PASS" 2>/dev/null || echo "" > "$DIFF_FILE_PASS"
+        REVIEWER_FILES_PASS="$(git -C "$RUN_CWD" diff --name-only "${PASS_START_HEAD_PREREAD}..HEAD" 2>/dev/null | tr '\n' ',' | sed 's/,$//' || echo "")"
+        git -C "$RUN_CWD" diff "${PASS_START_HEAD_PREREAD}..HEAD" > "$DIFF_FILE_PASS" 2>/dev/null || echo "" > "$DIFF_FILE_PASS"
 
         # 写 state：phase=passed_pending_review + last_iter_head + reviewer_pending 段
         STATE_FILE="$STATE_FILE" NEW_HEAD="$NEW_HEAD_SHORT" \
@@ -618,7 +617,7 @@ open(sf, 'w').write(text)
 PY
 
         write_processed_cursor "$PROJECT_ROOT"
-        echo "[builder-loop] ✅ PASS at iter ${NEXT_ITER} (worktree commit, phase=passed_pending_review)" >&2
+        echo "[builder-loop] ✅ PASS at iter ${NEXT_ITER} (commit, phase=passed_pending_review)" >&2
         write_trace "PASS"
 
         cat >&2 <<PASS_MSG
@@ -636,147 +635,16 @@ print(json.dumps({'code':2,'reason':'pass_done_v3','iter': int(os.environ.get('I
         exit 2
         ;;
       *)
-        echo "[builder-loop] ⚠️  worktree-commit-only.sh 失败：${COMMIT_LAST}" >&2
-        debug_log "exit" '{"code":2,"reason":"worktree_commit_only_error"}'
+        echo "[builder-loop] ⚠️  loop-commit.sh 失败：${COMMIT_LAST}" >&2
+        debug_log "exit" '{"code":2,"reason":"loop_commit_error"}'
         cat >&2 <<COMMIT_ERR
-[builder-loop] ⚠️  worktree commit 失败（iter ${NEXT_ITER}）
+[builder-loop] ⚠️  commit 失败（iter ${NEXT_ITER}）
 ${COMMIT_OUT}
-请检查 worktree 状态后重试。
+请检查工作目录状态后重试。
 COMMIT_ERR
         exit 2
         ;;
     esac
-  fi
-  # ---- /V3.0 worktree 模式分支结束；以下走 bare 模式 V2.x 路径 ----
-
-  # T2.7：worktree 启用时先合回主干（fast-forward / rebase / 标记仲裁）
-  MERGE_OUT="$(bash "${SKILL_DIR}/merge-worktree-back.sh" "$STATE_FILE" 2>&1 || true)"
-  MERGE_LAST="$(echo "$MERGE_OUT" | tail -1)"
-  MERGE_ACTION="$(echo "$MERGE_LAST" | awk '{print $1}')"
-  debug_log "merge_result" "$(MA="$MERGE_ACTION" ML="$MERGE_LAST" python3 -c "
-import os, json
-print(json.dumps({'merge_action': os.environ.get('MA',''), 'merge_last_line': os.environ.get('ML','')[:200]}))
-" 2>/dev/null || echo '{}')"
-  case "$MERGE_ACTION" in
-    MERGED|NOOP)
-      # 用 merge 前预读的 start_head（cleanup_worktree 可能已把 state 删了）
-      PASS_START_HEAD="$PASS_START_HEAD_PREREAD"
-      # fallback：旧 state 文件可能无 start_head 字段
-      if [ -z "$PASS_START_HEAD" ]; then
-        PASS_START_HEAD="$(git -C "$PROJECT_ROOT" rev-parse --short HEAD 2>/dev/null || echo "")"
-      fi
-      write_processed_cursor "$PROJECT_ROOT"
-      rm -f "$STATE_FILE"
-
-      # ---- 预计算 reviewer 参数 → 写入文件，builder 直接消费 ----
-      PARAMS_FILE="${PROJECT_ROOT}/.claude/reviewer-params.json"
-      DIFF_FILE="${PROJECT_ROOT}/.claude/reviewer-diff.txt"
-      REVIEWER_FILES="$(git -C "$PROJECT_ROOT" diff --name-only "${PASS_START_HEAD}..HEAD" 2>/dev/null | tr '\n' ',' | sed 's/,$//' || echo "")"
-      PROJ_NAME="$(basename "$PROJECT_ROOT")"
-      mkdir -p "${PROJECT_ROOT}/.claude/review_reports" 2>/dev/null || true
-      REPORT_TS="$(date +%Y%m%d_%H%M%S)"
-      REPORT_PATH="${PROJECT_ROOT}/.claude/review_reports/${PROJ_NAME}_${REPORT_TS}.md"
-      git -C "$PROJECT_ROOT" diff "${PASS_START_HEAD}..HEAD" > "$DIFF_FILE" 2>/dev/null || echo "" > "$DIFF_FILE"
-      PARAMS_FILE="$PARAMS_FILE" PASS_START_HEAD="$PASS_START_HEAD" REVIEWER_FILES="$REVIEWER_FILES" \
-        REPORT_PATH="$REPORT_PATH" DIFF_FILE="$DIFF_FILE" python3 -c "
-import json, os
-params = {
-    'start_head': os.environ['PASS_START_HEAD'],
-    'changed_files': [f for f in os.environ['REVIEWER_FILES'].split(',') if f],
-    'report_path': os.environ['REPORT_PATH'],
-    'diff_file': os.environ['DIFF_FILE'],
-}
-with open(os.environ['PARAMS_FILE'], 'w') as f:
-    json.dump(params, f, indent=2, ensure_ascii=False)
-    f.write('\n')
-" 2>/dev/null || true
-      echo "[builder-loop] ✅ PASS at iter ${NEXT_ITER} (${MERGE_ACTION})" >&2
-      write_trace "PASS"
-      # exit 2 让 CC 继续执行 reviewer/commit pipeline（stderr 作为 user message 注入 LLM）
-      cat >&2 <<PASS_MSG
-[builder-loop] ✅ PASS_CMD 全部阶段通过（iter ${NEXT_ITER}）。状态文件已清理，循环结束。
-start_head=${PASS_START_HEAD}
-reviewer_params=${PARAMS_FILE}
-请继续执行 Builder 后续流程：触发 Reviewer Subagent → 文档更新评估 → 自动 commit → 改动汇总。
-⚠️ 重要：如果之前已有 reviewer 在后台运行，其结果基于旧代码（loop 运行前的快照），无效。请忽略旧 reviewer 结果，基于当前 HEAD 重新 spawn reviewer。
-⚠️ Reviewer 参数已预计算到 ${PARAMS_FILE}（含 changed_files/report_path/diff_file），Read 后直接传给 reviewer。diff 用 git diff ${PASS_START_HEAD}..HEAD 或读 ${DIFF_FILE}。
-PASS_MSG
-      debug_log "exit" "$(IT="$NEXT_ITER" MA="$MERGE_ACTION" python3 -c "
-import os, json
-print(json.dumps({'code':2,'reason':'pass_done','iter': int(os.environ.get('IT','0') or 0), 'merge_action': os.environ.get('MA','')}))
-" 2>/dev/null || echo '{}')"
-      exit 2
-      ;;
-    NEED_ARBITRATION)
-      # state 里已被 merge-worktree-back.sh 标记 need_arbitration=true
-      # 预读所有参数，输出结构化指令让 CC 只需 spawn + 调脚本
-      WT_PATH="$(echo "$MERGE_LAST" | awk '{print $2}')"
-      CONFLICT_FILES="$(grep -E '^conflict_files:' "$STATE_FILE" | head -1 | sed -E 's/^conflict_files:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/')"
-      TASK_CTX="$(grep -E '^task_description:' "$STATE_FILE" | head -1 | sed -E 's/^task_description:[[:space:]]*//')"
-      MAIN_BR="$(git -C "$PROJECT_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")"
-      # 读对方 commits 上下文（merge-worktree-back.sh 已写入 state）
-      THEIR_COMMITS="$(grep -E '^their_commits:' "$STATE_FILE" | head -1 | sed -E "s/^their_commits:[[:space:]]*'?(.*)'?[[:space:]]*$/\1/")"
-      [ -z "$THEIR_COMMITS" ] && THEIR_COMMITS="[]"
-      # 读 loop.yml 的 arbitration.max_attempts（默认 2）
-      MAX_ATT="2"
-      if [ -f "${PROJECT_ROOT}/.claude/loop.yml" ]; then
-        MAX_ATT_RAW="$(LOOP_YML_PATH="${PROJECT_ROOT}/.claude/loop.yml" python3 -c "
-import re, os
-text = open(os.environ['LOOP_YML_PATH']).read()
-m = re.search(r'max_attempts:\s*(\d+)', text)
-print(m.group(1) if m else '2')
-" 2>/dev/null || echo "2")"
-        [ -n "$MAX_ATT_RAW" ] && MAX_ATT="$MAX_ATT_RAW"
-      fi
-      # 格式化对方 commits 为可读形式
-      THEIR_COMMITS_TEXT="$(THEIR_COMMITS_RAW="$THEIR_COMMITS" python3 -c "
-import json, os
-raw = os.environ.get('THEIR_COMMITS_RAW', '[]')
-try:
-    tc_list = json.loads(raw)
-    if tc_list:
-        lines = []
-        for c in tc_list[:20]:
-            lines.append(f'  - {c.get(\"hash\",\"?\")}: {c.get(\"message\",\"\")}')
-            for f in c.get('files', []):
-                lines.append(f'    {f}')
-        print('\n'.join(lines))
-    else:
-        print('(no opponent commits)')
-except Exception:
-    print('(parse failed)')
-" 2>/dev/null || echo "(parse failed)")"
-      # exit 2 让 CC 继续，stderr 注入仲裁指令
-      cat >&2 <<ARBITER_MSG
-[builder-loop] NEED_ARBITRATION: rebase 冲突。Read arbiter-flow.md 按其执行。
-worktree_path=${WT_PATH}
-main_branch=${MAIN_BR}
-conflict_files=${CONFLICT_FILES}
-task_context=${TASK_CTX}
-state_file=${STATE_FILE}
-their_commits:
-${THEIR_COMMITS_TEXT}
-ARBITER_MSG
-      debug_log "exit" '{"code":2,"reason":"need_arbitration"}'
-      exit 2
-      ;;
-    *)
-      # M5: 不再静默删 state；显式把 merge 完整输出抛给 builder + exit 2 让 builder 收到通知
-      # 历史教训：V1.9.1 之前 merge-worktree-back.sh 因 grep+pipefail 静默退出导致 MERGE_OUT 为空，
-      # 走到这里 echo 一行后 exit 0 + rm state，state 丢了下一轮进 builder 找不着→数据丢失
-      cat >&2 <<MERGE_FAIL_MSG
-[builder-loop] ❌ merge-worktree-back.sh 未识别结果（MERGE_LAST="${MERGE_LAST}"），不删除 state 也不走 reviewer。
-完整输出：
-${MERGE_OUT}
-请检查 worktree=$(grep -E '^worktree_path:' "$STATE_FILE" 2>/dev/null | head -1) 与主仓状态后手动决定下一步。
-MERGE_FAIL_MSG
-      debug_log "exit" "$(MA="$MERGE_ACTION" python3 -c "
-import os, json
-print(json.dumps({'code':2,'reason':'merge_failed','merge_action':os.environ.get('MA','')}))
-" 2>/dev/null || echo '{}')"
-      exit 2
-      ;;
-  esac
 fi
 
 # ---- 3b. FAIL → 处理反馈 ----

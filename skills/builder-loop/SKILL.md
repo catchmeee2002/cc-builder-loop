@@ -91,12 +91,11 @@ V3.5 引入 subagent 白名单管理，确保只有预期的 agent 类型能落�
 | L2B | worktree HEAD == `state.last_iter_head` 且 git status 空 | builder 在思考 / 讨论，没改代码 |
 | L3 | `.claude/builder-loop/<slug>.pause` 文件存在 | builder 主动 pause |
 
-**PASS_CMD 通过后**：
-- **worktree 模式（V3.0 reviewer-as-gate）** → 调 `worktree-commit-only.sh` 在 worktree 内 commit + 写 `state.phase=passed_pending_review` + 写 `reviewer_pending` 段 + 落盘 `reviewer-diff-<slug>.txt`，**不 merge 主线、不删 worktree**。Builder 收 stderr 提示 → 自检 cwd 推 slug → spawn reviewer → 反馈分支：
-  - 0🔴 通过 → builder 调 `merge-and-cleanup.sh <state>` 才 ff merge 主线 + 删 worktree
-  - 🟡/🔵 → builder 在 worktree 内修复 → dirty 触发 L1 自愈回 active → 下一轮 PASS_CMD
+**PASS_CMD 通过后**（worktree / bare 统一，V4.1）：
+- 调 `loop-commit.sh` 在 `project_root` 内 commit + 写 `state.phase=passed_pending_review` + 写 `reviewer_pending` 段 + 落盘 `reviewer-diff-<slug>.txt`。Builder 收 stderr 提示 → spawn reviewer → 反馈分支：
+  - 0🔴 通过 → builder 调 `merge-and-cleanup.sh <state>`（worktree: ff merge + 删 worktree + 删 state；bare: stash drop + 删 state）
+  - 🟡/🔵 → builder 修复 → dirty 触发 L1 自愈回 active → 下一轮 PASS_CMD
   - 🔴 阻塞 → AskUserQuestion 让用户选 [继续修 / abandon-loop.sh]
-- **bare 模式** → 保留 V2.x 行为：`merge-worktree-back.sh` NOOP + 写全局 `reviewer-params.json` + 删 state + builder 事后审 reviewer
 - **FAIL** → extract-error + early-stop-check → 写回状态文件 → 注入下轮
 
 ### CWD→state 匹配（V3.4）
@@ -124,7 +123,7 @@ worktree_path: /path/...         # worktree 启用时 = project_root；bare 时�
 worktree_mode: clean             # V2.3 新增：clean / selective / bare / reuse
                                  #   clean    = worktree from HEAD（无 stash）
                                  #   selective = 主仓 dirty 已 stash 并 apply 到 worktree（V3.2+ 替代 dirty）
-                                 #   bare     = --no-worktree（直接跑主仓）
+                                 #   bare     = --no-worktree（直接跑主仓，V4.1 起与 worktree 行为对齐：reviewer-as-gate）
                                  #   reuse    = 复用已有孤儿 worktree（V3.3+ --reuse-worktree）
 pre_loop_stash_ref: ""           # V2.3 新增：worktree_mode=dirty 时的 git stash commit hash
                                  # 用 commit hash 不用 stash@{N} index — 多 builder 并行安全

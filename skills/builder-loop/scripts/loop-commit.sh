@@ -1,21 +1,21 @@
 #!/usr/bin/env bash
-# worktree-commit-only.sh — V3.0 reviewer-as-gate：PASS 后只在 worktree 内 commit
+# loop-commit.sh — PASS 后在 project_root 内 commit（统一 bare/worktree 两种模式）
 #
-# 用法：bash worktree-commit-only.sh <state_file>
+# 用法：bash loop-commit.sh <state_file>
 #
 # 输出（stdout 最后一行为决定性结果）：
 #   COMMIT_DONE <new_head>  ← 有改动并已 commit，输出新 HEAD short sha
-#   NOOP                    ← worktree 内无改动（worktree 未启用或 git status 空）
+#   NOOP                    ← project_root 内无改动（git status 空）
 #   ERROR <reason>          ← commit 失败 / state 字段缺失（exit 3）
 #
 # 退出码：0=COMMIT_DONE/NOOP  3=ERROR
 #
 # 副作用：
-#   - 仅 `git -C $WORKTREE_PATH add -A && git -C $WORKTREE_PATH commit`
-#   - **不动主仓**、**不 ff merge**、**不删 worktree**
-#   - reviewer 通过后由 merge-and-cleanup.sh 处理 ff merge + cleanup
+#   - 仅 `git -C $PROJECT_ROOT add -A && git -C $PROJECT_ROOT commit`
+#   - **不 ff merge**、**不删 worktree**
+#   - reviewer 通过后由 merge-and-cleanup.sh 处理后续
 #
-# 依赖 state 字段：worktree_path / slug / task_description / iter / pre_loop_dirty_files
+# 依赖 state 字段：project_root / slug / task_description / iter / pre_loop_dirty_files
 
 set -euo pipefail
 
@@ -26,18 +26,16 @@ read_field() {
   grep -E "^${1}:" "$STATE" 2>/dev/null | head -1 | sed -E "s/^${1}:[[:space:]]*\"?([^\"]*)\"?[[:space:]]*\$/\1/" || true
 }
 
-WORKTREE_PATH="$(read_field worktree_path)"
-SLUG_FIELD="$(read_field slug)"
-PRE_LOOP_DIRTY_FILES="$(read_field pre_loop_dirty_files)"
-
-# bare 模式或 worktree 未启用 → NOOP（bare 模式 commit 在 hook PASS 路径或 merge-worktree-back.sh 处理）
-if [ -z "$WORKTREE_PATH" ] || [ ! -d "$WORKTREE_PATH" ]; then
-  echo "NOOP"
-  exit 0
+PROJECT_ROOT="$(read_field project_root)"
+if [ -z "$PROJECT_ROOT" ] || [ ! -d "$PROJECT_ROOT" ]; then
+  echo "ERROR project-root-missing"
+  exit 3
 fi
 
-WT_STATUS="$(git -C "$WORKTREE_PATH" status --porcelain 2>/dev/null || echo "")"
-if [ -z "$WT_STATUS" ]; then
+PRE_LOOP_DIRTY_FILES="$(read_field pre_loop_dirty_files)"
+
+STATUS="$(git -C "$PROJECT_ROOT" status --porcelain 2>/dev/null || echo "")"
+if [ -z "$STATUS" ]; then
   echo "NOOP"
   exit 0
 fi
@@ -51,7 +49,6 @@ else
   COMMIT_SUBJECT="chore(loop): [cr_id_skip] Auto-commit iter ${ITER_NUM}"
 fi
 
-# V2.3 dirty stash 兼容：subject 加 [+N main-dirty] 标记 + body 列文件清单
 DIRTY_BODY=""
 if [ -n "$PRE_LOOP_DIRTY_FILES" ]; then
   DIRTY_COUNT="$(printf '%s' "$PRE_LOOP_DIRTY_FILES" | tr ',' '\n' | grep -c . || true)"
@@ -65,12 +62,12 @@ if [ -n "$PRE_LOOP_DIRTY_FILES" ]; then
 fi
 COMMIT_MSG="${COMMIT_SUBJECT}${DIRTY_BODY}"
 
-git -C "$WORKTREE_PATH" add -A >&2
-if ! printf '%s\n' "$COMMIT_MSG" | git -C "$WORKTREE_PATH" commit -F - >&2; then
+git -C "$PROJECT_ROOT" add -A >&2
+if ! printf '%s\n' "$COMMIT_MSG" | git -C "$PROJECT_ROOT" commit -F - >&2; then
   echo "ERROR commit-failed"
   exit 3
 fi
 
-NEW_HEAD="$(git -C "$WORKTREE_PATH" rev-parse --short HEAD 2>/dev/null || echo "")"
+NEW_HEAD="$(git -C "$PROJECT_ROOT" rev-parse --short HEAD 2>/dev/null || echo "")"
 echo "COMMIT_DONE ${NEW_HEAD}"
 exit 0

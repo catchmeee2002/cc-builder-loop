@@ -35,11 +35,6 @@ START_HEAD="$(read_field start_head)"
 SLUG_FIELD="$(read_field slug)"
 CLEANUP_PHASE="$(read_field cleanup_phase)"
 
-# bare 模式 → 本脚本不适用（bare 模式合主仓走另外路径）
-if [ -z "$WORKTREE_PATH" ]; then
-  echo "ERROR bare-mode-not-supported-by-this-script"
-  exit 3
-fi
 if [ -z "$PROJECT_ROOT" ] || [ ! -d "$PROJECT_ROOT" ]; then
   echo "ERROR project-root-missing"
   exit 3
@@ -149,6 +144,14 @@ open(sf, 'w').write(text)
 PY
   echo "NEED_ARBITRATION ${wt}"
 }
+
+# bare 模式：commit 已在主仓，跳过 merge/worktree remove，只做 stash drop + rm state
+if [ -z "$WORKTREE_PATH" ]; then
+  drop_pre_loop_stash 2>/dev/null || true
+  rm -f "$STATE" 2>/dev/null || true
+  echo "MERGED __main__"
+  exit 0
+fi
 
 # === 阶段 1：ff merge（cleanup_phase="" 时跑） ===
 if [ -z "$CLEANUP_PHASE" ]; then

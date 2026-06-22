@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
 # merge-worktree-back.sh — V2.x 立即合主线路径（commit + ff merge + cleanup 一气合）
 #
-# V3.0 角色变化：
-#   - V3.0 起 hook PASS 路径不再调用本脚本；hook 改调 worktree-commit-only.sh，
+# V4.1 角色变化：
+#   - V3.0 起 hook PASS 路径不再调用本脚本；V4.1 统一调 loop-commit.sh（替代 worktree-commit-only.sh），
 #     ff merge + cleanup 推迟到 reviewer 通过后由 builder 主动调 merge-and-cleanup.sh。
 #   - 本脚本保留作"立即合主线"语义入口：arbiter 仲裁后续路径（run-apply-arbitration.sh）/
-#     bare 模式 NOOP / 现有 e2e fixture（test-conflict.sh / test-bare-loop-merge.sh /
-#     test-stop-hook-race-and-commit-msg.sh）继续使用。
+#     现有 e2e fixture（test-conflict.sh 等）继续使用。
 #   - 行为不变。后续可考虑把 arbiter 续路径迁到 merge-and-cleanup.sh，本期保留兼容。
 #
 # ⚠️  V3.0 已知技术债 — arbiter 续路径绕过 reviewer-as-gate：

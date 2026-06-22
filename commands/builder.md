@@ -35,6 +35,7 @@ description: "进入 Builder 模式 — 复杂任务先计划后动手，完成�
 
 1. 检查项目根 `.claude/loop.yml` 是否存在
 2. **存在** → `bash ~/.claude/skills/builder-loop/scripts/setup-builder-loop.sh "<任务描述>"`
+   - **V4.1 e2e 默认 bare**：setup 前检查对话中的方案文件，含 `<!-- e2e-cases -->` 标签 → 传 `--no-worktree`（e2e 行为测试需要活进程用新代码运行，worktree 隔离与此冲突）
    - setup 输出含 `🌿 worktree 已创建` → 从 setup 输出的「状态文件」路径 Read 该状态文件拿 `worktree_path` 并 **cd 进 worktree**
    - 告知：`✅ builder-loop 已启动，后续代码将在 worktree 中编写。`
    - 之后所有文件操作（Write/Edit）都在 worktree 内进行
@@ -108,8 +109,7 @@ description: "进入 Builder 模式 — 复杂任务先计划后动手，完成�
 **步骤 2：获取 diff + spawn reviewer**
 
 - 获取 diff + reviewer 参数（按 Stop hook stderr 文案识别路径）：
-  - **V3.0 worktree 模式 PASS**（Stop hook 消息含 `phase=passed_pending_review` + `state_file=<path>`）→ Read state.yml 拿 reviewer_pending 段（含 reviewer_files / report_path / diff_file / pass_start_head）。reviewer 通过后由 builder 主动调 `bash ~/.claude/skills/builder-loop/scripts/merge-and-cleanup.sh <state_file>` 才合主线
-  - **V2.x 立即合 PASS / bare 模式 PASS**（Stop hook 消息含 `reviewer_params=<path>`）→ Read 该 JSON 文件，内含 changed_files / report_path / diff_file / start_head。diff 内容从 diff_file 读取或 `git diff <start_head>..HEAD`
+  - **PASS（worktree / bare 统一）**（Stop hook 消息含 `phase=passed_pending_review` + `state_file=<path>`）→ Read state.yml 拿 reviewer_pending 段（含 reviewer_files / report_path / diff_file / pass_start_head）。reviewer 通过后由 builder 主动调 `bash ~/.claude/skills/builder-loop/scripts/merge-and-cleanup.sh <state_file>`（worktree 模式 ff merge + 删 worktree + 删 state；bare 模式 stash drop + 删 state）
   - **非 loop 场景** → `git diff HEAD` 获取 diff（过大用 `--stat`）；自行拼 changed_files / report_path
 - changed_files 中不在 diff 里的 → `wc -l` 补全为新建文件
 - 对话中有方案路径时：`split-plan-by-role.sh <方案路径> shared > /tmp/spec-shared.md`
@@ -122,8 +122,8 @@ description: "进入 Builder 模式 — 复杂任务先计划后动手，完成�
 
 | reviewer 反馈 | 动作 |
 |---|---|
-| 0 🔴 通过 | `bash ~/.claude/skills/builder-loop/scripts/merge-and-cleanup.sh <state_file>` 才合主线 + 删 worktree + 删 state |
-| 🟡 / 🔵 非阻塞 | 在 worktree 内 Edit/Write 修复 → dirty 出现 → 下一轮 stop hook L1 闸自愈回 phase=active → 重跑 PASS_CMD |
+| 0 🔴 通过 | `bash ~/.claude/skills/builder-loop/scripts/merge-and-cleanup.sh <state_file>`（worktree: ff merge + 删 worktree + 删 state；bare: stash drop + 删 state） |
+| 🟡 / 🔵 非阻塞 | Edit/Write 修复 → dirty 出现 → 下一轮 stop hook L1 闸自愈回 phase=active → 重跑 PASS_CMD |
 | 🔴 阻塞 | AskUserQuestion 让用户选 [继续修 / abandon-loop.sh] |
 
 **步骤 3：收到通知后处理**

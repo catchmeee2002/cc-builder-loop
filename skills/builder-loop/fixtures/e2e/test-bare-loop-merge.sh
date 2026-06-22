@@ -1,12 +1,9 @@
 #!/usr/bin/env bash
 # test-bare-loop-merge.sh — E2E：bare loop 完整 stop hook 流程
 #
-# 防回归：
-#   V1.9.1 之前 merge-worktree-back.sh::read_field 在 bare loop 场景（state 无 worktree_path 字段）
-#   下因 grep 未命中 + pipefail + set -e 静默退出 → MERGE_OUT 为空 → MERGE_ACTION 空 → case *
-#   静默 exit 0 + rm state，state 丢失。本测试覆盖：
-#   1. bare loop（worktree.enabled=false）一轮完整 PASS 路径
-#   2. case * 默认分支（M5）若被命中要 echo 详细错误 + exit 2，不再静默删 state
+# V4.1 更新：bare 模式升级到 reviewer-as-gate，行为对齐 worktree 模式：
+#   1. bare loop PASS → loop-commit.sh commit → phase=passed_pending_review（state 保留）
+#   2. merge-and-cleanup.sh 接受 bare mode → stash drop + rm state → MERGED __main__
 #
 # 用法：bash test-bare-loop-merge.sh
 # 退出码：0=全部通过 / 1=有失败
@@ -14,17 +11,13 @@
 source "$(dirname "${BASH_SOURCE[0]}")/harness.sh"
 harness_init "bare-loop-merge"
 
-MERGE_SCRIPT="${HARNESS_REPO_ROOT}/skills/builder-loop/scripts/merge-worktree-back.sh"
-
 assert_file_exists "stop hook 存在" "$HARNESS_HOOK"
-assert_file_exists "merge 脚本存在" "$MERGE_SCRIPT"
 
 # ============================================================
-# Case 1: bare loop 完整 PASS 路径（locate-state.sh slug=__main__ 兜底）
+# Case 1: bare loop 完整 PASS 路径 → phase=passed_pending_review（state 保留）
 # ============================================================
-section "Case 1: bare loop 完整 PASS 路径"
+section "Case 1: bare loop PASS → phase=passed_pending_review"
 env1=$(create_test_env --slug "__main__" --pass-cmd "true")
-# 覆盖 loop.yml 加 bare 模式配置
 cat > "$env1/.claude/loop.yml" <<'YMLEOF'
 pass_cmd:
   - stage: smoke
@@ -37,29 +30,35 @@ worktree:
   enabled: false
 YMLEOF
 mkdir -p "$env1/src"
+echo "change" > "$env1/src/test.py"
+git -C "$env1" add -A >/dev/null 2>&1 && git -C "$env1" commit -m "chore: [cr_id_skip] add test file" >/dev/null 2>&1
+echo "modified" > "$env1/src/test.py"
 
 result1=$(run_hook "$env1")
 assert_ec "Case 1 stop hook EC=2（PASS 续接）" "$result1" 2
 assert_stderr_contains "Case 1 stderr 含 PASS_CMD 全部阶段通过" "$result1" "PASS_CMD 全部阶段通过"
 sf1=$(state_file "$env1" "__main__")
-assert_file_missing "Case 1 state 已被 rm（PASS 后 cleanup）" "$sf1"
+assert_file_exists "Case 1 state 保留（reviewer-as-gate）" "$sf1"
+phase1=$(read_state_field "$sf1" "phase")
+assert "Case 1 phase=passed_pending_review" "[ '$phase1' = 'passed_pending_review' ]"
 assert_file_exists "Case 1 cursor 已写" "$env1/.claude/builder-loop/last_processed_head"
 
 # ============================================================
-# Case 2: 直接调 merge-worktree-back.sh，bare loop state（无 worktree_path）→ NOOP
-# 防 V1.9.1 修过的 read_field 静默退出回归
+# Case 2: merge-and-cleanup.sh 接受 bare state → MERGED __main__
 # ============================================================
-section "Case 2: merge-worktree-back.sh 在 bare state 下应输出 NOOP"
+section "Case 2: merge-and-cleanup.sh 在 bare state 下 → MERGED __main__"
 env2=$(create_test_env --slug "__main__")
 merge_result2=$(run_merge_cleanup "$(state_file "$env2" "__main__")")
 merge_last2=$(result_last "$merge_result2")
+merge_ec2=$(result_ec "$merge_result2")
 
-assert "Case 2 merge 输出非空" "[ -n '$merge_last2' ]"
-assert "Case 2 merge 拒绝 bare mode" "echo '$merge_last2' | grep -q 'ERROR bare-mode-not-supported'"
+assert "Case 2 merge EC=0" "[ '$merge_ec2' -eq 0 ]"
+assert "Case 2 merge 输出 MERGED __main__" "echo '$merge_last2' | grep -q 'MERGED __main__'"
+sf2=$(state_file "$env2" "__main__")
+assert_file_missing "Case 2 state 已删" "$sf2"
 
 # ============================================================
-# Case 3: 老 V1.x bare state（无 main_repo_path 字段，project_root=主仓）
-# merge-worktree-back.sh 兼容性
+# Case 3: 老 V1.x bare state（无 main_repo_path 字段）兼容
 # ============================================================
 section "Case 3: 老 V1.x bare state（缺 main_repo_path）兼容"
 env3=$(create_test_env --slug "__main__" --no-state)
@@ -74,8 +73,9 @@ EOF
 
 merge_result3=$(run_merge_cleanup "$env3/.claude/builder-loop/state/__main__.yml")
 merge_last3=$(result_last "$merge_result3")
+merge_ec3=$(result_ec "$merge_result3")
 
-assert "Case 3 merge 输出非空" "[ -n '$merge_last3' ]"
-assert "Case 3 merge 拒绝 bare mode" "echo '$merge_last3' | grep -q 'ERROR bare-mode-not-supported'"
+assert "Case 3 merge EC=0" "[ '$merge_ec3' -eq 0 ]"
+assert "Case 3 merge 输出 MERGED __main__" "echo '$merge_last3' | grep -q 'MERGED __main__'"
 
 harness_report
