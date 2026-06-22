@@ -326,7 +326,7 @@ text = re.sub(r'^phase:.*\$', 'phase: \"active\"', text, flags=re.M)
 open(sf, 'w').write(text)
 " 2>/dev/null || true
     echo "[builder-loop] L1 phase 自愈：检测到改动，phase passed_pending_review → active" >&2
-    debug_log "phase_self_heal" '{"from":"passed_pending_review","to":"active","reason":"worktree_changed"}'
+    debug_log "phase_self_heal" '{"from":"passed_pending_review","to":"active","reason":"path_changed"}'
   else
     debug_log "exit" '{"code":0,"reason":"l1_phase_passed_pending_review"}'
     exit 0
@@ -620,12 +620,14 @@ PY
         echo "[builder-loop] ✅ PASS at iter ${NEXT_ITER} (commit, phase=passed_pending_review)" >&2
         write_trace "PASS"
 
+        _WT_LINE=""
+        [ -n "$WORKTREE_PATH_PASS" ] && _WT_LINE="worktree_path=${WORKTREE_PATH_PASS}"
         cat >&2 <<PASS_MSG
 [builder-loop] ✅ PASS_CMD 全部阶段通过（iter ${NEXT_ITER}）。
 phase=passed_pending_review
 slug=${SLUG_PASS}
 state_file=${STATE_FILE}
-worktree_path=${WORKTREE_PATH_PASS}
+${_WT_LINE}
 PASS_MSG
 
         debug_log "exit" "$(IT="$NEXT_ITER" python3 -c "

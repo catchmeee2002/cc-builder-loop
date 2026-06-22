@@ -145,7 +145,8 @@ PY
   echo "NEED_ARBITRATION ${wt}"
 }
 
-# bare 模式：commit 已在主仓，跳过 merge/worktree remove，只做 stash drop + rm state
+# bare 模式：commit 已在主仓，跳过 merge/worktree remove，只做 stash drop + rm state。
+# 不使用 cleanup_phase 幂等保护——两步均幂等且顺序无关。
 if [ -z "$WORKTREE_PATH" ]; then
   drop_pre_loop_stash 2>/dev/null || true
   rm -f "$STATE" 2>/dev/null || true
