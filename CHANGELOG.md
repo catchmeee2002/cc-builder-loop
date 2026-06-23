@@ -2,6 +2,31 @@
 
 > 从 CLAUDE.md §5 外移。记录各版本交付的能力与关键实现细节。
 
+## V4.1 bare 模式 reviewer-as-gate 对齐 + e2e 默认 bare（2026-06-23）
+
+bare 模式从 V2.x 事后咨询升级到与 worktree 一致的 reviewer-as-gate 前置门禁。
+
+**1. 统一 PASS 路径**
+- 新建 `loop-commit.sh` 替代 `worktree-commit-only.sh`，用 `project_root` 统一 bare/worktree 两种模式的 commit 操作
+- stop hook PASS 分支删除 worktree/bare 双路径分歧（-150 行），统一走 commit → phase=passed_pending_review → reviewer_pending 段
+- V2.x bare 路径（reviewer-params.json 生成 + rm state）整段删除
+
+**2. L1 闸 bare fallback**
+- `worktree_path` 为空时 fallback 到 `PROJECT_ROOT` 做 dirty 检测，bare 模式也能自愈回 active
+
+**3. merge-and-cleanup.sh 接受 bare**
+- 去掉 bare hard reject（exit 3），bare 走 stash drop + rm state
+- cleanup_phase 幂等保护仅用于 worktree（bare 两步均幂等且顺序无关）
+
+**4. e2e → bare 默认**
+- builder.md 新增规则：plan 含 `<!-- e2e-cases -->` 标签时传 `--no-worktree` 给 setup
+
+**5. Fixture**
+- 新增 `test-bare-reviewer-gate.sh`（16 断言）、`test-e2e-default-bare.sh`（10 断言）
+- 更新 `test-bare-loop-merge.sh`（对齐 V3.0 行为）、`test-worktree-commit-only.sh`（适配 loop-commit.sh）
+
+---
+
 ## V4.0 Reviewer 吸收 Judge — plan 完成度检查 + 判据层统一（2026-06-21）
 
 Reviewer 成为唯一的独立 agent 判据层，Judge 作为独立组件废弃。

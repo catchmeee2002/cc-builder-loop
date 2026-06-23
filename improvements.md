@@ -4,12 +4,6 @@
 > **只记事实，不写建议方向**——loop 侧开发者拿到事实自己判断怎么修。
 > 已消化条目直接删除（代码是 ground truth），不标 ✅。已关闭条目见 [CHANGELOG](CHANGELOG.md)。
 
-## 2026-06-22 E2E 行为测试无法在 worktree 内闭环——bot 进程跑在主仓
-- 触发场景：Personal Assistant Bot 项目接入 e2e-agent PASS_CMD 阶段。e2e 需要重启 bot 进程并通过飞书消息验证行为。builder-loop 的 PASS_CMD 在 worktree 内执行
-- 现象：e2e harness 只能重启主仓的 bot（因为 bot 进程依赖主仓的 data/、.env、log/ 等运行时目录），worktree 里改的代码（prompts/system.txt、runtime/agent.py 等）不会生效。e2e 测的是旧代码
-- 根因：worktree 模式下，pass_cmd 的 syntax/test 阶段只需 import/compile，不依赖运行中的进程，所以 worktree 隔离没问题。但 e2e 行为测试需要一个**用新代码运行的活进程**，这在 worktree 隔离模型下无法实现——进程的 cwd、配置文件、数据目录都绑定在主仓
-- 优先级：高
-
 ## 2026-06-21 Builder PASS 后声称"Phase 完成"但 plan 文件清单完成率仅 33%（重复发生）
 - 触发场景：divine-word v2 全量重写，plan 有 4 Phase 共 ~40 个文件操作。Builder 写了后端（Phase 1/2/4）+ 前端部分文件后，pass_cmd（py_compile + import + 163 单元测试）全过。Builder 声称"全部 4 Phase 完成"并进入 reviewer 流程
 - 现象：用户手动对照 plan Phase 3 文件清单，发现 15 个文件操作中只完成 5 个（33%）。9 个文件未创建/未修改：TimelineSidebar.ts、CrisisOverlay.ts、FollowerDetail.ts、CausalHighlight.ts、EventAnimator.ts 全部缺失；OracleInput.ts、Follower.ts、gameState.ts、generate_sprites.py 未按计划修改。核心循环从"观赏模式+危机打断"变成了"v1 每轮交互套 v2 数据"——设计意图完全未落地。WebSocket 后端有 endpoint 但前端从未调用 connect()

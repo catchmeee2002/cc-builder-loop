@@ -152,7 +152,9 @@ done
 | `test-judge-integration.sh` | V1.9: judge agent 集成（stop hook 全流程 7 case：PASS+stop_done / PASS+continue_nudge / 连续 nudge 上限强制 / 降级原路径 / FAIL+retry_transient / FAIL 降级 / disabled） | run-judge-agent.sh + builder-loop-stop.sh |
 | `test-judge-edge-cases.sh` | V1.9.1: judge edge case（reviewer TESTER_HINT 4 case：stop_done 后 nudge 计数清零 / backfill 幂等 / self-check 凭证全缺 exit 1 / FAIL 分支脚本缺失降级原 V1.8 路径） | 同上 |
 | `test-pass-cmd-runs-worktree.sh` | V2.0: PASS_CMD 在 worktree 内跑（19 case：state 写 main_repo_path / project_root=worktree / worktree 内 loop.yml 加 stage 立即生效 / 老 V1.x state 兼容 fallback / 含空格 mktemp 路径鲁棒性） | setup-builder-loop.sh + builder-loop-stop.sh |
-| `test-bare-loop-merge.sh` | V2.0: bare loop 完整 stop hook + merge 路径（10 case：bare PASS + cleanup / merge-worktree-back NOOP 输出 / 老 V1.x state 缺 main_repo_path 兼容） | merge-worktree-back.sh |
+| `test-bare-loop-merge.sh` | V4.1: bare loop reviewer-as-gate（bare PASS → phase=passed\_pending\_review / merge-and-cleanup bare 分支 → MERGED \_\_main\_\_ / 老 V1.x state 兼容） | loop-commit.sh + merge-and-cleanup.sh |
+| `test-bare-reviewer-gate.sh` | V4.1: bare 模式完整 reviewer-as-gate 生命周期（16 assert：PASS → reviewer\_pending 段 / L1 自愈 / merge-and-cleanup bare 分支 / loop-commit NOOP） | loop-commit.sh + merge-and-cleanup.sh + builder-loop-stop.sh |
+| `test-e2e-default-bare.sh` | V4.1: e2e plan → bare 默认（10 assert：--no-worktree → bare state / 对照组 worktree state） | setup-builder-loop.sh |
 | `test-run-pass-cmd-args.sh` | V2.0: run-pass-cmd.sh 三参签名行为（13 case：三参 LOG_ROOT 决定日志归档 / 两参 缺省 LOG_ROOT=RUN_CWD / FAIL 消息含 LOG_ROOT 路径 / RUN_CWD 内 loop.yml 缺失 fallback 主仓 + stderr 警告） | reviewer hint 补测 |
 | `test-nudge-max-reads-worktree.sh` | V2.0: stop hook nudge 上限优先读 worktree loop.yml（18 case：worktree max=1 触发强制 stop_done / worktree loop.yml 缺失 fallback 主仓 max=99 走 nudge 分支） | mock judge agent + reviewer hint 补测 |
 | `test-judge-env-file-load.sh` | V2.1: judge env file 自动加载（12 case：主 env 干净时 source / 主 env 已设时不覆盖 / 文件不存在退回 V1.9 行为 / 语法错误 stderr WARN / loop.yml.credentials_file 项目级覆盖） | run-judge-agent.sh + 重定向 HOME |
