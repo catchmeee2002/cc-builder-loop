@@ -4,6 +4,25 @@
 > **只记事实，不写建议方向**——loop 侧开发者拿到事实自己判断怎么修。
 > 已消化条目直接删除（代码是 ground truth），不标 ✅。已关闭条目见 [CHANGELOG](CHANGELOG.md)。
 
+## 2026-06-24 e2e tester 失败重跑时每次 spawn 全新 agent，不复用已有 tester
+- 触发场景：divine-word 项目 e2e 验收第一轮 9 个用例跑了 7 PASS / 1 FAIL / 1 SKIP（tester agent 耗时 30 分钟、172 次工具调用、157k tokens）。修复代码后需要重跑失败用例
+- 现象：builder 按 V3.8 流程再次 `Agent(subagent_type: "tester")` spawn 了一个全新 tester。新 tester 从零开始：重连 Playwright CDP、重新打开游戏页面、重新建局、重新推进时代。第一轮 tester 已建立的游戏状态、Playwright 连接、已通过用例的上下文全部丢弃
+- 根因：V3.8 E2E 验证请求处理只描述了 "spawn tester subagent"，没有区分首次 spawn 和重跑场景。builder 在重跑时应该用 `SendMessage(to: existing_tester_id)` 续前一个 agent（它保有完整上下文），只传失败用例让它增量验证。但 V3.8 流程和 builder.md 都没有这个指引
+- 优先级：中
+
+
+## 2026-06-23 E2E 验收 case 沉淀应由 tester 而非 builder 执行
+- 触发场景：Personal Assistant Bot 项目用 V3.8 e2e-cases 做任务验收 + 项目自有 e2e_cases.yaml 做回归。验收通过后需要把临时 case 沉淀为永久回归 case。当前流程设想由 builder 转写，但 builder 手里没有执行现场数据（实际调了哪些工具、走了几步），只能从自然语言描述猜 hard_rules
+- 现象：tester 刚跑完验收，手里有地面真值（实际 tool_calls、steps、response），但验收完就结束了，没有沉淀动作。builder 收到 pass 报告后要重新理解 case 语义再猜着写 YAML，多一次语义转手必然损失信息
+- 根因：tester 的职责止于"验收判 pass/fail"，没有"从执行结果提取 hard_rules 并追加到项目回归集"这个能力。沉淀是验证的自然延伸（谁验证谁沉淀），不是编排的延伸（builder 编排）
+- 优先级：中
+
+## 2026-06-23 E2E 验收 case 积累后需要分级（fast/full）控制迭代成本
+- 触发场景：同上项目。e2e_cases.yaml 每条 case 需要重启 bot + 1 次 bot LLM 调用 + 0~1 次 judge LLM 调用。7 条 case 全量跑 ~10 分钟。预计积累到 30+ 条后每次 PASS_CMD 迭代全跑不现实
+- 现象：纯 L1 硬规则 case（llm_judge: null）成本低（只需 bot LLM），L2 语义判据 case 成本高（多一次 judge LLM）。但当前没有分级机制，全量或全不跑
+- 根因：e2e case 没有 level 字段，harness 没有 --level 过滤参数。沉淀时 tester 可以根据 case 是否含 llm_judge 自动标级
+- 优先级：中
+
 ## 2026-06-21 Builder PASS 后声称"Phase 完成"但 plan 文件清单完成率仅 33%（重复发生）
 - 触发场景：divine-word v2 全量重写，plan 有 4 Phase 共 ~40 个文件操作。Builder 写了后端（Phase 1/2/4）+ 前端部分文件后，pass_cmd（py_compile + import + 163 单元测试）全过。Builder 声称"全部 4 Phase 完成"并进入 reviewer 流程
 - 现象：用户手动对照 plan Phase 3 文件清单，发现 15 个文件操作中只完成 5 个（33%）。9 个文件未创建/未修改：TimelineSidebar.ts、CrisisOverlay.ts、FollowerDetail.ts、CausalHighlight.ts、EventAnimator.ts 全部缺失；OracleInput.ts、Follower.ts、gameState.ts、generate_sprites.py 未按计划修改。核心循环从"观赏模式+危机打断"变成了"v1 每轮交互套 v2 数据"——设计意图完全未落地。WebSocket 后端有 endpoint 但前端从未调用 connect()
