@@ -2,6 +2,31 @@
 
 > 从 CLAUDE.md §5 外移。记录各版本交付的能力与关键实现细节。
 
+## V4.3 Subagent Identity & Resume（2026-06-24）
+
+subagent 从"匿名临时工"升级为"有身份的协作者"——state 文件追踪 agent_id，支持 SendMessage 续接。
+
+**1. State schema 新增 `subagents` 段**
+- 通用结构（按 agent_type 分键），V4.3 写入 tester + reviewer
+- 字段：agent_id / started_at / status (running|idle) / transcript_path
+
+**2. Hook 自动写入**
+- SubagentStart hook 从 CC stdin JSON 读 `agent_id`（CC `coreSchemas.ts` 确认字段存在），写入 state + lock file
+- SubagentStop hook 读 `agent_id` + `agent_transcript_path`，更新 state status=idle + transcript_path
+- 仅 tester + reviewer 追踪（doc-maintainer/arbiter 不写）
+
+**3. Stop hook inject 消息升级**
+- e2e inject：读 state.subagents.tester，status=idle + id 非空 → 消息含 `tester_agent_id=<id>` + SendMessage 指令；否则保持 "spawn 新 tester"
+- PASS reviewer inject：读 state.subagents.reviewer → 追加 `reviewer_agent_id=<id>`
+
+**4. Builder prompt SendMessage 分支**
+- e2e 续接：`tester_agent_id` 存在 → SendMessage 续接（只传失败用例）；报错/无响应 → fallback Agent(new)
+- reviewer 续接：`reviewer_agent_id` 存在 → SendMessage 复查 🟡 findings；失败 → fallback 新 spawn
+
+## V4.2 e2e_pending phase（2026-06-24）
+
+e2e inject 前写 `phase: "e2e_pending"`，L1 闸静默后续 Stop 直到 e2e 完成或代码变动。修复 tester 运行期间 stop hook 反复触发（10+ 次）的 bug。
+
 ## V4.1 bare 模式 reviewer-as-gate 对齐 + e2e 默认 bare（2026-06-23）
 
 bare 模式从 V2.x 事后咨询升级到与 worktree 一致的 reviewer-as-gate 前置门禁。
