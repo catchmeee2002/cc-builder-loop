@@ -134,4 +134,39 @@ open(sf, 'w').write(text)
 result8=$(run_hook "$env8")
 assert_stderr_contains "PASS has reviewer_agent_id" "$result8" "reviewer_agent_id=rev-id-456"
 
+# ---- Case 9: tester block without agent_id does NOT cross to reviewer ----
+section "Case 9: regex cross-block guard"
+env9=$(create_test_env --slug "ident-9" --phase active --pass-cmd "true" --dirty "change.txt")
+state9="$(state_file "$env9" "ident-9")"
+
+mkdir -p "$env9/.claude/plans"
+cat > "$env9/.claude/plans/test-plan.md" <<'PLANEOF'
+# Test plan
+<!-- e2e-cases -->
+### Case A: test something
+- 断言：something works
+<!-- /e2e-cases -->
+PLANEOF
+# tester has status but NO agent_id; reviewer has agent_id
+python3 -c "
+sf = '$state9'
+text = open(sf).read()
+text += 'plan_path: \".claude/plans/test-plan.md\"\n'
+text += 'subagents:\n'
+text += '  tester:\n'
+text += '    started_at: \"2026-06-24T00:00:00\"\n'
+text += '    status: \"idle\"\n'
+text += '    transcript_path: \"\"\n'
+text += '  reviewer:\n'
+text += '    agent_id: \"rev-cross-block\"\n'
+text += '    started_at: \"2026-06-24T00:00:00\"\n'
+text += '    status: \"idle\"\n'
+text += '    transcript_path: \"\"\n'
+open(sf, 'w').write(text)
+"
+
+result9=$(run_hook "$env9")
+assert "no cross-block: spawn not SendMessage" "grep -q 'spawn tester' '$result9/stderr'"
+assert "no cross-block: reviewer id not leaked" "! grep -q 'rev-cross-block' '$result9/stderr' || grep -q 'reviewer_agent_id' '$result9/stderr'"
+
 harness_report

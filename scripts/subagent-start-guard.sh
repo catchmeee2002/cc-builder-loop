@@ -125,7 +125,7 @@ log "lock written: $LOCK_FILE | type=$SUBAGENT_TYPE | worktree=$WORKTREE_PATH"
 
 # V4.3: write agent identity to state (tester + reviewer only)
 case "$SUBAGENT_TYPE" in tester|reviewer)
-  if [ -n "$AGENT_ID" ] && [ -f "$STATE_FILE" ]; then
+  if [ -f "$STATE_FILE" ]; then
     STATE_FILE="$STATE_FILE" AGENT_TYPE="$SUBAGENT_TYPE" AGENT_ID="$AGENT_ID" \
       STARTED_AT="$(date -Iseconds 2>/dev/null || date +%s)" python3 -c "
 import os, re

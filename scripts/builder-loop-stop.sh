@@ -518,8 +518,8 @@ if [ "$LAST_LINE" = "PASS" ]; then
         _TESTER_AID="$(STATE_FILE="$STATE_FILE" python3 -c "
 import os, re
 text = open(os.environ['STATE_FILE']).read()
-m = re.search(r'^  tester:\n(?:.*\n)*?    agent_id: \"([^\"]+)\"', text, re.M)
-s = re.search(r'^  tester:\n(?:.*\n)*?    status: \"([^\"]+)\"', text, re.M)
+m = re.search(r'^  tester:\n(?:    .*\n)*?    agent_id: \"([^\"]+)\"', text, re.M)
+s = re.search(r'^  tester:\n(?:    .*\n)*?    status: \"([^\"]+)\"', text, re.M)
 if m and s and s.group(1) == 'idle':
     print(m.group(1))
 " 2>/dev/null || echo "")"
@@ -676,8 +676,8 @@ PY
         _REVIEWER_AID="$(STATE_FILE="$STATE_FILE" python3 -c "
 import os, re
 text = open(os.environ['STATE_FILE']).read()
-m = re.search(r'^  reviewer:\n(?:.*\n)*?    agent_id: \"([^\"]+)\"', text, re.M)
-s = re.search(r'^  reviewer:\n(?:.*\n)*?    status: \"([^\"]+)\"', text, re.M)
+m = re.search(r'^  reviewer:\n(?:    .*\n)*?    agent_id: \"([^\"]+)\"', text, re.M)
+s = re.search(r'^  reviewer:\n(?:    .*\n)*?    status: \"([^\"]+)\"', text, re.M)
 if m and s and s.group(1) == 'idle':
     print(m.group(1))
 " 2>/dev/null || echo "")"
