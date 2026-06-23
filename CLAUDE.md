@@ -35,7 +35,7 @@
 
 **V3.0 行为**：hook PASS 后**只 commit 不 merge**，等 reviewer 通过才合主线（详见 [CHANGELOG V3.0](CHANGELOG.md#v30-reviewer-as-gate-重构2026-05-09)）。V4.1 起 bare 模式行为对齐 worktree（统一 `loop-commit.sh` + reviewer-as-gate）。
 
-**关键 state 字段**：`phase`（active / e2e_pending / passed_pending_review）+ `last_iter_head` + `reviewer_pending` 段 + `cleanup_phase`。详见 SKILL.md 「状态文件 schema」段。
+**关键 state 字段**：`phase`（active / e2e_pending / passed_pending_review）+ `last_iter_head` + `reviewer_pending` 段 + `subagents` 段（V4.3 agent_id 追踪）+ `cleanup_phase`。详见 SKILL.md 「状态文件 schema」段。
 
 **Hook 闸顺序**（PASS_CMD 之前命中即静默 exit 0）：
 - L1 `phase=passed_pending_review|e2e_pending` → 静默（dirty/新 commit 自愈回 active；e2e_pending + verified_head==HEAD 自愈回 active）

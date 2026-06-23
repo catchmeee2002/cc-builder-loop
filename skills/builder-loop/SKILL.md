@@ -62,12 +62,14 @@ V3.5 引入 subagent 白名单管理，确保只有预期的 agent 类型能落�
   - 白名单内但非 active（如 `phase=passed_pending_review`） → 静默跳过（reviewer 等待中不落锁）
   - 非白名单 agent（如 inline workflow / unknown type） → 静默跳过（不受管）
   - 同时注入 worktree 边界上下文（source_dirs / test_dirs 隔离）
+  - V4.3: tester / reviewer → 额外写 `state.subagents.<type>` 段（agent_id / started_at / status:running）
 
 **SubagentStop hook** (`~/.claude/scripts/subagent-lock-clear.sh`)：
 - 触发时机：任何 subagent 结束
 - 行为：扫当前 session 的所有活跃锁（新旧格式），清除匹配当前 `agent_type` 的锁
   - 采用 TTL 1800s（30min）防止陈旧锁累积
   - 识别并清理旧锁格式 `cc-subagent-{session_id}.lock`（向后兼容）
+  - V4.3: tester / reviewer → 更新 `state.subagents.<type>.status` = idle + `transcript_path`
 
 **V3.5 前后对比**：
 
@@ -151,6 +153,19 @@ reviewer_pending:
 
 # V4.0 plan 路径（plan 含 <!-- plan-checklist --> 或 <!-- e2e-cases --> 标签时写入）
 plan_path: ".claude/plans/20260620-xxx.md"      # 通用 plan 文件路径（setup 时写入）
+
+# V4.3 subagent identity 段（tester + reviewer 写入，SubagentStart/Stop hook 自动维护）
+subagents:
+  tester:
+    agent_id: "a0a40ff29f9fd0741"               # CC SubagentStart hook 提供的 agent_id
+    started_at: "2026-06-24T01:00:00+08:00"
+    status: "running"                            # running（SubagentStart 写）| idle（SubagentStop 写）
+    transcript_path: ""                          # SubagentStop 时写入 agent_transcript_path
+  reviewer:
+    agent_id: "b1b51gg30g0ge1852"
+    started_at: "..."
+    status: "idle"
+    transcript_path: "/path/..."
 
 # V3.8 e2e behavioral verification 段
 e2e_verified_head: "abc1234"                    # e2e 验收通过时的 HEAD commit；与当前 HEAD 一致则跳过 e2e

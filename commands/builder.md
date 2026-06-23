@@ -87,7 +87,8 @@ description: "进入 Builder 模式 — 复杂任务先计划后动手，完成�
 
 > **V3.8 E2E 验证请求处理**：stop hook 消息含 `端到端验收用例` 时：
 > 1. 从消息中提取 `e2e_cases`（`端到端验收用例：` 之后的全部文本）和 `worktree_path`
-> 2. spawn tester subagent（同步），传 `e2e_cases` 和 `worktree_path`（不传 spec_view / interface_signatures，tester 按输入区分模式）
+> 2. **V4.3 续接路径**：消息含 `tester_agent_id=<id>` → 用 `SendMessage(to: "<id>", summary: "rerun failed e2e cases")` 续接已有 tester，只传失败用例。SendMessage 失败（报错/超时）→ fallback 到 2b 全量重跑
+> 2b. **首次路径**：消息不含 `tester_agent_id` → spawn tester subagent（同步），传 `e2e_cases` 和 `worktree_path`
 > 3. tester 输出 `E2E_SUMMARY: all_pass` → 从消息中提取 STATE_FILE 和 e2e_verified_head 值，用 python3 写入 state（不修改代码，让 stop hook 下轮跳过 e2e 直接进 reviewer）
 > 4. tester 输出 `E2E_SUMMARY: has_failure` → 根据 `E2E_RESULT` 中的 `[FAIL]` 条目修改代码
 
@@ -115,7 +116,8 @@ description: "进入 Builder 模式 — 复杂任务先计划后动手，完成�
 - 对话中有方案路径时：`split-plan-by-role.sh <方案路径> shared > /tmp/spec-shared.md`
 - diff_summary 中，凡实施与方案不同的点，必须写明「选了什么 + 一句理由」（方案是假设不是契约，实施碰现实后调整是正常路径）
 - **review_focus**（spawn 前必填；L1 纯文案填 `"N/A"` 即可）：列出 (1) 改动函数的参数边界值（0 / 负数 / None / 空容器 / 边界相等），(2) builder 最担心的 1-5 个具体怀疑点（不是泛泛的"测覆盖"，而是「函数 X 与 Y 的状态字段是否对齐」这种点对点怀疑）
-- spawn：`subagent_type: "reviewer", run_in_background: true`，传 changed_files / diff_summary / report_path / spec_shared / worktree_path / review_focus / plan_path（从 state reviewer_pending 段或 state.plan_path 读取；无 plan → 不传）
+- **V4.3 续接路径**：PASS 消息含 `reviewer_agent_id=<id>` → 用 `SendMessage(to: "<id>", summary: "recheck findings")` 续接已有 reviewer，传 diff_summary + review_focus。SendMessage 失败 → fallback 到下方新 spawn
+- spawn（新建路径）：`subagent_type: "reviewer", run_in_background: true`，传 changed_files / diff_summary / report_path / spec_shared / worktree_path / review_focus / plan_path（从 state reviewer_pending 段或 state.plan_path 读取；无 plan → 不传）
 - 告知："✅ 任务完成，reviewer 已在后台启动。"
 
 **V3.0 reviewer 反馈分支**（仅 phase=passed_pending_review 路径）：

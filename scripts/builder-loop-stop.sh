@@ -514,7 +514,35 @@ if [ "$LAST_LINE" = "PASS" ]; then
 
       if [ -n "$E2E_CASES" ]; then
         debug_log "e2e_inject" "cases found, injecting verification request (iter=$NEXT_ITER)"
-        cat >&2 <<E2EEOF
+        # V4.3: read tester identity from state for resume
+        _TESTER_AID="$(STATE_FILE="$STATE_FILE" python3 -c "
+import os, re
+text = open(os.environ['STATE_FILE']).read()
+m = re.search(r'^  tester:\n(?:.*\n)*?    agent_id: \"([^\"]+)\"', text, re.M)
+s = re.search(r'^  tester:\n(?:.*\n)*?    status: \"([^\"]+)\"', text, re.M)
+if m and s and s.group(1) == 'idle':
+    print(m.group(1))
+" 2>/dev/null || echo "")"
+        if [ -n "$_TESTER_AID" ]; then
+          cat >&2 <<E2EEOF
+
+[builder-loop] ✅ PASS_CMD 全过（iter ${NEXT_ITER}）。检测到端到端验收用例。
+tester_agent_id=${_TESTER_AID}
+
+续接 tester 执行端到端验收：
+1. SendMessage(to: "${_TESTER_AID}", summary: "rerun e2e")，传入失败用例
+   - 如果 SendMessage 失败，fallback 到 Agent(subagent_type: "tester") 全量重跑
+   - worktree_path: ${RUN_CWD}
+2. tester 报 E2E_SUMMARY: all_pass → 用 python3 写 e2e_verified_head 到 state 文件：
+   STATE_FILE=${STATE_FILE}
+   写入字段：e2e_verified_head: "${CURRENT_HEAD}"
+3. tester 报 E2E_SUMMARY: has_failure → 根据失败用例修改代码
+
+端到端验收用例：
+${E2E_CASES}
+E2EEOF
+        else
+          cat >&2 <<E2EEOF
 
 [builder-loop] ✅ PASS_CMD 全过（iter ${NEXT_ITER}）。检测到端到端验收用例。
 
@@ -530,6 +558,7 @@ if [ "$LAST_LINE" = "PASS" ]; then
 端到端验收用例：
 ${E2E_CASES}
 E2EEOF
+        fi
         # V4.2: 写 phase=e2e_pending，L1 闸静默后续 Stop 直到 e2e 完成或代码变动
         STATE_FILE="$STATE_FILE" python3 -c "
 import os, re
@@ -643,12 +672,24 @@ PY
 
         _WT_LINE=""
         [ -n "$WORKTREE_PATH_PASS" ] && _WT_LINE="worktree_path=${WORKTREE_PATH_PASS}"
+        # V4.3: read reviewer identity from state for resume
+        _REVIEWER_AID="$(STATE_FILE="$STATE_FILE" python3 -c "
+import os, re
+text = open(os.environ['STATE_FILE']).read()
+m = re.search(r'^  reviewer:\n(?:.*\n)*?    agent_id: \"([^\"]+)\"', text, re.M)
+s = re.search(r'^  reviewer:\n(?:.*\n)*?    status: \"([^\"]+)\"', text, re.M)
+if m and s and s.group(1) == 'idle':
+    print(m.group(1))
+" 2>/dev/null || echo "")"
+        _REV_LINE=""
+        [ -n "$_REVIEWER_AID" ] && _REV_LINE="reviewer_agent_id=${_REVIEWER_AID}"
         cat >&2 <<PASS_MSG
 [builder-loop] ✅ PASS_CMD 全部阶段通过（iter ${NEXT_ITER}）。
 phase=passed_pending_review
 slug=${SLUG_PASS}
 state_file=${STATE_FILE}
 ${_WT_LINE}
+${_REV_LINE}
 PASS_MSG
 
         debug_log "exit" "$(IT="$NEXT_ITER" python3 -c "

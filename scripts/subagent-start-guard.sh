@@ -24,6 +24,7 @@ INPUT="$(cat || echo '{}')"
 SESSION_ID=$(printf '%s' "$INPUT" | jq -r '.session_id // empty' 2>/dev/null || echo "")
 CWD=$(printf '%s' "$INPUT" | jq -r '.cwd // empty' 2>/dev/null || echo "")
 SUBAGENT_TYPE=$(printf '%s' "$INPUT" | jq -r '.subagent_type // empty' 2>/dev/null || echo "")
+AGENT_ID=$(printf '%s' "$INPUT" | jq -r '.agent_id // empty' 2>/dev/null || echo "")
 
 if [ -z "$SESSION_ID" ]; then
   log "no session_id in stdin, skip"
@@ -109,6 +110,7 @@ LOCK_FILE="$(bl_lock_path "$SESSION_ID" "$SUBAGENT_TYPE")"
   echo "main_repo_path: \"${MAIN_REPO_PATH}\""
   echo "worktree_path: \"${WORKTREE_PATH}\""
   echo "slug: \"${SLUG}\""
+  echo "agent_id: \"${AGENT_ID}\""
   echo "start_ts: $(date +%s)"
   echo "ttl_min: ${TTL_MIN}"
   echo "source_dirs_abs:"
@@ -120,6 +122,40 @@ LOCK_FILE="$(bl_lock_path "$SESSION_ID" "$SUBAGENT_TYPE")"
 } > "$LOCK_FILE"
 
 log "lock written: $LOCK_FILE | type=$SUBAGENT_TYPE | worktree=$WORKTREE_PATH"
+
+# V4.3: write agent identity to state (tester + reviewer only)
+case "$SUBAGENT_TYPE" in tester|reviewer)
+  if [ -n "$AGENT_ID" ] && [ -f "$STATE_FILE" ]; then
+    STATE_FILE="$STATE_FILE" AGENT_TYPE="$SUBAGENT_TYPE" AGENT_ID="$AGENT_ID" \
+      STARTED_AT="$(date -Iseconds 2>/dev/null || date +%s)" python3 -c "
+import os, re
+sf = os.environ['STATE_FILE']
+at = os.environ['AGENT_TYPE']
+aid = os.environ['AGENT_ID']
+sat = os.environ['STARTED_AT']
+text = open(sf).read()
+new_entry = (
+    f'  {at}:\n'
+    f'    agent_id: \"{aid}\"\n'
+    f'    started_at: \"{sat}\"\n'
+    f'    status: \"running\"\n'
+    f'    transcript_path: \"\"\n'
+)
+if re.search(r'^subagents:\n', text, re.M):
+    pat = rf'^  {at}:\n(?:    .+\n)*'
+    if re.search(pat, text, re.M):
+        text = re.sub(pat, new_entry, text, flags=re.M)
+    else:
+        text = re.sub(r'^(subagents:\n)', r'\1' + new_entry, text, flags=re.M)
+else:
+    if not text.endswith('\n'):
+        text += '\n'
+    text += 'subagents:\n' + new_entry
+open(sf, 'w').write(text)
+" 2>/dev/null || true
+    log "identity written to state: type=$SUBAGENT_TYPE agent_id=$AGENT_ID"
+  fi
+  ;; esac
 
 # Layer 1: Inject worktree boundary context into subagent via additionalContext
 if [ -n "$WORKTREE_PATH" ] && [ -d "$WORKTREE_PATH" ] && { [ "$PHASE" = "active" ] || [ "$PHASE" = "passed_pending_review" ]; }; then
