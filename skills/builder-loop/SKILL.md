@@ -86,7 +86,7 @@ V3.5 引入 subagent 白名单管理，确保只有预期的 agent 类型能落�
 
 | 闸 | 触发条件 | 静默原因 |
 |----|---------|---------|
-| L1 | `state.phase=passed_pending_review` | 牌子挂着等 reviewer 审查（特例：worktree 出现 dirty/新 commit → 自愈回 active） |
+| L1 | `state.phase=passed_pending_review\|e2e_pending` | 等 reviewer 审查 / tester 跑 e2e（自愈：dirty/新 commit → active；e2e_pending + verified_head==HEAD → active） |
 | L2A | transcript 末尾是 pending AskUserQuestion（无 tool_result） | builder 在等用户答 |
 | L2B | worktree HEAD == `state.last_iter_head` 且 git status 空 | builder 在思考 / 讨论，没改代码 |
 | L3 | `.claude/builder-loop/<slug>.pause` 文件存在 | builder 主动 pause |
@@ -106,7 +106,7 @@ stop hook 通过 `locate-state.sh` 用 CWD 匹配 state 文件（策略 2: workt
 
 ```yaml
 active: true                     # V3.x 后渐进下掉（仅写不读做新决策；详见 improvements.md「active 下掉计划」）
-phase: "active"                  # V3.0 新增：active / passed_pending_review；hook 主判用此字段
+phase: "active"                  # V3.0 新增：active / e2e_pending / passed_pending_review；hook 主判用此字段
 slug: "1777040807-task-alpha"    # = 文件名；bare loop 时 slug="__main__"
 owner_cwd: "/path/to/main-repo"  # setup 时所在 CWD（一般 = main_repo_path）
 owner_session_id: "abc123..."    # V3.7 新增：stop hook 首次绑定时写入的 CC session_id

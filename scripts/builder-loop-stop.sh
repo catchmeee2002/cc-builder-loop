@@ -284,8 +284,8 @@ NEXT_ITER=$(( ITER + 1 ))
 
 # ---- V3.0: PASS_CMD 前多层闸（命中即静默 exit 0） ----
 # 闸顺序（早闸优先，成本低到高）：
-#   L1  phase=passed_pending_review → 不跑（牌子挂着等 reviewer 审）
-#       特例：worktree 出现 dirty/新 commit → 自愈回 active 继续跑（reviewer 反馈修复路径）
+#   L1  phase=passed_pending_review|e2e_pending → 不跑（牌子挂着等 reviewer 审 / tester 跑 e2e）
+#       自愈：dirty/新 commit → active（修复路径）；e2e_pending + e2e_verified_head==HEAD → active（e2e 完成）
 #   L2A transcript 末是 pending AskUserQuestion → 不跑（builder 等用户答）
 #   L2B worktree HEAD == last_iter_head + git status 空 → 不跑（无改动 thinking/讨论）
 #       bare 模式（无 worktree_path）使用 PROJECT_ROOT 作 git 路径
@@ -301,23 +301,35 @@ if [ -z "$PHASE_FIELD" ] && grep -qE '^active:' "$STATE_FILE" 2>/dev/null; then
   echo "                本轮 hook 已自动升级到 V3.0 schema（PASS 后自动写 phase=passed_pending_review）" >&2
   debug_log "old_state_compat" '{"action":"warn_and_upgrade","missing_field":"phase"}'
 fi
-# L1: phase 闸 + worktree 改动兜底自愈
-if [ "$PHASE_FIELD" = "passed_pending_review" ]; then
+# L1: phase 闸 + 改动/e2e完成 自愈
+if [ "$PHASE_FIELD" = "passed_pending_review" ] || [ "$PHASE_FIELD" = "e2e_pending" ]; then
   WT_PATH_GATE="$(grep -E '^worktree_path:' "$STATE_FILE" 2>/dev/null | head -1 | sed -E 's/^worktree_path:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' || echo "")"
   # bare 模式 fallback：worktree_path 空时用 PROJECT_ROOT（主仓）做 dirty 检测
   CHECK_PATH_GATE="${WT_PATH_GATE:-$PROJECT_ROOT}"
-  HAS_CHANGES=0
+  SHOULD_HEAL=0
+  HEAL_REASON=""
   if [ -n "$CHECK_PATH_GATE" ] && [ -d "$CHECK_PATH_GATE" ]; then
     LIH_GATE="$(grep -E '^last_iter_head:' "$STATE_FILE" 2>/dev/null | head -1 | sed -E 's/^last_iter_head:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' || echo "")"
     CUR_HEAD_GATE="$(git -C "$CHECK_PATH_GATE" rev-parse --short HEAD 2>/dev/null || echo "")"
     STATUS_GATE="$(git -C "$CHECK_PATH_GATE" status --porcelain 2>/dev/null || echo "")"
     if [ -n "$STATUS_GATE" ]; then
-      HAS_CHANGES=1
+      SHOULD_HEAL=1
+      HEAL_REASON="dirty_changes"
     elif [ -n "$LIH_GATE" ] && [ -n "$CUR_HEAD_GATE" ] && [ "$LIH_GATE" != "$CUR_HEAD_GATE" ]; then
-      HAS_CHANGES=1
+      SHOULD_HEAL=1
+      HEAL_REASON="new_commit"
     fi
   fi
-  if [ "$HAS_CHANGES" = "1" ]; then
+  # e2e_pending 额外自愈：e2e_verified_head 与当前 HEAD 一致 → e2e 已完成，放行进 commit/reviewer
+  if [ "$PHASE_FIELD" = "e2e_pending" ] && [ "$SHOULD_HEAL" = "0" ]; then
+    E2E_VH_L1="$(grep -E '^e2e_verified_head:' "$STATE_FILE" 2>/dev/null | head -1 | sed -E 's/^e2e_verified_head:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' || echo "")"
+    CUR_HEAD_FULL_L1="$(git -C "$CHECK_PATH_GATE" rev-parse HEAD 2>/dev/null || echo "")"
+    if [ -n "$E2E_VH_L1" ] && [ "$E2E_VH_L1" = "$CUR_HEAD_FULL_L1" ]; then
+      SHOULD_HEAL=1
+      HEAL_REASON="e2e_verified"
+    fi
+  fi
+  if [ "$SHOULD_HEAL" = "1" ]; then
     STATE_FILE="$STATE_FILE" python3 -c "
 import os, re
 sf = os.environ['STATE_FILE']
@@ -325,10 +337,10 @@ text = open(sf).read()
 text = re.sub(r'^phase:.*\$', 'phase: \"active\"', text, flags=re.M)
 open(sf, 'w').write(text)
 " 2>/dev/null || true
-    echo "[builder-loop] L1 phase 自愈：检测到改动，phase passed_pending_review → active" >&2
-    debug_log "phase_self_heal" '{"from":"passed_pending_review","to":"active","reason":"path_changed"}'
+    echo "[builder-loop] L1 phase 自愈：${PHASE_FIELD} → active (reason=${HEAL_REASON})" >&2
+    debug_log "phase_self_heal" "{\"from\":\"${PHASE_FIELD}\",\"to\":\"active\",\"reason\":\"${HEAL_REASON}\"}"
   else
-    debug_log "exit" '{"code":0,"reason":"l1_phase_passed_pending_review"}'
+    debug_log "exit" "{\"code\":0,\"reason\":\"l1_phase_${PHASE_FIELD}\"}"
     exit 0
   fi
 fi
@@ -518,6 +530,15 @@ if [ "$LAST_LINE" = "PASS" ]; then
 端到端验收用例：
 ${E2E_CASES}
 E2EEOF
+        # V4.2: 写 phase=e2e_pending，L1 闸静默后续 Stop 直到 e2e 完成或代码变动
+        STATE_FILE="$STATE_FILE" python3 -c "
+import os, re
+sf = os.environ['STATE_FILE']
+text = open(sf).read()
+text = re.sub(r'^phase:.*$', 'phase: \"e2e_pending\"', text, flags=re.M)
+open(sf, 'w').write(text)
+" 2>/dev/null || true
+        debug_log "e2e_phase" '{"phase":"e2e_pending"}'
         exit 2
       fi
     else

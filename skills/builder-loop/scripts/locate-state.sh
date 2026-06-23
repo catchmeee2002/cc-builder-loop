@@ -128,14 +128,14 @@ fi
 
 # --- 5. V3.4 恢复：唯一 active/pending worktree 自动绑定 ---
 # CWD 在主仓但有 worktree loop 时兜底。恰好 1 个 → 绑定；≥2 个 → 不绑（保隔离）
-# V3.7: 匹配 active + passed_pending_review（两者 worktree 均存活，subagent 需受约束）
+# V3.7: 匹配 active + e2e_pending + passed_pending_review（均为存活 loop，subagent 需受约束）
 if [ -d "$STATE_DIR" ]; then
   _active_count=0
   _active_sf=""
   for sf in "$STATE_DIR"/*.yml; do
     [ -e "$sf" ] || continue
     _phase="$(grep -E '^phase:' "$sf" 2>/dev/null | head -1 | sed -E 's/^phase:[[:space:]]*"?([^"]*)"?.*/\1/' || true)"
-    case "$_phase" in active|passed_pending_review) ;; *) continue ;; esac
+    case "$_phase" in active|e2e_pending|passed_pending_review) ;; *) continue ;; esac
     _wt="$(grep -E '^worktree_path:' "$sf" 2>/dev/null | head -1 | sed -E 's/^worktree_path:[[:space:]]*"?([^"]*)"?.*/\1/' || true)"
     [ -z "$_wt" ] && continue
     [ ! -d "$_wt" ] && continue
