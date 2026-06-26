@@ -151,7 +151,7 @@ if [ -z "$STATE_FILE" ] || [ ! -f "$STATE_FILE" ]; then
   for _ in 1 2 3 4 5; do
     if [ -f "${_noop_d}/.claude/loop.yml" ]; then
       _noop_log="${_noop_d}/.claude/builder-loop/stop-hook-debug.log"
-      mkdir -p "$(dirname "$_noop_log")" 2>/dev/null || true
+      mkdir -p "${_noop_d}/.claude/builder-loop" 2>/dev/null || true
       printf '{"ts":"%s","phase":"no_op","cwd":"%s"}\n' \
         "$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)" \
         "$CWD" >> "$_noop_log" 2>/dev/null || true
