@@ -146,6 +146,20 @@ CWD="$(printf '%s' "$INPUT" | sed -n 's/.*"cwd"[[:space:]]*:[[:space:]]*"\([^"]*
 # ---- locate-state.sh（无 state → 立即 exit 0，不调 python3）----
 STATE_FILE="$(bash "$SKILL_DIR/locate-state.sh" "$CWD" 2>/dev/null || echo "")"
 if [ -z "$STATE_FILE" ] || [ ! -f "$STATE_FILE" ]; then
+  # V4.4: 轻量 no-op 日志（纯 bash，不调 python3）— troubleshooting §7.11 依赖 entry 区分触发/未触发
+  _noop_d="$CWD"
+  for _ in 1 2 3 4 5; do
+    if [ -f "${_noop_d}/.claude/loop.yml" ]; then
+      _noop_log="${_noop_d}/.claude/builder-loop/stop-hook-debug.log"
+      mkdir -p "$(dirname "$_noop_log")" 2>/dev/null || true
+      printf '{"ts":"%s","phase":"no_op","cwd":"%s"}\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        "$CWD" >> "$_noop_log" 2>/dev/null || true
+      break
+    fi
+    [ "$_noop_d" = "/" ] && break
+    _noop_d="$(dirname "$_noop_d")"
+  done
   exit 0
 fi
 
