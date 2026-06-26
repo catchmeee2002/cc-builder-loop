@@ -136,42 +136,28 @@ write_processed_cursor() {
   fi
 }
 
-# ---- 解析 stdin ----
+# ---- 解析 stdin（V4.4: no-op fast path — 零 python3 冷启动）----
+# CC stdin 是扁平 JSON，用 sed 提取 CWD 足够定位 state。
+# transcript_path / session_id 只在找到 state 后才需要，延迟到 python3 单次解析。
 INPUT="$(cat)"
-CWD="$(echo "$INPUT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('cwd',''))" 2>/dev/null || echo "")"
-[ -z "$CWD" ] && CWD="$(pwd)"
-# V1.9: transcript_path 给 judge agent 用
-TRANSCRIPT_PATH="$(echo "$INPUT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('transcript_path',''))" 2>/dev/null || echo "")"
-# V2.5: session_id 给 debug log 关联，便于跨 hook 触发追踪
-HOOK_SESSION_ID="$(echo "$INPUT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('session_id',''))" 2>/dev/null || echo "")"
+CWD="$(printf '%s' "$INPUT" | sed -n 's/.*"cwd"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
+[ -z "$CWD" ] && CWD="$(pwd 2>/dev/null || echo ".")"
 
-# V2.5: entry phase（在 locate / flock 之前）— 即使后续 exit 0 早退也能看到 hook 触发
-debug_log "entry" "$(CWD_J="$CWD" TP="$TRANSCRIPT_PATH" python3 -c "
-import os, json
-print(json.dumps({'cwd': os.environ.get('CWD_J',''), 'transcript_path': os.environ.get('TP','')}))
-" 2>/dev/null || echo '{}')"
-
-# ---- V3.4: locate-state.sh CWD→state 直接匹配（取代 V3.2 local.md 读取）----
-# 调 locate-state.sh 的 5 级策略定位 state：
-#   策略 2: CWD 在 .claude/worktrees/<slug>/ 下 → 直接拼 slug（精确）
-#   策略 3: 遍历 state/*.yml 比对 worktree_path
-#   策略 4: 兜底 __main__.yml（bare 模式）
-#   策略 5: 恰好 1 个 active worktree → 自动绑定
-# 无 state → exit 0 放行
+# ---- locate-state.sh（无 state → 立即 exit 0，不调 python3）----
 STATE_FILE="$(bash "$SKILL_DIR/locate-state.sh" "$CWD" 2>/dev/null || echo "")"
-# PROJECT_ROOT / RUN_CWD 在下方从 state 字段提取（非 locate-state.sh 返回）
+if [ -z "$STATE_FILE" ] || [ ! -f "$STATE_FILE" ]; then
+  exit 0
+fi
+
+# ---- 找到 state：解析剩余 stdin 字段（单次 python3）----
+TRANSCRIPT_PATH="$(printf '%s' "$INPUT" | sed -n 's/.*"transcript_path"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
+HOOK_SESSION_ID="$(printf '%s' "$INPUT" | sed -n 's/.*"session_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
+
 PROJECT_ROOT=""
 RUN_CWD=""
 
-debug_log "locate_result" "$(SF="${STATE_FILE:-}" python3 -c "
-import os, json
-print(json.dumps({'state_file': os.environ.get('SF',''), 'method': 'locate_state_sh'}))
-" 2>/dev/null || echo '{}')"
-
-if [ -z "$STATE_FILE" ] || [ ! -f "$STATE_FILE" ]; then
-  debug_log "exit" '{"code":0,"reason":"no_state_via_locate"}'
-  exit 0
-fi
+debug_log "entry" "{\"cwd\":\"${CWD}\",\"transcript_path\":\"${TRANSCRIPT_PATH}\"}"
+debug_log "locate_result" "{\"state_file\":\"${STATE_FILE}\",\"method\":\"locate_state_sh\"}"
 
 # ---- V3.7: owner_session_id 校验（防并发 session 越界）----
 # 首次绑定时写入 session_id；后续校验匹配，不匹配 → 警告 + skip
