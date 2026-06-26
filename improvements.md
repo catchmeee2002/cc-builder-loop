@@ -4,10 +4,17 @@
 > **只记事实，不写建议方向**——loop 侧开发者拿到事实自己判断怎么修。
 > 已消化条目直接删除（代码是 ground truth），不标 ✅。已关闭条目见 [CHANGELOG](CHANGELOG.md)。
 
-## 2026-06-24 e2e tester 失败重跑时每次 spawn 全新 agent，不复用已有 tester
-- 触发场景：divine-word 项目 e2e 验收第一轮 9 个用例跑了 7 PASS / 1 FAIL / 1 SKIP（tester agent 耗时 30 分钟、172 次工具调用、157k tokens）。修复代码后需要重跑失败用例
-- 现象：builder 按 V3.8 流程再次 `Agent(subagent_type: "tester")` spawn 了一个全新 tester。新 tester 从零开始：重连 Playwright CDP、重新打开游戏页面、重新建局、重新推进时代。第一轮 tester 已建立的游戏状态、Playwright 连接、已通过用例的上下文全部丢弃
-- 根因：V3.8 E2E 验证请求处理只描述了 "spawn tester subagent"，没有区分首次 spawn 和重跑场景。builder 在重跑时应该用 `SendMessage(to: existing_tester_id)` 续前一个 agent（它保有完整上下文），只传失败用例让它增量验证。但 V3.8 流程和 builder.md 都没有这个指引
+
+## 2026-06-24 L1 phase 闸 exit 0 时完全静默，builder 误判"自愈失效"手动干预
+- 触发场景：divine-word 项目 bare 模式。PASS + auto-commit 后 phase=passed_pending_review，reviewer 在后台运行。builder 看到连续两轮 Stop hook 静默 exit 0（17:50 + 17:56），误以为 L1 自愈机制失效，手动 python3 改 phase=active 恢复
+- 现象：builder 认为"hook 没自愈"，实际 debug log 确认 L1 gate 两次都正确判断"无 dirty"（auto-commit 已清空 dirty，reviewer 还没返回 builder 还没 Edit）。如果不手动干预，reviewer 返回 → builder Edit → dirty 出现 → 下一轮 L1 自愈 → PASS_CMD，流程会自然恢复
+- 根因：L1 gate 代码正确（bare fixture 16/16 PASS 验证），问题是 L1 exit 0 时完全静默——stderr 无输出、无 inject 消息。builder 无法区分"正常等待 dirty 出现"和"自愈机制失效"，在两轮静默 exit 后选择手动干预
+- 优先级：低（UX 改善，非功能 bug；加 L1 exit 0 时 stderr 提示"等待代码变更后自动恢复"即可）
+
+## 2026-06-24 reviewer 修复后 e2e_verified_head 失效要求全量重跑 e2e
+- 触发场景：同上项目。reviewer 🔴 修复后 stop hook 做了新的 auto-commit（HEAD 从 017b3c3 变为 a45ad21）。e2e_verified_head 仍指向旧 HEAD，stop hook 检测到不匹配，要求再跑一次完整 e2e 套件
+- 现象：3 行非破坏性修复（冲突 VFX 修 bug 让原本不工作的功能能工作、热力图数据源从 count 改为真实 piety 值、装饰物锚定从信徒改为建筑）触发了第三轮全量 e2e 验收（每轮 30 分钟、150k+ tokens）。builder 判断这些修复不可能让之前 9 个 PASS 的用例回退，选择直接写入 e2e_verified_head 跳过
+- 根因：e2e_verified_head 机制是 HEAD 精确匹配，任何 commit 变化都失效。没有"增量验证"（只跑受影响用例）或"小修免跑"（reviewer 修复级别的变更跳过 e2e）机制
 - 优先级：中
 
 
@@ -23,11 +30,6 @@
 - 根因：e2e case 没有 level 字段，harness 没有 --level 过滤参数。沉淀时 tester 可以根据 case 是否含 llm_judge 自动标级
 - 优先级：中
 
-## 2026-06-21 Builder PASS 后声称"Phase 完成"但 plan 文件清单完成率仅 33%（重复发生）
-- 触发场景：divine-word v2 全量重写，plan 有 4 Phase 共 ~40 个文件操作。Builder 写了后端（Phase 1/2/4）+ 前端部分文件后，pass_cmd（py_compile + import + 163 单元测试）全过。Builder 声称"全部 4 Phase 完成"并进入 reviewer 流程
-- 现象：用户手动对照 plan Phase 3 文件清单，发现 15 个文件操作中只完成 5 个（33%）。9 个文件未创建/未修改：TimelineSidebar.ts、CrisisOverlay.ts、FollowerDetail.ts、CausalHighlight.ts、EventAnimator.ts 全部缺失；OracleInput.ts、Follower.ts、gameState.ts、generate_sprites.py 未按计划修改。核心循环从"观赏模式+危机打断"变成了"v1 每轮交互套 v2 数据"——设计意图完全未落地。WebSocket 后端有 endpoint 但前端从未调用 connect()
-- 根因：pass_cmd 只管代码正确性（编译+测试），不管 plan 完整性（文件是否全部创建、功能是否全部实现）。Builder 在 pass_cmd 通过后跳过了"回头逐行对照 plan 文件清单"这一步。与 2026-06-20 session resume 记录的事故（"Phase 2 有两个 step 完全没写"）完全相同模式——**同一个 failure mode 第二次发生**
-- 优先级：高
 
 ## 2026-06-21 Builder 步骤 3.5 文档评估允许自证、无机械校验
 - 触发场景：divine-word 像素美术升级任务，新增 tools/、PreloadScene、config/spriteConfig、public/assets/ 四个目录/文件。Builder 在步骤 3.5 输出 `doc-A: 命中但已更新，无需 doc-maintainer`，实际 CLAUDE.md 项目结构未包含这些新条目
@@ -497,3 +499,15 @@
   1. `uninstall.sh` L49 的 `bl_scripts` 加 `"reviewer-timing-check.sh"` 一项
   2. 加 e2e fixture：`test-install-uninstall-roundtrip.sh`——install 后 uninstall 应让 settings.json 完全等于 install 前的状态（diff 必须为空）
 - **优先级**：中（uninstall 不彻底导致冗余执行，但不影响功能正确性）
+
+---
+
+## Archived（已消化/已修复）
+
+### 2026-06-24 e2e tester 失败重跑时每次 spawn 全新 agent，不复用已有 tester — V4.3 修复
+- 修复版本：V4.3 Subagent Identity & Resume
+- 修复内容：state.subagents 段追踪 tester/reviewer 的 agent_id + status；stop hook inject 消息携带 agent_id → builder 用 SendMessage 续接；失败自动 fallback 新 spawn
+
+### 2026-06-21 Builder PASS 后声称"Phase 完成"但 plan 文件清单完成率仅 33%（重复发生） — V4.0 reviewer Phase 0 修复
+- 修复版本：V4.0 plan 注册 + reviewer Phase 0 plan 完成度检查
+- 修复内容：setup 时注册 plan_path 到 state；reviewer Phase 0 提取 plan-checklist 标签内容，逐步骤验证代码是否体现了每个步骤的意图

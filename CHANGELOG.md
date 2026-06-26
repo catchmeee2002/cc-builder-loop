@@ -2,6 +2,10 @@
 
 > 从 CLAUDE.md §5 外移。记录各版本交付的能力与关键实现细节。
 
+## V4.4 Stop hook no-op fast path（2026-06-26）
+
+无活跃 loop 时 stop hook 从 ~30s 降到 ~40ms。CWD 解析用 sed 替代 python3，locate-state 返回空后直接 exit 0 跳过所有 debug_log 和 python3 调用。有 `.claude/loop.yml` 的项目仍写 `{"phase":"no_op"}` 轻量日志（纯 bash）供 troubleshooting 区分"触发但无 state"和"未触发"。
+
 ## V4.3 Subagent Identity & Resume（2026-06-24）
 
 subagent 从"匿名临时工"升级为"有身份的协作者"——state 文件追踪 agent_id，支持 SendMessage 续接。
