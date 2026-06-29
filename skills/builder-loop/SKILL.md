@@ -12,7 +12,8 @@ description: "Builder 自闭环迭代 — 在 builder 完成改动后，以项�
 3. **失败反馈**：`extract-error.sh` 处理日志，通过状态文件注入下轮 prompt
 4. **上限与早停**：硬上限 `max_iterations`（默认 5）+ 智能早停（无进展/反增长/保护路径被改）
 5. **worktree 隔离**：`worktree.enabled=true` 时创建 git worktree，PASS 后三档合回
-6. **循环外接力**：PASS 后 builder.md 接力（reviewer → doc-maintainer → commit）
+6. **⛔ 禁用 CC 内置 worktree**：worktree 操作一律由 `setup-builder-loop.sh` 通过 git CLI 创建和管理。禁止调用 CC 内置 `EnterWorktree` / `ExitWorktree`——builder-loop 的 state 绑定、写隔离、merge-back 链均依赖 git CLI 创建的 worktree，`EnterWorktree` 会创建出不受 state 追踪的 worktree（base ref 默认 origin/main 而非 HEAD）。setup 脚本会自动在项目 `.claude/settings.json` 设置 `bgIsolation: "none"`
+7. **循环外接力**：PASS 后 builder.md 接力（reviewer → doc-maintainer → commit）
 
 ## 启动流程
 

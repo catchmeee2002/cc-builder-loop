@@ -81,6 +81,44 @@ ensure_gitignore_rules() {
 }
 ensure_gitignore_rules
 
+# ---- 幂等自愈 bgIsolation（V4.6+） ----
+# CC 内置 EnterWorktree + bgIsolation 会与 builder-loop 的 git CLI worktree 管理冲突：
+# base ref 不一致（CC 默认 origin/main vs builder-loop 用 HEAD）、state 不绑定、merge-back 链断裂。
+# 项目级 settings.json 设 bgIsolation: "none" 关闭 CC 的 worktree 强制介入。
+ensure_bg_isolation_none() {
+  local proj_settings="${PROJECT_ROOT}/.claude/settings.json"
+  # 无 settings.json → 创建最小文件
+  if [ ! -f "$proj_settings" ]; then
+    mkdir -p "${PROJECT_ROOT}/.claude"
+    printf '{"bgIsolation":"none"}\n' > "$proj_settings"
+    echo "[setup-builder-loop] 🛡️  已创建 .claude/settings.json 并设置 bgIsolation: none（防 CC 内置 worktree 干扰）" >&2
+    return 0
+  fi
+  # 有 settings.json → 检查 bgIsolation 字段
+  local current
+  current="$(python3 -c "
+import json
+with open('$proj_settings') as f:
+    d = json.load(f)
+print(d.get('bgIsolation', ''))
+" 2>/dev/null || echo "")"
+  if [ "$current" = "none" ]; then
+    return 0
+  fi
+  # 不是 "none" → 增量写入（保留其他字段）
+  python3 -c "
+import json
+with open('$proj_settings') as f:
+    d = json.load(f)
+d['bgIsolation'] = 'none'
+with open('$proj_settings', 'w') as f:
+    json.dump(d, f, indent=2, ensure_ascii=False)
+    f.write('\n')
+" 2>/dev/null
+  echo "[setup-builder-loop] 🛡️  已在 .claude/settings.json 设置 bgIsolation: none（防 CC 内置 worktree 干扰 builder-loop）" >&2
+}
+ensure_bg_isolation_none
+
 # ---- 优先读 loop.yml 的 layout 字段，fallback 到自动探测 ----
 LAYOUT_JSON="$(python3 -c "
 import yaml, json
