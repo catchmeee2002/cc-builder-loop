@@ -30,8 +30,13 @@
 
 set -euo pipefail
 
-SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../skills/builder-loop/scripts" && pwd 2>/dev/null)" || \
-  SKILL_DIR="$HOME/.claude/skills/builder-loop/scripts"
+# V4.5: SKILL_DIR 延迟解析 — no-op 路径不需要，省掉 cd+pwd 的 2 次 stat
+_SCRIPT_DIR="${BASH_SOURCE[0]%/*}"
+_resolve_skill_dir() {
+  SKILL_DIR="$(cd "${_SCRIPT_DIR}/../skills/builder-loop/scripts" && pwd 2>/dev/null)" || \
+    SKILL_DIR="$HOME/.claude/skills/builder-loop/scripts"
+}
+SKILL_DIR=""
 
 # V1.8.1: state 归档到 legacy（替代"留着 active=false 僵尸"）
 # 两个调用点：① 发现 active!=true 的僵尸 state；② EARLY_STOP 不再改字段，直接归档
@@ -136,30 +141,72 @@ write_processed_cursor() {
   fi
 }
 
-# ---- 解析 stdin（V4.4: no-op fast path — 零 python3 冷启动）----
-# CC stdin 是扁平 JSON，用 sed 提取 CWD 足够定位 state。
-# transcript_path / session_id 只在找到 state 后才需要，延迟到 python3 单次解析。
+# ---- 解析 stdin（V4.5: 零子进程快速路径 — bash 内置解析 + 内联 locate）----
+# V4.4 已消除 python3 冷启动；V4.5 进一步消除 sed 子进程 + bash locate-state.sh 子进程，
+# 将 no-op 路径的 fork+exec 从 2 次降到 0 次，stat 从 ~20 次降到 ~3 次。
+# NFS/IO 压力大时从分钟级降到秒级以内。
 INPUT="$(cat)"
-CWD="$(printf '%s' "$INPUT" | sed -n 's/.*"cwd"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
+# bash 内置字符串操作提取 CWD（替代 sed 子进程）
+_after_cwd="${INPUT#*\"cwd\"}"
+if [ "$_after_cwd" != "$INPUT" ]; then
+  _after_colon="${_after_cwd#*:}"
+  _after_quote="${_after_colon#*\"}"
+  CWD="${_after_quote%%\"*}"
+else
+  CWD=""
+fi
 [ -z "$CWD" ] && CWD="$(pwd 2>/dev/null || echo ".")"
+CWD="${CWD%/}"
 
-# ---- locate-state.sh（无 state → 立即 exit 0，不调 python3）----
+# ---- 内联 locate-state 快速探测（V4.5: 零子进程）----
+# 先找 project root（loop.yml 所在目录），再检查 state 目录。
+# 找到 loop.yml 但无 state → 写 no-op 日志后 exit 0。
+# 找到 state → fall through 到完整的 locate-state.sh（需要精确的 worktree/bare/slug 匹配）。
+_PROJECT_ROOT=""
+_d="$CWD"
+for _ in 1 2 3 4 5; do
+  if [ -f "${_d}/.claude/loop.yml" ]; then
+    _PROJECT_ROOT="$_d"
+    break
+  fi
+  [ "$_d" = "/" ] && break
+  _d="${_d%/*}"
+  [ -z "$_d" ] && _d="/"
+done
+
+if [ -z "$_PROJECT_ROOT" ]; then
+  # 无 loop.yml → 此项目未接入 builder-loop，直接退出（不写日志、不 spawn 子进程）
+  exit 0
+fi
+
+# 有 loop.yml → 检查 state 目录是否有 .yml 文件
+_STATE_DIR="${_PROJECT_ROOT}/.claude/builder-loop/state"
+_HAS_STATE=0
+if [ -d "$_STATE_DIR" ]; then
+  for _sf in "$_STATE_DIR"/*.yml; do
+    [ -e "$_sf" ] && _HAS_STATE=1 && break
+  done
+fi
+
+if [ "$_HAS_STATE" -eq 0 ]; then
+  # 有 loop.yml 但无 state → no-op 日志后退出
+  _noop_log="${_PROJECT_ROOT}/.claude/builder-loop/stop-hook-debug.log"
+  mkdir -p "${_PROJECT_ROOT}/.claude/builder-loop" 2>/dev/null || true
+  printf '{"ts":"%s","phase":"no_op","cwd":"%s"}\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    "$CWD" >> "$_noop_log" 2>/dev/null || true
+  exit 0
+fi
+
+# 有 state 文件 → 需要精确匹配，调完整的 locate-state.sh（此路径本来就要跑完整流程，子进程开销可接受）
+[ -z "$SKILL_DIR" ] && _resolve_skill_dir
 STATE_FILE="$(bash "$SKILL_DIR/locate-state.sh" "$CWD" 2>/dev/null || echo "")"
 if [ -z "$STATE_FILE" ] || [ ! -f "$STATE_FILE" ]; then
-  # V4.4: 轻量 no-op 日志（纯 bash，不调 python3）— troubleshooting §7.11 依赖 entry 区分触发/未触发
-  _noop_d="$CWD"
-  for _ in 1 2 3 4 5; do
-    if [ -f "${_noop_d}/.claude/loop.yml" ]; then
-      _noop_log="${_noop_d}/.claude/builder-loop/stop-hook-debug.log"
-      mkdir -p "${_noop_d}/.claude/builder-loop" 2>/dev/null || true
-      printf '{"ts":"%s","phase":"no_op","cwd":"%s"}\n' \
-        "$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)" \
-        "$CWD" >> "$_noop_log" 2>/dev/null || true
-      break
-    fi
-    [ "$_noop_d" = "/" ] && break
-    _noop_d="$(dirname "$_noop_d")"
-  done
+  # locate-state 精确匹配失败（state 存在但不属于当前 CWD）→ no-op
+  _noop_log="${_PROJECT_ROOT}/.claude/builder-loop/stop-hook-debug.log"
+  printf '{"ts":"%s","phase":"no_op","cwd":"%s","note":"state_exists_but_no_match"}\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    "$CWD" >> "$_noop_log" 2>/dev/null || true
   exit 0
 fi
 

@@ -2,6 +2,10 @@
 
 > 从 CLAUDE.md §5 外移。记录各版本交付的能力与关键实现细节。
 
+## V4.5 Stop hook 零子进程快速路径（2026-06-29）
+
+在 V4.4 基础上进一步消除 no-op 路径的所有子进程 spawn（sed、bash locate-state.sh）和冗余 stat 调用。CWD 解析改 bash 内置字符串操作，locate-state 核心逻辑内联（先查 loop.yml → 再查 state 目录 → 有 state 才 fall through 到完整 locate-state.sh），SKILL_DIR 延迟到需要时才解析。无 `loop.yml` 的项目直接 exit 0 不写日志。fork+exec 从 2→0，stat 从 ~20→~5。NFS IO 压力大时从分钟级降到秒级以内。
+
 ## V4.4 Stop hook no-op fast path（2026-06-26）
 
 无活跃 loop 时 stop hook 从 ~30s 降到 ~40ms。CWD 解析用 sed 替代 python3，locate-state 返回空后直接 exit 0 跳过所有 debug_log 和 python3 调用。有 `.claude/loop.yml` 的项目仍写 `{"phase":"no_op"}` 轻量日志（纯 bash）供 troubleshooting 区分"触发但无 state"和"未触发"。
