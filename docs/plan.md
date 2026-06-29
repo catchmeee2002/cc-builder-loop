@@ -4,9 +4,9 @@
 
 > 覆写式维护（§8）：只保留当前态，历史进 CHANGELOG。
 
-## 当前阶段：V3.7 已发布，继续烘烤（2026-06-20 起）
+## 当前阶段：V4.6 已发布，继续烘烤（2026-06-29 起）
 
-V3.7 修了三条实战 bug（owner_session_id / tester 策略 5 phase 过滤 / fixture 清理挂起），回到烘烤状态。
+V4.6 新增 CC 内置 worktree 干扰防御（setup 自动设 bgIsolation: none + SKILL.md 禁令）。
 
 **观察期**：
 - tester 写主仓：策略 5 phase 过滤已修，**2026-07-02 前无复现 → 确认关闭**
