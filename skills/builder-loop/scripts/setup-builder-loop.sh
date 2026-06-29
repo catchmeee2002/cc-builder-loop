@@ -114,7 +114,7 @@ d['bgIsolation'] = 'none'
 with open('$proj_settings', 'w') as f:
     json.dump(d, f, indent=2, ensure_ascii=False)
     f.write('\n')
-" 2>/dev/null
+" 2>/dev/null || true
   echo "[setup-builder-loop] 🛡️  已在 .claude/settings.json 设置 bgIsolation: none（防 CC 内置 worktree 干扰 builder-loop）" >&2
 }
 ensure_bg_isolation_none
