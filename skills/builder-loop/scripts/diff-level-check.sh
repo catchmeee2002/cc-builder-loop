@@ -83,7 +83,14 @@ if [ -n "$DIFF_OUTPUT" ]; then
   done <<< "$DIFF_OUTPUT"
 fi
 
-echo "{\"level_signals\":[${SIGNALS}],\"count\":${COUNT}}"
+# ---- 3. 文档新鲜度提醒（plan.md / docs/plan.md）----
+DOC_REMIND=""
+for p in "plan.md" "docs/plan.md"; do
+  [ -f "${PROJECT_ROOT}/${p}" ] && DOC_REMIND="${DOC_REMIND}\"${p}\","
+done
+DOC_REMIND="${DOC_REMIND%,}"
+
+echo "{\"level_signals\":[${SIGNALS}],\"count\":${COUNT},\"doc_freshness_check\":[${DOC_REMIND}]}"
 
 if [ "$COUNT" -gt 0 ]; then
   exit 1
