@@ -130,3 +130,4 @@ cc-builder-loop/
 - **不改 CC 源码**：所有功能基于 CC 的 hook / skill / agent 扩展机制实现
 - **可破坏性升级**：升级允许不兼容已接入项目的 loop.yml，但必须手动更新所有已接入项目确保继续可用
 - **[HARD RULE] Prompt 只写"做什么"**：写 builder.md / SKILL.md / agent prompt / commands/*.md 时只下达 imperative 指令（操作步骤、判据、出口、约束），禁止写动机/原因/反向出题/"防偷懒"等心理说辞。设计思路写到代码注释或 `docs/`，不进 prompt
+- **文档新鲜度校验用交叉比对，不用自证**：检查文档（CLAUDE.md / plan.md / SKILL.md 等）是否需要更新时，禁止"builder 自行声称已检查没问题"。做法：机械提取文档中的状态声明行 → 与本次 changed_files 交叉比对 → 逐条给结论（"仍成立" / "需更新"）。不读全文，只提取含状态语义的行
