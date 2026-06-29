@@ -60,6 +60,7 @@ description: "进入 Builder 模式 — 复杂任务先计划后动手，完成�
 **改动级别机械检测（V3.2）**：代码写完后、进 loop 前，跑 `bash ~/.claude/skills/builder-loop/scripts/diff-level-check.sh`。
 - exit 0 → 无 L3 信号，按方案预估级别继续
 - exit 1 → 输出含新增签名列表（JSON）。builder 必须**逐项回应**每个签名："L3 对外接口" 或 "L2 内部 helper（理由）"。有任何一个判 L3 → 必须 spawn tester。全判 L2 → 必须给理由。**不允许跳过或一句话概括**
+- `doc_freshness_check` 字段非空 → 列出的每个文件在步骤 3.5.5 必须 Read 并检查过时性，不允许跳过或声称不存在
 
 - **L1**：跳过 loop.yml 检查，直接走 Reviewer
 - **L2**：走下方 loop.yml 检查
@@ -201,15 +202,16 @@ A 类命中 → spawn doc-maintainer（同步）。B 类命中 → builder 直�
 
 ## 步骤 3.5.5：plan.md 同步检查
 
-`docs/plan.md` 不存在 → `📋 plan.md: skip` 进入步骤 4。
+以 diff-level-check 输出的 `doc_freshness_check` 字段为准（机械探测，不自证）：
 
-存在 → Read 后输出**恰好一行**：
-- `📋 plan.md: 更新 #X (✅/🚧/作废)`（找到条目并 Edit 标记）
-- `📋 plan.md: #X 已同步`（找到且状态正确）
-- `📋 plan.md: 范围外`（无对应条目）
+- 字段为空 → `📋 plan.md: skip`
+- 字段非空 → **逐个文件** Read，对照本次 changed_files 检查过时性，每个文件输出一行：
+  - `📋 <path>: 更新（<简述改了什么>）`（Edit 更新）
+  - `📋 <path>: 仍成立`（Read 后确认无需改）
+  - `📋 <path>: 范围外`（本次改动与该文件内容无关）
 
 ⛔ 不允许 spawn doc-maintainer 维护 plan.md。
-⛔ 不允许静默跳过，即便 L1 / reviewer 兜底 / loop 异常收尾。
+⛔ `doc_freshness_check` 非空时不允许跳过 Read。
 
 ---
 
