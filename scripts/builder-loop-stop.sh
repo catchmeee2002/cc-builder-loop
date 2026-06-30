@@ -538,6 +538,12 @@ if [ "$LAST_LINE" = "PASS" ]; then
     PLAN_PATH="$(grep -E '^e2e_plan_path:' "$STATE_FILE" 2>/dev/null | head -1 | sed -E 's/^e2e_plan_path:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' || echo "")"
   fi
 
+  # ---- V4.8: read e2e_cases_path from loop.yml ----
+  E2E_CASES_PATH=""
+  if [ -f "${PROJECT_ROOT}/.claude/loop.yml" ]; then
+    E2E_CASES_PATH="$(grep -E '^e2e_cases_path:' "${PROJECT_ROOT}/.claude/loop.yml" 2>/dev/null | head -1 | sed -E 's/^e2e_cases_path:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' || echo "")"
+  fi
+
   # ---- V3.8: e2e behavioral verification ----
   E2E_PLAN_PATH="$PLAN_PATH"
   if [ -n "$E2E_PLAN_PATH" ]; then
@@ -580,6 +586,7 @@ tester_agent_id=${_TESTER_AID}
 1. SendMessage(to: "${_TESTER_AID}", summary: "rerun e2e")，传入失败用例
    - 如果 SendMessage 失败，fallback 到 Agent(subagent_type: "tester") 全量重跑
    - worktree_path: ${RUN_CWD}
+   - e2e_cases_path: ${E2E_CASES_PATH}
 2. tester 报 E2E_SUMMARY: all_pass → 用 python3 写 e2e_verified_head 到 state 文件：
    STATE_FILE=${STATE_FILE}
    写入字段：e2e_verified_head: "${CURRENT_HEAD}"
@@ -597,6 +604,7 @@ E2EEOF
 1. spawn tester subagent（e2e 模式），传入：
    - e2e_cases（以下用例文本）
    - worktree_path: ${RUN_CWD}
+   - e2e_cases_path: ${E2E_CASES_PATH}
 2. tester 报 E2E_SUMMARY: all_pass → 用 python3 写 e2e_verified_head 到 state 文件：
    STATE_FILE=${STATE_FILE}
    写入字段：e2e_verified_head: "${CURRENT_HEAD}"

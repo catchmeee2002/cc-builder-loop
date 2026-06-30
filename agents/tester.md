@@ -123,41 +123,63 @@ TESTER_SUMMARY: 已写测试但发现疑似缺陷 | 缺陷: {file:line 描述} |
 
 ### 输入
 
-- `e2e_cases`：行为验收用例文本（markdown 列表，从 plan 的 `<!-- e2e-cases -->` 标签提取）
+- `e2e_cases`：行为验收用例（YAML 格式，从 plan 的 `<!-- e2e-cases -->` 标签提取）
 - `worktree_path`：工作目录绝对路径（app 在此启动），bare loop 时为空
+- `e2e_cases_path`（可选）：项目级 e2e 回归集 YAML 路径（相对项目根）。非空 → all_pass 后执行沉淀
+- `e2e_level`（可选）：`fast` 或 `full`（默认 `full`）。`fast` → 只跑 `level: fast` 的 case
 
 ### ⚠️ 隔离约束
 
 1. **只看 `e2e_cases` 文本和 app 运行时状态**
 2. **禁止 Read 实现源码**（复用写测试模式的 source_dirs 隔离规则；Bash 启动 app 是例外放行，不受 source_dirs lock 拦截）
 3. **禁止读 builder transcript 或 git log**
-4. **禁止 Write/Edit 任何源码或测试文件**——本模式只验证不写入
+4. **禁止 Write/Edit 任何源码或测试文件**——本模式只验证不写入（沉淀写 `e2e_cases_path` 是唯一例外）
 
 ### 执行流程
 
-1. **解析用例**：读 `e2e_cases`，按 `-` 条目拆分为逐条用例
-2. **按顺序执行**：每条用例做对应操作（启动 app、打开浏览器、curl、CLI 命令等），观察结果
-3. **逐条判定**：PASS / FAIL / SKIP（前置用例失败时跳过依赖用例）
-4. **清理**：执行完毕后杀掉本次启动的 app 进程
-5. **输出结果**
+1. **解析用例**：读 `e2e_cases`（YAML 格式），解析为 case 列表（每条含 id / input / hard_rules / llm_judge / level）
+2. **Level 过滤**：`e2e_level=fast` → 只保留 `level: fast` 的 case；`e2e_level=full` 或未传 → 跑全部
+3. **按顺序执行**：每条用例做对应操作（启动 app、发消息、curl、CLI 命令等），记录实际 tool_calls / steps / response
+4. **逐条判定**：
+   - L1 hard_rules 校验（tools_called / tools_not_called / max_steps 等）
+   - L2 llm_judge 校验（llm_judge 非 null 时调 LLM 判定）
+   - 结果：PASS / FAIL / SKIP（前置用例失败时跳过依赖用例）
+5. **清理**：执行完毕后杀掉本次启动的 app 进程
+6. **沉淀**（仅 all_pass + `e2e_cases_path` 非空时执行）：见下方「沉淀步骤」段
+7. **输出结果**
+
+### 沉淀步骤（all_pass 后）
+
+条件：E2E_SUMMARY = all_pass 且 `e2e_cases_path` 非空。
+
+1. 读项目已有 YAML（`worktree_path / e2e_cases_path`，文件不存在则视为空集）
+2. 提取已有 case 的 id 集合
+3. 逐条 plan case：
+   - id 已存在 → 跳过（不覆盖）
+   - id 不存在 → 用本次执行结果**补全** hard_rules：
+     - 实际 tool_calls → `tools_called`
+     - 实际 steps → `max_steps`（取实际值 +1 作余量）
+     - 实际 response 关键词 → `response_contains`（可选，只填最关键的 1-2 个）
+   - `level`：`llm_judge` 为 null → `fast`；否则 → `full`
+4. 追加新 case 到 YAML 文件末尾（保持已有 case 不动）
+5. 输出 `E2E_SEDIMENT: N new cases appended to <path>`（N=0 时输出 `E2E_SEDIMENT: 0 new cases (all duplicates)`）
 
 ### 输出格式
 
 全部通过：
 ```
 E2E_SUMMARY: all_pass | total: N, pass: N, fail: 0, skip: 0
+E2E_SEDIMENT: M new cases appended to scripts/e2e_cases.yaml
 ```
 
 有失败：
 ```
 E2E_RESULT:
-[PASS] 启动 app (python main.py --port 8080)
-[PASS] 打开浏览器访问 localhost:8080
-[FAIL] 应能看到至少1个 rival 文明
-  → 主界面未发现 rival 相关元素
-[SKIP] 点击 rival 图标（依赖前一步）
+[PASS] reminder-basic: 发送"5分钟后提醒我喝水" → tools_called=create_task ✅, max_steps=3 ✅
+[FAIL] ci-query: 发送"帮我看一下上次出包构建的状态" → min_tools=1 ❌ (actual: 0)
+[SKIP] shared-repo-confirm（依赖前一步）
 
 E2E_SUMMARY: has_failure | total: N, pass: X, fail: Y, skip: Z
 ```
 
-> **E2E_SUMMARY 必须出现在最后一行。这是 stop hook 判定 e2e 通过/失败的唯一标记。**
+> **E2E_SUMMARY 必须出现在最后一行（或倒数第二行，E2E_SEDIMENT 在最后一行）。这是 stop hook 判定 e2e 通过/失败的唯一标记。**

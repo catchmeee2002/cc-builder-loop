@@ -93,6 +93,20 @@ arbitration:
       设为 low 则无条件 apply（不推荐）；high 则仅 high 信心自动 apply。
 
 # ============================================================
+# E2E 回归集（V4.8+）
+# ============================================================
+
+e2e_cases_path:
+  type: string
+  default: ""
+  examples: ["scripts/e2e_cases.yaml", "e2e/cases.yaml"]
+  description: |
+    项目级 e2e 回归集 YAML 路径（相对于项目根）。
+    tester 验收 all_pass 后将 plan 中的 e2e case 沉淀到此文件。
+    未设置（空字符串）→ 跳过沉淀。
+    YAML 格式：每条 case 含 id / input / hard_rules / llm_judge / level 字段。
+
+# ============================================================
 # 项目目录布局（用于隔离与保护）
 # 全部留空 → setup-builder-loop.sh 自动探测常见模式
 # ============================================================
@@ -236,7 +250,7 @@ judge:
 # ============================================================
 
 # pass_cmd:
-#   - { stage: doc-lint, cmd: "bash ~/.claude/skills/builder-loop/scripts/doc-lint.sh . HEAD~1", timeout: 10 }
+#   - { stage: doc-lint, cmd: "bash ~/.claude/skills/builder-loop/scripts/doc-lint.sh", timeout: 10 }
 #   - { stage: test, cmd: "pytest -x", timeout: 300 }
 #
 # layout:

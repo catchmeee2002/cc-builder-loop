@@ -260,7 +260,9 @@ bash ~/.claude/skills/builder-loop/scripts/probe-project-stack.sh <项目根>
 echo '<choice JSON>' | bash ~/.claude/skills/builder-loop/scripts/init-loop-config.sh <项目根>
 ```
 
-choice JSON 含 pass_cmd / max_iterations / layout / worktree。
+choice JSON 含 pass_cmd / max_iterations / layout / worktree / e2e_cases_path（可选）。
+
+`e2e_cases_path`：项目级 e2e 回归集 YAML 路径（相对于项目根）。tester 沉淀时往此文件追加 case。未设置则跳过沉淀。
 
 **choice JSON 格式示例**（pass_cmd 必须是对象数组，不是纯字符串数组）：
 
@@ -273,6 +275,7 @@ choice JSON 含 pass_cmd / max_iterations / layout / worktree。
   ],
   "max_iterations": 5,
   "layout": {"source_dirs": ["src"], "test_dirs": ["tests"]},
+  "e2e_cases_path": "scripts/e2e_cases.yaml",
   "worktree": {"enabled": false}
 }
 ```

@@ -38,7 +38,7 @@ description: "进入 Planner 模式 — 苏格拉底追问把模糊需求提炼�
 | 4 | 风险 & 退路 |
 | 5★ | 模块边界 & 接口 |
 | 6★ | 演进路径 & 扩展预留 |
-| 7★ | 验收方式 & 是否需要测试计划 & 是否需要端到端行为验证（必须用 AskUserQuestion 三选：用户自己写 / planner 代写 / 不需要 e2e。自己写 → 追问具体验收步骤后写入 `<!-- e2e-cases -->` 标签；代写 → planner 根据需求上下文拟稿，用 AskUserQuestion 展示给用户确认/改/删后写入标签） |
+| 7★ | 验收方式 & 是否需要测试计划 & 是否需要端到端行为验证（必须用 AskUserQuestion 三选：用户自己写 / planner 代写 / 不需要 e2e。自己写 → 追问具体验收步骤后写入 `<!-- e2e-cases -->` 标签；代写 → planner 根据需求上下文拟稿，用 AskUserQuestion 展示给用户确认/改/删后写入标签。**格式统一 YAML**——见下方「e2e-cases YAML 格式」段） |
 
 ★ 大方案专属。
 
@@ -60,7 +60,7 @@ description: "进入 Planner 模式 — 苏格拉底追问把模糊需求提炼�
 - **执行任务列表**：Builder 可直接执行的步骤，每步明确"改哪个文件/做什么"。多 Phase 时每个 Phase 注明消费的前置产物；产物不存在于更早 Phase → 调整顺序
 - **验收标准**：怎么确认做完了
 - **测试计划**（可选）：测试目标 / 关键测试场景 / 测试深度（快速/深度）
-- **端到端行为验证**（可选）：用户在 Round 7 选择"需要"时写入 `<!-- e2e-cases -->` 标签（可置于验收标准段内）。两种来源：用户自写（直接写入）或 planner 代写（拟稿后经用户 AskUserQuestion 确认再写入）。
+- **端到端行为验证**（可选）：用户在 Round 7 选择"需要"时写入 `<!-- e2e-cases -->` 标签（可置于验收标准段内）。格式统一 YAML（见下方段）。两种来源：用户自写（直接写入）或 planner 代写（拟稿后经用户 AskUserQuestion 确认再写入）。
 - **Plan 完成度检查锚点**（接入 builder-loop 的项目必须）：用 `<!-- plan-checklist -->` / `<!-- /plan-checklist -->` 标签包裹"执行任务列表"和"文件地图"两段。Reviewer Phase 0 提取此标签内容，逐步骤验证代码是否体现了每个步骤的意图。未包裹 → Reviewer 跳过 Phase 0 直接进代码审查。
 
 **3 视图区块约定（接入了 builder-loop 的项目要求）**：
@@ -84,6 +84,21 @@ description: "进入 Planner 模式 — 苏格拉底追问把模糊需求提炼�
 未被任何 role 标签包围的内容默认归 shared 视图。Builder Auto-Loop 在 spawn tester subagent 时会用 `split-plan-by-role.sh` 过滤，只把 shared+tester 视图传入。
 
 未接入 builder-loop 的项目可忽略此约定，方案文件按原结构写即可。
+
+**e2e-cases YAML 格式**（`<!-- e2e-cases -->` 标签内必须用此格式）：
+
+```yaml
+- id: reminder-basic
+  input: "5分钟后提醒我喝水"
+  hard_rules:
+    tools_called: ["create_task"]
+    tools_not_called: ["trigger_ci"]
+    max_steps: 4
+  llm_judge: null
+  level: fast
+```
+
+字段：`id`（必填，kebab-case）、`input`（必填）、`hard_rules`（可选，含 tools_called / tools_not_called / min_tools / max_tools / max_steps / response_contains / response_not_contains）、`llm_judge`（可选，null = 无 L2 语义判据）、`level`（必填，`fast` = 只跑 L1 / `full` = L1+L2；llm_judge 为 null 时填 fast，否则填 full）。planner 只填能确定的 hard_rules 字段，tester 执行后补全。
 
 **写入前自检（多 Phase 方案）**：执行任务列表有 ≥2 Phase 时，逐 Phase 检查：该 Phase 消费的新产物（新字段 / 新函数 / 新文件）是否在更早 Phase 已生产？不是 → 调整顺序后再写入。
 
