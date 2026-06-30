@@ -5,12 +5,6 @@
 > 已消化条目直接删除（代码是 ground truth），不标 ✅。已关闭条目见 [CHANGELOG](CHANGELOG.md)。
 
 
-## 2026-06-29 CC 内置 EnterWorktree 默认从 main 创建，与 builder-loop setup 脚本行为不一致
-- 触发场景：novel-writer 项目，长期在 `feat/narrative-engine-v2` 分支开发。后台任务（bgIsolation 守卫）要求先进 worktree 才能 Edit。调用 CC 内置 `EnterWorktree` 创建 worktree 后，发现目标文件（extraction.py 等）不存在——worktree 基于 main 创建，main 分支没有这些文件
-- 现象：①EnterWorktree 创建的 worktree 缺少 feat 分支的全部业务代码（novel_writer/ 目录结构完全不同）②改用 `git worktree add <path> -b <branch> feat/narrative-engine-v2` 手动创建，因仓库 615 个文件 checkout 超时（2 分钟跑到 50%）③最终通过 settings.json 设 `bgIsolation: "none"` 绕过，直接在主仓编辑
-- 根因：CC `EnterWorktree` 默认 `worktree.baseRef: "fresh"` = 从 `origin/<default-branch>`（main）创建分支。builder-loop 的 `setup-builder-loop.sh:333` 用 `git worktree add -b "$WORKTREE_BRANCH" "$WORKTREE_PATH" HEAD`——从当前 HEAD 创建。两套机制 base ref 默认值不一致。长期在非 main 分支开发的项目，CC 内置方式会创建出"错误的 worktree"
-- 优先级：低（用户可通过 settings.json `worktree.baseRef: "head"` 自行修复；builder-loop 自身不受影响因为用 git CLI 而非 EnterWorktree）
-
 ## 2026-06-24 L1 phase 闸 exit 0 时完全静默，builder 误判"自愈失效"手动干预
 - 触发场景：divine-word 项目 bare 模式。PASS + auto-commit 后 phase=passed_pending_review，reviewer 在后台运行。builder 看到连续两轮 Stop hook 静默 exit 0（17:50 + 17:56），误以为 L1 自愈机制失效，手动 python3 改 phase=active 恢复
 - 现象：builder 认为"hook 没自愈"，实际 debug log 确认 L1 gate 两次都正确判断"无 dirty"（auto-commit 已清空 dirty，reviewer 还没返回 builder 还没 Edit）。如果不手动干预，reviewer 返回 → builder Edit → dirty 出现 → 下一轮 L1 自愈 → PASS_CMD，流程会自然恢复
@@ -504,6 +498,9 @@
 ---
 
 ## Archived（已消化/已修复）
+
+### 2026-06-29 CC 内置 EnterWorktree 默认从 main 创建 — V4.6 bgIsolation: none 防御
+- 修复内容：setup 自动在项目 .claude/settings.json 写入 bgIsolation: "none"，禁用 CC 内置 worktree 机制，从根源消除冲突
 
 ### 2026-06-30 doc-lint 默认 DIFF_BASE=HEAD~1 吃进无关 commit 导致 339 处误报 — 默认值改为 HEAD
 - 修复内容：doc-lint.sh / diff-level-check.sh 默认 DIFF_BASE 从 HEAD~1 改为 HEAD（只看 staged/unstaged）；SKILL.md 示例同步；fixture 加 Case 8/9 验证 staged 场景和无关 commit 隔离
