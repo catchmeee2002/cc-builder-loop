@@ -2,6 +2,16 @@
 
 > 从 CLAUDE.md §5 外移。记录各版本交付的能力与关键实现细节。
 
+## V4.7 doc-lint / diff-level-check 默认 DIFF_BASE 修正（2026-06-30）
+
+默认 DIFF_BASE 从 `HEAD~1` 改为 `HEAD`（只看 staged/unstaged）。`HEAD~1` 会把 loop 前的无关 commit（如 gitignore 瘦身）拉入判据输入，导致 339 处误报阻断 loop。SKILL.md pass_cmd 示例同步去掉显式 `HEAD~1`。fixture 各加 2 个 staged 场景用例（含 HEAD vs HEAD~1 回归守卫）。
+
+## V4.6 CC 内置 worktree 干扰防御 + 文档新鲜度机械校验（2026-06-29）
+
+**1. bgIsolation 防御**：setup 自动在项目 `.claude/settings.json` 写入 `bgIsolation: "none"`，防止 CC 内置 `EnterWorktree` 创建基于 main 的 worktree 与 builder-loop 的 HEAD-based worktree 冲突。SKILL.md 加禁令。
+
+**2. doc_freshness_check**：diff-level-check.sh 输出新增 `doc_freshness_check` 字段，机械探测 `plan.md` / `docs/plan.md` 存在性。builder 步骤 3.5.5 以此字段为准逐文件 Read 检查过时性，禁止自证"已更新"。消化 improvements 6/21 条目（builder 步骤 3.5 允许自证、无机械校验）。
+
 ## V4.5 Stop hook 零子进程快速路径（2026-06-29）
 
 在 V4.4 基础上进一步消除 no-op 路径的所有子进程 spawn（sed、bash locate-state.sh）和冗余 stat 调用。CWD 解析改 bash 内置字符串操作，locate-state 核心逻辑内联（先查 loop.yml → 再查 state 目录 → 有 state 才 fall through 到完整 locate-state.sh），SKILL_DIR 延迟到需要时才解析。无 `loop.yml` 的项目直接 exit 0 不写日志。fork+exec 从 2→0，stat 从 ~20→~5。NFS IO 压力大时从分钟级降到秒级以内。
