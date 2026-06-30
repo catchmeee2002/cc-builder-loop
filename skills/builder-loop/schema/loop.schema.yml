@@ -37,11 +37,6 @@ early_stop:
     type: boolean
     default: true
     description: 错误数相比上轮增加 ≥ 50% → 早停（改坏了）
-  protected_path_changes:
-    type: integer
-    default: 3
-    description: 一轮内对 layout.test_dirs 修改 ≥ N 个文件 → 早停 + suspected_test_tampering
-
 # ============================================================
 # Worktree 隔离
 # ============================================================

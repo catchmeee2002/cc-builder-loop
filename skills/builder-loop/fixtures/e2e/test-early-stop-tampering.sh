@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# test-early-stop-tampering.sh — V3.2 tampering 检测新判据（只抓删除/弱化，修测试不算）
+# test-early-stop-tampering.sh — V4.9 tampering 检测已迁移到 reviewer 语义判定
 #
-# 覆盖：
-#   Case 1: test_dirs 未配置 → 第 5 段整体跳过 → CONTINUE
-#   Case 2: 删除 1 个测试文件 + 添加 2 行 skip/xfail 标记 → 总信号=3 → STOP
-#   Case 3: 删除 3 个测试文件 → 总信号=3 → STOP
-#   Case 4: 只删 2 个文件（信号=2），低于阈值 → STOP 不触发 → CONTINUE
-#   Case 5: 只改注释/格式（diff 有内容但无 tampering 信号）→ CONTINUE
+# 验证 early-stop-check.sh 不再因测试文件变更而输出 STOP：
+#   Case 1: test_dirs 未配置 → CONTINUE
+#   Case 2: 删测试文件 + 加 skip/xfail → CONTINUE（不再早停）
+#   Case 3: 删 3 个测试文件 → CONTINUE（不再早停）
+#   Case 4: 删 2 个测试文件 → CONTINUE
+#   Case 5: 只改注释/格式 → CONTINUE
 #
 # 用法：bash test-early-stop-tampering.sh
 
@@ -108,7 +108,7 @@ assert "Case 1 test_dirs 空 → 不触发 tampering 检测 → 输出 CONTINUE"
   "echo '$out1' | grep -q '^CONTINUE'"
 
 # ==============================================================
-section "Case 2: 删 1 个测试文件 + 加 2 行 skip/xfail 标记 → 信号=3 → STOP"
+section "Case 2: 删 1 个测试文件 + 加 2 行 skip/xfail 标记 → CONTINUE（tampering 迁移到 reviewer）"
 # ==============================================================
 # 场景：删 test_gamma.py（信号+1），在 test_beta.py 加 pytest.mark.skip（信号+1），
 #        在 test_alpha.py 加 pytest.mark.xfail（信号+1），总计 3 → 触发早停
@@ -143,11 +143,11 @@ state2="$(mk_state_file "$repo2" "tests")"
 log2="$(mk_empty_log)"
 
 out2="$(bash "$EARLY_STOP" "$state2" "$log2" 2>/dev/null)"
-assert "Case 2 总信号=3 → 输出 STOP suspected_test_tampering" \
-  "[ '$out2' = 'STOP suspected_test_tampering' ]"
+assert "Case 2 测试变更不再触发早停 → 输出 CONTINUE" \
+  "echo '$out2' | grep -q '^CONTINUE'"
 
 # ==============================================================
-section "Case 3: 删 3 个测试文件 → 信号=3 → STOP"
+section "Case 3: 删 3 个测试文件 → CONTINUE（tampering 迁移到 reviewer）"
 # ==============================================================
 
 repo3="$(mk_test_repo)"
@@ -160,8 +160,8 @@ state3="$(mk_state_file "$repo3" "tests")"
 log3="$(mk_empty_log)"
 
 out3="$(bash "$EARLY_STOP" "$state3" "$log3" 2>/dev/null)"
-assert "Case 3 删 3 个文件 → 总信号=3 → 输出 STOP suspected_test_tampering" \
-  "[ '$out3' = 'STOP suspected_test_tampering' ]"
+assert "Case 3 删 3 个文件不再触发早停 → 输出 CONTINUE" \
+  "echo '$out3' | grep -q '^CONTINUE'"
 
 # ==============================================================
 section "Case 4: 只删 2 个测试文件，信号=2 → 不触发早停 → CONTINUE"

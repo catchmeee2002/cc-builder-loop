@@ -11,23 +11,11 @@
 - 根因：`extract-e2e-cases.sh` 用 sed 按行匹配 `<!-- e2e-cases -->`，不感知 markdown 代码块（` ``` ` 包裹）。代码块内的标签与真标签在 sed 层面无区别
 - 优先级：低（只在 plan 里写了格式示例时触发，手动跳过即可；但每次都要跳两轮 stop hook 有些烦）
 
-## 2026-07-01 suspected_test_tampering 误判：fork 修测试适配新 API 被当篡改
-- 触发场景：novel-writer 项目 M2 全量追加迁移。L3 架构改动（删通道 + 改属性键名），fork subagent 在后台修改 9 个测试文件适配新 API（property key 从 power_level → fold_realm，删 entity_property_updates fixture 等）。stop hook 在 fork 写文件期间触发
-- 现象：stop hook 检测到测试文件变更，判定 suspected_test_tampering，iter 1 早停。实际是合法的接口适配改动
-- 根因：tampering 检测逻辑无法区分"篡改测试绕过门禁"和"正常适配新接口的测试修改"。L3 级改动必然伴随测试文件修改——如果 source 和 test 同时有 dirty 变更，且 source 变更是"删旧接口/改签名"，test 变更是"适配新接口"，这不是 tampering
-- 优先级：高（L3 级改动必触发，导致 loop 对大改动完全不可用）
-
 ## 2026-07-01 no_progress 误判：fork 后台改文档时 stop hook 提前触发
 - 触发场景：同上项目。reviewer 🔴 要求删 6 处文档中的过时引用。spawn fork 修文档，fork 还在 Edit 文件时 stop hook 触发第二轮
 - 现象：stop hook 发现 doc-lint 错误 hash 与上轮相同，判定 no_progress，iter 2 早停。实际 fork 的改动还没落盘
 - 根因：stop hook 是 CC 消息级同步触发的——builder 回复一条消息就触发一次。当 builder 回复"fork 在改"这条消息时 hook 立即跑，但 fork 是异步的，改动还没写完。hook 看到的是旧快照
 - 优先级：中（fork 并行工作模式下必现；workaround 是 builder 等 fork 完成再说话，但这违背并行工作的初衷）
-
-## 2026-07-01 删测试类/方法也触发 suspected_test_tampering
-- 触发场景：同上项目。删除了源码中的 check_irreversible_state 函数后，对应的 3 个测试类（TestCheckIrreversibleState / TestRunAllWithIrreversible / TestValidatorIssueRuleField）也需要删除。删除后 stop hook 再次判定 tampering
-- 现象：与第一条同类但场景不同——不是改测试内容，是删测试。删除已删函数的测试是唯一正确的做法
-- 根因：同第一条。tampering 检测把"测试文件有任何变更"等同于"篡改"
-- 优先级：高（同第一条，合并计数）
 
 ## 2026-06-24 L1 phase 闸 exit 0 时完全静默，builder 误判"自愈失效"手动干预
 - 触发场景：divine-word 项目 bare 模式。PASS + auto-commit 后 phase=passed_pending_review，reviewer 在后台运行。builder 看到连续两轮 Stop hook 静默 exit 0（17:50 + 17:56），误以为 L1 自愈机制失效，手动 python3 改 phase=active 恢复
@@ -48,12 +36,13 @@
 - 根因：Round 7 规定三件事（验收方式 & 测试计划 & e2e 验证），planner 只问了第一件就认为完成
 - 优先级：中
 
-## 2026-06-18 suspected_test_tampering 早停误判「需求翻转」场景
 
-- 触发场景：恢复 /mnt/mcap 自动清理能力（之前 commit 删除了该功能），Case 7 测试断言需从"不清理"翻转为"清理且验证参数正确性"——实际是**加强**断言（新增 3 条 assert 验证 output_dir/max_age_days/target_pct），非削弱
-- 现象：diff-level-check 或 PASS_CMD 阶段检测到 test 文件 assert 行被修改，触发 `suspected_test_tampering` 早停（iter 1），状态直接归档到 legacy/
-- 根因：tampering 检测粒度为"test 文件中 assert 行有变动"，不区分断言加强（新增/收紧条件）vs 断言削弱（删除/放宽条件）；也无法识别"需求反转导致的合法翻转"
-- 优先级：中
+## 2026-07-01 [观察期] tampering 检测迁移到 reviewer — 待验证真篡改仍被拦截
+
+- 修复：删除 early-stop-check.sh section 5（机器层 tampering 早停），改为 reviewer.md 步骤 2 新增「测试变更合法性审查」维度（独立 agent 语义判定）
+- 根因：机器判据（测试文件变更 >= 阈值 → 早停）无法区分合法适配和篡改，3 次误杀（L3 适配/删测试/需求翻转）
+- 验证条件：**2026-07-15 前无 reviewer 漏判真篡改 → 删除本条目**。漏判 → 评估是否需要轻量机器护栏（如 assert 总数下降超 50% 时警告）
+- 优先级：观察（已修，等验证）
 
 ## 2026-06-18 [观察期] tester 写主仓 — 策略 5 phase 过滤已修，待验证两周不复现
 

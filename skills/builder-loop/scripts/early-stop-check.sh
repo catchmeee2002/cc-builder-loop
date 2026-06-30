@@ -5,7 +5,7 @@
 #
 # 输出（stdout）：
 #   CONTINUE                  ← 继续循环
-#   STOP <reason>             ← 早停，reason ∈ {max_iter, no_progress, error_growth, suspected_test_tampering}
+#   STOP <reason>             ← 早停，reason ∈ {max_iter, no_progress, error_growth}
 #
 # 退出码：始终 0（判据本身不算失败）
 
@@ -67,29 +67,6 @@ if [ -n "${LAST_COUNT:-}" ] && [ "${LAST_COUNT:-0}" -gt 0 ]; then
   THRESHOLD=$(( LAST_COUNT * 3 / 2 ))
   if [ "$CUR_COUNT" -gt "$THRESHOLD" ]; then
     echo "STOP error_growth"
-    exit 0
-  fi
-fi
-
-# ---- 5. 保护路径作弊检测（V3.2 A+D: 只抓删除/弱化，修测试不算） ----
-# builder 修 tester 写的测试是正常流程
-# 可疑信号：测试文件被删 / assert 被移除 / skip/xfail 被添加
-TEST_DIRS_CSV="$(get_field test_dirs || echo '')"
-if [ -n "$TEST_DIRS_CSV" ]; then
-  IFS=',' read -ra TEST_DIRS <<< "$TEST_DIRS_CSV"
-  TAMPERING_SIGNALS=0
-  for d in "${TEST_DIRS[@]}"; do
-    [ -z "$d" ] && continue
-    # 信号 1: 测试文件被删除
-    n_deleted=$(git -C "$PROJECT_ROOT" diff --diff-filter=D --name-only HEAD -- "$d" 2>/dev/null | wc -l)
-    TAMPERING_SIGNALS=$(( TAMPERING_SIGNALS + n_deleted ))
-    # 信号 2: 断言被弱化（assert 行被删 或 skip/xfail 被加，只看修改的文件，删除的已在信号 1 计数）
-    n_weakened=$(git -C "$PROJECT_ROOT" diff --diff-filter=M HEAD -- "$d" 2>/dev/null \
-      | grep -E '^-.*\bassert|^\+.*(pytest\.mark\.(skip|xfail|skipif)|@unittest\.skip|\bxfail\(|\bskip\()' 2>/dev/null | wc -l || true)
-    TAMPERING_SIGNALS=$(( TAMPERING_SIGNALS + n_weakened ))
-  done
-  if [ "$TAMPERING_SIGNALS" -ge 3 ]; then
-    echo "STOP suspected_test_tampering"
     exit 0
   fi
 fi

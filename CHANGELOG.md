@@ -2,6 +2,10 @@
 
 > 从 CLAUDE.md §5 外移。记录各版本交付的能力与关键实现细节。
 
+## V4.9 tampering 检测迁移到 reviewer 语义判定（2026-07-01）
+
+删除 `early-stop-check.sh` 的机器层 `suspected_test_tampering` 早停（section 5），改为 `reviewer.md` 步骤 2 新增「测试变更合法性审查」维度。消除 3 次误杀（L3 改动适配测试、删已删函数测试、需求翻转场景）。`loop.schema.yml` 删除 `early_stop.protected_path_changes` 字段。设计哲学依据：原则一层错位——语义判定不应伪装成机器判据，reviewer 独立 agent 是正确的判定层。
+
 ## V4.8 E2E 沉淀 + 分级（2026-07-01）
 
 **1. planner YAML 统一**：plan `<!-- e2e-cases -->` 标签格式从 markdown 自然语言统一为 YAML（id/input/hard_rules/llm_judge/level），消除 tester 解析转换成本。
