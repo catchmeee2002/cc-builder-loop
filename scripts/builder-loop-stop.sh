@@ -538,10 +538,13 @@ if [ "$LAST_LINE" = "PASS" ]; then
     PLAN_PATH="$(grep -E '^e2e_plan_path:' "$STATE_FILE" 2>/dev/null | head -1 | sed -E 's/^e2e_plan_path:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' || echo "")"
   fi
 
-  # ---- V4.8: read e2e_cases_path from loop.yml ----
+  # ---- V4.8: read e2e_cases_path and e2e_level from loop.yml ----
   E2E_CASES_PATH=""
+  E2E_LEVEL="full"
   if [ -f "${PROJECT_ROOT}/.claude/loop.yml" ]; then
     E2E_CASES_PATH="$(grep -E '^e2e_cases_path:' "${PROJECT_ROOT}/.claude/loop.yml" 2>/dev/null | head -1 | sed -E 's/^e2e_cases_path:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' || echo "")"
+    _lvl="$(grep -E '^e2e_level:' "${PROJECT_ROOT}/.claude/loop.yml" 2>/dev/null | head -1 | sed -E 's/^e2e_level:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' || echo "")"
+    [ -n "$_lvl" ] && E2E_LEVEL="$_lvl"
   fi
 
   # ---- V3.8: e2e behavioral verification ----
@@ -587,6 +590,7 @@ tester_agent_id=${_TESTER_AID}
    - 如果 SendMessage 失败，fallback 到 Agent(subagent_type: "tester") 全量重跑
    - worktree_path: ${RUN_CWD}
    - e2e_cases_path: ${E2E_CASES_PATH}
+   - e2e_level: ${E2E_LEVEL}
 2. tester 报 E2E_SUMMARY: all_pass → 用 python3 写 e2e_verified_head 到 state 文件：
    STATE_FILE=${STATE_FILE}
    写入字段：e2e_verified_head: "${CURRENT_HEAD}"
@@ -605,6 +609,7 @@ E2EEOF
    - e2e_cases（以下用例文本）
    - worktree_path: ${RUN_CWD}
    - e2e_cases_path: ${E2E_CASES_PATH}
+   - e2e_level: ${E2E_LEVEL}
 2. tester 报 E2E_SUMMARY: all_pass → 用 python3 写 e2e_verified_head 到 state 文件：
    STATE_FILE=${STATE_FILE}
    写入字段：e2e_verified_head: "${CURRENT_HEAD}"

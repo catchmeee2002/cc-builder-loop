@@ -152,7 +152,7 @@ TESTER_SUMMARY: 已写测试但发现疑似缺陷 | 缺陷: {file:line 描述} |
 
 条件：E2E_SUMMARY = all_pass 且 `e2e_cases_path` 非空。
 
-1. 读项目已有 YAML（`worktree_path / e2e_cases_path`，文件不存在则视为空集）
+1. 定位 YAML 路径：`worktree_path` 非空 → `worktree_path/e2e_cases_path`；`worktree_path` 为空（bare 模式）→ 以 CWD 为根拼接 `e2e_cases_path`。文件不存在则视为空集
 2. 提取已有 case 的 id 集合
 3. 逐条 plan case：
    - id 已存在 → 跳过（不覆盖）

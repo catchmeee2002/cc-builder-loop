@@ -106,6 +106,14 @@ e2e_cases_path:
     未设置（空字符串）→ 跳过沉淀。
     YAML 格式：每条 case 含 id / input / hard_rules / llm_judge / level 字段。
 
+e2e_level:
+  type: enum
+  values: [fast, full]
+  default: "full"
+  description: |
+    e2e 验收 level 过滤。fast = 只跑 level=fast 的 case（L1 硬规则，无 LLM judge）；
+    full = 跑所有 case（默认）。stop hook 读此值传给 tester。
+
 # ============================================================
 # 项目目录布局（用于隔离与保护）
 # 全部留空 → setup-builder-loop.sh 自动探测常见模式

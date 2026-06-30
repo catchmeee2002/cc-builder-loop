@@ -87,9 +87,9 @@ description: "进入 Builder 模式 — 复杂任务先计划后动手，完成�
 > **⛔ Abandon loop 关键词识别（V2.6）**：仅在收到 stop hook `[builder-loop ...]` stderr 注入后的**下一轮** user reply 中识别。白名单：「停下loop / 停掉loop / 停止loop / 中止loop / abandon loop」（必须含 "loop" 或 "abandon" 锚词；单独「停了」不识别）。命中 → AskUserQuestion 单确认 reason → 用户确认后调 `bash ~/.claude/skills/builder-loop/scripts/abandon-loop.sh "<state_file>" "<reason>"`。归档后 worktree + branch 保留供用户手动 cherry-pick。
 
 > **V3.8 E2E 验证请求处理**：stop hook 消息含 `端到端验收用例` 时：
-> 1. 从消息中提取 `e2e_cases`（`端到端验收用例：` 之后的全部文本）和 `worktree_path`
+> 1. 从消息中提取 `e2e_cases`（`端到端验收用例：` 之后的全部文本）、`worktree_path`、`e2e_cases_path`、`e2e_level`
 > 2. **V4.3 续接路径**：消息含 `tester_agent_id=<id>` → 用 `SendMessage(to: "<id>", summary: "rerun failed e2e cases")` 续接已有 tester，只传失败用例。SendMessage 报错 / 无 E2E_SUMMARY 响应 → fallback 到 2b 全量重跑
-> 2b. **首次路径**：消息不含 `tester_agent_id` → spawn tester subagent（同步），传 `e2e_cases` 和 `worktree_path`
+> 2b. **首次路径**：消息不含 `tester_agent_id` → spawn tester subagent（同步），传 `e2e_cases`、`worktree_path`、`e2e_cases_path`、`e2e_level`
 > 3. tester 输出 `E2E_SUMMARY: all_pass` → 从消息中提取 STATE_FILE 和 e2e_verified_head 值，用 python3 写入 state（不修改代码，让 stop hook 下轮跳过 e2e 直接进 reviewer）
 > 4. tester 输出 `E2E_SUMMARY: has_failure` → 根据 `E2E_RESULT` 中的 `[FAIL]` 条目修改代码
 
