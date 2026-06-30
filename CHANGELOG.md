@@ -2,6 +2,16 @@
 
 > 从 CLAUDE.md §5 外移。记录各版本交付的能力与关键实现细节。
 
+## V4.8 E2E 沉淀 + 分级（2026-07-01）
+
+**1. planner YAML 统一**：plan `<!-- e2e-cases -->` 标签格式从 markdown 自然语言统一为 YAML（id/input/hard_rules/llm_judge/level），消除 tester 解析转换成本。
+
+**2. tester 沉淀步骤**：E2E 验收 all_pass 后，读 `e2e_cases_path`（从 loop.yml 配置）→ 去重 → 补全 hard_rules（从执行结果提取 actual tool_calls/steps）→ 自动标注 level → append 到项目回归集 YAML。输出 `E2E_SEDIMENT: N new cases appended`。
+
+**3. level 分级过滤**：case 加 `level: fast|full` 字段。tester 根据 `e2e_level` 参数过滤 case（fast=只跑 L1 硬规则，full=全部）。PA Bot `e2e_agent_test.py` 同步支持 `--level` 参数。
+
+**4. loop.yml 新字段**：`e2e_cases_path`（回归集路径）+ `e2e_level`（过滤级别，默认 full）。stop hook inject 消息传递两个字段给 tester。
+
 ## V4.7 doc-lint / diff-level-check 默认 DIFF_BASE 修正（2026-06-30）
 
 默认 DIFF_BASE 从 `HEAD~1` 改为 `HEAD`（只看 staged/unstaged）。`HEAD~1` 会把 loop 前的无关 commit（如 gitignore 瘦身）拉入判据输入，导致 339 处误报阻断 loop。SKILL.md pass_cmd 示例同步去掉显式 `HEAD~1`。fixture 各加 2 个 staged 场景用例（含 HEAD vs HEAD~1 回归守卫）。

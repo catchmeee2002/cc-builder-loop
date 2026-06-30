@@ -5,6 +5,30 @@
 > 已消化条目直接删除（代码是 ground truth），不标 ✅。已关闭条目见 [CHANGELOG](CHANGELOG.md)。
 
 
+## 2026-07-01 extract-e2e-cases.sh 不识别 markdown 代码块，把 plan 里的格式示例当真 case 提取
+- 触发场景：cc-builder-loop 项目自身。plan 文件 `20260630-e2e-sediment-and-level.md` 在「planner Round 7 输出格式变更」段用 markdown 代码块（` ```markdown `）包裹了 `<!-- e2e-cases -->` 标签作为格式示例。stop hook 调 `extract-e2e-cases.sh` 提取到了示例里的 case（`reminder-basic`），注入 e2e 验收请求
+- 现象：stop hook 要求对 cc-builder-loop 项目执行 PA Bot 的 e2e case（"5分钟后提醒我喝水"），明显不属于本项目。连续两轮误触发，需手动写 e2e_verified_head 跳过
+- 根因：`extract-e2e-cases.sh` 用 sed 按行匹配 `<!-- e2e-cases -->`，不感知 markdown 代码块（` ``` ` 包裹）。代码块内的标签与真标签在 sed 层面无区别
+- 优先级：低（只在 plan 里写了格式示例时触发，手动跳过即可；但每次都要跳两轮 stop hook 有些烦）
+
+## 2026-07-01 suspected_test_tampering 误判：fork 修测试适配新 API 被当篡改
+- 触发场景：novel-writer 项目 M2 全量追加迁移。L3 架构改动（删通道 + 改属性键名），fork subagent 在后台修改 9 个测试文件适配新 API（property key 从 power_level → fold_realm，删 entity_property_updates fixture 等）。stop hook 在 fork 写文件期间触发
+- 现象：stop hook 检测到测试文件变更，判定 suspected_test_tampering，iter 1 早停。实际是合法的接口适配改动
+- 根因：tampering 检测逻辑无法区分"篡改测试绕过门禁"和"正常适配新接口的测试修改"。L3 级改动必然伴随测试文件修改——如果 source 和 test 同时有 dirty 变更，且 source 变更是"删旧接口/改签名"，test 变更是"适配新接口"，这不是 tampering
+- 优先级：高（L3 级改动必触发，导致 loop 对大改动完全不可用）
+
+## 2026-07-01 no_progress 误判：fork 后台改文档时 stop hook 提前触发
+- 触发场景：同上项目。reviewer 🔴 要求删 6 处文档中的过时引用。spawn fork 修文档，fork 还在 Edit 文件时 stop hook 触发第二轮
+- 现象：stop hook 发现 doc-lint 错误 hash 与上轮相同，判定 no_progress，iter 2 早停。实际 fork 的改动还没落盘
+- 根因：stop hook 是 CC 消息级同步触发的——builder 回复一条消息就触发一次。当 builder 回复"fork 在改"这条消息时 hook 立即跑，但 fork 是异步的，改动还没写完。hook 看到的是旧快照
+- 优先级：中（fork 并行工作模式下必现；workaround 是 builder 等 fork 完成再说话，但这违背并行工作的初衷）
+
+## 2026-07-01 删测试类/方法也触发 suspected_test_tampering
+- 触发场景：同上项目。删除了源码中的 check_irreversible_state 函数后，对应的 3 个测试类（TestCheckIrreversibleState / TestRunAllWithIrreversible / TestValidatorIssueRuleField）也需要删除。删除后 stop hook 再次判定 tampering
+- 现象：与第一条同类但场景不同——不是改测试内容，是删测试。删除已删函数的测试是唯一正确的做法
+- 根因：同第一条。tampering 检测把"测试文件有任何变更"等同于"篡改"
+- 优先级：高（同第一条，合并计数）
+
 ## 2026-06-24 L1 phase 闸 exit 0 时完全静默，builder 误判"自愈失效"手动干预
 - 触发场景：divine-word 项目 bare 模式。PASS + auto-commit 后 phase=passed_pending_review，reviewer 在后台运行。builder 看到连续两轮 Stop hook 静默 exit 0（17:50 + 17:56），误以为 L1 自愈机制失效，手动 python3 改 phase=active 恢复
 - 现象：builder 认为"hook 没自愈"，实际 debug log 确认 L1 gate 两次都正确判断"无 dirty"（auto-commit 已清空 dirty，reviewer 还没返回 builder 还没 Edit）。如果不手动干预，reviewer 返回 → builder Edit → dirty 出现 → 下一轮 L1 自愈 → PASS_CMD，流程会自然恢复
@@ -15,19 +39,6 @@
 - 触发场景：同上项目。reviewer 🔴 修复后 stop hook 做了新的 auto-commit（HEAD 从 017b3c3 变为 a45ad21）。e2e_verified_head 仍指向旧 HEAD，stop hook 检测到不匹配，要求再跑一次完整 e2e 套件
 - 现象：3 行非破坏性修复（冲突 VFX 修 bug 让原本不工作的功能能工作、热力图数据源从 count 改为真实 piety 值、装饰物锚定从信徒改为建筑）触发了第三轮全量 e2e 验收（每轮 30 分钟、150k+ tokens）。builder 判断这些修复不可能让之前 9 个 PASS 的用例回退，选择直接写入 e2e_verified_head 跳过
 - 根因：e2e_verified_head 机制是 HEAD 精确匹配，任何 commit 变化都失效。没有"增量验证"（只跑受影响用例）或"小修免跑"（reviewer 修复级别的变更跳过 e2e）机制
-- 优先级：中
-
-
-## 2026-06-23 E2E 验收 case 沉淀应由 tester 而非 builder 执行
-- 触发场景：Personal Assistant Bot 项目用 V3.8 e2e-cases 做任务验收 + 项目自有 e2e_cases.yaml 做回归。验收通过后需要把临时 case 沉淀为永久回归 case。当前流程设想由 builder 转写，但 builder 手里没有执行现场数据（实际调了哪些工具、走了几步），只能从自然语言描述猜 hard_rules
-- 现象：tester 刚跑完验收，手里有地面真值（实际 tool_calls、steps、response），但验收完就结束了，没有沉淀动作。builder 收到 pass 报告后要重新理解 case 语义再猜着写 YAML，多一次语义转手必然损失信息
-- 根因：tester 的职责止于"验收判 pass/fail"，没有"从执行结果提取 hard_rules 并追加到项目回归集"这个能力。沉淀是验证的自然延伸（谁验证谁沉淀），不是编排的延伸（builder 编排）
-- 优先级：中
-
-## 2026-06-23 E2E 验收 case 积累后需要分级（fast/full）控制迭代成本
-- 触发场景：同上项目。e2e_cases.yaml 每条 case 需要重启 bot + 1 次 bot LLM 调用 + 0~1 次 judge LLM 调用。7 条 case 全量跑 ~10 分钟。预计积累到 30+ 条后每次 PASS_CMD 迭代全跑不现实
-- 现象：纯 L1 硬规则 case（llm_judge: null）成本低（只需 bot LLM），L2 语义判据 case 成本高（多一次 judge LLM）。但当前没有分级机制，全量或全不跑
-- 根因：e2e case 没有 level 字段，harness 没有 --level 过滤参数。沉淀时 tester 可以根据 case 是否含 llm_judge 自动标级
 - 优先级：中
 
 
@@ -498,6 +509,12 @@
 ---
 
 ## Archived（已消化/已修复）
+
+### 2026-06-23 E2E case 沉淀应由 tester 而非 builder 执行 — V4.8 tester 沉淀步骤
+- 修复内容：tester E2E 验收模式 all_pass 后新增沉淀步骤（读 e2e_cases_path → 去重 → 补全 hard_rules → append）；planner e2e-cases 标签统一 YAML 格式
+
+### 2026-06-23 E2E case 分级（fast/full）控制迭代成本 — V4.8 level 字段 + --level 参数
+- 修复内容：case 加 level: fast|full 字段；tester 根据 e2e_level 参数过滤；PA Bot harness 支持 --level；loop.yml 新增 e2e_cases_path + e2e_level 字段
 
 ### 2026-06-29 CC 内置 EnterWorktree 默认从 main 创建 — V4.6 bgIsolation: none 防御
 - 修复内容：setup 自动在项目 .claude/settings.json 写入 bgIsolation: "none"，禁用 CC 内置 worktree 机制，从根源消除冲突

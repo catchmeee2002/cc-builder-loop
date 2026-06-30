@@ -4,9 +4,9 @@
 
 > 覆写式维护（§8）：只保留当前态，历史进 CHANGELOG。
 
-## 当前阶段：V4.7 已发布，继续烘烤（2026-06-30 起）
+## 当前阶段：V4.8 已发布（2026-07-01 起）
 
-V4.7 修复 doc-lint / diff-level-check 默认 DIFF_BASE（HEAD~1 → HEAD），消除无关 commit 误报。
+V4.8 e2e 沉淀+分级：tester all_pass 后自动沉淀 plan case 到项目回归集；case 加 level 字段支持 fast/full 过滤。
 
 **观察期**：
 - tester 写主仓：策略 5 phase 过滤已修，**2026-07-02 前无复现 → 确认关闭**
