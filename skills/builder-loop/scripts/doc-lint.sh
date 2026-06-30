@@ -3,14 +3,14 @@
 #
 # 用法：bash doc-lint.sh [project_root] [diff_base]
 #   project_root: 项目根目录（默认 CWD）
-#   diff_base:    git diff 基准（默认 HEAD~1）
+#   diff_base:    git diff 基准（默认 HEAD，只看 staged/unstaged）
 #
 # 退出码：0=无过时引用  1=有过时引用  2=参数错误
 
 set -uo pipefail
 
 PROJECT_ROOT="${1:-$(pwd)}"
-DIFF_BASE="${2:-HEAD~1}"
+DIFF_BASE="${2:-HEAD}"
 
 if [ ! -d "$PROJECT_ROOT/.git" ] && ! git -C "$PROJECT_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   echo "[doc-lint] 非 git 仓库，跳过" >&2

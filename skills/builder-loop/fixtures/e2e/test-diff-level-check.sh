@@ -116,4 +116,39 @@ EC6=$?
 assert "Case 6 exit 1" "[ '$EC6' -eq 1 ]"
 assert "Case 6 输出含 do_cleanup" "echo '$OUT6' | grep -q 'do_cleanup'"
 
+# ============================================================
+# Case 7: staged 新函数 + 默认 HEAD → exit 1
+# ============================================================
+section "Case 7: staged new function with default HEAD → exit 1"
+env7=$(mk_py_repo)
+(cd "$env7" && cat > src/validator.py <<'PY'
+def validate_input(data):
+    return bool(data)
+PY
+git -C "$env7" add src/validator.py)
+OUT7=$(bash "$DLCHECK" "$env7" 2>/dev/null)
+EC7=$?
+assert "Case 7 exit 1" "[ '$EC7' -eq 1 ]"
+assert "Case 7 输出含 validate_input" "echo '$OUT7' | grep -q 'validate_input'"
+
+# ============================================================
+# Case 8: prior commit 加函数 + staged 无关改动 + 默认 HEAD → exit 0
+# 验证 HEAD vs HEAD~1 行为差异
+# ============================================================
+section "Case 8: prior commit added function + staged unrelated change → exit 0 with HEAD"
+env8=$(mk_py_repo)
+(cd "$env8" && cat > src/validator.py <<'PY'
+def validate_input(data):
+    return bool(data)
+PY
+git -C "$env8" add -A && git -C "$env8" -c core.hooksPath=/dev/null commit -q -m "chore(test): [cr_id_skip] Add validator"
+echo "# comment" >> "$env8/src/engine.py"
+git -C "$env8" add src/engine.py)
+OUT8_HEAD=$(bash "$DLCHECK" "$env8" 2>/dev/null)
+EC8_HEAD=$?
+assert "Case 8a exit 0 with default HEAD" "[ '$EC8_HEAD' -eq 0 ]"
+OUT8_OLD=$(bash "$DLCHECK" "$env8" "HEAD~1" 2>/dev/null)
+EC8_OLD=$?
+assert "Case 8b exit 1 with HEAD~1 (proves regression guard)" "[ '$EC8_OLD' -eq 1 ]"
+
 harness_report

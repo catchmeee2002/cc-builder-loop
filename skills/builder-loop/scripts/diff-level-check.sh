@@ -7,7 +7,7 @@
 set -uo pipefail
 
 PROJECT_ROOT="${1:-$(pwd)}"
-DIFF_BASE="${2:-HEAD~1}"
+DIFF_BASE="${2:-HEAD}"
 
 if ! git -C "$PROJECT_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   echo '{"level_signals":[],"count":0}'

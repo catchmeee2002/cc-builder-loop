@@ -217,4 +217,47 @@ OUT7=$(bash "$DOC_LINT" "$env7" "HEAD~1" 2>/dev/null)
 EC7=$?
 assert "Case 7 exit 0 (append/clear blacklisted)" "[ '$EC7' -eq 0 ]"
 
+# ============================================================
+# Case 8: staged 删除（未 commit）+ 默认 HEAD → exit 1
+# 模拟 pass_cmd 场景：builder 删了文件但还没 auto-commit
+# ============================================================
+section "Case 8: staged deletion with default HEAD → exit 1"
+env8=$(mk_lint_repo)
+(
+  cd "$env8"
+  rm src/engine.py
+  git add -A
+)
+OUT8=$(bash "$DOC_LINT" "$env8" 2>/dev/null)
+EC8=$?
+assert "Case 8 exit 1" "[ '$EC8' -eq 1 ]"
+assert "Case 8 输出含 save_chapter_snapshot" "echo '$OUT8' | grep -q 'save_chapter_snapshot'"
+
+# ============================================================
+# Case 9: prior commit 删函数 + staged 无关改动 + 默认 HEAD → exit 0
+# 验证 HEAD vs HEAD~1 行为差异：HEAD~1 会误报，HEAD 不会
+# ============================================================
+section "Case 9: prior commit removed function + staged unrelated change → exit 0 with HEAD"
+env9=$(mk_lint_repo)
+(
+  cd "$env9"
+  cat > src/engine.py <<'PY'
+def load_config():
+    pass
+
+class ChapterManager:
+    pass
+PY
+  git add -A
+  git -c core.hooksPath=/dev/null commit -q -m "chore(test): [cr_id_skip] Remove save_chapter_snapshot"
+  echo "# new section" >> README.md
+  git add README.md
+)
+OUT9_HEAD=$(bash "$DOC_LINT" "$env9" 2>/dev/null)
+EC9_HEAD=$?
+assert "Case 9a exit 0 with default HEAD" "[ '$EC9_HEAD' -eq 0 ]"
+OUT9_OLD=$(bash "$DOC_LINT" "$env9" "HEAD~1" 2>/dev/null)
+EC9_OLD=$?
+assert "Case 9b exit 1 with HEAD~1 (proves regression guard)" "[ '$EC9_OLD' -eq 1 ]"
+
 harness_report

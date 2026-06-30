@@ -5,6 +5,12 @@
 > 已消化条目直接删除（代码是 ground truth），不标 ✅。已关闭条目见 [CHANGELOG](CHANGELOG.md)。
 
 
+## 2026-06-29 CC 内置 EnterWorktree 默认从 main 创建，与 builder-loop setup 脚本行为不一致
+- 触发场景：novel-writer 项目，长期在 `feat/narrative-engine-v2` 分支开发。后台任务（bgIsolation 守卫）要求先进 worktree 才能 Edit。调用 CC 内置 `EnterWorktree` 创建 worktree 后，发现目标文件（extraction.py 等）不存在——worktree 基于 main 创建，main 分支没有这些文件
+- 现象：①EnterWorktree 创建的 worktree 缺少 feat 分支的全部业务代码（novel_writer/ 目录结构完全不同）②改用 `git worktree add <path> -b <branch> feat/narrative-engine-v2` 手动创建，因仓库 615 个文件 checkout 超时（2 分钟跑到 50%）③最终通过 settings.json 设 `bgIsolation: "none"` 绕过，直接在主仓编辑
+- 根因：CC `EnterWorktree` 默认 `worktree.baseRef: "fresh"` = 从 `origin/<default-branch>`（main）创建分支。builder-loop 的 `setup-builder-loop.sh:333` 用 `git worktree add -b "$WORKTREE_BRANCH" "$WORKTREE_PATH" HEAD`——从当前 HEAD 创建。两套机制 base ref 默认值不一致。长期在非 main 分支开发的项目，CC 内置方式会创建出"错误的 worktree"
+- 优先级：低（用户可通过 settings.json `worktree.baseRef: "head"` 自行修复；builder-loop 自身不受影响因为用 git CLI 而非 EnterWorktree）
+
 ## 2026-06-24 L1 phase 闸 exit 0 时完全静默，builder 误判"自愈失效"手动干预
 - 触发场景：divine-word 项目 bare 模式。PASS + auto-commit 后 phase=passed_pending_review，reviewer 在后台运行。builder 看到连续两轮 Stop hook 静默 exit 0（17:50 + 17:56），误以为 L1 自愈机制失效，手动 python3 改 phase=active 恢复
 - 现象：builder 认为"hook 没自愈"，实际 debug log 确认 L1 gate 两次都正确判断"无 dirty"（auto-commit 已清空 dirty，reviewer 还没返回 builder 还没 Edit）。如果不手动干预，reviewer 返回 → builder Edit → dirty 出现 → 下一轮 L1 自愈 → PASS_CMD，流程会自然恢复
@@ -30,12 +36,6 @@
 - 根因：e2e case 没有 level 字段，harness 没有 --level 过滤参数。沉淀时 tester 可以根据 case 是否含 llm_judge 自动标级
 - 优先级：中
 
-
-## 2026-06-21 Builder 步骤 3.5 文档评估允许自证、无机械校验
-- 触发场景：divine-word 像素美术升级任务，新增 tools/、PreloadScene、config/spriteConfig、public/assets/ 四个目录/文件。Builder 在步骤 3.5 输出 `doc-A: 命中但已更新，无需 doc-maintainer`，实际 CLAUDE.md 项目结构未包含这些新条目
-- 现象：commit 后用户手动检查发现 CLAUDE.md 缺失新增模块，builder 的"已更新"声明与文件实际内容不符
-- 根因：步骤 3.5 的"逐项检查"由 builder 自行声称结果，没有机械验证（如 diff changed_files 与 CLAUDE.md 项目结构段做交叉比对）。与 pass_cmd（代码跑出结果不可假）形成对比，doc 评估是纯主观判断，可错且无纠错手段
-- 优先级：中
 
 ## 2026-06-20 Planner Round 7 追问不完整——漏问 e2e 验证和测试深度
 - 触发场景：divine-word 项目 /planner 走完整流程 7 轮追问，Round 7 只问了"EndingScene 验证方式"，未按规定追问"是否需要测试计划+深度偏好"和"是否需要端到端行为验证"
@@ -121,7 +121,8 @@
   1. **no_progress 早停判据放宽**：当前看 `last_iter_head == HEAD`，但 worktree 模式下"是否有进展"应该看 worktree 内有没有 dirty 改动（`git -C <worktree_path> status --porcelain` 非空）而不是 HEAD。判据改成 `HEAD 未变 AND worktree 全 clean` 才算无进展
   2. **setup 完直接打印一个 `cd <worktree>` 提示 + 自动写入 .claude/builder-loop.local.md 让 stop hook 优先用 state 文件里的 worktree_path 而不是 cwd**（实际上 state 已经有 worktree_path 字段；stop hook 是不是没用？）
   3. **stop hook 行为兜底**：能从 builder-loop.local.md 或 state/*.yml 找出唯一 active worktree 时自动绑定（V2.4 策略 5 据说已实现，但本次没生效——值得排查 hook 是不是认了 owner_cwd 没去查 state）
-- 优先级：低（2026-06-15 验证：当前 CC 版本 L2B 闸已正确检查 worktree dirty；无法复现 CC 拦截 .claude/worktrees/ 路径。降级，复现时再修）
+- **2026-06-30 再次复现**（pc-ipc-toolkit 项目）：setup 创建 worktree 后 builder 在 Bash 里 `cd` 到 worktree，但 stop hook 用的是 session 级 CWD（主仓）。结果 stop hook **从头到尾没触发**，PASS_CMD 没跑过一次，loop 静默失效。builder 全程不知道 loop 没在跑，手动 shellcheck → 推远端 → 手动 commit + merge，loop 完全被绕过。与 2026-06-04 同根因，但这次更严重：上次 stop hook 至少触发了（只是 no_progress 误判），这次连触发都没有
+- 优先级：中（2026-06-30 复现，从低升回中。核心问题：setup 的 ⚠️ warning 不够——应该 hard block 或自动修正 CWD，而不是靠 builder 自觉 cd。stop hook 静默失效无任何反馈是最致命的）
 
 
 ## 2026-05-31 reviewer 对方法名存在性无校验能力，需项目侧基建兜底
@@ -503,6 +504,13 @@
 ---
 
 ## Archived（已消化/已修复）
+
+### 2026-06-30 doc-lint 默认 DIFF_BASE=HEAD~1 吃进无关 commit 导致 339 处误报 — 默认值改为 HEAD
+- 修复内容：doc-lint.sh / diff-level-check.sh 默认 DIFF_BASE 从 HEAD~1 改为 HEAD（只看 staged/unstaged）；SKILL.md 示例同步；fixture 加 Case 8/9 验证 staged 场景和无关 commit 隔离
+
+### 2026-06-21 Builder 步骤 3.5 文档评估允许自证、无机械校验 — V4.6 doc_freshness_check 修复
+- 修复版本：V4.6 diff-level-check 机械呈现 + doc_freshness_check
+- 修复内容：diff-level-check 输出 plan.md 存在性供 LLM 判断；doc_freshness_check 在步骤 3.5.5 做机械校验，禁止 builder 自证
 
 ### 2026-06-24 e2e tester 失败重跑时每次 spawn 全新 agent，不复用已有 tester — V4.3 修复
 - 修复版本：V4.3 Subagent Identity & Resume
