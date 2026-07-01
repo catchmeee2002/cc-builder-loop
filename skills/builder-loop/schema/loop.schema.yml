@@ -124,7 +124,7 @@ layout:
     type: array
     default: []
     examples: [tests, test, spec, __tests__]
-    description: 测试目录。builder 修改这些路径下文件 ≥ early_stop.protected_path_changes 个 → 早停。
+    description: 测试目录。tester subagent 读隔离边界。测试变更合法性由 reviewer 语义判定。
   interface_dirs:
     type: array
     default: []
