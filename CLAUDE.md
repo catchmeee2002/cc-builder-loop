@@ -41,6 +41,7 @@
 - L1 `phase=passed_pending_review|e2e_pending` → 静默（dirty/新 commit 自愈回 active；e2e_pending + verified_head==HEAD 自愈回 active）
 - L2A 末尾 pending AskUserQuestion → 静默
 - L2B HEAD == last_iter_head + git status 空 → 静默
+- L2C fork subagent 锁存在 → 静默（fork 还在后台写文件，等完成再判）
 - L3 `.claude/builder-loop/<slug>.pause` 存在 → 静默
 
 **[技术债] active 字段下掉计划**：V3.0 起 hook 主判用 phase 字段，`active: true` 仅写不读做新决策。下掉计划见 [`improvements.md`](improvements.md) 「active 字段下掉计划」候选条目；时间窗 V3.x 某版本统一 grep 全仓引用清单后移除。**禁止**在新代码里读 active 字段做决策。

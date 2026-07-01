@@ -11,7 +11,7 @@
 
 # ---- 常量 ----
 
-BL_AGENT_WHITELIST="tester doc-maintainer arbiter reviewer"
+BL_AGENT_WHITELIST="tester doc-maintainer arbiter reviewer fork"
 BL_SYNC_AGENTS="tester doc-maintainer arbiter"
 
 _BL_LOCK_DIR="${ISOLATION_LOCK_DIR:-/tmp}"

@@ -2,6 +2,10 @@
 
 > 从 CLAUDE.md §5 外移。记录各版本交付的能力与关键实现细节。
 
+## V4.10 fork-aware stop hook（2026-07-02）
+
+stop hook 新增 L2C 闸：fork subagent 锁存在时静默 exit 0，等 fork 完成再判。解决 builder fork 后台改文件时 stop hook 提前触发导致 no_progress 误判的问题。`lock-utils.sh` 白名单加 `fork`，SubagentStart hook 自动为 fork 写锁，SubagentStop 自动清锁。
+
 ## V4.9 tampering 检测迁移到 reviewer 语义判定（2026-07-01）
 
 删除 `early-stop-check.sh` 的机器层 `suspected_test_tampering` 早停（section 5），改为 `reviewer.md` 步骤 2 新增「测试变更合法性审查」维度。消除 3 次误杀（L3 改动适配测试、删已删函数测试、需求翻转场景）。`loop.schema.yml` 删除 `early_stop.protected_path_changes` 字段。设计哲学依据：原则一层错位——语义判定不应伪装成机器判据，reviewer 独立 agent 是正确的判定层。

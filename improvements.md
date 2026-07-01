@@ -11,11 +11,12 @@
 - 根因：`extract-e2e-cases.sh` 用 sed 按行匹配 `<!-- e2e-cases -->`，不感知 markdown 代码块（` ``` ` 包裹）。代码块内的标签与真标签在 sed 层面无区别
 - 优先级：低（只在 plan 里写了格式示例时触发，手动跳过即可；但每次都要跳两轮 stop hook 有些烦）
 
-## 2026-07-01 no_progress 误判：fork 后台改文档时 stop hook 提前触发
-- 触发场景：同上项目。reviewer 🔴 要求删 6 处文档中的过时引用。spawn fork 修文档，fork 还在 Edit 文件时 stop hook 触发第二轮
-- 现象：stop hook 发现 doc-lint 错误 hash 与上轮相同，判定 no_progress，iter 2 早停。实际 fork 的改动还没落盘
-- 根因：stop hook 是 CC 消息级同步触发的——builder 回复一条消息就触发一次。当 builder 回复"fork 在改"这条消息时 hook 立即跑，但 fork 是异步的，改动还没写完。hook 看到的是旧快照
-- 优先级：中（fork 并行工作模式下必现；workaround 是 builder 等 fork 完成再说话，但这违背并行工作的初衷）
+## 2026-07-02 [观察期] fork-aware stop hook — L2C 闸已加，待验证 fork 并行场景不再误判
+
+- 修复：`lock-utils.sh` 白名单加 `fork`，SubagentStart hook 自动写锁；stop hook 新增 L2C 闸（fork 锁存在 → exit 0 静默等待）
+- 根因：stop hook 是消息级同步触发，builder spawn fork 后的消息立即触发 hook，但 fork 还在后台写文件。hook 看到旧快照判 no_progress 早停
+- 验证条件：**2026-07-16 前 fork 并行场景无 no_progress 误判 → 删除本条目**。复现 → 排查是否多 fork 并发导致锁覆盖
+- 优先级：观察（已修，等验证）
 
 ## 2026-06-24 L1 phase 闸 exit 0 时完全静默，builder 误判"自愈失效"手动干预
 - 触发场景：divine-word 项目 bare 模式。PASS + auto-commit 后 phase=passed_pending_review，reviewer 在后台运行。builder 看到连续两轮 Stop hook 静默 exit 0（17:50 + 17:56），误以为 L1 自愈机制失效，手动 python3 改 phase=active 恢复
