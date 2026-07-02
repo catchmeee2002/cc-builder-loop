@@ -130,13 +130,13 @@ reviewer_pending:
 # V4.0 plan 路径（plan 含 <!-- plan-checklist --> 或 <!-- e2e-cases --> 标签时写入）
 plan_path: ".claude/plans/20260620-xxx.md"      # 通用 plan 文件路径（setup 时写入）
 
-# V4.3 subagent identity 段（tester + reviewer 写入，SubagentStart/Stop hook 自动维护）
+# V4.3 subagent identity 段（builder spawn 时写入，用于 V4.3 续接路径）
 subagents:
   tester:
-    agent_id: "a0a40ff29f9fd0741"               # CC SubagentStart hook 提供的 agent_id
+    agent_id: "a0a40ff29f9fd0741"
     started_at: "2026-06-24T01:00:00+08:00"
-    status: "running"                            # running（SubagentStart 写）| idle（SubagentStop 写）
-    transcript_path: ""                          # SubagentStop 时写入 agent_transcript_path
+    status: "running"
+    transcript_path: ""
   reviewer:
     agent_id: "b1b51gg30g0ge1852"
     started_at: "..."
@@ -154,25 +154,9 @@ e2e_verified_head: "abc1234"                    # e2e 验收通过时的 HEAD co
 # judge_active_model / judge_consecutive_failures
 ```
 
-### Subagent 锁文件 schema（V3.5+）
+### Subagent 锁文件 schema（已退役）
 
-文件路径：`/tmp/cc-subagent-{session_id}-{agent_type}.lock`（或 `$ISOLATION_LOCK_DIR` 若已设定）
-
-文件格式（YAML）：
-```yaml
-session_id: "abc1234def"              # CC session ID
-agent_type: "tester"                  # managed agent 类型（tester / doc-maintainer / arbiter / reviewer）
-start_ts: 1718374800                  # 锁创建时间戳（秒）
-pid: 12345                            # hook 进程 ID
-```
-
-**V3.5 主要变更**：
-
-- **旧格式**（V3.4-）：`/tmp/cc-subagent-{session_id}.lock`（单一锁文件，所有 agent 共用）
-- **新格式**（V3.5+）：`/tmp/cc-subagent-{session_id}-{agent_type}.lock`（按 agent_type 分离，支持并发不同 agent）
-- **后向兼容**：subagent-lock-check.sh 和清理脚本都识别旧格式，不强制迁移；旧 lock 文件 TTL 1800s（30min）自动清理
-
-> Managed agent 白名单、lock-utils 公共函数库已在 V5.0 退役，见 [CHANGELOG V5.0](../../CHANGELOG.md)。
+> V5.0 隔离范式变更：per-agent-type 锁机制已整体退役，见 [CHANGELOG V5.0](../../CHANGELOG.md)。
 
 ### 旧 schema 迁移
 

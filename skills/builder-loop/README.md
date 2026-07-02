@@ -95,14 +95,7 @@ subagent 强隔离通过多个 hook 脚本 + per-agent-type 锁文件实现。�
 
 ```bash
 # 锁文件位置（V3.5+ 按 agent_type 分离）
-ls -la /tmp/cc-subagent-*.lock
-# 示例：/tmp/cc-subagent-abc1234def-tester.lock （session_id-agent_type）
-
-# 查看锁文件内容
-cat /tmp/cc-subagent-<session_id>-<agent_type>.lock
-# 输出字段：session_id / agent_type / start_ts / pid
-
-# V5.0: 认身份隔离 hook（SubagentStart/Stop、tester-lock-check、worktree-write-guard、lock-utils）已退役
+# V5.0: 认身份隔离 hook 已退役，锁文件不再产生
 # 保留的日志：stop hook debug log
 tail -f ~/.claude/logs/stop-hook-debug.log
 ```
