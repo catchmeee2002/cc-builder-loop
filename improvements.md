@@ -4,6 +4,12 @@
 > **只记事实，不写建议方向**——loop 侧开发者拿到事实自己判断怎么修。
 > 已消化条目直接删除（代码是 ground truth），不标 ✅。已关闭条目见 [CHANGELOG](CHANGELOG.md)。
 
+## 2026-07-02 fork subagent 批量改测试文件漏改导致 PASS_CMD 失败
+- 触发场景：builder 用 fork subagent 批量替换 4 个测试文件中的 `state_after="X"` → `state_after=["X"]`。fork prompt 列了 4 个文件名但没列每个文件的命中数。fork 完成后 builder 没二次 grep 校验覆盖率，直接等 stop hook。
+- 现象：`test_llm_verify_secret_revealed.py` 的 `_make_spine` 方法里 2 处 `state_after="..."` 被 fork 漏掉（fork 只改了该文件中它认为需要改的 2 处，另外 2 处在共享 helper `_make_spine` 里没被识别）。PASS_CMD stage=test 6 个用例 FAIL。
+- 根因：fork subagent 继承上下文但不保证覆盖所有文件命中点——它按自己的理解筛选要改的位置，没有机械全覆盖保证。builder 也没在 fork 完成后跑 `grep -c` 确认剩余命中数=0。
+- 优先级：中
+
 
 ## 2026-07-01 extract-e2e-cases.sh 不识别 markdown 代码块，把 plan 里的格式示例当真 case 提取
 - 触发场景：cc-builder-loop 项目自身。plan 文件 `20260630-e2e-sediment-and-level.md` 在「planner Round 7 输出格式变更」段用 markdown 代码块（` ```markdown `）包裹了 `<!-- e2e-cases -->` 标签作为格式示例。stop hook 调 `extract-e2e-cases.sh` 提取到了示例里的 case（`reminder-basic`），注入 e2e 验收请求
@@ -45,12 +51,6 @@
 - 验证条件：**2026-07-15 前无 reviewer 漏判真篡改 → 删除本条目**。漏判 → 评估是否需要轻量机器护栏（如 assert 总数下降超 50% 时警告）
 - 优先级：观察（已修，等验证）
 
-## 2026-06-18 [观察期] tester 写主仓 — 策略 5 phase 过滤已修，待验证两周不复现
-
-- 修复：locate-state.sh 策略 5 从只匹配 `phase=active` 扩展为 `active + passed_pending_review`；subagent-start-guard additionalContext 注入同步扩展
-- 根因：tester 在 `passed_pending_review` 阶段 spawn 时，locate-state.sh 策略 5 不匹配 → SubagentStart 不写 lock → write-guard 无锁走 builder 宽松模式
-- 验证条件：**2026-07-02 前无复现 → 删除本条目**。复现 → 重新立项排查
-- 优先级：观察（已修，等验证）
 
 
 
