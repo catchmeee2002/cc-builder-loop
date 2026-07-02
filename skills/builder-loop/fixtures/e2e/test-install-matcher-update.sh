@@ -3,13 +3,13 @@
 #
 # 场景：
 #   - 临时 HOME + 临时 install.sh 副本
-#   - 第一次 install：matcher = "Read|Grep|Glob"
-#   - sed 改 install.sh 副本，让 tester-lock-check.sh 那行的 matcher 变 "Read|Grep|Glob|WebFetch"
+#   - 第一次 install：reviewer-timing-check.sh matcher = "Agent"
+#   - sed 改 install.sh 副本，让 reviewer-timing-check.sh 那行的 matcher 变 "Agent|Workflow"
 #   - 第二次 install：应识别为 stale → 删旧 + 写新
 #
 # 期望：
-#   - 第二次 install 后 settings.json 里 tester-lock-check.sh 这条 matcher = "Read|Grep|Glob|WebFetch"
-#   - PreToolUse 数组里只有一条 tester-lock-check.sh（不是 stale + new 两条）
+#   - 第二次 install 后 settings.json 里 reviewer-timing-check.sh 这条 matcher = "Agent|Workflow"
+#   - PreToolUse 数组里只有一条 reviewer-timing-check.sh（不是 stale + new 两条）
 #   - install.sh 输出含 "1 条更新"
 #
 # 用法：bash test-install-matcher-update.sh
@@ -51,23 +51,23 @@ INSTALL1_EC=0
 HOME="$TMPHOME" bash "$TMPREPO/install.sh" >"$INSTALL1_LOG" 2>&1 || INSTALL1_EC=$?
 assert "第一次 install 退出码=0" "[ '$INSTALL1_EC' -eq 0 ]"
 
-# ---- 4. 断言：matcher = "Read|Grep|Glob" ----
+# ---- 4. 断言：matcher = "Agent" ----
 matcher_before=$(python3 -c '
 import json, sys
 cfg = json.load(open(sys.argv[1]))
 for item in cfg.get("hooks", {}).get("PreToolUse", []):
     for h in item.get("hooks", []):
-        if "tester-lock-check.sh" in h.get("command", ""):
+        if "reviewer-timing-check.sh" in h.get("command", ""):
             print(item.get("matcher", ""))
             sys.exit(0)
 sys.exit(1)
 ' "$TMPHOME/.claude/settings.json")
-assert "第一次 install 后 matcher=Read|Grep|Glob" "[ '$matcher_before' = 'Read|Grep|Glob' ]"
+assert "第一次 install 后 matcher=Agent" "[ '$matcher_before' = 'Agent' ]"
 
-# ---- 5. sed 改临时副本：matcher 加 |WebFetch ----
+# ---- 5. sed 改临时副本：matcher 加 |Workflow ----
 section "sed 改 matcher 后第二次 install"
-sed -i 's#"tester-lock-check.sh",      "Read|Grep|Glob"#"tester-lock-check.sh",      "Read|Grep|Glob|WebFetch"#' "$TMPREPO/install.sh"
-assert "sed 改成功" "grep -q 'Read|Grep|Glob|WebFetch' '$TMPREPO/install.sh'"
+sed -i 's#"reviewer-timing-check.sh",  "Agent"#"reviewer-timing-check.sh",  "Agent|Workflow"#' "$TMPREPO/install.sh"
+assert "sed 改成功" "grep -q 'Agent|Workflow' '$TMPREPO/install.sh'"
 
 # ---- 6. 第二次 install ----
 INSTALL2_LOG="$(mktemp)"
@@ -89,11 +89,11 @@ arr = cfg.get("hooks", {}).get("PreToolUse", [])
 matched = []
 for item in arr:
     for h in item.get("hooks", []):
-        if "tester-lock-check.sh" in h.get("command", ""):
+        if "reviewer-timing-check.sh" in h.get("command", ""):
             matched.append(item.get("matcher", ""))
 assert len(matched) == 1, f"expected 1 entry, got {len(matched)}"
-assert matched[0] == "Read|Grep|Glob|WebFetch", f"unexpected matcher: {matched[0]}"
+assert matched[0] == "Agent|Workflow", f"unexpected matcher: {matched[0]}"
 ' "$TMPHOME/.claude/settings.json" && matcher_check_ok=1
-assert "stale 条目被删 + 新条目写入（count=1, matcher=Read|Grep|Glob|WebFetch）" "[ '$matcher_check_ok' -eq 1 ]"
+assert "stale 条目被删 + 新条目写入（count=1, matcher=Agent|Workflow）" "[ '$matcher_check_ok' -eq 1 ]"
 
 harness_report

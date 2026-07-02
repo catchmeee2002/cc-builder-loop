@@ -57,15 +57,13 @@ INSTALL_EC=0
 ANTHROPIC_BASE_URL=http://127.0.0.1:4141 HOME="$TMPHOME" bash "$INSTALL_SCRIPT" >"$INSTALL_LOG" 2>&1 || INSTALL_EC=$?
 assert "install 退出码=0" "[ '$INSTALL_EC' -eq 0 ]"
 
-# ---- 3. 断言：install 后含 6 条 builder-loop hook ----
+# ---- 3. 断言：install 后含 2 条 builder-loop hook ----
 section "验证 install 后 hook 数量"
 bl_count=$(python3 -c '
 import json, sys
 cfg = json.load(open(sys.argv[1]))
 hooks = cfg.get("hooks", {})
-bl_scripts = ["builder-loop-stop.sh", "subagent-start-guard.sh",
-              "tester-lock-check.sh", "subagent-lock-clear.sh",
-              "worktree-write-guard.sh", "reviewer-timing-check.sh"]
+bl_scripts = ["builder-loop-stop.sh", "reviewer-timing-check.sh"]
 n = 0
 for arr in hooks.values():
     for item in arr:
@@ -74,7 +72,7 @@ for arr in hooks.values():
                 n += 1
 print(n)
 ' "$SETTINGS")
-assert "install 后 builder-loop hook 数=6" "[ '$bl_count' = '6' ]"
+assert "install 后 builder-loop hook 数=2" "[ '$bl_count' = '2' ]"
 
 # ---- 4. 断言：原 user hook 仍在 ----
 user_hook_ok=0

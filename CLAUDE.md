@@ -41,7 +41,6 @@
 - L1 `phase=passed_pending_review|e2e_pending` → 静默（dirty/新 commit 自愈回 active；e2e_pending + verified_head==HEAD 自愈回 active）
 - L2A 末尾 pending AskUserQuestion → 静默
 - L2B HEAD == last_iter_head + git status 空 → 静默
-- L2C fork subagent 锁存在 → 静默（fork 还在后台写文件，等完成再判）
 - L3 `.claude/builder-loop/<slug>.pause` 存在 → 静默
 
 **[技术债] active 字段下掉计划**：V3.0 起 hook 主判用 phase 字段，`active: true` 仅写不读做新决策。下掉计划见 [`improvements.md`](improvements.md) 「active 字段下掉计划」候选条目；时间窗 V3.x 某版本统一 grep 全仓引用清单后移除。**禁止**在新代码里读 active 字段做决策。
@@ -56,11 +55,6 @@ install.sh 创建以下软链，把仓库文件映射到 CC 运行时路径：
 |----------|-----------|---------|------|
 | `skills/builder-loop/` | `~/.claude/skills/builder-loop/` | `ln -sfn` 整目录 | CC 自动发现 SKILL.md |
 | `scripts/builder-loop-stop.sh` | `~/.claude/scripts/builder-loop-stop.sh` | `ln -sf` 逐文件 | Stop hook 入口 |
-| `scripts/subagent-start-guard.sh` | `~/.claude/scripts/subagent-start-guard.sh` | `ln -sf` 逐文件 | SubagentStart hook |
-| `scripts/lock-utils.sh` | `~/.claude/scripts/lock-utils.sh` | `ln -sf` 逐文件 | subagent lock 公共函数库 |
-| `scripts/tester-lock-check.sh` | `~/.claude/scripts/tester-lock-check.sh` | `ln -sf` 逐文件 | PreToolUse hook |
-| `scripts/subagent-lock-clear.sh` | `~/.claude/scripts/subagent-lock-clear.sh` | `ln -sf` 逐文件 | SubagentStop hook |
-| `scripts/worktree-write-guard.sh` | `~/.claude/scripts/worktree-write-guard.sh` | `ln -sf` 逐文件 | PreToolUse hook（Write\|Edit\|MultiEdit）|
 | `scripts/reviewer-timing-check.sh` | `~/.claude/scripts/reviewer-timing-check.sh` | `ln -sf` 逐文件 | PreToolUse hook（Agent） |
 | `agents/tester.md` | `~/.claude/agents/tester.md` | `ln -sf` 逐文件 | tester subagent |
 | `agents/arbiter.md` | `~/.claude/agents/arbiter.md` | `ln -sf` 逐文件 | 仲裁 subagent |
@@ -71,13 +65,9 @@ install.sh 创建以下软链，把仓库文件映射到 CC 运行时路径：
 | Hook 类型 | Matcher | 脚本 | 作用 | 方案 |
 |-----------|---------|------|------|------|
 | Stop | 无（全局） | builder-loop-stop.sh | 每次 CC Stop 时检查是否需要继续循环 | 全部 |
-| SubagentStart | 无（全局） | subagent-start-guard.sh | 白名单内 agent + active state 时写 per-type 锁 + 注入 worktree 边界上下文 | 全部 |
-| SubagentStop | 无（全局） | subagent-lock-clear.sh | 所有 managed subagent 结束时按 agent_type 精确清锁 | 全部 |
-| PreToolUse | `Read\|Grep\|Glob` | tester-lock-check.sh | 拦截 tester 对 source_dirs 的读操作 | 全部 |
-| PreToolUse | `Write\|Edit\|MultiEdit` | worktree-write-guard.sh | 分级写路径防护：subagent 严格白名单 / builder 宽松放行+日志 | 全部 |
 | PreToolUse | `Agent` | reviewer-timing-check.sh | 拦截 phase=active 期间的 reviewer spawn；phase=passed_pending_review 时放行 | 全部 |
 
-**方案说明**：install.sh 在运行时读 `ANTHROPIC_BASE_URL` env 识别方案 — localhost/127.0.0.1 → copilot；其他 → max。V3.1 起所有 6 个 hook 在两种方案下均注册（worktree-write-guard.sh 取代 copilot 专属的 tester-write-guard.sh）。
+**方案说明**：install.sh 在运行时读 `ANTHROPIC_BASE_URL` env 识别方案 — localhost/127.0.0.1 → copilot；其他 → max。当前仅 2 个 hook（builder-loop-stop.sh + reviewer-timing-check.sh）在两种方案下均注册。**认身份隔离 hook 已整体退役**——`subagent_type` 在真实环境读不到、隔离退地基，详见 [CHANGELOG 范式变更节](CHANGELOG.md)。
 
 ## 2. 部署指南
 
@@ -122,7 +112,7 @@ cc-builder-loop/
 ├── CLAUDE.md                   # 本文件
 ├── CHANGELOG.md                # 版本历史（V1.0~V3.7）
 ├── skills/builder-loop/        # CC skill（含 SKILL.md、scripts/、fixtures/e2e/、schema/、docs/）
-├── scripts/                    # Stop hook + subagent 启动守卫 + lock 公共库 + subagent 清锁 + tester 读隔离 + worktree 写边界守卫 + reviewer 时序检查（7 个 .sh）
+├── scripts/                    # Stop hook + reviewer 时序检查 + e2e case 提取（3 个 .sh）
 └── agents/                     # tester.md + arbiter.md
 ```
 

@@ -97,10 +97,6 @@ plan = os.environ.get('PLAN', 'copilot')
 # 未来加新方案：plan_filter 可写 'copilot,gemini' 逗号分隔，过滤改 plan in pf.split(',')
 expected_all = [
     ('Stop', 'builder-loop-stop.sh', None, ''),
-    ('SubagentStart', 'subagent-start-guard.sh', None, ''),
-    ('SubagentStop', 'tester-lock-clear.sh', None, ''),
-    ('PreToolUse', 'tester-lock-check.sh', 'Read|Grep|Glob', ''),
-    ('PreToolUse', 'worktree-write-guard.sh', 'Write|Edit|MultiEdit', ''),
     ('PreToolUse', 'reviewer-timing-check.sh', 'Agent', ''),
 ]
 expected = [(t, s, m) for (t, s, m, pf) in expected_all if (not pf) or pf == plan]
@@ -149,10 +145,6 @@ LINKS_PYTHON="$(cat <<'PYEOF'
 import json, os
 expected = [
     '~/.claude/scripts/builder-loop-stop.sh',
-    '~/.claude/scripts/subagent-start-guard.sh',
-    '~/.claude/scripts/tester-lock-check.sh',
-    '~/.claude/scripts/tester-lock-clear.sh',
-    '~/.claude/scripts/worktree-write-guard.sh',
     '~/.claude/scripts/reviewer-timing-check.sh',
     '~/.claude/skills/builder-loop',
     '~/.claude/agents/tester.md',

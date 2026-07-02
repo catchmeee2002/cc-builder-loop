@@ -157,7 +157,7 @@ START_HEAD="$(git -C "$PROJECT_ROOT" rev-parse --short HEAD 2>/dev/null || echo 
 
 # ---- plan_file 已移除（V3.6）----
 # 方案文件路径由 builder 对话上下文持有（/planner 产出或用户指定），不再由 setup 启发式猜测。
-# split-plan-by-role.sh 仍可用，builder 直接传对话中已知的路径调用。
+# builder 直接 Read 方案全文（role 视图隔离已退役，见 CHANGELOG 范式变更节）。
 
 # ---- worktree 真接入（V1.1 T2.2）----
 # 读 loop.yml.worktree.enabled（缺省 false）→ true 则 git worktree add

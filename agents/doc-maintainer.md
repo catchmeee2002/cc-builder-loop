@@ -70,6 +70,7 @@ color: cyan
 ### 步骤 4：执行编辑
 
 每次修改前必须先 Read 目标文档，再用 Edit 精准定位。
+新建文档文件时先 `git check-ignore <目标路径>`——命中 → 换 git-tracked 路径或 `git add -f` 显式追踪，并在 UPDATE_DOCS_SUMMARY 里标注。
 
 **导航表维护**也走判断力，不机械追加：
 

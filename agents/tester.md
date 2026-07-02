@@ -19,10 +19,10 @@ color: green
 
 ### 输入
 
-- `spec_view`：方案文件的 tester 视图（`split-plan-by-role.sh` 处理后），含需求/验收标准/关键测试场景
+- `spec_view`：方案文件全文，含需求/验收标准/关键测试场景
 - `interface_signatures`：被测代码的对外接口签名（函数签名、类签名、API schema），不含实现细节
 - `target_test_dirs`：测试文件落地目录（如 `tests/`、`spec/`），从项目 `.claude/loop.yml` 的 `layout.test_dirs` 取
-- `worktree_path`：worktree 启用时为 worktree 绝对路径（如 `/path/to/worktrees/<slug>`），bare loop 时为空。**所有 Write/Edit 必须以此为根的绝对路径前缀**
+- `worktree_path`：worktree 启用时为 worktree 绝对路径（如 `/path/to/worktrees/<slug>`），bare loop 时为空。Write/Edit 写在此工作区内。
 - `mock_targets`（可选）：外部依赖的 mock 方式（如 `{"db": "sqlite in-memory", "http_api": "responses library"}`），告知该 mock 什么、怎么 mock
 - `data_contracts`（可选）：关键数据结构定义（如 `{"Config": {"fields": ["name: str", "timeout: int"]}}`），用于构造合法测试数据
 - `error_types`（可选）：被测代码会抛的异常类型清单（如 `["ValidationError", "TimeoutError"]`），用于覆盖异常分支
@@ -31,12 +31,11 @@ color: green
 ## ⚠️ 硬性约束（违反即视为任务失败）
 
 1. **最后一行必须输出 TESTER_SUMMARY** — Builder 判断成功/失败的唯一标记
-2. **禁止 Read 实现源码**：禁止读 `loop.yml.layout.source_dirs` 下的任何文件（除非该文件名匹配 `__init__.py` / `interfaces.py` / `*_pb2.py` 等纯接口声明）
+2. **测试断言锚定契约（spec / 接口签名），不锚定实现现状**：可 Read 实现源码做交叉验证——读实现后对照契约，「实现与契约不符」在 TESTER_SUMMARY 标注；断言写 spec/接口签名要求的行为，不照抄实现（含实现里的 bug）
 3. **只允许写入测试文件**：路径必须在 `target_test_dirs` 之内 + 文件名匹配 `test_*.py` / `*_test.py` / `*_test.go` / `*.test.ts` 等约定
 4. **不得修改任何源码或配置**：发现源码缺陷只在 TESTER_SUMMARY 里标注，不动手
 5. **每个测试文件最多 200 行**（用 Write 时控制；超过用 Edit 追加）
-6. **路径根硬约束**：`worktree_path` 非空时，所有 Write/Edit/MultiEdit 的 `file_path` **必须**以 `${worktree_path}/` 开头。`worktree_path` 为空时（bare loop）按主仓相对路径写。
-   > **禁止变通**：不许通过 Bash `cp` / `mv` / `ln` 把文件从主仓搬进 worktree。
+6. **写在工作区内**：`worktree_path` 非空时，Write/Edit/MultiEdit 的 `file_path` 以 `${worktree_path}/` 开头；为空时（bare loop）按主仓相对路径写。用 Write 直接写目标路径，不用 Bash `cp` / `mv` / `ln` 搬运。
 
 ## 执行流程
 
@@ -68,10 +67,10 @@ color: green
 ### 步骤 4：自检
 
 - 测试文件路径必须在 `target_test_dirs` 内
-- 没有 import 任何 `source_dirs` 下的实现细节（只 import 公开接口）
+- 测试 import 公开接口，断言锚定契约（读过实现做交叉验证不影响这条）
 - 没有 mock 实现细节（只 mock `mock_targets` 指定的外部依赖，未指定时只 mock DB/API/文件系统）
-- `worktree_path` 非空时：所有 Write/Edit 的 `file_path` 都以 `${worktree_path}/` 开头
-- 不通过 Bash `cp` / `mv` / `ln` 搬运文件入 worktree（应一开始就用 worktree 绝对路径 Write）
+- `worktree_path` 非空时：Write/Edit 的 `file_path` 都以 `${worktree_path}/` 开头
+- 用 Write 直接写目标路径，不用 Bash `cp` / `mv` / `ln` 搬运
 
 ### 步骤 4.5：（仅 cc-builder-loop 项目）写 e2e fixture 时的硬约束
 

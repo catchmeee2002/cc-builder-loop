@@ -15,11 +15,9 @@ description: "进入 Builder 模式 — 复杂任务先计划后动手，完成�
 
 ---
 
-## 读方案文件时按角色视图过滤
+## 读方案文件
 
-读 `.claude/plans/*.md` 时，如果对话中持有方案文件路径（/planner 产出或用户指定），且项目接入了 builder-loop（`.claude/loop.yml` 存在）：
-- `bash ~/.claude/skills/builder-loop/scripts/split-plan-by-role.sh <方案路径> builder > /tmp/plan-builder-view.md`，Read 过滤后文件
-- 无方案文件 → 直接 Read 原方案（不做视图过滤）
+读 `.claude/plans/*.md` 时，如果对话中持有方案文件路径（/planner 产出或用户指定）→ 直接 Read 原方案全文。（role 视图已退役，见 CHANGELOG 范式变更节。）
 
 ---
 
@@ -114,7 +112,7 @@ description: "进入 Builder 模式 — 复杂任务先计划后动手，完成�
   - **PASS（worktree / bare 统一）**（Stop hook 消息含 `phase=passed_pending_review` + `state_file=<path>`）→ Read state.yml 拿 reviewer_pending 段（含 reviewer_files / report_path / diff_file / pass_start_head）。reviewer 通过后由 builder 主动调 `bash ~/.claude/skills/builder-loop/scripts/merge-and-cleanup.sh <state_file>`（worktree 模式 ff merge + 删 worktree + 删 state；bare 模式 stash drop + 删 state）
   - **非 loop 场景** → `git diff HEAD` 获取 diff（过大用 `--stat`）；自行拼 changed_files / report_path
 - changed_files 中不在 diff 里的 → `wc -l` 补全为新建文件
-- 对话中有方案路径时：`split-plan-by-role.sh <方案路径> shared > /tmp/spec-shared.md`
+- 对话中有方案路径时：直接 Read 方案全文作为 spec_shared
 - diff_summary 中，凡实施与方案不同的点，必须写明「选了什么 + 一句理由」（方案是假设不是契约，实施碰现实后调整是正常路径）
 - **review_focus**（spawn 前必填；L1 纯文案填 `"N/A"` 即可）：列出 (1) 改动函数的参数边界值（0 / 负数 / None / 空容器 / 边界相等），(2) builder 最担心的 1-5 个具体怀疑点（不是泛泛的"测覆盖"，而是「函数 X 与 Y 的状态字段是否对齐」这种点对点怀疑）
 - **V4.3 续接路径**：PASS 消息含 `reviewer_agent_id=<id>` → 用 `SendMessage(to: "<id>", summary: "recheck findings")` 续接已有 reviewer，传 diff_summary + review_focus。SendMessage 报错 / 无 REVIEW_SUMMARY 响应 → fallback 到下方新 spawn
@@ -154,7 +152,7 @@ description: "进入 Builder 模式 — 复杂任务先计划后动手，完成�
 
 分支：
 - **loop 活跃**（`bash ~/.claude/skills/builder-loop/scripts/locate-state.sh` 找到 `phase: "active"`）：
-  1. 对话中有方案路径时过滤 tester 视图（`split-plan-by-role.sh <方案路径> tester`），spawn tester（同步），传 spec_view / interface_signatures / target_test_dirs / missing_cases / mock_targets / data_contracts / error_types / worktree_path
+  1. 对话中有方案路径时把方案全文作为 spec_view 传入，spawn tester（同步），传 spec_view / interface_signatures / target_test_dirs / missing_cases / mock_targets / data_contracts / error_types / worktree_path
   2. Edit state 的 `iter:` 为 `0`
   3. 告知 `🧪 tester 已补充，iter 已重置`（下一轮 Stop hook 会重跑 PASS_CMD 验证新测试）
 - **loop 已结束（或从未活跃）**：

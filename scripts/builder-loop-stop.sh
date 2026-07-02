@@ -336,7 +336,6 @@ NEXT_ITER=$(( ITER + 1 ))
 #   L2A transcript 末是 pending AskUserQuestion → 不跑（builder 等用户答）
 #   L2B worktree HEAD == last_iter_head + git status 空 → 不跑（无改动 thinking/讨论）
 #       bare 模式（无 worktree_path）使用 PROJECT_ROOT 作 git 路径
-#   L2C fork subagent 锁存在 → 不跑（fork 还在后台写文件，等完成再判）
 #   L3  .claude/builder-loop/<slug>.pause 文件存在 → 不跑（builder 主动 pause）
 
 # 老 state（V2.x 创建，无 phase 字段）兼容：stderr warning + 隐式升级（fall-through 到 PASS_CMD 路径，
@@ -457,15 +456,6 @@ if [ -n "$GIT_PATH_L2B" ]; then
   WT_STATUS_L2B="$(git -C "$GIT_PATH_L2B" status --porcelain 2>/dev/null || echo "")"
   if [ -n "$LIH_L2B" ] && [ "$LIH_L2B" = "$CUR_HEAD_L2B" ] && [ -z "$WT_STATUS_L2B" ]; then
     debug_log "exit" '{"code":0,"reason":"l2b_no_diff"}'
-    exit 0
-  fi
-fi
-
-# L2C: fork subagent 在飞 → 静默等待（落盘后下一轮再判）
-if [ -n "$HOOK_SESSION_ID" ]; then
-  _FORK_LOCK="${_BL_LOCK_DIR:-/tmp}/cc-subagent-${HOOK_SESSION_ID}-fork.lock"
-  if [ -f "$_FORK_LOCK" ]; then
-    debug_log "exit" '{"code":0,"reason":"l2c_fork_in_flight"}'
     exit 0
   fi
 fi

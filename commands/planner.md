@@ -63,27 +63,7 @@ description: "进入 Planner 模式 — 苏格拉底追问把模糊需求提炼�
 - **端到端行为验证**（可选）：用户在 Round 7 选择"需要"时写入 `<!-- e2e-cases -->` 标签（可置于验收标准段内）。格式统一 YAML（见下方段）。两种来源：用户自写（直接写入）或 planner 代写（拟稿后经用户 AskUserQuestion 确认再写入）。
 - **Plan 完成度检查锚点**（接入 builder-loop 的项目必须）：用 `<!-- plan-checklist -->` / `<!-- /plan-checklist -->` 标签包裹"执行任务列表"和"文件地图"两段。Reviewer Phase 0 提取此标签内容，逐步骤验证代码是否体现了每个步骤的意图。未包裹 → Reviewer 跳过 Phase 0 直接进代码审查。
 
-**3 视图区块约定（接入了 builder-loop 的项目要求）**：
-
-如果目标项目根存在 `.claude/loop.yml`（即接入了 builder-loop 自闭环），方案文件需用 HTML 注释标签划分内容视图，让 tester subagent 与 builder 之间做信息隔离：
-
-```markdown
-<!-- role:shared -->
-（共享内容：需求、对外接口签名、验收标准）
-<!-- /role -->
-
-<!-- role:builder -->
-（仅 builder 可读：技术选型、实现提示、现有代码路径）
-<!-- /role -->
-
-<!-- role:tester -->
-（仅 tester 可读：关键测试场景、边界条件思路、测试深度）
-<!-- /role -->
-```
-
-未被任何 role 标签包围的内容默认归 shared 视图。Builder Auto-Loop 在 spawn tester subagent 时会用 `split-plan-by-role.sh` 过滤，只把 shared+tester 视图传入。
-
-未接入 builder-loop 的项目可忽略此约定，方案文件按原结构写即可。
+**方案视图**：方案文件按统一结构写，不分 role 视图。（3 视图区块机制已退役，见 CHANGELOG 范式变更节。）
 
 **e2e-cases YAML 格式**（`<!-- e2e-cases -->` 标签内必须用此格式）：
 

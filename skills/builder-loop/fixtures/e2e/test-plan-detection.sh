@@ -51,9 +51,7 @@ count_bl_hooks() {
 import json, sys
 cfg = json.load(open(sys.argv[1]))
 hooks = cfg.get("hooks", {})
-bl_scripts = ["builder-loop-stop.sh", "subagent-start-guard.sh",
-              "tester-lock-check.sh", "tester-lock-clear.sh",
-              "worktree-write-guard.sh", "reviewer-timing-check.sh"]
+bl_scripts = ["builder-loop-stop.sh", "reviewer-timing-check.sh"]
 n = 0
 for arr in hooks.values():
     for item in arr:
@@ -100,11 +98,11 @@ assert_stdout_contains "max install 输出含 '检测方案=max'" "$RES_I1" '检
 assert_stdout_contains "max install 输出含 '0 条跳过'" "$RES_I1" '0 条跳过'
 
 n="$(count_bl_hooks "$TMPHOME/.claude/settings.json")"
-assert "max install 后 settings.json 含 6 条 builder-loop hook（实际=$n）" "[ '$n' = '6' ]"
-if has_hook "$TMPHOME/.claude/settings.json" "worktree-write-guard.sh"; then
-  assert "max install 后 worktree-write-guard.sh 已注册" "true"
+assert "max install 后 settings.json 含 2 条 builder-loop hook（实际=$n）" "[ '$n' = '2' ]"
+if has_hook "$TMPHOME/.claude/settings.json" "reviewer-timing-check.sh"; then
+  assert "max install 后 reviewer-timing-check.sh 已注册" "true"
 else
-  assert "max install 后 worktree-write-guard.sh 已注册" "false"
+  assert "max install 后 reviewer-timing-check.sh 已注册" "false"
 fi
 
 # ============================================================
@@ -162,11 +160,11 @@ assert_stdout_contains "copilot install 输出含 '检测方案=copilot'" "$RES_
 assert_stdout_contains "copilot install 输出含 '0 条跳过'" "$RES_I2" '0 条跳过'
 
 n="$(count_bl_hooks "$TMPHOME/.claude/settings.json")"
-assert "copilot install 后 settings.json 含 6 条 builder-loop hook（实际=$n）" "[ '$n' = '6' ]"
-if has_hook "$TMPHOME/.claude/settings.json" "worktree-write-guard.sh"; then
-  assert "copilot install 后 worktree-write-guard.sh 已注册" "true"
+assert "copilot install 后 settings.json 含 2 条 builder-loop hook（实际=$n）" "[ '$n' = '2' ]"
+if has_hook "$TMPHOME/.claude/settings.json" "reviewer-timing-check.sh"; then
+  assert "copilot install 后 reviewer-timing-check.sh 已注册" "true"
 else
-  assert "copilot install 后 worktree-write-guard.sh 已注册" "false"
+  assert "copilot install 后 reviewer-timing-check.sh 已注册" "false"
 fi
 
 # ============================================================

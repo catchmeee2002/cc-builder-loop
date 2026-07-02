@@ -43,7 +43,6 @@
 │   ├── run-pass-cmd.sh         # 按阶段跑 PASS_CMD，日志落 .claude/loop-runs/
 │   ├── extract-error.sh        # 错误反馈处理器（V1=full+脱敏）
 │   ├── early-stop-check.sh     # 早停判据（无进展/反增长/保护路径）
-│   ├── split-plan-by-role.sh   # 方案文件按 <!-- role:xxx --> 区块过滤
 │   ├── merge-worktree-back.sh  # V1.1 worktree 合回主干（fast-forward/rebase/仲裁标记）
 │   └── run-apply-arbitration.sh # V1.1 仲裁 patch 应用（解析 arbiter 输出/apply/retry merge）
 └── schema/
@@ -56,7 +55,7 @@
 - `~/my-dotfiles/claude/.claude/commands/builder.md` — 在原步骤前插入循环分支判断
 - `~/my-dotfiles/claude/.claude/agents/arbiter.md` — V1.1 仲裁 subagent（解 rebase 冲突）
 - `~/my-dotfiles/claude/.claude/agents/reviewer.md` — V1.1 末尾输出 TESTER_HINT JSON 块
-- `~/my-dotfiles/claude/.claude/commands/planner.md` — 方案模板增加 3 视图区块说明
+- `~/my-dotfiles/claude/.claude/commands/planner.md` — 方案模板（3 视图区块已退役，隔离范式变更）
 - `~/my-dotfiles/claude/.claude/settings.json` — 注册 Stop hook
 - `~/my-dotfiles/claude/.claude/scripts/README.md` — 追加 hook 文档条目
 
@@ -103,19 +102,10 @@ ls -la /tmp/cc-subagent-*.lock
 cat /tmp/cc-subagent-<session_id>-<agent_type>.lock
 # 输出字段：session_id / agent_type / start_ts / pid
 
-# 锁写入日志（SubagentStart 时记录）
-tail -f ~/.claude/logs/subagent-start-*.log
-
-# 锁检查日志（PreToolUse 时记录 block/allow 决策）
-tail -f ~/.claude/logs/tester-lock-check-*.log
+# V5.0: 认身份隔离 hook（SubagentStart/Stop、tester-lock-check、worktree-write-guard、lock-utils）已退役
+# 保留的日志：stop hook debug log
+tail -f ~/.claude/logs/stop-hook-debug.log
 ```
-
-**V3.5 变更说明**：
-- 锁文件从 `cc-subagent-{sid}.lock` 改为 `cc-subagent-{sid}-{agent_type}.lock`
-- 支持 tester/doc-maintainer/arbiter/reviewer 并发各落各的锁
-- 非白名单 agent（如 inline workflow）不写锁
-- 向后兼容旧格式（TTL 自动清理）
-- 公共函数库：`source ~/.claude/scripts/lock-utils.sh`
 
 ### 5.2 空仓 fixture 验证
 
@@ -145,7 +135,7 @@ done
 |------|---------|------|
 | `test-empty-repo.sh` | P0: 空仓 setup 不被 set -e 杀 | 无 |
 | `run-fixture.sh` | T6.1-T6.2: 完整循环（setup→FAIL→fix→PASS） | python3 + pytest |
-| `test-isolation.sh` | T6.3: tester 隔离 hook 拦截 source_dirs | tester-lock-check.sh 软链 |
+| ~~`test-isolation.sh`~~ | ~~T6.3: tester 隔离 hook（V5.0 退役）~~ | ~~已删除~~ |
 | `test-conflict.sh` | T6.4: rebase 冲突 → 仲裁标记 → mock 修复 → 合回 | merge-worktree-back.sh |
 | `test-arbitration-apply.sh` | V1.1: run-apply-arbitration.sh 三场景（high→APPLIED / low→LOW_CONFIDENCE / bad patch→APPLY_FAILED） | run-apply-arbitration.sh + merge-worktree-back.sh |
 | `test-judge-agent.sh` | V1.9: judge agent 单元（mock Anthropic API，9 case：env 凭证 / API 超时 / 500 / 非法 JSON / low confidence / 凭证全缺 / disabled / dot 模型规范化） | python3 内嵌 mock server |

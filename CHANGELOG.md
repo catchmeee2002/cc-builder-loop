@@ -2,7 +2,55 @@
 
 > 从 CLAUDE.md §5 外移。记录各版本交付的能力与关键实现细节。
 
+## V5.0 隔离范式变更——认身份隔离退役，隔离退地基（2026-07-02）
+
+**设计范式变更**，非增量功能。
+
+### 变更原因（因果链）
+
+1. **subagent_type 失效**：CC 内核的 SubagentStart hook stdin 对自定义 agent（tester / reviewer / doc-maintainer / arbiter）从未在真实环境提供过 `subagent_type` 字段。2026-06-14 V3.5 落地 per-agent-type 锁机制时，所有测试用 fixture 灌假 stdin 全绿，但真实 session 从未写过一把 tester/reviewer 锁。2026-07-02 实测确认：内置 agent（general-purpose / Explore）同样读空——整套按身份识别的隔离机制**从落地起就在真实环境空转**。
+2. **读隔离病根消失**：读隔离防的是「同一个大脑串味」——builder 写实现的意图流进测试。但 tester 是独立推理实例（独立上下文、独立模型 sonnet），与 builder 不共享思维链。共脑不存在，串味不成立，读隔离失去防御对象。
+3. **写隔离退地基**：写边界的防御对象（agent 越界/篡改）与共不共脑无关，仍然存在。但强制手段（按 subagent_type 拦截的 hook）已失效。替代方案：subagent prompt 职责声明（软）+ merge 前 diff 审查（中）+ PASS_CMD 锚定 agent 改不到的测试集（硬）。内核 `isolation: worktree` 作演进预留。
+
+### 删除的文件
+
+| 文件 | 原用途 |
+|------|--------|
+| `scripts/subagent-start-guard.sh` | SubagentStart hook：按 subagent_type 写 per-type 锁 + 注入 worktree 边界上下文 |
+| `scripts/lock-utils.sh` | subagent lock 公共函数库 |
+| `scripts/tester-lock-check.sh` | PreToolUse hook：拦截 tester 对 source_dirs 的读操作 |
+| `scripts/worktree-write-guard.sh` | PreToolUse hook：分级写路径防护 |
+| `scripts/subagent-lock-clear.sh` | SubagentStop hook：按 agent_type 清锁 |
+| `skills/builder-loop/scripts/split-plan-by-role.sh` | 方案文件按 role 标签过滤（读隔离载体） |
+
+### 删除的 stop hook 闸
+
+- **L2C**（fork subagent 锁存在 → 静默）：依赖 per-type 锁机制，随认身份 hook 一起退役
+
+### 变更的 prompt / 文档
+
+- **tester.md**：「禁止 Read 实现源码」→「测试断言锚定契约，可 Read 实现做交叉验证」；路径约束从硬约束降为职责声明
+- **doc-maintainer.md**：加 `git check-ignore` 自检
+- **builder.md / planner.md**：删 role 视图过滤，方案全文直传 subagent
+- **design-philosophy.md**：原则一（独立 agent 判据独立性来自架构天然属性，不依赖外部隔离机制）；原则三（写边界退地基）
+- **install.sh**：registrations 从 6 条缩为 2 条（Stop + PreToolUse:Agent）；deprecated 加 4 条认身份 hook
+- **CLAUDE.md**：映射表、hook 表、闸顺序、目录结构同步更新
+
+### 保留的 hook
+
+| Hook | 脚本 | 保留原因 |
+|------|------|---------|
+| Stop | builder-loop-stop.sh | loop 核心闸（PASS_CMD 驱动），与认身份无关 |
+| PreToolUse:Agent | reviewer-timing-check.sh | 时序控制（phase=active 时拦 reviewer），按 phase 字段判而非 agent 身份 |
+
+### 设计哲学依据
+
+- **原则四（改输入条件，不改输出约束）**：认身份 hook 全是末端输出约束（拦它别读、拦它别写），是原则四点名的脆点。新架构下 subagent 天然独立，这些约束的前提（共脑串味）消失，删除是正确路径。
+- **原则五（三次就是架构缺陷）**：tester 写主仓 / e2e 无限循环 / 锁不写——三个 bug 同一个根（subagent_type 读空），证明 per-agent-type 锁是架构缺陷而非单点 bug。
+
 ## V4.10 fork-aware stop hook（2026-07-02）
+
+> **已在 V5.0 中退役。** L2C 闸及相关锁机制（lock-utils.sh / SubagentStart 写锁 / SubagentStop 清锁）随认身份隔离整体删除。保留此条目作为历史记录。
 
 stop hook 新增 L2C 闸：fork subagent 锁存在时静默 exit 0，等 fork 完成再判。解决 builder fork 后台改文件时 stop hook 提前触发导致 no_progress 误判的问题。`lock-utils.sh` 白名单加 `fork`，SubagentStart hook 自动为 fork 写锁，SubagentStop 自动清锁。
 
