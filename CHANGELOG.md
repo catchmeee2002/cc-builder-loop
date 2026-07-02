@@ -2,6 +2,19 @@
 
 > 从 CLAUDE.md §5 外移。记录各版本交付的能力与关键实现细节。
 
+## V5.1 locate-state session_id 匹配 + merge-and-cleanup 一行修（2026-07-03）
+
+### locate-state.sh session_id 匹配
+
+CC session CWD 是会话级常量（主仓），Bash tool 的 `cd` 不改它。多 worktree 并发时 locate-state.sh 原有策略全靠 CWD 匹配，策略 5（唯一 active 兜底）在 ≥2 active 时被安全限制封死 → stop hook 找不到 state → loop 静默失效。两次实际复现（2026-06-04 PA_Bot、2026-06-30 pc-ipc-toolkit）。
+
+修法：locate-state.sh 加可选第二参数 `session_id`。新增策略 1.5（按 `owner_session_id` 精确匹配）和策略 6（唯一未绑定 active state 首次绑定兜底）。stop hook 从 stdin 提取 session_id 后传入 locate-state.sh。首次 stop hook fire 写入 `owner_session_id` → 后续全走策略 1.5 直接命中，不再依赖 CWD。
+
+### merge-and-cleanup.sh 两处一行修
+
+- `read_field()` sed 加 `s/^'(.*)'$/\1/` 剥 yaml 单引号（python yaml.dump 输出 `cleanup_phase: ''` 导致 `ERROR unknown-cleanup-phase`）
+- worktree remove 后加 `cd "$PROJECT_ROOT"` 兜底（CWD 被删 → `set -euo pipefail` 下 getcwd 失败 → 误导性 exit 1）
+
 ## V5.0 隔离范式变更——认身份隔离退役，隔离退地基（2026-07-02）
 
 **设计范式变更**，非增量功能。

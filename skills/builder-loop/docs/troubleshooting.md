@@ -148,7 +148,7 @@ curl -sS -X POST $ANTHROPIC_BASE_URL/v1/messages \
 
 **自检**：stop hook stderr 含 `[builder-loop reward-hack-guard]`；`judge-trace.jsonl` 含 `suspected_reward_hack`。
 
-## 7.10 主仓 cwd 仍 setup 进 worktree → stop hook 不跟（V2.4）
+## 7.10 主仓 cwd 仍 setup 进 worktree → stop hook 不跟（V2.4, V5.1 缓解）
 
 **现象**：setup 后 worktree 创建成功，CC session cwd 仍在主仓，stop hook 没跑 PASS_CMD。
 
@@ -157,7 +157,9 @@ curl -sS -X POST $ANTHROPIC_BASE_URL/v1/messages \
 2. 唯一 active worktree → locate-state.sh 策略 5 自动绑定
 3. 多 active worktree → 不绑，stop hook stderr 列候选
 
-**何时仍哑火**：≥2 个 active state + 主仓 cwd → 必须 cd 到目标 worktree。
+**V5.1 缓解**：stop hook 从 stdin 提取 `session_id` 传给 locate-state.sh。首次绑定成功后 state 写入 `owner_session_id`，后续同 session 触发全走策略 1.5 精确匹配，不再依赖 CWD；即使主仓 cwd + ≥2 active state 也能命中。
+
+**何时仍哑火**：≥2 个**均未绑定 `owner_session_id`**的 active state + 主仓 cwd → 策略 6 无法判断唯一归属，仍需 cd 到目标 worktree 完成首次绑定。一旦某 state 绑定过，该 session 后续不受此限制。
 
 **排查**：
 ```bash

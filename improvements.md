@@ -4,6 +4,50 @@
 > **只记事实，不写建议方向**——loop 侧开发者拿到事实自己判断怎么修。
 > 已消化条目直接删除（代码是 ground truth），不标 ✅。已关闭条目见 [CHANGELOG](CHANGELOG.md)。
 
+## 2026-07-02 stop hook 在手动干预场景（unpause/reset/e2e标记）后不触发
+
+- 触发场景：divine-word 项目 visual maturity overhaul，e2e 需要 Mac Agent 而 Mac Agent 反复不可用，builder 多次手动操作 state 文件（删 pause 文件、python3 重置 phase=active+iter=0、写 e2e_verified_head）。每次操作后用户说"loop没跑起来"
+- 现象：
+  1. 删除 `.claude/builder-loop/__main__.pause` 后，下一轮 Stop hook 静默 exit 0
+  2. python3 写 `phase: active, iter: 0` 到 state 文件后，Stop hook 静默 exit 0
+  3. python3 写 `e2e_verified_head` + `phase: completed` 到 state 文件后，Stop hook 静默 exit 0
+- 根因：
+  1. 事件1+2 共同命中 **L2B 闸**（HEAD == last_iter_head + git status 空 → 不跑）。state 文件在 `.claude/` 下被 .gitignore 排除，改 state 不产生 git dirty，L2B 判定"无改动"静默跳过
+  2. 事件3 命中 **L1 闸**：builder 写了 `phase: "completed"`（非法值），L1 只识别 `passed_pending_review` 和 `e2e_pending` 做自愈，`completed` 走"非活跃"分支 → exit 0。即使 phase 正确为 `e2e_pending`，L1 自愈后仍要过 L2B（无 dirty → 拦）
+  3. 共性：L2B 假设"无 git 改动 = 无事可做"，但在 unpause / e2e 完成标记等手动干预场景下，用户期望 hook 继续推进流程即使没有新代码改动
+- 优先级：高
+
+## 2026-07-02 builder 步骤 3.5.5 plan.md 检查遗漏三类过时内容
+
+- 触发场景：divine-word 项目 visual maturity overhaul（L3，19个文件，3个新模块）。builder 步骤 3.5.5 输出 `📋 plan.md: skip`（diff-level-check doc_freshness_check 为空）。用户追问"所有文档更新了？"后发现 plan.md 有三处过时
+- 现象：
+  1. plan.md 架构概览表写"115单元测试"，实际已是190；缺"聚落系统"和"音效系统"两行
+  2. plan.md P0 section 的 CameraFocus/聚落/音效 TODO 全标 `[ ]`，实际已全部完成
+  3. CLAUDE.md 项目结构中 narrative 行仍写"回合编排"（应为"四幕编排"），presentation 行缺 CivilizationGrowth
+- 根因：
+  1. diff-level-check doc_freshness_check 返回空 → 步骤 3.5.5 整个跳过。"115→190"是历史债务（早于本次改动就过时了），不在 changed_files 对照范围
+  2. 步骤 3.5.5 管"文档新鲜度"，不管"进度状态同步"。plan.md 中 `[ ]`→`[x]` 的标记没有任何步骤负责
+  3. doc-B 规则只说"builder 亲自写"，没要求全文扫描。builder 做了最小 grep-and-patch（加了两个词），漏了同段内的相邻行描述
+- 优先级：中
+
+## 2026-07-02 tester subagent 写文件到主仓而非 worktree，导致合并冲突
+- 触发场景：builder spawn tester（worktree 模式），传 `worktree_path`。tester 完成后文件写到了主仓 `/mnt/hongyu.liao_docker/generator/tests/test_publish.py` 而非 worktree 路径。builder 手动 cp 到 worktree 后，主仓残留 dirty `novel_writer/cli/app.py`（tester 也写了一份实现代码副本），merge-and-cleanup.sh ff-merge 失败（Your local changes would be overwritten）。需要 `git checkout --` 清主仓 + `git stash` plan.md 才能继续。
+- 现象：merge-and-cleanup.sh 报 `ERROR ff-after-rebase-failed`，exit 3
+- 根因：tester subagent 收到 worktree_path 参数但实际 cwd 是主仓，Write/Edit 用了主仓绝对路径
+- 优先级：高
+
+## 2026-07-02 tester mock 模式与被测代码不匹配（CalledProcessError vs CompletedProcess）
+- 触发场景：tester 为 `novel publish` 命令写 9 个测试，其中 3 个 mock `subprocess.run` 用 `side_effect=CalledProcessError`。但 publish 代码用 `subprocess.run` 不带 `check=True`，检查 `.returncode` 而非捕获异常。
+- 现象：3 个测试失败（empty output / AssertionError），loop 多跑 2 轮修复
+- 根因：tester 没有阅读被测函数的 subprocess 调用模式就选了 mock 策略
+- 优先级：中
+
+## 2026-07-02 tester subagent 写文件触发 stop hook 无限循环（e2e_pending ↔ dirty L1 自愈）
+- 触发场景：builder PASS_CMD 通过后进入 e2e_pending，spawn tester subagent 在 worktree 写测试文件。tester 每次 Write/Edit 触发 stop hook → hook 检测 dirty → L1 自愈（e2e_pending → active）→ 重跑 PASS_CMD → PASS → 检测到 e2e cases → 又要求 spawn tester。tester 还在后台跑着，stop hook 已循环触发 10+ 次。
+- 现象：builder 主线被 stop hook 反复注入相同的 e2e 验收请求，每轮都要手动回复"重复触发，跳过"。最终需要 `touch .pause` 暂停 hook 才能等 tester 完成。
+- 根因：stop hook 的 L1 dirty 自愈不感知"当前有 tester subagent 正在工作"这个状态。tester 在 worktree 写文件 = dirty，dirty 触发 L1 自愈回 active，active PASS 后又进 e2e_pending，形成闭环。缺少"tester 运行中 → 跳过 L1 dirty 自愈"的守卫。
+- 优先级：高（每次有 e2e cases 的任务都会触发，严重干扰主线对话）
+
 ## 2026-07-02 fork subagent 批量改测试文件漏改导致 PASS_CMD 失败
 - 触发场景：builder 用 fork subagent 批量替换 4 个测试文件中的 `state_after="X"` → `state_after=["X"]`。fork prompt 列了 4 个文件名但没列每个文件的命中数。fork 完成后 builder 没二次 grep 校验覆盖率，直接等 stop hook。
 - 现象：`test_llm_verify_secret_revealed.py` 的 `_make_spine` 方法里 2 处 `state_after="..."` 被 fork 漏掉（fork 只改了该文件中它认为需要改的 2 处，另外 2 处在共享 helper `_make_spine` 里没被识别）。PASS_CMD stage=test 6 个用例 FAIL。
@@ -16,13 +60,6 @@
 - 现象：stop hook 要求对 cc-builder-loop 项目执行 PA Bot 的 e2e case（"5分钟后提醒我喝水"），明显不属于本项目。连续两轮误触发，需手动写 e2e_verified_head 跳过
 - 根因：`extract-e2e-cases.sh` 用 sed 按行匹配 `<!-- e2e-cases -->`，不感知 markdown 代码块（` ``` ` 包裹）。代码块内的标签与真标签在 sed 层面无区别
 - 优先级：低（只在 plan 里写了格式示例时触发，手动跳过即可；但每次都要跳两轮 stop hook 有些烦）
-
-## 2026-07-02 [观察期] fork-aware stop hook — L2C 闸已加，待验证 fork 并行场景不再误判
-
-- 修复：`lock-utils.sh` 白名单加 `fork`，SubagentStart hook 自动写锁；stop hook 新增 L2C 闸（fork 锁存在 → exit 0 静默等待）
-- 根因：stop hook 是消息级同步触发，builder spawn fork 后的消息立即触发 hook，但 fork 还在后台写文件。hook 看到旧快照判 no_progress 早停
-- 验证条件：**2026-07-16 前 fork 并行场景无 no_progress 误判 → 删除本条目**。复现 → 排查是否多 fork 并发导致锁覆盖
-- 优先级：观察（已修，等验证）
 
 ## 2026-06-24 L1 phase 闸 exit 0 时完全静默，builder 误判"自愈失效"手动干预
 - 触发场景：divine-word 项目 bare 模式。PASS + auto-commit 后 phase=passed_pending_review，reviewer 在后台运行。builder 看到连续两轮 Stop hook 静默 exit 0（17:50 + 17:56），误以为 L1 自愈机制失效，手动 python3 改 phase=active 恢复
@@ -108,17 +145,6 @@
   2. **setup-builder-loop.sh 输出加一行 reminder**：脚本 setup 成功后顺手提醒「⚠️ 如有 Bash 后台任务（特别是 Python import / DB / 网络）请先 TaskStop 再进 loop，避免 pass_cmd flaky timeout」
   3. **run-pass-cmd 检测同主机活跃 background Bash 任务**（如可行）：在 timeout 失败时自动追加日志「检测到 N 个 builder 启动的 background 任务可能影响 startup 性能，请考虑 TaskStop」，把"flaky"和"真 bug"快速分流
 - 优先级：中（不是每次 loop 都踩，但踩了一次会浪费一轮 PASS_CMD + 一轮 builder 判断 + 一次 stop hook tick）
-
-## 2026-06-04 worktree 模式下 CC session cwd 留在主仓 → stop hook 错位 + 第 2 轮 no_progress 早停
-
-- 触发上下文：Personal_Assistant_Bot 这次 session-key refactor 启 builder-loop worktree 后，setup 脚本明明在 stderr 警告「CC session cwd 仍在主仓 /...Personal_Assistant_Bot...stop hook 触发时不能直接定位本 worktree state」，但提示要求用户/builder 主动 `cd <worktree>`，builder 实际只在 Bash 里 cd，**CC session 自身的 cwd 没变**。结果：第 1 轮 PASS_CMD 失败注入回来 builder 修复，第 2 轮 stop hook 触发时检测 `last_iter_head == HEAD == 24dcbf6`（builder 在 worktree 改了文件但没 commit，主仓 HEAD 不动），判定为「无进展」直接归档 state 到 `legacy/20260603-220049-early_stop_no_progress.bak`。后续整个 reviewer / commit / merge 全靠手动补，loop 流程白搭一半
-- 建议方向：
-  1. **no_progress 早停判据放宽**：当前看 `last_iter_head == HEAD`，但 worktree 模式下"是否有进展"应该看 worktree 内有没有 dirty 改动（`git -C <worktree_path> status --porcelain` 非空）而不是 HEAD。判据改成 `HEAD 未变 AND worktree 全 clean` 才算无进展
-  2. **setup 完直接打印一个 `cd <worktree>` 提示 + 自动写入 .claude/builder-loop.local.md 让 stop hook 优先用 state 文件里的 worktree_path 而不是 cwd**（实际上 state 已经有 worktree_path 字段；stop hook 是不是没用？）
-  3. **stop hook 行为兜底**：能从 builder-loop.local.md 或 state/*.yml 找出唯一 active worktree 时自动绑定（V2.4 策略 5 据说已实现，但本次没生效——值得排查 hook 是不是认了 owner_cwd 没去查 state）
-- **2026-06-30 再次复现**（pc-ipc-toolkit 项目）：setup 创建 worktree 后 builder 在 Bash 里 `cd` 到 worktree，但 stop hook 用的是 session 级 CWD（主仓）。结果 stop hook **从头到尾没触发**，PASS_CMD 没跑过一次，loop 静默失效。builder 全程不知道 loop 没在跑，手动 shellcheck → 推远端 → 手动 commit + merge，loop 完全被绕过。与 2026-06-04 同根因，但这次更严重：上次 stop hook 至少触发了（只是 no_progress 误判），这次连触发都没有
-- 优先级：中（2026-06-30 复现，从低升回中。核心问题：setup 的 ⚠️ warning 不够——应该 hard block 或自动修正 CWD，而不是靠 builder 自觉 cd。stop hook 静默失效无任何反馈是最致命的）
-
 
 ## 2026-05-31 reviewer 对方法名存在性无校验能力，需项目侧基建兜底
 
@@ -266,17 +292,6 @@
 
 ---
 
-## 2026-05-09 [V3.0.1 衍生] .gitignore 漏 reviewer-diff-*.txt 新格式（V3.0 文件按 slug 拆后未跟进）
-
-- **触发上下文**：V3.0.1 hotfix merge 完后主仓 `git status` 显示 `.claude/reviewer-diff-1778322888-reviewer-timing-chec.txt` untracked。`.gitignore` 里有 V2.x 的 `.claude/reviewer-diff.txt`（单文件），V3.0 reviewer-as-gate 把该文件改成按 slug 拆 `.claude/reviewer-diff-<slug>.txt` 但 .gitignore 没跟进。所有已接入 V3.0 项目都会撞——每跑一次 loop 留一个 untracked diff 文件。
-- **建议方向**：
-  1. **.gitignore 加一行**：`.claude/reviewer-diff-*.txt`（保留 `.claude/reviewer-diff.txt` 兼容老数据，新加 `*` 模式覆盖 V3.0 格式）
-  2. **fixture 验证**：在 V3.0 lifecycle fixture 末尾断言主仓 git status 不应残留 reviewer-diff-* untracked
-  3. **顺手扫**：grep V3.0 改动里所有「按 slug 拆」的文件名（`reviewer-diff-<slug>.txt` / `review_reports/<project>_<slug>_*.md` 等），跟 .gitignore 对一遍
-- **优先级**：低（不影响功能但污染 git status；接入 V3.0 项目都会踩，但只是噪音不是漏洞）
-
----
-
 ## 2026-05-09 doc-maintainer 在 worktree 改动会被 PASS auto-commit 抢跑
 
 - **触发上下文**：BOT 项目「上电自检告警每日封顶限频」任务，PASS_CMD 通过后 stop hook 在 spawn doc-maintainer 之前已经把 worktree 改动 auto-commit（commit `b4b780d`）。doc-maintainer 之后在 worktree 内 Edit 了 `CLAUDE.md`（加一条核心约束条目），但这次 Edit 没有任何机制 commit；最终 `merge-and-cleanup.sh` fast-forward 主线时这一行 doc 改动**没合进来**。Builder 只能在主仓手动 Edit + commit 一次（`e341b31`）补救。
@@ -285,14 +300,6 @@
   2. 或者：`merge-and-cleanup.sh` 合主线前先 `git status --porcelain` 检查 worktree 是否有 uncommitted 改动，有则 stage + amend 进最近 commit，否则 fast-forward 会丢
   3. 或者：doc-maintainer SKILL prompt 末尾加 "Edit/Write 完成后，自己用 `git add <files> && git commit --amend --no-edit` 把改动并入上一个 commit"
 - **优先级**：中（doc 漏 commit 不影响功能、能事后人肉补；但 silent loss 让人很难发现，比如这次是兜底自审顺手 grep 才发现 main 上没有那一行）
-
-## 2026-05-09 merge-and-cleanup.sh 末尾 cwd 被删导致 pwd 报错 exit 1
-
-- **触发上下文**：BOT 项目同上任务，builder cwd 在 worktree 时调 `merge-and-cleanup.sh`，脚本删 worktree 后末尾的 shell 报 `pwd: error retrieving current directory: getcwd: cannot access parent directories: No such file or directory` 并 exit 1。Fast-forward 实际成功（commit / branch 删除均完成），但 exit 1 让调用者（Builder）一开始误判失败。
-- **建议方向**：
-  1. `merge-and-cleanup.sh` 末尾添加 `cd "${MAIN_REPO}" 2>/dev/null || cd /tmp` 让 cwd 跳出被删的 worktree 后再 exit
-  2. 或者脚本入口先记录 `MAIN_REPO`，最后 `exec sh -c "cd '$MAIN_REPO' && exit 0"` 类似的兜底
-- **优先级**：低（仅是返回码误导，合并本身正确）
 
 ## 2026-05-09 main-dirty stash apply 进 worktree 的语义需要在 setup 输出 / commit message 之外多一处显式提示
 

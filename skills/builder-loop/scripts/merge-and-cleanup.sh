@@ -25,7 +25,7 @@ STATE="${1:?state file path required}"
 [ -f "$STATE" ] || { echo "ERROR state-not-found"; exit 3; }
 
 read_field() {
-  grep -E "^${1}:" "$STATE" 2>/dev/null | head -1 | sed -E "s/^${1}:[[:space:]]*\"?([^\"]*)\"?[[:space:]]*\$/\1/" || true
+  grep -E "^${1}:" "$STATE" 2>/dev/null | head -1 | sed -E "s/^${1}:[[:space:]]*\"?([^\"]*)\"?[[:space:]]*\$/\1/; s/^'(.*)'$/\1/" || true
 }
 
 PROJECT_ROOT="$(read_field main_repo_path)"
@@ -250,6 +250,7 @@ if [ "$CLEANUP_PHASE" = "ff_merged" ]; then
   git -C "$PROJECT_ROOT" worktree remove --force "$WORKTREE_PATH" 2>/dev/null || \
     rm -rf "$WORKTREE_PATH" 2>/dev/null || true
   git -C "$PROJECT_ROOT" worktree prune 2>/dev/null || true
+  cd "$PROJECT_ROOT" 2>/dev/null || cd /tmp
   [ -n "$WT_BRANCH" ] && git -C "$PROJECT_ROOT" branch -D "$WT_BRANCH" 2>/dev/null || true
   write_cleanup_phase "worktree_removed"
   CLEANUP_PHASE="worktree_removed"

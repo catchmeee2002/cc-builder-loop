@@ -76,9 +76,9 @@ bash ~/.claude/skills/builder-loop/scripts/setup-builder-loop.sh "$TASK_DESCRIPT
   - 🔴 阻塞 → AskUserQuestion 让用户选 [继续修 / abandon-loop.sh]
 - **FAIL** → extract-error + early-stop-check → 写回状态文件 → 注入下轮
 
-### CWD→state 匹配（V3.4）
+### CWD→state 匹配（V3.4, V5.1 增强）
 
-stop hook 通过 `locate-state.sh` 用 CWD 匹配 state 文件（策略 2: worktree 路径推 slug → 策略 3: worktree_path 字段匹配 → 策略 4: bare 模式 `__main__.yml` → 策略 5: 唯一 active 自动绑定）。无匹配 = exit 0 放行。V3.4 起 `.claude/builder-loop.local.md` 已移除，多 session 并发各用各的 worktree CWD 天然隔离。
+stop hook 通过 `locate-state.sh` 用 CWD + session_id 匹配 state 文件（策略 1.5: `session_id` 精确匹配 `owner_session_id` → 策略 2: worktree 路径推 slug → 策略 3: worktree_path 字段匹配 → 策略 4: bare 模式 `__main__.yml` → 策略 5: 唯一 active 自动绑定 → 策略 6: 唯一未绑定 owner_session_id 的 active state 首次绑定）。无匹配 = exit 0 放行。V3.4 起 `.claude/builder-loop.local.md` 已移除。**V5.1 起不再假设 CWD 天然隔离**——CC session CWD 是会话级常量（主仓），Bash `cd` 不改它；多 worktree 并发靠 session_id（策略 1.5/6）而非 CWD 定位，详见 [CHANGELOG V5.1](../../CHANGELOG.md)。
 
 ## 状态文件 schema（`.claude/builder-loop/state/<slug>.yml`）
 

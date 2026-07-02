@@ -158,6 +158,16 @@ fi
 [ -z "$CWD" ] && CWD="$(pwd 2>/dev/null || echo ".")"
 CWD="${CWD%/}"
 
+# bash 内置字符串操作提取 session_id（locate-state.sh 策略 1.5 需要）
+_after_sid="${INPUT#*\"session_id\"}"
+if [ "$_after_sid" != "$INPUT" ]; then
+  _sid_colon="${_after_sid#*:}"
+  _sid_quote="${_sid_colon#*\"}"
+  HOOK_SESSION_ID="${_sid_quote%%\"*}"
+else
+  HOOK_SESSION_ID=""
+fi
+
 # ---- 内联 locate-state 快速探测（V4.5: 零子进程）----
 # 先找 project root（loop.yml 所在目录），再检查 state 目录。
 # 找到 loop.yml 但无 state → 写 no-op 日志后 exit 0。
@@ -200,7 +210,7 @@ fi
 
 # 有 state 文件 → 需要精确匹配，调完整的 locate-state.sh（此路径本来就要跑完整流程，子进程开销可接受）
 [ -z "$SKILL_DIR" ] && _resolve_skill_dir
-STATE_FILE="$(bash "$SKILL_DIR/locate-state.sh" "$CWD" 2>/dev/null || echo "")"
+STATE_FILE="$(bash "$SKILL_DIR/locate-state.sh" "$CWD" "$HOOK_SESSION_ID" 2>/dev/null || echo "")"
 if [ -z "$STATE_FILE" ] || [ ! -f "$STATE_FILE" ]; then
   # locate-state 精确匹配失败（state 存在但不属于当前 CWD）→ no-op
   _noop_log="${_PROJECT_ROOT}/.claude/builder-loop/stop-hook-debug.log"
@@ -210,9 +220,9 @@ if [ -z "$STATE_FILE" ] || [ ! -f "$STATE_FILE" ]; then
   exit 0
 fi
 
-# ---- 找到 state：解析剩余 stdin 字段（单次 python3）----
+# ---- 找到 state：解析剩余 stdin 字段 ----
 TRANSCRIPT_PATH="$(printf '%s' "$INPUT" | sed -n 's/.*"transcript_path"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
-HOOK_SESSION_ID="$(printf '%s' "$INPUT" | sed -n 's/.*"session_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
+# HOOK_SESSION_ID 已在 locate-state 之前用 bash 内置提取
 
 PROJECT_ROOT=""
 RUN_CWD=""

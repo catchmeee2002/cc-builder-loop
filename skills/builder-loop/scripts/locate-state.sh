@@ -2,10 +2,10 @@
 # locate-state.sh — 从 CWD 找到对应的 builder-loop state 文件
 #
 # 用法：
-#   STATE_FILE="$(bash locate-state.sh [cwd])"
+#   STATE_FILE="$(bash locate-state.sh [cwd] [session_id])"
 #   [ -n "$STATE_FILE" ] || echo "未找到"
 #
-# 默认 cwd = $PWD。
+# 默认 cwd = $PWD。session_id 可选，提供时优先按 owner_session_id 匹配。
 #
 # 定位策略（按优先级）：
 #   1. 向上最多 5 层找 .claude/loop.yml → 锚定 PROJECT_ROOT
@@ -29,6 +29,7 @@
 set -uo pipefail
 
 CWD="${1:-$PWD}"
+SESSION_ID="${2:-}"
 # 归一化 cwd
 if [ -d "$CWD" ]; then
   CWD="$(cd "$CWD" && pwd -P)"
@@ -68,6 +69,18 @@ PROJECT_ROOT="$(find_project_root "$CWD" || echo "")"
 [ -z "$PROJECT_ROOT" ] && exit 1
 
 STATE_DIR="${PROJECT_ROOT}/.claude/builder-loop/state"
+
+# --- 1.5. session_id 匹配（多 worktree 并发时 cwd 不在 worktree 内也能定位）---
+if [ -n "$SESSION_ID" ] && [ -d "$STATE_DIR" ]; then
+  for sf in "$STATE_DIR"/*.yml; do
+    [ -e "$sf" ] || continue
+    _sid="$(grep -E '^owner_session_id:' "$sf" 2>/dev/null | head -1 | sed -E 's/^owner_session_id:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' || true)"
+    if [ -n "$_sid" ] && [ "$_sid" = "$SESSION_ID" ]; then
+      echo "$sf"
+      exit 0
+    fi
+  done
+fi
 
 # --- 2. cwd 在 <PROJECT_ROOT>/.claude/worktrees/<slug>/ 下时直接拼 ---
 WT_ROOT="${PROJECT_ROOT}/.claude/worktrees"
@@ -144,6 +157,25 @@ if [ -d "$STATE_DIR" ]; then
   done
   if [ "$_active_count" -eq 1 ]; then
     echo "$_active_sf"
+    exit 0
+  fi
+fi
+
+# --- 6. session_id 提供但前序策略均失败 → 唯一未绑定 active state 首次绑定 ---
+if [ -n "$SESSION_ID" ] && [ -d "$STATE_DIR" ]; then
+  _unbound_count=0
+  _unbound_sf=""
+  for sf in "$STATE_DIR"/*.yml; do
+    [ -e "$sf" ] || continue
+    _phase="$(grep -E '^phase:' "$sf" 2>/dev/null | head -1 | sed -E 's/^phase:[[:space:]]*"?([^"]*)"?.*/\1/' || true)"
+    case "$_phase" in active|e2e_pending|passed_pending_review) ;; *) continue ;; esac
+    _sid="$(grep -E '^owner_session_id:' "$sf" 2>/dev/null | head -1 | sed -E 's/^owner_session_id:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' || true)"
+    [ -n "$_sid" ] && continue
+    _unbound_count=$(( _unbound_count + 1 ))
+    _unbound_sf="$sf"
+  done
+  if [ "$_unbound_count" -eq 1 ]; then
+    echo "$_unbound_sf"
     exit 0
   fi
 fi
