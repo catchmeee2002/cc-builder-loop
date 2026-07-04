@@ -4,6 +4,14 @@
 > **只记事实，不写建议方向**——loop 侧开发者拿到事实自己判断怎么修。
 > 已消化条目直接删除（代码是 ground truth），不标 ✅。已关闭条目见 [CHANGELOG](CHANGELOG.md)。
 
+## 2026-07-05 [架构决策] 删 doc-maintainer + 加 reviewer Phase D
+
+- 触发场景：cc-builder-loop 项目自身多次 loop 完成后用户追问"文档都更新了吗"，90% 能捡出遗漏。S1/S2/V5.4 三次均复现
+- 现象：builder 每轮 step 3.5 自评文档完整性，大概率漏更新或描述不准确（"静默"未改、README 缺脚本、improvements 未归档）。doc-maintainer spawn 后也会出错（写主仓非 worktree、幻觉脚本名、移文件到 gitignored 路径）
+- 根因：文档更新在判据分层中无独立判据层。代码有 PASS_CMD（机器）+ reviewer（独立 agent）两层验证；文档只有 builder 自评（最弱独立性）。doc-maintainer 独立性为零（由 builder spawn + 指挥），不是审计者而是执行者——加 writer 不解决质量问题，加 auditor 才解决。机械层（doc_freshness_check）只能做存在性检测不能做正确性检测，且语义准确性不可穷举（"从反向拦截穷举不完"）
+- 架构决策：(1) 删 doc-maintainer agent，builder 自己写所有文档（doc 视为特殊 code）；(2) reviewer.md 新增 Phase D：doc-policy compliance 独立审计，以 doc_freshness_check 收窄审计范围；(3) Phase D findings 路由回 builder 修复，dirty 触发 re-review 闭环。依据：原则一（独立性属于判断层不属于执行层）+ 原则四（删协调约束比加更简单）+ research 数据（单 agent 顺序链优于多 agent 协调，prompt 2.7K tokens 仍在高原区）
+- 优先级：高
+
 ## 2026-07-04 tester subagent 写入主仓而非 worktree
 
 - 触发场景：generator 项目 #7 时间线泄露修复。builder 在 worktree 内改代码，PASS 后 spawn tester 补测试，prompt 传了 `worktree_path`
