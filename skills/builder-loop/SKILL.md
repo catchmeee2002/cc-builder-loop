@@ -58,7 +58,7 @@ bash ~/.claude/skills/builder-loop/scripts/setup-builder-loop.sh "$TASK_DESCRIPT
 
 ## Stop Hook
 
-`~/.claude/scripts/builder-loop-stop.sh`：按 CWD 调用 `locate-state.sh` 找本 worktree 对应 state → 检测 active=true → 多层闸过滤非目标场景 → 跑 PASS_CMD。
+`~/.claude/scripts/builder-loop-stop.sh`：按 CWD 调用 `locate-state.sh` 找本 worktree 对应 state → 检测 active=true → 多层闸过滤非目标场景 → 跑 PASS_CMD → PASS 时转交 `handle-pass-result.sh` 统一处理。
 
 **V3.0 多层闸（PASS_CMD 之前自动识别非目标场景静默退出）**：
 
@@ -69,12 +69,16 @@ bash ~/.claude/skills/builder-loop/scripts/setup-builder-loop.sh "$TASK_DESCRIPT
 | L2B | worktree HEAD == `state.last_iter_head` 且 git status 空 | builder 在思考 / 讨论，没改代码 |
 | L3 | `.claude/builder-loop/<slug>.pause` 文件存在 | builder 主动 pause |
 
-**PASS_CMD 通过后**（worktree / bare 统一，V4.1）：
-- 调 `loop-commit.sh` 在 `project_root` 内 commit + 写 `state.phase=passed_pending_review` + 写 `reviewer_pending` 段 + 落盘 `reviewer-diff-<slug>.txt`。Builder 收 stderr 提示 → spawn reviewer → 反馈分支：
-  - 0🔴 通过 → builder 调 `merge-and-cleanup.sh <state>`（worktree: ff merge + 删 worktree + 删 state；bare: stash drop + 删 state）
-  - 🟡/🔵 → builder 修复 → dirty 触发 L1 自愈回 active → 下一轮 PASS_CMD
-  - 🔴 阻塞 → AskUserQuestion 让用户选 [继续修 / abandon-loop.sh]
-- **FAIL** → extract-error + early-stop-check → 写回状态文件 → 注入下轮
+**PASS_CMD 通过后 → `handle-pass-result.sh <state_file> <next_iter> <run_cwd> <project_root>`**（worktree / bare 统一走此路径，V4.1；V5.4 从 Stop hook ~230 行内联逻辑提取为独立脚本，`run-pass-cmd.sh` + 本脚本可由 builder 直接调用完成一轮迭代、不必等 Stop event，详见 [CHANGELOG V5.4](../../CHANGELOG.md)）：依次跑 e2e 检测 → reward hacking 检测 → commit + state 写入，stdout 落一行 JSON（`type` 字段），调用方按 type 分支：
+
+| type | exit code | 触发条件 / 后续动作 |
+|------|-----------|---------|
+| `e2e_needed` | 2 | plan 含 e2e 用例且当前 HEAD 未被 `e2e_verified_head` 验收过 → 写 `phase=e2e_pending` → spawn/续接 tester 跑端到端验收 |
+| `reward_hack` | 3 | diff 命中测试配置文件（`loop.yml`/`conftest.py`/`test_*` 等）+ 可疑关键字（`xfail`/`pytest.mark.skip`/`--reruns` 等）双命中 → AskUserQuestion 三选项决策，禁止单方面继续 commit |
+| `pass` | 0 | 调 `loop-commit.sh` commit + 写 `state.phase=passed_pending_review` + `reviewer_pending` 段 + 落盘 `reviewer-diff-<slug>.txt`。Builder 收提示 → spawn reviewer → 反馈分支：0🔴 通过 → `merge-and-cleanup.sh <state>`（worktree: ff merge + 删 worktree + 删 state；bare: stash drop + 删 state）；🟡/🔵 → builder 修复 → dirty 触发 L1 自愈回 active → 下一轮 PASS_CMD；🔴 阻塞 → AskUserQuestion 让用户选 [继续修 / abandon-loop.sh] |
+| `commit_error` | 4 | `loop-commit.sh` 失败 → 日志落 `.claude/loop-runs/commit-error-iter-<n>.log` → 提示用户检查工作目录后重试 |
+
+- **FAIL**（PASS_CMD 本身未过）→ extract-error + early-stop-check → 写回状态文件 → 注入下轮
 
 ### CWD→state 匹配（V3.4, V5.1 增强）
 

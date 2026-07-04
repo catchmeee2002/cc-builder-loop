@@ -37,7 +37,9 @@
 
 **关键 state 字段**：`phase`（active / e2e_pending / passed_pending_review）+ `last_iter_head` + `reviewer_pending` 段 + `subagents` 段（V4.3 agent_id 追踪）+ `cleanup_phase`。详见 SKILL.md 「状态文件 schema」段。
 
-**Hook 闸顺序**（PASS_CMD 之前命中即静默 exit 0）：
+**V5.4 执行模型变更**：PASS_CMD 主触发器从 Stop hook 改为 builder 显式调用（`run-pass-cmd.sh` + `handle-pass-result.sh`）。Stop hook 保留为 safety net——如果 fire，L1 闸看 phase=passed_pending_review → exit 0，不 double run。详见 [CHANGELOG V5.4](CHANGELOG.md)。
+
+**Hook 闸顺序**（PASS_CMD 之前命中即静默 exit 0，V5.4 起 Stop hook 为 safety net）：
 - L1 `phase=passed_pending_review|e2e_pending` → 静默（passed_pending_review: dirty/新 commit 自愈回 active；e2e_pending: 仅新 commit/verified_head 自愈，dirty 不自愈防 tester 写文件触发无限循环）
 - L2A 末尾 pending AskUserQuestion → 静默
 - L2B HEAD == last_iter_head + git status 空 → 静默

@@ -2,6 +2,16 @@
 
 > 从 CLAUDE.md §5 外移。记录各版本交付的能力与关键实现细节。
 
+## V5.4 Builder 接管 PASS_CMD 执行（2026-07-04）
+
+**动机**：Stop hook 作为 PASS_CMD 唯一触发器被证实不可靠（CC 平台 Stop event 有时不 fire，三次复现）。原则五"三次=架构缺陷"触发重构。
+
+**核心变更**：Stop hook PASS 路径（~230 行内联逻辑）提取为独立脚本 `handle-pass-result.sh`（e2e 检测 + reward hacking + commit + state 写入 + reviewer_pending）。Builder 可直接调用 `run-pass-cmd.sh` + `handle-pass-result.sh` 完成一次迭代，不依赖 Stop event。Stop hook 保留为 safety net（如果 fire，L1 闸看 phase=passed_pending_review → exit 0，不 double run）。
+
+**新脚本**：`skills/builder-loop/scripts/handle-pass-result.sh`——stdout JSON 输出（type: pass/e2e_needed/reward_hack/commit_error），exit code 0/2/3/4。
+
+**独立性分析**：PASS_CMD 的独立性属于测试套件本身（loop.yml 定义、机器执行），不属于触发机制。谁 invoke `pytest` 不影响判据独立性。
+
 ## V5.3 install.sh 幂等覆盖 + find_project_root worktree 追溯（2026-07-04）
 
 - **install.sh 幂等覆盖**：hook 注册从"检测差异→条件更新"改为"无条件删旧+写新"。消灭 `find_entry_status` 部分比较导致的配置漂移（如只比脚本名不比 matcher）。deprecated 列表合并进统一清理逻辑
