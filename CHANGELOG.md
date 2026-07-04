@@ -2,6 +2,18 @@
 
 > 从 CLAUDE.md §5 外移。记录各版本交付的能力与关键实现细节。
 
+## V5.5 文档审计架构重构（2026-07-05）
+
+**动机**：文档更新无独立判据层（代码有 PASS_CMD + reviewer 两层，文档只有 builder 自评）。90% loop 结束后追问"文档更新了吗"都能捡出遗漏。doc-maintainer 独立性为零（builder spawn + 指挥），是 writer 不是 auditor。
+
+**核心变更**：
+- 删 `agents/doc-maintainer.md`——builder 自己写所有文档（doc 视为特殊 code）
+- reviewer.md 新增 Phase D：doc-policy compliance 独立审计（输入 doc_freshness_check 列表，审文档描述与代码行为一致性）
+- 修 🔴 re-review 缺口：builder.md 🔴 路径补"修完后必须重跑 PASS_CMD + reviewer 再审"
+- 修 V5.4 reviewer agent_id 回写遗漏：spawn 后写 state.subagents.reviewer
+
+**设计依据**：原则一（独立性属于判断层不属于执行层）+ 原则四（删协调约束比加更简单）+ research 数据（单 agent 顺序链优于多 agent 协调，builder.md ~2.7K tokens 仍在指令高原区）。
+
 ## V5.4 Builder 接管 PASS_CMD 执行（2026-07-04）
 
 **动机**：Stop hook 作为 PASS_CMD 唯一触发器被证实不可靠（CC 平台 Stop event 有时不 fire，三次复现）。原则五"三次=架构缺陷"触发重构。

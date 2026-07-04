@@ -86,7 +86,7 @@ description: "进入 Builder 模式 — 复杂任务先计划后动手，完成�
   - setup 输出含 `🌿 worktree 已创建` → 从 setup 输出的「状态文件」路径 Read 该状态文件拿 `worktree_path` 并 cd 进去
 - **不存在** → 见 builder-loop SKILL.md「智能提示」段
 
-> **⛔ 硬规则**：state.phase=active 期间绝对不 spawn reviewer/doc-maintainer/commit。PASS_CMD 通过 + handle-pass-result.sh 写入 phase=passed_pending_review 后才走 Reviewer 流程。phase=passed_pending_review 时 spawn reviewer 不算违规。
+> **⛔ 硬规则**：state.phase=active 期间绝对不 spawn reviewer/commit。PASS_CMD 通过 + handle-pass-result.sh 写入 phase=passed_pending_review 后才走 Reviewer 流程。phase=passed_pending_review 时 spawn reviewer 不算违规。
 
 > **⛔ Reward hacking 警戒（V2.3）**：修 `loop.yml.pass_cmd` 命令字符串或加 `--reruns`/`xfail`/`skip`/`@pytest.mark.flaky` 等关键词时，必须 AskUserQuestion 列三选项（quarantine / 修测试 / 保留 cmd）让用户选，禁止单方面继续 commit。
 
@@ -107,7 +107,7 @@ description: "进入 Builder 模式 — 复杂任务先计划后动手，完成�
 
 ---
 
-> **V3.2 subagent 统一约束**：所有 spawn（reviewer / tester / doc-maintainer）worktree 模式时必传 `worktree_path`（从 state 读），非 worktree 传空。
+> **V3.2 subagent 统一约束**：所有 spawn（reviewer / tester）worktree 模式时必传 `worktree_path`（从 state 读），非 worktree 传空。
 
 ## 完成后触发 Reviewer Subagent
 
@@ -124,7 +124,8 @@ description: "进入 Builder 模式 — 复杂任务先计划后动手，完成�
 - diff_summary 中，凡实施与方案不同的点，必须写明「选了什么 + 一句理由」（方案是假设不是契约，实施碰现实后调整是正常路径）
 - **review_focus**（spawn 前必填；L1 纯文案填 `"N/A"` 即可）：列出 (1) 改动函数的参数边界值（0 / 负数 / None / 空容器 / 边界相等），(2) builder 最担心的 1-5 个具体怀疑点（不是泛泛的"测覆盖"，而是「函数 X 与 Y 的状态字段是否对齐」这种点对点怀疑）
 - **V4.3 续接路径**：PASS 消息含 `reviewer_agent_id=<id>` → 用 `SendMessage(to: "<id>", summary: "recheck findings")` 续接已有 reviewer，传 diff_summary + review_focus。SendMessage 报错 / 无 REVIEW_SUMMARY 响应 → fallback 到下方新 spawn
-- spawn（新建路径）：`subagent_type: "reviewer", run_in_background: true`，传 changed_files / diff_summary / report_path / spec_shared / worktree_path / review_focus / plan_path（从 state reviewer_pending 段或 state.plan_path 读取；无 plan → 不传）
+- spawn（新建路径）：`subagent_type: "reviewer", run_in_background: true`，传 changed_files / diff_summary / report_path / spec_shared / worktree_path / review_focus / plan_path / doc_freshness_check（从 state reviewer_pending 段或 state.plan_path 读取；无 plan → 不传。doc_freshness_check 从 diff-level-check 输出直传）
+- **V5.5 reviewer agent_id 回写**：spawn 后用 python3 写 agent_id 到 state file 的 `subagents.reviewer` 段（`agent_id: "<id>", status: "running"`），供下轮 handle-pass-result.sh 续接
 - 告知："✅ 任务完成，reviewer 已在后台启动。"
 
 **V3.0 reviewer 反馈分支**（仅 phase=passed_pending_review 路径）：
@@ -133,7 +134,7 @@ description: "进入 Builder 模式 — 复杂任务先计划后动手，完成�
 |---|---|
 | 0 🔴 通过 | `bash ~/.claude/skills/builder-loop/scripts/merge-and-cleanup.sh <state_file>`（worktree: ff merge + 删 worktree + 删 state；bare: stash drop + 删 state） |
 | 🟡 / 🔵 非阻塞 | Edit/Write 修复 → dirty 出现 → 下一轮 stop hook L1 闸自愈回 phase=active → 重跑 PASS_CMD |
-| 🔴 阻塞 | AskUserQuestion 让用户选 [继续修 / abandon-loop.sh] |
+| 🔴 阻塞 | AskUserQuestion 让用户选 [继续修 / abandon-loop.sh]。用户选继续修 → builder 修复 → 重跑 run-pass-cmd + handle-pass-result → reviewer 再审（同 🟡 路径，不允许跳过 re-review 直接 merge） |
 
 **步骤 3：收到通知后处理**
 
@@ -178,45 +179,36 @@ description: "进入 Builder 模式 — 复杂任务先计划后动手，完成�
 
 ---
 
-## 步骤 3.5：文档评估（独立判断，不依赖 reviewer 结果）
+## 步骤 3.5：文档评估（V5.5：builder 统一写 doc，reviewer Phase D 独立审计）
 
-逐项检查，按分流规则处理：
-
-**A 类（机械同步）→ spawn doc-maintainer**：
+逐项检查，builder 直接 Read doc-policy.md 后 Edit：
 - [ ] `SKILL.md` / `README.md` 里声明的脚本 / 函数 / hook 的行为或输出格式变了
 - [ ] 新增对外文件（新脚本 / 新配置字段 / 新 state 目录 / 新消息格式）
-
-**B 类（需要设计上下文）→ builder 亲自 Edit**：
 - [ ] `CLAUDE.md` 的"已交付能力"应加版本条目
 - [ ] 新增 TODO / 排查手册 / 项目记忆条目
 - [ ] 设计文档变更（哲学 / 架构 / 原则 / 新概念解释 / CHANGELOG 语义段）
 
-A 类命中 → spawn doc-maintainer（同步）。B 类命中 → builder 直接 Read doc-policy.md 后自行更新。A+B 同时命中 → 先 builder 写 B 类，再 spawn doc-maintainer 处理 A 类。
-
-**⛔ 输出格式（强制两行并列，缺任何一行 = 违规）**：
+**⛔ 输出格式**：
 
 ```
-📄 doc-A: 命中 → spawn doc-maintainer / 未命中（<一句理由>）
-📄 doc-B: 命中 → builder 亲自写 / 未命中（<一句理由>）
+📄 文档评估：已更新 N 个文件（<file1>, <file2>）/ 未命中（<一句理由>）
 ```
-
-两行都必须写，包括未命中的（写理由）。不允许合并成一行、不允许只写命中的那一类。
 
 > ⛔ 不允许静默跳过。即使 reviewer 走到 3c 兜底、或者任务是异常收尾，3.5 仍必须走一次。
+> 独立审计由 reviewer Phase D 负责（spawn 时传 `doc_freshness_check` 字段）。builder 写的 doc 会被独立审——incentive 同代码。
 
 ---
 
-## 步骤 3.5.5：plan.md 同步检查
+## 步骤 3.5.5：doc_freshness_check 同步检查
 
 以 diff-level-check 输出的 `doc_freshness_check` 字段为准（机械探测，不自证）：
 
-- 字段为空 → `📋 plan.md: skip`
+- 字段为空 → `📋 doc_freshness_check: skip`
 - 字段非空 → **逐个文件** Read，对照本次 changed_files 检查过时性，每个文件输出一行：
   - `📋 <path>: 更新（<简述改了什么>）`（Edit 更新）
   - `📋 <path>: 仍成立`（Read 后确认无需改）
   - `📋 <path>: 范围外`（本次改动与该文件内容无关）
 
-⛔ 不允许 spawn doc-maintainer 维护 plan.md。
 ⛔ `doc_freshness_check` 非空时不允许跳过 Read。
 
 ---

@@ -33,7 +33,26 @@ color: red
    - 步骤提到"删除 X"→ 确认文件不存在
 3. 判定：
    - **有未完成步骤** → 输出 🔴 findings 列出每个未完成步骤（`位置` 列填 plan 步骤编号），`结论: 需修改`。**立即结束审查（early exit）**，不进步骤 1-5
-   - **全部完成** → 继续进入步骤 1
+   - **全部完成** → 继续进入 Phase D（如有）或步骤 1
+
+### Phase D：doc-policy compliance 审计（有 doc_freshness_check 时执行）
+
+输入：`doc_freshness_check` 字段（builder spawn 时传入，来自 diff-level-check 机械探测）。
+
+1. 逐个 Read `doc_freshness_check` 列出的文件
+2. 对照 diff_summary / changed_files：这些文档中的描述是否仍与当前代码行为一致？
+   - 行为描述变了但文档未跟（如代码加了 stderr 输出但文档仍写"静默"）→ 🟡 category=doc
+   - 新增脚本/字段/接口未出现在相关文档 → 🟡 category=doc
+   - 文档声明的约束与代码实际行为矛盾 → 🔴 category=doc
+3. 基本 doc-policy 规则检查（不需要 Read doc-policy.md，凭以下 3 条判）：
+   - CLAUDE.md 行数 > 200 行 → 🔵 category=doc
+   - 实现细节（API 签名/字段定义/JSON schema）出现在 CLAUDE.md 而非代码 → 🟡 category=doc
+   - 快照类内容（版本号/性能数字/实验数据）出现在 CLAUDE.md 无保质期标注 → 🔵 category=doc
+4. 判定：
+   - 无 doc findings → 继续步骤 1
+   - 有 findings → 输出（category=doc 标记），继续步骤 1（不 early exit——doc 问题不阻塞代码审查）
+
+无 `doc_freshness_check` 字段或为空 → 跳过 Phase D 直接进步骤 1。
 
 ### 步骤 1：读取源文件（限制读取量）
 
