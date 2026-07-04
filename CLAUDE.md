@@ -40,10 +40,10 @@
 **V5.4 执行模型变更**：PASS_CMD 主触发器从 Stop hook 改为 builder 显式调用（`run-pass-cmd.sh` + `handle-pass-result.sh`）。Stop hook 保留为 safety net——如果 fire，L1 闸看 phase=passed_pending_review → exit 0，不 double run。详见 [CHANGELOG V5.4](CHANGELOG.md)。
 
 **Hook 闸顺序**（PASS_CMD 之前命中即静默 exit 0，V5.4 起 Stop hook 为 safety net）：
-- L1 `phase=passed_pending_review|e2e_pending` → 静默（passed_pending_review: dirty/新 commit 自愈回 active；e2e_pending: 仅新 commit/verified_head 自愈，dirty 不自愈防 tester 写文件触发无限循环）
-- L2A 末尾 pending AskUserQuestion → 静默
-- L2B HEAD == last_iter_head + git status 空 → 静默
-- L3 `.claude/builder-loop/<slug>.pause` 存在 → 静默
+- L1 `phase=passed_pending_review|e2e_pending` → exit 0 + stderr 诊断（passed_pending_review: dirty/新 commit 自愈回 active；e2e_pending: 仅新 commit/verified_head 自愈，dirty 不自愈防 tester 写文件触发无限循环）
+- L2A 末尾 pending AskUserQuestion → exit 0 + stderr 诊断
+- L2B HEAD == last_iter_head + git status 空 → exit 0 + stderr 诊断
+- L3 `.claude/builder-loop/<slug>.pause` 存在 → exit 0 + stderr 诊断
 
 **[技术债] active 字段下掉计划**：V3.0 起 hook 主判用 phase 字段，`active: true` 仅写不读做新决策。下掉计划见 [`improvements.md`](improvements.md) 「active 字段下掉计划」候选条目；时间窗 V3.x 某版本统一 grep 全仓引用清单后移除。**禁止**在新代码里读 active 字段做决策。
 

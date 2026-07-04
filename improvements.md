@@ -87,18 +87,6 @@
 - 优先级：中
 
 
-## 2026-07-01 extract-e2e-cases.sh 不识别 markdown 代码块，把 plan 里的格式示例当真 case 提取
-- 触发场景：cc-builder-loop 项目自身。plan 文件 `20260630-e2e-sediment-and-level.md` 在「planner Round 7 输出格式变更」段用 markdown 代码块（` ```markdown `）包裹了 `<!-- e2e-cases -->` 标签作为格式示例。stop hook 调 `extract-e2e-cases.sh` 提取到了示例里的 case（`reminder-basic`），注入 e2e 验收请求
-- 现象：stop hook 要求对 cc-builder-loop 项目执行 PA Bot 的 e2e case（"5分钟后提醒我喝水"），明显不属于本项目。连续两轮误触发，需手动写 e2e_verified_head 跳过
-- 根因：`extract-e2e-cases.sh` 用 sed 按行匹配 `<!-- e2e-cases -->`，不感知 markdown 代码块（` ``` ` 包裹）。代码块内的标签与真标签在 sed 层面无区别
-- 优先级：低（只在 plan 里写了格式示例时触发，手动跳过即可；但每次都要跳两轮 stop hook 有些烦）
-
-## 2026-06-24 L1 phase 闸 exit 0 时完全静默，builder 误判"自愈失效"手动干预
-- 触发场景：divine-word 项目 bare 模式。PASS + auto-commit 后 phase=passed_pending_review，reviewer 在后台运行。builder 看到连续两轮 Stop hook 静默 exit 0（17:50 + 17:56），误以为 L1 自愈机制失效，手动 python3 改 phase=active 恢复
-- 现象：builder 认为"hook 没自愈"，实际 debug log 确认 L1 gate 两次都正确判断"无 dirty"（auto-commit 已清空 dirty，reviewer 还没返回 builder 还没 Edit）。如果不手动干预，reviewer 返回 → builder Edit → dirty 出现 → 下一轮 L1 自愈 → PASS_CMD，流程会自然恢复
-- 根因：L1 gate 代码正确（bare fixture 16/16 PASS 验证），问题是 L1 exit 0 时完全静默——stderr 无输出、无 inject 消息。builder 无法区分"正常等待 dirty 出现"和"自愈机制失效"，在两轮静默 exit 后选择手动干预
-- 优先级：低（UX 改善，非功能 bug；加 L1 exit 0 时 stderr 提示"等待代码变更后自动恢复"即可）
-
 ## 2026-06-24 reviewer 修复后 e2e_verified_head 失效要求全量重跑 e2e
 - 触发场景：同上项目。reviewer 🔴 修复后 stop hook 做了新的 auto-commit（HEAD 从 017b3c3 变为 a45ad21）。e2e_verified_head 仍指向旧 HEAD，stop hook 检测到不匹配，要求再跑一次完整 e2e 套件
 - 现象：3 行非破坏性修复（冲突 VFX 修 bug 让原本不工作的功能能工作、热力图数据源从 count 改为真实 piety 值、装饰物锚定从信徒改为建筑）触发了第三轮全量 e2e 验收（每轮 30 分钟、150k+ tokens）。builder 判断这些修复不可能让之前 9 个 PASS 的用例回退，选择直接写入 e2e_verified_head 跳过
@@ -499,6 +487,12 @@
 ---
 
 ## Archived（已消化/已修复）
+
+### 2026-07-01 extract-e2e-cases.sh 不识别 markdown 代码块 — V5.4 修复
+- 修复内容：sed 替换为 awk，加 ``` 围栏状态机，代码块内的 e2e-cases 标签跳过
+
+### 2026-06-24 L1 phase 闸 exit 0 完全静默 — V5.4 修复
+- 修复内容：L1/L2A/L2B 三个 exit 0 分支各加 stderr 诊断提示，builder 可区分"正常等待"和"机制失效"
 
 ### 2026-05-19 setup 在 worktree CWD 内创建嵌套 worktree — V5.3 修复
 - 修复内容：setup-builder-loop.sh L19-29 检测 .git 文件 → git-common-dir 追溯主仓，worktree 内调用不再创建嵌套
