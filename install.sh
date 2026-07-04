@@ -134,8 +134,8 @@ registrations = [
 # V5.3: 幂等覆盖 — 每次安装无条件删旧+写新，不检测差异。
 # 消灭 has_entry 部分比较导致的配置漂移（如只比脚本名不比 matcher）。
 # 同时清理所有已退役 hook（不再需要单独的 deprecated 列表）。
-bl_script_names = {cmd for _, cmd, _, _ in registrations}
-bl_script_names.update([
+bl_script_paths = {os.path.join(scripts_dir, cmd) for _, cmd, _, _ in registrations}
+bl_script_paths.update(os.path.join(scripts_dir, s) for s in [
     "tester-lock-write.sh", "tester-lock-clear.sh", "tester-write-guard.sh",
     "subagent-start-guard.sh", "subagent-lock-clear.sh",
     "tester-lock-check.sh", "worktree-write-guard.sh",
@@ -145,7 +145,7 @@ for hook_type in list(hooks.keys()):
     hooks[hook_type] = [
         item for item in hooks[hook_type]
         if not any(
-            any(s in h.get("command", "") for s in bl_script_names)
+            h.get("command", "") in bl_script_paths
             for h in item.get("hooks", [])
         )
     ]

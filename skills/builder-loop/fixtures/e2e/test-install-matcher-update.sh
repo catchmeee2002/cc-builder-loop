@@ -10,7 +10,7 @@
 # 期望：
 #   - 第二次 install 后 settings.json 里 reviewer-timing-check.sh 这条 matcher = "Agent|Workflow"
 #   - PreToolUse 数组里只有一条 reviewer-timing-check.sh（不是 stale + new 两条）
-#   - install.sh 输出含 "1 条更新"
+#   - install.sh 输出含 "条写入"（V5.3 幂等覆盖不再区分新增/更新）
 #
 # 用法：bash test-install-matcher-update.sh
 
