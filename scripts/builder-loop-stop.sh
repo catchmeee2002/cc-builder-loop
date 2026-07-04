@@ -397,6 +397,7 @@ open(sf, 'w').write(text)
     echo "[builder-loop] L1 phase 自愈：${PHASE_FIELD} → active (reason=${HEAL_REASON})" >&2
     debug_log "phase_self_heal" "{\"from\":\"${PHASE_FIELD}\",\"to\":\"active\",\"reason\":\"${HEAL_REASON}\"}"
   else
+    echo "[builder-loop] L1 静默：phase=${PHASE_FIELD}，等待代码变更后自动恢复" >&2
     debug_log "exit" "{\"code\":0,\"reason\":\"l1_phase_${PHASE_FIELD}\"}"
     exit 0
   fi
@@ -445,6 +446,7 @@ print('true')
 PY
 )"
   if [ "$ASKUQ_PENDING" = "true" ]; then
+    echo "[builder-loop] L2A 静默：等待用户回答 AskUserQuestion" >&2
     debug_log "exit" '{"code":0,"reason":"l2a_askuq_pending"}'
     exit 0
   fi
@@ -465,6 +467,7 @@ if [ -n "$GIT_PATH_L2B" ]; then
   CUR_HEAD_L2B="$(git -C "$GIT_PATH_L2B" rev-parse --short HEAD 2>/dev/null || echo "")"
   WT_STATUS_L2B="$(git -C "$GIT_PATH_L2B" status --porcelain 2>/dev/null || echo "")"
   if [ -n "$LIH_L2B" ] && [ "$LIH_L2B" = "$CUR_HEAD_L2B" ] && [ -z "$WT_STATUS_L2B" ]; then
+    echo "[builder-loop] L2B 静默：HEAD=${CUR_HEAD_L2B} 未变且无 dirty，等待代码改动" >&2
     debug_log "exit" '{"code":0,"reason":"l2b_no_diff"}'
     exit 0
   fi
