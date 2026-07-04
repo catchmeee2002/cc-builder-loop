@@ -279,4 +279,4 @@ bash ~/.claude/skills/builder-loop/scripts/run-judge-agent.sh --self-check
 
 ## 版本交付历史
 
-详见 [`../../CHANGELOG.md`](../../CHANGELOG.md)。当前最新 **V5.0 隔离范式变更**（认身份隔离退役、隔离退地基）。
+详见 [`../../CHANGELOG.md`](../../CHANGELOG.md)。
