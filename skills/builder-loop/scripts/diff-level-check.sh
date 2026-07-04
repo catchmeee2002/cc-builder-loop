@@ -91,10 +91,11 @@ for p in "plan.md" "docs/plan.md"; do
 done
 # 项目 doc 交叉引用：changed files 的 basename 出现在 doc 中 → 提醒检查过时性
 CHANGED_BASENAMES=""
-for cf in $(git -C "$PROJECT_ROOT" diff "$DIFF_BASE" --name-only 2>/dev/null || true); do
+while IFS= read -r cf; do
+  [ -z "$cf" ] && continue
   bn="${cf##*/}"
   [ -n "$bn" ] && CHANGED_BASENAMES="${CHANGED_BASENAMES} ${bn}"
-done
+done <<< "$(git -C "$PROJECT_ROOT" diff "$DIFF_BASE" --name-only 2>/dev/null || true)"
 if [ -n "$CHANGED_BASENAMES" ]; then
   for doc in "CLAUDE.md" "skills/builder-loop/SKILL.md" "skills/builder-loop/README.md"; do
     doc_full="${PROJECT_ROOT}/${doc}"

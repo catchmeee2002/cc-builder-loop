@@ -151,4 +151,32 @@ OUT8_OLD=$(bash "$DLCHECK" "$env8" "HEAD~1" 2>/dev/null)
 EC8_OLD=$?
 assert "Case 8b exit 1 with HEAD~1 (proves regression guard)" "[ '$EC8_OLD' -eq 1 ]"
 
+# ---- Case 9: doc_freshness_check 交叉引用命中 ----
+section "Case 9: changed file basename in CLAUDE.md → doc_freshness_check 含 CLAUDE.md"
+env9=$(mk_py_repo)
+cat > "$env9/CLAUDE.md" <<'MD'
+# Project
+Uses engine.py for core logic.
+MD
+git -C "$env9" add CLAUDE.md
+git -C "$env9" commit -q -m "docs(test): [cr_id_skip] Add CLAUDE.md"
+echo "changed" >> "$env9/src/engine.py"
+git -C "$env9" add src/engine.py
+OUT9=$(bash "$DLCHECK" "$env9" 2>/dev/null)
+assert "Case 9 doc_freshness_check 含 CLAUDE.md" "echo '$OUT9' | grep -q 'CLAUDE.md'"
+
+# ---- Case 10: doc_freshness_check 无命中 ----
+section "Case 10: changed file basename not in any doc → doc_freshness_check 空"
+env10=$(mk_py_repo)
+cat > "$env10/CLAUDE.md" <<'MD'
+# Project
+Nothing relevant here.
+MD
+git -C "$env10" add CLAUDE.md
+git -C "$env10" commit -q -m "docs(test): [cr_id_skip] Add CLAUDE.md"
+echo "changed" >> "$env10/src/engine.py"
+git -C "$env10" add src/engine.py
+OUT10=$(bash "$DLCHECK" "$env10" 2>/dev/null)
+assert "Case 10 doc_freshness_check 不含 CLAUDE.md" "! echo '$OUT10' | grep -q 'CLAUDE.md'"
+
 harness_report
