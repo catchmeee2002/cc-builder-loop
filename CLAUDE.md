@@ -58,7 +58,7 @@ install.sh 创建以下软链，把仓库文件映射到 CC 运行时路径：
 | `scripts/reviewer-timing-check.sh` | `~/.claude/scripts/reviewer-timing-check.sh` | `ln -sf` 逐文件 | PreToolUse hook（Agent） |
 | `agents/tester.md` | `~/.claude/agents/tester.md` | `ln -sf` 逐文件 | tester subagent |
 | `agents/arbiter.md` | `~/.claude/agents/arbiter.md` | `ln -sf` 逐文件 | 仲裁 subagent |
-| *(install.sh)* | `~/.claude/settings.json` hooks 段 | python3 增量合并 | 5-6 个 hook 条目（取决于方案） |
+| *(install.sh)* | `~/.claude/settings.json` hooks 段 | python3 幂等覆盖（V5.3 起无条件删旧+写新） | 2 个 hook 条目 |
 
 **注册的 hook（方案差异）**：
 
