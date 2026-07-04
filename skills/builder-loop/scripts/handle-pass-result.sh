@@ -61,8 +61,6 @@ if [ -n "$E2E_PLAN_PATH" ]; then
 
   if [ "$E2E_VERIFIED_HEAD" != "$CURRENT_HEAD" ] && [ -f "$E2E_PLAN_FULL" ]; then
     EXTRACT_SCRIPT="${SKILL_DIR}/../../../scripts/extract-e2e-cases.sh"
-    [ -f "$EXTRACT_SCRIPT" ] || EXTRACT_SCRIPT="$(dirname "${BASH_SOURCE[0]}")/../../scripts/extract-e2e-cases.sh"
-    [ -f "$EXTRACT_SCRIPT" ] || EXTRACT_SCRIPT="$(cd "${SKILL_DIR}/../../.." 2>/dev/null && pwd)/scripts/extract-e2e-cases.sh"
 
     E2E_CASES=""
     if [ -f "$EXTRACT_SCRIPT" ]; then
@@ -233,11 +231,15 @@ print(json.dumps({
     exit 0
     ;;
   *)
-    COMMIT_LAST="$COMMIT_LAST" python3 -c "
+    COMMIT_ERR_LOG="${PROJECT_ROOT}/.claude/loop-runs/commit-error-iter-${NEXT_ITER}.log"
+    mkdir -p "$(dirname "$COMMIT_ERR_LOG")" 2>/dev/null || true
+    printf '%s\n' "$COMMIT_OUT" > "$COMMIT_ERR_LOG" 2>/dev/null || true
+    COMMIT_LAST="$COMMIT_LAST" COMMIT_ERR_LOG="$COMMIT_ERR_LOG" python3 -c "
 import os, json
 print(json.dumps({
     'type': 'commit_error',
     'detail': os.environ.get('COMMIT_LAST', 'unknown error'),
+    'log_file': os.environ.get('COMMIT_ERR_LOG', ''),
 }))
 " 2>/dev/null
     exit 4

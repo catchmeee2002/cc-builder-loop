@@ -624,6 +624,7 @@ RH_MSG
       exit 2
       ;;
     pass)
+      debug_log "commit_only_result" "$(echo "$HANDLE_PASS_OUT" | tail -1)"
       write_trace "PASS"
       _PASS_JSON="$(echo "$HANDLE_PASS_OUT" | tail -1)"
       _SLUG="$(echo "$_PASS_JSON" | python3 -c "import sys,json; print(json.loads(sys.stdin.read()).get('slug',''))" 2>/dev/null || echo "")"
@@ -649,12 +650,15 @@ print(json.dumps({'code':2,'reason':'pass_done_v3','iter': int(os.environ.get('I
       exit 2
       ;;
     commit_error)
-      _CE_DETAIL="$(echo "$HANDLE_PASS_OUT" | tail -1 | python3 -c "import sys,json; print(json.loads(sys.stdin.read()).get('detail',''))" 2>/dev/null || echo "")"
+      _CE_JSON="$(echo "$HANDLE_PASS_OUT" | tail -1)"
+      _CE_DETAIL="$(echo "$_CE_JSON" | python3 -c "import sys,json; print(json.loads(sys.stdin.read()).get('detail',''))" 2>/dev/null || echo "")"
+      _CE_LOG="$(echo "$_CE_JSON" | python3 -c "import sys,json; print(json.loads(sys.stdin.read()).get('log_file',''))" 2>/dev/null || echo "")"
       echo "[builder-loop] loop-commit.sh 失败：${_CE_DETAIL}" >&2
       debug_log "exit" '{"code":2,"reason":"loop_commit_error"}'
       cat >&2 <<COMMIT_ERR
 [builder-loop] commit 失败（iter ${NEXT_ITER}）
 ${_CE_DETAIL}
+完整日志：${_CE_LOG}
 请检查工作目录状态后重试。
 COMMIT_ERR
       exit 2
