@@ -4,6 +4,42 @@
 > **只记事实，不写建议方向**——loop 侧开发者拿到事实自己判断怎么修。
 > 已消化条目直接删除（代码是 ground truth），不标 ✅。已关闭条目见 [CHANGELOG](CHANGELOG.md)。
 
+## 2026-07-04 tester subagent 写入主仓而非 worktree
+
+- 触发场景：generator 项目 #7 时间线泄露修复。builder 在 worktree 内改代码，PASS 后 spawn tester 补测试，prompt 传了 `worktree_path`
+- 现象：tester 把新增测试文件写到主仓 `/mnt/hongyu.liao_docker/generator/tests/` 而非 worktree `/mnt/.../worktrees/.../tests/`。worktree `git status` 为空，stop hook 检测不到 dirty。builder 手动 `cp` 到 worktree + `git checkout` 还原主仓才恢复
+- 根因：tester agent 的 cwd 是主仓（spawn 时继承 session cwd），未根据 `worktree_path` 参数切换工作目录
+- 优先级：中
+
+## 2026-07-04 e2e_verified_head 写入后 doc commit 导致 HEAD 前进，L1 自愈永远不匹配
+
+- 触发场景：divine-word 项目 P1+P2 视觉叙事任务。PASS_CMD 通过 → phase=e2e_pending → tester all_pass → builder 写 `e2e_verified_head: d4f6415` → builder 又 commit 了 plan.md 文档更新（HEAD 前进到 afac459）
+- 现象：stop hook 在 13:25 / 13:39 / 13:41 / 13:51 共 fire 4 次，每次命中 L1 gate `exit 0, reason: l1_phase_e2e_pending`。e2e 自愈分支比较 `e2e_verified_head(d4f6415) == HEAD(afac459)` 不匹配，SHOULD_HEAL=0，死循环静默 exit 0。用户等了 30 分钟后手动介入
+- 根因：e2e_verified_head 是一次性精确 SHA 快照，任何后续 commit（包括 doc 更新、reviewer 修复等非代码改动）都让它失效。与 2026-06-24 条目「reviewer 修复后 e2e_verified_head 失效要求全量重跑 e2e」是同一根因的不同触发路径：那次是 reviewer 🔴 修复后 commit，这次是 builder 步骤 3.5 doc-B 更新 plan.md 后 commit
+- 优先级：高
+
+## 2026-07-04 diff-level-check doc_freshness_check 未检出 plan.md 需更新
+
+- 触发场景：divine-word 项目 Oracle 引擎大修（16文件 +585/-48 行，改了 engine/models/llm/api 四层）+ P1/P2 视觉叙事（4文件）。plan.md 中 BCDE 四项待修和 P1/P2 待办直接引用了被改的模块
+- 现象：两次 `diff-level-check.sh` 的 `doc_freshness_check` 均返回空。步骤 3.5.5 两次都走 `📋 plan.md: skip`。plan.md 中十几个 `[ ]` 条目该标 `[x]` 但无人检测
+- 根因：`doc_freshness_check` 探测逻辑不覆盖 plan.md（只看 CLAUDE.md / README / SKILL.md 等），没有"changed files 与 plan.md 待办条目的模块交集"检测
+- 优先级：中
+
+## 2026-07-04 doc-B "命中" 声明无机械闸，builder 可跳过执行直接 commit
+
+- 触发场景：同上 Oracle 引擎大修。builder 在步骤 3.5 输出 `📄 doc-B: 命中 → builder 亲自写`，但紧接着直接进了步骤 4 commit，plan.md 从未被 Edit
+- 现象：用户事后发现 BCDE / P1 / P2 完成后 plan.md 全是旧的 `[ ]` 状态
+- 根因：doc-B "命中" 是纯文本声明，没有任何后续校验环节。PASS_CMD 不检查文档，reviewer 只审代码，commit 不验 doc-B 是否落实。builder prompt 要求"命中 → 亲自 Edit"但无机械强制
+- 优先级：中
+
+## 2026-07-04 builder 一个 turn 内完成全周期导致 stop hook 从无执行机会
+
+- 触发场景：Personal_Assistant_Bot 项目修 trigger_ci 回退。builder 进入 worktree 模式后，在同一个 turn 内连续完成：setup → 写代码 → 跑语法检查 → 跑 pytest → 说"等 stop hook 跑 PASS_CMD"→ 紧接着自己跑了 diff-level-check → 手动跑 PASS_CMD → python3 改 state 为 passed_pending_review → spawn reviewer → commit → merge-and-cleanup 删 state + worktree。全程无 turn boundary
+- 现象：用户看到 builder 说"等 stop hook 跑"但 hook 从未触发。debug log 零 active-phase entry。所有 `no_op` 条目均在 merge 之后（state 已删）
+- 根因：Stop hook 仅在 turn boundary 触发。builder agent 说了"等 hook"但没有 END TURN——在同一 response 内继续做了后续所有步骤。等 turn 真正结束时 state 已被 merge-and-cleanup 删除。locate-state strategy 5 逻辑已验证正确（yaml.dump 格式可匹配），不是定位失败
+- 与 2026-07-02 事件「复现 2」机制相同：不是闸拦住了，是 CC 平台层的 turn boundary 在 builder 连续输出期间不会 fire Stop hook
+- 优先级：高
+
 ## 2026-07-02 stop hook 在手动干预场景（unpause/reset/e2e标记）后不触发
 
 - 触发场景：divine-word 项目 visual maturity overhaul，e2e 需要 Mac Agent 而 Mac Agent 反复不可用，builder 多次手动操作 state 文件（删 pause 文件、python3 重置 phase=active+iter=0、写 e2e_verified_head）。每次操作后用户说"loop没跑起来"
@@ -15,6 +51,7 @@
   1. 事件1+2 共同命中 **L2B 闸**（HEAD == last_iter_head + git status 空 → 不跑）。state 文件在 `.claude/` 下被 .gitignore 排除，改 state 不产生 git dirty，L2B 判定"无改动"静默跳过
   2. 事件3 命中 **L1 闸**：builder 写了 `phase: "completed"`（非法值），L1 只识别 `passed_pending_review` 和 `e2e_pending` 做自愈，`completed` 走"非活跃"分支 → exit 0。即使 phase 正确为 `e2e_pending`，L1 自愈后仍要过 L2B（无 dirty → 拦）
   3. 共性：L2B 假设"无 git 改动 = 无事可做"，但在 unpause / e2e 完成标记等手动干预场景下，用户期望 hook 继续推进流程即使没有新代码改动
+- 复现 2（2026-07-04）：cc-builder-loop 项目自身 V5.2 修复任务。PASS iter 1 → phase=passed_pending_review → L1 正确 exit 0（worktree 刚 commit 完干净）。之后 18 分钟内 spawn reviewer（background）、reviewer 返回、Edit SKILL.md、Write fixture、Bash 跑 fixture、python3 reset phase=active——debug log 零 entry，CC 一次 Stop 事件都没触发。与事件 1-3 不同：不是闸拦住了，是 CC 平台层根本没 fire Stop hook
 - 优先级：高
 
 ## 2026-07-02 builder 步骤 3.5.5 plan.md 检查遗漏三类过时内容
@@ -182,15 +219,7 @@
   1. **setup 时检测假活**：扫 `state/*.yml` 找 `phase=active` + `iter=0` + `created_at` 超过 24 小时的 → 提示「发现 N 个疑似假活 state，要归档吗？」+ 列出 slug/创建时间/worktree 路径
   2. **或 stop hook 加 TTL 检测**：`phase=active` + 最近一次 `last_iter_head` 更新超过 N 小时 → 自动归档到 legacy（风险：正在跑但暂停的 loop 也会被回收，需结合 `.pause` 文件排除）
   3. **最轻量**：V3.3 孤儿 worktree 检测扩展——在 setup 的孤儿检测里同时扫假活 state，合并到同一个用户决策流程
-- **优先级**：中（不破坏功能但会导致 stop hook 误绑 + git status 噪音；手动清理可绕过）
-
-## 2026-05-19 setup-builder-loop.sh 在 worktree CWD 内调用时创建嵌套 worktree
-
-- **触发上下文**：V3.1 worktree 隔离加固任务。loop 早停后在旧 worktree 的 CWD 下调 `setup-builder-loop.sh` 想重新进 loop。setup 把旧 worktree 当作"主仓"（因为它也有 `.claude/loop.yml`），在其下再建 `.claude/worktrees/<slug>/`，产生嵌套 worktree。嵌套的 worktree 从旧 worktree 的 HEAD 创建，不包含未提交的代码改动。
-- **建议方向**：
-  1. **setup 检测是否已在 worktree 内**：`git rev-parse --is-inside-work-tree` + `git worktree list` 检查当前 CWD 是否在某个 worktree 子路径内，如果是则报错 + stderr 提示「请 cd 到主仓再跑 setup」
-  2. **或者 setup 自动追溯到主仓**：如果 CWD 在 worktree 内，沿 `main_repo_path`（from state）或 `.git` 文件的 `gitdir:` 追溯到真正的主仓，在那里创建 worktree
-- **优先级**：中（低频但一旦踩到很混乱，需要手动清理嵌套 worktree + abandon）
+- **优先级**：低（V5.1 session_id 匹配 + V3.7 session mismatch 校验已解牙——僵尸不再劫持新 session，仅污染 state 目录和 active 计数；手动清理可绕过）
 
 ---
 
@@ -470,6 +499,9 @@
 ---
 
 ## Archived（已消化/已修复）
+
+### 2026-05-19 setup 在 worktree CWD 内创建嵌套 worktree — V5.3 修复
+- 修复内容：setup-builder-loop.sh L19-29 检测 .git 文件 → git-common-dir 追溯主仓，worktree 内调用不再创建嵌套
 
 ### 2026-06-17 --reuse-worktree state 创建在 worktree 内 — V5.3 修复
 - 修复内容：setup-builder-loop.sh + locate-state.sh 的 PROJECT_ROOT 锚定增加 .git 文件检测，worktree 内自动追溯到主仓
