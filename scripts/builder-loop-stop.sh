@@ -538,254 +538,136 @@ print(json.dumps({
 }))
 " 2>/dev/null || echo '{}')"
 
-# ---- 3a. PASS → merge worktree 回主干 / 删状态、放行 ----
+# ---- 3a. PASS → 调 handle-pass-result.sh 统一处理（V5.4 提取） ----
 if [ "$LAST_LINE" = "PASS" ]; then
-  # V1.8.3 hotfix: 预读 start_head — merge-worktree-back.sh 的 cleanup_worktree 会 rm state，
-  # 后续再 grep state 会抛 `No such file` 到用户屏幕（复现 session d9ef1004 `grep: .../state.yml`）
-  # 安全性：进入此分支前 STATE_FILE 已通过 L200 + L203 的 `[ -f "$STATE_FILE" ]` 检查，`set -u` 不会抢先触发
-  PASS_START_HEAD_PREREAD="$(grep -E '^start_head:' "$STATE_FILE" 2>/dev/null | head -1 | sed -E 's/^start_head:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' || echo "")"
+  _resolve_skill_dir
+  set +e
+  HANDLE_PASS_OUT="$(bash "${SKILL_DIR}/handle-pass-result.sh" "$STATE_FILE" "$NEXT_ITER" "$RUN_CWD" "$PROJECT_ROOT" 2>/dev/null)"
+  HANDLE_PASS_EC=$?
+  set -e
+  HANDLE_PASS_TYPE="$(echo "$HANDLE_PASS_OUT" | tail -1 | python3 -c "import sys,json; print(json.loads(sys.stdin.read()).get('type',''))" 2>/dev/null || echo "")"
 
-  # ---- V4.0: read plan_path (fallback e2e_plan_path for old state files) ----
-  PLAN_PATH="$(grep -E '^plan_path:' "$STATE_FILE" 2>/dev/null | head -1 | sed -E 's/^plan_path:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' || echo "")"
-  if [ -z "$PLAN_PATH" ]; then
-    PLAN_PATH="$(grep -E '^e2e_plan_path:' "$STATE_FILE" 2>/dev/null | head -1 | sed -E 's/^e2e_plan_path:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' || echo "")"
-  fi
+  # ---- V5.4: dispatch by handle-pass-result.sh exit code ----
+  debug_log "handle_pass_result" "$(HP_EC="$HANDLE_PASS_EC" HP_TYPE="$HANDLE_PASS_TYPE" python3 -c "
+import os, json
+print(json.dumps({'exit_code': int(os.environ.get('HP_EC','0') or 0), 'type': os.environ.get('HP_TYPE','')}))
+" 2>/dev/null || echo '{}')"
 
-  # ---- V4.8: read e2e_cases_path and e2e_level from loop.yml ----
-  E2E_CASES_PATH=""
-  E2E_LEVEL="full"
-  if [ -f "${PROJECT_ROOT}/.claude/loop.yml" ]; then
-    E2E_CASES_PATH="$(grep -E '^e2e_cases_path:' "${PROJECT_ROOT}/.claude/loop.yml" 2>/dev/null | head -1 | sed -E 's/^e2e_cases_path:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' || echo "")"
-    _lvl="$(grep -E '^e2e_level:' "${PROJECT_ROOT}/.claude/loop.yml" 2>/dev/null | head -1 | sed -E 's/^e2e_level:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' || echo "")"
-    [ -n "$_lvl" ] && E2E_LEVEL="$_lvl"
-  fi
+  case "$HANDLE_PASS_TYPE" in
+    e2e_needed)
+      # e2e 验证请求 — 从 JSON 提取字段，构造 inject 消息
+      debug_log "e2e_inject" "cases found via handle-pass-result (iter=$NEXT_ITER)"
+      _E2E_JSON="$(echo "$HANDLE_PASS_OUT" | tail -1)"
+      _E2E_WTP="$(echo "$_E2E_JSON" | python3 -c "import sys,json; print(json.loads(sys.stdin.read()).get('worktree_path',''))" 2>/dev/null || echo "")"
+      _E2E_CP="$(echo "$_E2E_JSON" | python3 -c "import sys,json; print(json.loads(sys.stdin.read()).get('e2e_cases_path',''))" 2>/dev/null || echo "")"
+      _E2E_LVL="$(echo "$_E2E_JSON" | python3 -c "import sys,json; print(json.loads(sys.stdin.read()).get('e2e_level','full'))" 2>/dev/null || echo "full")"
+      _E2E_CASES="$(echo "$_E2E_JSON" | python3 -c "import sys,json; print(json.loads(sys.stdin.read()).get('e2e_cases',''))" 2>/dev/null || echo "")"
+      _E2E_TAID="$(echo "$_E2E_JSON" | python3 -c "import sys,json; print(json.loads(sys.stdin.read()).get('tester_agent_id',''))" 2>/dev/null || echo "")"
+      _E2E_CH="$(echo "$_E2E_JSON" | python3 -c "import sys,json; print(json.loads(sys.stdin.read()).get('current_head',''))" 2>/dev/null || echo "")"
+      if [ -n "$_E2E_TAID" ]; then
+        cat >&2 <<E2EEOF
 
-  # ---- V3.8: e2e behavioral verification ----
-  E2E_PLAN_PATH="$PLAN_PATH"
-  if [ -n "$E2E_PLAN_PATH" ]; then
-    # resolve relative path against PROJECT_ROOT
-    if [ "${E2E_PLAN_PATH#/}" = "$E2E_PLAN_PATH" ]; then
-      E2E_PLAN_FULL="${PROJECT_ROOT}/${E2E_PLAN_PATH}"
-    else
-      E2E_PLAN_FULL="$E2E_PLAN_PATH"
-    fi
-
-    E2E_VERIFIED_HEAD="$(grep -E '^e2e_verified_head:' "$STATE_FILE" 2>/dev/null | head -1 | sed -E 's/^e2e_verified_head:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' || echo "")"
-    CURRENT_HEAD="$(git -C "$RUN_CWD" rev-parse HEAD 2>/dev/null || echo "")"
-
-    if [ "$E2E_VERIFIED_HEAD" != "$CURRENT_HEAD" ] && [ -f "$E2E_PLAN_FULL" ]; then
-      EXTRACT_SCRIPT="$(dirname "${BASH_SOURCE[0]}")/extract-e2e-cases.sh"
-
-      E2E_CASES=""
-      if [ -f "$EXTRACT_SCRIPT" ]; then
-        E2E_CASES="$(bash "$EXTRACT_SCRIPT" "$E2E_PLAN_FULL" 2>/dev/null || echo "")"
-      fi
-
-      if [ -n "$E2E_CASES" ]; then
-        debug_log "e2e_inject" "cases found, injecting verification request (iter=$NEXT_ITER)"
-        # V4.3: read tester identity from state for resume
-        _TESTER_AID="$(STATE_FILE="$STATE_FILE" python3 -c "
-import os, re
-text = open(os.environ['STATE_FILE']).read()
-m = re.search(r'^  tester:\n(?:    .*\n)*?    agent_id: \"([^\"]+)\"', text, re.M)
-s = re.search(r'^  tester:\n(?:    .*\n)*?    status: \"([^\"]+)\"', text, re.M)
-if m and s and s.group(1) == 'idle':
-    print(m.group(1))
-" 2>/dev/null || echo "")"
-        if [ -n "$_TESTER_AID" ]; then
-          cat >&2 <<E2EEOF
-
-[builder-loop] ✅ PASS_CMD 全过（iter ${NEXT_ITER}）。检测到端到端验收用例。
-tester_agent_id=${_TESTER_AID}
+[builder-loop] PASS_CMD 全过（iter ${NEXT_ITER}）。检测到端到端验收用例。
+tester_agent_id=${_E2E_TAID}
 
 续接 tester 执行端到端验收：
-1. SendMessage(to: "${_TESTER_AID}", summary: "rerun e2e")，传入失败用例
+1. SendMessage(to: "${_E2E_TAID}", summary: "rerun e2e")，传入失败用例
    - 如果 SendMessage 失败，fallback 到 Agent(subagent_type: "tester") 全量重跑
-   - worktree_path: ${RUN_CWD}
-   - e2e_cases_path: ${E2E_CASES_PATH}
-   - e2e_level: ${E2E_LEVEL}
+   - worktree_path: ${_E2E_WTP}
+   - e2e_cases_path: ${_E2E_CP}
+   - e2e_level: ${_E2E_LVL}
 2. tester 报 E2E_SUMMARY: all_pass → 用 python3 写 e2e_verified_head 到 state 文件：
    STATE_FILE=${STATE_FILE}
-   写入字段：e2e_verified_head: "${CURRENT_HEAD}"
+   写入字段：e2e_verified_head: "${_E2E_CH}"
 3. tester 报 E2E_SUMMARY: has_failure → 修改代码后用 python3 写 phase: "active" 到 state 触发 PASS_CMD 重跑：
    STATE_FILE=${STATE_FILE}
 
 端到端验收用例：
-${E2E_CASES}
+${_E2E_CASES}
 E2EEOF
-        else
-          cat >&2 <<E2EEOF
+      else
+        cat >&2 <<E2EEOF
 
-[builder-loop] ✅ PASS_CMD 全过（iter ${NEXT_ITER}）。检测到端到端验收用例。
+[builder-loop] PASS_CMD 全过（iter ${NEXT_ITER}）。检测到端到端验收用例。
 
 请执行端到端验收：
 1. spawn tester subagent（e2e 模式），传入：
    - e2e_cases（以下用例文本）
-   - worktree_path: ${RUN_CWD}
-   - e2e_cases_path: ${E2E_CASES_PATH}
-   - e2e_level: ${E2E_LEVEL}
+   - worktree_path: ${_E2E_WTP}
+   - e2e_cases_path: ${_E2E_CP}
+   - e2e_level: ${_E2E_LVL}
 2. tester 报 E2E_SUMMARY: all_pass → 用 python3 写 e2e_verified_head 到 state 文件：
    STATE_FILE=${STATE_FILE}
-   写入字段：e2e_verified_head: "${CURRENT_HEAD}"
+   写入字段：e2e_verified_head: "${_E2E_CH}"
 3. tester 报 E2E_SUMMARY: has_failure → 修改代码后用 python3 写 phase: "active" 到 state 触发 PASS_CMD 重跑：
    STATE_FILE=${STATE_FILE}
 
 端到端验收用例：
-${E2E_CASES}
+${_E2E_CASES}
 E2EEOF
-        fi
-        # V4.2: 写 phase=e2e_pending，L1 闸静默后续 Stop 直到 e2e 完成或代码变动
-        STATE_FILE="$STATE_FILE" python3 -c "
-import os, re
-sf = os.environ['STATE_FILE']
-text = open(sf).read()
-text = re.sub(r'^phase:.*$', 'phase: \"e2e_pending\"', text, flags=re.M)
-open(sf, 'w').write(text)
-" 2>/dev/null || true
-        debug_log "e2e_phase" '{"phase":"e2e_pending"}'
-        exit 2
       fi
-    else
-      debug_log "e2e_skip" "already verified at HEAD=$CURRENT_HEAD"
-    fi
-  fi
-
-  # ---- V4.0: reward hacking regex check (from judge Layer 2, now mechanical) ----
-  RH_DIFF="$(git -C "$RUN_CWD" diff "${PASS_START_HEAD_PREREAD}..HEAD" --name-only 2>/dev/null || echo "")"
-  RH_CONFIG_HIT=""
-  for rh_f in $RH_DIFF; do
-    case "$rh_f" in
-      *loop.yml|*pyproject.toml|*pytest.ini|*setup.cfg|*conftest.py|tests*/*.py|test_*) RH_CONFIG_HIT="$rh_f"; break ;;
-    esac
-  done
-  if [ -n "$RH_CONFIG_HIT" ]; then
-    RH_CONTENT="$(git -C "$RUN_CWD" diff "${PASS_START_HEAD_PREREAD}..HEAD" -- "$RH_CONFIG_HIT" 2>/dev/null || echo "")"
-    RH_KEYWORD_HIT=""
-    for rh_kw in '--reruns' '@pytest.mark.flaky' 'xfail' 'pytest.skip' 'pytest.mark.skip' '@unittest.skip' '.skipTest(' '-k "not'; do
-      case "$RH_CONTENT" in
-        *"$rh_kw"*) RH_KEYWORD_HIT="$rh_kw"; break ;;
-      esac
-    done
-    if [ -n "$RH_KEYWORD_HIT" ]; then
-      debug_log "reward_hack_guard" "file=$RH_CONFIG_HIT keyword=$RH_KEYWORD_HIT"
+      debug_log "e2e_phase" '{"phase":"e2e_pending"}'
+      exit 2
+      ;;
+    reward_hack)
+      _RH_FILE="$(echo "$HANDLE_PASS_OUT" | tail -1 | python3 -c "import sys,json; print(json.loads(sys.stdin.read()).get('file',''))" 2>/dev/null || echo "")"
+      _RH_KW="$(echo "$HANDLE_PASS_OUT" | tail -1 | python3 -c "import sys,json; print(json.loads(sys.stdin.read()).get('keyword',''))" 2>/dev/null || echo "")"
+      debug_log "reward_hack_guard" "file=$_RH_FILE keyword=$_RH_KW"
       cat >&2 <<RH_MSG
-[builder-loop reward-hack-guard] PASS_CMD 配置改动疑似 reward hacking（file=$RH_CONFIG_HIT, keyword=$RH_KEYWORD_HIT）。
+[builder-loop reward-hack-guard] PASS_CMD 配置改动疑似 reward hacking（file=$_RH_FILE, keyword=$_RH_KW）。
 立即用 AskUserQuestion 列三选项让用户决策：
-  ① quarantine 该测试（pytest.mark.skip / --ignore=... / xfail）+ 留 followup issue
-  ② 修测试根因（race / sleep / 共享状态 改成同步原语）
-  ③ 保留 cmd 改动（需在回复中给出必要性理由）
+  1. quarantine 该测试（pytest.mark.skip / --ignore=... / xfail）+ 留 followup issue
+  2. 修测试根因（race / sleep / 共享状态 改成同步原语）
+  3. 保留 cmd 改动（需在回复中给出必要性理由）
 禁止单方面继续完成 commit 流程。
 RH_MSG
       exit 2
-    fi
-  fi
-
-  # ---- V3.0 reviewer-as-gate: 统一 bare/worktree 路径 ----
-  WORKTREE_PATH_PASS="$(grep -E '^worktree_path:' "$STATE_FILE" 2>/dev/null | head -1 | sed -E 's/^worktree_path:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' || echo "")"
-  COMMIT_OUT="$(bash "${SKILL_DIR}/loop-commit.sh" "$STATE_FILE" 2>&1 || true)"
-    COMMIT_LAST="$(echo "$COMMIT_OUT" | tail -1)"
-    COMMIT_ACTION="$(echo "$COMMIT_LAST" | awk '{print $1}')"
-    debug_log "commit_only_result" "$(CA="$COMMIT_ACTION" CL="$COMMIT_LAST" python3 -c "
-import os, json
-print(json.dumps({'commit_action': os.environ.get('CA',''), 'commit_last_line': os.environ.get('CL','')[:200]}))
-" 2>/dev/null || echo '{}')"
-
-    case "$COMMIT_ACTION" in
-      COMMIT_DONE|NOOP)
-        NEW_HEAD_SHORT="$(echo "$COMMIT_LAST" | awk '{print $2}')"
-        [ -z "$NEW_HEAD_SHORT" ] && NEW_HEAD_SHORT="$(git -C "$RUN_CWD" rev-parse --short HEAD 2>/dev/null || echo "")"
-        SLUG_PASS="$(grep -E '^slug:' "$STATE_FILE" 2>/dev/null | head -1 | sed -E 's/^slug:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' || echo "")"
-        DIFF_FILE_PASS="${PROJECT_ROOT}/.claude/reviewer-diff-${SLUG_PASS}.txt"
-        PROJ_NAME_PASS="$(basename "$PROJECT_ROOT")"
-        mkdir -p "${PROJECT_ROOT}/.claude/review_reports" 2>/dev/null || true
-        REPORT_TS_PASS="$(date +%Y%m%d_%H%M%S)"
-        REPORT_PATH_PASS="${PROJECT_ROOT}/.claude/review_reports/${PROJ_NAME_PASS}_${SLUG_PASS}_${REPORT_TS_PASS}.md"
-        REVIEWER_FILES_PASS="$(git -C "$RUN_CWD" diff --name-only "${PASS_START_HEAD_PREREAD}..HEAD" 2>/dev/null | tr '\n' ',' | sed 's/,$//' || echo "")"
-        git -C "$RUN_CWD" diff "${PASS_START_HEAD_PREREAD}..HEAD" > "$DIFF_FILE_PASS" 2>/dev/null || echo "" > "$DIFF_FILE_PASS"
-
-        # 写 state：phase=passed_pending_review + last_iter_head + reviewer_pending 段
-        STATE_FILE="$STATE_FILE" NEW_HEAD="$NEW_HEAD_SHORT" \
-          PASS_SH_PASS="$PASS_START_HEAD_PREREAD" RFILES_PASS="$REVIEWER_FILES_PASS" \
-          DFILE_PASS="$DIFF_FILE_PASS" RPATH_PASS="$REPORT_PATH_PASS" \
-          PLAN_PATH_PASS="$PLAN_PATH" \
-          WAT_PASS="$(date -Iseconds 2>/dev/null || date +%s)" python3 - <<'PY' 2>/dev/null || true
-import os, re
-sf = os.environ['STATE_FILE']
-text = open(sf).read()
-
-def upsert(text, key, val):
-    pat = re.compile(rf'^{key}:.*$', re.M)
-    if pat.search(text):
-        return pat.sub(f'{key}: {val}', text)
-    if not text.endswith('\n'):
-        text += '\n'
-    return text + f'{key}: {val}\n'
-
-text = upsert(text, 'phase', '"passed_pending_review"')
-text = upsert(text, 'last_iter_head', f'"{os.environ["NEW_HEAD"]}"')
-
-# 删除老 reviewer_pending 段（块内每行以 2 空格缩进）
-text = re.sub(r'^reviewer_pending:\n(?:  .+\n)*', '', text, flags=re.M)
-if not text.endswith('\n'):
-    text += '\n'
-pending_block = (
-    'reviewer_pending:\n'
-    f'  pass_start_head: "{os.environ["PASS_SH_PASS"]}"\n'
-    f'  reviewer_files: "{os.environ["RFILES_PASS"]}"\n'
-    f'  diff_file: "{os.environ["DFILE_PASS"]}"\n'
-    f'  report_path: "{os.environ["RPATH_PASS"]}"\n'
-    f'  plan_path: "{os.environ.get("PLAN_PATH_PASS", "")}"\n'
-    f'  written_at: "{os.environ["WAT_PASS"]}"\n'
-)
-text += pending_block
-open(sf, 'w').write(text)
-PY
-
-        write_processed_cursor "$PROJECT_ROOT"
-        echo "[builder-loop] ✅ PASS at iter ${NEXT_ITER} (commit, phase=passed_pending_review)" >&2
-        write_trace "PASS"
-
-        _WT_LINE=""
-        [ -n "$WORKTREE_PATH_PASS" ] && _WT_LINE="worktree_path=${WORKTREE_PATH_PASS}"
-        # V4.3: read reviewer identity from state for resume
-        _REVIEWER_AID="$(STATE_FILE="$STATE_FILE" python3 -c "
-import os, re
-text = open(os.environ['STATE_FILE']).read()
-m = re.search(r'^  reviewer:\n(?:    .*\n)*?    agent_id: \"([^\"]+)\"', text, re.M)
-s = re.search(r'^  reviewer:\n(?:    .*\n)*?    status: \"([^\"]+)\"', text, re.M)
-if m and s and s.group(1) == 'idle':
-    print(m.group(1))
-" 2>/dev/null || echo "")"
-        _REV_LINE=""
-        [ -n "$_REVIEWER_AID" ] && _REV_LINE="reviewer_agent_id=${_REVIEWER_AID}"
-        cat >&2 <<PASS_MSG
-[builder-loop] ✅ PASS_CMD 全部阶段通过（iter ${NEXT_ITER}）。
+      ;;
+    pass)
+      write_trace "PASS"
+      _PASS_JSON="$(echo "$HANDLE_PASS_OUT" | tail -1)"
+      _SLUG="$(echo "$_PASS_JSON" | python3 -c "import sys,json; print(json.loads(sys.stdin.read()).get('slug',''))" 2>/dev/null || echo "")"
+      _WTP="$(echo "$_PASS_JSON" | python3 -c "import sys,json; print(json.loads(sys.stdin.read()).get('worktree_path',''))" 2>/dev/null || echo "")"
+      _RAID="$(echo "$_PASS_JSON" | python3 -c "import sys,json; print(json.loads(sys.stdin.read()).get('reviewer_agent_id',''))" 2>/dev/null || echo "")"
+      _WT_LINE=""
+      [ -n "$_WTP" ] && _WT_LINE="worktree_path=${_WTP}"
+      _REV_LINE=""
+      [ -n "$_RAID" ] && _REV_LINE="reviewer_agent_id=${_RAID}"
+      echo "[builder-loop] PASS at iter ${NEXT_ITER} (commit, phase=passed_pending_review)" >&2
+      cat >&2 <<PASS_MSG
+[builder-loop] PASS_CMD 全部阶段通过（iter ${NEXT_ITER}）。
 phase=passed_pending_review
-slug=${SLUG_PASS}
+slug=${_SLUG}
 state_file=${STATE_FILE}
 ${_WT_LINE}
 ${_REV_LINE}
 PASS_MSG
-
-        debug_log "exit" "$(IT="$NEXT_ITER" python3 -c "
+      debug_log "exit" "$(IT="$NEXT_ITER" python3 -c "
 import os, json
 print(json.dumps({'code':2,'reason':'pass_done_v3','iter': int(os.environ.get('IT','0') or 0), 'phase': 'passed_pending_review'}))
 " 2>/dev/null || echo '{}')"
-        exit 2
-        ;;
-      *)
-        echo "[builder-loop] ⚠️  loop-commit.sh 失败：${COMMIT_LAST}" >&2
-        debug_log "exit" '{"code":2,"reason":"loop_commit_error"}'
-        cat >&2 <<COMMIT_ERR
-[builder-loop] ⚠️  commit 失败（iter ${NEXT_ITER}）
-${COMMIT_OUT}
+      exit 2
+      ;;
+    commit_error)
+      _CE_DETAIL="$(echo "$HANDLE_PASS_OUT" | tail -1 | python3 -c "import sys,json; print(json.loads(sys.stdin.read()).get('detail',''))" 2>/dev/null || echo "")"
+      echo "[builder-loop] loop-commit.sh 失败：${_CE_DETAIL}" >&2
+      debug_log "exit" '{"code":2,"reason":"loop_commit_error"}'
+      cat >&2 <<COMMIT_ERR
+[builder-loop] commit 失败（iter ${NEXT_ITER}）
+${_CE_DETAIL}
 请检查工作目录状态后重试。
 COMMIT_ERR
-        exit 2
-        ;;
-    esac
+      exit 2
+      ;;
+    *)
+      echo "[builder-loop] handle-pass-result.sh 返回未知 type: ${HANDLE_PASS_TYPE} (ec=${HANDLE_PASS_EC})" >&2
+      debug_log "exit" '{"code":2,"reason":"handle_pass_unknown"}'
+      exit 2
+      ;;
+  esac
 fi
 
+# (Old inline PASS path removed in V5.4 — now handled by handle-pass-result.sh above)
 # ---- 3b. FAIL → 处理反馈 ----
 echo "[builder-loop] ❌ iter ${NEXT_ITER}: PASS_CMD 在 stage=$(echo "$LAST_LINE" | awk '{print $2}') 失败，分析中..." >&2
 STAGE="$(echo "$LAST_LINE" | awk '{print $2}')"
