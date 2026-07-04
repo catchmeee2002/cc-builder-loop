@@ -71,14 +71,22 @@ description: "进入 Builder 模式 — 复杂任务先计划后动手，完成�
 > 如果前置 loop 检查已经 setup 过（`bash ~/.claude/skills/builder-loop/scripts/locate-state.sh` 找到 `phase: "active"` 的 state），跳过此段。
 
 - **已 setup**（`locate-state.sh` 找到 `phase: "active"`）→ 直接告知 `✅ loop 已活跃`
-  - 之后由 Stop hook 接管：PASS→Reviewer / FAIL→注入继续修 / 早停→问用户
+  - **V5.4 builder 主动跑 PASS_CMD**：diff-level-check 后，从 state 读 `worktree_path`（或 `project_root`）和 `iter`，执行：
+    1. `bash ~/.claude/skills/builder-loop/scripts/run-pass-cmd.sh <run_cwd> <iter+1> <project_root>`
+    2. PASS → `bash ~/.claude/skills/builder-loop/scripts/handle-pass-result.sh <state_file> <iter+1> <run_cwd> <project_root>`
+       - exit 0（type=pass）→ Read state 拿 reviewer_pending，进入下方 Reviewer 流程
+       - exit 2（type=e2e_needed）→ 按 JSON 输出走 E2E 验证请求处理
+       - exit 3（type=reward_hack）→ 按 JSON 输出走 Reward hacking 警戒
+       - exit 4（type=commit_error）→ 按 JSON 的 log_file 排查
+    3. FAIL → Read run-pass-cmd.sh 输出的日志路径，修代码，回到步骤 1
+  - Stop hook 作为 safety net：如果 CC fire 了 Stop event，L1 闸看 phase=passed_pending_review → exit 0（不 double run）。如果 builder 没跑 PASS_CMD 就结束 turn，Stop hook 照旧接管
   - PASS 后 rebase 冲突 → Read `~/.claude/skills/builder-loop/docs/arbiter-flow.md` 按其执行
 - **loop.yml 存在但未 setup** → `bash ~/.claude/skills/builder-loop/scripts/setup-builder-loop.sh "<任务描述>"`
-  - 告知：`✅ builder-loop 已启动，回复结束后自动跑测试，失败自动修复，通过后审查+提交。`
+  - 告知：`✅ builder-loop 已启动，代码写完后主动跑 PASS_CMD，失败自行修复，通过后审查+提交。`
   - setup 输出含 `🌿 worktree 已创建` → 从 setup 输出的「状态文件」路径 Read 该状态文件拿 `worktree_path` 并 cd 进去
 - **不存在** → 见 builder-loop SKILL.md「智能提示」段
 
-> **⛔ 硬规则**：state.phase=active 期间绝对不 spawn reviewer/doc-maintainer/commit。等 Stop hook 返回 PASS 消息后才走 Reviewer 流程。phase=passed_pending_review 时 spawn reviewer 不算违规。
+> **⛔ 硬规则**：state.phase=active 期间绝对不 spawn reviewer/doc-maintainer/commit。PASS_CMD 通过 + handle-pass-result.sh 写入 phase=passed_pending_review 后才走 Reviewer 流程。phase=passed_pending_review 时 spawn reviewer 不算违规。
 
 > **⛔ Reward hacking 警戒（V2.3）**：修 `loop.yml.pass_cmd` 命令字符串或加 `--reruns`/`xfail`/`skip`/`@pytest.mark.flaky` 等关键词时，必须 AskUserQuestion 列三选项（quarantine / 修测试 / 保留 cmd）让用户选，禁止单方面继续 commit。
 
