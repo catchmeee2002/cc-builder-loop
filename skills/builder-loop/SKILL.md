@@ -13,7 +13,7 @@ description: "Builder 自闭环迭代 — 在 builder 完成改动后，以项�
 4. **上限与早停**：硬上限 `max_iterations`（默认 5）+ 智能早停（无进展/反增长/保护路径被改）
 5. **worktree 隔离**：`worktree.enabled=true` 时创建 git worktree，PASS 后三档合回
 6. **⛔ 禁用 CC 内置 worktree**：禁止调用 `EnterWorktree` / `ExitWorktree`。worktree 一律由 `setup-builder-loop.sh` 通过 git CLI 创建
-7. **循环外接力**：PASS 后 builder.md 接力（reviewer → doc-maintainer → commit）
+7. **循环外接力**：PASS 后 builder.md 接力（builder 写 doc → reviewer Phase D 独立审 → commit）
 
 ## 启动流程
 

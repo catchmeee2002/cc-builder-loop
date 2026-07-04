@@ -134,7 +134,7 @@ description: "进入 Builder 模式 — 复杂任务先计划后动手，完成�
 |---|---|
 | 0 🔴 通过 | `bash ~/.claude/skills/builder-loop/scripts/merge-and-cleanup.sh <state_file>`（worktree: ff merge + 删 worktree + 删 state；bare: stash drop + 删 state） |
 | 🟡 / 🔵 非阻塞 | Edit/Write 修复 → dirty 出现 → 下一轮 stop hook L1 闸自愈回 phase=active → 重跑 PASS_CMD |
-| 🔴 阻塞 | AskUserQuestion 让用户选 [继续修 / abandon-loop.sh]。用户选继续修 → builder 修复 → 重跑 run-pass-cmd + handle-pass-result → reviewer 再审（同 🟡 路径，不允许跳过 re-review 直接 merge） |
+| 🔴 阻塞 | AskUserQuestion 让用户选 [继续修 / abandon-loop.sh]。用户选继续修 → builder 修复 → 重跑 run-pass-cmd + handle-pass-result → 按步骤 2 续接/新 spawn reviewer 再审（不允许跳过 re-review 直接 merge） |
 
 **步骤 3：收到通知后处理**
 
