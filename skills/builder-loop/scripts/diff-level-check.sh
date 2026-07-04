@@ -83,11 +83,30 @@ if [ -n "$DIFF_OUTPUT" ]; then
   done <<< "$DIFF_OUTPUT"
 fi
 
-# ---- 3. 文档新鲜度提醒（plan.md / docs/plan.md）----
+# ---- 3. 文档新鲜度交叉引用（V5.3: changed files basename → 项目 doc grep）----
 DOC_REMIND=""
+# plan.md 保留原逻辑：存在即提醒
 for p in "plan.md" "docs/plan.md"; do
   [ -f "${PROJECT_ROOT}/${p}" ] && DOC_REMIND="${DOC_REMIND}\"${p}\","
 done
+# 项目 doc 交叉引用：changed files 的 basename 出现在 doc 中 → 提醒检查过时性
+CHANGED_BASENAMES=""
+for cf in $(git -C "$PROJECT_ROOT" diff "$DIFF_BASE" --name-only 2>/dev/null || true); do
+  bn="${cf##*/}"
+  [ -n "$bn" ] && CHANGED_BASENAMES="${CHANGED_BASENAMES} ${bn}"
+done
+if [ -n "$CHANGED_BASENAMES" ]; then
+  for doc in "CLAUDE.md" "skills/builder-loop/SKILL.md" "skills/builder-loop/README.md"; do
+    doc_full="${PROJECT_ROOT}/${doc}"
+    [ -f "$doc_full" ] || continue
+    for bn in $CHANGED_BASENAMES; do
+      if grep -qF "$bn" "$doc_full" 2>/dev/null; then
+        DOC_REMIND="${DOC_REMIND}\"${doc}\","
+        break
+      fi
+    done
+  done
+fi
 DOC_REMIND="${DOC_REMIND%,}"
 
 echo "{\"level_signals\":[${SIGNALS}],\"count\":${COUNT},\"doc_freshness_check\":[${DOC_REMIND}]}"

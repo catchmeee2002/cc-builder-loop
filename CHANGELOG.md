@@ -6,6 +6,7 @@
 
 - **install.sh 幂等覆盖**：hook 注册从"检测差异→条件更新"改为"无条件删旧+写新"。消灭 `find_entry_status` 部分比较导致的配置漂移（如只比脚本名不比 matcher）。deprecated 列表合并进统一清理逻辑
 - **find_project_root worktree 追溯**：setup-builder-loop.sh 和 locate-state.sh 的 PROJECT_ROOT 锚定增加 `.git` 文件检测（worktree 的 `.git` 是文件不是目录）。检测到 worktree 后通过 `git rev-parse --git-common-dir` 追溯到主仓，解决 `--reuse-worktree` 从 worktree 内调用时 state 创建在 worktree 内的问题
+- **doc_freshness_check 交叉引用**：diff-level-check.sh 从"plan.md 硬编码存在性探测"升级为扫描项目文档（CLAUDE.md/SKILL.md/README.md）与 changed files 的 basename 交叉引用。命中的文档输出到 doc_freshness_check 数组，步骤 3.5.5 强制 Read 检查过时性
 
 ## V5.2 e2e_pending dirty guard + locate-state || true（2026-07-04）
 
