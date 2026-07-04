@@ -42,11 +42,6 @@
 - 根因：tester 没有阅读被测函数的 subprocess 调用模式就选了 mock 策略
 - 优先级：中
 
-## 2026-07-02 tester subagent 写文件触发 stop hook 无限循环（e2e_pending ↔ dirty L1 自愈）
-- 触发场景：builder PASS_CMD 通过后进入 e2e_pending，spawn tester subagent 在 worktree 写测试文件。tester 每次 Write/Edit 触发 stop hook → hook 检测 dirty → L1 自愈（e2e_pending → active）→ 重跑 PASS_CMD → PASS → 检测到 e2e cases → 又要求 spawn tester。tester 还在后台跑着，stop hook 已循环触发 10+ 次。
-- 现象：builder 主线被 stop hook 反复注入相同的 e2e 验收请求，每轮都要手动回复"重复触发，跳过"。最终需要 `touch .pause` 暂停 hook 才能等 tester 完成。
-- 根因：stop hook 的 L1 dirty 自愈不感知"当前有 tester subagent 正在工作"这个状态。tester 在 worktree 写文件 = dirty，dirty 触发 L1 自愈回 active，active PASS 后又进 e2e_pending，形成闭环。缺少"tester 运行中 → 跳过 L1 dirty 自愈"的守卫。
-- 优先级：高（每次有 e2e cases 的任务都会触发，严重干扰主线对话）
 
 ## 2026-07-02 fork subagent 批量改测试文件漏改导致 PASS_CMD 失败
 - 触发场景：builder 用 fork subagent 批量替换 4 个测试文件中的 `state_after="X"` → `state_after=["X"]`。fork prompt 列了 4 个文件名但没列每个文件的命中数。fork 完成后 builder 没二次 grep 校验覆盖率，直接等 stop hook。
@@ -449,15 +444,6 @@
   4. e2e fixture：`test-doc-maintainer-write-guard.sh` 模拟 doc-maintainer 试图写主仓 → exit 2 + 精确诊断 stderr
 - **优先级**：中（doc 漏审风险跟 tester 同等级；本次手动补但易遗漏）
 
-## 2026-04-29 locate-state.sh 策略 3 grep-sed 管道缺 `|| true` + set -e 缺失（pre-existing）
-
-- **触发上下文**：V2.4 reviewer 反馈（🟡）— `locate-state.sh:24` 用 `set -uo pipefail` 缺 `-e`（与同项目其他脚本不一致，外部静默契约下吞错）；策略 3 的 `wt="$(grep -E '^worktree_path:' "$sf" 2>/dev/null | head -1 | sed -E '...')"`（L83）grep 未命中时 + pipefail 让子 shell 退出非 0，外层 `wt=...` 命令替换实际接受空字符串后续 `[ -z "$wt" ] && continue` 兜过去，但这种写法依赖 `set -e` 缺失才不杀脚本，写法脆弱（迁移到 `set -euo pipefail` 时会暴露）。本期按"bug fix 不带周边清理"原则不改。
-- **建议方向**：
-  1. 统一 `set -euo pipefail`，所有 grep / head / sed 管道末尾补 `|| true`（locate-state.sh / 其他遗留脚本一并扫一遍）
-  2. e2e fixture：构造「worktree_path 字段缺失」的 state 文件验证策略 3 跳过该 state 不报错
-  3. 顺路检查策略 4 / 5 的 grep 是否同样脆弱（V2.4 策略 5 已显式 `|| true`，但策略 3-4 未审）
-- **优先级**：低（pre-existing 多版本未触发实质 bug；脆弱性属于代码风格而非功能正确性）
-
 ## 2026-04-29 reviewer-params.json changed_files 含 loop hook 一并 commit 的无关 untracked 累积，reviewer 焦点被噪音稀释
 
 - **触发上下文**：同上 meta-analysis 任务。Loop PASS auto-commit 时 hook 把所有 `git status` 中的 untracked 文件一并 `git add` 进 commit `db9f7bc` —— 包括上一轮 exp-015 实验产物 `novels/exp-015-blood-v12/export/*` 共 14 个文件。`reviewer-params.json` 的 `changed_files` 字段直接基于这次 commit 生成，把 14 个无关文件喂给 reviewer。Builder 必须在 reviewer prompt 里手动列「需剔除：novels/exp-015-blood-v12/export/* 全部，与本任务无关」。如果 builder 没意识到要剔除，reviewer 会把无关 export 文件当本任务产物去审。
@@ -495,17 +481,18 @@
   2. e2e fixture：`test-install-matcher-update.sh` —— install 一次（matcher=A）→ 改 matcher=B → 再 install → 断言 settings.json 该条目 matcher=B
 - **优先级**：中（V2.2 没改 matcher，未触发；未来改 matcher 时会静默失效）
 
-## 2026-04-26 uninstall.sh bl_scripts 列表漏 reviewer-timing-check.sh
-
-- **触发上下文**：V2.2 reviewer 审查发现（pre-existing 老 bug，本期未修按"bug fix 不带周边清理"原则留作 A2 候选）。`uninstall.sh` L49 的 `bl_scripts = ["builder-loop-stop.sh", "tester-lock-write.sh", "tester-lock-check.sh", "tester-lock-clear.sh", "tester-write-guard.sh"]` 列表漏 `reviewer-timing-check.sh`，uninstall 后 settings.json 里该 hook 条目残留，下次 install 重复合并造成 hook 执行多次。
-- **建议方向**：
-  1. `uninstall.sh` L49 的 `bl_scripts` 加 `"reviewer-timing-check.sh"` 一项
-  2. 加 e2e fixture：`test-install-uninstall-roundtrip.sh`——install 后 uninstall 应让 settings.json 完全等于 install 前的状态（diff 必须为空）
-- **优先级**：中（uninstall 不彻底导致冗余执行，但不影响功能正确性）
-
 ---
 
 ## Archived（已消化/已修复）
+
+### 2026-07-02 e2e_pending L1 dirty 自愈导致 tester 写文件触发无限循环 — V5.2 修复
+- 修复内容：L1 闸 e2e_pending 时跳过 dirty_changes 自愈（仅 new_commit/e2e_verified 自愈）；e2e 注入消息加 phase reset 提示
+
+### 2026-04-29 locate-state.sh 策略 3 grep 管道缺 || true — V5.2 修复
+- 修复内容：策略 3 grep pipeline 末尾补 || true，与策略 4/5 对齐
+
+### 2026-04-26 uninstall.sh bl_scripts 列表漏 reviewer-timing-check.sh — V3.5-A 已修
+- 修复内容：commit 8673268 已补齐（improvements.md 残留条目清理）
 
 ### 2026-06-23 E2E case 沉淀应由 tester 而非 builder 执行 — V4.8 tester 沉淀步骤
 - 修复内容：tester E2E 验收模式 all_pass 后新增沉淀步骤（读 e2e_cases_path → 去重 → 补全 hard_rules → append）；planner e2e-cases 标签统一 YAML 格式

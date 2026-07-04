@@ -369,7 +369,7 @@ if [ "$PHASE_FIELD" = "passed_pending_review" ] || [ "$PHASE_FIELD" = "e2e_pendi
     LIH_GATE="$(grep -E '^last_iter_head:' "$STATE_FILE" 2>/dev/null | head -1 | sed -E 's/^last_iter_head:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' || echo "")"
     CUR_HEAD_GATE="$(git -C "$CHECK_PATH_GATE" rev-parse --short HEAD 2>/dev/null || echo "")"
     STATUS_GATE="$(git -C "$CHECK_PATH_GATE" status --porcelain 2>/dev/null || echo "")"
-    if [ -n "$STATUS_GATE" ]; then
+    if [ -n "$STATUS_GATE" ] && [ "$PHASE_FIELD" != "e2e_pending" ]; then
       SHOULD_HEAL=1
       HEAL_REASON="dirty_changes"
     elif [ -n "$LIH_GATE" ] && [ -n "$CUR_HEAD_GATE" ] && [ "$LIH_GATE" != "$CUR_HEAD_GATE" ]; then
@@ -604,7 +604,8 @@ tester_agent_id=${_TESTER_AID}
 2. tester 报 E2E_SUMMARY: all_pass → 用 python3 写 e2e_verified_head 到 state 文件：
    STATE_FILE=${STATE_FILE}
    写入字段：e2e_verified_head: "${CURRENT_HEAD}"
-3. tester 报 E2E_SUMMARY: has_failure → 根据失败用例修改代码
+3. tester 报 E2E_SUMMARY: has_failure → 修改代码后用 python3 写 phase: "active" 到 state 触发 PASS_CMD 重跑：
+   STATE_FILE=${STATE_FILE}
 
 端到端验收用例：
 ${E2E_CASES}
@@ -623,7 +624,8 @@ E2EEOF
 2. tester 报 E2E_SUMMARY: all_pass → 用 python3 写 e2e_verified_head 到 state 文件：
    STATE_FILE=${STATE_FILE}
    写入字段：e2e_verified_head: "${CURRENT_HEAD}"
-3. tester 报 E2E_SUMMARY: has_failure → 根据失败用例修改代码
+3. tester 报 E2E_SUMMARY: has_failure → 修改代码后用 python3 写 phase: "active" 到 state 触发 PASS_CMD 重跑：
+   STATE_FILE=${STATE_FILE}
 
 端到端验收用例：
 ${E2E_CASES}

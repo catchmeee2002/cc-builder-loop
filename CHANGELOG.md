@@ -2,6 +2,12 @@
 
 > 从 CLAUDE.md §5 外移。记录各版本交付的能力与关键实现细节。
 
+## V5.2 e2e_pending dirty guard + locate-state || true（2026-07-04）
+
+- **L1 闸 e2e_pending dirty guard**：e2e_pending 时 dirty_changes 不再触发自愈回 active，仅 new_commit 和 e2e_verified 自愈。解决 tester 写文件导致 stop hook 无限循环（e2e_pending → dirty heal → active → PASS → e2e_pending）。trade-off：builder 修完 failed e2e 的代码后需手动写 phase=active（注入消息已含提示）
+- **locate-state.sh 策略 3 || true**：grep pipeline 末尾补 `|| true`，与策略 4/5/6 对齐，防 set -e 迁移时脚本中断
+- **improvements.md 清理**：删 3 条已消化条目（uninstall.sh 漏项 V3.5-A 已修 / e2e_pending 循环本次修 / locate-state || true 本次修）
+
 ## V5.1 locate-state session_id 匹配 + merge-and-cleanup 一行修（2026-07-03）
 
 ### locate-state.sh session_id 匹配

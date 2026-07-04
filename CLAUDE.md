@@ -38,7 +38,7 @@
 **关键 state 字段**：`phase`（active / e2e_pending / passed_pending_review）+ `last_iter_head` + `reviewer_pending` 段 + `subagents` 段（V4.3 agent_id 追踪）+ `cleanup_phase`。详见 SKILL.md 「状态文件 schema」段。
 
 **Hook 闸顺序**（PASS_CMD 之前命中即静默 exit 0）：
-- L1 `phase=passed_pending_review|e2e_pending` → 静默（dirty/新 commit 自愈回 active；e2e_pending + verified_head==HEAD 自愈回 active）
+- L1 `phase=passed_pending_review|e2e_pending` → 静默（passed_pending_review: dirty/新 commit 自愈回 active；e2e_pending: 仅新 commit/verified_head 自愈，dirty 不自愈防 tester 写文件触发无限循环）
 - L2A 末尾 pending AskUserQuestion → 静默
 - L2B HEAD == last_iter_head + git status 空 → 静默
 - L3 `.claude/builder-loop/<slug>.pause` 存在 → 静默

@@ -101,7 +101,7 @@ esac
 if [ -d "$STATE_DIR" ]; then
   for sf in "$STATE_DIR"/*.yml; do
     [ -e "$sf" ] || continue
-    wt="$(grep -E '^worktree_path:' "$sf" 2>/dev/null | head -1 | sed -E 's/^worktree_path:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/')"
+    wt="$(grep -E '^worktree_path:' "$sf" 2>/dev/null | head -1 | sed -E 's/^worktree_path:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' || true)"
     [ -z "$wt" ] && continue
     # 归一化
     if [ -d "$wt" ]; then
