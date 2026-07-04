@@ -16,6 +16,17 @@
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(pwd)" && pwd -P)"
+# V5.3: worktree 内调用时追溯到主仓（.git 是文件 → worktree；是目录 → 主仓）
+if [ -f "${PROJECT_ROOT}/.git" ]; then
+  _common="$(git -C "$PROJECT_ROOT" rev-parse --git-common-dir 2>/dev/null || echo "")"
+  if [ -n "$_common" ]; then
+    _main="$(cd "$_common/.." && pwd -P 2>/dev/null || echo "")"
+    if [ -n "$_main" ] && [ -f "${_main}/.claude/loop.yml" ]; then
+      echo "[setup-builder-loop] ⚠️  当前在 worktree 内，已追溯到主仓：${_main}" >&2
+      PROJECT_ROOT="$_main"
+    fi
+  fi
+fi
 LOOP_YML="${PROJECT_ROOT}/.claude/loop.yml"
 STATE_DIR="${PROJECT_ROOT}/.claude/builder-loop/state"
 LOG_DIR="${PROJECT_ROOT}/.claude/loop-runs"

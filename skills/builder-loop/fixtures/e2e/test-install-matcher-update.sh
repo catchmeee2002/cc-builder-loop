@@ -76,8 +76,8 @@ INSTALL2_EC=0
 HOME="$TMPHOME" bash "$TMPREPO/install.sh" >"$INSTALL2_LOG" 2>&1 || INSTALL2_EC=$?
 assert "第二次 install 退出码=0" "[ '$INSTALL2_EC' -eq 0 ]"
 
-# ---- 7. 断言：install 输出含 "1 条更新" ----
-assert_contains "install 输出含 '1 条更新'" "$INSTALL2_LOG" '1 条更新'
+# ---- 7. 断言：install 输出含 "写入"（V5.3 幂等覆盖不再区分新增/更新）----
+assert_contains "install 输出含 '条写入'" "$INSTALL2_LOG" '条写入'
 
 # ---- 8. 断言：matcher 已更新 + 只有一条 ----
 section "验证 matcher 更新结果"

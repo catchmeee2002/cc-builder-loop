@@ -2,6 +2,11 @@
 
 > 从 CLAUDE.md §5 外移。记录各版本交付的能力与关键实现细节。
 
+## V5.3 install.sh 幂等覆盖 + find_project_root worktree 追溯（2026-07-04）
+
+- **install.sh 幂等覆盖**：hook 注册从"检测差异→条件更新"改为"无条件删旧+写新"。消灭 `find_entry_status` 部分比较导致的配置漂移（如只比脚本名不比 matcher）。deprecated 列表合并进统一清理逻辑
+- **find_project_root worktree 追溯**：setup-builder-loop.sh 和 locate-state.sh 的 PROJECT_ROOT 锚定增加 `.git` 文件检测（worktree 的 `.git` 是文件不是目录）。检测到 worktree 后通过 `git rev-parse --git-common-dir` 追溯到主仓，解决 `--reuse-worktree` 从 worktree 内调用时 state 创建在 worktree 内的问题
+
 ## V5.2 e2e_pending dirty guard + locate-state || true（2026-07-04）
 
 - **L1 闸 e2e_pending dirty guard**：e2e_pending 时 dirty_changes 不再触发自愈回 active，仅 new_commit 和 e2e_verified 自愈。解决 tester 写文件导致 stop hook 无限循环（e2e_pending → dirty heal → active → PASS → e2e_pending）。trade-off：builder 修完 failed e2e 的代码后需手动写 phase=active（注入消息已含提示）

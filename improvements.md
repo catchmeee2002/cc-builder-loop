@@ -86,14 +86,6 @@
 
 
 
-## 2026-06-17 --reuse-worktree 把 state 创建在 worktree 内部而非主仓 state 目录
-
-- 触发场景：loop 早停后用 `setup-builder-loop.sh --reuse-worktree <path>` 重新进入，state 文件被创建在 worktree 的 `.claude/builder-loop/state/` 目录下（而非主仓的）
-- 现象：stop hook 用主仓 CWD 调 locate-state.sh → 只扫主仓 state 目录 → 找不到 → exit 0 静默放行。需手动 cp state 到主仓才能恢复 hook
-- 根因：--reuse-worktree 的 PROJECT_ROOT 解析指向 worktree 自身（worktree 内有 .claude/loop.yml），state 目录也跟着创建在 worktree 内
-- 优先级：中（每次 --reuse-worktree 都会踩，当前靠手动 cp 绕过）
-
-
 ## 2026-06-17 builder 步骤 5 确认记忆后调 /memory 导致用户被重复确认同一条知识
 
 - 触发场景：builder 步骤 5 任务回顾中，用户通过 AskUserQuestion 确认了 `[记住] c1`（跳板机 script_ota 可能全程静默执行）。builder 随后调用 `/memory` skill 写入，但 `/memory` skill 有自己的完整流程（读→提炼→AskUserQuestion 确认→写入），等于同一条知识让用户确认了两次，且第二次的候选内容和第一次一模一样。
@@ -484,6 +476,12 @@
 ---
 
 ## Archived（已消化/已修复）
+
+### 2026-06-17 --reuse-worktree state 创建在 worktree 内 — V5.3 修复
+- 修复内容：setup-builder-loop.sh + locate-state.sh 的 PROJECT_ROOT 锚定增加 .git 文件检测，worktree 内自动追溯到主仓
+
+### 2026-04-27 install.sh has_entry 仅比脚本名不比 matcher — V5.3 修复
+- 修复内容：hook 注册改为无条件删旧+写新（幂等覆盖），消灭部分比较导致的配置漂移
 
 ### 2026-07-02 e2e_pending L1 dirty 自愈导致 tester 写文件触发无限循环 — V5.2 修复
 - 修复内容：L1 闸 e2e_pending 时跳过 dirty_changes 自愈（仅 new_commit/e2e_verified 自愈）；e2e 注入消息加 phase reset 提示

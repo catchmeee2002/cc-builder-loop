@@ -126,69 +126,46 @@ def make_entry(cmd_name, matcher=None):
         entry["matcher"] = matcher
     return entry
 
-def find_entry_status(arr, cmd_name, matcher):
-    # 返回 (status, index)。status: 'missing' | 'match' | 'stale'
-    # 'match' = 脚本名命中且 matcher 字面相等；'stale' = 脚本名命中但 matcher 不同
-    for i, item in enumerate(arr):
-        for h in item.get("hooks", []):
-            if cmd_name in h.get("command", ""):
-                if item.get("matcher") == matcher:
-                    return ("match", i)
-                return ("stale", i)
-    return ("missing", -1)
-
-# 元组第 4 字段 plan_filter：""=通用，"copilot"=仅 copilot 方案装
-# 未来加新方案（gemini / openrouter 等）：plan_filter 可写 "copilot,gemini" 这种逗号分隔
-# 字符串，过滤逻辑改 `plan in plan_filter.split(',')` 即可保持兼容
 registrations = [
     ("Stop",           "builder-loop-stop.sh",      None,                    ""),
     ("PreToolUse",     "reviewer-timing-check.sh",  "Agent",                 ""),
 ]
 
-# V3.1: remove deprecated hooks from previous installs
-# 认身份隔离 hook 整体退役（subagent_type 失效 + 隔离退地基，见 CHANGELOG 范式变更节）
-deprecated = [
-    ("SubagentStart", "tester-lock-write.sh"),
-    ("SubagentStop",  "tester-lock-clear.sh"),  # V3.5: replaced by subagent-lock-clear.sh
-    ("PreToolUse",    "tester-write-guard.sh"),
-    ("SubagentStart", "subagent-start-guard.sh"),
-    ("SubagentStop",  "subagent-lock-clear.sh"),
-    ("PreToolUse",    "tester-lock-check.sh"),
-    ("PreToolUse",    "worktree-write-guard.sh"),
-]
-for hook_type, old_cmd in deprecated:
-    arr = hooks.get(hook_type, [])
+# V5.3: 幂等覆盖 — 每次安装无条件删旧+写新，不检测差异。
+# 消灭 has_entry 部分比较导致的配置漂移（如只比脚本名不比 matcher）。
+# 同时清理所有已退役 hook（不再需要单独的 deprecated 列表）。
+bl_script_names = {cmd for _, cmd, _, _ in registrations}
+bl_script_names.update([
+    "tester-lock-write.sh", "tester-lock-clear.sh", "tester-write-guard.sh",
+    "subagent-start-guard.sh", "subagent-lock-clear.sh",
+    "tester-lock-check.sh", "worktree-write-guard.sh",
+])
+
+for hook_type in list(hooks.keys()):
     hooks[hook_type] = [
-        item for item in arr
-        if not any(old_cmd in h.get("command", "") for h in item.get("hooks", []))
+        item for item in hooks[hook_type]
+        if not any(
+            any(s in h.get("command", "") for s in bl_script_names)
+            for h in item.get("hooks", [])
+        )
     ]
+    if not hooks[hook_type]:
+        del hooks[hook_type]
 
 added = 0
-updated = 0
 skipped = 0
 for hook_type, cmd_name, matcher, plan_filter in registrations:
     if plan_filter and plan_filter != plan:
         skipped += 1
         continue
-    arr = hooks.setdefault(hook_type, [])
-    status, idx = find_entry_status(arr, cmd_name, matcher)
-    if status == "missing":
-        arr.append(make_entry(cmd_name, matcher))
-        added += 1
-    elif status == "stale":
-        arr.pop(idx)
-        arr.append(make_entry(cmd_name, matcher))
-        updated += 1
-    # 'match' 则跳过
-
-applicable = len(registrations) - skipped
-existed = applicable - added - updated
+    hooks.setdefault(hook_type, []).append(make_entry(cmd_name, matcher))
+    added += 1
 
 with open(out_path, "w") as f:
     json.dump(cfg, f, indent=2, ensure_ascii=False)
     f.write("\n")
 
-print(f"✓ hooks ({plan} plan): {added} 条新增，{updated} 条更新，{existed} 条已存在，{skipped} 条跳过（不属于本方案）")
+print(f"✓ hooks ({plan} plan): {added} 条写入，{skipped} 条跳过（不属于本方案）")
 PYEOF
     then
       echo "❌ python3 改写失败，未触碰原 settings.json" >&2

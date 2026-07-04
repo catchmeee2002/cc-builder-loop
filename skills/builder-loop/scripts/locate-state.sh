@@ -55,6 +55,19 @@ find_project_root() {
   # ② 普通向上查（主项目内）
   while [ "$i" -lt 5 ]; do
     if [ -f "${dir}/.claude/loop.yml" ]; then
+      # V5.3: worktree 内 loop.yml 是继承副本，追溯到主仓
+      if [ -f "${dir}/.git" ]; then
+        local _c
+        _c="$(git -C "$dir" rev-parse --git-common-dir 2>/dev/null || echo "")"
+        if [ -n "$_c" ]; then
+          local _m
+          _m="$(cd "$_c/.." && pwd -P 2>/dev/null || echo "")"
+          if [ -n "$_m" ] && [ -f "${_m}/.claude/loop.yml" ]; then
+            echo "$_m"
+            return 0
+          fi
+        fi
+      fi
       echo "$dir"
       return 0
     fi
