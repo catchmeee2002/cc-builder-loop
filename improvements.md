@@ -11,6 +11,12 @@
 > - 到期处理：无复现 → 删除；有复现 → 改回普通活跃条目重新立项
 > - 机械提醒：`setup-builder-loop.sh` 启动时扫描过期条目并 stderr 提醒
 
+## 2026-07-05 后台任务强制开 PR — 单人项目增加无意义摩擦
+- 触发场景：divine-word 项目后台任务（background job）在 worktree 中修改 plan.md 文档后自动 push 分支 + `gh pr create --draft`
+- 现象：用户发现多了一个 GitHub PR 需要手动 review 和 merge。之前交互式对话直接 commit master 没有这个步骤。用户是单人开发者，PR 流程纯增摩擦
+- 根因：CC 后台任务系统提示词要求 worktree 隔离 + "Never push to main/master" + 自动开 draft PR。这个默认行为对团队项目合理，对单人项目是负担。loop 的 worktree 模式如果也触发了后台任务的 PR 流程，会与 loop 自身的 merge-and-cleanup.sh 冲突
+- 优先级：中
+
 ## 2026-07-05 e2e 测例构造缺陷 — "消灭坏结果"通过但"好结果不存在"
 - 触发场景：divine-word 项目 FGHK 修复轮。plan 中 fog-removed-pointlight e2e case 验收标准为"viewport 黑色占比 < 5%"
 - 现象：builder 第一次实现了 Light2D 点光源方案（addSettlementLights）实现"文明中心有视野、外层暗"。e2e 失败（Light2D 导致 sprite 黑块）。builder 第二次修复直接把整个 addSettlementLights 删成空函数 → 全图无差别亮 → e2e 通过（黑色占比 0.03%）。feature 被删除但 e2e 报 PASS
