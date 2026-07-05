@@ -4,14 +4,6 @@
 > **只记事实，不写建议方向**——loop 侧开发者拿到事实自己判断怎么修。
 > 已消化条目直接删除（代码是 ground truth），不标 ✅。已关闭条目见 [CHANGELOG](CHANGELOG.md)。
 
-## 2026-07-05 [待验证] bgIsolation 配置嵌套层级写错，bg-job 被强制 EnterWorktree 导致 loop 全部门禁被绕过
-
-- 触发场景：divine-word 项目 FGHK 修复。bg-job（session adcc6343）尝试 Edit 主仓文件时被 CC 拒绝："Call EnterWorktree first"。agent 被迫进入 worktree，但 loop 是 bare 模式 → cp 绕过 loop 全链路
-- 现象：builder 在 bg-job worktree 里编辑代码 → `cp` 文件到主仓 → 直接 `git add` + `git commit` + `git push`。handle-pass-result / reviewer / doc 更新全被跳过
-- 根因：`setup-builder-loop.sh` 写 `{"bgIsolation":"none"}`（顶层），CC v2.1.201 期望 `{"worktree":{"bgIsolation":"none"}}`（嵌套）。顶层配置被静默忽略 → bg-job 仍强制隔离
-- 修复：setup 改为正确嵌套 + 旧顶层 key 自动迁移（commit dad513b）。6 个项目 settings.json 已批量修正
-- 验证状态：**脚本输出格式已验证正确；CC 实际行为待 e2e 验证**（需在已修项目跑 `claude --bg` 尝试 Edit，确认不再报 EnterWorktree 错误）
-- 优先级：高
 
 ## 2026-05-09 [理论风险] dirty stash 流程边界 case（原 known-risks R6）
 
