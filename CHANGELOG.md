@@ -2,6 +2,19 @@
 
 > 从 CLAUDE.md §5 外移。记录各版本交付的能力与关键实现细节。
 
+## V5.7 E2E 框架重设计：verify + quality 双轨判定（2026-07-05）
+
+**动机**：divine-word 事件——e2e 验收通过但产出是 programmer-art。根因：(1) llm_judge 确认式提问引导 tester 进入"数据源模式"；(2) 独立 agent 复现同样盲区——是 LLM 通用感知模式问题；(3) 框架无质量维度、无审计、静默跳过。
+
+**核心变更**：
+- **Case schema 重设计**：`llm_judge: string|null` → `judge: {verify, quality}`。verify = 功能验证（确认式），quality = 质量标准（评价式，给 tester 判断自由度）。每条 full case 必须同时含两个维度
+- **Tester 评估流程三层化**：L1 hard_rules → L2a verify（确认式 prompt）→ L2b quality（评价式 prompt）。prompt 结构差异对抗 LLM 数据源模式
+- **Planner Round 7 指导重写**：verify/quality 写法规范 + 自检（"功能正确但质量极差能拦住吗？"）
+- **审计落盘**：tester 写 `{project_root}/.claude/e2e-audit/{timestamp}.yaml` 留痕，不随 state 清理
+- **静默跳过修复**：handle-pass-result.sh E2E_PLAN_PATH 空/plan 文件不存在 → stderr warning + JSON `e2e_skipped` 字段
+
+**设计依据**：原则四（case 结构 = 输入条件，引导正确认知模式）+ 原则一（quality 判定 = 独立语义层，给 tester 判断自由度而非穷举失败模式）。
+
 ## V5.6 tester 路径隔离 + e2e_verified_head ancestor 判定（2026-07-05）
 
 **动机**：tester subagent 3 次写入主仓而非 worktree（07-04、07-02、04-29 doc-maintainer 同模式）。原则五"三次=架构缺陷"。根因：tester 的 session cwd = 主仓（CC 不支持设 subagent cwd），prompt 说"以 worktree_path/ 开头"是输出约束，对抗环境引导（Glob 探索返回主仓路径）赢面低。

@@ -68,17 +68,42 @@ description: "进入 Planner 模式 — 苏格拉底追问把模糊需求提炼�
 **e2e-cases YAML 格式**（`<!-- e2e-cases -->` 标签内必须用此格式）：
 
 ```yaml
-- id: reminder-basic
+- id: reminder-no-overstep
   input: "5分钟后提醒我喝水"
   hard_rules:
     tools_called: ["create_task"]
     tools_not_called: ["trigger_ci"]
     max_steps: 4
-  llm_judge: null
-  level: fast
+  judge:
+    verify: "正确创建了 5 分钟后的提醒任务，内容含'喝水'"
+    quality: "无多余操作，回复简洁确认，用户无需二次确认"
+  level: full
 ```
 
-字段：`id`（必填，kebab-case）、`input`（必填）、`hard_rules`（可选，含 tools_called / tools_not_called / min_tools / max_tools / max_steps / response_contains / response_not_contains）、`llm_judge`（可选，null = 无 L2 语义判据）、`level`（必填，`fast` = 只跑 L1 / `full` = L1+L2；llm_judge 为 null 时填 fast，否则填 full）。planner 只填能确定的 hard_rules 字段，tester 执行后补全。
+**字段**：
+- `id`（必填）：kebab-case 唯一标识
+- `input`（必填）：触发动作
+- `hard_rules`（可选）：L1 机械判据（tools_called / tools_not_called / min_tools / max_tools / max_steps / response_contains / response_not_contains）
+- `judge`（level=full 时必填）：L2 语义判据，含两个子字段：
+  - `verify`：功能验证——描述预期产出是什么（陈述句，精确可证伪）
+  - `quality`：质量标准——描述"达标"的正面标准（评价式，给 tester 判断自由度）
+- `level`（必填）：`fast` = 只跑 L1 / `full` = L1 + L2（verify + quality）
+
+**写 judge.verify 的规范**：
+- 陈述句描述功能预期，不用疑问句（`"回复包含构建编号"` 而非 `"是否包含？"`）
+- 必须可证伪：产出中没有 → tester 能明确判 FAIL
+
+**写 judge.quality 的规范**：
+- 描述"达标"的正面标准，不穷举失败模式
+- 给 tester 判断自由度——像给人类 QA 下标准
+- 按产出类型覆盖最常见质量维度：
+  - 视觉类：sprite/资产质量、布局合理性、无 placeholder
+  - bot 回复类：简洁性、格式适配、无多余操作、诚实性
+  - CLI/API 类：输出规范、错误可读、无 stacktrace 泄露
+
+**Planner 自检**：写完每条 case 后问——"如果 builder 交付了一个功能正确但质量极差的实现，这条 case 能拦住吗？"不能 → quality 写得不够好。
+
+planner 只填能确定的 hard_rules 字段，tester 执行后补全。
 
 **写入前自检（多 Phase 方案）**：执行任务列表有 ≥2 Phase 时，逐 Phase 检查：该 Phase 消费的新产物（新字段 / 新函数 / 新文件）是否在更早 Phase 已生产？不是 → 调整顺序后再写入。
 

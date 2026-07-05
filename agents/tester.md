@@ -136,16 +136,20 @@ TESTER_SUMMARY: 已写测试但发现疑似缺陷 | 缺陷: {file:line 描述} |
 
 ### 执行流程
 
-1. **解析用例**：读 `e2e_cases`（YAML 格式），解析为 case 列表（每条含 id / input / hard_rules / llm_judge / level）
+1. **解析用例**：读 `e2e_cases`（YAML 格式），解析为 case 列表（每条含 id / input / hard_rules / judge / level）
 2. **Level 过滤**：`e2e_level=fast` → 只保留 `level: fast` 的 case；`e2e_level=full` 或未传 → 跑全部
-3. **按顺序执行**：每条用例做对应操作（启动 app、发消息、curl、CLI 命令等），记录实际 tool_calls / steps / response
-4. **逐条判定**：
-   - L1 hard_rules 校验（tools_called / tools_not_called / max_steps 等）
-   - L2 llm_judge 校验（llm_judge 非 null 时调 LLM 判定）
-   - 结果：PASS / FAIL / SKIP（前置用例失败时跳过依赖用例）
+3. **按顺序执行**：每条用例做对应操作（启动 app、发消息、截图、curl、CLI 命令等），收集实际产出（tool_calls / steps / response / screenshots）
+4. **逐条判定**（三层）：
+   - **L1 hard_rules**：机械校验（tools_called / tools_not_called / max_steps 等）
+   - **L2a verify**（judge.verify 非空时）：确认式判定——"以下实际产出是否满足条件：{verify}"。判定 PASS/FAIL + 理由
+   - **L2b quality**（judge.quality 非空时）：评价式判定——"以评审者视角评估以下实际产出。质量标准：{quality}。是否达标？不达标说明具体不足"。判定 PASS/FAIL + 理由
+   - 最终：L1 + L2a + L2b 全 PASS → case PASS；任一 FAIL → case FAIL；前置用例失败 → SKIP
 5. **清理**：执行完毕后杀掉本次启动的 app 进程
-6. **沉淀**（仅 all_pass + `e2e_cases_path` 非空时执行）：见下方「沉淀步骤」段
-7. **输出结果**
+6. **审计落盘**：将详细判定结果写入 `{project_root}/.claude/e2e-audit/{YYYYMMDD-HHMMSS}.yaml`（含每条 case 的 l1/verify/quality 结果和 fail 理由）
+7. **沉淀**（仅 all_pass + `e2e_cases_path` 非空时执行）：见下方「沉淀步骤」段
+8. **输出结果**
+
+> **L2a 与 L2b 的认知模式差异**：verify 用确认式 prompt（"是否满足 X"），quality 用评价式 prompt（"是否达标 + 什么不足"）。这个 prompt 结构差异是对抗 LLM 数据源模式的核心机制——确认式找证据，评价式找问题。
 
 ### 沉淀步骤（all_pass 后）
 
@@ -159,7 +163,7 @@ TESTER_SUMMARY: 已写测试但发现疑似缺陷 | 缺陷: {file:line 描述} |
      - 实际 tool_calls → `tools_called`
      - 实际 steps → `max_steps`（取实际值 +1 作余量）
      - 实际 response 关键词 → `response_contains`（可选，只填最关键的 1-2 个）
-   - `level`：`llm_judge` 为 null → `fast`；否则 → `full`
+   - `level`：无 `judge` 段 → `fast`；有 → `full`
 4. 追加新 case 到 YAML 文件末尾（保持已有 case 不动）
 5. 输出 `E2E_SEDIMENT: N new cases appended to <path>`（N=0 时输出 `E2E_SEDIMENT: 0 new cases (all duplicates)`）
 

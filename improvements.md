@@ -464,6 +464,9 @@
 
 ## Archived（已消化/已修复）
 
+### 2026-07-05 tester e2e 视觉验收通过但产出是 programmer-art — V5.7 修复
+- 修复内容：e2e case schema 从 llm_judge 单字段改为 judge:{verify, quality} 双轨；tester 评估三层化（L1→L2a verify→L2b quality）；planner Round 7 加写法规范+自检；handle-pass-result.sh 静默跳过加 warning
+
 ### 2026-07-04 + 2026-06-24 e2e_verified_head 精确 SHA 失效（2 次复现） — V5.6 修复
 - 修复内容：L1 闸 e2e_pending 自愈从 `==HEAD` 改为 ancestor + path filter（safe patterns: *.md/*.txt/docs/*/.claude/*）。doc commit 不再打破验证有效性，源码变更仍正确阻断
 

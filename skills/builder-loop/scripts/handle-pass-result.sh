@@ -49,6 +49,11 @@ if [ -f "${PROJECT_ROOT}/.claude/loop.yml" ]; then
 fi
 
 E2E_PLAN_PATH="$PLAN_PATH"
+E2E_SKIPPED=""
+if [ -z "$E2E_PLAN_PATH" ]; then
+  E2E_SKIPPED="no_e2e_plan_path"
+  echo "[builder-loop] e2e: e2e_plan_path 为空，跳过 e2e 验收" >&2
+fi
 if [ -n "$E2E_PLAN_PATH" ]; then
   if [ "${E2E_PLAN_PATH#/}" = "$E2E_PLAN_PATH" ]; then
     E2E_PLAN_FULL="${PROJECT_ROOT}/${E2E_PLAN_PATH}"
@@ -59,7 +64,10 @@ if [ -n "$E2E_PLAN_PATH" ]; then
   E2E_VERIFIED_HEAD="$(read_field e2e_verified_head)"
   CURRENT_HEAD="$(git -C "$RUN_CWD" rev-parse HEAD 2>/dev/null || echo "")"
 
-  if [ "$E2E_VERIFIED_HEAD" != "$CURRENT_HEAD" ] && [ -f "$E2E_PLAN_FULL" ]; then
+  if [ ! -f "$E2E_PLAN_FULL" ]; then
+    E2E_SKIPPED="plan_file_missing"
+    echo "[builder-loop] e2e: plan 文件不存在 ($E2E_PLAN_FULL)，跳过 e2e 验收" >&2
+  elif [ "$E2E_VERIFIED_HEAD" != "$CURRENT_HEAD" ]; then
     EXTRACT_SCRIPT="${SKILL_DIR}/../../../scripts/extract-e2e-cases.sh"
 
     E2E_CASES=""
@@ -216,17 +224,21 @@ if m and s and s.group(1) == 'idle':
     # Output pass result as JSON
     STATE_FILE="$STATE_FILE" SLUG="$SLUG" RUN_CWD="$RUN_CWD" \
       WORKTREE_PATH_PASS="$WORKTREE_PATH_PASS" NEXT_ITER="$NEXT_ITER" \
-      REVIEWER_AID="$_REVIEWER_AID" \
+      REVIEWER_AID="$_REVIEWER_AID" E2E_SKIPPED="$E2E_SKIPPED" \
       python3 -c "
 import os, json
-print(json.dumps({
+d = {
     'type': 'pass',
     'iter': int(os.environ.get('NEXT_ITER', '0') or 0),
     'state_file': os.environ['STATE_FILE'],
     'slug': os.environ.get('SLUG', ''),
     'worktree_path': os.environ.get('WORKTREE_PATH_PASS', ''),
     'reviewer_agent_id': os.environ.get('REVIEWER_AID', ''),
-}, ensure_ascii=False))
+}
+sk = os.environ.get('E2E_SKIPPED', '')
+if sk:
+    d['e2e_skipped'] = sk
+print(json.dumps(d, ensure_ascii=False))
 " 2>/dev/null
     exit 0
     ;;
