@@ -14,6 +14,18 @@
 
 
 
+## 2026-05-09 [理论风险] dirty stash 流程边界 case（原 known-risks R6）
+
+- 触发条件：worktree 模式下 setup 的 stash apply / merge-and-cleanup 的 stash drop 在特定边界场景不完整
+- 子项：
+  - R6.1 git status --porcelain 重命名文件只取 new 路径，pre_loop_dirty_files 不全（仅记录欠完整，不影响 stash 内容）
+  - R6.2 EARLY_STOP 还原 stash apply 失败（用户主仓被中途修改）→ 仅 warn，需手动处理。无 fixture
+  - R6.3 worktree add 失败时已实现 stash 回滚，但无 fixture 覆盖
+  - R6.4 merge-worktree-back 路径 B/C 下 stash 不自动 drop（有 stderr 提示）。无 fixture
+  - R6.5 reward_hacking 关键词清单不全（--ignore-glob / --collect-only / pytest.mark.skipif 未覆盖），依赖 Layer 1 LLM 兜底
+  - R6.6 grep 实现差异（V2.3.1 已改字面字符类兼容，BSD grep 残余风险）
+- 优先级：低（各子项均有 workaround 或已部分修复，仅缺 fixture 覆盖）
+
 ## 2026-07-04 diff-level-check doc_freshness_check 未检出 plan.md 需更新
 
 - 触发场景：divine-word 项目 Oracle 引擎大修（16文件 +585/-48 行，改了 engine/models/llm/api 四层）+ P1/P2 视觉叙事（4文件）。plan.md 中 BCDE 四项待修和 P1/P2 待办直接引用了被改的模块

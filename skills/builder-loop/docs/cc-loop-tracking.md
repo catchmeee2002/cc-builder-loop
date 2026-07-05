@@ -101,7 +101,7 @@ strings $(which claude)*.exe 2>/dev/null | tr ';' '\n' | grep -iE 'ScheduleWakeu
 
 - 每次 `claude` 升级：跑 §1 复查命令 + 更新两条线快照表
 - 每次 cc-builder-loop 大版本：复盘借鉴清单状态变迁
-- 用户反馈撞车 case → 立即在 §3 对应小节补条目 + 同步 known-risks
+- 用户反馈撞车 case → 立即在 §3 对应小节补条目 + 同步 improvements.md
 - CC 在 `SubagentStart` 补 `agent_transcript_path` → §3.2 实现层防御转「可做」
 - CC Agent tool 补 `schema` 参数 → §2 schema 行转「可做」，roadmap schema-out 解封
 

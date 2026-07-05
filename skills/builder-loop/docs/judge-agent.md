@@ -87,7 +87,7 @@ V1.9 配置完全兼容（`model:` 字段自动等价 primary_model）。配置�
 
 > ⚠️ **正版 Max CC 用户特别说明**（2026-04-26 实测发现）：CC 自己的 OAuth access token 不在 `~/.claude.json` 的 `oauthAccount` 字段公开（该字段只含 metadata），oauth 路径在当前 CC 架构下**永远返回 none**。如果你用 Max 订阅，judge agent 会自动降级回 V1.8 二值判据（无功能损失）。
 >
-> **Workaround**：从 https://console.anthropic.com 申请独立 API key（不影响 Max 订阅），`export ANTHROPIC_API_KEY=sk-ant-...` 后 judge agent 自动启用。详见 `known-risks.md` R5。
+> **Workaround**：从 https://console.anthropic.com 申请独立 API key（不影响 Max 订阅），`export ANTHROPIC_API_KEY=sk-ant-...` 后 judge agent 自动启用。
 
 ## 4. 模型选择三层 fallback
 
@@ -254,10 +254,6 @@ judge:
 
 `loop.yml.judge.enabled: false`；或卸载 `run-judge-agent.sh`（stop hook 检测到脚本缺失会自动走原路径）。
 
-## 11. 已知风险（开口项）
+## 11. 已知风险
 
-详见 `skills/builder-loop/known-risks.md`：
-- R1: Reward hacking（builder 学得绕过 nudge 检查）
-- R2: LLM 假阳性（confidence 阈值 + 上限缓解）
-- R3: 模型版本不可用（三层 fallback）
-- R4: judge-trace.jsonl 无限增长
+> Judge agent 已于 V4.0 废弃（功能被 reviewer Phase 0 吸收）。原 R1-R4 风险项已随 judge 退役而关闭。残余边界 case 见 `improvements.md`。

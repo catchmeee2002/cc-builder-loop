@@ -263,7 +263,7 @@ PASS_CMD 二值判据之上叠加一道 **LLM 语义判定**，识别假完成 /
 | 配置段 | `loop.yml.judge`（全部可选；缺省 enabled=true，凭证缺失自动降级回 PASS_CMD） |
 | Telemetry | `.claude/builder-loop/judge-trace.jsonl`（每次 judge 调用一行 + outcome 后置补标） |
 | 详细架构 | `docs/judge-agent.md` |
-| 已知风险 | `known-risks.md`（R1~R4 开口项） |
+| 已知风险 | 已合并入 `improvements.md`（V5.7 起 known-risks.md 废弃删除） |
 
 **核心契约**：
 
