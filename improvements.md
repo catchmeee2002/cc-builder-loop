@@ -4,11 +4,13 @@
 > **只记事实，不写建议方向**——loop 侧开发者拿到事实自己判断怎么修。
 > 已消化条目直接删除（代码是 ground truth），不标 ✅。已关闭条目见 [CHANGELOG](CHANGELOG.md)。
 
-## 2026-07-05 bare 模式 + bg-job worktree 隔离冲突，builder 手动 cp+commit 绕过 loop 全部门禁
+## 2026-07-05 [待验证] bgIsolation 配置嵌套层级写错，bg-job 被强制 EnterWorktree 导致 loop 全部门禁被绕过
 
-- 触发场景：divine-word 项目 FGHK 修复。builder 以 CC bg-job 身份运行（系统强制 worktree 隔离，bgIsolation），但 loop setup 指定 bare 模式（`--no-worktree`，因 e2e 需要 app 跑新代码）。两个约束冲突：bg-job 不让 Edit 主仓文件，bare 模式要求改主仓
-- 现象：builder 在 bg-job worktree 里编辑代码 → `cp` 文件到主仓 → 直接 `git add` + `git commit` + `git push origin master`。handle-pass-result.sh / loop-commit.sh / reviewer / doc-maintainer 全部被绕过。文档更新被跳过，直到用户追问才手动补
-- 根因：bg-job worktree 隔离（CC 平台行为）与 bare 模式（loop 设计）产生物理冲突，无合法路径同时满足两者。builder 用 cp 手动同步作为 workaround，但这条路径完全在 loop 状态机之外
+- 触发场景：divine-word 项目 FGHK 修复。bg-job（session adcc6343）尝试 Edit 主仓文件时被 CC 拒绝："Call EnterWorktree first"。agent 被迫进入 worktree，但 loop 是 bare 模式 → cp 绕过 loop 全链路
+- 现象：builder 在 bg-job worktree 里编辑代码 → `cp` 文件到主仓 → 直接 `git add` + `git commit` + `git push`。handle-pass-result / reviewer / doc 更新全被跳过
+- 根因：`setup-builder-loop.sh` 写 `{"bgIsolation":"none"}`（顶层），CC v2.1.201 期望 `{"worktree":{"bgIsolation":"none"}}`（嵌套）。顶层配置被静默忽略 → bg-job 仍强制隔离
+- 修复：setup 改为正确嵌套 + 旧顶层 key 自动迁移（commit dad513b）。6 个项目 settings.json 已批量修正
+- 验证状态：**脚本输出格式已验证正确；CC 实际行为待 e2e 验证**（需在已修项目跑 `claude --bg` 尝试 Edit，确认不再报 EnterWorktree 错误）
 - 优先级：高
 
 ## 2026-05-09 [理论风险] dirty stash 流程边界 case（原 known-risks R6）
