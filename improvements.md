@@ -13,12 +13,6 @@
 - 优先级：高
 
 
-## 2026-07-04 e2e_verified_head 写入后 doc commit 导致 HEAD 前进，L1 自愈永远不匹配
-
-- 触发场景：divine-word 项目 P1+P2 视觉叙事任务。PASS_CMD 通过 → phase=e2e_pending → tester all_pass → builder 写 `e2e_verified_head: d4f6415` → builder 又 commit 了 plan.md 文档更新（HEAD 前进到 afac459）
-- 现象：stop hook 在 13:25 / 13:39 / 13:41 / 13:51 共 fire 4 次，每次命中 L1 gate `exit 0, reason: l1_phase_e2e_pending`。e2e 自愈分支比较 `e2e_verified_head(d4f6415) == HEAD(afac459)` 不匹配，SHOULD_HEAL=0，死循环静默 exit 0。用户等了 30 分钟后手动介入
-- 根因：e2e_verified_head 是一次性精确 SHA 快照，任何后续 commit（包括 doc 更新、reviewer 修复等非代码改动）都让它失效。与 2026-06-24 条目「reviewer 修复后 e2e_verified_head 失效要求全量重跑 e2e」是同一根因的不同触发路径：那次是 reviewer 🔴 修复后 commit，这次是 builder 步骤 3.5 doc-B 更新 plan.md 后 commit
-- 优先级：高
 
 ## 2026-07-04 diff-level-check doc_freshness_check 未检出 plan.md 需更新
 
@@ -84,11 +78,6 @@
 - 优先级：中
 
 
-## 2026-06-24 reviewer 修复后 e2e_verified_head 失效要求全量重跑 e2e
-- 触发场景：同上项目。reviewer 🔴 修复后 stop hook 做了新的 auto-commit（HEAD 从 017b3c3 变为 a45ad21）。e2e_verified_head 仍指向旧 HEAD，stop hook 检测到不匹配，要求再跑一次完整 e2e 套件
-- 现象：3 行非破坏性修复（冲突 VFX 修 bug 让原本不工作的功能能工作、热力图数据源从 count 改为真实 piety 值、装饰物锚定从信徒改为建筑）触发了第三轮全量 e2e 验收（每轮 30 分钟、150k+ tokens）。builder 判断这些修复不可能让之前 9 个 PASS 的用例回退，选择直接写入 e2e_verified_head 跳过
-- 根因：e2e_verified_head 机制是 HEAD 精确匹配，任何 commit 变化都失效。没有"增量验证"（只跑受影响用例）或"小修免跑"（reviewer 修复级别的变更跳过 e2e）机制
-- 优先级：中
 
 
 ## 2026-06-20 Planner Round 7 追问不完整——漏问 e2e 验证和测试深度
@@ -474,6 +463,9 @@
 ---
 
 ## Archived（已消化/已修复）
+
+### 2026-07-04 + 2026-06-24 e2e_verified_head 精确 SHA 失效（2 次复现） — V5.6 修复
+- 修复内容：L1 闸 e2e_pending 自愈从 `==HEAD` 改为 ancestor + path filter（safe patterns: *.md/*.txt/docs/*/.claude/*）。doc commit 不再打破验证有效性，源码变更仍正确阻断
 
 ### 2026-07-04 tester subagent 写入主仓而非 worktree（3 次复现） — V5.6 修复
 - 修复内容：builder spawn tester 时 target_test_dirs 改为绝对路径（含 worktree 前缀）+ tester 返回后 post-hoc 校验 CHANGED_TEST_FILES 路径前缀（不匹配则搬运）。tester.md 约束简化为"路径在 target_test_dirs 之内"

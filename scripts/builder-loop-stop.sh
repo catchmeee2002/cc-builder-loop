@@ -342,7 +342,7 @@ NEXT_ITER=$(( ITER + 1 ))
 # ---- V3.0: PASS_CMD 前多层闸（命中即静默 exit 0） ----
 # 闸顺序（早闸优先，成本低到高）：
 #   L1  phase=passed_pending_review|e2e_pending → 不跑（牌子挂着等 reviewer 审 / tester 跑 e2e）
-#       自愈：dirty/新 commit → active（修复路径）；e2e_pending + e2e_verified_head==HEAD → active（e2e 完成）
+#       自愈：dirty/新 commit → active（修复路径）；e2e_pending + e2e_verified_head is-ancestor + diff 全非源码 → active（e2e 完成）
 #   L2A transcript 末是 pending AskUserQuestion → 不跑（builder 等用户答）
 #   L2B worktree HEAD == last_iter_head + git status 空 → 不跑（无改动 thinking/讨论）
 #       bare 模式（无 worktree_path）使用 PROJECT_ROOT 作 git 路径
@@ -377,13 +377,29 @@ if [ "$PHASE_FIELD" = "passed_pending_review" ] || [ "$PHASE_FIELD" = "e2e_pendi
       HEAL_REASON="new_commit"
     fi
   fi
-  # e2e_pending 额外自愈：e2e_verified_head 与当前 HEAD 一致 → e2e 已完成，放行进 commit/reviewer
+  # e2e_pending 额外自愈（V5.6）：e2e_verified_head 是 HEAD 祖先 + 中间 diff 全是非行为文件 → e2e 仍有效
   if [ "$PHASE_FIELD" = "e2e_pending" ] && [ "$SHOULD_HEAL" = "0" ]; then
     E2E_VH_L1="$(grep -E '^e2e_verified_head:' "$STATE_FILE" 2>/dev/null | head -1 | sed -E 's/^e2e_verified_head:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' || echo "")"
-    CUR_HEAD_FULL_L1="$(git -C "$CHECK_PATH_GATE" rev-parse HEAD 2>/dev/null || echo "")"
-    if [ -n "$E2E_VH_L1" ] && [ "$E2E_VH_L1" = "$CUR_HEAD_FULL_L1" ]; then
-      SHOULD_HEAL=1
-      HEAL_REASON="e2e_verified"
+    if [ -n "$E2E_VH_L1" ]; then
+      if git -C "$CHECK_PATH_GATE" merge-base --is-ancestor "$E2E_VH_L1" HEAD 2>/dev/null; then
+        E2E_DIFF_FILES="$(git -C "$CHECK_PATH_GATE" diff --name-only "$E2E_VH_L1"..HEAD 2>/dev/null || echo "")"
+        if [ -z "$E2E_DIFF_FILES" ]; then
+          SHOULD_HEAL=1
+          HEAL_REASON="e2e_verified"
+        else
+          E2E_HAS_SOURCE=0
+          while IFS= read -r _ef; do
+            case "$_ef" in
+              *.md|*.txt|docs/*|.claude/*) ;;
+              *) E2E_HAS_SOURCE=1; break ;;
+            esac
+          done <<< "$E2E_DIFF_FILES"
+          if [ "$E2E_HAS_SOURCE" = "0" ]; then
+            SHOULD_HEAL=1
+            HEAL_REASON="e2e_verified_ancestor_safe"
+          fi
+        fi
+      fi
     fi
   fi
   if [ "$SHOULD_HEAL" = "1" ]; then

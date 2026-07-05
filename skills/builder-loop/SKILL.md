@@ -64,7 +64,7 @@ bash ~/.claude/skills/builder-loop/scripts/setup-builder-loop.sh "$TASK_DESCRIPT
 
 | 闸 | 触发条件 | 静默原因 |
 |----|---------|---------|
-| L1 | `state.phase=passed_pending_review\|e2e_pending` | 等 reviewer 审查 / tester 跑 e2e（自愈：passed_pending_review dirty/新 commit → active；e2e_pending 仅 new_commit/verified_head 自愈，dirty 不自愈防 tester 循环） |
+| L1 | `state.phase=passed_pending_review\|e2e_pending` | 等 reviewer 审查 / tester 跑 e2e（自愈：passed_pending_review dirty/新 commit → active；e2e_pending 仅 new_commit/verified_head ancestor+safe_diff 自愈，dirty 不自愈防 tester 循环） |
 | L2A | transcript 末尾是 pending AskUserQuestion（无 tool_result） | builder 在等用户答 |
 | L2B | worktree HEAD == `state.last_iter_head` 且 git status 空 | builder 在思考 / 讨论，没改代码 |
 | L3 | `.claude/builder-loop/<slug>.pause` 文件存在 | builder 主动 pause |
@@ -148,7 +148,7 @@ subagents:
     transcript_path: "/path/..."
 
 # V3.8 e2e behavioral verification 段
-e2e_verified_head: "abc1234"                    # e2e 验收通过时的 HEAD commit；与当前 HEAD 一致则跳过 e2e
+e2e_verified_head: "abc1234"                    # e2e 验收通过时的 HEAD commit；V5.6 起用 ancestor + path filter 判定（非精确���配）
 
 # (V4.0 废弃) e2e_plan_path — 改用 plan_path，stop hook 读时 fallback
 # e2e_plan_path: ".claude/plans/20260620-xxx.md"

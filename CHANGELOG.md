@@ -2,7 +2,7 @@
 
 > 从 CLAUDE.md §5 外移。记录各版本交付的能力与关键实现细节。
 
-## V5.6 tester 路径隔离：输入条件改造 + post-hoc 兜底（2026-07-05）
+## V5.6 tester 路径隔离 + e2e_verified_head ancestor 判定（2026-07-05）
 
 **动机**：tester subagent 3 次写入主仓而非 worktree（07-04、07-02、04-29 doc-maintainer 同模式）。原则五"三次=架构缺陷"。根因：tester 的 session cwd = 主仓（CC 不支持设 subagent cwd），prompt 说"以 worktree_path/ 开头"是输出约束，对抗环境引导（Glob 探索返回主仓路径）赢面低。
 
@@ -17,6 +17,17 @@
 - 实验 C：CHANGED_TEST_FILES 行提供可审计的文件路径列表 → post-hoc 校验有数据源
 
 **设计依据**：原则四（改输入条件不改输出约束）+ 原则五（三次=架构缺陷）+ 原则一（分层：路线 2 降频 + 路线 3 兜底消灭漏网）。
+
+### e2e_verified_head 从精确 SHA 改为 ancestor + path filter
+
+**动机**：e2e 通过后的无关 commit（doc 更新、reviewer 修复）让 HEAD 前进 → `e2e_verified_head == HEAD` 不匹配 → L1 自愈永远不触发 → 用户等 30 分钟死循环（两次复现：07-04 + 06-24）。根因：SHA 精确匹配是 identity 比较，e2e 需要的是 behavioral equivalence。
+
+**核心变更**：L1 闸 e2e_pending 自愈从 `e2e_verified_head == HEAD` 改为：
+1. `e2e_verified_head` is-ancestor-of HEAD（含精确相等）
+2. `git diff --name-only` 中间 diff 全命中 safe patterns（`*.md`/`*.txt`/`docs/*`/`.claude/*`）
+3. 有源码变更 → 不自愈（保留原始并发守卫功能）
+
+**fixture**：`test-e2e-verified-head-ancestor.sh`（3 case × 2 assert = 6 assertions）覆盖 ancestor+doc / ancestor+source / exact-match 三种场景。
 
 ## V5.5 文档审计架构重构（2026-07-05）
 
