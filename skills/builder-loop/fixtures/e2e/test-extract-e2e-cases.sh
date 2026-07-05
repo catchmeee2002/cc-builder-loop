@@ -102,4 +102,50 @@ run_extract "$TMPDIR/plan-indent.md" "$TMPDIR/out8.txt"
 assert "indented tags exits 0" "[ $? -eq 0 ]"
 assert_contains "indented tag content" "$TMPDIR/out8.txt" "缩进标签"
 
+# ---- 9. YAML inside code fence within tags → extracted (fence stripped) ----
+cat > "$TMPDIR/plan-fenced-yaml.md" <<'PLANEOF'
+## 验收标准
+
+<!-- e2e-cases -->
+```yaml
+- id: reminder-no-overstep
+  input: "5分钟后提醒我喝水"
+  hard_rules:
+    tools_called: ["create_task"]
+  judge:
+    verify: "正确创建了提醒任务"
+    quality: "无多余操作"
+  level: full
+```
+<!-- /e2e-cases -->
+
+其他内容
+PLANEOF
+
+run_extract "$TMPDIR/plan-fenced-yaml.md" "$TMPDIR/out9.txt"
+assert "fenced yaml exits 0" "[ $? -eq 0 ]"
+assert_contains "extracts id field" "$TMPDIR/out9.txt" "reminder-no-overstep"
+assert_contains "extracts input field" "$TMPDIR/out9.txt" "5分钟后提醒我喝水"
+assert_contains "extracts judge block" "$TMPDIR/out9.txt" "verify"
+assert "strips fence markers" "! grep -q '^\`\`\`' '$TMPDIR/out9.txt'"
+
+# ---- 10. Tags inside doc code block → NOT extracted ----
+cat > "$TMPDIR/plan-doc-fence.md" <<'PLANEOF'
+## 示例文档
+
+下面是 e2e-cases 的写法示例：
+
+```markdown
+<!-- e2e-cases -->
+- id: example
+  input: "这不该被提取"
+<!-- /e2e-cases -->
+```
+
+正文继续
+PLANEOF
+
+run_extract "$TMPDIR/plan-doc-fence.md" "$TMPDIR/out10.txt" || true
+assert "doc fence exits non-zero or empty" "[ ! -s '$TMPDIR/out10.txt' ]"
+
 harness_report

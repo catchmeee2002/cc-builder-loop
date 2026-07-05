@@ -8,6 +8,12 @@
 > - 标题格式：`## YYYY-MM-DD [观察期] <标题>`
 > - 必填字段：`验证条件：<截止日期 YYYY-MM-DD> + <通过→删除本条目> + <失败→具体动作>`
 > - 截止日期默认 fix 日期 +14 天
+
+## 2026-07-05 extract-e2e-cases.sh fence 逻辑与 planner 格式冲突导致 e2e 验收静默跳过
+- 触发场景：planner 产出的方案文件中 `<!-- e2e-cases -->` 标签内的 YAML 用 markdown 代码块（` ```yaml ... ``` `）包裹（为可读性），builder 写完代码后 handle-pass-result.sh 调 extract-e2e-cases.sh 提取 e2e cases
+- 现象：extract-e2e-cases.sh 返回空 + exit 1，handle-pass-result 走 type=pass 路径，e2e 验收被完全跳过，builder 无任何提示
+- 根因：extract-e2e-cases.sh V5.4 awk 逻辑中 fence（代码块检测）优先于 capture（e2e 标签检测）。` ```yaml ` 触发 fence=true 后，标签内所有内容被 `fence { next }` 跳过，CONTENT 为空
+- 优先级：高（静默跳过 = 用户以为跑了实际没跑，最危险的失败模式）
 > - 到期处理：无复现 → 删除；有复现 → 改回普通活跃条目重新立项
 > - 机械提醒：`setup-builder-loop.sh` 启动时扫描过期条目并 stderr 提醒
 
@@ -108,7 +114,7 @@
 
 - 修复：删除 early-stop-check.sh section 5（机器层 tampering 早停），改为 reviewer.md 步骤 2 新增「测试变更合法性审查」维度（独立 agent 语义判定）
 - 根因：机器判据（测试文件变更 >= 阈值 → 早停）无法区分合法适配和篡改，3 次误杀（L3 适配/删测试/需求翻转）
-- 验证条件：**2026-07-15 前无 reviewer 漏判真篡改 → 删除本条目**。漏判 → 评估是否需要轻量机器护栏（如 assert 总数下降超 50% 时警告）
+- 验证条件：截止日期：2026-07-15 前无 reviewer 漏判真篡改 → 删除本条目。漏判 → 评估是否需要轻量机器护栏（如 assert 总数下降超 50% 时警告）
 - 优先级：观察（已修，等验证）
 
 

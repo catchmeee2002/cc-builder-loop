@@ -37,3 +37,9 @@
 {"ts": "2026-06-23T18:39:35.433337+00:00", "iter": 1, "result": "PASS", "duration_ms": 683, "task": "|"}
 {"ts": "2026-06-26T11:06:58.605022+00:00", "iter": 1, "result": "PASS", "duration_ms": 10534, "task": "|"}
 {"ts": "2026-06-26T11:12:55.837266+00:00", "iter": 1, "result": "PASS", "duration_ms": 984, "task": "|"}
+{"ts": "2026-06-30T17:09:26.335970+00:00", "iter": 1, "result": "PASS", "duration_ms": 2301, "task": "|"}
+{"ts": "2026-06-30T17:23:59.005581+00:00", "iter": 1, "result": "PASS", "duration_ms": 1936, "task": "|"}
+{"ts": "2026-07-02T15:24:20.268921+00:00", "iter": 1, "result": "PASS", "duration_ms": 486, "task": "|"}
+{"ts": "2026-07-02T15:24:34.454Z", "event": "ABANDON", "slug": "1783005811-isolation-redesign-smoke", "iter": 0, "reason": "smoke test done"}
+{"ts": "2026-07-04T07:48:58.720258+00:00", "iter": 1, "result": "PASS", "duration_ms": 349, "task": "|"}
+{"ts": "2026-07-05T16:40:48.933Z", "event": "ABANDON", "slug": "1783269627-fix-extract-e2e-cases-sh", "iter": 0, "reason": "Unwanted worktree - code changes in main repo"}

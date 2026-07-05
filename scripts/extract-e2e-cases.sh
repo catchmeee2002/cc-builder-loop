@@ -14,7 +14,7 @@ fi
 
 # V5.4: skip e2e-cases tags inside markdown fenced code blocks (``` ... ```)
 CONTENT=$(awk '
-  /^[[:space:]]*```/ { fence = !fence; next }
+  /^[[:space:]]*```/ { if (!capture) fence = !fence; next }
   fence { next }
   /^[[:space:]]*<!-- e2e-cases -->/ { capture = 1; next }
   /^[[:space:]]*<!-- \/e2e-cases -->/ { capture = 0; next }

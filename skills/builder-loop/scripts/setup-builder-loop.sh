@@ -143,7 +143,7 @@ check_observation_expiry() {
   while IFS= read -r line; do
     local title="${line##*] }"
     local deadline
-    deadline="$(grep -F -A5 "$line" "$imp_file" | grep -oP '截止日期[：:]\s*\K[0-9]{4}-[0-9]{2}-[0-9]{2}' | head -1)"
+    deadline="$(grep -F -A5 "$line" "$imp_file" | grep -oP '截止日期[：:]\s*\K[0-9]{4}-[0-9]{2}-[0-9]{2}' | head -1 || true)"
     [ -z "$deadline" ] && continue
     if [ "$today" \> "$deadline" ] || [ "$today" = "$deadline" ]; then
       expired="${expired}  - ${title} (截止: ${deadline})\n"
