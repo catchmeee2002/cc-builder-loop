@@ -4,6 +4,21 @@
 > **只记事实，不写建议方向**——loop 侧开发者拿到事实自己判断怎么修。
 > 已消化条目直接删除（代码是 ground truth），不标 ✅。已关闭条目见 [CHANGELOG](CHANGELOG.md)。
 
+## 2026-07-05 builder 写 improvements.md 时把活跃条目写进 Archived 段
+
+- 触发场景：divine-word 项目 e2e 续接失败后，builder 步骤 5 立项写入 improvements.md。因新条目与 V4.3 archived 条目 topically 相关，builder 在 V4.3 archived 条目旁追加新发现
+- 现象：新的活跃条目（标"待修复"）出现在 `## Archived` 分隔线之下，被当成已关闭条目。后续维护者读活跃区看不到这条反馈
+- 根因：active 和 archived 在同一文件内，仅靠 `##` vs `###` 层级和一行分隔线区分。LLM 按 topical proximity 写（找到相关条目就在旁边追加），不按文档结构写。分隔线对 LLM 的「位置感知」不够强
+- 优先级：中
+
+## 2026-07-05 V4.3 subagent 续接路径因 SendMessage 为 deferred tool 从未工作
+
+- 触发场景：divine-word 项目 e2e 验收 3/4 FAIL 后，builder 修代码后尝试用 SendMessage 续接已有 tester agent（V4.3 续接路径）
+- 现象：`SendMessage(to: "<agent_id>", summary: "...")` 报 `InputValidationError: The required parameter "message" is missing`。错误信息明确指出 schema 未加载。需要先 `ToolSearch("select:SendMessage")` 加载 schema 才能调用
+- 根因：SendMessage 是 CC 的 deferred tool（schema 不预加载），builder.md V4.3 写了 `SendMessage(to: "<id>", summary: "rerun failed e2e cases")` 但未提示 builder 先 ToolSearch 加载 schema。builder 按文档直接调用 → schema 未加载 → InputValidationError → 每次必 fallback 全量重跑
+- 后果：V4.3 续接路径自发布以来从未成功过。每次 fallback 浪费约 15 万 token + 丢失旧 tester 的全部上下文（截图、判定记录、环境状态）
+- 优先级：高
+
 
 ## 2026-05-09 [理论风险] dirty stash 流程边界 case（原 known-risks R6）
 
@@ -511,12 +526,6 @@
 - 修复版本：V4.3 Subagent Identity & Resume
 - 修复内容：state.subagents 段追踪 tester/reviewer 的 agent_id + status；stop hook inject 消息携带 agent_id → builder 用 SendMessage 续接；失败自动 fallback 新 spawn
 
-### 2026-07-05 V4.3 tester 续接路径因 SendMessage 为 deferred tool 静默失败 — 待修复
-- 触发场景：divine-word 项目 e2e 验收 3/4 FAIL 后，builder 修代码后尝试用 SendMessage 续接已有 tester agent（V4.3 续接路径）
-- 现象：`SendMessage(to: "<agent_id>", summary: "...")` 报 `InputValidationError: The required parameter "message" is missing`。错误信息明确指出 `This tool's schema was not sent to the API — it was not in the discovered-tool set`。需要先 `ToolSearch("select:SendMessage")` 加载 schema 才能调用
-- 根因：SendMessage 是 CC 的 deferred tool（schema 不预加载），builder.md V4.3 写了 `SendMessage(to: "<id>", summary: "rerun failed e2e cases")` 但未提示 builder 先 ToolSearch 加载 schema。builder 按文档直接调用 → schema 未加载 → 必需参数 `message` 无法被解析 → InputValidationError
-- 后果：续接失败 → fallback 到 2b 全量重跑 → 丢失旧 tester 的全部上下文（截图、判定记录、环境状态），浪费一整轮 tester 的 token（本次约 15 万 token）
-- 优先级：中
 
 ### 2026-06-21 Builder PASS 后声称"Phase 完成"但 plan 文件清单完成率仅 33%（重复发生） — V4.0 reviewer Phase 0 修复
 - 修复版本：V4.0 plan 注册 + reviewer Phase 0 plan 完成度检查
