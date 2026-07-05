@@ -98,35 +98,38 @@ ensure_gitignore_rules
 # 项目级 settings.json 设 bgIsolation: "none" 关闭 CC 的 worktree 强制介入。
 ensure_bg_isolation_none() {
   local proj_settings="${PROJECT_ROOT}/.claude/settings.json"
-  # 无 settings.json → 创建最小文件
+  # 无 settings.json → 创建最小文件（正确嵌套：worktree.bgIsolation）
   if [ ! -f "$proj_settings" ]; then
     mkdir -p "${PROJECT_ROOT}/.claude"
-    printf '{"bgIsolation":"none"}\n' > "$proj_settings"
-    echo "[setup-builder-loop] 🛡️  已创建 .claude/settings.json 并设置 bgIsolation: none（防 CC 内置 worktree 干扰）" >&2
+    printf '{"worktree":{"bgIsolation":"none"}}\n' > "$proj_settings"
+    echo "[setup-builder-loop] 🛡️  已创建 .claude/settings.json 并设置 worktree.bgIsolation: none（防 CC 内置 worktree 干扰）" >&2
     return 0
   fi
-  # 有 settings.json → 检查 bgIsolation 字段
+  # 有 settings.json → 检查 worktree.bgIsolation 字段
   local current
   current="$(python3 -c "
 import json
 with open('$proj_settings') as f:
     d = json.load(f)
-print(d.get('bgIsolation', ''))
+wt = d.get('worktree', {})
+print(wt.get('bgIsolation', '') if isinstance(wt, dict) else '')
 " 2>/dev/null || echo "")"
   if [ "$current" = "none" ]; then
     return 0
   fi
-  # 不是 "none" → 增量写入（保留其他字段）
+  # 不是 "none" → 增量写入（保留其他字段，迁移旧顶层 bgIsolation）
   python3 -c "
 import json
 with open('$proj_settings') as f:
     d = json.load(f)
-d['bgIsolation'] = 'none'
+d.pop('bgIsolation', None)
+wt = d.setdefault('worktree', {})
+wt['bgIsolation'] = 'none'
 with open('$proj_settings', 'w') as f:
     json.dump(d, f, indent=2, ensure_ascii=False)
     f.write('\n')
 " 2>/dev/null || true
-  echo "[setup-builder-loop] 🛡️  已在 .claude/settings.json 设置 bgIsolation: none（防 CC 内置 worktree 干扰 builder-loop）" >&2
+  echo "[setup-builder-loop] 🛡️  已在 .claude/settings.json 设置 worktree.bgIsolation: none（防 CC 内置 worktree 干扰 builder-loop）" >&2
 }
 ensure_bg_isolation_none
 
