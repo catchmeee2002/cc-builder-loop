@@ -133,6 +133,28 @@ with open('$proj_settings', 'w') as f:
 }
 ensure_bg_isolation_none
 
+# ---- 观察期到期扫描（V5.8） ----
+check_observation_expiry() {
+  local imp_file="${PROJECT_ROOT}/improvements.md"
+  [ -f "$imp_file" ] || return 0
+  local today
+  today="$(date +%Y-%m-%d)"
+  local expired=""
+  while IFS= read -r line; do
+    local title="${line##*] }"
+    local deadline
+    deadline="$(grep -F -A5 "$line" "$imp_file" | grep -oP '截止日期[：:]\s*\K[0-9]{4}-[0-9]{2}-[0-9]{2}' | head -1)"
+    [ -z "$deadline" ] && continue
+    if [ "$today" \> "$deadline" ] || [ "$today" = "$deadline" ]; then
+      expired="${expired}  - ${title} (截止: ${deadline})\n"
+    fi
+  done < <(grep '^##.*\[观察期\]' "$imp_file")
+  if [ -n "$expired" ]; then
+    printf "[setup-builder-loop] ⏰ 观察期条目已到期，需处理（删除或重开）：\n%b" "$expired" >&2
+  fi
+}
+check_observation_expiry
+
 # ---- 优先读 loop.yml 的 layout 字段，fallback 到自动探测 ----
 LAYOUT_JSON="$(python3 -c "
 import yaml, json
