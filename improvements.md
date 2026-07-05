@@ -4,21 +4,12 @@
 > **只记事实，不写建议方向**——loop 侧开发者拿到事实自己判断怎么修。
 > 已消化条目直接删除（代码是 ground truth），不标 ✅。已关闭条目见 [CHANGELOG](CHANGELOG.md)。
 
-## 2026-07-05 builder 写 improvements.md 时把活跃条目写进 Archived 段
+## 2026-07-05 bare 模式 + bg-job worktree 隔离冲突，builder 手动 cp+commit 绕过 loop 全部门禁
 
-- 触发场景：divine-word 项目 e2e 续接失败后，builder 步骤 5 立项写入 improvements.md。因新条目与 V4.3 archived 条目 topically 相关，builder 在 V4.3 archived 条目旁追加新发现
-- 现象：新的活跃条目（标"待修复"）出现在 `## Archived` 分隔线之下，被当成已关闭条目。后续维护者读活跃区看不到这条反馈
-- 根因：active 和 archived 在同一文件内，仅靠 `##` vs `###` 层级和一行分隔线区分。LLM 按 topical proximity 写（找到相关条目就在旁边追加），不按文档结构写。分隔线对 LLM 的「位置感知」不够强
-- 优先级：中
-
-## 2026-07-05 V4.3 subagent 续接路径因 SendMessage 为 deferred tool 从未工作
-
-- 触发场景：divine-word 项目 e2e 验收 3/4 FAIL 后，builder 修代码后尝试用 SendMessage 续接已有 tester agent（V4.3 续接路径）
-- 现象：`SendMessage(to: "<agent_id>", summary: "...")` 报 `InputValidationError: The required parameter "message" is missing`。错误信息明确指出 schema 未加载。需要先 `ToolSearch("select:SendMessage")` 加载 schema 才能调用
-- 根因：SendMessage 是 CC 的 deferred tool（schema 不预加载），builder.md V4.3 写了 `SendMessage(to: "<id>", summary: "rerun failed e2e cases")` 但未提示 builder 先 ToolSearch 加载 schema。builder 按文档直接调用 → schema 未加载 → InputValidationError → 每次必 fallback 全量重跑
-- 后果：V4.3 续接路径自发布以来从未成功过。每次 fallback 浪费约 15 万 token + 丢失旧 tester 的全部上下文（截图、判定记录、环境状态）
+- 触发场景：divine-word 项目 FGHK 修复。builder 以 CC bg-job 身份运行（系统强制 worktree 隔离，bgIsolation），但 loop setup 指定 bare 模式（`--no-worktree`，因 e2e 需要 app 跑新代码）。两个约束冲突：bg-job 不让 Edit 主仓文件，bare 模式要求改主仓
+- 现象：builder 在 bg-job worktree 里编辑代码 → `cp` 文件到主仓 → 直接 `git add` + `git commit` + `git push origin master`。handle-pass-result.sh / loop-commit.sh / reviewer / doc-maintainer 全部被绕过。文档更新被跳过，直到用户追问才手动补
+- 根因：bg-job worktree 隔离（CC 平台行为）与 bare 模式（loop 设计）产生物理冲突，无合法路径同时满足两者。builder 用 cp 手动同步作为 workaround，但这条路径完全在 loop 状态机之外
 - 优先级：高
-
 
 ## 2026-05-09 [理论风险] dirty stash 流程边界 case（原 known-risks R6）
 
@@ -451,6 +442,4 @@
   3. e2e fixture：`test-bare-loop-reviewer-params.sh` —— bare 模式 + 主仓 dirty + setup → PASS_CMD 跑通 → 断言 reviewer-params.json changed_files 含主仓 dirty 文件清单 + diff_file 含 `git diff HEAD` 内容
   4. 配套 builder.md 更新「步骤 2 获取 diff + spawn reviewer」一句话明确：bare 模式 reviewer-params 已自动覆盖 working tree diff，无需手动 fallback
 - **优先级**：中（bare 模式不是默认路径，但 bootstrap 用 bare + 用户手动 `--no-worktree` 都会撞；本期靠手动 fallback 兜过；不修的话每次 bare PASS 都得手动构造 diff）
-
-
 
