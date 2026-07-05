@@ -11,6 +11,25 @@
 > - 到期处理：无复现 → 删除；有复现 → 改回普通活跃条目重新立项
 > - 机械提醒：`setup-builder-loop.sh` 启动时扫描过期条目并 stderr 提醒
 
+## 2026-07-05 [观察期] V4.3 SendMessage 续接路径 — ToolSearch pre-load 修复
+- 修复：builder.md 续接段加 `ToolSearch("select:SendMessage")` 前置 + 参数名 summary→message（commit 66ce073）
+- 验证条件：截止日期：2026-07-19 前有 builder 在真实 loop 中成功通过 SendMessage 续接 tester 或 reviewer → 删除本条目。失败 → 排查 SendMessage 的 message 参数格式或 agent 生命周期问题
+- 优先级：观察
+
+## 2026-07-05 [观察期] V5.7 E2E framework redesign — verify+quality 双轨 judge
+- 修复：tester 三层评估（L1→L2a verify→L2b quality），case schema 从 llm_judge 改为 judge:{verify, quality}（commit fb8802e）
+- 验证条件：截止日期：2026-07-19 前有项目用新 schema 跑过完整 e2e 且 quality judge 正确拦住低质量产出 → 删除本条目。quality judge 形同虚设（全 pass 不拦）→ 检查 quality prompt 有效性
+- 优先级：观察
+
+## 2026-07-05 [观察期] V5.6 tester path isolation — absolute target_test_dirs
+- 修复：builder spawn tester 时 target_test_dirs 改为绝对路径 + post-hoc 校验（commit 35c065d）
+- 验证条件：截止日期：2026-07-19 前有 worktree 模式 loop 触发 tester 且 tester 文件全写在 worktree 内 → 删除本条目。tester 仍写主仓 → 检查 post-hoc 搬运是否生效
+- 优先级：观察
+
+## 2026-07-05 [观察期] V5.5 reviewer Phase D — doc audit 独立审计
+- 修复：删 doc-maintainer，builder 写 doc，reviewer Phase D 独立审计 doc_freshness_check 列表（commit 1fd2d6e）
+- 验证条件：截止日期：2026-07-19 前有 reviewer 实际执行 Phase D 并产出 doc 相关 finding（通过或发现问题均可）→ 删除本条目。Phase D 从未触发 → 检查 reviewer.md prompt 是否正确接收 doc_freshness_check 参数
+- 优先级：观察
 
 ## 2026-05-09 [理论风险] dirty stash 流程边界 case（原 known-risks R6）
 
