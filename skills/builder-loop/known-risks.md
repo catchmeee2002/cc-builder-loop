@@ -138,3 +138,37 @@ export ANTHROPIC_BASE_URL=http://localhost:4142
 - CC 开放 `~/.claude/credentials/access_token` 文件接口（非 keyring）
 - CC 提供 `claude internal-token` CLI 命令导出当前 OAuth token
 - 或方案 v3 的独立仲裁进程通过 CC 的 IPC 复用同一对话上下文
+
+---
+
+## R8: E2E llm_judge 对视觉质量判断力不足（2026-07-05 divine-word 事件）
+
+**事件描述**：divine-word 项目两次"前端视觉大迭代"（commit `3143d50`、`7067801`），planner 选了"需要 e2e 测试"，plan 文件写入 `<!-- e2e-cases -->` 含 8 条用例（如 `farm-military-visible: llm_judge "地图上是否可见农田tile和军营/旗帜sprite？"`）。builder-loop 信号链设计上完整。但最终产出：fog-of-war 巨大黑洞覆盖 60%+ 屏幕、所有建筑是 `fillRect` 纯色矩形而非 sprite。视觉效果是 programmer-art 级别，用户端到端 playtest 才发现。
+
+**根因（两层）**：
+
+1. **llm_judge 确认偏差**：tester agent 截图后调 LLM 问"地图上是否可见农田tile"，LLM 看到绿色 `fillRect` 方块→判"可见，有绿色区域代表农田"→ PASS。llm_judge **分不清 fillRect 占位实现和真正的 sprite**，因为 prompt 里没有 negative example（"如果看到大片均匀颜色矩形 = FAIL"）或精度要求（"必须是离散 16x16 像素 tile"）。同一个 LLM 又当 builder（写 fillRect）又当 judge（看 fillRect 判通过），天然确认偏差。
+
+2. **e2e 静默跳过无告警**：`handle-pass-result.sh` line 52 `if [ -n "$E2E_PLAN_PATH" ]`——plan_path 为空时整个 e2e 块被跳过，直接走后续 commit 流程，**不输出任何 warning**。无法回溯 e2e 是否真正执行（state 已清理）。如果 plan_path 未正确注册（手动 setup、loop 已 active 跳过重注册等场景），e2e 验证被整体静默吞没。
+
+**已修复（V5.7）**：
+- `llm_judge` → `judge: {verify, quality}` 双轨判定。quality 用评价式 prompt 对抗数据源模式
+- handle-pass-result.sh E2E_PLAN_PATH 空/plan 不存在 → stderr warning + JSON `e2e_skipped`
+- tester 审计落盘：`.claude/e2e-audit/{timestamp}.yaml`
+- planner Round 7 加 quality 写法规范 + 自检
+
+**残余风险**：LLM 评价式 prompt 是否真能对抗数据源模式，需实际项目验证。待观察期结束后评估效果。
+
+---
+
+## R9: tester e2e 视觉验收的感知模式缺陷（2026-07-05 divine-word 事件，R8 追加）
+
+**事实（续 R8 同一事件，深一层分析）**：
+
+1. **tester 当前感知模式**：tester e2e 验收截图时，工作方式是"数据源模式"——从截图中提取目标物是否存在（"有绿色区域→农田可见→PASS"）。它没有进入"视觉作品模式"——评整体画面质量、第一印象、面积占比、是否像一个成品游戏。
+
+2. **同一缺陷在独立 agent 身上复现**：同一个项目中，一个完全没看过代码的 agent 被要求端到端玩游戏并评估，看了12张截图，每张都有占屏幕60%的黑洞，没有报出来。该 agent 事后自述根因："把截图当数据源读（提取文字和数值），不是当视觉作品评"。这说明问题不是 tester 特有的，是 LLM agent 处理截图时的通用感知模式。
+
+3. **确认式提问强化数据源模式**：当前 llm_judge 的提问方式是 `"地图上是否可见农田tile？"`——这是确认式的，引导 agent 找目标物并确认存在。agent 在这种提问下不会主动评估"画面整体是否合格"。
+
+4. **上下文泄漏强化确认偏差**：tester 收到 e2e_cases 时，同时收到 plan 文件内容和实现描述。它知道 builder 刚实现了 fog-of-war 和农田渲染，所以在截图中"找"这些实现的证据，而不是"评"截图的视觉质量。找到绿色区域→确认存在→PASS。如果 tester 不知道实现了什么、只拿到截图和设计文档的视觉目标，它更可能报出"60%是黑的"和"建筑是纯色方块"。
