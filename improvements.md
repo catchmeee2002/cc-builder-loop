@@ -12,12 +12,6 @@
 - 架构决策：(1) 删 doc-maintainer agent，builder 自己写所有文档（doc 视为特殊 code）；(2) reviewer.md 新增 Phase D：doc-policy compliance 独立审计，以 doc_freshness_check 收窄审计范围；(3) Phase D findings 路由回 builder 修复，dirty 触发 re-review 闭环。依据：原则一（独立性属于判断层不属于执行层）+ 原则四（删协调约束比加更简单）+ research 数据（单 agent 顺序链优于多 agent 协调，prompt 2.7K tokens 仍在高原区）
 - 优先级：高
 
-## 2026-07-04 tester subagent 写入主仓而非 worktree
-
-- 触发场景：generator 项目 #7 时间线泄露修复。builder 在 worktree 内改代码，PASS 后 spawn tester 补测试，prompt 传了 `worktree_path`
-- 现象：tester 把新增测试文件写到主仓 `/mnt/hongyu.liao_docker/generator/tests/` 而非 worktree `/mnt/.../worktrees/.../tests/`。worktree `git status` 为空，stop hook 检测不到 dirty。builder 手动 `cp` 到 worktree + `git checkout` 还原主仓才恢复
-- 根因：tester agent 的 cwd 是主仓（spawn 时继承 session cwd），未根据 `worktree_path` 参数切换工作目录
-- 优先级：中
 
 ## 2026-07-04 e2e_verified_head 写入后 doc commit 导致 HEAD 前进，L1 自愈永远不匹配
 
@@ -75,11 +69,6 @@
   3. doc-B 规则只说"builder 亲自写"，没要求全文扫描。builder 做了最小 grep-and-patch（加了两个词），漏了同段内的相邻行描述
 - 优先级：中
 
-## 2026-07-02 tester subagent 写文件到主仓而非 worktree，导致合并冲突
-- 触发场景：builder spawn tester（worktree 模式），传 `worktree_path`。tester 完成后文件写到了主仓 `/mnt/hongyu.liao_docker/generator/tests/test_publish.py` 而非 worktree 路径。builder 手动 cp 到 worktree 后，主仓残留 dirty `novel_writer/cli/app.py`（tester 也写了一份实现代码副本），merge-and-cleanup.sh ff-merge 失败（Your local changes would be overwritten）。需要 `git checkout --` 清主仓 + `git stash` plan.md 才能继续。
-- 现象：merge-and-cleanup.sh 报 `ERROR ff-after-rebase-failed`，exit 3
-- 根因：tester subagent 收到 worktree_path 参数但实际 cwd 是主仓，Write/Edit 用了主仓绝对路径
-- 优先级：高
 
 ## 2026-07-02 tester mock 模式与被测代码不匹配（CalledProcessError vs CompletedProcess）
 - 触发场景：tester 为 `novel publish` 命令写 9 个测试，其中 3 个 mock `subprocess.run` 用 `side_effect=CalledProcessError`。但 publish 代码用 `subprocess.run` 不带 `check=True`，检查 `.returncode` 而非捕获异常。
@@ -451,16 +440,6 @@
   3. **进一步**：reviewer hook 拒绝时返回的 deny message 应包含被命中的 slug，方便用户 / 上游 builder 当场判断是不是误拦（现在只说 "loop active"，看不出是哪个 loop）。
 - **优先级**：中（多 session 并发同仓不是日常但确实会发生；触发时只能走兜底自审，对 reviewer 价值打折）
 
-## 2026-04-29 doc-maintainer 改主仓而非 worktree（与 V2.2 tester-write-guard 同模式漏洞）
-
-- **触发上下文**：V2.4 落地 session 步骤 3.5 spawn doc-maintainer 同步评估 SKILL.md / README.md。Doc-maintainer 输出 `UPDATE_DOCS_SUMMARY: 已更新 1 个文档 | skills/builder-loop/README.md: 补 V2.4 fixture 表格条目`，但实际改的是**主仓** `skills/builder-loop/README.md`，不是 builder cwd 所在的 worktree（`/mnt/hongyu.liao_docker/cc-builder-loop/.claude/worktrees/1777457315-v2-4-locate-state-sh/skills/builder-loop/README.md`）。Builder 在 worktree 内 git status 看不到 README 改动；后续 ff merge 时主仓本地 README 又卡 merge（"local changes would be overwritten"），需手动 stash → merge → drop。Builder 还得自己在 worktree 内手动补一次同样的行才能进 commit。本次靠注意力发现，下次可能漏判。
-- **建议方向**：
-  1. 与 V2.2 `tester-write-guard.sh` 同模式扩展：把 `Write|Edit|MultiEdit` 跨目录写防护扩展到 doc-maintainer 子代理（matcher 改成识别 doc-maintainer subagent）；或加新 hook `doc-maintainer-write-guard.sh`
-  2. `agents/doc-maintainer.md`（如果存在）prompt 字段表加 `worktree_path` 必填字段 + 步骤自检追加路径根校验项（同 V2.2 tester.md 加固方式）
-  3. builder.md 步骤 3.5 spawn doc-maintainer 段强制传 `worktree_path`（loop 活跃 = state.worktree_path / loop 已结束 = ""）
-  4. e2e fixture：`test-doc-maintainer-write-guard.sh` 模拟 doc-maintainer 试图写主仓 → exit 2 + 精确诊断 stderr
-- **优先级**：中（doc 漏审风险跟 tester 同等级；本次手动补但易遗漏）
-
 ## 2026-04-29 reviewer-params.json changed_files 含 loop hook 一并 commit 的无关 untracked 累积，reviewer 焦点被噪音稀释
 
 - **触发上下文**：同上 meta-analysis 任务。Loop PASS auto-commit 时 hook 把所有 `git status` 中的 untracked 文件一并 `git add` 进 commit `db9f7bc` —— 包括上一轮 exp-015 实验产物 `novels/exp-015-blood-v12/export/*` 共 14 个文件。`reviewer-params.json` 的 `changed_files` 字段直接基于这次 commit 生成，把 14 个无关文件喂给 reviewer。Builder 必须在 reviewer prompt 里手动列「需剔除：novels/exp-015-blood-v12/export/* 全部，与本任务无关」。如果 builder 没意识到要剔除，reviewer 会把无关 export 文件当本任务产物去审。
@@ -495,6 +474,12 @@
 ---
 
 ## Archived（已消化/已修复）
+
+### 2026-07-04 tester subagent 写入主仓而非 worktree（3 次复现） — V5.6 修复
+- 修复内容：builder spawn tester 时 target_test_dirs 改为绝对路径（含 worktree 前缀）+ tester 返回后 post-hoc 校验 CHANGED_TEST_FILES 路径前缀（不匹配则搬运）。tester.md 约束简化为"路径在 target_test_dirs 之内"
+
+### 2026-04-29 doc-maintainer 改主仓而非 worktree — V5.5 删除 doc-maintainer 后 moot
+- 修复内容：V5.5 删除 doc-maintainer agent，问题随 agent 消失
 
 ### 2026-07-01 extract-e2e-cases.sh 不识别 markdown 代码块 — V5.4 修复
 - 修复内容：sed 替换为 awk，加 ``` 围栏状态机，代码块内的 e2e-cases 标签跳过

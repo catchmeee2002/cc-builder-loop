@@ -2,6 +2,22 @@
 
 > 从 CLAUDE.md §5 外移。记录各版本交付的能力与关键实现细节。
 
+## V5.6 tester 路径隔离：输入条件改造 + post-hoc 兜底（2026-07-05）
+
+**动机**：tester subagent 3 次写入主仓而非 worktree（07-04、07-02、04-29 doc-maintainer 同模式）。原则五"三次=架构缺陷"。根因：tester 的 session cwd = 主仓（CC 不支持设 subagent cwd），prompt 说"以 worktree_path/ 开头"是输出约束，对抗环境引导（Glob 探索返回主仓路径）赢面低。
+
+**核心变更**：
+- **路线 2（原则四，改输入条件）**：builder spawn tester 时 `target_test_dirs` 从相对路径改为绝对路径（已含 worktree 前缀）。tester 的 Glob/Write 自然跟随此路径，不再需要心理转换
+- **路线 3（原则一，分层兜底）**：builder 在 tester 返回后 parse `CHANGED_TEST_FILES`，逐路径校验前缀，不匹配 → cp + rm 搬运
+- **tester.md 约束简化**：硬约束 6 从"worktree_path 非空时 prepend"改为"路径必须在 target_test_dirs（绝对路径）之内"——消除心理转换需求
+
+**实验验证**：
+- 实验 A：fresh agent cwd = session primary working directory（固定），Bash cd 不影响 → 路线 1 不可行
+- 实验 B：tester 步骤 2 Glob target_test_dirs 获取探索路径 → 传绝对路径即可引导写入位置
+- 实验 C：CHANGED_TEST_FILES 行提供可审计的文件路径列表 → post-hoc 校验有数据源
+
+**设计依据**：原则四（改输入条件不改输出约束）+ 原则五（三次=架构缺陷）+ 原则一（分层：路线 2 降频 + 路线 3 兜底消灭漏网）。
+
 ## V5.5 文档审计架构重构（2026-07-05）
 
 **动机**：文档更新无独立判据层（代码有 PASS_CMD + reviewer 两层，文档只有 builder 自评）。90% loop 结束后追问"文档更新了吗"都能捡出遗漏。doc-maintainer 独立性为零（builder spawn + 指挥），是 writer 不是 auditor。

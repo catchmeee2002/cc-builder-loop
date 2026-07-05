@@ -108,6 +108,8 @@ description: "进入 Builder 模式 — 复杂任务先计划后动手，完成�
 ---
 
 > **V3.2 subagent 统一约束**：所有 spawn（reviewer / tester）worktree 模式时必传 `worktree_path`（从 state 读），非 worktree 传空。
+>
+> **V5.6 tester 路径约束**：spawn tester 时 `target_test_dirs` 必须是**绝对路径**——worktree 模式下 = `worktree_path` + "/" + 相对路径（如 `/mnt/.../worktrees/<slug>/tests/`）；bare 模式下 = 主仓绝对路径。tester 的 Glob/Write 自然跟随此路径，不再依赖 tester 自行 prepend worktree_path。
 
 ## 完成后触发 Reviewer Subagent
 
@@ -162,8 +164,10 @@ description: "进入 Builder 模式 — 复杂任务先计划后动手，完成�
 分支：
 - **loop 活跃**（`bash ~/.claude/skills/builder-loop/scripts/locate-state.sh` 找到 `phase: "active"`）：
   1. 对话中有方案路径时把方案全文作为 spec_view 传入，spawn tester（同步），传 spec_view / interface_signatures / target_test_dirs / missing_cases / mock_targets / data_contracts / error_types / worktree_path
-  2. Edit state 的 `iter:` 为 `0`
-  3. 告知 `🧪 tester 已补充，iter 已重置`（下一轮 Stop hook 会重跑 PASS_CMD 验证新测试）
+     - **V5.6 路径构造**：`target_test_dirs` 传绝对路径。worktree 模式 = state.worktree_path + "/" + loop.yml.layout.test_dirs 各项；bare 模式 = 主仓绝对路径 + 各项
+  2. tester 返回后 **post-hoc 路径校验**：parse CHANGED_TEST_FILES 行，逐路径检查是否以 worktree_path 开头。不匹配 → `cp <主仓路径> <worktree对应路径>` + `rm <主仓路径>`（搬运兜底）
+  3. Edit state 的 `iter:` 为 `0`
+  4. 告知 `🧪 tester 已补充，iter 已重置`（下一轮 Stop hook 会重跑 PASS_CMD 验证新测试）
 - **loop 已结束（或从未活跃）**：
   1. 同样 spawn tester（同步）补测，传参同上；**worktree_path: ""**（loop 已结束，tester 在主仓 cwd 工作，无 worktree 边界）
   2. tester 写完新测试后，手动跑一次 PASS_CMD 或对应测试目录
