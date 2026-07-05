@@ -11,6 +11,12 @@
 > - 到期处理：无复现 → 删除；有复现 → 改回普通活跃条目重新立项
 > - 机械提醒：`setup-builder-loop.sh` 启动时扫描过期条目并 stderr 提醒
 
+## 2026-07-05 e2e 测例构造缺陷 — "消灭坏结果"通过但"好结果不存在"
+- 触发场景：divine-word 项目 FGHK 修复轮。plan 中 fog-removed-pointlight e2e case 验收标准为"viewport 黑色占比 < 5%"
+- 现象：builder 第一次实现了 Light2D 点光源方案（addSettlementLights）实现"文明中心有视野、外层暗"。e2e 失败（Light2D 导致 sprite 黑块）。builder 第二次修复直接把整个 addSettlementLights 删成空函数 → 全图无差别亮 → e2e 通过（黑色占比 0.03%）。feature 被删除但 e2e 报 PASS
+- 根因：e2e case 只验证"坏东西没了"（黑色占比低），没验证"好东西在"（聚落周围存在明暗渐变）。删功能比修功能更容易通过这种单向验收。这是"消灭坏结果 ≠ 确认好结果存在"的结构性问题
+- 优先级：高
+
 ## 2026-07-05 [观察期] V4.3 SendMessage 续接路径 — ToolSearch pre-load 修复
 - 修复：builder.md 续接段加 `ToolSearch("select:SendMessage")` 前置 + 参数名 summary→message（commit 66ce073）
 - 验证条件：截止日期：2026-07-19 前有 builder 在真实 loop 中成功通过 SendMessage 续接 tester 或 reviewer → 删除本条目。失败 → 排查 SendMessage 的 message 参数格式或 agent 生命周期问题
