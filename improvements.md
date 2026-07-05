@@ -4,15 +4,6 @@
 > **只记事实，不写建议方向**——loop 侧开发者拿到事实自己判断怎么修。
 > 已消化条目直接删除（代码是 ground truth），不标 ✅。已关闭条目见 [CHANGELOG](CHANGELOG.md)。
 
-## 2026-07-05 [架构决策] 删 doc-maintainer + 加 reviewer Phase D
-
-- 触发场景：cc-builder-loop 项目自身多次 loop 完成后用户追问"文档都更新了吗"，90% 能捡出遗漏。S1/S2/V5.4 三次均复现
-- 现象：builder 每轮 step 3.5 自评文档完整性，大概率漏更新或描述不准确（"静默"未改、README 缺脚本、improvements 未归档）。doc-maintainer spawn 后也会出错（写主仓非 worktree、幻觉脚本名、移文件到 gitignored 路径）
-- 根因：文档更新在判据分层中无独立判据层。代码有 PASS_CMD（机器）+ reviewer（独立 agent）两层验证；文档只有 builder 自评（最弱独立性）。doc-maintainer 独立性为零（由 builder spawn + 指挥），不是审计者而是执行者——加 writer 不解决质量问题，加 auditor 才解决。机械层（doc_freshness_check）只能做存在性检测不能做正确性检测，且语义准确性不可穷举（"从反向拦截穷举不完"）
-- 架构决策：(1) 删 doc-maintainer agent，builder 自己写所有文档（doc 视为特殊 code）；(2) reviewer.md 新增 Phase D：doc-policy compliance 独立审计，以 doc_freshness_check 收窄审计范围；(3) Phase D findings 路由回 builder 修复，dirty 触发 re-review 闭环。依据：原则一（独立性属于判断层不属于执行层）+ 原则四（删协调约束比加更简单）+ research 数据（单 agent 顺序链优于多 agent 协调，prompt 2.7K tokens 仍在高原区）
-- 优先级：高
-
-
 
 ## 2026-05-09 [理论风险] dirty stash 流程边界 case（原 known-risks R6）
 
@@ -26,19 +17,7 @@
   - R6.6 grep 实现差异（V2.3.1 已改字面字符类兼容，BSD grep 残余风险）
 - 优先级：低（各子项均有 workaround 或已部分修复，仅缺 fixture 覆盖）
 
-## 2026-07-04 diff-level-check doc_freshness_check 未检出 plan.md 需更新
 
-- 触发场景：divine-word 项目 Oracle 引擎大修（16文件 +585/-48 行，改了 engine/models/llm/api 四层）+ P1/P2 视觉叙事（4文件）。plan.md 中 BCDE 四项待修和 P1/P2 待办直接引用了被改的模块
-- 现象：两次 `diff-level-check.sh` 的 `doc_freshness_check` 均返回空。步骤 3.5.5 两次都走 `📋 plan.md: skip`。plan.md 中十几个 `[ ]` 条目该标 `[x]` 但无人检测
-- 根因：`doc_freshness_check` 探测逻辑不覆盖 plan.md（只看 CLAUDE.md / README / SKILL.md 等），没有"changed files 与 plan.md 待办条目的模块交集"检测
-- 优先级：中
-
-## 2026-07-04 doc-B "命中" 声明无机械闸，builder 可跳过执行直接 commit
-
-- 触发场景：同上 Oracle 引擎大修。builder 在步骤 3.5 输出 `📄 doc-B: 命中 → builder 亲自写`，但紧接着直接进了步骤 4 commit，plan.md 从未被 Edit
-- 现象：用户事后发现 BCDE / P1 / P2 完成后 plan.md 全是旧的 `[ ]` 状态
-- 根因：doc-B "命中" 是纯文本声明，没有任何后续校验环节。PASS_CMD 不检查文档，reviewer 只审代码，commit 不验 doc-B 是否落实。builder prompt 要求"命中 → 亲自 Edit"但无机械强制
-- 优先级：中
 
 ## 2026-07-04 builder 一个 turn 内完成全周期导致 stop hook 从无执行机会
 
@@ -62,18 +41,6 @@
 - 复现 2（2026-07-04）：cc-builder-loop 项目自身 V5.2 修复任务。PASS iter 1 → phase=passed_pending_review → L1 正确 exit 0（worktree 刚 commit 完干净）。之后 18 分钟内 spawn reviewer（background）、reviewer 返回、Edit SKILL.md、Write fixture、Bash 跑 fixture、python3 reset phase=active——debug log 零 entry，CC 一次 Stop 事件都没触发。与事件 1-3 不同：不是闸拦住了，是 CC 平台层根本没 fire Stop hook
 - 优先级：高
 
-## 2026-07-02 builder 步骤 3.5.5 plan.md 检查遗漏三类过时内容
-
-- 触发场景：divine-word 项目 visual maturity overhaul（L3，19个文件，3个新模块）。builder 步骤 3.5.5 输出 `📋 plan.md: skip`（diff-level-check doc_freshness_check 为空）。用户追问"所有文档更新了？"后发现 plan.md 有三处过时
-- 现象：
-  1. plan.md 架构概览表写"115单元测试"，实际已是190；缺"聚落系统"和"音效系统"两行
-  2. plan.md P0 section 的 CameraFocus/聚落/音效 TODO 全标 `[ ]`，实际已全部完成
-  3. CLAUDE.md 项目结构中 narrative 行仍写"回合编排"（应为"四幕编排"），presentation 行缺 CivilizationGrowth
-- 根因：
-  1. diff-level-check doc_freshness_check 返回空 → 步骤 3.5.5 整个跳过。"115→190"是历史债务（早于本次改动就过时了），不在 changed_files 对照范围
-  2. 步骤 3.5.5 管"文档新鲜度"，不管"进度状态同步"。plan.md 中 `[ ]`→`[x]` 的标记没有任何步骤负责
-  3. doc-B 规则只说"builder 亲自写"，没要求全文扫描。builder 做了最小 grep-and-patch（加了两个词），漏了同段内的相邻行描述
-- 优先级：中
 
 
 ## 2026-07-02 tester mock 模式与被测代码不匹配（CalledProcessError vs CompletedProcess）
@@ -476,6 +443,18 @@
 
 ## Archived（已消化/已修复）
 
+### 2026-07-05 [架构决策] 删 doc-maintainer + 加 reviewer Phase D — V5.5 实施
+- 修复内容：删 doc-maintainer agent，builder 统一写 doc；reviewer 新增 Phase D（doc-policy compliance 独立审计，doc_freshness_check 收窄范围）
+
+### 2026-07-04 diff-level-check doc_freshness_check 未检出 plan.md — V5.3 cross-reference 修复
+- 修复内容：diff-level-check.sh 无条件将 plan.md 加入 doc_freshness_check（存在即报）+ basename 交叉引用检测
+
+### 2026-07-04 doc-B "命中"无机械闸 — V5.5 reviewer Phase D 修复
+- 修复内容：reviewer Phase D 独立审计 doc_freshness_check 列表，builder 跳过 Edit 会被独立 agent 抓出
+
+### 2026-07-02 builder 步骤 3.5.5 plan.md 检查遗漏三类过时内容 — V5.3+V5.5 修复
+- 修复内容：V5.3 确保 plan.md 进入 doc_freshness_check 触发 builder Read；V5.5 Phase D 独立审计兜底
+
 ### 2026-07-05 tester e2e 视觉验收通过但产出是 programmer-art — V5.7 修复
 - 修复内容：e2e case schema 从 llm_judge 单字段改为 judge:{verify, quality} 双轨；tester 评估三层化（L1→L2a verify→L2b quality）；planner Round 7 加写法规范+自检；handle-pass-result.sh 静默跳过加 warning
 
@@ -531,6 +510,13 @@
 ### 2026-06-24 e2e tester 失败重跑时每次 spawn 全新 agent，不复用已有 tester — V4.3 修复
 - 修复版本：V4.3 Subagent Identity & Resume
 - 修复内容：state.subagents 段追踪 tester/reviewer 的 agent_id + status；stop hook inject 消息携带 agent_id → builder 用 SendMessage 续接；失败自动 fallback 新 spawn
+
+### 2026-07-05 V4.3 tester 续接路径因 SendMessage 为 deferred tool 静默失败 — 待修复
+- 触发场景：divine-word 项目 e2e 验收 3/4 FAIL 后，builder 修代码后尝试用 SendMessage 续接已有 tester agent（V4.3 续接路径）
+- 现象：`SendMessage(to: "<agent_id>", summary: "...")` 报 `InputValidationError: The required parameter "message" is missing`。错误信息明确指出 `This tool's schema was not sent to the API — it was not in the discovered-tool set`。需要先 `ToolSearch("select:SendMessage")` 加载 schema 才能调用
+- 根因：SendMessage 是 CC 的 deferred tool（schema 不预加载），builder.md V4.3 写了 `SendMessage(to: "<id>", summary: "rerun failed e2e cases")` 但未提示 builder 先 ToolSearch 加载 schema。builder 按文档直接调用 → schema 未加载 → 必需参数 `message` 无法被解析 → InputValidationError
+- 后果：续接失败 → fallback 到 2b 全量重跑 → 丢失旧 tester 的全部上下文（截图、判定记录、环境状态），浪费一整轮 tester 的 token（本次约 15 万 token）
+- 优先级：中
 
 ### 2026-06-21 Builder PASS 后声称"Phase 完成"但 plan 文件清单完成率仅 33%（重复发生） — V4.0 reviewer Phase 0 修复
 - 修复版本：V4.0 plan 注册 + reviewer Phase 0 plan 完成度检查

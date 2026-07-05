@@ -1,29 +1,21 @@
-[保质期: V4.0 规划启动, owner: hongyu, 正向归宿: CHANGELOG.md]
+[保质期: V6.0 规划启动, owner: hongyu, 正向归宿: CHANGELOG.md]
 
 # cc-builder-loop 当前计划
 
 > 覆写式维护（§8）：只保留当前态，历史进 CHANGELOG。
 
-## 当前阶段：V4.8 已发布（2026-07-01 起）
+## 当前阶段：V5.7 已发布（2026-07-05）
 
-V4.8 e2e 沉淀+分级：tester all_pass 后自动沉淀 plan case 到项目回归集；case 加 level 字段支持 fast/full 过滤。
+V5.7 E2E framework redesign: verify + quality dual-track judge。tester 三层评估（L1 hard_rules → L2a verify → L2b quality），case schema 从 llm_judge 改为 judge:{verify, quality}。
 
 **观察期**：
-- tester 写主仓：策略 5 phase 过滤已修，**2026-07-02 前无复现 → 确认关闭**
-
-**待验证（等实战数据）**：
-1. reviewer 轮次是否从 2-3 降到 1-2（V3.6 review_focus + 假设 frame）
-2. 文件地图校验是否减少 reviewer 🔴
-
-**已知中优 open**（不急）：
-- --reuse-worktree state 路径错（创建在 worktree 内而非主仓）
-- 步骤 5 /memory 重复确认
+- tampering 检测迁移到 reviewer：**2026-07-15 前无漏判真篡改 → 关闭**
 
 **阻塞项**：
-- schema-out：等 CC Agent tool 支持 schema 参数（当前 v2.1.177 仍不支持）
-- V4.0 三方向（spec contract / reviewer 并列收敛 / dashboard）均为大工程，需实战数据驱动优先级
+- schema-out：等 CC Agent tool 支持 schema 参数（当前仍不支持，仅 Workflow agent() 有）
+- spec contract / dashboard：大工程，需实战数据驱动
 
 **下一步触发条件**：
-- tester 写主仓 7/2 前复现 → 重新立项
-- 收集到 ≥3 个任务的 reviewer 轮次数据 → 评估 V3.6 效果
-- CC Agent tool 支持 schema → 解封 schema-out
+- tampering 观察期 7/15 到期 → 评估关闭或加回轻量机器护栏
+- CC Agent tool 支持 schema → 解封 schema-out（reviewer/tester 输出契约化）
+- 积累 ≥3 个 V5.7 E2E 实战数据 → 评估 quality judge 准确率
