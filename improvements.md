@@ -9,13 +9,10 @@
 > - 必填字段：`验证条件：<截止日期 YYYY-MM-DD> + <通过→删除本条目> + <失败→具体动作>`
 > - 截止日期默认 fix 日期 +14 天
 
-## 2026-07-05 extract-e2e-cases.sh fence 逻辑与 planner 格式冲突导致 e2e 验收静默跳过
-- 触发场景：planner 产出的方案文件中 `<!-- e2e-cases -->` 标签内的 YAML 用 markdown 代码块（` ```yaml ... ``` `）包裹（为可读性），builder 写完代码后 handle-pass-result.sh 调 extract-e2e-cases.sh 提取 e2e cases
-- 现象：extract-e2e-cases.sh 返回空 + exit 1，handle-pass-result 走 type=pass 路径，e2e 验收被完全跳过，builder 无任何提示
-- 根因：extract-e2e-cases.sh V5.4 awk 逻辑中 fence（代码块检测）优先于 capture（e2e 标签检测）。` ```yaml ` 触发 fence=true 后，标签内所有内容被 `fence { next }` 跳过，CONTENT 为空
-- 优先级：高（静默跳过 = 用户以为跑了实际没跑，最危险的失败模式）
-> - 到期处理：无复现 → 删除；有复现 → 改回普通活跃条目重新立项
-> - 机械提醒：`setup-builder-loop.sh` 启动时扫描过期条目并 stderr 提醒
+## 2026-07-06 [观察期] extract-e2e-cases.sh fence 逻辑与 planner 格式冲突导致 e2e 验收静默跳过
+- 修复：awk fence 逻辑加 `if (!capture)` 条件，capture 模式内 ``` 不 toggle fence（commit 6c568f4）。fixture case 9/10 覆盖
+- 验证条件：截止日期：2026-07-20 前有 planner 产出 ```yaml 包裹的 e2e-cases 且 extract 正确提取 → 删除本条目。仍静默跳过 → 排查 awk 逻辑是否有未覆盖的 fence 嵌套场景
+- 优先级：观察
 
 ## 2026-07-05 后台任务强制开 PR — 单人项目增加无意义摩擦
 - 触发场景：divine-word 项目后台任务（background job）在 worktree 中修改 plan.md 文档后自动 push 分支 + `gh pr create --draft`

@@ -2,6 +2,12 @@
 
 > 从 CLAUDE.md §5 外移。记录各版本交付的能力与关键实现细节。
 
+## V5.8.1 extract-e2e-cases fence 修复 + 观察期扫描防崩溃（2026-07-06）
+
+**修复**：
+- **extract-e2e-cases.sh fence 静默跳过**：V5.4 awk fence 逻辑无条件优先于 capture，planner 在 `<!-- e2e-cases -->` 标签内用 ` ```yaml ``` ` 包裹 YAML 时全部内容被跳过 → e2e 验收静默跳过。修法：`if (!capture) fence = !fence`，capture 模式内 ``` 只剥标记行不 toggle fence。fixture case 9/10 覆盖
+- **setup-builder-loop.sh check_observation_expiry 崩溃**：V5.8 观察期扫描的 grep pipeline 在条目 deadline 格式不匹配时 exit 1 + pipefail + set -e 杀掉整个 setup。修法：`|| true`
+
 ## V5.7 E2E 框架重设计：verify + quality 双轨判定（2026-07-05）
 
 **动机**：divine-word 事件——e2e 验收通过但产出是 programmer-art。根因：(1) llm_judge 确认式提问引导 tester 进入"数据源模式"；(2) 独立 agent 复现同样盲区——是 LLM 通用感知模式问题；(3) 框架无质量维度、无审计、静默跳过。

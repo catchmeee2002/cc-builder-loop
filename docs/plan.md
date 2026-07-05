@@ -4,7 +4,7 @@
 
 > 覆写式维护（§8）：只保留当前态，历史进 CHANGELOG。
 
-## 当前阶段：V5.7 已发布（2026-07-05）
+## 当前阶段：V5.8.1 已发布（2026-07-06）
 
 V5.7 E2E framework redesign: verify + quality dual-track judge。tester 三层评估（L1 hard_rules → L2a verify → L2b quality），case schema 从 llm_judge 改为 judge:{verify, quality}。
 
