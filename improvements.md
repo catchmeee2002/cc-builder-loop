@@ -14,12 +14,10 @@
 - 验证条件：截止日期：2026-07-20 前有 planner 产出 ```yaml 包裹的 e2e-cases 且 extract 正确提取 → 删除本条目。仍静默跳过 → 排查 awk 逻辑是否有未覆盖的 fence 嵌套场景
 - 优先级：观察
 
-## 2026-07-06 diff-level-check doc_freshness_check 输出粒度不足 — builder 用「未命中」shortcut 跳过 CHANGELOG/plan/improvements 更新
-- 触发场景：V5.8.1 fence fix 后，diff-level-check 输出 `doc_freshness_check: [CHANGELOG.md, plan.md, SKILL.md, README.md]`。builder Read 这 4 个文件后判定"未命中"跳过全部更新。用户发现后追问才补了 CHANGELOG V5.8.1 条目 + plan.md 版本号 + improvements.md 观察期状态
-- 现象：3 个文档更新全漏（CHANGELOG 缺版本条目、plan.md 版本号过期、improvements.md 条目未转观察期），builder 无任何提示
-- 根因：机器层给的是文件列表（open-ended），LLM 层做 open-ended "需不需要更新" 判断，搜索空间太大任何一个没想到就漏。"未命中" 是对 open-ended 问题的 shortcut。违反原则一（能机械覆盖的不该依赖 LLM）+ 原则四（当前防护是 prompt 输出约束"不允许跳过 Read"，应改输入条件）
-- 修法方向：diff-level-check 输出从文件列表升级为 specific 检查指令（changelog_needed / plan_version_stale / improvements_status_candidates），机器能判的直接判，不能判的缩窄问题粒度
-- 优先级：高
+## 2026-07-06 [观察期] diff-level-check doc_freshness_check 三层 specific 检查指令
+- 修复：doc_freshness_check 从 string[] 改为 `{machine_checks, candidates, semantic_checks}` 三层结构 + builder.md/reviewer.md 消费端适配（V5.9）
+- 验证条件：截止日期：2026-07-20 前有 builder 在真实 loop 中依据 machine_checks 自动更新 CHANGELOG/plan 而非被用户追问才补 → 删除本条目。仍出现"未命中"跳过 → 排查哪一层输出缺失
+- 优先级：观察
 
 ## 2026-07-05 后台任务强制开 PR — 单人项目增加无意义摩擦
 - 触发场景：divine-word 项目后台任务（background job）在 worktree 中修改 plan.md 文档后自动 push 分支 + `gh pr create --draft`

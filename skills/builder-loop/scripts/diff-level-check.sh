@@ -96,9 +96,10 @@ changed_files = [f for f in changed_files_raw.strip().splitlines() if f]
 changed_basenames = [os.path.basename(f) for f in changed_files if f]
 
 # --- machine_checks ---
+_test_pat = re.compile(r'(^test_|/tests?/|/fixtures?/|_test\.|\.test\.)')
 has_code_change = any(
-    f.endswith('.sh') or
-    (f.startswith('agents/') and f.endswith('.md'))
+    (f.endswith('.sh') or (f.startswith('agents/') and f.endswith('.md')))
+    and not _test_pat.search(f)
     for f in changed_files
 )
 changelog_in_diff = 'CHANGELOG.md' in changed_files
@@ -142,7 +143,8 @@ if os.path.isfile(imp_path) and changed_basenames:
             title = line.strip().lstrip('# ').strip()
             date_stripped = re.sub(r'^\d{4}-\d{2}-\d{2}\s*', '', title)
             for bn in changed_basenames:
-                if bn in date_stripped:
+                stem = os.path.splitext(bn)[0]
+                if bn in date_stripped or stem in date_stripped:
                     improvements_status.append(date_stripped)
                     break
 

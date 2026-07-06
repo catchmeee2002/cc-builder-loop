@@ -251,4 +251,44 @@ assert "Case 14 changelog_needed=false" "echo '$OUT14' | python3 -c \"import jso
 assert "Case 14 plan_version_stale=false" "echo '$OUT14' | python3 -c \"import json,sys; d=json.load(sys.stdin); assert d['doc_freshness_check']['machine_checks']['plan_version_stale']==False, d\""
 assert "Case 14 improvements_status 空" "echo '$OUT14' | python3 -c \"import json,sys; d=json.load(sys.stdin); assert d['doc_freshness_check']['candidates']['improvements_status']==[], d\""
 
+# ---- Case 15: improvements 标题不含扩展名 → stem 匹配仍命中 ----
+section "Case 15: improvements title without extension → stem match hits"
+env15=$(mk_py_repo)
+cat > "$env15/improvements.md" <<'MD'
+# Improvements
+## 2026-07-06 diff-level-check 输出粒度不足
+- 触发场景：builder 跳过更新
+- 优先级：高
+MD
+mkdir -p "$env15/skills/builder-loop/scripts"
+cat > "$env15/skills/builder-loop/scripts/diff-level-check.sh" <<'SH'
+#!/usr/bin/env bash
+echo "original"
+SH
+git -C "$env15" add -A
+git -C "$env15" -c core.hooksPath=/dev/null commit -q -m "chore(test): [cr_id_skip] Add improvements + script"
+echo 'echo "modified"' >> "$env15/skills/builder-loop/scripts/diff-level-check.sh"
+git -C "$env15" add skills/builder-loop/scripts/diff-level-check.sh
+OUT15=$(bash "$DLCHECK" "$env15" 2>/dev/null)
+assert "Case 15 improvements_status 非空" "echo '$OUT15' | python3 -c \"import json,sys; d=json.load(sys.stdin); imp=d['doc_freshness_check']['candidates']['improvements_status']; assert len(imp)>0, 'got: '+str(imp)\""
+assert "Case 15 匹配含 diff-level-check" "echo '$OUT15' | python3 -c \"import json,sys; d=json.load(sys.stdin); imp=d['doc_freshness_check']['candidates']['improvements_status']; assert any('diff-level-check' in t for t in imp), imp\""
+
+# ---- Case 16: fixture-only .sh 改动 → changelog_needed=false ----
+section "Case 16: fixture .sh change only → changelog_needed=false"
+env16=$(mk_py_repo)
+mkdir -p "$env16/skills/builder-loop/fixtures/e2e"
+cat > "$env16/skills/builder-loop/fixtures/e2e/test-something.sh" <<'SH'
+#!/usr/bin/env bash
+echo "test"
+SH
+cat > "$env16/CHANGELOG.md" <<'MD'
+## V1.0 Initial
+MD
+git -C "$env16" add -A
+git -C "$env16" -c core.hooksPath=/dev/null commit -q -m "chore(test): [cr_id_skip] Add fixture + CHANGELOG"
+echo 'echo "modified"' >> "$env16/skills/builder-loop/fixtures/e2e/test-something.sh"
+git -C "$env16" add skills/builder-loop/fixtures/e2e/test-something.sh
+OUT16=$(bash "$DLCHECK" "$env16" 2>/dev/null)
+assert "Case 16 changelog_needed=false" "echo '$OUT16' | python3 -c \"import json,sys; d=json.load(sys.stdin); assert d['doc_freshness_check']['machine_checks']['changelog_needed']==False, d\""
+
 harness_report

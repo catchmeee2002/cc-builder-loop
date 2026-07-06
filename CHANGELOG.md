@@ -2,6 +2,21 @@
 
 > 从 CLAUDE.md §5 外移。记录各版本交付的能力与关键实现细节。
 
+## V5.9 doc_freshness_check 三层 specific 检查指令（2026-07-06）
+
+**动机**：V5.8.1 fence fix 后暴露 builder 步骤 3.5.5 用「未命中」shortcut 跳过 CHANGELOG/plan/improvements 更新。根因：机器层给 open-ended 文件列表，LLM 做 open-ended 判断（违反原则一+四）。
+
+**核心变更**：
+- **diff-level-check.sh 输出重构**：`doc_freshness_check` 从 `string[]` 改为 `{machine_checks, candidates, semantic_checks}` 三层结构
+  - `machine_checks.changelog_needed`：diff 含 .sh/agents/*.md 改动 + CHANGELOG 不在 changed_files → boolean
+  - `machine_checks.plan_version_stale`：plan.md 版本号 ≠ CHANGELOG 最新版本号 → boolean
+  - `candidates.improvements_status`：活跃 improvements 条目标题匹配 changed file basename → string[]
+  - `semantic_checks`：沿用交叉引用 + 附 specific question → `{file, question}[]`
+- **builder.md step 3.5.5 适配**：machine_checks 项 builder 只执行不判断（消灭"未命中"shortcut）；candidates 逐条回答 specific 问题；semantic_checks Read + 回答
+- **reviewer.md Phase D 适配**：D1 验证 machine_checks 落地（CHANGELOG/plan 是否在 changed_files）；D2 验证 candidates 处理；D3 验证 semantic_checks
+
+**设计依据**：原则一（能机械覆盖的用机器判据兜底）+ 原则四（改输入条件让正确行为自然发生，不加输出约束）。
+
 ## V5.8.1 extract-e2e-cases fence 修复 + 观察期扫描防崩溃（2026-07-06）
 
 **修复**：
