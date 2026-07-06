@@ -7,7 +7,7 @@
 **动机**：用户跨 2 台服务器工作，业务侧 agent 无法直接写 cc-builder-loop 的 improvements.md。
 
 **核心变更**：
-- **improvements.md 退役**：50 条活跃/观察期条目迁移至 GitHub Issues（#4~#53），improvements.md 文件删除
+- **improvements.md 退役**：50 条活跃/观察期条目迁移至 GitHub Issues（新建 #4~#53；#2~#3 为迁移前已创建的 issue，仅补标签），improvements.md 文件删除
 - **diff-level-check.sh GitHub fallback**：本地 improvements.md 不存在时自动 `gh issue list` 查 GitHub remote，做 candidates 匹配。输出新增 `improvements_source` 字段（`local`/`github`/`none`）
 - **setup-builder-loop.sh 观察期扫描 GitHub fallback**：同上逻辑，gh 不可用时 stderr 警告 + 跳过
 - **builder.md step 5 `[loop 改进]` 路径**：从 `Edit improvements.md` 改为 `gh issue create --repo <repo>`。观察期/关闭操作走 `gh issue edit`/`gh issue close`

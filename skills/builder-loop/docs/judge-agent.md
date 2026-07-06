@@ -256,4 +256,4 @@ judge:
 
 ## 11. 已知风险
 
-> Judge agent 已于 V4.0 废弃（功能被 reviewer Phase 0 吸收）。原 R1-R4 风险项已随 judge 退役而关闭。残余边界 case 见 `improvements.md`。
+> Judge agent 已于 V4.0 废弃（功能被 reviewer Phase 0 吸收）。原 R1-R4 风险项已随 judge 退役而关闭。残余边界 case 见 [GitHub Issues](https://github.com/catchmeee2002/cc-builder-loop/issues)。

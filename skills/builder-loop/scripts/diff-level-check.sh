@@ -131,6 +131,14 @@ machine_checks = {
 }
 
 # --- candidates ---
+def _bn_matches_title(bn, title):
+    if bn in title:
+        return True
+    stem = os.path.splitext(bn)[0]
+    if '-' in stem or '_' in stem:
+        return stem in title
+    return False
+
 imp_path = os.path.join(project_root, 'improvements.md')
 improvements_status = []
 improvements_source = 'none'
@@ -146,8 +154,7 @@ if os.path.isfile(imp_path) and changed_basenames:
             title = line.strip().lstrip('# ').strip()
             date_stripped = re.sub(r'^\d{4}-\d{2}-\d{2}\s*', '', title)
             for bn in changed_basenames:
-                stem = os.path.splitext(bn)[0]
-                if bn in date_stripped or stem in date_stripped:
+                if _bn_matches_title(bn, date_stripped):
                     improvements_status.append(date_stripped)
                     break
 elif changed_basenames:
@@ -170,8 +177,7 @@ elif changed_basenames:
                 title = iss['title']
                 date_stripped = re.sub(r'^\d{4}-\d{2}-\d{2}\s*', '', title)
                 for bn in changed_basenames:
-                    stem = os.path.splitext(bn)[0]
-                    if bn in date_stripped or stem in date_stripped:
+                    if _bn_matches_title(bn, date_stripped):
                         improvements_status.append(date_stripped)
                         break
     except Exception:

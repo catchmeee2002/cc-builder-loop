@@ -79,7 +79,7 @@ strings $(which claude)*.exe 2>/dev/null | tr ';' '\n' | grep -iE 'ScheduleWakeu
 - `agent_transcript_path` 仅 `SubagentStop` 输入才有
 - → inline workflow agent 在 **start 阶段无干净信号**与 builder-loop 自己的 reviewer/tester 区分（cwd 同为主仓）
 
-**实现层防御**（improvements 立项，待条件成熟）：
+**实现层防御**（GitHub issues 立项，待条件成熟）：
 - 路径 A：`agent_type` 反向白名单——只对已知 builder-loop agent（reviewer/tester/arbiter/doc-maintainer）落锁+注入，其余 skip（行为变更，需 e2e）
 - 路径 B：等 CC 在 `SubagentStart` 也暴露 `agent_transcript_path`，按 `/workflows/` 路径探测（最干净）
 - §1 复查命令已加 `WorkflowTool` sentinel，CC 升级时跟踪该字段是否补齐
@@ -101,7 +101,7 @@ strings $(which claude)*.exe 2>/dev/null | tr ';' '\n' | grep -iE 'ScheduleWakeu
 
 - 每次 `claude` 升级：跑 §1 复查命令 + 更新两条线快照表
 - 每次 cc-builder-loop 大版本：复盘借鉴清单状态变迁
-- 用户反馈撞车 case → 立即在 §3 对应小节补条目 + 同步 improvements.md
+- 用户反馈撞车 case → 立即在 §3 对应小节补条目 + 同步 GitHub issue
 - CC 在 `SubagentStart` 补 `agent_transcript_path` → §3.2 实现层防御转「可做」
 - CC Agent tool 补 `schema` 参数 → §2 schema 行转「可做」，roadmap schema-out 解封
 

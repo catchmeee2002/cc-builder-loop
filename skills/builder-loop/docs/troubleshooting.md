@@ -144,7 +144,7 @@ curl -sS -X POST $ANTHROPIC_BASE_URL/v1/messages \
 
 **禁用**：`loop.yml.judge.reward_hacking_detection: false` 关 Layer 2 正则。
 
-**假阴性盲区**：`--ignore-glob` / `--collect-only` / `pytest.mark.skipif` 等未覆盖（见 `improvements.md` dirty stash 边界 case R6.5）。
+**假阴性盲区**：`--ignore-glob` / `--collect-only` / `pytest.mark.skipif` 等未覆盖（见 [GitHub issue #12](https://github.com/catchmeee2002/cc-builder-loop/issues/12) R6.5）。
 
 **自检**：stop hook stderr 含 `[builder-loop reward-hack-guard]`；`judge-trace.jsonl` 含 `suspected_reward_hack`。
 

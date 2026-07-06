@@ -87,7 +87,7 @@ stop hook 通过 `locate-state.sh` 用 CWD + session_id 匹配 state 文件（�
 ## 状态文件 schema（`.claude/builder-loop/state/<slug>.yml`）
 
 ```yaml
-active: true                     # V3.x 后渐进下掉（仅写不读做新决策；详见 improvements.md「active 下掉计划」）
+active: true                     # V3.x 后渐进下掉（仅写不读做新决策；详见 GitHub issue #43）
 phase: "active"                  # V3.0 新增：active / e2e_pending / passed_pending_review；hook 主判用此字段
 slug: "1777040807-task-alpha"    # = 文件名；bare loop 时 slug="__main__"
 owner_cwd: "/path/to/main-repo"  # setup 时所在 CWD（一般 = main_repo_path）
@@ -263,7 +263,7 @@ PASS_CMD 二值判据之上叠加一道 **LLM 语义判定**，识别假完成 /
 | 配置段 | `loop.yml.judge`（全部可选；缺省 enabled=true，凭证缺失自动降级回 PASS_CMD） |
 | Telemetry | `.claude/builder-loop/judge-trace.jsonl`（每次 judge 调用一行 + outcome 后置补标） |
 | 详细架构 | `docs/judge-agent.md` |
-| 已知风险 | 已合并入 `improvements.md`（V5.7 起 known-risks.md 废弃删除） |
+| 已知风险 | 已合并入 GitHub Issues（V6.0 起 improvements.md 退役） |
 
 **核心契约**：
 

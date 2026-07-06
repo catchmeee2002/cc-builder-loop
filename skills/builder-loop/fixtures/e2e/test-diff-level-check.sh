@@ -372,4 +372,21 @@ OUT20=$(PATH="$env20/mock_bin:$PATH" bash "$DLCHECK" "$env20" 2>/dev/null)
 assert "Case 20 improvements_source=local" "echo '$OUT20' | python3 -c \"import json,sys; d=json.load(sys.stdin); assert d['doc_freshness_check']['improvements_source']=='local', d\""
 assert "Case 20 匹配含 local entry" "echo '$OUT20' | python3 -c \"import json,sys; d=json.load(sys.stdin); imp=d['doc_freshness_check']['candidates']['improvements_status']; assert any('local' in t for t in imp), imp\""
 
+# ---- Case 21: single-word stem (builder) does NOT match generic issue titles ----
+section "Case 21: single-word stem skips generic matches, compound stem still matches"
+env21=$(mk_gh_repo)
+mk_mock_gh "$env21" '[{"title":"2026-07-06 builder 步骤 5 重复确认","labels":[{"name":"active"}]},{"title":"2026-07-06 diff-level-check 输出粒度不足","labels":[{"name":"active"}]}]'
+mkdir -p "$env21/commands"
+echo "changed" > "$env21/commands/builder.md"
+mkdir -p "$env21/skills/builder-loop/scripts"
+echo "changed" > "$env21/skills/builder-loop/scripts/diff-level-check.sh"
+git -C "$env21" add -A
+git -C "$env21" -c core.hooksPath=/dev/null commit -q -m "chore(test): [cr_id_skip] Add files"
+echo "modified" >> "$env21/commands/builder.md"
+echo "modified" >> "$env21/skills/builder-loop/scripts/diff-level-check.sh"
+git -C "$env21" add commands/builder.md skills/builder-loop/scripts/diff-level-check.sh
+OUT21=$(PATH="$env21/mock_bin:$PATH" bash "$DLCHECK" "$env21" 2>/dev/null)
+assert "Case 21 不含 builder 单词匹配" "echo '$OUT21' | python3 -c \"import json,sys; d=json.load(sys.stdin); imp=d['doc_freshness_check']['candidates']['improvements_status']; assert not any('builder 步骤' in t for t in imp), 'unexpected: '+str(imp)\""
+assert "Case 21 含 diff-level-check 复合匹配" "echo '$OUT21' | python3 -c \"import json,sys; d=json.load(sys.stdin); imp=d['doc_freshness_check']['candidates']['improvements_status']; assert any('diff-level-check' in t for t in imp), imp\""
+
 harness_report

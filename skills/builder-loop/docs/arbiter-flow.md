@@ -2,7 +2,7 @@
 
 > 收到 Stop hook 仲裁请求（`[builder-loop] ⚠️ PASS_CMD 通过，但 worktree rebase 主干时发生冲突`）时执行。
 
-> ⚠️ **V3.0 已知缺口**：当前 arbiter 续路径调 `merge-worktree-back.sh`（V2.x 立即合语义），冲突解决后 commit **直接 ff 进主线，跳过 reviewer-as-gate**。即 V3.0 worktree 模式下 arbiter 路径不走 phase=passed_pending_review，reviewer 看不到合并后的代码。本期 V3.0 保留这条 V2.x 路径是为了不破坏 `test-conflict.sh` 等 fixture，属于落地的已知缺口。详见 `improvements.md`「arbiter 续路径迁移到 reviewer-as-gate」候选条目（V3.x 修）。
+> ⚠️ **V3.0 已知缺口**：当前 arbiter 续路径调 `merge-worktree-back.sh`（V2.x 立即合语义），冲突解决后 commit **直接 ff 进主线，跳过 reviewer-as-gate**。即 V3.0 worktree 模式下 arbiter 路径不走 phase=passed_pending_review，reviewer 看不到合并后的代码。本期 V3.0 保留这条 V2.x 路径是为了不破坏 `test-conflict.sh` 等 fixture，属于落地的已知缺口。详见 [GitHub issue #42](https://github.com/catchmeee2002/cc-builder-loop/issues/42)（V3.x 修）。
 
 Stop hook 已预填所有参数并给出后处理脚本路径，按其指示：
 
