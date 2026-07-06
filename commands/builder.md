@@ -212,7 +212,7 @@ description: "进入 Builder 模式 — 复杂任务先计划后动手，完成�
 - `plan_version_stale == true` → 必须更新 plan.md 版本号，输出 `📋 plan.md: 已更新版本号`
 
 **candidates（匹配候选，builder 逐条回答 specific 问题）**：
-- `improvements_status` 非空 → 逐条标题回答：「本次是否修复了该条目？是 → `gh issue edit` 转观察期 或 `gh issue close`（GitHub 源）/ 转[观察期]或删除（本地源）；否 → `📋 improvements: <标题>: 未修复，跳过`」
+- `improvements_status` 非空 → 逐条标题回答：「本次是否修复了该条目？是 → `gh issue edit` 转观察期 或 `gh issue close`；否 → `📋 improvements: <标题>: 未修复，跳过`」
 
 **semantic_checks（语义检查，builder Read + 回答 question）**：
 - 非空 → 逐条 Read file，回答 question 字段的 specific 问题：
@@ -263,11 +263,11 @@ description: "进入 Builder 模式 — 复杂任务先计划后动手，完成�
 
 | 去向 | 什么时候选 | 落到哪 |
 |------|-----------|--------|
-| **改代码防住** | 能写成 检查/断言/fixture/hook/prompt 防住下次再撞 | 业务码写 CWD 项目根的 `improvements.md`；loop 机制到 cc-builder-loop GitHub repo 开 issue（`gh issue create --repo <repo>`） |
+| **改代码防住** | 能写成 检查/断言/fixture/hook/prompt 防住下次再撞 | 业务码到 CWD 项目 GitHub repo 开 issue；loop 机制到 cc-builder-loop GitHub repo 开 issue |
 | **只能记住** | 代码改不了——CC 平台行为 / 工具隐式约定 / 业务事实 / 必须调试过才知道的根因，下次只能靠 Claude 自己记得 | 走下方 5 问筛，过的进 `/memory` |
 | **都做** | 既能改代码也值得记住（比如 loop 改进要 N 周才落地，期间靠记得绕过） | 各写一处；memory 条目里注明「代码已/待固化于 X」 |
 
-**业务码 vs loop 码 怎么分**：踩坑产生在哪一层——loop 机制（hook / agent / SKILL prompt / cc-builder-loop 仓库脚本 / fixture）写 cc-builder-loop 仓库；当前业务代码 / 测试 / 项目流程写 CWD 项目根。涉及两层拆开各落一处。CWD 本身就是 cc-builder-loop 项目时不区分。
+**业务码 vs loop 码 怎么分**：踩坑产生在哪一层——loop 机制（hook / agent / SKILL prompt / cc-builder-loop 仓库脚本 / fixture）到 cc-builder-loop repo 开 issue；当前业务代码 / 测试 / 项目流程到 CWD 项目 repo 开 issue。涉及两层拆开各开一个 issue。CWD 本身就是 cc-builder-loop 项目时不区分。
 
 **cc-builder-loop GitHub repo 定位**：`readlink ~/.claude/skills/builder-loop` 取软链目标，向上两层即仓库根，`git remote get-url origin` 提取 `owner/repo`。
 
@@ -295,19 +295,20 @@ description: "进入 Builder 模式 — 复杂任务先计划后动手，完成�
 
 | 前缀 | 含义 |
 |------|------|
-| `[业务改进]` | 写到业务项目根 improvements.md |
+| `[业务改进]` | `gh issue create --repo <CWD 项目 git remote>` 开 GitHub issue |
 | `[loop 改进]` | `gh issue create --repo <cc-builder-loop repo>` 开 GitHub issue |
 | `[记住]` | 进 `/memory` |
 
 「都做」候选拆成两个选项分别打前缀（如 `[loop 改进] c1: ...` + `[记住] c1: ...`）。附 5 问表格 / improvements 模板让用户看到判据。
 
 **5. 落盘**：
-- `[业务改进]` 选项 → Edit/Write 业务项目根的 improvements.md
-- `[loop 改进]` 选项 → `gh issue create --repo <repo> --title "YYYY-MM-DD <标题>" --label active,priority:<level> --body "<body>"`
+- `[业务改进]` / `[loop 改进]` 选项 → `gh issue create --repo <target_repo> --title "YYYY-MM-DD <标题>" --label active,priority:<level> --body "<body>"`
+  - `[loop 改进]` target_repo = cc-builder-loop repo（`readlink ~/.claude/skills/builder-loop` → 上 2 层 → `git remote get-url origin`）
+  - `[业务改进]` target_repo = CWD 项目 repo（`git remote get-url origin`）
 - `[记住]` 选项 → 调 `/memory` 命令
 - 全部为空 → `📝 本次任务无需回顾`
 
-**`[loop 改进]` GitHub issue body 模板**：
+**GitHub issue body 模板**（`[业务改进]` 和 `[loop 改进]` 通用）：
 
 ```markdown
 ### 触发场景
@@ -320,21 +321,9 @@ description: "进入 Builder 模式 — 复杂任务先计划后动手，完成�
 <定位到的原因，或「未定位」>
 ```
 
-**`[业务改进]` improvements.md 条目模板**（本地文件，无文件则新建，时间倒序）：
-
-```
-## YYYY-MM-DD <一句标题>
-- 触发场景：<操作步骤>
-- 现象：<看到了什么>
-- 根因：<原因，或「未定位」>
-- 优先级：高 / 中 / 低
-```
-
 **观察期分流**（fix 已落地时额外判断）：
-- fix 已有 e2e 验证通过 或 已在实战中确认生效 → `[loop 改进]` 走 `gh issue close <num>`；`[业务改进]` 从 improvements.md 删除
-- fix 只过 fixture/单测，未经 e2e 或实战：
-  - `[loop 改进]` → `gh issue edit <num> --remove-label active --add-label observation` + 更新 body 加验证条件段
-  - `[业务改进]` → 改标题为 `[观察期]`，加 `验证条件` 字段
+- fix 已有 e2e 验证通过 或 已在实战中确认生效 → `gh issue close <num>`
+- fix 只过 fixture/单测，未经 e2e 或实战 → `gh issue edit <num> --remove-label active --add-label observation` + 更新 body 加验证条件段
 
 **观察期 body 追加段**：
 
