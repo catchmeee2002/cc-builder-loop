@@ -58,7 +58,7 @@ description: "进入 Builder 模式 — 复杂任务先计划后动手，完成�
 **改动级别机械检测（V3.2）**：代码写完后、进 loop 前，跑 `bash ~/.claude/skills/builder-loop/scripts/diff-level-check.sh`。
 - exit 0 → 无 L3 信号，按方案预估级别继续
 - exit 1 → 输出含新增签名列表（JSON）。builder 必须**逐项回应**每个签名："L3 对外接口" 或 "L2 内部 helper（理由）"。有任何一个判 L3 → 必须 spawn tester。全判 L2 → 必须给理由。**不允许跳过或一句话概括**
-- `doc_freshness_check` 字段非空 → 列出的每个文件在步骤 3.5.5 必须 Read 并检查过时性，不允许跳过或声称不存在
+- `doc_freshness_check` 对象非空 → 按步骤 3.5.5 三层处理（machine_checks / candidates / semantic_checks）
 
 - **L1**：跳过 loop.yml 检查，直接走 Reviewer
 - **L2**：走下方 loop.yml 检查
@@ -203,17 +203,23 @@ description: "进入 Builder 模式 — 复杂任务先计划后动手，完成�
 
 ---
 
-## 步骤 3.5.5：doc_freshness_check 同步检查
+## 步骤 3.5.5：doc_freshness_check 三层检查（V5.9）
 
-以 diff-level-check 输出的 `doc_freshness_check` 字段为准（机械探测，不自证）：
+以 diff-level-check 输出的 `doc_freshness_check` 对象为准（三层结构，机械探测不自证）。三层全空 → `📋 doc_freshness_check: skip`。非空时按层处理：
 
-- 字段为空 → `📋 doc_freshness_check: skip`
-- 字段非空 → **逐个文件** Read，对照本次 changed_files 检查过时性，每个文件输出一行：
-  - `📋 <path>: 更新（<简述改了什么>）`（Edit 更新）
-  - `📋 <path>: 仍成立`（Read 后确认无需改）
-  - `📋 <path>: 范围外`（本次改动与该文件内容无关）
+**machine_checks（机器判定，builder 只执行不判断）**：
+- `changelog_needed == true` → 必须加 CHANGELOG 条目，输出 `📋 CHANGELOG: 已更新`
+- `plan_version_stale == true` → 必须更新 plan.md 版本号，输出 `📋 plan.md: 已更新版本号`
 
-⛔ `doc_freshness_check` 非空时不允许跳过 Read。
+**candidates（匹配候选，builder 逐条回答 specific 问题）**：
+- `improvements_status` 非空 → 逐条标题回答：「本次是否修复了该条目？是 → 转[观察期]或删除；否 → `📋 improvements: <标题>: 未修复，跳过`」
+
+**semantic_checks（语义检查，builder Read + 回答 question）**：
+- 非空 → 逐条 Read file，回答 question 字段的 specific 问题：
+  - `📋 <file>: 更新（<简述>）`（Edit 更新）
+  - `📋 <file>: 仍成立`（Read 后确认行为描述仍准确）
+
+⛔ machine_checks 为 true 的项不允许跳过或判"不需要"——机器已判定，builder 只执行。
 
 ---
 

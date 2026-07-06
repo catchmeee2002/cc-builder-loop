@@ -14,7 +14,7 @@ color: red
 - `report_path`：报告绝对路径（已展开，不含 `~`），用于可选落盘
 - `review_focus`（可选）：builder 提供的审查焦点——含参数边界值 + 具体怀疑点。有此字段时**优先逐项验证**，验完再做自由发挥审查
 - `plan_path`（可选）：plan 文件路径。有此字段且 plan 含 `<!-- plan-checklist -->` 标签 → 先执行 Phase 0（plan 完成度检查）；无此字段、文件不存在、或提取不到 plan-checklist 标签内容 → 跳过 Phase 0 直接进步骤 1
-- `doc_freshness_check`（可选）：diff-level-check 机械探测命中的文档路径列表。非空 → 执行 Phase D（doc-policy compliance 审计）；空或缺失 → 跳过 Phase D
+- `doc_freshness_check`（可选）：diff-level-check 机械探测输出的三层结构对象（V5.9：`{machine_checks, candidates, semantic_checks}`）。非空 → 执行 Phase D（doc-policy compliance 审计）；空或缺失 → 跳过 Phase D
 
 ## ⚠️ 硬性约束（违反即视为任务失败）
 
@@ -38,20 +38,26 @@ color: red
 
 ### Phase D：doc-policy compliance 审计（有 doc_freshness_check 时执行）
 
-输入：`doc_freshness_check` 字段（builder spawn 时传入，来自 diff-level-check 机械探测）。
+输入：`doc_freshness_check` 三层结构对象（V5.9：`{machine_checks, candidates, semantic_checks}`）。
 
-1. 逐个 Read `doc_freshness_check` 列出的文件
-2. 对照 diff_summary / changed_files：这些文档中的描述是否仍与当前代码行为一致？
-   - 行为描述变了但文档未跟（如代码加了 stderr 输出但文档仍写"静默"）→ 🟡 category=doc
-   - 新增脚本/字段/接口未出现在相关文档 → 🟡 category=doc
-   - 文档声明的约束与代码实际行为矛盾 → 🔴 category=doc
-3. 基本 doc-policy 规则检查（不需要 Read doc-policy.md，凭以下 3 条判）：
-   - CLAUDE.md 行数 > 200 行 → 🔵 category=doc
-   - 实现细节（API 签名/字段定义/JSON schema）出现在 CLAUDE.md 而非代码 → 🟡 category=doc
-   - 快照类内容（版本号/性能数字/实验数据）出现在 CLAUDE.md 无保质期标注 → 🔵 category=doc
-4. 判定：
-   - 无 doc findings → 继续步骤 1
-   - 有 findings → 输出（category=doc 标记），继续步骤 1（不 early exit——doc 问题不阻塞代码审查）
+**D1. machine_checks 验证**（builder 应已执行，reviewer 验证是否落地）：
+- `changelog_needed == true` 且 CHANGELOG.md 不在 changed_files → 🔴 category=doc「机器判定需 CHANGELOG 条目但未更新」
+- `plan_version_stale == true` 且 plan.md 不在 changed_files → 🟡 category=doc「plan.md 版本号未同步」
+
+**D2. candidates 验证**：
+- `improvements_status` 非空但 improvements.md 不在 changed_files → 🟡 category=doc「匹配的 improvements 条目未处理」
+
+**D3. semantic_checks 验证**：
+- 逐条 Read `semantic_checks` 列出的 file，对照 diff_summary / changed_files 检查 question 指出的引用是否仍准确：
+  - 行为描述变了但文档未跟 → 🟡 category=doc
+  - 文档声明的约束与代码实际行为矛盾 → 🔴 category=doc
+
+**D4. 基本 doc-policy 规则检查**（不需要 Read doc-policy.md，凭以下 3 条判）：
+- CLAUDE.md 行数 > 200 行 → 🔵 category=doc
+- 实现细节（API 签名/字段定义/JSON schema）出现在 CLAUDE.md 而非代码 → 🟡 category=doc
+- 快照类内容（版本号/性能数字/实验数据）出现在 CLAUDE.md 无保质期标注 → 🔵 category=doc
+
+判定：无 doc findings → 继续步骤 1；有 findings → 输出（category=doc 标记），继续步骤 1（不 early exit）。
 
 无 `doc_freshness_check` 字段或为空 → 跳过 Phase D 直接进步骤 1。
 

@@ -151,8 +151,8 @@ OUT8_OLD=$(bash "$DLCHECK" "$env8" "HEAD~1" 2>/dev/null)
 EC8_OLD=$?
 assert "Case 8b exit 1 with HEAD~1 (proves regression guard)" "[ '$EC8_OLD' -eq 1 ]"
 
-# ---- Case 9: doc_freshness_check 交叉引用命中 ----
-section "Case 9: changed file basename in CLAUDE.md → doc_freshness_check 含 CLAUDE.md"
+# ---- Case 9: semantic_checks 交叉引用命中 ----
+section "Case 9: changed file basename in CLAUDE.md → semantic_checks 含 CLAUDE.md"
 env9=$(mk_py_repo)
 cat > "$env9/CLAUDE.md" <<'MD'
 # Project
@@ -163,10 +163,10 @@ git -C "$env9" commit -q -m "docs(test): [cr_id_skip] Add CLAUDE.md"
 echo "changed" >> "$env9/src/engine.py"
 git -C "$env9" add src/engine.py
 OUT9=$(bash "$DLCHECK" "$env9" 2>/dev/null)
-assert "Case 9 doc_freshness_check 含 CLAUDE.md" "echo '$OUT9' | grep -q 'CLAUDE.md'"
+assert "Case 9 semantic_checks 含 CLAUDE.md" "echo '$OUT9' | python3 -c \"import json,sys; d=json.load(sys.stdin); sc=d['doc_freshness_check']['semantic_checks']; assert any(c['file']=='CLAUDE.md' for c in sc), sc\""
 
-# ---- Case 10: doc_freshness_check 无命中 ----
-section "Case 10: changed file basename not in any doc → doc_freshness_check 空"
+# ---- Case 10: semantic_checks 无命中 ----
+section "Case 10: changed file basename not in any doc → semantic_checks 空"
 env10=$(mk_py_repo)
 cat > "$env10/CLAUDE.md" <<'MD'
 # Project
@@ -177,6 +177,78 @@ git -C "$env10" commit -q -m "docs(test): [cr_id_skip] Add CLAUDE.md"
 echo "changed" >> "$env10/src/engine.py"
 git -C "$env10" add src/engine.py
 OUT10=$(bash "$DLCHECK" "$env10" 2>/dev/null)
-assert "Case 10 doc_freshness_check 不含 CLAUDE.md" "! echo '$OUT10' | grep -q 'CLAUDE.md'"
+assert "Case 10 semantic_checks 空" "echo '$OUT10' | python3 -c \"import json,sys; d=json.load(sys.stdin); assert d['doc_freshness_check']['semantic_checks']==[], d\""
+
+# ---- Case 11: changelog_needed=true（改 .sh + CHANGELOG 未改）----
+section "Case 11: .sh changed without CHANGELOG → changelog_needed=true"
+env11=$(mk_py_repo)
+mkdir -p "$env11/scripts"
+cat > "$env11/scripts/helper.sh" <<'SH'
+#!/usr/bin/env bash
+echo "original"
+SH
+cat > "$env11/CHANGELOG.md" <<'MD'
+## V1.0 Initial
+MD
+git -C "$env11" add -A
+git -C "$env11" -c core.hooksPath=/dev/null commit -q -m "chore(test): [cr_id_skip] Add helper.sh + CHANGELOG"
+echo 'echo "modified"' >> "$env11/scripts/helper.sh"
+git -C "$env11" add scripts/helper.sh
+OUT11=$(bash "$DLCHECK" "$env11" 2>/dev/null)
+assert "Case 11 changelog_needed=true" "echo '$OUT11' | python3 -c \"import json,sys; d=json.load(sys.stdin); assert d['doc_freshness_check']['machine_checks']['changelog_needed']==True, d\""
+
+# ---- Case 12: plan_version_stale=true（plan 版本号 < CHANGELOG 版本号）----
+section "Case 12: plan.md version behind CHANGELOG → plan_version_stale=true"
+env12=$(mk_py_repo)
+mkdir -p "$env12/docs"
+cat > "$env12/docs/plan.md" <<'MD'
+## 当前阶段：V1.0 已发布
+MD
+cat > "$env12/CHANGELOG.md" <<'MD'
+## V2.0 New feature
+## V1.0 Initial
+MD
+git -C "$env12" add -A
+git -C "$env12" -c core.hooksPath=/dev/null commit -q -m "chore(test): [cr_id_skip] Add stale plan"
+echo "# changed" >> "$env12/src/engine.py"
+git -C "$env12" add src/engine.py
+OUT12=$(bash "$DLCHECK" "$env12" 2>/dev/null)
+assert "Case 12 plan_version_stale=true" "echo '$OUT12' | python3 -c \"import json,sys; d=json.load(sys.stdin); assert d['doc_freshness_check']['machine_checks']['plan_version_stale']==True, d\""
+
+# ---- Case 13: improvements_status 匹配（活跃条目标题含 changed basename）----
+section "Case 13: active improvements entry title contains changed basename"
+env13=$(mk_py_repo)
+cat > "$env13/improvements.md" <<'MD'
+# Improvements
+## 2026-07-05 engine.py 缺少错误处理
+- 触发场景：load_config 无 try/except
+- 优先级：中
+MD
+git -C "$env13" add improvements.md
+git -C "$env13" -c core.hooksPath=/dev/null commit -q -m "chore(test): [cr_id_skip] Add improvements"
+echo "# changed" >> "$env13/src/engine.py"
+git -C "$env13" add src/engine.py
+OUT13=$(bash "$DLCHECK" "$env13" 2>/dev/null)
+assert "Case 13 improvements_status 非空" "echo '$OUT13' | python3 -c \"import json,sys; d=json.load(sys.stdin); imp=d['doc_freshness_check']['candidates']['improvements_status']; assert len(imp)>0, imp\""
+assert "Case 13 匹配含 engine.py" "echo '$OUT13' | python3 -c \"import json,sys; d=json.load(sys.stdin); imp=d['doc_freshness_check']['candidates']['improvements_status']; assert any('engine.py' in t for t in imp), imp\""
+
+# ---- Case 14: 全空（三层都不触发）----
+section "Case 14: no code change, no improvements, no doc refs → all empty"
+env14=$(mk_py_repo)
+mkdir -p "$env14/docs"
+cat > "$env14/CHANGELOG.md" <<'MD'
+## V1.0 Initial
+MD
+cat > "$env14/docs/plan.md" <<'MD'
+## 当前阶段：V1.0 已发布
+MD
+git -C "$env14" add -A
+git -C "$env14" -c core.hooksPath=/dev/null commit -q -m "chore(test): [cr_id_skip] Add CHANGELOG + plan"
+echo "# comment" >> "$env14/src/engine.py"
+git -C "$env14" add src/engine.py
+OUT14=$(bash "$DLCHECK" "$env14" 2>/dev/null)
+assert "Case 14 changelog_needed=false" "echo '$OUT14' | python3 -c \"import json,sys; d=json.load(sys.stdin); assert d['doc_freshness_check']['machine_checks']['changelog_needed']==False, d\""
+assert "Case 14 plan_version_stale=false" "echo '$OUT14' | python3 -c \"import json,sys; d=json.load(sys.stdin); assert d['doc_freshness_check']['machine_checks']['plan_version_stale']==False, d\""
+assert "Case 14 improvements_status 空" "echo '$OUT14' | python3 -c \"import json,sys; d=json.load(sys.stdin); assert d['doc_freshness_check']['candidates']['improvements_status']==[], d\""
 
 harness_report

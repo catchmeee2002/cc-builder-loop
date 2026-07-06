@@ -83,34 +83,98 @@ if [ -n "$DIFF_OUTPUT" ]; then
   done <<< "$DIFF_OUTPUT"
 fi
 
-# ---- 3. 文档新鲜度交叉引用（V5.3: changed files basename → 项目 doc grep）----
-DOC_REMIND=""
-# plan.md 保留原逻辑：存在即提醒
-for p in "plan.md" "docs/plan.md"; do
-  [ -f "${PROJECT_ROOT}/${p}" ] && DOC_REMIND="${DOC_REMIND}\"${p}\","
-done
-# 项目 doc 交叉引用：changed files 的 basename 出现在 doc 中 → 提醒检查过时性
-CHANGED_BASENAMES=""
-while IFS= read -r cf; do
-  [ -z "$cf" ] && continue
-  bn="${cf##*/}"
-  [ -n "$bn" ] && CHANGED_BASENAMES="${CHANGED_BASENAMES} ${bn}"
-done <<< "$(git -C "$PROJECT_ROOT" diff "$DIFF_BASE" --name-only 2>/dev/null || true)"
-if [ -n "$CHANGED_BASENAMES" ]; then
-  for doc in "CLAUDE.md" "skills/builder-loop/SKILL.md" "skills/builder-loop/README.md"; do
-    doc_full="${PROJECT_ROOT}/${doc}"
-    [ -f "$doc_full" ] || continue
-    for bn in $CHANGED_BASENAMES; do
-      if grep -qF "$bn" "$doc_full" 2>/dev/null; then
-        DOC_REMIND="${DOC_REMIND}\"${doc}\","
-        break
-      fi
-    done
-  done
-fi
-DOC_REMIND="${DOC_REMIND%,}"
+# ---- 3. doc_freshness_check 三层检测（V5.9: specific 检查指令替代文件列表）----
+CHANGED_FILES="$(git -C "$PROJECT_ROOT" diff "$DIFF_BASE" --name-only 2>/dev/null || true)"
 
-echo "{\"level_signals\":[${SIGNALS}],\"count\":${COUNT},\"doc_freshness_check\":[${DOC_REMIND}]}"
+DOC_CHECK_JSON="$(python3 -c "
+import json, re, sys, os
+
+project_root = sys.argv[1]
+changed_files_raw = sys.argv[2]
+
+changed_files = [f for f in changed_files_raw.strip().splitlines() if f]
+changed_basenames = [os.path.basename(f) for f in changed_files if f]
+
+# --- machine_checks ---
+has_code_change = any(
+    f.endswith('.sh') or
+    (f.startswith('agents/') and f.endswith('.md'))
+    for f in changed_files
+)
+changelog_in_diff = 'CHANGELOG.md' in changed_files
+changelog_needed = has_code_change and not changelog_in_diff
+
+plan_version_stale = False
+for p in ['docs/plan.md', 'plan.md']:
+    pp = os.path.join(project_root, p)
+    if os.path.isfile(pp):
+        with open(pp) as f:
+            for line in f:
+                m = re.search(r'当前阶段[：:]\s*(V[\d.]+)', line)
+                if m:
+                    plan_ver = m.group(1)
+                    cl = os.path.join(project_root, 'CHANGELOG.md')
+                    if os.path.isfile(cl):
+                        with open(cl) as cf:
+                            for cl_line in cf:
+                                cm = re.match(r'^## (V[\d.]+)', cl_line)
+                                if cm:
+                                    plan_version_stale = (plan_ver != cm.group(1))
+                                    break
+                    break
+        break
+
+machine_checks = {
+    'changelog_needed': changelog_needed,
+    'plan_version_stale': plan_version_stale,
+}
+
+# --- candidates ---
+imp_path = os.path.join(project_root, 'improvements.md')
+improvements_status = []
+if os.path.isfile(imp_path) and changed_basenames:
+    with open(imp_path) as f:
+        for line in f:
+            if not line.startswith('## '):
+                continue
+            if '[观察期]' in line or '~~' in line or '已关闭' in line:
+                continue
+            title = line.strip().lstrip('# ').strip()
+            date_stripped = re.sub(r'^\d{4}-\d{2}-\d{2}\s*', '', title)
+            for bn in changed_basenames:
+                if bn in date_stripped:
+                    improvements_status.append(date_stripped)
+                    break
+
+candidates = {'improvements_status': improvements_status}
+
+# --- semantic_checks ---
+semantic_checks = []
+doc_list = ['CLAUDE.md', 'skills/builder-loop/SKILL.md', 'skills/builder-loop/README.md']
+if changed_basenames:
+    for doc in doc_list:
+        doc_full = os.path.join(project_root, doc)
+        if not os.path.isfile(doc_full):
+            continue
+        with open(doc_full) as f:
+            content = f.read()
+        for bn in changed_basenames:
+            if bn in content:
+                semantic_checks.append({
+                    'file': doc,
+                    'question': '本次改动的 ' + bn + ' 在 ' + doc + ' 中被引用，检查引用的行为描述是否仍准确',
+                })
+                break
+
+result = {
+    'machine_checks': machine_checks,
+    'candidates': candidates,
+    'semantic_checks': semantic_checks,
+}
+print(json.dumps(result, ensure_ascii=False))
+" "$PROJECT_ROOT" "$CHANGED_FILES" 2>/dev/null || echo '{"machine_checks":{"changelog_needed":false,"plan_version_stale":false},"candidates":{"improvements_status":[]},"semantic_checks":[]}')"
+
+echo "{\"level_signals\":[${SIGNALS}],\"count\":${COUNT},\"doc_freshness_check\":${DOC_CHECK_JSON}}"
 
 if [ "$COUNT" -gt 0 ]; then
   exit 1
