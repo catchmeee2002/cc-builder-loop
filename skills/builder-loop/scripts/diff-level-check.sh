@@ -175,7 +175,7 @@ elif changed_basenames:
                         improvements_status.append(date_stripped)
                         break
     except Exception:
-        sys.stderr.write('[diff-level-check] gh not available, skipping improvements check\n')
+        pass
 
 candidates = {'improvements_status': improvements_status}
 
@@ -205,6 +205,11 @@ result = {
 }
 print(json.dumps(result, ensure_ascii=False))
 " "$PROJECT_ROOT" "$CHANGED_FILES" 2>/dev/null || echo '{"machine_checks":{"changelog_needed":false,"plan_version_stale":false},"candidates":{"improvements_status":[]},"semantic_checks":[],"improvements_source":"none"}')"
+
+IMP_SRC="$(echo "$DOC_CHECK_JSON" | python3 -c "import json,sys; print(json.load(sys.stdin).get('improvements_source','none'))" 2>/dev/null || echo "none")"
+if [ "$IMP_SRC" = "none" ] && [ ! -f "$PROJECT_ROOT/improvements.md" ]; then
+  echo "[diff-level-check] ⚠️  no improvements.md + gh unavailable, skipping improvements check" >&2
+fi
 
 echo "{\"level_signals\":[${SIGNALS}],\"count\":${COUNT},\"doc_freshness_check\":${DOC_CHECK_JSON}}"
 
