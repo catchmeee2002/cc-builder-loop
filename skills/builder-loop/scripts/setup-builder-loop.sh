@@ -133,24 +133,52 @@ with open('$proj_settings', 'w') as f:
 }
 ensure_bg_isolation_none
 
-# ---- 观察期到期扫描（V5.8） ----
+# ---- 观察期到期扫描（V5.8, V6.0: GitHub fallback） ----
 check_observation_expiry() {
   local imp_file="${PROJECT_ROOT}/improvements.md"
-  [ -f "$imp_file" ] || return 0
   local today
   today="$(date +%Y-%m-%d)"
   local expired=""
-  while IFS= read -r line; do
-    local title="${line##*] }"
-    local deadline
-    deadline="$(grep -F -A5 "$line" "$imp_file" | grep -oP '截止日期[：:]\s*\K[0-9]{4}-[0-9]{2}-[0-9]{2}' | head -1 || true)"
-    [ -z "$deadline" ] && continue
-    if [ "$today" \> "$deadline" ] || [ "$today" = "$deadline" ]; then
-      expired="${expired}  - ${title} (截止: ${deadline})\n"
-    fi
-  done < <(grep '^##.*\[观察期\]' "$imp_file")
+
+  if [ -f "$imp_file" ]; then
+    while IFS= read -r line; do
+      local title="${line##*] }"
+      local deadline
+      deadline="$(grep -F -A5 "$line" "$imp_file" | grep -oP '截止日期[：:]\s*\K[0-9]{4}-[0-9]{2}-[0-9]{2}' | head -1 || true)"
+      [ -z "$deadline" ] && continue
+      if [ "$today" \> "$deadline" ] || [ "$today" = "$deadline" ]; then
+        expired="${expired}  - ${title} (截止: ${deadline})\n"
+      fi
+    done < <(grep '^##.*\[观察期\]' "$imp_file")
+  else
+    local repo_url gh_repo gh_out
+    repo_url="$(git -C "$PROJECT_ROOT" remote get-url origin 2>/dev/null)" || return 0
+    gh_repo="$(echo "$repo_url" | grep -oP '[:/]\K[^/]+/[^/.]+(?=\.git|$)' | tail -1)"
+    [ -z "$gh_repo" ] && return 0
+    gh_out="$(gh issue list --repo "$gh_repo" --state open --label observation --json title,body -L 100 2>/dev/null)" || {
+      echo "[setup-builder-loop] ⚠️  gh 不可用，跳过观察期检查" >&2
+      return 0
+    }
+    expired="$(python3 -c "
+import json, re, sys
+today = sys.argv[1]
+issues = json.loads(sys.argv[2])
+for iss in issues:
+    title = iss.get('title', '')
+    body = iss.get('body', '')
+    m = re.search(r'截止日期[：:]\s*(\d{4}-\d{2}-\d{2})', body)
+    if not m:
+        continue
+    deadline = m.group(1)
+    if today >= deadline:
+        date_stripped = re.sub(r'^\d{4}-\d{2}-\d{2}\s*', '', title)
+        clean = re.sub(r'\[观察期\]\s*', '', date_stripped).strip()
+        print(f'  - {clean} (截止: {deadline})')
+" "$today" "$gh_out" 2>/dev/null || true)"
+  fi
+
   if [ -n "$expired" ]; then
-    printf "[setup-builder-loop] ⏰ 观察期条目已到期，需处理（删除或重开）：\n%b" "$expired" >&2
+    printf "[setup-builder-loop] ⏰ 观察期条目已到期，需处理（关闭 issue 或延期）：\n%b\n" "$expired" >&2
   fi
 }
 check_observation_expiry

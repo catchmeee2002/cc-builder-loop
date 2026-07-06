@@ -87,7 +87,7 @@ fi
 CHANGED_FILES="$(git -C "$PROJECT_ROOT" diff "$DIFF_BASE" --name-only 2>/dev/null || true)"
 
 DOC_CHECK_JSON="$(python3 -c "
-import json, re, sys, os
+import json, re, sys, os, subprocess
 
 project_root = sys.argv[1]
 changed_files_raw = sys.argv[2]
@@ -133,7 +133,10 @@ machine_checks = {
 # --- candidates ---
 imp_path = os.path.join(project_root, 'improvements.md')
 improvements_status = []
+improvements_source = 'none'
+
 if os.path.isfile(imp_path) and changed_basenames:
+    improvements_source = 'local'
     with open(imp_path) as f:
         for line in f:
             if not line.startswith('## '):
@@ -147,6 +150,32 @@ if os.path.isfile(imp_path) and changed_basenames:
                 if bn in date_stripped or stem in date_stripped:
                     improvements_status.append(date_stripped)
                     break
+elif changed_basenames:
+    try:
+        repo_url = subprocess.check_output(
+            ['git', '-C', project_root, 'remote', 'get-url', 'origin'],
+            stderr=subprocess.DEVNULL, text=True).strip()
+        m_repo = re.search(r'[:/]([^/]+/[^/.]+?)(?:\.git)?$', repo_url)
+        if m_repo:
+            gh_out = subprocess.check_output(
+                ['gh', 'issue', 'list', '--repo', m_repo.group(1),
+                 '--state', 'open', '--json', 'title,labels', '-L', '100'],
+                stderr=subprocess.DEVNULL, text=True, timeout=15)
+            issues = json.loads(gh_out)
+            improvements_source = 'github'
+            for iss in issues:
+                label_names = [l['name'] for l in iss.get('labels', [])]
+                if 'observation' in label_names:
+                    continue
+                title = iss['title']
+                date_stripped = re.sub(r'^\d{4}-\d{2}-\d{2}\s*', '', title)
+                for bn in changed_basenames:
+                    stem = os.path.splitext(bn)[0]
+                    if bn in date_stripped or stem in date_stripped:
+                        improvements_status.append(date_stripped)
+                        break
+    except Exception:
+        sys.stderr.write('[diff-level-check] gh not available, skipping improvements check\n')
 
 candidates = {'improvements_status': improvements_status}
 
@@ -172,9 +201,10 @@ result = {
     'machine_checks': machine_checks,
     'candidates': candidates,
     'semantic_checks': semantic_checks,
+    'improvements_source': improvements_source,
 }
 print(json.dumps(result, ensure_ascii=False))
-" "$PROJECT_ROOT" "$CHANGED_FILES" 2>/dev/null || echo '{"machine_checks":{"changelog_needed":false,"plan_version_stale":false},"candidates":{"improvements_status":[]},"semantic_checks":[]}')"
+" "$PROJECT_ROOT" "$CHANGED_FILES" 2>/dev/null || echo '{"machine_checks":{"changelog_needed":false,"plan_version_stale":false},"candidates":{"improvements_status":[]},"semantic_checks":[],"improvements_source":"none"}')"
 
 echo "{\"level_signals\":[${SIGNALS}],\"count\":${COUNT},\"doc_freshness_check\":${DOC_CHECK_JSON}}"
 

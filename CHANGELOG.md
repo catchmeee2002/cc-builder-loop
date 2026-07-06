@@ -2,6 +2,20 @@
 
 > 从 CLAUDE.md §5 外移。记录各版本交付的能力与关键实现细节。
 
+## V6.0 improvements.md → GitHub Issues 迁移（2026-07-06）
+
+**动机**：用户跨 2 台服务器工作，业务侧 agent 无法直接写 cc-builder-loop 的 improvements.md。
+
+**核心变更**：
+- **improvements.md 退役**：50 条活跃/观察期条目迁移至 GitHub Issues（#4~#53），improvements.md 文件删除
+- **diff-level-check.sh GitHub fallback**：本地 improvements.md 不存在时自动 `gh issue list` 查 GitHub remote，做 candidates 匹配。输出新增 `improvements_source` 字段（`local`/`github`/`none`）
+- **setup-builder-loop.sh 观察期扫描 GitHub fallback**：同上逻辑，gh 不可用时 stderr 警告 + 跳过
+- **builder.md step 5 `[loop 改进]` 路径**：从 `Edit improvements.md` 改为 `gh issue create --repo <repo>`。观察期/关闭操作走 `gh issue edit`/`gh issue close`
+- **reviewer.md Phase D2 分支**：`improvements_source=github` 时降级为 advisory（GitHub 操作不在 changed_files 可见）
+- **GitHub labels 体系**：active / observation / priority:high / priority:mid / priority:low / synced
+
+**设计决策**：文件缺失 fallback 机制——脚本先查本地 improvements.md，存在则读（业务项目不变）；不存在则走 GitHub。cc-builder-loop 删文件即自动切换，业务项目无影响。
+
 ## V5.9 doc_freshness_check 三层 specific 检查指令（2026-07-06）
 
 **动机**：V5.8.1 fence fix 后暴露 builder 步骤 3.5.5 用「未命中」shortcut 跳过 CHANGELOG/plan/improvements 更新。根因：机器层给 open-ended 文件列表，LLM 做 open-ended 判断（违反原则一+四）。

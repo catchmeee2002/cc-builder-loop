@@ -291,4 +291,85 @@ git -C "$env16" add skills/builder-loop/fixtures/e2e/test-something.sh
 OUT16=$(bash "$DLCHECK" "$env16" 2>/dev/null)
 assert "Case 16 changelog_needed=false" "echo '$OUT16' | python3 -c \"import json,sys; d=json.load(sys.stdin); assert d['doc_freshness_check']['machine_checks']['changelog_needed']==False, d\""
 
+# ============================================================
+# GitHub fallback tests (mock gh via PATH injection)
+# ============================================================
+
+mk_mock_gh() {
+  local mock_dir="$1" response="$2"
+  mkdir -p "$mock_dir/mock_bin"
+  cat > "$mock_dir/mock_bin/gh" << GHEOF
+#!/usr/bin/env bash
+echo '$response'
+GHEOF
+  chmod +x "$mock_dir/mock_bin/gh"
+}
+
+mk_gh_repo() {
+  local d
+  d=$(mktemp -d -t "harness-dlcheck-gh-XXXXXX")
+  _HARNESS_TMPDIRS+=("$d")
+  (
+    cd "$d"
+    git init -q
+    git config user.email "harness@test.local"
+    git config user.name "harness"
+    git remote add origin "https://github.com/testowner/testrepo.git"
+    mkdir -p src
+    cat > src/engine.py <<'PY'
+def load_config():
+    return {}
+PY
+    git add -A
+    git -c core.hooksPath=/dev/null commit -q -m "chore(test): [cr_id_skip] Seed"
+  )
+  echo "$d"
+}
+
+# ---- Case 17: no local improvements.md + mock gh returns active issue with changed basename → match ----
+section "Case 17: GitHub fallback — active issue matches changed basename"
+env17=$(mk_gh_repo)
+mk_mock_gh "$env17" '[{"title":"2026-07-06 engine.py 缺少错误处理","labels":[{"name":"active"},{"name":"priority:mid"}]}]'
+echo "# changed" >> "$env17/src/engine.py"
+git -C "$env17" add src/engine.py
+OUT17=$(PATH="$env17/mock_bin:$PATH" bash "$DLCHECK" "$env17" 2>/dev/null)
+assert "Case 17 improvements_status 非空" "echo '$OUT17' | python3 -c \"import json,sys; d=json.load(sys.stdin); imp=d['doc_freshness_check']['candidates']['improvements_status']; assert len(imp)>0, imp\""
+assert "Case 17 improvements_source=github" "echo '$OUT17' | python3 -c \"import json,sys; d=json.load(sys.stdin); assert d['doc_freshness_check']['improvements_source']=='github', d\""
+
+# ---- Case 18: no local improvements.md + mock gh returns only observation issue → no match ----
+section "Case 18: GitHub fallback — observation issue filtered out"
+env18=$(mk_gh_repo)
+mk_mock_gh "$env18" '[{"title":"2026-07-06 [观察期] engine.py fix","labels":[{"name":"observation"}]}]'
+echo "# changed" >> "$env18/src/engine.py"
+git -C "$env18" add src/engine.py
+OUT18=$(PATH="$env18/mock_bin:$PATH" bash "$DLCHECK" "$env18" 2>/dev/null)
+assert "Case 18 improvements_status 空" "echo '$OUT18' | python3 -c \"import json,sys; d=json.load(sys.stdin); assert d['doc_freshness_check']['candidates']['improvements_status']==[], d\""
+assert "Case 18 improvements_source=github" "echo '$OUT18' | python3 -c \"import json,sys; d=json.load(sys.stdin); assert d['doc_freshness_check']['improvements_source']=='github', d\""
+
+# ---- Case 19: no local improvements.md + gh not available → graceful fallback, empty ----
+section "Case 19: GitHub fallback — gh not in PATH → empty + source=none"
+env19=$(mk_gh_repo)
+echo "# changed" >> "$env19/src/engine.py"
+git -C "$env19" add src/engine.py
+OUT19=$(PATH="/usr/bin:/bin" bash "$DLCHECK" "$env19" 2>/dev/null)
+assert "Case 19 improvements_status 空" "echo '$OUT19' | python3 -c \"import json,sys; d=json.load(sys.stdin); assert d['doc_freshness_check']['candidates']['improvements_status']==[], d\""
+assert "Case 19 improvements_source=none" "echo '$OUT19' | python3 -c \"import json,sys; d=json.load(sys.stdin); assert d['doc_freshness_check']['improvements_source']=='none', d\""
+
+# ---- Case 20: local improvements.md exists + mock gh also has data → reads local (priority) ----
+section "Case 20: local file takes priority over GitHub"
+env20=$(mk_gh_repo)
+cat > "$env20/improvements.md" <<'MD'
+# Improvements
+## 2026-07-06 engine.py local entry
+- 优先级：中
+MD
+mk_mock_gh "$env20" '[{"title":"2026-07-06 engine.py github entry","labels":[{"name":"active"}]}]'
+git -C "$env20" add -A
+git -C "$env20" -c core.hooksPath=/dev/null commit -q -m "chore(test): [cr_id_skip] Add improvements"
+echo "# changed" >> "$env20/src/engine.py"
+git -C "$env20" add src/engine.py
+OUT20=$(PATH="$env20/mock_bin:$PATH" bash "$DLCHECK" "$env20" 2>/dev/null)
+assert "Case 20 improvements_source=local" "echo '$OUT20' | python3 -c \"import json,sys; d=json.load(sys.stdin); assert d['doc_freshness_check']['improvements_source']=='local', d\""
+assert "Case 20 匹配含 local entry" "echo '$OUT20' | python3 -c \"import json,sys; d=json.load(sys.stdin); imp=d['doc_freshness_check']['candidates']['improvements_status']; assert any('local' in t for t in imp), imp\""
+
 harness_report

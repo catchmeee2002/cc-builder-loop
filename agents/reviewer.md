@@ -38,14 +38,15 @@ color: red
 
 ### Phase D：doc-policy compliance 审计（有 doc_freshness_check 时执行）
 
-输入：`doc_freshness_check` 三层结构对象（V5.9：`{machine_checks, candidates, semantic_checks}`）。
+输入：`doc_freshness_check` 三层结构对象（V5.9：`{machine_checks, candidates, semantic_checks, improvements_source}`）。
 
 **D1. machine_checks 验证**（builder 应已执行，reviewer 验证是否落地）：
 - `changelog_needed == true` 且 CHANGELOG.md 不在 changed_files → 🔴 category=doc「机器判定需 CHANGELOG 条目但未更新」
 - `plan_version_stale == true` 且 plan.md 不在 changed_files → 🟡 category=doc「plan.md 版本号未同步」
 
 **D2. candidates 验证**：
-- `improvements_status` 非空但 improvements.md 不在 changed_files → 🟡 category=doc「匹配的 improvements 条目未处理」
+- `improvements_source == "local"` 且 `improvements_status` 非空但 improvements.md 不在 changed_files → 🟡 category=doc「匹配的 improvements 条目未处理」
+- `improvements_source == "github"` 且 `improvements_status` 非空 → 📋 advisory（GitHub issue 操作不在 changed_files 可见，不标 🟡）
 
 **D3. semantic_checks 验证**：
 - 逐条 Read `semantic_checks` 列出的 file，对照 diff_summary / changed_files 检查 question 指出的引用是否仍准确：
