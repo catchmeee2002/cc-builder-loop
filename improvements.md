@@ -46,6 +46,27 @@
 - 验证条件：截止日期：2026-07-19 前有 reviewer 实际执行 Phase D 并产出 doc 相关 finding（通过或发现问题均可）→ 删除本条目。Phase D 从未触发 → 检查 reviewer.md prompt 是否正确接收 doc_freshness_check 参数
 - 优先级：观察
 
+## 2026-07-06 bare 模式 auto-commit 漏 .gitignore 忽略文件 + stop hook 自愈 commit tester 产物
+
+- 触发场景：novel-writer 项目 reader 成品级优化，bare 模式。项目 .gitignore 有 `*.md` 全忽略规则 + 白名单例外（CLAUDE.md / docs/architecture.md 等）。builder 新建 scripts/reader/README.md 时未同步加 .gitignore 例外。tester subagent 沉淀 scripts/reader/e2e_cases.yaml（新文件）后 builder 未手动 add
+- 现象：
+  1. handle-pass-result bare auto-commit 只 git add 已 tracked + git add -u，scripts/reader/README.md 被 `*.md` 规则忽略漏在首 commit 外（stat 缺该文件）。builder 手工 amend 补 .gitignore 例外 + README.md 才入库。若未发现，远端 sparse pull 拉不到 README.md → deploy cp 失败 → docsify 首页 404
+  2. tester 产出的 e2e_cases.yaml 未提交 → 工作区 dirty → stop hook L1 闸自愈（passed_pending_review → active，reason=dirty_changes）→ 重跑 PASS_CMD → PASS → auto-commit e2e_cases.yaml 进新 commit → 回 passed_pending_review
+- 根因：
+  1. bare auto-commit 逻辑按 git check-ignore 过滤，不感知"builder 应该提交但被 .gitignore 误伤"的文件。builder 加 .gitignore 例外是手工补救，时机晚于首次 auto-commit
+  2. stop hook L1 自愈是设计行为（dirty → active），auto-commit tester 产物也算正确收尾，但 builder 未预期 tester 产物会变 dirty，commit message 仍是 builder 的 task 描述，tester 产物混入可能误导
+- 优先级：中（① 需 builder 警惕 `*.md` 全忽略项目里新建 .md 文件时同步加 .gitignore 例外，否则 bare auto-commit 漏提交；② stop hook 自愈 commit tester 产物实际是 helpful，但 commit 归属语义模糊）
+
+
+## 2026-07-06 bare 模式 background reviewer agent 丢失（TaskOutput 报 No task found）
+
+- 触发场景：novel-writer 项目 reader 成品级优化，bare 模式（主仓 cwd /home/ubuntu/dev/generator）。builder 在同一 message 内并行 spawn reviewer（subagent_type=reviewer, run_in_background=true）+ tester（同步）。tester 同步返回 E2E_SUMMARY
+- 现象：reviewer background spawn 返回 agentId a325b956c244fbc7e + "Async agent launched successfully"。后续 TaskOutput(task_id=a325b956c244fbc7e, block=false) 报 "No task found with ID"。用户反馈"reviewer 没 spawn"。改同步 spawn（不带 run_in_background）后正常返回审查报告
+- 根因：未定位。CC 平台 background agent 在本环境（bare 模式 / 主仓 cwd）调度丢失。worktree 模式未测
+- 优先级：中（影响 bare 模式 background 审查链路可靠性，builder 以为在跑实则丢了）
+
+
+
 ## 2026-05-09 [理论风险] dirty stash 流程边界 case（原 known-risks R6）
 
 - 触发条件：worktree 模式下 setup 的 stash apply / merge-and-cleanup 的 stash drop 在特定边界场景不完整
