@@ -2,6 +2,16 @@
 
 > 从 CLAUDE.md §5 外移。记录各版本交付的能力与关键实现细节。
 
+## V6.1 subagent 续接基建路径修复（2026-07-10）
+
+**动机**：V4.3 设计的 SendMessage 续接路径从未生效——V5.0 退役 SubagentStop hook 后，`handle-pass-result.sh` 的 `status=="idle"` 守卫永远不满足（无人写 idle），导致 agent_id 始终输出空，每次都 fallback 开新 agent。
+
+**核心变更**：
+- **handle-pass-result.sh**：去掉 tester/reviewer 两处 `status=="idle"` 守卫，改为只检查 agent_id 存在
+- **builder.md V5.5 回写**：从 reviewer-only 扩展为 reviewer+tester 统一规则
+- **SKILL.md schema 示例**：reviewer status 从 `"idle"` 修正为 `"running"`
+- **fixture**：新增 `test-handle-pass-agent-id.sh`（4 case：running 状态提取、e2e 路径提取、无 subagents 段、无 status 字段）
+
 ## V6.0 improvements.md → GitHub Issues 迁移（2026-07-06）
 
 **动机**：用户跨 2 台服务器工作，业务侧 agent 无法直接写 cc-builder-loop 的 improvements.md。
