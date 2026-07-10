@@ -62,7 +62,7 @@ description: "进入 Builder 模式 — 复杂任务先计划后动手，完成�
 
 - **L1**：跳过 loop.yml 检查，直接走 Reviewer
 - **L2**：走下方 loop.yml 检查
-- **L3**：先 spawn tester（同步，参数同步骤 3a+ 格式），完成后进 loop，**等 loop PASS 后再 spawn reviewer**（不要在 tester 之后立即 spawn reviewer）。本轮已 spawn 过 tester 则 reviewer TESTER_HINT 触发时跳过
+- **L3**：先 spawn tester（同步，参数同步骤 3a+ 格式），spawn 后按 V5.5 规则写 `subagents.tester` 到 state。完成后进 loop，**等 loop PASS 后再 spawn reviewer**（不要在 tester 之后立即 spawn reviewer）。本轮已 spawn 过 tester 则 reviewer TESTER_HINT 触发时跳过
 
 ---
 
@@ -95,7 +95,7 @@ description: "进入 Builder 模式 — 复杂任务先计划后动手，完成�
 > **V3.8 E2E 验证请求处理**：stop hook 消息含 `端到端验收用例` 时：
 > 1. 从消息中提取 `e2e_cases`（`端到端验收用例：` 之后的全部文本）、`worktree_path`、`e2e_cases_path`、`e2e_level`
 > 2. **V4.3 续接路径**：消息含 `tester_agent_id=<id>` → 先 `ToolSearch("select:SendMessage")` 加载 schema，再 `SendMessage(to: "<id>", message: "rerun failed e2e cases")` 续接已有 tester，只传失败用例。SendMessage 报错 / 无 E2E_SUMMARY 响应 → fallback 到 2b 全量重跑
-> 2b. **首次路径**：消息不含 `tester_agent_id` → spawn tester subagent（同步），传 `e2e_cases`、`worktree_path`、`e2e_cases_path`、`e2e_level`
+> 2b. **首次路径**：消息不含 `tester_agent_id` → spawn tester subagent（同步），传 `e2e_cases`、`worktree_path`、`e2e_cases_path`、`e2e_level`。spawn 后按 V5.5 规则写 `subagents.tester` 到 state
 > 3. tester 输出 `E2E_SUMMARY: all_pass` → 从消息中提取 STATE_FILE 和 e2e_verified_head 值，用 python3 写入 state（不修改代码，让 stop hook 下轮跳过 e2e 直接进 reviewer）
 > 4. tester 输出 `E2E_SUMMARY: has_failure` → 根据 `E2E_RESULT` 中的 `[FAIL]` 条目修改代码
 
@@ -163,7 +163,7 @@ description: "进入 Builder 模式 — 复杂任务先计划后动手，完成�
 
 分支：
 - **loop 活跃**（`bash ~/.claude/skills/builder-loop/scripts/locate-state.sh` 找到 `phase: "active"`）：
-  1. 对话中有方案路径时把方案全文作为 spec_view 传入，spawn tester（同步），传 spec_view / interface_signatures / target_test_dirs / missing_cases / mock_targets / data_contracts / error_types / worktree_path
+  1. 对话中有方案路径时把方案全文作为 spec_view 传入，spawn tester（同步），传 spec_view / interface_signatures / target_test_dirs / missing_cases / mock_targets / data_contracts / error_types / worktree_path。spawn 后按 V5.5 规则写 `subagents.tester` 到 state
      - **V5.6 路径构造**：`target_test_dirs` 传绝对路径。worktree 模式 = state.worktree_path + "/" + loop.yml.layout.test_dirs 各项；bare 模式 = 主仓绝对路径 + 各项
   2. tester 返回后 **post-hoc 路径校验**：parse CHANGED_TEST_FILES 行，逐路径检查是否以 worktree_path 开头。不匹配 → `cp <主仓路径> <worktree对应路径>` + `rm <主仓路径>`（搬运兜底）
   3. Edit state 的 `iter:` 为 `0`
