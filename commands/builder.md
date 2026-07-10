@@ -127,7 +127,7 @@ description: "进入 Builder 模式 — 复杂任务先计划后动手，完成�
 - **review_focus**（spawn 前必填；L1 纯文案填 `"N/A"` 即可）：列出 (1) 改动函数的参数边界值（0 / 负数 / None / 空容器 / 边界相等），(2) builder 最担心的 1-5 个具体怀疑点（不是泛泛的"测覆盖"，而是「函数 X 与 Y 的状态字段是否对齐」这种点对点怀疑）
 - **V4.3 续接路径**：PASS 消息含 `reviewer_agent_id=<id>` → 先 `ToolSearch("select:SendMessage")` 加载 schema，再 `SendMessage(to: "<id>", message: "recheck findings")` 续接已有 reviewer，传 diff_summary + review_focus。SendMessage 报错 / 无 REVIEW_SUMMARY 响应 → fallback 到下方新 spawn
 - spawn（新建路径）：`subagent_type: "reviewer", run_in_background: true`，传 changed_files / diff_summary / report_path / spec_shared / worktree_path / review_focus / plan_path / doc_freshness_check（从 state reviewer_pending 段或 state.plan_path 读取；无 plan → 不传。doc_freshness_check 从 diff-level-check 输出直传）
-- **V5.5 reviewer agent_id 回写**：spawn 后用 python3 写 agent_id 到 state file 的 `subagents.reviewer` 段（`agent_id: "<id>", status: "running"`），供下轮 handle-pass-result.sh 续接
+- **V5.5 subagent agent_id 回写**：spawn reviewer/tester 后，用 python3 写 agent_id 到 state file 的 `subagents.<role>` 段（`agent_id: "<id>", status: "running"`），供下轮 handle-pass-result.sh 续接。reviewer 写 `subagents.reviewer`，tester 写 `subagents.tester`
 - 告知："✅ 任务完成，reviewer 已在后台启动。"
 
 **V3.0 reviewer 反馈分支**（仅 phase=passed_pending_review 路径）：

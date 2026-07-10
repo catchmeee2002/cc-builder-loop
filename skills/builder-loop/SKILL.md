@@ -134,7 +134,7 @@ reviewer_pending:
 # V4.0 plan 路径（plan 含 <!-- plan-checklist --> 或 <!-- e2e-cases --> 标签时写入）
 plan_path: ".claude/plans/20260620-xxx.md"      # 通用 plan 文件路径（setup 时写入）
 
-# V4.3 subagent identity 段（builder spawn 时写入，用于 V4.3 续接路径）
+# V4.3 subagent identity 段（builder spawn 时写入，handle-pass-result.sh 读 agent_id 用于续接）
 subagents:
   tester:
     agent_id: "a0a40ff29f9fd0741"
@@ -144,7 +144,7 @@ subagents:
   reviewer:
     agent_id: "b1b51gg30g0ge1852"
     started_at: "..."
-    status: "idle"
+    status: "running"
     transcript_path: "/path/..."
 
 # V3.8 e2e behavioral verification 段

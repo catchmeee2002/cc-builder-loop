@@ -81,8 +81,7 @@ if [ -n "$E2E_PLAN_PATH" ]; then
 import os, re
 text = open(os.environ['STATE_FILE']).read()
 m = re.search(r'^  tester:\n(?:    .*\n)*?    agent_id: \"([^\"]+)\"', text, re.M)
-s = re.search(r'^  tester:\n(?:    .*\n)*?    status: \"([^\"]+)\"', text, re.M)
-if m and s and s.group(1) == 'idle':
+if m:
     print(m.group(1))
 " 2>/dev/null || echo "")"
 
@@ -216,8 +215,7 @@ PY
 import os, re
 text = open(os.environ['STATE_FILE']).read()
 m = re.search(r'^  reviewer:\n(?:    .*\n)*?    agent_id: \"([^\"]+)\"', text, re.M)
-s = re.search(r'^  reviewer:\n(?:    .*\n)*?    status: \"([^\"]+)\"', text, re.M)
-if m and s and s.group(1) == 'idle':
+if m:
     print(m.group(1))
 " 2>/dev/null || echo "")"
 
