@@ -166,9 +166,9 @@ done
 
 ## 7. 演进路径
 
-各版本交付能力（V1.0 ~ V3.0）详见 [`CHANGELOG.md`](../../CHANGELOG.md)。
+各版本交付能力（V1.0 ~ V7.0）详见 [`CHANGELOG.md`](../../CHANGELOG.md)。
 
-**当前最新版本 V3.0（reviewer-as-gate）**：把 hook 行为从「主动喊话 + 立即 merge」改成「挂牌子 + builder 主动拉取」。三件事 — 拆 merge 时机（PASS 后只 commit 不 merge，reviewer 通过才合主线）+ 文件按 slug 拆（消除多 worktree 串扰）+ hook 多层闸（L1 phase / L2A AskUserQuestion / L2B 无改动 / L3 pause）。详细变更见 CHANGELOG V3.0 段。
+**当前最新版本 V7.0（unit-test-spec）**：planner 必出结构化 `<!-- unit-test-spec -->` YAML（L2/L3），tester 直接消费结构化目标而非 plan 全文。详细变更见 CHANGELOG V7.0 段。
 
 **长期演进路线**（不带版本号，按规模分类）：
 

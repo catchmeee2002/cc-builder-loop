@@ -62,7 +62,7 @@ description: "进入 Builder 模式 — 复杂任务先计划后动手，完成�
 
 - **L1**：跳过 loop.yml 检查，直接走 Reviewer
 - **L2**：走下方 loop.yml 检查
-- **L3**：先 spawn tester（同步，参数同步骤 3a+ 格式），spawn 后按 V5.5 规则写 `subagents.tester` 到 state。完成后进 loop，**等 loop PASS 后再 spawn reviewer**（不要在 tester 之后立即 spawn reviewer）。本轮已 spawn 过 tester 则 reviewer TESTER_HINT 触发时跳过
+- **L3**：先 spawn tester（同步），传 unit_test_spec（从 plan 提取 `<!-- unit-test-spec -->` 标签内容）/ interface_signatures / target_test_dirs / worktree_path。plan 无标签 → `⚠️ plan 无 unit-test-spec，跳过 tester`。spawn 后按 V5.5 规则写 `subagents.tester` 到 state。完成后进 loop，**等 loop PASS 后再 spawn reviewer**（不要在 tester 之后立即 spawn reviewer）。本轮已 spawn 过 tester 则 reviewer TESTER_HINT 触发时跳过
 
 ---
 
