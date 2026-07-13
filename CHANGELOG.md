@@ -2,6 +2,23 @@
 
 > 从 CLAUDE.md §5 外移。记录各版本交付的能力与关键实现细节。
 
+## V7.0 unit-test-spec：planner → tester 测试目标结构化（2026-07-14）
+
+**动机**：tester（写测试模式）的主输入 `spec_view` 是 plan 全文 blob——tester 必须从自然语言中自行提炼"测什么"，违反原则四（改输入条件，不改输出约束）和原则六（契约先于实现）。planner 的"测试计划"章节是可选且非结构化的。
+
+**核心变更**：
+- **planner.md**：plan 结构新增 `<!-- unit-test-spec -->` YAML 标签（L2/L3 必出），planner 从验收标准+方案设计自动推导后 AskUserQuestion 确认。旧"测试计划（可选）"替换为"单元测试规格（L2/L3 必出）"
+- **tester.md**：主输入从 `spec_view`（plan 全文）改为 `unit_test_spec`（结构化 YAML）。删除 `mock_targets` / `data_contracts` / `error_types` 字段，mock 策略折入 `unit_test_spec.mock_strategy`。新增 `missing_cases` 字段接收 reviewer 增量
+- **builder.md**：TESTER_HINT 路径从传 plan 全文改为提取 `<!-- unit-test-spec -->` 标签内容。L3 路径引用"参数同步骤 3a+ 格式"自动继承。plan 无标签时 warn 并跳过 tester spawn
+
+**破坏性变更**：
+- 旧 plan（无 `<!-- unit-test-spec -->` 标签）无法触发写测试模式 tester
+- tester 不再接受 `spec_view` 字段
+
+**设计决策**：
+- `<!-- unit-test-spec -->` 与 `<!-- e2e-cases -->` 并列独立——前者是测试规格（tester 据此写代码），后者是行为用例（tester 据此跑验收），抽象层级不同
+- reviewer TESTER_HINT 格式不改（`missing_cases` 保持 freeform string 数组）——reviewer 是独立 agent，不被 planner 格式约束
+
 ## V6.1 subagent 续接基建路径修复（2026-07-10）
 
 **动机**：V4.3 设计的 SendMessage 续接路径从未生效——V5.0 退役 SubagentStop hook 后，`handle-pass-result.sh` 的 `status=="idle"` 守卫永远不满足（无人写 idle），导致 agent_id 始终输出空，每次都 fallback 开新 agent。

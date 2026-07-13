@@ -163,7 +163,7 @@ description: "进入 Builder 模式 — 复杂任务先计划后动手，完成�
 
 分支：
 - **loop 活跃**（`bash ~/.claude/skills/builder-loop/scripts/locate-state.sh` 找到 `phase: "active"`）：
-  1. 对话中有方案路径时把方案全文作为 spec_view 传入，spawn tester（同步），传 spec_view / interface_signatures / target_test_dirs / missing_cases / mock_targets / data_contracts / error_types / worktree_path。spawn 后按 V5.5 规则写 `subagents.tester` 到 state
+  1. 对话中有方案路径时从方案文件提取 `<!-- unit-test-spec -->` 到 `<!-- /unit-test-spec -->` 之间的 YAML 内容作为 unit_test_spec，spawn tester（同步），传 unit_test_spec / interface_signatures / target_test_dirs / missing_cases / worktree_path。plan 无 `<!-- unit-test-spec -->` 标签 → `⚠️ plan 无 unit-test-spec，跳过 tester`。spawn 后按 V5.5 规则写 `subagents.tester` 到 state
      - **V5.6 路径构造**：`target_test_dirs` 传绝对路径。worktree 模式 = state.worktree_path + "/" + loop.yml.layout.test_dirs 各项；bare 模式 = 主仓绝对路径 + 各项
   2. tester 返回后 **post-hoc 路径校验**：parse CHANGED_TEST_FILES 行，逐路径检查是否以 worktree_path 开头。不匹配 → `cp <主仓路径> <worktree对应路径>` + `rm <主仓路径>`（搬运兜底）
   3. Edit state 的 `iter:` 为 `0`

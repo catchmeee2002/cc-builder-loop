@@ -26,7 +26,7 @@ description: "进入 Planner 模式 — 苏格拉底追问把模糊需求提炼�
 - 边界：只摸地形，不深入实现，不评估可行性
 - 产出：一句话现状概述 + 受影响模块清单
 
-**快速通道**：合并为 1 轮，一次问清目标、约束、技术偏好、验收方式（含是否需要测试计划、是否需要端到端行为验证）。
+**快速通道**：合并为 1 轮，一次问清目标、约束、技术偏好、验收方式（含是否需要端到端行为验证）。
 
 **完整流程**：每轮只问 1 个问题（选择题优先），共 4~7 轮：
 
@@ -38,7 +38,7 @@ description: "进入 Planner 模式 — 苏格拉底追问把模糊需求提炼�
 | 4 | 风险 & 退路 |
 | 5★ | 模块边界 & 接口 |
 | 6★ | 演进路径 & 扩展预留 |
-| 7★ | 验收方式 & 是否需要测试计划 & 是否需要端到端行为验证（必须用 AskUserQuestion 三选：用户自己写 / planner 代写 / 不需要 e2e。自己写 → 追问具体验收步骤后写入 `<!-- e2e-cases -->` 标签；代写 → planner 根据需求上下文拟稿，用 AskUserQuestion 展示给用户确认/改/删后写入标签。**格式统一 YAML**——见下方「e2e-cases YAML 格式」段） |
+| 7★ | 验收方式 & 是否需要端到端行为验证（必须用 AskUserQuestion 三选：用户自己写 / planner 代写 / 不需要 e2e。自己写 → 追问具体验收步骤后写入 `<!-- e2e-cases -->` 标签；代写 → planner 根据需求上下文拟稿，用 AskUserQuestion 展示给用户确认/改/删后写入标签。**格式统一 YAML**——见下方「e2e-cases YAML 格式」段） |
 
 ★ 大方案专属。
 
@@ -59,11 +59,39 @@ description: "进入 Planner 模式 — 苏格拉底追问把模糊需求提炼�
 - **文件地图**：Glob/Grep 探索后填写，存量文件路径 + 改动点；新项目填"无存量文件"
 - **执行任务列表**：Builder 可直接执行的步骤，每步明确"改哪个文件/做什么"。多 Phase 时每个 Phase 注明消费的前置产物；产物不存在于更早 Phase → 调整顺序
 - **验收标准**：怎么确认做完了
-- **测试计划**（可选）：测试目标 / 关键测试场景 / 测试深度（快速/深度）
+- **单元测试规格**（L2/L3 必出）：用 `<!-- unit-test-spec -->` / `<!-- /unit-test-spec -->` 标签包裹 YAML（见下方「unit-test-spec YAML 格式」段）。planner 从验收标准+方案设计自动推导，用 AskUserQuestion 确认后写入。L1 豁免
 - **端到端行为验证**（可选）：用户在 Round 7 选择"需要"时写入 `<!-- e2e-cases -->` 标签（可置于验收标准段内）。格式统一 YAML（见下方段）。两种来源：用户自写（直接写入）或 planner 代写（拟稿后经用户 AskUserQuestion 确认再写入）。
 - **Plan 完成度检查锚点**（接入 builder-loop 的项目必须）：用 `<!-- plan-checklist -->` / `<!-- /plan-checklist -->` 标签包裹"执行任务列表"和"文件地图"两段。Reviewer Phase 0 提取此标签内容，逐步骤验证代码是否体现了每个步骤的意图。未包裹 → Reviewer 跳过 Phase 0 直接进代码审查。
 
 **方案视图**：方案文件按统一结构写，不分 role 视图。（3 视图区块机制已退役，见 CHANGELOG 范式变更节。）
+
+**unit-test-spec YAML 格式**（`<!-- unit-test-spec -->` 标签内必须用此格式。L2/L3 plan 必出）：
+
+```yaml
+behaviors:
+  - id: create-reminder
+    what: "创建定时提醒任务"
+    boundaries:
+      - "定时 0 秒（边界下限）"
+      - "定时超过 24h（边界上限）"
+    invariants:
+      - "已有提醒不受影响"
+mock_strategy:
+  db: "sqlite in-memory"
+```
+
+**字段**：
+- `behaviors[]`（必填）：测试行为列表
+  - `id`（必填）：kebab-case 唯一标识
+  - `what`（必填）：一句话描述该行为
+  - `boundaries`（可选）：边界条件列表
+  - `invariants`（可选）：不变量列表（测试中应断言不被破坏的约束）
+- `mock_strategy`（可选）：外部依赖 mock 方式。key=依赖名，value=mock 方法
+
+**推导步骤**（写完方案主体后、写入前自检之前执行）：
+1. 从"验收标准"+"方案设计"+"风险"推导 unit-test-spec YAML
+2. 用 AskUserQuestion 展示推导结果，用户确认/修改后写入 plan 的 `<!-- unit-test-spec -->` 标签
+3. L1 计划跳过此步骤
 
 **e2e-cases YAML 格式**（`<!-- e2e-cases -->` 标签内必须用此格式）：
 
