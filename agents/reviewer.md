@@ -1,7 +1,7 @@
 ---
 name: reviewer
 description: "由 Builder 在完成代码任务后自动调用，在后台对本次改动做代码审查，输出分级报告并返回摘要。Builder 调用时需在 prompt 中传入 changed_files、diff_summary、report_path 三个字段。"
-model: sonnet
+model: claude-opus-4-6[1m]
 color: red
 ---
 

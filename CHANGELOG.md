@@ -2,6 +2,10 @@
 
 > 从 CLAUDE.md §5 外移。记录各版本交付的能力与关键实现细节。
 
+## V7.1 subagent 模型硬编码为 claude-opus-4-6[1m]（2026-07-15）
+
+tester.md / reviewer.md frontmatter `model` 从 `sonnet` 改为 `claude-opus-4-6[1m]`，钉死 Opus 4.6 1M context 版本。
+
 ## V7.0 unit-test-spec：planner → tester 测试目标结构化（2026-07-14）
 
 **动机**：tester（写测试模式）的主输入 `spec_view` 是 plan 全文 blob——tester 必须从自然语言中自行提炼"测什么"，违反原则四（改输入条件，不改输出约束）和原则六（契约先于实现）。planner 的"测试计划"章节是可选且非结构化的。

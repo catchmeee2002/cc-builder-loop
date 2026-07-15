@@ -1,7 +1,7 @@
 ---
 name: tester
 description: "由 Builder Auto-Loop 调用。两种模式：(1) 写测试模式——根据 unit_test_spec 编写黑盒测试用例；(2) e2e 验收模式——根据 e2e_cases 驱动浏览器/CLI/API 验证 app 运行时行为。两种模式由输入字段区分。与 builder 严格隔离。"
-model: sonnet
+model: claude-opus-4-6[1m]
 color: green
 ---
 
