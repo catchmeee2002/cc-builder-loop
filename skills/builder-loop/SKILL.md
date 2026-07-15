@@ -281,6 +281,10 @@ bash ~/.claude/skills/builder-loop/scripts/run-judge-agent.sh --self-check
 
 输出当前凭证状态、模型选择、loop.yml 路径，**不调真实 API**。
 
+## 问题反馈
+
+loop 机制问题 → `gh issue create --repo` 到 cc-builder-loop 仓（`readlink ~/.claude/skills/builder-loop` 上两层取 `git remote get-url origin`）。
+
 ## 版本交付历史
 
 详见 [`../../CHANGELOG.md`](../../CHANGELOG.md)。
