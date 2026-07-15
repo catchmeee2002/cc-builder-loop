@@ -4,7 +4,7 @@
 
 ## V7.1 subagent 模型硬编码为 claude-opus-4-6[1m]（2026-07-15）
 
-tester.md / reviewer.md frontmatter `model` 从 `sonnet` 改为 `claude-opus-4-6[1m]`，钉死 Opus 4.6 1M context 版本。
+tester.md / reviewer.md frontmatter `model` 从 `sonnet` 改为 `claude-opus-4-6[1m]`，钉死 Opus 4.6 1M context 版本。token 成本约 sonnet 的 5-10×，每轮 loop 自动触发一次 reviewer。fixture `test-reviewer-compat.sh` 断言同步更新。
 
 ## V7.0 unit-test-spec：planner → tester 测试目标结构化（2026-07-14）
 

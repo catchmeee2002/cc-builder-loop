@@ -30,8 +30,8 @@ FALLBACK_MD="${HARNESS_REPO_ROOT}/skills/builder-loop/docs/reviewer-fallback.md"
 section "子测 A：配置一致性 lint"
 
 if [ -f "$REVIEWER_MD" ]; then
-  assert "reviewer.md frontmatter: model=sonnet" \
-    "grep -Eq '^model:[[:space:]]+sonnet[[:space:]]*$' '$REVIEWER_MD'"
+  assert "reviewer.md frontmatter: model=claude-opus-4-6[1m]" \
+    "grep -Eq '^model:[[:space:]]+claude-opus-4-6\[1m\][[:space:]]*$' '$REVIEWER_MD'"
   assert "reviewer.md 无 haiku 残留" \
     "! grep -Eq '^model:[[:space:]]+haiku[[:space:]]*$' '$REVIEWER_MD'"
 else
