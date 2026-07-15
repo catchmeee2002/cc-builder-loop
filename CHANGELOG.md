@@ -2,6 +2,20 @@
 
 > 从 CLAUDE.md §5 外移。记录各版本交付的能力与关键实现细节。
 
+## V7.2 arbiter 续路径接入 reviewer-as-gate（2026-07-15）
+
+**动机**：V3.0 落地 reviewer-as-gate 时只迁移了正常 PASS 路径，arbiter 解决 rebase 冲突后仍走 V2.x 立即合语义（`merge-worktree-back.sh`）——冲突融合后的代码直接 ff 进主线，reviewer 从未看见。违反原则一（判据按独立性分层）：arbiter 是同会话 LLM，其输出必须过独立 agent 判据层才能进主线。详见 [GitHub issue #42](https://github.com/catchmeee2002/cc-builder-loop/issues/42)。
+
+**核心变更**：
+- **run-apply-arbitration.sh**：步骤 8 从「调 `merge-worktree-back.sh` 合回」改为「写 `phase=passed_pending_review` + `reviewer_pending` 段挂牌等审」，与正常 PASS 路径同出口。ff merge 改由 builder 在 reviewer 通过后调 `merge-and-cleanup.sh` 完成
+- **diff baseline**：reviewer diff 基准从 `state.start_head` 改为 rebase 落点（rebase 前 `MAIN_BRANCH` 的 SHA）。start_head 是 rebase 前的旧 main，用它做基准会把其他 builder 合入主干的改动混进 reviewer 视野
+- **退出码**：`MERGE_FAILED`（exit 3）移除——本脚本不再 merge，该出口不再可能
+- **arbiter-flow.md**：删除 V3.0 缺口警告；APPLIED 决策改为「Read state 拿 reviewer_pending → 走 reviewer 流程 → 通过后 merge-and-cleanup.sh」
+
+**验证**：`test-arbitration-apply.sh` 13/13 PASS，新增 9 条断言锚住新行为（phase 值 / reviewer_pending 段 / need_arbitration 清除 / **主线 HEAD 未移动** / worktree 存活 / state 存活）。`test-conflict.sh` 9/9 PASS 不受影响。
+
+**已知残留**：`merge-worktree-back.sh` 生产路径已无调用者（bare 模式 V4.1 起走 `loop-commit.sh`），仅 2 个 fixture 直接测它，事实上已孤儿化。
+
 ## V7.1 subagent 模型硬编码为 claude-opus-4-6[1m]（2026-07-15）
 
 tester.md / reviewer.md frontmatter `model` 从 `sonnet` 改为 `claude-opus-4-6[1m]`，钉死 Opus 4.6 1M context 版本。token 成本约 sonnet 的 5-10×，每轮 loop 自动触发一次 reviewer。fixture `test-reviewer-compat.sh` 断言同步更新。
