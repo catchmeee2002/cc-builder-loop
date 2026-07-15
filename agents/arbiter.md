@@ -1,6 +1,6 @@
 ---
 name: arbiter
-description: "由 Builder 在 builder-loop 循环 PASS 后 merge-worktree-back.sh 标记 need_arbitration=true 时调用，仲裁 git rebase 冲突并输出 patch。Builder 调用时需传入 conflict_files / worktree_path / main_branch / task_context 四字段。"
+description: "由 Builder 在 builder-loop 循环 PASS 后 merge 脚本检测到 rebase 冲突并标记 need_arbitration=true 时调用，仲裁 git rebase 冲突并输出 patch。Builder 调用时需传入 conflict_files / worktree_path / main_branch / task_context 四字段。"
 model: opus
 color: purple
 ---

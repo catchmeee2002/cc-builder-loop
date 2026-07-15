@@ -120,6 +120,10 @@ echo "[arbitration] 已提取 patch ($(wc -l < "$PATCH_FILE") 行)" >&2
 # arbiter 步骤 5 已经 git rebase --abort，worktree 是干净态
 MAIN_BRANCH="$(git -C "$PROJECT_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")"
 
+# rebase 落点：rebase 后 worktree 的 commit 接在这个 SHA 之后，是 reviewer diff 的正确基准。
+# 不能用 state.start_head——那是 rebase 前的旧 main，diff 会混入其他 builder 合入主干的改动。
+REBASE_BASE="$(git -C "$PROJECT_ROOT" rev-parse --short "$MAIN_BRANCH" 2>/dev/null || echo "")"
+
 echo "[arbitration] 重新 rebase $MAIN_BRANCH 制造冲突态..." >&2
 # rebase 预期失败（有冲突），捕获退出码
 REBASE_EC=0
@@ -161,17 +165,17 @@ echo "[arbitration] patch apply + rebase 成功" >&2
 
 # ---- 7. 挂牌等审：清 need_arbitration / conflict_files + 写 phase + reviewer_pending ----
 SLUG="$(read_field slug)"
-START_HEAD="$(read_field start_head)"
+[ -z "$REBASE_BASE" ] && REBASE_BASE="$(read_field start_head)"
 NEW_HEAD_SHORT="$(git -C "$WORKTREE_PATH" rev-parse --short HEAD 2>/dev/null || echo "")"
 DIFF_FILE="${PROJECT_ROOT}/.claude/reviewer-diff-${SLUG}.txt"
 PROJ_NAME="$(basename "$PROJECT_ROOT")"
 mkdir -p "${PROJECT_ROOT}/.claude/review_reports" 2>/dev/null || true
 REPORT_PATH="${PROJECT_ROOT}/.claude/review_reports/${PROJ_NAME}_${SLUG}_$(date +%Y%m%d_%H%M%S).md"
-REVIEWER_FILES="$(git -C "$WORKTREE_PATH" diff --name-only "${START_HEAD}..HEAD" 2>/dev/null | tr '\n' ',' | sed 's/,$//' || echo "")"
-git -C "$WORKTREE_PATH" diff "${START_HEAD}..HEAD" > "$DIFF_FILE" 2>/dev/null || echo "" > "$DIFF_FILE"
+REVIEWER_FILES="$(git -C "$WORKTREE_PATH" diff --name-only "${REBASE_BASE}..HEAD" 2>/dev/null | tr '\n' ',' | sed 's/,$//' || echo "")"
+git -C "$WORKTREE_PATH" diff "${REBASE_BASE}..HEAD" > "$DIFF_FILE" 2>/dev/null || echo "" > "$DIFF_FILE"
 PLAN_PATH="$(read_field plan_path)"
 
-STATE="$STATE" NEW_HEAD="$NEW_HEAD_SHORT" PASS_SH="$START_HEAD" \
+STATE="$STATE" NEW_HEAD="$NEW_HEAD_SHORT" PASS_SH="$REBASE_BASE" \
   RFILES="$REVIEWER_FILES" DFILE="$DIFF_FILE" RPATH="$REPORT_PATH" \
   PLAN_PATH_V="$PLAN_PATH" \
   WAT="$(date -Iseconds 2>/dev/null || date +%s)" python3 - <<'PY'

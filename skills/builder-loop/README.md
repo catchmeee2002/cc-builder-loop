@@ -45,7 +45,7 @@
 │   ├── extract-error.sh        # 错误反馈处理器（V1=full+脱敏）
 │   ├── early-stop-check.sh     # 早停判据（无进展/反增长/保护路径）
 │   ├── merge-worktree-back.sh  # V1.1 worktree 合回主干（fast-forward/rebase/仲裁标记）
-│   └── run-apply-arbitration.sh # V1.1 仲裁 patch 应用（解析 arbiter 输出/apply/retry merge）
+│   └── run-apply-arbitration.sh # V1.1 仲裁 patch 应用（解析 arbiter 输出/apply/挂牌等审）
 └── schema/
     └── loop.schema.yml         # 项目层 .claude/loop.yml 字段规范
 ```
