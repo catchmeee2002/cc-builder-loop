@@ -23,6 +23,7 @@ for arg in "$@"; do
 done
 
 REVIEWER_MD="${HOME}/.claude/agents/reviewer.md"
+TESTER_MD="${HOME}/.claude/agents/tester.md"
 BUILDER_MD="${HOME}/.claude/commands/builder.md"
 FALLBACK_MD="${HARNESS_REPO_ROOT}/skills/builder-loop/docs/reviewer-fallback.md"
 
@@ -36,6 +37,15 @@ if [ -f "$REVIEWER_MD" ]; then
     "! grep -Eq '^model:[[:space:]]+haiku[[:space:]]*$' '$REVIEWER_MD'"
 else
   assert "reviewer.md 存在" "[ -f '$REVIEWER_MD' ]"
+fi
+
+if [ -f "$TESTER_MD" ]; then
+  assert "tester.md frontmatter: model=claude-opus-4-6[1m]" \
+    "grep -Eq '^model:[[:space:]]+claude-opus-4-6\[1m\][[:space:]]*$' '$TESTER_MD'"
+  assert "tester.md 无 haiku 残留" \
+    "! grep -Eq '^model:[[:space:]]+haiku[[:space:]]*$' '$TESTER_MD'"
+else
+  assert "tester.md 存在" "[ -f '$TESTER_MD' ]"
 fi
 
 if [ -f "$BUILDER_MD" ]; then
