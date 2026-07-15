@@ -29,7 +29,7 @@ _HARNESS_TMPDIRS+=("$TMP")
   cat > .claude/loop.yml <<'YMLEOF'
 pass_cmd:
   - stage: smoke
-    cmd: "active"
+    cmd: "true"
     timeout: 10
 max_iterations: 3
 layout:

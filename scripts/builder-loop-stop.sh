@@ -38,8 +38,8 @@ _resolve_skill_dir() {
 }
 SKILL_DIR=""
 
-# V1.8.1: state 归档到 legacy（替代"留着 active=false 僵尸"）
-# 两个调用点：① 发现 active!=true 的僵尸 state；② EARLY_STOP 不再改字段，直接归档
+# V1.8.1: state 归档到 legacy
+# 两个调用点：① 发现无 phase 字段的僵尸 state；② EARLY_STOP 不再改字段，直接归档
 archive_to_legacy() {
   local sf="$1" reason="$2"
   [ -f "$sf" ] || return 0
@@ -129,7 +129,7 @@ with open(os.environ['LOG_FILE'], 'a') as f:
 # V1.8.2: 写"已处理 HEAD"游标 — 避免同一 commit 反复触发 bootstrap 兜底激活
 # 调用点：PASS / 异常 merge / EARLY_STOP 三处"本轮 loop 结束"的出口
 # 刻意不调用的路径：
-#   ① zombie_inactive（非本轮 loop 归档，HEAD 可能未经处理，写游标会误阻塞下次合法激活）
+#   ① zombie_no_phase（非本轮 loop 归档，HEAD 可能未经处理，写游标会误阻塞下次合法激活）
 #   ② NEED_ARBITRATION（state 未清，下次 Stop 命中 state 走正常流程，不进 bootstrap guard）
 write_processed_cursor() {
   local proj_root="$1"
@@ -730,7 +730,7 @@ print(json.dumps({'iter': int(os.environ.get('IT','0') or 0), 'reason': os.envir
     fi
   fi
 
-  # V1.8.1: 不再"改 active=false 留僵尸"，直接归档 + exit 2 注入让 builder 立即 AskUserQuestion
+  # V1.8.1: 直接归档 + exit 2 注入让 builder 立即 AskUserQuestion
   # 原行为 exit 0 需要 builder 在下一轮 user prompt 时才发现早停；新行为 builder 当场反应
   write_processed_cursor "$PROJECT_ROOT"
   archive_to_legacy "$STATE_FILE" "early_stop_${REASON}"
