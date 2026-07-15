@@ -11,17 +11,19 @@
 #   5. 提取 ARBITER_PATCH_BEGIN/END 块 → 写临时 diff 文件
 #   6. cd worktree → git rebase main → git apply patch → git add → git rebase --continue
 #   7. 清除 state 中 need_arbitration / conflict_files
-#   8. 调 merge-worktree-back.sh 重试合回 → APPLIED / MERGE_FAILED
+#   8. 写 phase=passed_pending_review + reviewer_pending 段 → APPLIED
 #
-# stdout 最后一行：APPLIED / LOW_CONFIDENCE / APPLY_FAILED / MERGE_FAILED
-# 退出码：0=APPLIED  1=LOW_CONFIDENCE  2=APPLY_FAILED  3=MERGE_FAILED
+# 冲突解决后的 rebase 结果是新代码，与正常 PASS 路径同样必须过 reviewer 独立判据层
+# 才能进主线。本脚本不 merge，只挂牌等审；ff merge 由 builder 在 reviewer 通过后
+# 调 merge-and-cleanup.sh 完成。
+#
+# stdout 最后一行：APPLIED / LOW_CONFIDENCE / APPLY_FAILED
+# 退出码：0=APPLIED  1=LOW_CONFIDENCE  2=APPLY_FAILED
 #
 # 注意：arbiter.md 步骤 5 会 git rebase --abort，所以 apply 脚本拿到的
 # worktree 是干净态，需重新 git rebase 制造冲突再 apply patch。
 
 set -euo pipefail
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 STATE="${1:?用法: run-apply-arbitration.sh <state_file> <arbiter_output_file>}"
 ARBITER_OUTPUT="${2:?用法: run-apply-arbitration.sh <state_file> <arbiter_output_file>}"
@@ -157,44 +159,55 @@ fi
 
 echo "[arbitration] patch apply + rebase 成功" >&2
 
-# ---- 7. 清除 state 中 need_arbitration / conflict_files ----
-STATE="$STATE" python3 - <<'PY'
+# ---- 7. 挂牌等审：清 need_arbitration / conflict_files + 写 phase + reviewer_pending ----
+SLUG="$(read_field slug)"
+START_HEAD="$(read_field start_head)"
+NEW_HEAD_SHORT="$(git -C "$WORKTREE_PATH" rev-parse --short HEAD 2>/dev/null || echo "")"
+DIFF_FILE="${PROJECT_ROOT}/.claude/reviewer-diff-${SLUG}.txt"
+PROJ_NAME="$(basename "$PROJECT_ROOT")"
+mkdir -p "${PROJECT_ROOT}/.claude/review_reports" 2>/dev/null || true
+REPORT_PATH="${PROJECT_ROOT}/.claude/review_reports/${PROJ_NAME}_${SLUG}_$(date +%Y%m%d_%H%M%S).md"
+REVIEWER_FILES="$(git -C "$WORKTREE_PATH" diff --name-only "${START_HEAD}..HEAD" 2>/dev/null | tr '\n' ',' | sed 's/,$//' || echo "")"
+git -C "$WORKTREE_PATH" diff "${START_HEAD}..HEAD" > "$DIFF_FILE" 2>/dev/null || echo "" > "$DIFF_FILE"
+PLAN_PATH="$(read_field plan_path)"
+
+STATE="$STATE" NEW_HEAD="$NEW_HEAD_SHORT" PASS_SH="$START_HEAD" \
+  RFILES="$REVIEWER_FILES" DFILE="$DIFF_FILE" RPATH="$REPORT_PATH" \
+  PLAN_PATH_V="$PLAN_PATH" \
+  WAT="$(date -Iseconds 2>/dev/null || date +%s)" python3 - <<'PY'
 import os, re
 sf = os.environ['STATE']
 text = open(sf).read()
+
 text = re.sub(r'^need_arbitration:.*\n?', '', text, flags=re.M)
 text = re.sub(r'^conflict_files:.*\n?', '', text, flags=re.M)
+
+def upsert(text, key, val):
+    pat = re.compile(rf'^{key}:.*$', re.M)
+    if pat.search(text):
+        return pat.sub(f'{key}: {val}', text)
+    if not text.endswith('\n'):
+        text += '\n'
+    return text + f'{key}: {val}\n'
+
+text = upsert(text, 'phase', '"passed_pending_review"')
+text = upsert(text, 'last_iter_head', f'"{os.environ["NEW_HEAD"]}"')
+
+text = re.sub(r'^reviewer_pending:\n(?:  .+\n)*', '', text, flags=re.M)
+if not text.endswith('\n'):
+    text += '\n'
+text += (
+    'reviewer_pending:\n'
+    f'  pass_start_head: "{os.environ["PASS_SH"]}"\n'
+    f'  reviewer_files: "{os.environ["RFILES"]}"\n'
+    f'  diff_file: "{os.environ["DFILE"]}"\n'
+    f'  report_path: "{os.environ["RPATH"]}"\n'
+    f'  plan_path: "{os.environ.get("PLAN_PATH_V", "")}"\n'
+    f'  written_at: "{os.environ["WAT"]}"\n'
+)
 open(sf, 'w').write(text)
 PY
 
-# ---- 8. 调 merge-worktree-back.sh 重试合回 ----
-MERGE_SCRIPT="${SCRIPT_DIR}/merge-worktree-back.sh"
-if [ ! -f "$MERGE_SCRIPT" ]; then
-  echo "ERROR: merge-worktree-back.sh not found at $MERGE_SCRIPT" >&2
-  echo "MERGE_FAILED"
-  exit 3
-fi
-
-echo "[arbitration] 重试 merge-worktree-back..." >&2
-MERGE_EC=0
-MERGE_OUT="$(bash "$MERGE_SCRIPT" "$STATE" 2>&1)" || MERGE_EC=$?
-MERGE_LAST="$(echo "$MERGE_OUT" | tail -1)"
-MERGE_ACTION="$(echo "$MERGE_LAST" | awk '{print $1}')"
-
-case "$MERGE_ACTION" in
-  MERGED|NOOP)
-    echo "[arbitration] ✅ 合回成功 ($MERGE_ACTION)" >&2
-    echo "APPLIED"
-    exit 0
-    ;;
-  NEED_ARBITRATION)
-    echo "[arbitration] ⚠️  合回再次冲突" >&2
-    echo "MERGE_FAILED"
-    exit 3
-    ;;
-  *)
-    echo "[arbitration] ❌ merge 未知结果: $MERGE_OUT" >&2
-    echo "MERGE_FAILED"
-    exit 3
-    ;;
-esac
+echo "[arbitration] ✅ 冲突已解决，phase=passed_pending_review 挂牌等 reviewer 审查" >&2
+echo "APPLIED"
+exit 0

@@ -131,7 +131,7 @@ done
 | `run-fixture.sh` | T6.1-T6.2: 完整循环（setup→FAIL→fix→PASS） | python3 + pytest |
 | ~~`test-isolation.sh`~~ | ~~T6.3: tester 隔离 hook（V5.0 退役）~~ | ~~已删除~~ |
 | `test-conflict.sh` | T6.4: rebase 冲突 → 仲裁标记 → mock 修复 → 合回 | merge-worktree-back.sh |
-| `test-arbitration-apply.sh` | V1.1: run-apply-arbitration.sh 三场景（high→APPLIED / low→LOW_CONFIDENCE / bad patch→APPLY_FAILED） | run-apply-arbitration.sh + merge-worktree-back.sh |
+| `test-arbitration-apply.sh` | V1.1: run-apply-arbitration.sh 三场景（high→APPLIED / low→LOW_CONFIDENCE / bad patch→APPLY_FAILED） | run-apply-arbitration.sh |
 | `test-judge-agent.sh` | V1.9: judge agent 单元（mock Anthropic API，9 case：env 凭证 / API 超时 / 500 / 非法 JSON / low confidence / 凭证全缺 / disabled / dot 模型规范化） | python3 内嵌 mock server |
 | `test-judge-integration.sh` | V1.9: judge agent 集成（stop hook 全流程 7 case：PASS+stop_done / PASS+continue_nudge / 连续 nudge 上限强制 / 降级原路径 / FAIL+retry_transient / FAIL 降级 / disabled） | run-judge-agent.sh + builder-loop-stop.sh |
 | `test-judge-edge-cases.sh` | V1.9.1: judge edge case（reviewer TESTER_HINT 4 case：stop_done 后 nudge 计数清零 / backfill 幂等 / self-check 凭证全缺 exit 1 / FAIL 分支脚本缺失降级原 V1.8 路径） | 同上 |

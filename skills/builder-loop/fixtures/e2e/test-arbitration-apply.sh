@@ -2,7 +2,7 @@
 # test-arbitration-apply.sh — 验证 run-apply-arbitration.sh 三种场景
 #
 # 场景：
-#   1. 信心 high + 有效 patch → APPLIED (exit 0)
+#   1. 信心 high + 有效 patch → APPLIED (exit 0) + 挂牌等审（phase=passed_pending_review，主线未动）
 #   2. 信心 low  → LOW_CONFIDENCE (exit 1)
 #   3. 信心 high + 坏 patch → APPLY_FAILED (exit 2)
 #
@@ -60,6 +60,7 @@ LYML
   # 写 state file
   mkdir -p "$repo/.claude/builder-loop/state"
   cat > "$repo/.claude/builder-loop/state/test-wt.yml" <<STEOF
+phase: "active"
 slug: "test-wt"
 iter: 1
 max_iter: 3
@@ -107,10 +108,26 @@ ARBITER_PATCH_END
 ARBITER_SUMMARY: 已解决 1 处冲突 | 关键决策: 合并两侧改动 | 信心: high
 ARBEOF
 
+MAIN_HEAD_BEFORE_1="$(git -C "$REPO1" rev-parse --short HEAD)"
+
 EC=0
 RESULT="$(bash "$APPLY_SCRIPT" "$STATE1" "$ARB_OUT1" 2>/dev/null)" || EC=$?
 LAST="$(echo "$RESULT" | tail -1)"
 assert "场景1: exit=0, result=APPLIED" "[ '$EC' -eq 0 ] && [ '$LAST' = 'APPLIED' ]"
+
+# reviewer-as-gate：冲突解决后挂牌等审，不直接合主线
+assert "场景1: state.phase=passed_pending_review" \
+  "grep -q 'phase: \"passed_pending_review\"' '$STATE1'"
+assert "场景1: state 写入 reviewer_pending 段" "grep -q '^reviewer_pending:' '$STATE1'"
+assert "场景1: reviewer_pending 含 diff_file" "grep -q '  diff_file:' '$STATE1'"
+assert "场景1: reviewer_pending 含 report_path" "grep -q '  report_path:' '$STATE1'"
+assert "场景1: need_arbitration 已清除" "! grep -q '^need_arbitration:' '$STATE1'"
+assert "场景1: conflict_files 已清除" "! grep -q '^conflict_files:' '$STATE1'"
+assert "场景1: 主线 HEAD 未移动（未跳过 reviewer gate）" \
+  "[ \"\$(git -C '$REPO1' rev-parse --short HEAD)\" = '$MAIN_HEAD_BEFORE_1' ]"
+assert "场景1: worktree 仍存在（等 reviewer 通过才清理）" \
+  "[ -d '$REPO1/.claude/worktrees/test-wt' ]"
+assert "场景1: state 文件仍在（未被提前删除）" "[ -f '$STATE1' ]"
 
 # =============================================
 # 场景 2：信心 low → LOW_CONFIDENCE

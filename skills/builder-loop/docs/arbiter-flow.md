@@ -2,8 +2,6 @@
 
 > 收到 Stop hook 仲裁请求（`[builder-loop] ⚠️ PASS_CMD 通过，但 worktree rebase 主干时发生冲突`）时执行。
 
-> ⚠️ **V3.0 已知缺口**：当前 arbiter 续路径调 `merge-worktree-back.sh`（V2.x 立即合语义），冲突解决后 commit **直接 ff 进主线，跳过 reviewer-as-gate**。即 V3.0 worktree 模式下 arbiter 路径不走 phase=passed_pending_review，reviewer 看不到合并后的代码。本期 V3.0 保留这条 V2.x 路径是为了不破坏 `test-conflict.sh` 等 fixture，属于落地的已知缺口。详见 [GitHub issue #42](https://github.com/catchmeee2002/cc-builder-loop/issues/42)（V3.x 修）。
-
 Stop hook 已预填所有参数并给出后处理脚本路径，按其指示：
 
 1. **spawn arbiter subagent**（`run_in_background: false`，同步等待），用 hook 给出的参数：
@@ -22,7 +20,6 @@ Stop hook 已预填所有参数并给出后处理脚本路径，按其指示：
    bash <hook 给出的 apply_script> <hook 给出的 state_file> /tmp/arbiter-output.txt
    ```
 4. **根据退出码决策**：
-   - `APPLIED`（exit 0）→ 清理 state 并继续走 Reviewer 流程
+   - `APPLIED`（exit 0）→ state 已写 `phase=passed_pending_review` + `reviewer_pending` 段。Read state 拿 reviewer_pending，走 builder.md「完成后触发 Reviewer Subagent」流程；reviewer 通过后调 `merge-and-cleanup.sh <state_file>` 合主线
    - `LOW_CONFIDENCE`（exit 1）→ 用 AskUserQuestion 把冲突概览 + arbiter 理由呈给用户决策
    - `APPLY_FAILED`（exit 2）→ 重试（不超过 hook 给出的 max_attempts），仍失败则交用户
-   - `MERGE_FAILED`（exit 3）→ 同 APPLY_FAILED 处理
