@@ -115,7 +115,6 @@ YMLEOF
 LEGACY_HEAD="$(git -C "$LEGACY_WT" rev-parse --short HEAD)"
 cat > "$TMP/.claude/builder-loop/state/legacy-task.yml" <<EOF
 # builder-loop state file (do NOT manually edit while loop is active)
-active: true
 slug: "legacy-task"
 owner_cwd: "$TMP"
 iter: 0

@@ -29,7 +29,7 @@ _HARNESS_TMPDIRS+=("$TMP")
   cat > .claude/loop.yml <<'YMLEOF'
 pass_cmd:
   - stage: smoke
-    cmd: "true"
+    cmd: "active"
     timeout: 10
 max_iterations: 3
 layout:
@@ -48,12 +48,11 @@ mkdir -p "$STATE_DIR"
 
 # Helper: 写 minimal state
 write_ls_state() {
-  local sf="$1" active="$2" wt_path="$3" slug="$4"
+  local sf="$1" phase_val="$2" wt_path="$3" slug="$4"
   mkdir -p "$(dirname "$sf")"
   cat > "$sf" <<STEOF
-active: $active
 slug: "$slug"
-phase: "active"
+phase: "$phase_val"
 iter: 0
 max_iter: 5
 project_root: "$wt_path"
@@ -74,7 +73,7 @@ STEOF
 section "A1: 主仓 cwd + 1 active → 策略 5 命中"
 WT_A1="$TMP/.claude/worktrees/1700000001-foo"
 mkdir -p "$WT_A1"
-write_ls_state "$STATE_DIR/1700000001-foo.yml" "true" "$WT_A1" "1700000001-foo"
+write_ls_state "$STATE_DIR/1700000001-foo.yml" "active" "$WT_A1" "1700000001-foo"
 
 resultA1=$(run_locate "$TMP")
 assert_ec "A1 locate exit 0（策略 5 恢复）" "$resultA1" 0
@@ -93,8 +92,8 @@ section "A2: 主仓 cwd + 2 active → 返回空"
 WT_A2_1="$TMP/.claude/worktrees/1700000002-bar"
 WT_A2_2="$TMP/.claude/worktrees/1700000003-baz"
 mkdir -p "$WT_A2_1" "$WT_A2_2"
-write_ls_state "$STATE_DIR/1700000002-bar.yml" "true" "$WT_A2_1" "1700000002-bar"
-write_ls_state "$STATE_DIR/1700000003-baz.yml" "true" "$WT_A2_2" "1700000003-baz"
+write_ls_state "$STATE_DIR/1700000002-bar.yml" "active" "$WT_A2_1" "1700000002-bar"
+write_ls_state "$STATE_DIR/1700000003-baz.yml" "active" "$WT_A2_2" "1700000003-baz"
 
 resultA2=$(run_locate "$TMP")
 assert_ec "A2 locate exit 1（多 active 不绑）" "$resultA2" 1
@@ -109,7 +108,7 @@ rm -f "$STATE_DIR"/*.yml; rm -rf "$TMP/.claude/worktrees"
 section "A3: worktree cwd → 策略 2 命中"
 WT_A3="$TMP/.claude/worktrees/1700000004-qux"
 mkdir -p "$WT_A3"
-write_ls_state "$STATE_DIR/1700000004-qux.yml" "true" "$WT_A3" "1700000004-qux"
+write_ls_state "$STATE_DIR/1700000004-qux.yml" "active" "$WT_A3" "1700000004-qux"
 
 resultA3=$(run_locate "$WT_A3")
 assert_ec "A3 locate exit 0（策略 2 命中）" "$resultA3" 0
@@ -122,7 +121,7 @@ rm -f "$STATE_DIR"/*.yml; rm -rf "$TMP/.claude/worktrees"
 # A4: __main__.yml 存在 → 策略 4 兜底命中
 # ============================================================
 section "A4: __main__.yml → 策略 4 兜底"
-write_ls_state "$STATE_DIR/__main__.yml" "true" "$TMP" "__main__"
+write_ls_state "$STATE_DIR/__main__.yml" "active" "$TMP" "__main__"
 
 resultA4=$(run_locate "$TMP")
 assert_ec "A4 locate exit 0（策略 4 命中）" "$resultA4" 0
@@ -137,7 +136,7 @@ rm -f "$STATE_DIR"/*.yml
 section "A5: worktree_path 匹配 cwd → 策略 3 命中"
 WT_A5="$TMP/external-worktree-dir"
 mkdir -p "$WT_A5"
-write_ls_state "$STATE_DIR/1700000005-ext.yml" "true" "$WT_A5" "1700000005-ext"
+write_ls_state "$STATE_DIR/1700000005-ext.yml" "active" "$WT_A5" "1700000005-ext"
 
 resultA5=$(run_locate "$WT_A5")
 assert_ec "A5 locate exit 0（策略 3 命中）" "$resultA5" 0

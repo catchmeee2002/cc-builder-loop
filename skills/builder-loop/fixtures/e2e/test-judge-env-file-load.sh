@@ -112,7 +112,6 @@ EOF
 
 mkdir -p "$PROJ/.claude/builder-loop/state"
 cat > "$PROJ/.claude/builder-loop/state/test-a5.yml" <<EOF
-active: true
 slug: test-a5
 iter: 1
 max_iter: 3
@@ -152,7 +151,6 @@ EOF
 
 mkdir -p "$PROJ_A6/.claude/builder-loop/state"
 cat > "$PROJ_A6/.claude/builder-loop/state/test-a6.yml" <<EOF
-active: true
 slug: test-a6
 iter: 1
 max_iter: 3

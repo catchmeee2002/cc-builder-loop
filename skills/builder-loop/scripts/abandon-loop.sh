@@ -98,8 +98,7 @@ read_field_path() {
     | sed -E "s/^${1}:[[:space:]]*\"?([^\"]*)\"?[[:space:]]*\$/\1/" || true
 }
 
-ACTIVE="$(read_field active)"
-PHASE_FIELD="$(read_field phase)"  # V3.0：active / passed_pending_review；老 state 缺字段为空
+PHASE_FIELD="$(read_field phase)"
 SLUG="$(read_field slug)"
 ITER="$(read_field iter)"
 PROJECT_ROOT="$(read_field_path main_repo_path)"
@@ -112,9 +111,9 @@ BASELINE_PROBE_PID="$(read_field baseline_probe_pid)"
 BASELINE_PROBE_WORKTREE="$(read_field_path baseline_probe_worktree)"
 BASELINE_PROBE_STATUS="$(read_field baseline_probe_status)"
 
-# active 必须为 true 才允许 abandon（防 zombie 重复归档）
-if [ "$ACTIVE" != "true" ]; then
-  echo "[abandon-loop] ❌ state.active=${ACTIVE:-<空>}，loop 非活跃，不重复归档。" >&2
+# phase 非空才允许 abandon（防 zombie 重复归档）
+if [ -z "$PHASE_FIELD" ]; then
+  echo "[abandon-loop] ❌ state.phase 为空，loop 非活跃，不重复归档。" >&2
   echo "                state 文件：$STATE" >&2
   echo "                如已 PASS / 早停 / 之前 abandon 过，无需操作。" >&2
   exit 2

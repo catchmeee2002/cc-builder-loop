@@ -319,16 +319,11 @@ if [ ! -f "$STATE_FILE" ]; then
   debug_log "exit" '{"code":0,"reason":"state_file_missing"}'
   exit 0
 fi
-ACTIVE="$(grep -E '^active:' "$STATE_FILE" | head -1 | awk '{print $2}')"
-if [ "$ACTIVE" != "true" ]; then
-  # V1.8.1: 非活跃 state 视为僵尸（手动编辑 / 早停遗留），归档后放行
-  # 防止下次 builder 进场误把僵尸当活跃 loop
-  echo "[builder-loop] 🧟 state active='${ACTIVE}' (非 true)，归档到 legacy/ 后放行" >&2
-  archive_to_legacy "$STATE_FILE" "zombie_inactive"
-  debug_log "exit" "$(A="$ACTIVE" python3 -c "
-import os, json
-print(json.dumps({'code':0,'reason':'zombie_inactive','active': os.environ.get('A','')}))
-" 2>/dev/null || echo '{}')"
+PHASE_PRE="$(grep -E '^phase:' "$STATE_FILE" 2>/dev/null | head -1 | sed -E 's/^phase:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' || echo "")"
+if [ -z "$PHASE_PRE" ]; then
+  echo "[builder-loop] 🧟 state 无 phase 字段（僵尸 / 损坏），归档到 legacy/ 后放行" >&2
+  archive_to_legacy "$STATE_FILE" "zombie_no_phase"
+  debug_log "exit" '{"code":0,"reason":"zombie_no_phase"}'
   exit 0
 fi
 
@@ -348,16 +343,7 @@ NEXT_ITER=$(( ITER + 1 ))
 #       bare 模式（无 worktree_path）使用 PROJECT_ROOT 作 git 路径
 #   L3  .claude/builder-loop/<slug>.pause 文件存在 → 不跑（builder 主动 pause）
 
-# 老 state（V2.x 创建，无 phase 字段）兼容：stderr warning + 隐式升级（fall-through 到 PASS_CMD 路径，
-# 跑完 PASS_CMD 后写 phase=passed_pending_review 自动升级 schema）。
-# 设计偏离 spec：spec 要求 AskUserQuestion 阻断，实施改为"提示 + 隐式升级"——更平滑、跨 1-2 个版本周期所有
-# 已接入项目自动升级到 V3.0 schema，不打断用户工作流。
-PHASE_FIELD="$(grep -E '^phase:' "$STATE_FILE" 2>/dev/null | head -1 | sed -E 's/^phase:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' || echo "")"
-if [ -z "$PHASE_FIELD" ] && grep -qE '^active:' "$STATE_FILE" 2>/dev/null; then
-  echo "[builder-loop] ⚠️  检测到 V2.x 老 state（无 phase 字段）：${STATE_FILE}" >&2
-  echo "                本轮 hook 已自动升级到 V3.0 schema（PASS 后自动写 phase=passed_pending_review）" >&2
-  debug_log "old_state_compat" '{"action":"warn_and_upgrade","missing_field":"phase"}'
-fi
+PHASE_FIELD="$PHASE_PRE"
 # L1: phase 闸 + 改动/e2e完成 自愈
 if [ "$PHASE_FIELD" = "passed_pending_review" ] || [ "$PHASE_FIELD" = "e2e_pending" ]; then
   WT_PATH_GATE="$(grep -E '^worktree_path:' "$STATE_FILE" 2>/dev/null | head -1 | sed -E 's/^worktree_path:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' || echo "")"

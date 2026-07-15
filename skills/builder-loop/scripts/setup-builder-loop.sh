@@ -353,12 +353,12 @@ fi
 
 # ---- 若同 slug state 已 active 且对应 worktree 还在 → 拒绝 ----
 if [ -f "$STATE_FILE" ]; then
-  EXIST_ACTIVE="$(grep -E '^active:' "$STATE_FILE" | head -1 | awk '{print $2}')"
+  EXIST_PHASE="$(grep -E '^phase:' "$STATE_FILE" | head -1 | sed -E 's/^phase:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/')"
   EXIST_WT="$(grep -E '^worktree_path:' "$STATE_FILE" | head -1 | sed -E 's/^worktree_path:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/')"
-  if [ "$EXIST_ACTIVE" = "true" ]; then
+  if [ -n "$EXIST_PHASE" ]; then
     # bare 模式（worktree_path 空）或 worktree 目录仍存在 → 拒绝
     if [ -z "$EXIST_WT" ] || [ -d "$EXIST_WT" ]; then
-      echo "❌ 同 slug (${SLUG}) 已有 active loop，state=${STATE_FILE}" >&2
+      echo "❌ 同 slug (${SLUG}) 已有 active loop（phase=${EXIST_PHASE}），state=${STATE_FILE}" >&2
       echo "   若确认要清理，请手动 rm \"${STATE_FILE}\" 再重试" >&2
       exit 4
     fi
@@ -490,7 +490,6 @@ else
 fi
 cat > "$STATE_FILE" <<EOF
 # builder-loop state file (do NOT manually edit while loop is active)
-active: true
 phase: "active"
 slug: "${SLUG}"
 owner_cwd: "${OWNER_CWD}"

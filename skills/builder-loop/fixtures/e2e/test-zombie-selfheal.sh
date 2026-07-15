@@ -16,11 +16,10 @@ STATE_FILE="$STATE_DIR/__main__.yml"
 mkdir -p "$STATE_DIR"
 
 # ============================================================
-# S1: active=false 的僵尸 → 归档
+# S1: phase 缺失的僵尸 → 归档
 # ============================================================
-section "S1: active=false 僵尸归档"
+section "S1: phase 缺失僵尸归档"
 cat > "$STATE_FILE" <<ZOMBIE
-active: false
 slug: "__main__"
 iter: 0
 max_iter: 5
@@ -45,7 +44,7 @@ r1=$(run_hook "$env")
 assert_stderr_contains "hook 输出含归档提示" "$r1" "归档到 legacy"
 assert_ec "hook exit 0 放行" "$r1" 0
 assert_file_missing "僵尸 state 已从 state/ 挪走" "$STATE_FILE"
-assert "legacy/ 出现 zombie_inactive bak" "ls '$LEGACY_DIR'/*-zombie_inactive.bak >/dev/null 2>&1"
+assert "legacy/ 出现 zombie_no_phase bak" "ls '$LEGACY_DIR'/*-zombie_no_phase.bak >/dev/null 2>&1"
 
 # ============================================================
 # S2: EARLY_STOP（max_iter 触发）→ 归档 + exit 2 + stderr 注入
@@ -55,7 +54,7 @@ rm -rf "$STATE_DIR" "$LEGACY_DIR"
 mkdir -p "$STATE_DIR"
 
 cat > "$STATE_FILE" <<ACTIVE
-active: true
+phase: "active"
 slug: "__main__"
 iter: 2
 max_iter: 2

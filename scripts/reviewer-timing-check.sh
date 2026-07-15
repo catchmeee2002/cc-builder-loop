@@ -44,19 +44,9 @@ STATE_FILE="$(bash "$LOCATE_SCRIPT" "$(pwd)" 2>/dev/null || echo "")"
 # 仅 phase=active 时拦截 reviewer spawn。V3.0 PASS 后 phase=passed_pending_review，
 # builder 主动 spawn reviewer 是 reviewer-as-gate 必经流程，必须放行。
 PHASE_FIELD="$(grep -E '^phase:' "$STATE_FILE" 2>/dev/null | head -1 | sed -E 's/^phase:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' || echo "")"
-ACTIVE_FIELD="$(grep -E '^active:' "$STATE_FILE" 2>/dev/null | head -1 | awk '{print $2}' || echo "")"
 
-if [ -n "$PHASE_FIELD" ]; then
-  # V3.0+ state：以 phase 为准
-  [ "$PHASE_FIELD" != "active" ] && exit 0
-else
-  # V2.x 老 state（无 phase 字段）兼容：fallback active=true 拦
-  echo "[builder-loop] reviewer-timing-check: V2.x 老 state（无 phase 字段），fallback active=${ACTIVE_FIELD:-empty} 判定（state=${STATE_FILE}）" >&2
-  [ "$ACTIVE_FIELD" != "true" ] && exit 0
-fi
+[ "$PHASE_FIELD" != "active" ] && exit 0
 
-# Loop 真正在跑 PASS_CMD → 拦截 reviewer spawn。stderr 写一行明确原因，
-# 避免 CC 把「exit 2 + 仅 stdout JSON」渲染成「No stderr output」误导排查。
-echo "[builder-loop] reviewer-timing-check: blocked reviewer spawn (state=${STATE_FILE}, phase=${PHASE_FIELD:-empty}, active=${ACTIVE_FIELD:-empty})" >&2
+echo "[builder-loop] reviewer-timing-check: blocked reviewer spawn (state=${STATE_FILE}, phase=${PHASE_FIELD})" >&2
 printf '%s\n' '{"action":"deny","message":"⛔ [builder-loop] Reviewer spawn blocked: loop active (phase=active). Wait for PASS_CMD."}'
 exit 2

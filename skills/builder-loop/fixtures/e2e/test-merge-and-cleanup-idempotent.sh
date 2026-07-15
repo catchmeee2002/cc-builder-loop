@@ -35,7 +35,6 @@ setup_post_pass() {
 
   mkdir -p "$env/.claude/builder-loop/state"
   cat > "$env/.claude/builder-loop/state/$slug.yml" <<STEOF
-active: true
 phase: "passed_pending_review"
 slug: "$slug"
 owner_cwd: "$env"

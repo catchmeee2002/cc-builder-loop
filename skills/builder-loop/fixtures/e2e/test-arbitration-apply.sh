@@ -60,7 +60,6 @@ LYML
   # 写 state file
   mkdir -p "$repo/.claude/builder-loop/state"
   cat > "$repo/.claude/builder-loop/state/test-wt.yml" <<STEOF
-active: true
 slug: "test-wt"
 iter: 1
 max_iter: 3

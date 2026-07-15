@@ -41,10 +41,10 @@ run_capture() {
 }
 
 write_state() {
-  # $1=state path, $2=active, $3=worktree_mode, $4=worktree_path, $5=stash_ref, $6=main_repo
+  # $1=state path, $2=phase, $3=worktree_mode, $4=worktree_path, $5=stash_ref, $6=main_repo
   mkdir -p "$(dirname "$1")"
   cat > "$1" <<EOF
-active: $2
+phase: "$2"
 slug: "test-abandon-fixture"
 iter: 0
 max_iter: 5
@@ -95,7 +95,7 @@ mkdir -p "$STATE_DIR"
 # A1: reason 必填
 # ============================================================
 section "A1: reason 必填"
-write_state "$STATE_DIR/a1.yml" "true" "clean" "" "" "$TMP"
+write_state "$STATE_DIR/a1.yml" "active" "clean" "" "" "$TMP"
 run_capture A1_OUT A1_EC bash "$ABANDON_SCRIPT"
 assert "无参数 → exit 2" "[ '$A1_EC' -eq 2 ]"
 assert "无参数 stderr 含用法提示" "echo '$A1_OUT' | grep -q '用法：'"
@@ -115,19 +115,19 @@ assert "stderr 含 state file 不存在" "echo '$A2_OUT' | grep -q 'state file �
 # A3: reason 仅空白
 # ============================================================
 section "A3: reason 仅空白"
-write_state "$STATE_DIR/a3.yml" "true" "clean" "" "" "$TMP"
+write_state "$STATE_DIR/a3.yml" "active" "clean" "" "" "$TMP"
 run_capture A3_OUT A3_EC bash "$ABANDON_SCRIPT" "$STATE_DIR/a3.yml" "   "
 assert "纯空白 reason → exit 2" "[ '$A3_EC' -eq 2 ]"
 assert "stderr 含 reason 必填" "echo '$A3_OUT' | grep -q 'reason 必填'"
 assert "state 仍未归档" "[ -f '$STATE_DIR/a3.yml' ]"
 
 # ============================================================
-# A4: state.active=false 拒绝
+# A4: state.phase=空 拒绝
 # ============================================================
-section "A4: state.active=false 拒绝"
-write_state "$STATE_DIR/a4.yml" "false" "clean" "" "" "$TMP"
+section "A4: state.phase=空 拒绝"
+write_state "$STATE_DIR/a4.yml" "" "clean" "" "" "$TMP"
 run_capture A4_OUT A4_EC bash "$ABANDON_SCRIPT" "$STATE_DIR/a4.yml" "test inactive"
-assert "active=false → exit 2" "[ '$A4_EC' -eq 2 ]"
+assert "phase=空 → exit 2" "[ '$A4_EC' -eq 2 ]"
 assert "stderr 含 非活跃" "echo '$A4_OUT' | grep -q '非活跃'"
 assert "inactive state 未归档" "[ -f '$STATE_DIR/a4.yml' ]"
 
@@ -150,7 +150,7 @@ git -C "$WT_PATH_A5" config user.name "e2e-test"
 echo "wt content" > "$WT_PATH_A5/wt-file.txt"
 git -C "$WT_PATH_A5" add . && git -C "$WT_PATH_A5" -c core.hooksPath=/dev/null commit -q -m "chore(test): [cr_id_skip] Wt init"
 
-write_state "$STATE_DIR/a5.yml" "true" "dirty" "$WT_PATH_A5" "$STASH_REF" "$TMP"
+write_state "$STATE_DIR/a5.yml" "active" "dirty" "$WT_PATH_A5" "$STASH_REF" "$TMP"
 
 run_capture A5_OUT A5_EC bash "$ABANDON_SCRIPT" "$STATE_DIR/a5.yml" "baseline broken not my fault"
 assert "dirty abandon → exit 0" "[ '$A5_EC' -eq 0 ]"
@@ -179,7 +179,7 @@ git -C "$TMP" clean -fd 2>/dev/null >/dev/null
 section "A6: clean 模式"
 WT_PATH_A6="$TMP/.claude/worktrees/1777647748-test-a6"
 mkdir -p "$WT_PATH_A6"
-write_state "$STATE_DIR/a6.yml" "true" "clean" "$WT_PATH_A6" "" "$TMP"
+write_state "$STATE_DIR/a6.yml" "active" "clean" "$WT_PATH_A6" "" "$TMP"
 run_capture A6_OUT A6_EC bash "$ABANDON_SCRIPT" "$STATE_DIR/a6.yml" "clean test"
 assert "clean abandon → exit 0" "[ '$A6_EC' -eq 0 ]"
 assert "state 已归档" "[ ! -f '$STATE_DIR/a6.yml' ]"
@@ -191,7 +191,7 @@ assert "stdout 不含 stash 还原行" "! echo '$A6_OUT' | grep -q '主仓 dirty
 # A7: bare 模式（worktree_path 空）
 # ============================================================
 section "A7: bare 模式"
-write_state "$STATE_DIR/a7.yml" "true" "bare" "" "" "$TMP"
+write_state "$STATE_DIR/a7.yml" "active" "bare" "" "" "$TMP"
 run_capture A7_OUT A7_EC bash "$ABANDON_SCRIPT" "$STATE_DIR/a7.yml" "bare test"
 assert "bare abandon → exit 0" "[ '$A7_EC' -eq 0 ]"
 assert "stdout 显示 <bare 模式>" "echo '$A7_OUT' | grep -q '<bare 模式 / 已不存在>'"
@@ -203,7 +203,7 @@ assert "state 已归档" "[ ! -f '$STATE_DIR/a7.yml' ]"
 section "A8: stash hash 无效 → conflict 但仍归档"
 WT_PATH_A8="$TMP/.claude/worktrees/1777647748-test-a8"
 mkdir -p "$WT_PATH_A8"
-write_state "$STATE_DIR/a8.yml" "true" "dirty" "$WT_PATH_A8" "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef" "$TMP"
+write_state "$STATE_DIR/a8.yml" "active" "dirty" "$WT_PATH_A8" "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef" "$TMP"
 run_capture A8_OUT A8_EC bash "$ABANDON_SCRIPT" "$STATE_DIR/a8.yml" "invalid stash"
 assert "invalid stash → 仍 exit 0（不阻断）" "[ '$A8_EC' -eq 0 ]"
 assert "stderr 含 stash apply 失败提示" "echo '$A8_OUT' | grep -q 'stash apply 失败'"
@@ -215,7 +215,7 @@ assert "state 已归档" "[ ! -f '$STATE_DIR/a8.yml' ]"
 # A9: 重复调 abandon
 # ============================================================
 section "A9: 重复调 abandon"
-write_state "$STATE_DIR/a9.yml" "true" "clean" "" "" "$TMP"
+write_state "$STATE_DIR/a9.yml" "active" "clean" "" "" "$TMP"
 bash "$ABANDON_SCRIPT" "$STATE_DIR/a9.yml" "first call" >/dev/null 2>&1
 run_capture A9_2_OUT A9_2_EC bash "$ABANDON_SCRIPT" "$STATE_DIR/a9.yml" "second call"
 assert "重复调 → exit 2（state 已不在）" "[ '$A9_2_EC' -eq 2 ]"
@@ -234,7 +234,7 @@ echo "wt-a10" > "$WT_PATH_A10/wt.txt"
 git -C "$WT_PATH_A10" add . && git -C "$WT_PATH_A10" -c core.hooksPath=/dev/null commit -q -m "chore(test): [cr_id_skip] Wt-a10 init"
 
 A10_SLUG="1777647748-test-a10"
-write_state "$STATE_DIR/${A10_SLUG}.yml" "true" "clean" "$WT_PATH_A10" "" "$TMP"
+write_state "$STATE_DIR/${A10_SLUG}.yml" "active" "clean" "$WT_PATH_A10" "" "$TMP"
 
 # Step 1: abandon 之前 reviewer hook 拦截
 HOOK_INPUT='{"tool_input":{"subagent_type":"reviewer"}}'
@@ -254,7 +254,7 @@ assert "abandon 之后 reviewer hook 放行 (exit 0)" "[ '$HOOK_AFTER_EC' -eq 0 
 section "A11: reason 含换行符 → info reason_raw 不被换行破坏"
 WT_PATH_A11="$TMP/.claude/worktrees/1777647748-test-a11"
 mkdir -p "$WT_PATH_A11"
-write_state "$STATE_DIR/a11.yml" "true" "clean" "$WT_PATH_A11" "" "$TMP"
+write_state "$STATE_DIR/a11.yml" "active" "clean" "$WT_PATH_A11" "" "$TMP"
 REASON_A11="$(printf 'line1\nline2')"
 run_capture A11_OUT A11_EC bash "$ABANDON_SCRIPT" "$STATE_DIR/a11.yml" "$REASON_A11"
 assert "换行 reason → exit 0" "[ '$A11_EC' -eq 0 ]"
@@ -270,7 +270,7 @@ assert "info reason_raw 只出现一行" "[ '$REASON_RAW_LINES' -eq 1 ]"
 section "A12: reason 含特殊字符 → trace JSON 合法"
 WT_PATH_A12="$TMP/.claude/worktrees/1777647748-test-a12"
 mkdir -p "$WT_PATH_A12"
-write_state "$STATE_DIR/a12.yml" "true" "clean" "$WT_PATH_A12" "" "$TMP"
+write_state "$STATE_DIR/a12.yml" "active" "clean" "$WT_PATH_A12" "" "$TMP"
 REASON_A12="it's done: backtick-cmd and dollar-sign"
 run_capture A12_OUT A12_EC bash "$ABANDON_SCRIPT" "$STATE_DIR/a12.yml" "$REASON_A12"
 assert "特殊字符 reason → exit 0" "[ '$A12_EC' -eq 0 ]"

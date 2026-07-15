@@ -48,7 +48,7 @@ bash ~/.claude/skills/builder-loop/scripts/setup-builder-loop.sh "$TASK_DESCRIPT
 | 1 | 配置错误：项目根缺 `.claude/loop.yml` 或格式无效 |
 | 2 | worktree 操作失败（git worktree add 失败 / --reuse-worktree 路径无效 / flag 互斥冲突 / git 特殊状态） |
 | 3 | 探测失败（配置项无法解析） |
-| 4 | 同 slug 已有 active loop（state 文件存在且 active=true）；手动 `rm <state_file>` 后重试 |
+| 4 | 同 slug 已有 active loop（state 文件存在且 phase 非空）；手动 `rm <state_file>` 后重试 |
 | 5 | Lock 超时（10s 内无法获取 setup lock，可能另一 setup 在运行） |
 | 6 | 孤儿 worktree 检测（V3.3+）：目录存在但无对应 active state；stderr 列出选项：`--reuse-worktree <path>` / `--ignore-orphans` / 手动清理 |
 
@@ -58,7 +58,7 @@ bash ~/.claude/skills/builder-loop/scripts/setup-builder-loop.sh "$TASK_DESCRIPT
 
 ## Stop Hook
 
-`~/.claude/scripts/builder-loop-stop.sh`：按 CWD 调用 `locate-state.sh` 找本 worktree 对应 state → 检测 active=true → 多层闸过滤非目标场景 → 跑 PASS_CMD → PASS 时转交 `handle-pass-result.sh` 统一处理。
+`~/.claude/scripts/builder-loop-stop.sh`：按 CWD 调用 `locate-state.sh` 找本 worktree 对应 state → 检测 phase 非空 → 多层闸过滤非目标场景 → 跑 PASS_CMD → PASS 时转交 `handle-pass-result.sh` 统一处理。
 
 **V3.0 多层闸（PASS_CMD 之前自动识别非目标场景静默退出）**：
 
@@ -87,8 +87,7 @@ stop hook 通过 `locate-state.sh` 用 CWD + session_id 匹配 state 文件（�
 ## 状态文件 schema（`.claude/builder-loop/state/<slug>.yml`）
 
 ```yaml
-active: true                     # V3.x 后渐进下掉（仅写不读做新决策；详见 GitHub issue #43）
-phase: "active"                  # V3.0 新增：active / e2e_pending / passed_pending_review；hook 主判用此字段
+phase: "active"                  # hook 主判字段：active / e2e_pending / passed_pending_review
 slug: "1777040807-task-alpha"    # = 文件名；bare loop 时 slug="__main__"
 owner_cwd: "/path/to/main-repo"  # setup 时所在 CWD（一般 = main_repo_path）
 owner_session_id: "abc123..."    # V3.7 新增：stop hook 首次绑定时写入的 CC session_id

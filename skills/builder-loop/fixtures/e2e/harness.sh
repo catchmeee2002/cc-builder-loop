@@ -134,7 +134,6 @@ GIEOF
     local wt_head="$head1"
     [ -n "$wt_path" ] && wt_head="$(git -C "$wt_path" rev-parse --short HEAD 2>/dev/null || echo "$head1")"
     cat > "$dir/.claude/builder-loop/state/${slug}.yml" <<STEOF
-active: true
 phase: "${phase}"
 slug: "${slug}"
 owner_cwd: "$dir"

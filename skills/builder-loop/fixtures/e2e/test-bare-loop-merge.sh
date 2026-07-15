@@ -64,7 +64,6 @@ section "Case 3: 老 V1.x bare state（缺 main_repo_path）兼容"
 env3=$(create_test_env --slug "__main__" --no-state)
 mkdir -p "$env3/.claude/builder-loop/state"
 cat > "$env3/.claude/builder-loop/state/__main__.yml" <<EOF
-active: true
 slug: "__main__"
 project_root: "$env3"
 start_head: "deadbeef"

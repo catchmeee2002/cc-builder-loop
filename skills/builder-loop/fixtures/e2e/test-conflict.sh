@@ -51,7 +51,6 @@ git -C "$TMPDIR" -c core.hooksPath=/dev/null commit -q -m "chore(test): [cr_id_s
 mkdir -p "$TMPDIR/.claude/builder-loop/state"
 STATE="$TMPDIR/.claude/builder-loop/state/test-wt.yml"
 cat > "$STATE" <<STEOF
-active: true
 slug: "test-wt"
 iter: 1
 max_iter: 3

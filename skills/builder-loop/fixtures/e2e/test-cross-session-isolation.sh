@@ -52,7 +52,6 @@ write_cs_state() {
   local slug="$1" wt="$2"
   mkdir -p "$TMP/.claude/builder-loop/state"
   cat > "$TMP/.claude/builder-loop/state/$slug.yml" <<STEOF
-active: true
 phase: "active"
 slug: "$slug"
 owner_cwd: "$TMP"

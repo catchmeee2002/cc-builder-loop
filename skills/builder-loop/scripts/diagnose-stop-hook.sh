@@ -191,13 +191,13 @@ for fn in sorted(os.listdir(sd)):
     def grab(key):
         m = re.search(rf'^{key}:\s*"?([^"\n]*)"?\s*$', text, re.M)
         return m.group(1) if m else ''
-    active = grab('active')
+    phase = grab('phase')
     iter_v = grab('iter')
     wt = grab('worktree_path')
     wt_alive = bool(wt) and os.path.isdir(wt)
-    items.append({'file': fn, 'active': active, 'iter': iter_v, 'worktree_path': wt, 'worktree_alive': wt_alive})
-# verdict: active=true 但 worktree 死 = warn；其余 ok
-warn = any(i['active'] == 'true' and i['worktree_path'] and not i['worktree_alive'] for i in items)
+    items.append({'file': fn, 'phase': phase, 'iter': iter_v, 'worktree_path': wt, 'worktree_alive': wt_alive})
+# verdict: phase 非空但 worktree 死 = warn；其余 ok
+warn = any(i['phase'] and i['worktree_path'] and not i['worktree_alive'] for i in items)
 print(json.dumps({'verdict': 'warn' if warn else 'ok', 'items': items}))
 PYEOF
 )"

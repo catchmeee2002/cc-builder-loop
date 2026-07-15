@@ -193,7 +193,6 @@ LOOPEOF
   local slug="__main__"
   mkdir -p "${dir}/.claude/builder-loop/state"
   cat > "${dir}/.claude/builder-loop/state/${slug}.yml" <<STATEEOF
-active: true
 slug: ${slug}
 iter: 1
 max_iter: 5

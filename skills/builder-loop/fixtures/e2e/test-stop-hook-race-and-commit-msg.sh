@@ -77,7 +77,6 @@ mkdir -p "$TMP_B/.claude/builder-loop/state"
 STATE_B="$TMP_B/.claude/builder-loop/state/e2e-msg-test.yml"
 TASK_DESC_B="E2E test auto-commit message propagation"
 cat > "$STATE_B" <<YMLEOF
-active: true
 iter: 0
 max_iter: 5
 project_root: "$TMP_B"
@@ -129,7 +128,6 @@ git -C "$TMP_C" worktree add -q -b "$BRANCH_C" "$WT_PATH_C" HEAD
 mkdir -p "$TMP_C/.claude/builder-loop/state"
 STATE_C="$TMP_C/.claude/builder-loop/state/e2e-empty-task.yml"
 cat > "$STATE_C" <<YMLEOF
-active: true
 iter: 2
 max_iter: 5
 project_root: "$TMP_C"

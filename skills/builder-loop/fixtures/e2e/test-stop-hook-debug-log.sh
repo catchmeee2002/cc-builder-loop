@@ -51,7 +51,7 @@ mkdir -p "$STATE_DIR"
 
 write_state_yml() {
   cat > "$1" <<EOF
-active: $2
+phase: "$2"
 slug: "$4"
 iter: 0
 max_iter: 5
@@ -72,7 +72,7 @@ EOF
 # A1: 基础写入 + phase 顺序
 # ============================================================
 section "A1: 基础写入 + phase 顺序"
-write_state_yml "${STATE_DIR}/__main__.yml" "true" "" "__main__"
+write_state_yml "${STATE_DIR}/__main__.yml" "active" "" "__main__"
 
 printf '{"cwd":"%s","session_id":"a1session"}' "$TMP" | bash "$HARNESS_HOOK" >/dev/null 2>&1 || true
 
@@ -123,7 +123,7 @@ rm -f "${STATE_DIR}"/*.yml
 # A2: IO 失败容忍
 # ============================================================
 section "A2: IO 失败容忍"
-write_state_yml "${STATE_DIR}/__main__.yml" "true" "" "__main__"
+write_state_yml "${STATE_DIR}/__main__.yml" "active" "" "__main__"
 
 mkdir -p "$(dirname "$DEBUG_LOG")"
 touch "$DEBUG_LOG"
@@ -144,7 +144,7 @@ rm -f "${STATE_DIR}"/*.yml
 # A3: rotate 触发
 # ============================================================
 section "A3: rotate 触发（log > 1 MB → .1 出现）"
-write_state_yml "${STATE_DIR}/__main__.yml" "true" "" "__main__"
+write_state_yml "${STATE_DIR}/__main__.yml" "active" "" "__main__"
 
 mkdir -p "$(dirname "$DEBUG_LOG")"
 python3 -c "
@@ -175,7 +175,7 @@ rm -f "${STATE_DIR}"/*.yml
 # A4: diagnose-stop-hook.sh 6 段 + 严格 dry-run
 # ============================================================
 section "A4: diagnose 6 段 + dry-run"
-write_state_yml "${STATE_DIR}/__main__.yml" "true" "" "__main__"
+write_state_yml "${STATE_DIR}/__main__.yml" "active" "" "__main__"
 
 A4_SCRATCH="$(mktemp -d -p /tmp harness-a4-XXXXXX)"
 _HARNESS_TMPDIRS+=("$A4_SCRATCH")

@@ -129,7 +129,6 @@ clear_model_log() { rm -f "$TMP/model_log.txt"; }
 make_state() {
   local proj="$1" sf="$2"
   cat > "$sf" <<EOF
-active: true
 slug: test
 iter: 1
 max_iter: 5
@@ -297,7 +296,6 @@ PROJ_B10="$TMP/b10"; mkdir -p "$PROJ_B10"
 make_loop_yml "$PROJ_B10" "claude-sonnet-4-6" "claude-haiku-4-5" 2
 SF_B10="$PROJ_B10/state.yml"
 cat > "$SF_B10" <<EOF
-active: true
 slug: legacy
 iter: 1
 project_root: "$PROJ_B10"

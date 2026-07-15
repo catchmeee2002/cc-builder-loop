@@ -45,8 +45,6 @@
 - L2B HEAD == last_iter_head + git status 空 → exit 0 + stderr 诊断
 - L3 `.claude/builder-loop/<slug>.pause` 存在 → exit 0 + stderr 诊断
 
-**[技术债] active 字段下掉计划**：V3.0 起 hook 主判用 phase 字段，`active: true` 仅写不读做新决策。下掉计划见 [GitHub issue #43](https://github.com/catchmeee2002/cc-builder-loop/issues/43)；时间窗 V3.x 某版本统一 grep 全仓引用清单后移除。**禁止**在新代码里读 active 字段做决策。
-
 ---
 
 ## 1. 链接映射表

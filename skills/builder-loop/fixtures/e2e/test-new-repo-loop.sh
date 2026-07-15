@@ -60,7 +60,7 @@ section "Step 3: setup-builder-loop"
 (cd "$TMP" && bash "$SCRIPTS_DIR/setup-builder-loop.sh" --no-worktree "E2E test task" 2>&1 | tail -3)
 
 assert "状态文件存在" "[ -f '$TMP/.claude/builder-loop/state/__main__.yml' ]"
-assert "active=true" "grep -q 'active: true' '$TMP/.claude/builder-loop/state/__main__.yml'"
+assert "phase=active" "grep -q 'phase: .active.' '$TMP/.claude/builder-loop/state/__main__.yml'"
 
 # ---- Step 4: run-pass-cmd → 预期 FAIL（语法错误）----
 section "Step 4: run-pass-cmd (预期 FAIL)"

@@ -161,7 +161,6 @@ LOOPEOF
   local slug="__main__"
   mkdir -p "${dir}/.claude/builder-loop/state"
   cat > "${dir}/.claude/builder-loop/state/${slug}.yml" <<STATEEOF
-active: true
 slug: ${slug}
 iter: 1
 max_iter: 5
@@ -227,7 +226,6 @@ section "M1: PASS + judge stop_done → state rm + 新 setup 不残留 nudge 计
   NEW_SLUG="edge-proj_m1_new"
   HEAD=$(git -C "$PROJ" rev-parse HEAD 2>/dev/null || echo "abc123")
   cat > "${PROJ}/.claude/builder-loop/state/${NEW_SLUG}.yml" <<NEWSTATEEOF
-active: true
 slug: ${NEW_SLUG}
 iter: 1
 max_iter: 5
@@ -267,7 +265,6 @@ TRACEOF
   # 第二次跑
   HEAD=$(git -C "$PROJ" rev-parse HEAD 2>/dev/null || echo "abc123")
   cat > "${PROJ}/.claude/builder-loop/state/${SLUG}.yml" <<STATEEOF2
-active: true
 slug: ${SLUG}
 iter: 2
 max_iter: 5
@@ -288,7 +285,6 @@ STATEEOF2
   # 多行场景
   HEAD=$(git -C "$PROJ" rev-parse HEAD 2>/dev/null || echo "abc123")
   cat > "${PROJ}/.claude/builder-loop/state/${SLUG}.yml" <<STATEEOF3
-active: true
 slug: ${SLUG}
 iter: 3
 max_iter: 5

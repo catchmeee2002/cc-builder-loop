@@ -44,7 +44,6 @@ mkdir -p "$TMP/.claude/builder-loop/state"
 write_mw_state() {
   local dir="$1" slug="$2" head="$3" wt="$4"
   cat > "$dir/.claude/builder-loop/state/${slug}.yml" <<EOF
-active: true
 phase: "active"
 slug: "${slug}"
 owner_cwd: "$dir"
