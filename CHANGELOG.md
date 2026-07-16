@@ -2,6 +2,20 @@
 
 > 从 CLAUDE.md §5 外移。记录各版本交付的能力与关键实现细节。
 
+## V7.3 PASS_CMD 假 PASS 堵死 + 第三参数正名 log_root（2026-07-16）
+
+**动机**：`run-pass-cmd.sh` 在 pass_cmd 解析失败时静默输出 `PASS` —— 一个 stage 都没跑却报通过，纯机器判据这层地基被无声绕过。触发链：builder.md 把第三参数写作 `<project_root>`，而 worktree 模式下 `state.project_root` = worktree_path，builder 照字面传 worktree → `log_root == run_cwd` → fallback 读主仓 loop.yml 的条件不成立 → worktree 内无 loop.yml（gitignored 不 checkout）→ python 抛 FileNotFoundError。放大器是 `while ... done < <(parse_pass_cmd)`：process substitution 的退出码父 shell 收不到，`set -euo pipefail` 也够不着它，while 读到空输入零次循环，直落末尾 `echo "PASS"`。违反原则一（判据按独立性分层）——地基能静默返回 PASS，其上的 reviewer / tester 层全建在假地基上，且没有任何一层校验 PASS 的真伪。同时违反原则二（每份数据一个家）：`project_root` 一名四指（state 字段 = worktree、stop hook 变量 = 主仓、本脚本第三参数 = log_root、handle-pass-result 第四参数 = 主仓）。详见 [GitHub issue #67](https://github.com/catchmeee2002/cc-builder-loop/issues/67)。
+
+**核心变更**：
+- **run-pass-cmd.sh**：新增 `FATAL <reason>`（exit 2）出口，与 `PASS`（exit 0）/ `FAIL <stage> <log>`（exit 1）三分。loop.yml 缺失 / yaml 解析失败 / pass_cmd 为空 / 零个 stage 真执行 —— 四种「判据没跑起来」一律 FATAL，不再降级成 PASS。解析改为先捕获 + 显式判退出码 + here-string 喂循环，替掉吞退出码的 process substitution。`PASS` 现在只在至少跑过一个 stage 且全通过时输出
+- **参数正名**：第三参数在 builder.md / SKILL.md 中从 `<project_root>` 改为 `<main_repo>`，显式写明 worktree 模式取 `state.main_repo_path`、bare 模式取 `state.project_root`。`handle-pass-result.sh` 第四参数同步正名（它读的也是主仓 loop.yml）
+- **builder-loop-stop.sh**：新增 FATAL 分支。原 FAIL 分支按 `FAIL <stage> <log>` 分词，会把 `FATAL <reason>` 的 reason 误当 stage，把 builder 引向「改代码」——而 FATAL 要改的是参数或 loop.yml 配置
+- **CLAUDE.md**：§1 链接映射表补齐 `agents/reviewer.md` 与 `commands/*.md`（install.sh 通配全链，表里一直漏）；§3「与 dotfiles 的依赖关系」全表作废——builder.md / planner.md / reviewer.md 三个文件早已在本仓 `commands/` 与 `agents/` 下，不是 dotfiles 共享文件
+
+**验证**：`test-run-pass-cmd-args.sh` 13 → 25 case 全 PASS。新增 Case 5（#67 原场景，正负配对：传 worktree → FATAL 且 stdout 绝不含 PASS；传主仓 → fallback 生效且 stage 真跑过）/ Case 6（pass_cmd 为空）/ Case 7（yaml 损坏）。**变异测试**：回退修复后 10 条断言变红，传错参数 / pass_cmd 空 / yaml 损坏三种情况旧代码均 `ec=0` —— 假 PASS 现场复现，证明新 case 有鉴别力而非恒过。
+
+**已知残留**：本仓自身 `.claude/loop.yml` 的 `pass_cmd` 为 `cmd: "true"`（空判据），53 个 fixture 无自动执行入口；`test-pass-cmd-runs-worktree.sh` / `test-nudge-max-reads-worktree.sh` / `test-stop-hook-debug-log.sh` 在 main 上已有 15 条断言长期为红且无人发现（本次已用基线对比确认非本次引入）。与本 issue 同族——判据形同虚设，待立项。
+
 ## V7.2 arbiter 续路径接入 reviewer-as-gate（2026-07-15）
 
 **动机**：V3.0 落地 reviewer-as-gate 时只迁移了正常 PASS 路径，arbiter 解决 rebase 冲突后仍走 V2.x 立即合语义（`merge-worktree-back.sh`）——冲突融合后的代码直接 ff 进主线，reviewer 从未看见。违反原则一（判据按独立性分层）：arbiter 是同会话 LLM，其输出必须过独立 agent 判据层才能进主线。详见 [GitHub issue #42](https://github.com/catchmeee2002/cc-builder-loop/issues/42)。

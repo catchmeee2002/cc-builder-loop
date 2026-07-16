@@ -69,7 +69,15 @@ bash ~/.claude/skills/builder-loop/scripts/setup-builder-loop.sh "$TASK_DESCRIPT
 | L2B | worktree HEAD == `state.last_iter_head` 且 git status 空 | builder 在思考 / 讨论，没改代码 |
 | L3 | `.claude/builder-loop/<slug>.pause` 文件存在 | builder 主动 pause |
 
-**PASS_CMD 通过后 → `handle-pass-result.sh <state_file> <next_iter> <run_cwd> <project_root>`**（worktree / bare 统一走此路径，V4.1；V5.4 从 Stop hook ~230 行内联逻辑提取为独立脚本，`run-pass-cmd.sh` + 本脚本可由 builder 直接调用完成一轮迭代、不必等 Stop event，详见 [CHANGELOG V5.4](../../CHANGELOG.md)）：依次跑 e2e 检测 → reward hacking 检测 → commit + state 写入，stdout 落一行 JSON（`type` 字段），调用方按 type 分支：
+**PASS_CMD 由 `run-pass-cmd.sh <run_cwd> <iter> <main_repo>` 跑** — `<run_cwd>`：worktree 模式传 `state.worktree_path`，bare 模式传 `state.project_root`；`<main_repo>`：worktree 模式传 `state.main_repo_path`，bare 模式传 `state.project_root`。stdout 最后一行三选一：
+
+| 输出 | exit | 后续动作 |
+|------|------|---------|
+| `PASS` | 0 | 至少跑过一个 stage 且全部通过 → 进 `handle-pass-result.sh` |
+| `FAIL <stage> <log>` | 1 | 判据执行了、结果为负 → 改代码后重跑 |
+| `FATAL <reason>` | 2 | 判据未执行（loop.yml 缺失 / yaml 损坏 / pass_cmd 为空）→ 改参数或 loop.yml 配置，不要改代码 |
+
+**PASS_CMD 通过后 → `handle-pass-result.sh <state_file> <next_iter> <run_cwd> <main_repo>`**（worktree / bare 统一走此路径，V4.1；V5.4 从 Stop hook ~230 行内联逻辑提取为独立脚本，`run-pass-cmd.sh` + 本脚本可由 builder 直接调用完成一轮迭代、不必等 Stop event，详见 [CHANGELOG V5.4](../../CHANGELOG.md)）：依次跑 e2e 检测 → reward hacking 检测 → commit + state 写入，stdout 落一行 JSON（`type` 字段），调用方按 type 分支：
 
 | type | exit code | 触发条件 / 后续动作 |
 |------|-----------|---------|
@@ -240,7 +248,7 @@ choice JSON 含 pass_cmd / max_iterations / layout / worktree / e2e_cases_path�
 bash ~/.claude/skills/builder-loop/scripts/run-pass-cmd.sh <项目根> 0
 ```
 
-PASS → `✅ 配置可用`；FAIL → `⚠️ smoke test 失败，请检查`（不阻断）。
+PASS → `✅ 配置可用`；FAIL / FATAL → `⚠️ smoke test 失败，请检查`（不阻断）。
 
 ### Step 5: 汇报
 

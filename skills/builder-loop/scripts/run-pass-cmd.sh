@@ -4,13 +4,18 @@
 # 用法：bash run-pass-cmd.sh <run_cwd> <iter_num> [<log_root>]
 #   run_cwd  = 干活的地方（V2.0 = worktree / bare = 主仓）
 #              LOOP_YML 从此读，PASS_CMD 在此跑
-#   log_root = 日志归档根（V2.0 = 主仓 / 缺省时 = run_cwd）
+#   log_root = 日志归档根 + loop.yml fallback 源（V2.0 = 主仓 / 缺省时 = run_cwd）
+#              worktree 模式必须传主仓路径，即 state.main_repo_path。
+#              传 state.project_root 会踩坑：worktree 模式下该字段 = worktree_path，
+#              于是 log_root == run_cwd，下方 fallback 条件不成立（issue #67）
 #
-# 输出（stdout）：
-#   PASS                              ← 全部阶段通过
-#   FAIL <stage> <log_file_path>      ← 任一阶段失败，输出失败的阶段名和日志路径
+# 输出（stdout 最后一行）：
+#   PASS                              ← 至少跑过一个 stage 且全部通过
+#   FAIL <stage> <log_file_path>      ← 判据执行了、结果为负 → 改代码
+#   FATAL <reason>                    ← 判据没能执行（loop.yml 缺失 / 解析失败 / pass_cmd 为空）
+#                                       → 改参数或配置，改代码没用
 #
-# 退出码：0=PASS，非0=FAIL
+# 退出码：0=PASS，1=FAIL，2=FATAL
 #
 # 副作用：
 #   - 每阶段日志落地 <log_root>/.claude/loop-runs/iter-<N>-<stage>.log
@@ -32,14 +37,24 @@ if [ ! -f "$LOOP_YML" ] && [ "$LOG_ROOT" != "$RUN_CWD" ] && [ -f "${LOG_ROOT}/.c
   LOOP_YML="${LOG_ROOT}/.claude/loop.yml"
 fi
 
+if [ ! -f "$LOOP_YML" ]; then
+  echo "[run-pass-cmd] ❌ loop.yml 不存在：${LOOP_YML}" >&2
+  echo "[run-pass-cmd]    run_cwd=${RUN_CWD}" >&2
+  echo "[run-pass-cmd]    log_root=${LOG_ROOT}" >&2
+  echo "[run-pass-cmd]    两者相同时上方 fallback 不触发。worktree 模式下第三参数须传主仓路径" >&2
+  echo "[run-pass-cmd]    （state.main_repo_path），而非 state.project_root（= worktree_path）" >&2
+  echo "FATAL loop.yml not found: ${LOOP_YML}"
+  exit 2
+fi
+
 # ---- 简易 yaml 解析（仅取 pass_cmd 数组）----
 # 不引入额外依赖（yq 可能没装），用 python3 解析
 parse_pass_cmd() {
   python3 -c "
 import sys, yaml
 with open('$LOOP_YML') as f:
-    cfg = yaml.safe_load(f)
-for item in cfg.get('pass_cmd', []):
+    cfg = yaml.safe_load(f) or {}
+for item in (cfg.get('pass_cmd') or []):
     if isinstance(item, dict):
         stage = item.get('stage', 'unknown')
         cmd = item.get('cmd', '')
@@ -48,9 +63,29 @@ for item in cfg.get('pass_cmd', []):
 "
 }
 
+# ---- 解析 pass_cmd ----
+# 不写成 `done < <(parse_pass_cmd)`：process substitution 的退出码父 shell 收不到，
+# set -e 也够不着它。parse 崩掉（loop.yml 缺失 / yaml 损坏）时 while 只是读到空输入 →
+# 零次循环 → 直落末尾 echo "PASS"，一个 stage 都没跑却报通过（issue #67）。
+# 改为先捕获、显式判退出码，再用 here-string 喂循环。
+STAGES=""
+if ! STAGES="$(parse_pass_cmd)"; then
+  echo "[run-pass-cmd] ❌ pass_cmd 解析失败（见上方 python traceback）：${LOOP_YML}" >&2
+  echo "FATAL pass_cmd parse failed: ${LOOP_YML}"
+  exit 2
+fi
+
+if [ -z "${STAGES//[[:space:]]/}" ]; then
+  echo "[run-pass-cmd] ❌ loop.yml 的 pass_cmd 为空或缺失，没有任何机器判据可跑：${LOOP_YML}" >&2
+  echo "FATAL pass_cmd is empty: ${LOOP_YML}"
+  exit 2
+fi
+
 # ---- 主循环 ----
+RAN=0
 while IFS=$'\t' read -r STAGE TIMEOUT CMD; do
   [ -z "$STAGE" ] && continue
+  RAN=$((RAN + 1))
   LOG="${LOG_DIR}/iter-${ITER}-${STAGE}.log"
   echo "▶ stage=${STAGE} timeout=${TIMEOUT}s cmd=${CMD}" | tee "$LOG"
 
@@ -77,7 +112,14 @@ while IFS=$'\t' read -r STAGE TIMEOUT CMD; do
     echo "FAIL ${STAGE} ${LOG}"
     exit 1
   fi
-done < <(parse_pass_cmd)
+done <<< "$STAGES"
+
+# 解析出内容却一个 stage 都没真跑（如全是空行）→ 同样不许报 PASS
+if [ "$RAN" -eq 0 ]; then
+  echo "[run-pass-cmd] ❌ 解析出 pass_cmd 但零个有效 stage 被执行：${LOOP_YML}" >&2
+  echo "FATAL no stage executed: ${LOOP_YML}"
+  exit 2
+fi
 
 echo "PASS"
 exit 0

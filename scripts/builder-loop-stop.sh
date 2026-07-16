@@ -534,7 +534,7 @@ last = os.environ.get('LL','')
 parts = last.split()
 print(json.dumps({
   'last_line': last,
-  'result': 'PASS' if last == 'PASS' else 'FAIL' if parts and parts[0] == 'FAIL' else 'UNKNOWN',
+  'result': 'PASS' if last == 'PASS' else parts[0] if parts and parts[0] in ('FAIL', 'FATAL') else 'UNKNOWN',
   'last_stage': parts[1] if len(parts) > 1 else '',
   'log_path': ' '.join(parts[2:]) if len(parts) > 2 else '',
 }))
@@ -674,6 +674,24 @@ COMMIT_ERR
 fi
 
 # (Old inline PASS path removed in V5.4 — now handled by handle-pass-result.sh above)
+# ---- 3a'. FATAL → 判据没跑起来，和「测试没过」是两回事 ----
+# 不落到 3b：3b 按 `FAIL <stage> <log>` 分词，会把 `FATAL <reason>` 的 reason 当 stage
+# 塞进日志路径提示，把 builder 引向「改代码」——而 FATAL 要改的是参数或 loop.yml 配置。
+case "$LAST_LINE" in
+  FATAL*)
+    echo "[builder-loop] ⛔ iter ${NEXT_ITER}: PASS_CMD 未能执行 — ${LAST_LINE}" >&2
+    debug_log "exit" '{"code":2,"reason":"pass_cmd_fatal"}'
+    cat >&2 <<FATAL_MSG
+[builder-loop] PASS_CMD 未能执行（iter ${NEXT_ITER}）——判据一个都没跑，不是测试失败。
+${LAST_LINE}
+run_cwd=${RUN_CWD}
+main_repo=${PROJECT_ROOT}
+不要改代码。核对 loop.yml 是否存在、pass_cmd 是否非空、yaml 是否合法后重试。
+FATAL_MSG
+    exit 2
+    ;;
+esac
+
 # ---- 3b. FAIL → 处理反馈 ----
 echo "[builder-loop] ❌ iter ${NEXT_ITER}: PASS_CMD 在 stage=$(echo "$LAST_LINE" | awk '{print $2}') 失败，分析中..." >&2
 STAGE="$(echo "$LAST_LINE" | awk '{print $2}')"

@@ -21,7 +21,7 @@
 | 文档 | 定位 | 何时读 |
 |------|------|--------|
 | [`docs/design-philosophy.md`](docs/design-philosophy.md) | 设计哲学（判据分层等原则，SSOT 唯一来源） | 做设计决策 / 评估方案时 |
-| [`CHANGELOG.md`](CHANGELOG.md) | 各版本交付能力（V1.0~V7.0） | 需要了解历史版本做了什么时 |
+| [`CHANGELOG.md`](CHANGELOG.md) | 各版本交付能力与关键实现细节 | 需要了解历史版本做了什么时 |
 | [`docs/troubleshooting.md`](skills/builder-loop/docs/troubleshooting.md) | 排查手册（§7.1~7.12） | stop hook / worktree / state 出问题时 |
 | [`docs/sync-checklist.md`](skills/builder-loop/docs/sync-checklist.md) | 改动同步 checklist | 本仓 commit 后需同步操作时 |
 | [`docs/judge-agent.md`](skills/builder-loop/docs/judge-agent.md) | ~~Judge agent~~（V4.0 废弃，已被 reviewer Phase 0 吸收） | 仅供历史参考 |
@@ -56,8 +56,8 @@ install.sh 创建以下软链，把仓库文件映射到 CC 运行时路径：
 | `skills/builder-loop/` | `~/.claude/skills/builder-loop/` | `ln -sfn` 整目录 | CC 自动发现 SKILL.md |
 | `scripts/builder-loop-stop.sh` | `~/.claude/scripts/builder-loop-stop.sh` | `ln -sf` 逐文件 | Stop hook 入口 |
 | `scripts/reviewer-timing-check.sh` | `~/.claude/scripts/reviewer-timing-check.sh` | `ln -sf` 逐文件 | PreToolUse hook（Agent） |
-| `agents/tester.md` | `~/.claude/agents/tester.md` | `ln -sf` 逐文件 | tester subagent |
-| `agents/arbiter.md` | `~/.claude/agents/arbiter.md` | `ln -sf` 逐文件 | 仲裁 subagent |
+| `agents/*.md` | `~/.claude/agents/*.md` | `ln -sf` 通配逐文件 | tester / reviewer / arbiter subagent |
+| `commands/*.md` | `~/.claude/commands/*.md` | `ln -sf` 通配逐文件 | `/builder`、`/planner` slash command |
 | *(install.sh)* | `~/.claude/settings.json` hooks 段 | python3 幂等覆盖（V5.3 起无条件删旧+写新） | 2 个 hook 条目 |
 
 **注册的 hook（方案差异）**：
@@ -92,13 +92,7 @@ ls -la ~/.claude/skills/builder-loop/SKILL.md  # 应指向本仓库
 
 ## 3. 与 dotfiles 的依赖关系
 
-本仓库是**自包含**的，但运行时依赖 dotfiles 中的以下共享文件：
-
-| dotfiles 文件 | 本仓库依赖方式 |
-|---------------|---------------|
-| `~/.claude/commands/builder.md` | builder 模式定义，含 loop.yml 检测 / setup 调用 / tester 触发等 loop 逻辑 |
-| `~/.claude/commands/planner.md` | planner 模式定义，含 3 视图区块约定 |
-| `~/.claude/agents/reviewer.md` | reviewer 定义，含 TESTER_HINT 输出格式 |
+本仓库**自包含**：builder / planner 模式定义在 `commands/`，tester / reviewer / arbiter agent 定义在 `agents/`，均由 install.sh 通配软链到运行时路径（见 §1 映射表）。dotfiles 不提供任何本仓依赖的文件，只负责 `~/.claude/` 目录本身存在（`stow claude`）。
 
 **路径约定**：所有脚本引用都通过 `~/.claude/` 前缀的运行时路径，不直接引用仓库路径。
 
@@ -110,10 +104,11 @@ ls -la ~/.claude/skills/builder-loop/SKILL.md  # 应指向本仓库
 cc-builder-loop/
 ├── install.sh / uninstall.sh   # 部署/卸载
 ├── CLAUDE.md                   # 本文件
-├── CHANGELOG.md                # 版本历史（V1.0~V7.0）
+├── CHANGELOG.md                # 版本历史（逐版本交付能力）
 ├── skills/builder-loop/        # CC skill（含 SKILL.md、scripts/、fixtures/e2e/、schema/、docs/）
 ├── scripts/                    # Stop hook + reviewer 时序检查 + e2e case 提取（3 个 .sh）
-└── agents/                     # tester.md + arbiter.md
+├── agents/                     # tester.md + reviewer.md + arbiter.md
+└── commands/                   # builder.md + planner.md（/builder、/planner slash command）
 ```
 
 ## 5. 开发原则

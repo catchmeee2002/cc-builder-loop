@@ -140,4 +140,61 @@ assert_stderr_contains "Case 4: stderr 含 fallback 关键词" "$RES4" 'allback'
 assert_file_exists "Case 4: fallback 后仍产出日志文件" "${LOG_ROOT4}/.claude/loop-runs/iter-0-fallback_smoke.log"
 assert_contains "Case 4: fallback 命令真跑了" "${LOG_ROOT4}/.claude/loop-runs/iter-0-fallback_smoke.log" 'FALLBACK_RAN'
 
+# ============================================================
+# Case 5：#67 回归 — 第三参数传 worktree（错）vs 传主仓（对）
+#   builder 按 builder.md 字面读 state.project_root 传第三参数，worktree 模式下
+#   该字段 = worktree_path = RUN_CWD → LOG_ROOT == RUN_CWD → fallback 条件不成立。
+#   修复前：parse_pass_cmd 崩在 process substitution 里、退出码被吞，while 零次循环
+#          直落 echo PASS —— 一个 stage 都没跑却报通过。
+# ============================================================
+section "Case 5: #67 回归 — 第三参数传 worktree → FATAL；传主仓 → 真跑并 PASS"
+MAIN_REPO5="${TMP}/main_repo_5"
+WT5="${TMP}/wt_5"
+make_loop_dir "${MAIN_REPO5}"
+git -C "${MAIN_REPO5}" worktree add "${WT5}" HEAD >/dev/null 2>&1 || true
+rm -f "${WT5}/.claude/loop.yml"   # 模拟 loop.yml gitignored / 未 commit → worktree 内不存在
+
+# 负：传错（第三参数 = worktree）→ 必须 FATAL，绝不能 PASS
+RES5="$(run_pass_cmd "${WT5}" 0 "${WT5}")"
+assert "Case 5: 传错参数时 stdout 绝不含 PASS（假 PASS 防线）" "! grep -q '^PASS' '${RES5}/stdout'"
+assert_stdout_contains "Case 5: 传错参数 → stdout 含 FATAL" "$RES5" '^FATAL'
+assert_ec "Case 5: 传错参数 → 退出码 2（FATAL，区别于 FAIL=1）" "$RES5" 2
+assert_stderr_contains "Case 5: stderr 指明该传 main_repo_path" "$RES5" 'main_repo_path'
+
+# 正：传对（第三参数 = 主仓）→ fallback 生效，stage 真跑过并 PASS
+RES5B="$(run_pass_cmd "${WT5}" 1 "${MAIN_REPO5}")"
+assert_stdout_contains "Case 5: 传对参数 → PASS" "$RES5B" '^PASS'
+assert_file_exists "Case 5: 传对参数 → stage 真跑过（日志落主仓）" \
+  "${MAIN_REPO5}/.claude/loop-runs/iter-1-smoke.log"
+
+# ============================================================
+# Case 6：pass_cmd 为空 → FATAL（没有判据可跑 ≠ 判据全过）
+# ============================================================
+section "Case 6: pass_cmd 为空 → FATAL"
+EMPTY6="${TMP}/empty_6"
+mkdir -p "${EMPTY6}/.claude"
+cat > "${EMPTY6}/.claude/loop.yml" <<'YMLEOF6'
+pass_cmd: []
+worktree:
+  enabled: false
+YMLEOF6
+
+RES6="$(run_pass_cmd "${EMPTY6}" 0)"
+assert "Case 6: stdout 绝不含 PASS" "! grep -q '^PASS' '${RES6}/stdout'"
+assert_stdout_contains "Case 6: stdout 含 FATAL" "$RES6" '^FATAL'
+assert_ec "Case 6: 退出码 2" "$RES6" 2
+
+# ============================================================
+# Case 7：loop.yml yaml 损坏 → FATAL（解析失败不许降级成 PASS）
+# ============================================================
+section "Case 7: loop.yml yaml 损坏 → FATAL"
+BROKEN7="${TMP}/broken_7"
+mkdir -p "${BROKEN7}/.claude"
+printf 'pass_cmd: [unclosed bracket\n  - stage: x\n' > "${BROKEN7}/.claude/loop.yml"
+
+RES7="$(run_pass_cmd "${BROKEN7}" 0)"
+assert "Case 7: stdout 绝不含 PASS" "! grep -q '^PASS' '${RES7}/stdout'"
+assert_stdout_contains "Case 7: stdout 含 FATAL" "$RES7" '^FATAL'
+assert_ec "Case 7: 退出码 2" "$RES7" 2
+
 harness_report

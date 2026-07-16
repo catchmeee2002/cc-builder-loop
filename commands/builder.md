@@ -75,14 +75,19 @@ description: "进入 Builder 模式 — 复杂任务先计划后动手，完成�
 > 如果前置 loop 检查已经 setup 过（`bash ~/.claude/skills/builder-loop/scripts/locate-state.sh` 找到 `phase: "active"` 的 state），跳过此段。
 
 - **已 setup**（`locate-state.sh` 找到 `phase: "active"`）→ 直接告知 `✅ loop 已活跃`
-  - **V5.4 builder 主动跑 PASS_CMD**：diff-level-check 后，从 state 读 `worktree_path`（或 `project_root`）和 `iter`，执行：
-    1. `bash ~/.claude/skills/builder-loop/scripts/run-pass-cmd.sh <run_cwd> <iter+1> <project_root>`
-    2. PASS → `bash ~/.claude/skills/builder-loop/scripts/handle-pass-result.sh <state_file> <iter+1> <run_cwd> <project_root>`
+  - **V5.4 builder 主动跑 PASS_CMD**：diff-level-check 后，从 state 读 `iter` 和两个路径：
+    - `<run_cwd>` — worktree 模式取 `worktree_path`；bare 模式取 `project_root`
+    - `<main_repo>` — worktree 模式取 `main_repo_path`；bare 模式取 `project_root`
+
+    执行：
+    1. `bash ~/.claude/skills/builder-loop/scripts/run-pass-cmd.sh <run_cwd> <iter+1> <main_repo>`
+    2. PASS → `bash ~/.claude/skills/builder-loop/scripts/handle-pass-result.sh <state_file> <iter+1> <run_cwd> <main_repo>`
        - exit 0（type=pass）→ Read state 拿 reviewer_pending，进入下方 Reviewer 流程
        - exit 2（type=e2e_needed）→ 按 JSON 输出走 E2E 验证请求处理
        - exit 3（type=reward_hack）→ 按 JSON 输出走 Reward hacking 警戒
        - exit 4（type=commit_error）→ 按 JSON 的 log_file 排查
     3. FAIL → Read run-pass-cmd.sh 输出的日志路径，修代码，回到步骤 1
+    4. FATAL → 不要改代码。按 stderr 提示核对：第三参数是否为 `main_repo_path`、loop.yml 是否存在、pass_cmd 是否非空。修正后回到步骤 1
   - Stop hook 作为 safety net：如果 CC fire 了 Stop event，L1 闸看 phase=passed_pending_review → exit 0（不 double run）。如果 builder 没跑 PASS_CMD 就结束 turn，Stop hook 照旧接管
   - PASS 后 rebase 冲突 → Read `~/.claude/skills/builder-loop/docs/arbiter-flow.md` 按其执行
 - **loop.yml 存在但未 setup** → `bash ~/.claude/skills/builder-loop/scripts/setup-builder-loop.sh "<任务描述>"`
