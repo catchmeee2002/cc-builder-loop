@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 # handle-pass-result.sh — PASS_CMD 通过后的统一处理（commit + state write + e2e/reward-hack 检测）
 #
-# 用法：bash handle-pass-result.sh <state_file> <next_iter> <run_cwd> <project_root>
+# 用法：bash handle-pass-result.sh <state_file> <next_iter> <run_cwd> <main_repo>
+#   run_cwd   = 干活的地方（worktree 模式 = state.worktree_path / bare 模式 = state.project_root）
+#   main_repo = 主仓（worktree 模式 = state.main_repo_path / bare 模式 = state.project_root）
+#               loop.yml、reviewer-diff、review_reports、last_processed_head 均落此处。
+#               不要传 state.project_root：worktree 模式下该字段 = worktree_path（同 issue #67）
 #
 # 从 builder-loop-stop.sh PASS 路径提取（V5.4），供 stop hook 和 builder 共用。
 #
@@ -22,7 +26,7 @@ set -euo pipefail
 STATE_FILE="${1:?state_file required}"
 NEXT_ITER="${2:?next_iter required}"
 RUN_CWD="${3:?run_cwd required}"
-PROJECT_ROOT="${4:?project_root required}"
+MAIN_REPO="${4:?main_repo required}"
 
 [ -f "$STATE_FILE" ] || { echo '{"type":"commit_error","detail":"state file not found"}'; exit 4; }
 
@@ -42,9 +46,9 @@ fi
 # ---- 2. E2E behavioral verification ----
 E2E_CASES_PATH=""
 E2E_LEVEL="full"
-if [ -f "${PROJECT_ROOT}/.claude/loop.yml" ]; then
-  E2E_CASES_PATH="$(grep -E '^e2e_cases_path:' "${PROJECT_ROOT}/.claude/loop.yml" 2>/dev/null | head -1 | sed -E 's/^e2e_cases_path:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' || echo "")"
-  _lvl="$(grep -E '^e2e_level:' "${PROJECT_ROOT}/.claude/loop.yml" 2>/dev/null | head -1 | sed -E 's/^e2e_level:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' || echo "")"
+if [ -f "${MAIN_REPO}/.claude/loop.yml" ]; then
+  E2E_CASES_PATH="$(grep -E '^e2e_cases_path:' "${MAIN_REPO}/.claude/loop.yml" 2>/dev/null | head -1 | sed -E 's/^e2e_cases_path:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' || echo "")"
+  _lvl="$(grep -E '^e2e_level:' "${MAIN_REPO}/.claude/loop.yml" 2>/dev/null | head -1 | sed -E 's/^e2e_level:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' || echo "")"
   [ -n "$_lvl" ] && E2E_LEVEL="$_lvl"
 fi
 
@@ -56,7 +60,7 @@ if [ -z "$E2E_PLAN_PATH" ]; then
 fi
 if [ -n "$E2E_PLAN_PATH" ]; then
   if [ "${E2E_PLAN_PATH#/}" = "$E2E_PLAN_PATH" ]; then
-    E2E_PLAN_FULL="${PROJECT_ROOT}/${E2E_PLAN_PATH}"
+    E2E_PLAN_FULL="${MAIN_REPO}/${E2E_PLAN_PATH}"
   else
     E2E_PLAN_FULL="$E2E_PLAN_PATH"
   fi
@@ -158,11 +162,11 @@ case "$COMMIT_ACTION" in
     NEW_HEAD_SHORT="$(echo "$COMMIT_LAST" | awk '{print $2}')"
     [ -z "$NEW_HEAD_SHORT" ] && NEW_HEAD_SHORT="$(git -C "$RUN_CWD" rev-parse --short HEAD 2>/dev/null || echo "")"
     SLUG="$(read_field slug)"
-    DIFF_FILE="${PROJECT_ROOT}/.claude/reviewer-diff-${SLUG}.txt"
-    PROJ_NAME="$(basename "$PROJECT_ROOT")"
-    mkdir -p "${PROJECT_ROOT}/.claude/review_reports" 2>/dev/null || true
+    DIFF_FILE="${MAIN_REPO}/.claude/reviewer-diff-${SLUG}.txt"
+    PROJ_NAME="$(basename "$MAIN_REPO")"
+    mkdir -p "${MAIN_REPO}/.claude/review_reports" 2>/dev/null || true
     REPORT_TS="$(date +%Y%m%d_%H%M%S)"
-    REPORT_PATH="${PROJECT_ROOT}/.claude/review_reports/${PROJ_NAME}_${SLUG}_${REPORT_TS}.md"
+    REPORT_PATH="${MAIN_REPO}/.claude/review_reports/${PROJ_NAME}_${SLUG}_${REPORT_TS}.md"
     REVIEWER_FILES="$(git -C "$RUN_CWD" diff --name-only "${PASS_START_HEAD}..HEAD" 2>/dev/null | tr '\n' ',' | sed 's/,$//' || echo "")"
     git -C "$RUN_CWD" diff "${PASS_START_HEAD}..HEAD" > "$DIFF_FILE" 2>/dev/null || echo "" > "$DIFF_FILE"
 
@@ -204,10 +208,10 @@ open(sf, 'w').write(text)
 PY
 
     # Write processed cursor
-    _head_sha="$(git -C "$PROJECT_ROOT" rev-parse HEAD 2>/dev/null || echo "")"
+    _head_sha="$(git -C "$MAIN_REPO" rev-parse HEAD 2>/dev/null || echo "")"
     if [ -n "$_head_sha" ]; then
-      mkdir -p "${PROJECT_ROOT}/.claude/builder-loop" 2>/dev/null || true
-      printf '%s\n' "$_head_sha" > "${PROJECT_ROOT}/.claude/builder-loop/last_processed_head" 2>/dev/null || true
+      mkdir -p "${MAIN_REPO}/.claude/builder-loop" 2>/dev/null || true
+      printf '%s\n' "$_head_sha" > "${MAIN_REPO}/.claude/builder-loop/last_processed_head" 2>/dev/null || true
     fi
 
     # ---- 6. Read reviewer identity for resume ----
@@ -241,7 +245,7 @@ print(json.dumps(d, ensure_ascii=False))
     exit 0
     ;;
   *)
-    COMMIT_ERR_LOG="${PROJECT_ROOT}/.claude/loop-runs/commit-error-iter-${NEXT_ITER}.log"
+    COMMIT_ERR_LOG="${MAIN_REPO}/.claude/loop-runs/commit-error-iter-${NEXT_ITER}.log"
     mkdir -p "$(dirname "$COMMIT_ERR_LOG")" 2>/dev/null || true
     printf '%s\n' "$COMMIT_OUT" > "$COMMIT_ERR_LOG" 2>/dev/null || true
     COMMIT_LAST="$COMMIT_LAST" COMMIT_ERR_LOG="$COMMIT_ERR_LOG" python3 -c "
