@@ -189,26 +189,39 @@ if [ -z "$_PROJECT_ROOT" ]; then
   exit 0
 fi
 
-# 有 loop.yml → 检查 state 目录是否有 .yml 文件
-_STATE_DIR="${_PROJECT_ROOT}/.claude/builder-loop/state"
-_HAS_STATE=0
-if [ -d "$_STATE_DIR" ]; then
-  for _sf in "$_STATE_DIR"/*.yml; do
-    [ -e "$_sf" ] && _HAS_STATE=1 && break
-  done
+# V7.4(#69): cwd 落 <主仓>/.claude/worktrees/<slug>/ 下时，state 在主仓、worktree 内的
+# .claude/builder-loop 被 gitignore，下面的"查 _PROJECT_ROOT/state"快速判据必然误判为空。
+# 曾在此 no-op → worktree 模式 Stop hook 全失效（PASS_CMD/e2e 注入/judge 均不触发）。
+# worktree cwd 一律 fall through 到 locate-state.sh（其 find_project_root 用 git-common-dir
+# 追溯回主仓、策略2 按 slug 精确定位）；非 worktree cwd 保留零子进程快速路径。
+_CWD_IN_WORKTREE=0
+case "$CWD" in
+  */.claude/worktrees/*) _CWD_IN_WORKTREE=1 ;;
+esac
+
+if [ "$_CWD_IN_WORKTREE" -eq 0 ]; then
+  # 非 worktree cwd → 检查主仓 state 目录是否有 .yml 文件（零子进程快速判据）
+  _STATE_DIR="${_PROJECT_ROOT}/.claude/builder-loop/state"
+  _HAS_STATE=0
+  if [ -d "$_STATE_DIR" ]; then
+    for _sf in "$_STATE_DIR"/*.yml; do
+      [ -e "$_sf" ] && _HAS_STATE=1 && break
+    done
+  fi
+
+  if [ "$_HAS_STATE" -eq 0 ]; then
+    # 有 loop.yml 但无 state → no-op 日志后退出
+    _noop_log="${_PROJECT_ROOT}/.claude/builder-loop/stop-hook-debug.log"
+    mkdir -p "${_PROJECT_ROOT}/.claude/builder-loop" 2>/dev/null || true
+    printf '{"ts":"%s","phase":"no_op","cwd":"%s"}\n' \
+      "$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)" \
+      "$CWD" >> "$_noop_log" 2>/dev/null || true
+    exit 0
+  fi
 fi
 
-if [ "$_HAS_STATE" -eq 0 ]; then
-  # 有 loop.yml 但无 state → no-op 日志后退出
-  _noop_log="${_PROJECT_ROOT}/.claude/builder-loop/stop-hook-debug.log"
-  mkdir -p "${_PROJECT_ROOT}/.claude/builder-loop" 2>/dev/null || true
-  printf '{"ts":"%s","phase":"no_op","cwd":"%s"}\n' \
-    "$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)" \
-    "$CWD" >> "$_noop_log" 2>/dev/null || true
-  exit 0
-fi
-
-# 有 state 文件 → 需要精确匹配，调完整的 locate-state.sh（此路径本来就要跑完整流程，子进程开销可接受）
+# worktree cwd，或非 worktree 且主仓有 state → 调完整 locate-state.sh 精确匹配
+# （此路径要跑完整流程，子进程开销可接受）
 [ -z "$SKILL_DIR" ] && _resolve_skill_dir
 STATE_FILE="$(bash "$SKILL_DIR/locate-state.sh" "$CWD" "$HOOK_SESSION_ID" 2>/dev/null || echo "")"
 if [ -z "$STATE_FILE" ] || [ ! -f "$STATE_FILE" ]; then
