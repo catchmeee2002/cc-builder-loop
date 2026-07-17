@@ -1,0 +1,129 @@
+---
+name: builder-loop-planner
+description: 在 Codex Plan mode（/plan）中为代码或文档变更生成 builder-loop 可验证方案，固定行为验收、独立测试目标、角色写边界、机器验证命令与审查范围。进入 Plan mode 且后续可能使用 $builder 交付时自动使用；普通问答、只读分析或已给出可执行且已验证方案时不要使用。
+---
+
+# Builder Loop Planner
+
+只产出方案，不实现代码。
+
+## 建立上下文
+
+1. 读取适用的 `AGENTS.md`、项目约束和设计哲学。
+2. 检查 Git 根目录、当前 `HEAD`、测试布局、可复制执行的验证命令和对外接口。
+3. 修改或新建 Markdown 前，读取项目声明的适用文档政策；项目未声明时读取
+   `${CODEX_HOME:-$HOME/.codex}/builder-loop/doc-policy.md`。政策不可读时停止文档方案，
+   不自行发明替代规则。
+4. 只在答案会实质改变方案时使用 `request_user_input`。不要用纯文本问题替代。
+5. 不按 diff 大小决定验证深度。按行为变化、接口契约、数据风险和用户可见影响定义证据。
+
+## 固定方案契约
+
+在最终方案中包含 `plan-checklist`。对任何可执行行为变化，再包含
+`unit-test-spec`；纯 Markdown 文档任务改用 `documentation-spec` 并写出独立一行
+`预估改动级别：L1`。两种 spec 都冻结规划时 HEAD、revision 和精确写边界。L1 不得包含
+`unit-test-spec/e2e-cases`；需要运行时行为验收时包含 `e2e-cases`。
+
+使用以下结构，字段名保持不变：
+
+```markdown
+<!-- unit-test-spec -->
+schema_version: 1
+spec_head: "<planning-time HEAD>"
+plan_revision: 1
+parallel_ready: true
+interfaces:
+  - "<public interface or black-box entry>"
+test_context:
+  target_test_dirs: ["tests"]
+  support_paths: ["<test-only support paths>"]
+  public_prerequisites: []
+  runner: "<one deterministic verification command>"
+ownership:
+  builder_write: ["src/**", "<affected documentation paths when needed>"]
+  tester_write: ["tests/**"]
+behaviors:
+  - id: <kebab-case-id>
+    what: "<observable behavior>"
+    boundaries: ["<boundary>"]
+    invariants: ["<must remain true>"]
+mock_strategy: {}
+<!-- /unit-test-spec -->
+
+<!-- plan-checklist -->
+- [ ] <implementation outcome tied to one behavior>
+- [ ] <machine verification evidence>
+- [ ] <tester, reviewer, and documentation evidence target the integrated HEAD>
+<!-- /plan-checklist -->
+```
+
+纯文档任务使用：
+
+```markdown
+预估改动级别：L1
+
+<!-- documentation-spec -->
+schema_version: 1
+spec_head: "<planning-time HEAD>"
+plan_revision: 1
+ownership:
+  builder_write: ["README.md", "docs/<affected>.md"]
+<!-- /documentation-spec -->
+
+<!-- plan-checklist -->
+- [ ] <documentation outcome>
+- [ ] <Reviewer content and document-policy audit on final HEAD>
+<!-- /plan-checklist -->
+```
+
+满足以下约束：
+
+- 让 `spec_head` 等于规划时 Git `HEAD`。
+- 始终让 builder 与 tester 写路径互斥；只有 Tester 能完全依据 `spec_head`、冻结目标和既有公开
+  黑盒面写测时才设置 `parallel_ready: true`。
+- 设置 `parallel_ready: false` 时，在方案正文和 checklist 中明确 Builder 必须先提交的公开前置
+  产物、对应路径及 Tester 可见的公开入口，并把同一事实写入非空
+  `test_context.public_prerequisites`。每项必须是 Builder-owned 的精确普通文件路径，不得使用 glob、
+  目录或 symlink；文件必须是可独立冻结的最终公开契约产物，发布后同一 run 不再修改，后续实现
+  写入其他 Builder-owned 文件。为 `true` 时该字段必须为空。Tester 只接收 runtime 合成的隔离
+  publication HEAD/manifest、冻结契约和黑盒入口，不接收 Builder HEAD、candidate diff 或其他
+  实现文件。
+- 让 tester 独占 `target_test_dirs`；不要把这些路径放进 `builder_write`。
+- 把测试目标写成输入、输出、边界和不变量，不写实现方式。
+- 每个 behavior 使用唯一 kebab-case id，并提供非空 `boundaries` 与 `invariants`；始终提供映射类型
+  `mock_strategy`，即使当前为空。
+- 给出一个可直接运行的 `test_context.runner`，不要使用恒真或仅打印命令。
+- 把测试工具支持文件列入 `support_paths`，并保持其不属于 `builder_write`；Tester 需要修改时
+  再显式列入 `tester_write`，不要借此扩大 Tester 的业务源码写权限。
+- `make`、pytest、包管理器等 runner 的 Makefile、测试配置、package manifest 等控制文件由
+  runtime 自动保护；不要把这些路径授权给 Builder 或 Tester。复杂组合逻辑放进已声明的受保护
+  repository wrapper，不用 `!`、动态 exit、PATH override 或内联 shell control flow 反转退出码。
+  wrapper 必须在规划时 `spec_head` 已存在、位于仓库内且是普通文件而非 symlink，并列入
+  `support_paths`；v1 不允许在被它验证的同一个 run 中创建或修改。缺少 wrapper 时先做独立、
+  用户授权的准备提交，再基于新 HEAD 重新 `/plan`。
+- 先按文档政策判断本次是否触及文档面；触及时把具体 README/docs 路径加入
+  `ownership.builder_write` 和 checklist，使 Builder 能在首次审查前同步文档。未触及时不添加
+  找补式文档任务。L1 `documentation-spec` 只能列精确 `.md` 文件，不能用目录或 glob 扩权。
+- 让 checklist 同时覆盖功能完成、机器判据、黑盒验收、代码审查和文档审计。
+- 对所有非 L1 计划，把 Tester author `tests_ready` 和同一 thread 针对 integrated HEAD 的
+  blackbox `pass` 写入 checklist；不能只依赖机器测试或 Reviewer。
+- 对 UI、CLI、API、跨进程或集成行为增加 `e2e-cases`；其中机械断言与语义质量标准分开。
+- 测试目标、ownership 或验收标准一旦需要变化，不设计“当前 run 内批准”路径。保持原契约时
+  续接原 thread；选择修订时先 abandon 当前 run 保留现场，再由 `/plan` 提升 `plan_revision`
+  生成新方案，并由用户重新调用 `$builder`。
+- `plan_revision=1` 不写 `supersedes`。从 abandoned run 修订时使用更高 revision，并在 spec 中
+  增加 `supersedes.run_id` 与旧 ledger 的 `plan.sha256`；runtime 会验证旧 run 已 abandoned、摘要
+  一致且 revision 单调增加。
+
+## 验证方案
+
+1. 首次调用前运行 `codex-builder-loop plan-validate --help`，以当前 CLI 为准。
+2. 将完整方案通过 stdin 传给 `codex-builder-loop plan-validate`。
+3. 只解析 stdout 最后一行 JSON，并要求至少包含 `status` 与 `message`。
+4. `status=READY` 时输出该方案。
+5. `status=NEEDS_USER` 时使用 `request_user_input` 处理 JSON 指出的实质选择，更新方案后重验。
+6. `status=FATAL` 或输出不是合法 JSON 时停止，不猜测成功。
+7. 其他状态按 `message` 修正可修复的契约问题，再运行一次；不要绕过 validator。
+
+最终回答保留完整 marker 内容，并明确后续必须由用户显式调用 `$builder`。不要创建
+builder-loop run，也不要提前生成实现代码。

@@ -1,0 +1,12 @@
+<!-- BEGIN cc-builder-loop-codex -->
+## Codex Builder Loop
+
+- 在 Plan mode 为后续代码交付制定方案时，使用 `$builder-loop-planner` 固化验收、测试目标、角色写边界和验证命令。
+- 只有用户显式输入 `$builder` 时才启动 builder-loop；普通改码请求不要隐式触发。
+- 以 `codex-builder-loop` CLI 的最后一行 JSON 和 run ledger 为状态唯一来源，不手工改 ledger，不在 prompt 或旁路文件缓存 phase。
+- 主线程只协调并写 builder-owned 业务实现；tester 首次独立写 tester-owned 测试并在同一 thread 黑盒复验；reviewer 始终只读。
+- 项目没有更具体政策时，文档维护和 Reviewer Phase D 使用
+  `${CODEX_HOME:-$HOME/.codex}/builder-loop/doc-policy.md`。
+- 测试目标、ownership 或验收标准需要变化时，必须使用 `request_user_input` 获得用户决定；不得由 agent 单方面放宽。
+- 具体步骤只在对应 Skill 和 custom agent 中维护，不在本托管块复制。
+<!-- END cc-builder-loop-codex -->

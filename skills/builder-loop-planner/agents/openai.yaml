@@ -1,0 +1,7 @@
+interface:
+  display_name: "Builder Loop Planner"
+  short_description: "在 Plan mode 固化验收、测试目标与交付门禁"
+  default_prompt: "Use $builder-loop-planner to create a validated plan with independent test ownership and delivery gates."
+
+policy:
+  allow_implicit_invocation: true

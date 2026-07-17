@@ -1,85 +1,173 @@
 #!/usr/bin/env bash
-# uninstall.sh — 删除 cc-builder-loop 的所有软链和 hook 注册
-#
-# 执行后 builder-loop 完全从 CC 运行时消失。
-# 如需恢复，重跑 install.sh 即可。
+# Remove only the Codex-native builder-loop surfaces owned by this checkout.
 
 set -euo pipefail
 
-CLAUDE_DIR="${HOME}/.claude"
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CODEX_HOME="${CODEX_HOME:-${HOME}/.codex}"
+SKILLS_HOME="${HOME}/.agents/skills"
+LOCAL_BIN="${HOME}/.local/bin"
+HOOKS_FILE="${CODEX_HOME}/hooks.json"
+GLOBAL_AGENTS="${CODEX_HOME}/AGENTS.md"
+INSTALLED_HOOK="${CODEX_HOME}/hooks/builder-loop.py"
+DOC_POLICY="${CODEX_HOME}/builder-loop/doc-policy.md"
 
-echo "正在卸载 cc-builder-loop..."
+LINK_TARGETS=(
+  "$SKILLS_HOME/builder-loop-planner"
+  "$SKILLS_HOME/builder"
+  "$CODEX_HOME/agents/tester.toml"
+  "$CODEX_HOME/agents/reviewer.toml"
+  "$INSTALLED_HOOK"
+  "$LOCAL_BIN/codex-builder-loop"
+  "$DOC_POLICY"
+)
+LINK_EXPECTED=(
+  "$REPO_DIR/skills/builder-loop-planner"
+  "$REPO_DIR/skills/builder"
+  "$REPO_DIR/agents/tester.toml"
+  "$REPO_DIR/agents/reviewer.toml"
+  "$REPO_DIR/hooks/builder-loop.py"
+  "$REPO_DIR/scripts/codex-builder-loop.py"
+  "$REPO_DIR/policies/doc-policy.md"
+)
+LINK_OWNED=()
+ANY_LINK_OWNED=0
+REMOVED_LINKS=()
 
-# ---- 1. 删除 skill 目录软链 ----
-if [ -L "$CLAUDE_DIR/skills/builder-loop" ]; then
-  rm "$CLAUDE_DIR/skills/builder-loop"
-  echo "✓ 已删除 ~/.claude/skills/builder-loop"
-fi
+preflight_link() {
+  local target="$1"
+  local expected="$2"
+  if [ ! -L "$target" ]; then
+    LINK_OWNED+=(0)
+    return
+  fi
+  local actual
+  local wanted
+  if ! actual="$(readlink -f -- "$target")" || \
+    ! wanted="$(readlink -f -- "$expected")" || \
+    [ "$actual" != "$wanted" ]; then
+    echo "leaving foreign symlink: $target" >&2
+    LINK_OWNED+=(0)
+    return
+  fi
+  LINK_OWNED+=(1)
+  ANY_LINK_OWNED=1
+}
 
-# ---- 2. 删除 companion scripts 软链 ----
-for f in builder-loop-stop.sh subagent-start-guard.sh subagent-lock-clear.sh lock-utils.sh tester-lock-write.sh tester-lock-check.sh tester-lock-clear.sh worktree-write-guard.sh tester-write-guard.sh reviewer-timing-check.sh; do
-  target="$CLAUDE_DIR/scripts/$f"
-  if [ -L "$target" ]; then
-    rm "$target"
-    echo "✓ 已删除 ~/.claude/scripts/$f"
+for index in "${!LINK_TARGETS[@]}"; do
+  preflight_link "${LINK_TARGETS[$index]}" "${LINK_EXPECTED[$index]}"
+done
+
+HOOK_LINK_OWNED="${LINK_OWNED[4]}"
+INSTALLATION_OWNED="${LINK_OWNED[1]}"
+
+python3 - "$HOOKS_FILE" "$GLOBAL_AGENTS" "$ANY_LINK_OWNED" <<'PY'
+from __future__ import annotations
+
+import json
+import re
+import sys
+from pathlib import Path
+
+
+hooks_target = Path(sys.argv[1])
+agents_target = Path(sys.argv[2])
+has_owned_links = sys.argv[3] == "1"
+start = "<!-- BEGIN cc-builder-loop-codex -->"
+end = "<!-- END cc-builder-loop-codex -->"
+pattern = re.compile(re.escape(start) + r".*?" + re.escape(end), re.DOTALL)
+
+
+def reject_dangling(path: Path, label: str) -> None:
+    if not path.is_symlink():
+        return
+    try:
+        path.resolve(strict=True)
+    except OSError as exc:
+        raise SystemExit(f"dangling {label} symlink; refusing to edit {path}: {exc}")
+
+
+def read_text(path: Path, label: str) -> str:
+    try:
+        return path.read_text()
+    except OSError as exc:
+        raise SystemExit(f"invalid {label}; refusing to edit {path}: {exc}")
+
+
+if has_owned_links:
+    reject_dangling(hooks_target, "Codex hooks")
+    if hooks_target.exists():
+        try:
+            config = json.loads(hooks_target.read_text())
+        except (OSError, json.JSONDecodeError) as exc:
+            raise SystemExit(
+                f"invalid Codex hooks JSON; refusing to edit {hooks_target}: {exc}"
+            )
+        if not isinstance(config, dict):
+            raise SystemExit(f"Codex hooks root must be an object: {hooks_target}")
+        hooks = config.get("hooks", {})
+        if not isinstance(hooks, dict):
+            raise SystemExit(f"hooks must be an object: {hooks_target}")
+        for event, entries in hooks.items():
+            if not isinstance(entries, list):
+                raise SystemExit(f"hooks.{event} must be a list: {hooks_target}")
+
+    reject_dangling(agents_target, "global AGENTS")
+    if agents_target.exists():
+        content = read_text(agents_target, "global AGENTS")
+        starts = content.count(start)
+        ends = content.count(end)
+        matches = len(pattern.findall(content))
+        if starts != ends or starts != matches or starts > 1:
+            raise SystemExit(f"invalid managed AGENTS block: {agents_target}")
+PY
+
+restore_removed_links() {
+  local status="$?"
+  local index
+  trap - ERR
+  set +e
+  for index in "${REMOVED_LINKS[@]}"; do
+    if [ ! -e "${LINK_TARGETS[$index]}" ] && [ ! -L "${LINK_TARGETS[$index]}" ]; then
+      ln -s "${LINK_EXPECTED[$index]}" "${LINK_TARGETS[$index]}"
+    fi
+  done
+  exit "$status"
+}
+trap restore_removed_links ERR
+
+for index in "${!LINK_TARGETS[@]}"; do
+  if [ "${LINK_OWNED[$index]}" -eq 1 ]; then
+    rm -- "${LINK_TARGETS[$index]}"
+    REMOVED_LINKS+=("$index")
+    echo "removed ${LINK_TARGETS[$index]}"
   fi
 done
 
-# ---- 3. 删除 agents 软链 ----
-for f in tester.md arbiter.md; do
-  target="$CLAUDE_DIR/agents/$f"
-  if [ -L "$target" ]; then
-    rm "$target"
-    echo "✓ 已删除 ~/.claude/agents/$f"
-  fi
-done
-
-# ---- 4. 从 settings.json 删除 hook 条目 ----
-SETTINGS="$CLAUDE_DIR/settings.json"
-if [ -f "$SETTINGS" ] && command -v python3 &>/dev/null; then
-  cp "$SETTINGS" "${SETTINGS}.bak"
-  python3 - "$SETTINGS" <<'PYEOF'
-import json, sys
-
-settings_path = sys.argv[1]
-with open(settings_path) as f:
-    cfg = json.load(f)
-
-hooks = cfg.get("hooks", {})
-bl_scripts = ["builder-loop-stop.sh", "subagent-start-guard.sh",
-              "subagent-lock-clear.sh", "lock-utils.sh",
-              "tester-lock-write.sh", "tester-lock-check.sh",
-              "tester-lock-clear.sh", "worktree-write-guard.sh",
-              "tester-write-guard.sh", "reviewer-timing-check.sh"]
-
-removed = 0
-for hook_type in list(hooks.keys()):
-    arr = hooks[hook_type]
-    new_arr = []
-    for item in arr:
-        dominated = False
-        for h in item.get("hooks", []):
-            cmd = h.get("command", "")
-            if any(s in cmd for s in bl_scripts):
-                dominated = True
-                break
-        if not dominated:
-            new_arr.append(item)
-        else:
-            removed += 1
-    if new_arr:
-        hooks[hook_type] = new_arr
-    else:
-        del hooks[hook_type]
-
-with open(settings_path, "w") as f:
-    json.dump(cfg, f, indent=2, ensure_ascii=False)
-    f.write("\n")
-
-print(f"✓ hooks: 已删除 {removed} 条 builder-loop 相关条目")
-PYEOF
+CONFIG_ARGS=()
+CONFIG_NEEDED=0
+if ! { [ "$HOOK_LINK_OWNED" -eq 1 ] && \
+  { [ -e "$HOOKS_FILE" ] || [ -L "$HOOKS_FILE" ]; }; }; then
+  CONFIG_ARGS+=(--skip-hooks)
+else
+  CONFIG_NEEDED=1
+fi
+if ! { [ "$INSTALLATION_OWNED" -eq 1 ] && \
+  { [ -e "$GLOBAL_AGENTS" ] || [ -L "$GLOBAL_AGENTS" ]; }; }; then
+  CONFIG_ARGS+=(--skip-agents)
+else
+  CONFIG_NEEDED=1
 fi
 
-echo ""
-echo "✅ cc-builder-loop 已卸载"
-echo "   如需恢复：cd <cc-builder-loop-repo> && ./install.sh"
+if [ "$CONFIG_NEEDED" -eq 1 ]; then
+  python3 "$REPO_DIR/scripts/codex-builder-loop-config.py" uninstall \
+    --hooks-file "$HOOKS_FILE" \
+    --hooks-template "$REPO_DIR/hooks/hooks.json" \
+    --installed-hook "$INSTALLED_HOOK" \
+    --agents-file "$GLOBAL_AGENTS" \
+    --agents-block "$REPO_DIR/agents/AGENTS.md.block" \
+    "${CONFIG_ARGS[@]}"
+fi
+
+trap - ERR
+echo "Codex builder-loop uninstalled. Existing run ledgers were preserved."

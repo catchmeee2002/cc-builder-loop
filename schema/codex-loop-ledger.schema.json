@@ -1,0 +1,470 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openai.local/codex-builder-loop/ledger-v1.schema.json",
+  "title": "Codex Builder Loop Ledger v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "run_id",
+    "owner_session_id",
+    "phase",
+    "repo_root",
+    "spec_head",
+    "target_branch",
+    "target_start_head",
+    "plan",
+    "loop_config",
+    "worktrees",
+    "branches",
+    "prerequisite_publication",
+    "verification_attempts",
+    "tester_integration",
+    "agents",
+    "completed_agent_turns",
+    "verified_head",
+    "e2e_verified_head",
+    "reviewed_head",
+    "doc_reviewed_head",
+    "finalize_intent",
+    "final_head",
+    "created_at",
+    "updated_at",
+    "events"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "run_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"},
+    "owner_session_id": {"type": "string", "minLength": 1},
+    "phase": {
+      "enum": [
+        "active",
+        "integration_conflict",
+        "finalize_conflict",
+        "continuity_failure",
+        "iteration_limit",
+        "finalized_cleanup",
+        "finalized",
+        "abandoned"
+      ]
+    },
+    "repo_root": {"type": "string", "minLength": 1},
+    "spec_head": {"$ref": "#/$defs/commit"},
+    "target_branch": {"type": "string", "minLength": 1},
+    "target_start_head": {"$ref": "#/$defs/commit"},
+    "plan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "source_path",
+        "sha256",
+        "level",
+        "spec_head",
+        "plan_revision",
+        "parallel_ready",
+        "interfaces",
+        "target_test_dirs",
+        "support_paths",
+        "public_prerequisites",
+        "runner",
+        "builder_write",
+        "tester_write",
+        "behavior_ids",
+        "supersedes_run_id",
+        "supersedes_plan_sha256",
+        "has_e2e_cases"
+      ],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "source_path": {"type": "string", "minLength": 1},
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "level": {"enum": ["L1", "L2/L3"]},
+        "spec_head": {"$ref": "#/$defs/commit"},
+        "plan_revision": {"type": "integer", "minimum": 1},
+        "parallel_ready": {"type": "boolean"},
+        "interfaces": {"type": "array"},
+        "target_test_dirs": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "support_paths": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "public_prerequisites": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "runner": {
+          "oneOf": [{"type": "string", "minLength": 1}, {"type": "null"}]
+        },
+        "builder_write": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "tester_write": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "behavior_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "supersedes_run_id": {
+          "oneOf": [
+            {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"},
+            {"type": "null"}
+          ]
+        },
+        "supersedes_plan_sha256": {
+          "oneOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]
+        },
+        "has_e2e_cases": {"type": "boolean"}
+      }
+    },
+    "loop_config": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "spec_sha256", "stages", "runner_paths", "max_iterations"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "spec_sha256": {"$ref": "#/$defs/sha256"},
+        "stages": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1}
+        },
+        "runner_paths": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "max_iterations": {"type": "integer", "minimum": 1}
+      }
+    },
+    "worktrees": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["builder", "tester"],
+      "properties": {
+        "builder": {"$ref": "#/$defs/worktree"},
+        "tester": {"$ref": "#/$defs/worktree"}
+      }
+    },
+    "branches": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["builder", "tester"],
+      "properties": {
+        "builder": {"type": "string", "minLength": 1},
+        "tester": {"type": "string", "minLength": 1}
+      }
+    },
+    "prerequisite_publication": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["required", "builder_head", "head", "tree", "manifest_sha256", "paths", "files"],
+      "properties": {
+        "required": {"type": "boolean"},
+        "builder_head": {"$ref": "#/$defs/nullableCommit"},
+        "head": {"$ref": "#/$defs/nullableCommit"},
+        "tree": {"$ref": "#/$defs/nullableCommit"},
+        "manifest_sha256": {
+          "oneOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]
+        },
+        "paths": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "files": {
+          "type": "object",
+          "additionalProperties": {"type": "string", "pattern": "^[0-9a-f]{40,64}$"}
+        }
+      }
+    },
+    "verification_attempts": {"type": "integer", "minimum": 0},
+    "tester_integration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "base_head",
+        "source_head",
+        "owned_paths",
+        "ownership_baseline_head",
+        "pending",
+        "author_agent_id",
+        "author_turn_id",
+        "author_head",
+        "author_prerequisite_manifest_sha256",
+        "completed"
+      ],
+      "properties": {
+        "base_head": {"$ref": "#/$defs/commit"},
+        "source_head": {"$ref": "#/$defs/commit"},
+        "owned_paths": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "ownership_baseline_head": {
+          "oneOf": [{"$ref": "#/$defs/commit"}, {"type": "null"}]
+        },
+        "author_agent_id": {
+          "oneOf": [{"type": "string", "minLength": 1}, {"type": "null"}]
+        },
+        "author_turn_id": {
+          "oneOf": [{"type": "string", "minLength": 1}, {"type": "null"}]
+        },
+        "author_head": {"$ref": "#/$defs/nullableCommit"},
+        "author_prerequisite_manifest_sha256": {
+          "oneOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]
+        },
+        "completed": {"type": "boolean"},
+        "pending": {
+          "oneOf": [
+            {"type": "null"},
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "source_base_head",
+                "source_head",
+                "builder_before_head",
+                "changed_paths",
+                "patch_path",
+                "unmerged_paths"
+              ],
+              "properties": {
+                "source_base_head": {"$ref": "#/$defs/commit"},
+                "source_head": {"$ref": "#/$defs/commit"},
+                "builder_before_head": {"$ref": "#/$defs/commit"},
+                "changed_paths": {"type": "array", "items": {"type": "string"}},
+                "patch_path": {"type": "string", "minLength": 1},
+                "unmerged_paths": {"type": "array", "items": {"type": "string"}}
+              }
+            }
+          ]
+        }
+      }
+    },
+    "agents": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tester", "reviewer"],
+      "properties": {
+        "tester": {"$ref": "#/$defs/nullableAgent"},
+        "reviewer": {"$ref": "#/$defs/nullableAgent"}
+      }
+    },
+    "completed_agent_turns": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tester", "reviewer"],
+      "properties": {
+        "tester": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "reviewer": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "verified_head": {"$ref": "#/$defs/nullableCommit"},
+    "e2e_verified_head": {"$ref": "#/$defs/nullableCommit"},
+    "reviewed_head": {"$ref": "#/$defs/nullableCommit"},
+    "doc_reviewed_head": {"$ref": "#/$defs/nullableCommit"},
+    "finalize_intent": {
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "candidate_head",
+            "candidate_tree",
+            "expected_target_head",
+            "final_head",
+            "target_branch",
+            "created_at"
+          ],
+          "properties": {
+            "candidate_head": {"$ref": "#/$defs/commit"},
+            "candidate_tree": {"$ref": "#/$defs/commit"},
+            "expected_target_head": {"$ref": "#/$defs/commit"},
+            "final_head": {"$ref": "#/$defs/commit"},
+            "target_branch": {"type": "string", "minLength": 1},
+            "created_at": {"type": "string", "format": "date-time"}
+          }
+        }
+      ]
+    },
+    "final_head": {"$ref": "#/$defs/nullableCommit"},
+    "created_at": {"type": "string", "format": "date-time"},
+    "updated_at": {"type": "string", "format": "date-time"},
+    "events": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["sequence", "type", "at", "facts"],
+        "properties": {
+          "sequence": {"type": "integer", "minimum": 1},
+          "type": {"type": "string", "minLength": 1},
+          "at": {"type": "string", "format": "date-time"},
+          "facts": {"type": "object"}
+        }
+      }
+    }
+  },
+  "$defs": {
+    "commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "nullableCommit": {
+      "oneOf": [{"$ref": "#/$defs/commit"}, {"type": "null"}]
+    },
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "worktree": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "branch"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "branch": {"type": "string", "minLength": 1}
+      }
+    },
+    "agent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "agent_id",
+        "event",
+        "turn_id",
+        "result",
+        "candidate_head",
+        "candidate_dirty",
+        "role_head",
+        "role_dirty",
+        "prerequisite_manifest_sha256",
+        "review_prerequisites",
+        "at"
+      ],
+      "properties": {
+        "agent_id": {"type": "string", "minLength": 1},
+        "event": {"enum": ["start", "idle", "closed"]},
+        "turn_id": {"type": "string", "minLength": 1},
+        "result": {
+          "oneOf": [
+            {
+              "enum": [
+                "tests_ready",
+                "pass",
+                "fail",
+                "target_change_required",
+                "blocked",
+                "findings"
+              ]
+            },
+            {"type": "null"}
+          ]
+        },
+        "candidate_head": {"$ref": "#/$defs/commit"},
+        "candidate_dirty": {"type": "boolean"},
+        "role_head": {"$ref": "#/$defs/commit"},
+        "role_dirty": {"type": "boolean"},
+        "prerequisite_manifest_sha256": {
+          "oneOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]
+        },
+        "review_prerequisites": {
+          "oneOf": [
+            {"$ref": "#/$defs/reviewPrerequisites"},
+            {"type": "null"}
+          ]
+        },
+        "at": {"type": "string", "format": "date-time"}
+      }
+    },
+    "reviewPrerequisiteSnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "captured_at",
+        "plan_level",
+        "candidate_head",
+        "candidate_dirty",
+        "documentation_paths",
+        "tester_integration_completed",
+        "tester_author_turn_id",
+        "prerequisite_required",
+        "prerequisite_head",
+        "prerequisite_tree",
+        "prerequisite_manifest_sha256",
+        "tester_author_prerequisite_manifest_sha256",
+        "prerequisite_bound",
+        "verified_head",
+        "e2e_verified_head",
+        "satisfied"
+      ],
+      "properties": {
+        "captured_at": {"type": "string", "format": "date-time"},
+        "plan_level": {"enum": ["L1", "L2/L3"]},
+        "candidate_head": {"$ref": "#/$defs/commit"},
+        "candidate_dirty": {"type": "boolean"},
+        "documentation_paths": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "tester_integration_completed": {"type": "boolean"},
+        "tester_author_turn_id": {
+          "oneOf": [
+            {"type": "string", "minLength": 1},
+            {"type": "null"}
+          ]
+        },
+        "prerequisite_required": {"type": "boolean"},
+        "prerequisite_head": {"$ref": "#/$defs/nullableCommit"},
+        "prerequisite_tree": {"$ref": "#/$defs/nullableCommit"},
+        "prerequisite_manifest_sha256": {
+          "oneOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]
+        },
+        "tester_author_prerequisite_manifest_sha256": {
+          "oneOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]
+        },
+        "prerequisite_bound": {"type": "boolean"},
+        "verified_head": {"$ref": "#/$defs/nullableCommit"},
+        "e2e_verified_head": {"$ref": "#/$defs/nullableCommit"},
+        "satisfied": {"type": "boolean"}
+      }
+    },
+    "reviewPrerequisites": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["start", "completion", "bound"],
+      "properties": {
+        "start": {"$ref": "#/$defs/reviewPrerequisiteSnapshot"},
+        "completion": {
+          "oneOf": [
+            {"$ref": "#/$defs/reviewPrerequisiteSnapshot"},
+            {"type": "null"}
+          ]
+        },
+        "bound": {"type": "boolean"}
+      }
+    },
+    "nullableAgent": {
+      "oneOf": [{"$ref": "#/$defs/agent"}, {"type": "null"}]
+    }
+  }
+}

@@ -1,6 +1,10 @@
 pass_cmd:
-  - stage: smoke
-    cmd: "true"
-    timeout: 10
+  - stage: runtime-compile
+    cmd: "python3 -m py_compile scripts/codex-builder-loop.py scripts/codex-builder-loop-config.py runtime/codex_builder_loop/*.py hooks/*.py"
+    timeout: 30
+  - stage: fixtures
+    cmd: "bash scripts/verify-all.sh"
+    timeout: 300
+max_iterations: 5
 worktree:
   enabled: true

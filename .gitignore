@@ -1,8 +1,13 @@
-# cc-builder-loop — runtime artifacts
+# Codex-native runtime artifacts
+.builder-loop/codex/
+__pycache__/
+*.py[cod]
 *.local.md
 loop-runs/
 worktrees/
 *.log
+
+# Legacy branch artifacts kept ignored for coexistence
 .claude/builder-loop/
 .claude/loop-trace.jsonl
 .claude/loop-runs/
