@@ -9,6 +9,7 @@ SKILLS_HOME="${HOME}/.agents/skills"
 LOCAL_BIN="${HOME}/.local/bin"
 HOOKS_FILE="${CODEX_HOME}/hooks.json"
 GLOBAL_AGENTS="${CODEX_HOME}/AGENTS.md"
+GLOBAL_AGENTS_OVERRIDE="${CODEX_HOME}/AGENTS.override.md"
 DOC_POLICY="${CODEX_HOME}/builder-loop/doc-policy.md"
 
 LINK_SOURCES=(
@@ -68,7 +69,8 @@ for index in "${!LINK_TARGETS[@]}"; do
 done
 
 python3 - "$HOOKS_FILE" "$REPO_DIR/hooks/hooks.json" \
-  "$GLOBAL_AGENTS" "$REPO_DIR/agents/AGENTS.md.block" <<'PY'
+  "$GLOBAL_AGENTS" "$REPO_DIR/agents/AGENTS.md.block" \
+  "$GLOBAL_AGENTS_OVERRIDE" <<'PY'
 from __future__ import annotations
 
 import json
@@ -81,6 +83,7 @@ hooks_target = Path(sys.argv[1])
 hooks_template = Path(sys.argv[2])
 agents_target = Path(sys.argv[3])
 agents_block = Path(sys.argv[4])
+agents_override = Path(sys.argv[5])
 start = "<!-- BEGIN cc-builder-loop-codex -->"
 end = "<!-- END cc-builder-loop-codex -->"
 pattern = re.compile(re.escape(start) + r".*?" + re.escape(end), re.DOTALL)
@@ -140,6 +143,14 @@ reject_dangling(agents_target, "global AGENTS")
 if agents_target.exists():
     validate_managed_block(read_text(agents_target, "global AGENTS"), agents_target, required=False)
 validate_managed_block(read_text(agents_block, "managed AGENTS block"), agents_block, required=True)
+reject_dangling(agents_override, "global AGENTS override")
+if agents_override.exists() and read_text(
+    agents_override, "global AGENTS override"
+).strip():
+    raise SystemExit(
+        "non-empty global AGENTS.override.md shadows AGENTS.md; "
+        f"merge or remove {agents_override} before installing"
+    )
 PY
 
 python3 "$REPO_DIR/scripts/codex-builder-loop.py" --help >/dev/null

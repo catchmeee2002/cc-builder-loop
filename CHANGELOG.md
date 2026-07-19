@@ -1,6 +1,6 @@
 # Changelog
 
-## Codex-native 0.1.0 — 2026-07-17
+## Codex-native 0.1.0 — 2026-07-19
 
 - 从 `main` 建立长期独立的 `codex-native` 分支；Claude Code 版本继续由 `main` 维护。
 - 将用户入口固定为 `/plan <需求>` 后显式调用 `$builder`，安装器为 Plan mode 注入
@@ -11,7 +11,8 @@
   现场，再经 `/plan` 提升 `plan_revision` 并重新调用 `$builder`。
 - 新增确定性 runtime CLI、ledger、ownership gate、机器验证、agent lifecycle 记录、证据
   HEAD 失效、冲突安全停止和单次 squash commit。
-- 保留 L1/L2/L3 兼容标签；L1 仅允许 Markdown 文档改动，不启动 Tester 或伪造机器证据。
+- 对外只保留 L1 纯 Markdown 特例；其他任务统一进入 `L2/L3` 非 L1 交付路径，不再维护两套
+  L2/L3 流程。
 - Builder 继续负责文档维护，Reviewer 在 Phase D 按文档政策审计；未拆分独立 Doc Reviewer。
 - 新增 Codex Skills、Tester/Reviewer custom agents、官方 lifecycle hooks 与隔离安装/卸载流程。
 - 随安装部署默认文档政策；项目可提供更具体政策覆盖，避免 Reviewer Phase D 依赖作者机器路径。
@@ -37,6 +38,8 @@
   覆盖固定 `.bak` 文件。
 - 移除 Tester/Reviewer custom agent 的固定模型配置，使其继承根线程模型和推理强度。
 - 明确安装产物为指向 checkout 的符号链接，并补充自定义 `CODEX_HOME` 路径和移动约束。
+- 将全局 AGENTS 托管块缩为 `/plan` 与显式 `$builder` 两条触发规则；非空
+  `AGENTS.override.md` 会遮蔽该块，因此安装时 fail closed。
 - 删除本分支中旧的 Claude Code commands、Markdown agents、Stop-hook 编排脚本和旧 fixture；
   同时移除旧 `.claude` plan、review report、trace、settings 与本地状态快照；这些实现及其完整历史
   仍保留在 `main` 和 Git 历史中。

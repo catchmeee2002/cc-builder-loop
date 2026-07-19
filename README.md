@@ -32,6 +32,7 @@ $builder
   开始和结束都必须已经绑定当前 Tester integration、机器验证和 blackbox evidence。
 - Reviewer 通过前目标分支不移动。finalize 在临时 ref/worktree 执行目标仓库 hooks，确认最终
   tree 与已审 candidate 一致后，才用 expected-old compare-and-swap 更新目标分支。
+- finalize 只更新本地目标分支，不自动 push、创建 PR 或合并远端分支。
 - 正常修复循环会自动继续；测试目标或 ownership 变化、计划过期、迭代上限、Reviewer
   决策项、agent/target continuity 失败、目标 dirty 或 Git 冲突等安全停止会交还用户。
 
@@ -52,6 +53,11 @@ cd /path/to/cc-builder-loop-codex
 ./install.sh
 ```
 
+确保 `~/.local/bin` 在 `PATH` 中。安装后新开 Codex session，使全局 instructions 和 Skills 重新
+发现；随后用 `/hooks` 审查并信任 builder-loop hook。若存在非空
+`${CODEX_HOME:-$HOME/.codex}/AGENTS.override.md`，它会遮蔽 `AGENTS.md`，安装器因此拒绝继续；先
+合并或移除 override，再重新安装。
+
 安装器只配置 Codex。以下路径中的 Skills、custom agents、CLI、hook 脚本和默认文档政策均为
 指向当前 checkout 的符号链接；`hooks.json` 与 `AGENTS.md` 只合并托管注册：
 
@@ -64,7 +70,7 @@ cd /path/to/cc-builder-loop-codex
 
 checkout 必须保留在安装时的路径；移动或删除前先运行 `./uninstall.sh`，移动后再重新安装。
 安装器不会修改 `~/.claude`，因此可以与 `main` 分支上的 Claude Code 版本共存。首次安装或
-hook 内容变化后，按 Codex 提示在 `/hooks` 中检查并信任 hook。
+hook 内容变化后，需要再次检查并信任新 hash。
 
 ## 项目配置
 
@@ -101,5 +107,8 @@ python3 -m pip install -r requirements-dev.txt
 python3 scripts/codex-builder-loop.py --help
 bash scripts/verify-all.sh
 ```
+
+该命令只运行确定性契约 fixtures，不包含真实 Codex child spawn、follow-up、hook continuation
+和 sandbox live smoke；发布级实机验收条件见 [docs/known-issues.md](docs/known-issues.md)。
 
 设计原则见 [docs/design-philosophy.md](docs/design-philosophy.md)，运行架构见 [docs/architecture.md](docs/architecture.md)，环境限制见 [docs/known-issues.md](docs/known-issues.md)。

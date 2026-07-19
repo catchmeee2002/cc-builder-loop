@@ -150,6 +150,48 @@ class InstallContractTest(unittest.TestCase):
                 self.assertFalse(target.is_symlink(), target)
                 self.assertFalse(target.exists(), target)
 
+    def test_install_rejects_nonempty_global_agents_override_before_linking(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="builder-loop-agents-override-") as raw_home:
+            home = Path(raw_home)
+            codex_home = home / ".codex"
+            codex_home.mkdir(parents=True)
+            agents_path = codex_home / "AGENTS.md"
+            agents_path.write_text("# Base guidance\n")
+            override_path = codex_home / "AGENTS.override.md"
+            override_path.write_text("# Temporary override\n")
+
+            installed = run_process(
+                ["bash", ROOT / "install.sh"],
+                cwd=ROOT,
+                env=self.environment(home),
+            )
+
+            self.assertNotEqual(installed.returncode, 0)
+            self.assertIn("shadows AGENTS.md", installed.stderr)
+            self.assertEqual(agents_path.read_text(), "# Base guidance\n")
+            self.assertEqual(override_path.read_text(), "# Temporary override\n")
+            self.assertFalse((codex_home / "hooks.json").exists())
+            for target in self.installed_links(home):
+                self.assertFalse(target.is_symlink(), target)
+                self.assertFalse(target.exists(), target)
+
+    def test_empty_global_agents_override_does_not_shadow_install(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="builder-loop-empty-override-") as raw_home:
+            home = Path(raw_home)
+            codex_home = home / ".codex"
+            codex_home.mkdir(parents=True)
+            (codex_home / "AGENTS.override.md").write_text(" \n")
+
+            installed = run_process(
+                ["bash", ROOT / "install.sh"],
+                cwd=ROOT,
+                env=self.environment(home),
+            )
+
+            self.assertEqual(installed.returncode, 0, installed.stderr)
+            agents = (codex_home / "AGENTS.md").read_text()
+            self.assertIn("BEGIN cc-builder-loop-codex", agents)
+
     def test_uninstall_invalid_hooks_json_removes_no_links(self) -> None:
         with tempfile.TemporaryDirectory(prefix="builder-loop-invalid-uninstall-") as raw_home:
             home = Path(raw_home)
