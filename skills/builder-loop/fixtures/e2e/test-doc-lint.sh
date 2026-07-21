@@ -260,4 +260,108 @@ OUT9_OLD=$(bash "$DOC_LINT" "$env9" "HEAD~1" 2>/dev/null)
 EC9_OLD=$?
 assert "Case 9b exit 1 with HEAD~1 (proves regression guard)" "[ '$EC9_OLD' -eq 1 ]"
 
+# ============================================================
+# Case 10: 函数迁移 + 旧 path::symbol 指针 → exit 1
+# ============================================================
+section "Case 10: moved function stale qualified pointer → exit 1"
+env10=$(mk_lint_repo)
+(
+  cd "$env10"
+  cat > docs/architecture.md <<'MD'
+# Architecture
+
+Snapshot logic lives at `src/engine.py::save_chapter_snapshot`.
+MD
+  git add -A
+  git -c core.hooksPath=/dev/null commit -q -m "docs(test): [cr_id_skip] Add qualified pointer"
+  cat > src/engine.py <<'PY'
+def load_config():
+    pass
+
+class ChapterManager:
+    pass
+PY
+  cat > src/snapshot.py <<'PY'
+def save_chapter_snapshot():
+    pass
+PY
+  git add -A
+)
+OUT10=$(bash "$DOC_LINT" "$env10" 2>/dev/null)
+EC10=$?
+assert "Case 10 exit 1" "[ '$EC10' -eq 1 ]"
+assert "Case 10 输出旧路径与符号" "echo '$OUT10' | grep -q 'src/engine.py::save_chapter_snapshot'"
+
+# ============================================================
+# Case 11: 函数迁移 + symbol-only 引用仍可成立 → exit 0
+# ============================================================
+section "Case 11: moved function symbol-only reference → exit 0"
+env11=$(mk_lint_repo)
+(
+  cd "$env11"
+  cat > docs/architecture.md <<'MD'
+# Architecture
+
+The snapshot flow uses `save_chapter_snapshot`.
+MD
+  git add -A
+  git -c core.hooksPath=/dev/null commit -q -m "docs(test): [cr_id_skip] Add symbol reference"
+  cat > src/engine.py <<'PY'
+def load_config():
+    pass
+
+class ChapterManager:
+    pass
+PY
+  cat > src/snapshot.py <<'PY'
+def save_chapter_snapshot():
+    pass
+PY
+  git add -A
+)
+OUT11=$(bash "$DOC_LINT" "$env11" 2>/dev/null)
+EC11=$?
+assert "Case 11 exit 0" "[ '$EC11' -eq 0 ]"
+
+# ============================================================
+# Case 12: detector 无法解析 diff base → exit 2，不静默 PASS
+# ============================================================
+section "Case 12: reference detector failure → exit 2"
+env12=$(mk_lint_repo)
+OUT12=$(bash "$DOC_LINT" "$env12" "missing-reference" 2>/dev/null)
+EC12=$?
+assert "Case 12 exit 2" "[ '$EC12' -eq 2 ]"
+
+# ============================================================
+# Case 13: 历史 CHANGELOG 中的删除符号不要求回写历史
+# ============================================================
+section "Case 13: deleted symbol in CHANGELOG history → excluded"
+env13=$(mk_lint_repo)
+(
+  cd "$env13"
+  cat > docs/architecture.md <<'MD'
+# Architecture
+
+Current architecture without private symbol pointers.
+MD
+  cat > CHANGELOG.md <<'MD'
+# Changelog
+
+- Earlier versions used `save_chapter_snapshot`.
+MD
+  git add -A
+  git -c core.hooksPath=/dev/null commit -q -m "docs(test): [cr_id_skip] Move reference to history"
+  cat > src/engine.py <<'PY'
+def load_config():
+    pass
+
+class ChapterManager:
+    pass
+PY
+  git add -A
+)
+OUT13=$(bash "$DOC_LINT" "$env13" 2>/dev/null)
+EC13=$?
+assert "Case 13 exit 0" "[ '$EC13' -eq 0 ]"
+
 harness_report

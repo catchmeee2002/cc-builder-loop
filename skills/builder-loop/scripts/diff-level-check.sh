@@ -8,6 +8,7 @@ set -uo pipefail
 
 PROJECT_ROOT="${1:-$(pwd)}"
 DIFF_BASE="${2:-HEAD}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 if ! git -C "$PROJECT_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   echo '{"level_signals":[],"count":0}'
@@ -91,9 +92,29 @@ import json, re, sys, os, subprocess
 
 project_root = sys.argv[1]
 changed_files_raw = sys.argv[2]
+diff_base = sys.argv[3]
+reference_script = sys.argv[4]
+try:
+    doc_reference = json.loads(subprocess.check_output(
+        [sys.executable, reference_script, project_root, diff_base],
+        stderr=subprocess.STDOUT, text=True))
+    reference_scan_error = None
+except Exception as exc:
+    doc_reference = {'documents': [], 'broken_symbol_references': [], 'semantic_checks': []}
+    reference_scan_error = str(exc)
 
 changed_files = [f for f in changed_files_raw.strip().splitlines() if f]
 changed_basenames = [os.path.basename(f) for f in changed_files if f]
+doc_list = doc_reference.get('documents', [])
+doc_lines = {}
+for doc in doc_list:
+    try:
+        with open(os.path.join(project_root, doc), encoding='utf-8') as f:
+            doc_lines[doc] = f.read().splitlines()
+    except (OSError, UnicodeError):
+        pass
+broken_symbol_references = doc_reference.get('broken_symbol_references', [])
+symbol_semantic_checks = doc_reference.get('semantic_checks', [])
 
 # --- machine_checks ---
 _test_pat = re.compile(r'(^test_|/tests?/|/fixtures?/|_test\.|\.test\.)')
@@ -128,6 +149,8 @@ for p in ['docs/plan.md', 'plan.md']:
 machine_checks = {
     'changelog_needed': changelog_needed,
     'plan_version_stale': plan_version_stale,
+    'broken_symbol_references': broken_symbol_references,
+    'doc_reference_scan_error': reference_scan_error,
 }
 
 # --- candidates ---
@@ -187,21 +210,27 @@ candidates = {'improvements_status': improvements_status}
 
 # --- semantic_checks ---
 semantic_checks = []
-doc_list = ['CLAUDE.md', 'skills/builder-loop/SKILL.md', 'skills/builder-loop/README.md']
-if changed_basenames:
+semantic_basenames = [
+    os.path.basename(f) for f in changed_files
+    if not f.endswith('.md') and not _test_pat.search(f)
+]
+if semantic_basenames:
     for doc in doc_list:
-        doc_full = os.path.join(project_root, doc)
-        if not os.path.isfile(doc_full):
+        lines = doc_lines.get(doc)
+        if lines is None:
             continue
-        with open(doc_full) as f:
-            content = f.read()
-        for bn in changed_basenames:
+        content = '\n'.join(lines)
+        for bn in semantic_basenames:
             if bn in content:
                 semantic_checks.append({
                     'file': doc,
                     'question': '本次改动的 ' + bn + ' 在 ' + doc + ' 中被引用，检查引用的行为描述是否仍准确',
                 })
                 break
+
+for check in symbol_semantic_checks:
+    if check not in semantic_checks:
+        semantic_checks.append(check)
 
 result = {
     'machine_checks': machine_checks,
@@ -210,7 +239,7 @@ result = {
     'improvements_source': improvements_source,
 }
 print(json.dumps(result, ensure_ascii=False))
-" "$PROJECT_ROOT" "$CHANGED_FILES" 2>/dev/null || echo '{"machine_checks":{"changelog_needed":false,"plan_version_stale":false},"candidates":{"improvements_status":[]},"semantic_checks":[],"improvements_source":"none"}')"
+" "$PROJECT_ROOT" "$CHANGED_FILES" "$DIFF_BASE" "$SCRIPT_DIR/doc-reference-check.py" 2>/dev/null || echo '{"machine_checks":{"changelog_needed":false,"plan_version_stale":false,"broken_symbol_references":[],"doc_reference_scan_error":"doc freshness assembly failed"},"candidates":{"improvements_status":[]},"semantic_checks":[],"improvements_source":"none"}')"
 
 IMP_SRC="$(echo "$DOC_CHECK_JSON" | python3 -c "import json,sys; print(json.load(sys.stdin).get('improvements_source','none'))" 2>/dev/null || echo "none")"
 if [ "$IMP_SRC" = "none" ] && [ ! -f "$PROJECT_ROOT/improvements.md" ]; then

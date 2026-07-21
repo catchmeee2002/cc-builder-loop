@@ -219,6 +219,11 @@ description: "进入 Builder 模式 — 复杂任务先计划后动手，完成�
 **machine_checks（机器判定，builder 只执行不判断）**：
 - `changelog_needed == true` → 必须加 CHANGELOG 条目，输出 `📋 CHANGELOG: 已更新`
 - `plan_version_stale == true` → 必须更新 plan.md 版本号，输出 `📋 plan.md: 已更新版本号`
+- `broken_symbol_references` 非空 → 逐条 Read `file:line`，修复仍指向 `old_path::symbol` 的失效
+  源码指针。按 doc-policy 优先改写为稳定模块职责；确需源码导航时才改指向 `new_paths` 中仍存在的
+  位置。每条输出 `📋 <file>: 已修复失效指针 <old_path>::<symbol>`，不允许仅以“文档未改行为”跳过
+- `doc_reference_scan_error` 非空 → 机械扫描未执行成功，立即停止文档评估并修复脚本/参数；不得把
+  扫描失败解释为无文档影响
 
 **candidates（匹配候选，builder 逐条回答 specific 问题）**：
 - `improvements_status` 非空 → 逐条标题回答：「本次是否修复了该条目？是 → `gh issue edit` 转观察期 或 `gh issue close`；否 → `📋 improvements: <标题>: 未修复，跳过`」
@@ -228,7 +233,8 @@ description: "进入 Builder 模式 — 复杂任务先计划后动手，完成�
   - `📋 <file>: 更新（<简述>）`（Edit 更新）
   - `📋 <file>: 仍成立`（Read 后确认行为描述仍准确）
 
-⛔ machine_checks 为 true 的项不允许跳过或判"不需要"——机器已判定，builder 只执行。
+⛔ boolean machine check 为 true、`broken_symbol_references` 非空或扫描错误存在时不允许跳过——
+机器已判定，builder 只执行。
 
 ---
 

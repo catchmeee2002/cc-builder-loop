@@ -2,6 +2,31 @@
 
 > 从 CLAUDE.md §5 外移。记录各版本交付的能力与关键实现细节。
 
+## V7.4 文档失效源码指针机械锚点（2026-07-21）
+
+**动机**：函数迁移后，嵌套 CLAUDE.md 中的 `old/path.py::symbol` 仍指向已不存在的位置；原
+`doc_freshness_check` 只用 changed basename 扫三个顶层文档，Builder 与 Reviewer 都收不到信号。
+这是用户第三次在交付后追问文档并发现漏更，按原则五属于架构缺口而非提示词疏忽。
+
+**核心变更**：
+- `diff-level-check.sh` 从 diff 提取 Python/JavaScript/Go/Rust/Shell 被移除的函数或类定义；同名定义
+  出现在其他文件时标为 moved，否则标为 removed。签名只在原文件变化时不误判为迁移
+- 提取与 Markdown 定位集中到 `doc-reference-check.py`；`diff-level-check.sh` 与 `doc-lint.sh` 共同
+  消费这一唯一结果，避免两套“迁移是否使指针失效”的实现继续漂移。`doc-lint` 因此也能在配置为
+  PASS_CMD stage 时直接阻断失效 qualified pointer
+- detector 调用失败会写入 `machine_checks.doc_reference_scan_error`，Builder 必须停止、Reviewer
+  必须 blocked；扫描失败不再退化成“没有文档影响”
+- 文档扫描从三个硬编码文件扩展为项目维护型 Markdown；排除 `.git`、`.claude`、vendor/build
+  产物、CHANGELOG 与 improvements 历史容器，避免要求改写历史记录
+- 同一行同时包含旧完整路径与已迁移/删除符号时，输出
+  `machine_checks.broken_symbol_references`；只有符号提及时进入 `semantic_checks`，继续由 Reviewer
+  判断语义，不把模糊命中升级成机器硬结论
+- Builder 步骤 3.5.5 必须修复每条失效指针；Reviewer Phase D 即使目标文档未进入 changed_files
+  也会定点复核
+
+**设计依据**：原则一要求可证明的指针失效进入机器判据，原则四要求增强审计输入而非继续增加
+“多 grep 几个词”的输出约束；精确指针与模糊语义分层，避免 doc-policy 所反对的找补式更新。
+
 ## V7.3 PASS_CMD 假 PASS 堵死 + 第三参数正名 log_root（2026-07-16）
 
 **动机**：`run-pass-cmd.sh` 在 pass_cmd 解析失败时静默输出 `PASS` —— 一个 stage 都没跑却报通过，纯机器判据这层地基被无声绕过。触发链：builder.md 把第三参数写作 `<project_root>`，而 worktree 模式下 `state.project_root` = worktree_path，builder 照字面传 worktree → `log_root == run_cwd` → fallback 读主仓 loop.yml 的条件不成立 → worktree 内无 loop.yml（gitignored 不 checkout）→ python 抛 FileNotFoundError。放大器是 `while ... done < <(parse_pass_cmd)`：process substitution 的退出码父 shell 收不到，`set -euo pipefail` 也够不着它，while 读到空输入零次循环，直落末尾 `echo "PASS"`。违反原则一（判据按独立性分层）——地基能静默返回 PASS，其上的 reviewer / tester 层全建在假地基上，且没有任何一层校验 PASS 的真伪。同时违反原则二（每份数据一个家）：`project_root` 一名四指（state 字段 = worktree、stop hook 变量 = 主仓、本脚本第三参数 = log_root、handle-pass-result 第四参数 = 主仓）。详见 [GitHub issue #67](https://github.com/catchmeee2002/cc-builder-loop/issues/67)。

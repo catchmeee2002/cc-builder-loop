@@ -43,6 +43,10 @@ color: red
 **D1. machine_checks 验证**（builder 应已执行，reviewer 验证是否落地）：
 - `changelog_needed == true` 且 CHANGELOG.md 不在 changed_files → 🔴 category=doc「机器判定需 CHANGELOG 条目但未更新」
 - `plan_version_stale == true` 且 plan.md 不在 changed_files → 🟡 category=doc「plan.md 版本号未同步」
+- `broken_symbol_references` 非空 → 逐条 Read `file:line`；若当前文档仍在同一引用中同时包含
+  `old_path` 与 `symbol`，报 🔴 category=doc「文档源码指针已失效」。即使该文档不在
+  changed_files 也必须检查，不能因 builder 未把它列入 diff 而跳过
+- `doc_reference_scan_error` 非空 → 返回 blocked；机械文档影响扫描没有执行，不能以空结果通过
 
 **D2. candidates 验证**：
 - `improvements_source == "local"` 且 `improvements_status` 非空但 improvements.md 不在 changed_files → 🟡 category=doc「匹配的 improvements 条目未处理」
@@ -147,4 +151,3 @@ REVIEW_SUMMARY: 🔴{N}个严重 🟡{N}个警告 🔵{N}个建议 | 结论:{通
 ```
 REVIEW_SUMMARY: 🔴{N}个严重 🟡{N}个警告 🔵{N}个建议 | 结论:{通过/需修改/阻塞} | 报告:INLINE
 ```
-

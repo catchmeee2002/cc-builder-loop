@@ -42,6 +42,7 @@
 │   ├── init-loop-config.sh     # 接入向导：写 loop.yml + 追加 .gitignore（纯 bash，可独立调用）
 │   ├── run-pass-cmd.sh         # 按阶段跑 PASS_CMD，日志落 .claude/loop-runs/
 │   ├── handle-pass-result.sh   # V5.4: PASS 后统一处理（commit + state + e2e/reward-hack 检测）
+│   ├── doc-reference-check.py  # 从 diff 提取迁移/删除符号并定位失效 Markdown 源码指针
 │   ├── extract-error.sh        # 错误反馈处理器（V1=full+脱敏）
 │   ├── early-stop-check.sh     # 早停判据（无进展/反增长/保护路径）
 │   ├── merge-worktree-back.sh  # V1.1 worktree 合回主干（fast-forward/rebase/仲裁标记）

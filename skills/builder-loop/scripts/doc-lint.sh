@@ -11,6 +11,7 @@ set -uo pipefail
 
 PROJECT_ROOT="${1:-$(pwd)}"
 DIFF_BASE="${2:-HEAD}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 if [ ! -d "$PROJECT_ROOT/.git" ] && ! git -C "$PROJECT_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   echo "[doc-lint] 非 git 仓库，跳过" >&2
@@ -110,17 +111,17 @@ if [ -n "$DELETED_SYMBOLS" ]; then
   done <<< "$DELETED_SYMBOLS"
 fi
 
-if [ -z "$PATTERNS" ]; then
-  echo "[doc-lint] 无删除的文件或函数，跳过"
-  exit 0
-fi
-
 # ---- 4. 在 .md 文件中搜索过时引用 ----
 MD_FILES="$(find "$PROJECT_ROOT" -name '*.md' -type f \
   -not -path '*/.git/*' \
+  -not -path '*/.claude/*' \
+  -not -path '*/.builder-loop/*' \
   -not -path '*/node_modules/*' \
-  -not -path '*/.claude/plans/*' \
-  -not -path '*/.claude/builder-loop/legacy/*' \
+  -not -path '*/vendor/*' \
+  -not -path '*/dist/*' \
+  -not -path '*/build/*' \
+  -not -name 'CHANGELOG.md' \
+  -not -name 'improvements.md' \
   2>/dev/null || true)"
 
 if [ -z "$MD_FILES" ]; then
@@ -148,6 +149,34 @@ while IFS= read -r pattern; do
     fi
   done <<< "$MD_FILES"
 done < <(printf '%b' "$PATTERNS")
+
+# ---- 4.5 检测 moved symbol 的旧 path::symbol 指针 ----
+# 删除符号仍由上面的通用引用检查负责；迁移符号不能按名字一刀切，因为 symbol-only 文档可能
+# 仍然准确。这里只消费共享 detector 可证明失效的「旧完整路径 + 同一符号」引用。
+REFERENCE_JSON="$(python3 "$SCRIPT_DIR/doc-reference-check.py" "$PROJECT_ROOT" "$DIFF_BASE" 2>/dev/null)"
+REFERENCE_EC=$?
+if [ "$REFERENCE_EC" -ne 0 ]; then
+  echo "[doc-lint] 文档源码指针扫描失败" >&2
+  exit 2
+fi
+while IFS=$'\t' read -r ref_file ref_line ref_symbol ref_old_path ref_new_paths; do
+  [ -z "$ref_file" ] && continue
+  HITS="${HITS}  ${ref_file}:${ref_line}: 失效源码指针 \`${ref_old_path}::${ref_symbol}\` — 候选位置: ${ref_new_paths:-无}\n"
+  HIT_COUNT=$((HIT_COUNT + 1))
+done < <(echo "$REFERENCE_JSON" | python3 -c '
+import json, sys
+data = json.load(sys.stdin)
+for item in data.get("broken_symbol_references", []):
+    if item.get("change") != "moved":
+        continue
+    print("\t".join([
+        str(item.get("file", "")),
+        str(item.get("line", "")),
+        str(item.get("symbol", "")),
+        str(item.get("old_path", "")),
+        ",".join(item.get("new_paths", [])),
+    ]))
+')
 
 # ---- 5. 输出结果 ----
 if [ "$HIT_COUNT" -gt 0 ]; then

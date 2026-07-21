@@ -389,4 +389,120 @@ OUT21=$(PATH="$env21/mock_bin:$PATH" bash "$DLCHECK" "$env21" 2>/dev/null)
 assert "Case 21 不含 builder 单词匹配" "echo '$OUT21' | python3 -c \"import json,sys; d=json.load(sys.stdin); imp=d['doc_freshness_check']['candidates']['improvements_status']; assert not any('builder 步骤' in t for t in imp), 'unexpected: '+str(imp)\""
 assert "Case 21 含 diff-level-check 复合匹配" "echo '$OUT21' | python3 -c \"import json,sys; d=json.load(sys.stdin); imp=d['doc_freshness_check']['candidates']['improvements_status']; assert any('diff-level-check' in t for t in imp), imp\""
 
+mk_symbol_move_repo() {
+  local d
+  d=$(mktemp -d -t "harness-dlcheck-symbol-XXXXXX")
+  _HARNESS_TMPDIRS+=("$d")
+  (
+    cd "$d"
+    git init -q
+    git config user.email "harness@test.local"
+    git config user.name "harness"
+    mkdir -p handler card
+    cat > handler/ops_hmi_video.py <<'PY'
+def _parse_picker_to_epoch(value):
+    return value
+
+def keep_local():
+    return True
+PY
+    git add -A
+    git -c core.hooksPath=/dev/null commit -q -m "chore(test): [cr_id_skip] Seed symbol move"
+  )
+  echo "$d"
+}
+
+move_symbol() {
+  local d="$1"
+  cat > "$d/handler/ops_hmi_video.py" <<'PY'
+def keep_local():
+    return True
+PY
+  cat > "$d/handler/card_shared.py" <<'PY'
+def _parse_picker_to_epoch(value):
+    return value
+PY
+  git -C "$d" add -A
+}
+
+# ---- Case 22: nested Markdown stale path::symbol after move → machine check ----
+section "Case 22: moved symbol stale qualified pointer → machine check"
+env22=$(mk_symbol_move_repo)
+cat > "$env22/card/CLAUDE.md" <<'MD'
+# Card
+
+解析在 `handler/ops_hmi_video.py::_parse_picker_to_epoch`。
+MD
+git -C "$env22" add card/CLAUDE.md
+git -C "$env22" -c core.hooksPath=/dev/null commit -q -m "docs(test): [cr_id_skip] Add nested pointer"
+move_symbol "$env22"
+OUT22=$(bash "$DLCHECK" "$env22" 2>/dev/null)
+assert "Case 22 broken_symbol_references 命中 nested CLAUDE.md" "echo '$OUT22' | python3 -c \"import json,sys; d=json.load(sys.stdin); refs=d['doc_freshness_check']['machine_checks']['broken_symbol_references']; assert any(r['file']=='card/CLAUDE.md' and r['symbol']=='_parse_picker_to_epoch' and r['old_path']=='handler/ops_hmi_video.py' and r['new_paths']==['handler/card_shared.py'] for r in refs), refs\""
+
+# ---- Case 23: pointer updated to destination → no machine finding ----
+section "Case 23: moved symbol pointer already updated → no machine finding"
+env23=$(mk_symbol_move_repo)
+cat > "$env23/card/CLAUDE.md" <<'MD'
+# Card
+
+解析在 `handler/ops_hmi_video.py::_parse_picker_to_epoch`。
+MD
+git -C "$env23" add card/CLAUDE.md
+git -C "$env23" -c core.hooksPath=/dev/null commit -q -m "docs(test): [cr_id_skip] Add pointer"
+move_symbol "$env23"
+sed -i 's|handler/ops_hmi_video.py|handler/card_shared.py|' "$env23/card/CLAUDE.md"
+git -C "$env23" add card/CLAUDE.md
+OUT23=$(bash "$DLCHECK" "$env23" 2>/dev/null)
+assert "Case 23 broken_symbol_references 为空" "echo '$OUT23' | python3 -c \"import json,sys; d=json.load(sys.stdin); assert d['doc_freshness_check']['machine_checks']['broken_symbol_references']==[], d\""
+
+# ---- Case 24: symbol-only mention → semantic candidate, not hard finding ----
+section "Case 24: moved symbol without old path → semantic candidate"
+env24=$(mk_symbol_move_repo)
+cat > "$env24/card/CLAUDE.md" <<'MD'
+# Card
+
+时间解析统一复用 `_parse_picker_to_epoch`。
+MD
+git -C "$env24" add card/CLAUDE.md
+git -C "$env24" -c core.hooksPath=/dev/null commit -q -m "docs(test): [cr_id_skip] Add symbol mention"
+move_symbol "$env24"
+OUT24=$(bash "$DLCHECK" "$env24" 2>/dev/null)
+assert "Case 24 machine finding 为空" "echo '$OUT24' | python3 -c \"import json,sys; d=json.load(sys.stdin); assert d['doc_freshness_check']['machine_checks']['broken_symbol_references']==[], d\""
+assert "Case 24 semantic_checks 命中 nested CLAUDE.md" "echo '$OUT24' | python3 -c \"import json,sys; d=json.load(sys.stdin); checks=d['doc_freshness_check']['semantic_checks']; assert any(c['file']=='card/CLAUDE.md' and '_parse_picker_to_epoch' in c['question'] for c in checks), checks\""
+
+# ---- Case 25: historical CHANGELOG pointer is excluded ----
+section "Case 25: historical CHANGELOG pointer → excluded"
+env25=$(mk_symbol_move_repo)
+cat > "$env25/CHANGELOG.md" <<'MD'
+# Changelog
+
+- 曾由 `handler/ops_hmi_video.py::_parse_picker_to_epoch` 解析。
+MD
+git -C "$env25" add CHANGELOG.md
+git -C "$env25" -c core.hooksPath=/dev/null commit -q -m "docs(test): [cr_id_skip] Add history"
+move_symbol "$env25"
+OUT25=$(bash "$DLCHECK" "$env25" 2>/dev/null)
+assert "Case 25 broken_symbol_references 为空" "echo '$OUT25' | python3 -c \"import json,sys; d=json.load(sys.stdin); assert d['doc_freshness_check']['machine_checks']['broken_symbol_references']==[], d\""
+
+# ---- Case 26: signature-only change in same file keeps pointer valid ----
+section "Case 26: same-file signature change → pointer remains valid"
+env26=$(mk_symbol_move_repo)
+cat > "$env26/card/CLAUDE.md" <<'MD'
+# Card
+
+解析在 `handler/ops_hmi_video.py::_parse_picker_to_epoch`。
+MD
+git -C "$env26" add card/CLAUDE.md
+git -C "$env26" -c core.hooksPath=/dev/null commit -q -m "docs(test): [cr_id_skip] Add pointer"
+sed -i 's/def _parse_picker_to_epoch(value):/def _parse_picker_to_epoch(value, timezone=None):/' "$env26/handler/ops_hmi_video.py"
+git -C "$env26" add handler/ops_hmi_video.py
+OUT26=$(bash "$DLCHECK" "$env26" 2>/dev/null)
+assert "Case 26 broken_symbol_references 为空" "echo '$OUT26' | python3 -c \"import json,sys; d=json.load(sys.stdin); assert d['doc_freshness_check']['machine_checks']['broken_symbol_references']==[], d\""
+
+# ---- Case 27: invalid diff base → scan error, not silent empty ----
+section "Case 27: reference detector failure → machine scan error"
+env27=$(mk_py_repo)
+OUT27=$(bash "$DLCHECK" "$env27" "missing-reference" 2>/dev/null)
+assert "Case 27 doc_reference_scan_error 非空" "echo '$OUT27' | python3 -c \"import json,sys; d=json.load(sys.stdin); assert d['doc_freshness_check']['machine_checks']['doc_reference_scan_error'], d\""
+
 harness_report
