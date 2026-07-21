@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- 修复同一 Tester/Reviewer thread 的 follow-up 只有 `SubagentStop`、没有第二次
+  `SubagentStart` 时 ledger 保留首次 turn 结果的问题。新增 `prepare-follow-up` dispatch 契约，
+  在发送 follow-up 前失效旧 evidence、记录 pending turn，并由实际 terminal event 绑定新
+  `turn_id`、结果、HEAD 与 Reviewer prerequisite snapshot。
+
 ## Codex-native 0.1.0 — 2026-07-19
 
 - 从 `main` 建立长期独立的 `codex-native` 分支；Claude Code 版本继续由 `main` 维护。

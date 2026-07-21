@@ -264,6 +264,15 @@
         "reviewer": {"$ref": "#/$defs/nullableAgent"}
       }
     },
+    "pending_agent_turns": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tester", "reviewer"],
+      "properties": {
+        "tester": {"$ref": "#/$defs/nullablePendingAgentTurn"},
+        "reviewer": {"$ref": "#/$defs/nullablePendingAgentTurn"}
+      }
+    },
     "completed_agent_turns": {
       "type": "object",
       "additionalProperties": false,
@@ -391,8 +400,60 @@
             {"type": "null"}
           ]
         },
+        "follow_up_dispatch_id": {
+          "oneOf": [{"type": "string", "minLength": 1}, {"type": "null"}]
+        },
+        "follow_up_purpose": {
+          "oneOf": [
+            {"enum": ["author", "blackbox", "review"]},
+            {"type": "null"}
+          ]
+        },
         "at": {"type": "string", "format": "date-time"}
       }
+    },
+    "pendingAgentTurn": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "dispatch_id",
+        "agent_id",
+        "purpose",
+        "previous_turn_id",
+        "candidate_head",
+        "candidate_dirty",
+        "role_head",
+        "role_dirty",
+        "prerequisite_manifest_sha256",
+        "review_prerequisites_start",
+        "prepared_at"
+      ],
+      "properties": {
+        "dispatch_id": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
+        "agent_id": {"type": "string", "minLength": 1},
+        "purpose": {"enum": ["author", "blackbox", "review"]},
+        "previous_turn_id": {"type": "string", "minLength": 1},
+        "candidate_head": {"$ref": "#/$defs/commit"},
+        "candidate_dirty": {"type": "boolean"},
+        "role_head": {"$ref": "#/$defs/commit"},
+        "role_dirty": {"type": "boolean"},
+        "prerequisite_manifest_sha256": {
+          "oneOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]
+        },
+        "review_prerequisites_start": {
+          "oneOf": [
+            {"$ref": "#/$defs/reviewPrerequisiteSnapshot"},
+            {"type": "null"}
+          ]
+        },
+        "prepared_at": {"type": "string", "format": "date-time"}
+      }
+    },
+    "nullablePendingAgentTurn": {
+      "oneOf": [
+        {"$ref": "#/$defs/pendingAgentTurn"},
+        {"type": "null"}
+      ]
     },
     "reviewPrerequisiteSnapshot": {
       "type": "object",

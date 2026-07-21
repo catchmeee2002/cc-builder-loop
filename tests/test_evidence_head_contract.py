@@ -251,6 +251,82 @@ class EvidenceHeadContractTest(unittest.TestCase):
         assert_status(boolean_returncode, "FATAL", rc=2)
         self.assertEqual(boolean_returncode.data.get("code"), "E2E_DETAILS_INVALID")
 
+    def test_prepared_tester_follow_up_records_blackbox_pass_without_start_hook(self) -> None:
+        started, run_path = start_run(self.repo, self.plan)
+        builder, _tester = worktrees_from(started, run_path)
+        tester_agent_id = register_agent(run_path, "tester", result="tests_ready")
+        assert_status(run_cli("integrate-tests", "--run", run_path), "NOOP", rc=0)
+        verified = run_cli("verify", "--run", run_path)
+        assert_status(verified, "PASS", rc=0)
+        candidate = head(builder)
+
+        prepared = run_cli(
+            "prepare-follow-up",
+            "--run",
+            run_path,
+            "--role",
+            "tester",
+            "--agent-id",
+            tester_agent_id,
+            "--purpose",
+            "blackbox",
+        )
+        assert_status(prepared, "READY", rc=0)
+        repeated = run_cli(
+            "prepare-follow-up",
+            "--run",
+            run_path,
+            "--role",
+            "tester",
+            "--agent-id",
+            tester_agent_id,
+            "--purpose",
+            "blackbox",
+        )
+        assert_status(repeated, "NOOP", rc=0)
+        self.assertEqual(repeated.data["dispatch_id"], prepared.data["dispatch_id"])
+        pending = load_ledger(run_path)["pending_agent_turns"]["tester"]
+        self.assertEqual(pending["purpose"], "blackbox")
+
+        completed = run_cli(
+            "agent-event",
+            "--repo",
+            self.repo,
+            "--session-id",
+            "fixture-session",
+            "--role",
+            "tester",
+            "--agent-id",
+            tester_agent_id,
+            "--turn-id",
+            "tester-blackbox-follow-up",
+            "--event",
+            "idle",
+            "--result",
+            "pass",
+            env={"BUILDER_LOOP_HOOK_EVENT": "1"},
+        )
+        assert_status(completed, "READY", rc=0)
+        ledger = load_ledger(run_path)
+        self.assertEqual(ledger["agents"]["tester"]["result"], "pass")
+        self.assertEqual(
+            ledger["agents"]["tester"]["turn_id"], "tester-blackbox-follow-up"
+        )
+        self.assertEqual(
+            ledger["agents"]["tester"]["follow_up_dispatch_id"],
+            prepared.data["dispatch_id"],
+        )
+        self.assertIsNone(ledger["pending_agent_turns"]["tester"])
+
+        recorded = record_evidence(
+            run_path,
+            "e2e_verified",
+            candidate,
+            agent_id=tester_agent_id,
+        )
+        assert_status(recorded, "READY", rc=0)
+        assert_ledger_schema(run_path)
+
 
 if __name__ == "__main__":
     unittest.main()

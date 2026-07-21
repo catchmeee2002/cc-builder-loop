@@ -63,6 +63,8 @@ class HookRuntimeIntegrationTest(unittest.TestCase):
         started_ledger = load_ledger(run_path)
         self.assertEqual(started_ledger["agents"]["tester"]["event"], "start")
 
+        residue = tester / "author-residue.tmp"
+        residue.write_text("dirty\n")
         stop_output = self.call_hook(
             {
                 **base_event,
@@ -75,6 +77,46 @@ class HookRuntimeIntegrationTest(unittest.TestCase):
         self.assertNotIn("decision", stop_output, stop_output)
         idle_ledger = load_ledger(run_path)
         self.assertEqual(idle_ledger["agents"]["tester"]["result"], "tests_ready")
+        self.assertTrue(idle_ledger["agents"]["tester"]["role_dirty"])
+
+        prepared = run_cli(
+            "prepare-follow-up",
+            "--run",
+            run_path,
+            "--role",
+            "tester",
+            "--agent-id",
+            base_event["agent_id"],
+            "--purpose",
+            "author",
+        )
+        assert_status(prepared, "READY", rc=0)
+        blocked_integration = run_cli("integrate-tests", "--run", run_path)
+        assert_status(blocked_integration, "NEEDS_USER", rc=1)
+        self.assertEqual(blocked_integration.data.get("code"), "TESTER_TURN_PENDING")
+        residue.unlink()
+        follow_up_output = self.call_hook(
+            {
+                **base_event,
+                "turn_id": "tester-hook-follow-up-turn",
+                "hook_event_name": "SubagentStop",
+                "last_assistant_message": "clean correction\nTESTER_RESULT: tests_ready",
+                "stop_hook_active": False,
+            },
+            cwd=tester,
+        )
+        self.assertNotIn("systemMessage", follow_up_output, follow_up_output)
+        resumed_ledger = load_ledger(run_path)
+        self.assertEqual(
+            resumed_ledger["agents"]["tester"]["turn_id"],
+            "tester-hook-follow-up-turn",
+        )
+        self.assertFalse(resumed_ledger["agents"]["tester"]["role_dirty"])
+        self.assertEqual(
+            resumed_ledger["tester_integration"]["author_turn_id"],
+            "tester-hook-follow-up-turn",
+        )
+        self.assertIsNone(resumed_ledger["pending_agent_turns"]["tester"])
 
         root_stop = self.call_hook(
             {

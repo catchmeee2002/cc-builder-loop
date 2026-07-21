@@ -345,9 +345,46 @@ class AgentThreadResumeContractTest(unittest.TestCase):
         )
         assert_status(replay, "NOOP", rc=0)
         self.assertEqual(replay.data.get("code"), "STALE_AGENT_TURN")
+        prepared = run_cli(
+            "prepare-follow-up",
+            "--run",
+            run_path,
+            "--role",
+            "tester",
+            "--agent-id",
+            agent_id,
+            "--purpose",
+            "author",
+        )
+        assert_status(prepared, "READY", rc=0)
+        stale_prepared_terminal = run_agent_event(
+            "agent-event",
+            "--repo",
+            repo,
+            "--session-id",
+            "fixture-session",
+            "--role",
+            "tester",
+            "--agent-id",
+            agent_id,
+            "--turn-id",
+            "turn-1",
+            "--event",
+            "idle",
+            "--result",
+            "pass",
+        )
+        assert_status(stale_prepared_terminal, "NEEDS_USER", rc=1)
+        self.assertEqual(
+            stale_prepared_terminal.data.get("code"), "AGENT_TURN_MISMATCH"
+        )
         ledger = json.loads((run_path / "ledger.json").read_text())
         self.assertEqual(ledger["agents"]["tester"]["turn_id"], "turn-2")
         self.assertEqual(ledger["agents"]["tester"]["result"], "fail")
+        self.assertEqual(
+            ledger["pending_agent_turns"]["tester"]["dispatch_id"],
+            prepared.data["dispatch_id"],
+        )
 
 
 if __name__ == "__main__":

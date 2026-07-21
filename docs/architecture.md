@@ -84,9 +84,16 @@ agent/turn 身份、候选 HEAD、证据 HEAD、Git 结果和事件，不保存�
 Hook 使用 Codex 提供的 `session_id` 找到唯一 active run：
 
 - SessionStart 只注入当前 session 身份和使用提示。
-- SubagentStart/SubagentStop 只经 runtime 记录 agent 事实。每个 role 同时只允许一个 running
-  turn；terminal event 必须匹配当前 turn，已完成 turn 不能重放。新的 Tester/Reviewer turn 会先
-  清除该角色旧 evidence，避免后续 fail/findings 仍被旧 pass 覆盖。
+- `SubagentStart` 属于 subagent/thread 创建事件，不保证在同一 thread 的 follow-up turn 再次触发；
+  `SubagentStop` 才是逐 turn 事件。首次 turn 由二者直接记录。后续 turn 在根线程发送
+  `followup_task` 前，必须先经 runtime `prepare-follow-up` 写入唯一 pending turn、冻结 dispatch
+  边界事实并清除该角色旧 evidence；`SubagentStop` 用同一 agent id 和新的 turn id 原子认领该
+  pending turn。若未来原生 surface 为 follow-up 提供 start 事件，同一 pending turn也可先由 start
+  认领，再按普通 terminal event 完成。
+- 每个 role 同时只允许一个 running 或 pending turn；terminal event 必须匹配当前 turn 或唯一
+  pending follow-up，已完成 turn 不能重放。Tester author correction 在 prepare 时立即使旧
+  integration attestation 失效；Reviewer follow-up 的 prerequisite start snapshot 也在 prepare
+  时冻结，不能用完成时快照倒填。
 - Stop 仅在 run 仍为 ACTIVE 时返回 Codex 的 continuation block。Builder 通过
   `BUILDER_INPUT_REQUIRED:<run_id>` 明确进入用户等待；冲突、continuity failure、fatal、
   完成或歧义状态均允许停止并展示原因。

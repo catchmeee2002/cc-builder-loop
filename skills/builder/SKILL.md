@@ -62,6 +62,11 @@ description: 显式执行已接受的 builder-loop 方案，在隔离 worktree �
 4. spawn Tester 时传入 `phase=author`、`run_id`、`plan_path`、tester worktree、完整
    `unit-test-spec`、`e2e-cases`、`parallel_ready` 及允许查看的公开前置产物。保存返回的
    tester agent/thread id；一个 run 只 spawn 一次 Tester。
+   首次 spawn 由 `SubagentStart` 绑定 thread；此后每次调用 `followup_task` 前必须先调用
+   `prepare-follow-up --run <run> --role <role> --agent-id <id> --purpose <purpose>`。Tester 写测或
+   澄清用 `purpose=author`，黑盒复验用 `purpose=blackbox`，Reviewer 复审用
+   `purpose=review`。只有 `READY` 或同一 pending turn 的幂等 `NOOP` 才能发送 follow-up；不得
+   直接修改 ledger，也不得在 prepare 失败后继续发送。
 5. Builder 在 `ownership.builder_write` 内实现代码，并按已读取的文档政策判断、同步计划授权的
    受影响文档；首次 Reviewer 前完成。要求并行计划的 Tester 从 `spec_head`、串行计划的 Tester
    从 publication HEAD 出发并核对 manifest；两者都只在 `ownership.tester_write` 内独立写测并
@@ -70,7 +75,8 @@ description: 显式执行已接受的 builder-loop 方案，在隔离 worktree �
 6. 等待 Tester 返回；只有最后一行 `TESTER_RESULT: tests_ready` 且包含 tester commit/head、
    changed paths 和最小执行证据时才继续。
 7. Tester 报 `target_change_required` 时冻结当前 run，不修改 plan 或测试目标。主线程使用
-   `request_user_input` 提供三类选择：保持冻结目标并 follow-up 同一 Tester 澄清；abandon；或
+   `request_user_input` 提供三类选择：保持冻结目标并先以 `purpose=author` prepare、再 follow-up
+   同一 Tester 澄清；abandon；或
    修订契约。选择修订时先 `abandon --run <run>` 保留现场，再要求用户 `/plan` 生成更高
    `plan_revision` 的新方案并重新调用 `$builder`；新 run 不冒充旧 Tester thread。
 8. 对 builder 与 tester 分别执行 `role-check --run <run> --role <role>`。仅
@@ -86,15 +92,18 @@ description: 显式执行已接受的 builder-loop 方案，在隔离 worktree �
 1. 执行 `verify --run <run>`。runtime 必须在当前 candidate commit 派生的临时干净 worktree
    中运行机器判据；Builder 不在验证 worktree 中修代码或保留运行产物。
 2. `status=FAIL` 时读取返回的 `stage` 与 `log_path`，按 ownership 路由：Builder-owned
-   实现/文档错误由 Builder 修；冻结目标不变的 Tester-owned 测试或测试支持实现错误，follow-up
-   同一 Tester 进入 author correction，返回新的 `tests_ready` 后重新 role-check 和
+   实现/文档错误由 Builder 修；冻结目标不变的 Tester-owned 测试或测试支持实现错误，先以
+   `purpose=author` prepare，再 follow-up 同一 Tester 进入 author correction，返回新的
+   `tests_ready` 后重新 role-check 和
    `integrate-tests`；需要改变测试目标、ownership 或验收标准时 abandon/new plan。不得让
    Builder 越界修改测试或受保护 runner 控制文件。修复后再重跑。
    返回 `iteration_limit_reached=true` 时停止当前 frozen run，不继续调用 verify。使用选项卡让
    用户选择 abandon，或先 abandon 保留现场、再 `/plan` 提升 `plan_revision` 并重新调用
    `$builder`；不得在同一 run 内重置计数或批准修订。
 3. `status=FATAL` 时停止；不要把“判据未执行”当作测试失败，更不要返回 PASS。
-4. `status=PASS` 后 follow-up 同一个 tester thread，传入 `phase=blackbox`、集成 HEAD、
+4. `status=PASS` 后先执行
+   `prepare-follow-up --run <run> --role tester --agent-id <tester_id> --purpose blackbox`，再
+   follow-up 同一个 tester thread，传入 `phase=blackbox`、集成 HEAD、
    `candidate_worktree` 的绝对路径、runner 和公开黑盒入口。所有非 L1 run 都必须执行本步骤；
    禁止 spawn 新 Tester。
 5. 要求 Tester 先在 `candidate_worktree` 执行 `git rev-parse HEAD` 并核对 integrated HEAD，
@@ -103,8 +112,9 @@ description: 显式执行已接受的 builder-loop 方案，在隔离 worktree �
    产生的 tracked/untracked/ignored residue，并同时核对普通 status 与 ignored files 均为空。
    返回实际 command、数值 returncode、执行前后 HEAD、worktree 路径和 `candidate_dirty=false`。
 6. Tester 报 FAIL 且可重放公开行为确为产品实现错误时由 Builder 修实现，重新 `role-check`
-   和 `verify`，再 follow-up 同一 Tester；若失败来自 Tester 的执行方法或测试支持实现，则回到
-   同一 Tester correction，不让 Builder 修改 tester-owned 内容。
+   和 `verify`，再以 `purpose=blackbox` prepare 并 follow-up 同一 Tester；若失败来自 Tester 的
+   执行方法或测试支持实现，则仍以 `purpose=blackbox` prepare 后续接同一 Tester，不让 Builder
+   修改 tester-owned 内容。
 7. Tester 提议改变测试目标、ownership 或验收标准时，执行上一节的 frozen-run 协议；即使
    用户选择修订，也不得在当前 run 更新测试。新方案必须进入新 run。
 8. 只有同一 Tester thread 返回 `TESTER_RESULT: pass` 后，才对当前 integrated HEAD 执行
@@ -126,7 +136,9 @@ description: 显式执行已接受的 builder-loop 方案，在隔离 worktree �
    文档政策审计。等待最后一行 `REVIEW_RESULT`。
 3. Reviewer 有 actionable findings 且冻结契约不变时，按 ownership 路由：Builder-owned
    实现/文档由 Builder 修；Tester-owned 测试实现或测试支持由同一 Tester author correction
-   修正、重新 `tests_ready` 并集成。随后 follow-up 同一 Reviewer thread 复审，不新建 reviewer。
+   修正、重新 `tests_ready` 并集成。随后执行
+   `prepare-follow-up --run <run> --role reviewer --agent-id <reviewer_id> --purpose review`，再
+   follow-up 同一 Reviewer thread 复审，不新建 reviewer。
    非 L1 必须重新 `role-check`、`verify` 和 tester blackbox；L1 只重新执行 builder
    role-check，不为通过门禁临时添加虚假测试。
    finding 需要改变测试目标、ownership 或验收标准时，先 abandon，再进入新 plan/new run。

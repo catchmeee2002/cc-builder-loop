@@ -131,17 +131,31 @@ class ReviewerPrerequisiteOrderTest(unittest.TestCase):
             stale_pass.data.get("code"), "REVIEW_PREREQUISITES_NOT_BOUND"
         )
 
-        for event, result in (("start", None), ("idle", "pass")):
-            rereviewed = agent_event(
-                run_path,
-                role="reviewer",
-                agent_id=reviewer_agent_id,
-                turn_id="review-turn-after-gates",
-                event=event,
-                result=result,
-            )
-            assert_status(rereviewed, "READY", rc=0)
+        prepared = run_cli(
+            "prepare-follow-up",
+            "--run",
+            run_path,
+            "--role",
+            "reviewer",
+            "--agent-id",
+            reviewer_agent_id,
+            "--purpose",
+            "review",
+        )
+        assert_status(prepared, "READY", rc=0)
+        rereviewed = agent_event(
+            run_path,
+            role="reviewer",
+            agent_id=reviewer_agent_id,
+            turn_id="review-turn-after-gates",
+            event="idle",
+            result="pass",
+        )
+        assert_status(rereviewed, "READY", rc=0)
         self.assertTrue(rereviewed.data["review_prerequisites"]["bound"])
+        self.assertEqual(
+            rereviewed.data["follow_up_dispatch_id"], prepared.data["dispatch_id"]
+        )
         record_evidence(
             run_path, "reviewed", candidate, agent_id=reviewer_agent_id
         )

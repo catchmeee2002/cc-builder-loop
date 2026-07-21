@@ -16,6 +16,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import uuid
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, Iterator, Sequence
 
@@ -47,6 +48,10 @@ PUBLIC_EVIDENCE_FIELDS = {
 AGENT_RESULTS = {
     "tester": {"tests_ready", "pass", "fail", "target_change_required", "blocked"},
     "reviewer": {"pass", "findings", "blocked"},
+}
+FOLLOW_UP_PURPOSES = {
+    "tester": {"author", "blackbox"},
+    "reviewer": {"review"},
 }
 PROTECTED_RUNTIME_PATHS = {".claude/loop.yml"}
 RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
@@ -412,7 +417,13 @@ def invalidate_evidence(ledger: dict[str, Any], previous_head: str, current_head
     )
 
 
-def invalidate_role_evidence(ledger: dict[str, Any], role: str, turn_id: str) -> None:
+def invalidate_role_evidence(
+    ledger: dict[str, Any],
+    role: str,
+    *,
+    turn_id: str | None = None,
+    dispatch_id: str | None = None,
+) -> None:
     fields = {
         "tester": ("e2e_verified_head",),
         "reviewer": ("reviewed_head", "doc_reviewed_head"),
@@ -422,11 +433,12 @@ def invalidate_role_evidence(ledger: dict[str, Any], role: str, turn_id: str) ->
         return
     for field in fields:
         ledger[field] = None
-    append_event(
-        ledger,
-        "agent_evidence_invalidated",
-        {"role": role, "turn_id": turn_id, "cleared": cleared},
-    )
+    facts: dict[str, Any] = {"role": role, "cleared": cleared}
+    if turn_id is not None:
+        facts["turn_id"] = turn_id
+    if dispatch_id is not None:
+        facts["dispatch_id"] = dispatch_id
+    append_event(ledger, "agent_evidence_invalidated", facts)
 
 
 def reject_during_finalize_intent(ledger: dict[str, Any], operation: str) -> None:
@@ -3219,6 +3231,10 @@ def cmd_start_locked(args: argparse.Namespace, repo: Path) -> tuple[dict[str, An
             "tester": None,
             "reviewer": None,
         },
+        "pending_agent_turns": {
+            "tester": None,
+            "reviewer": None,
+        },
         "completed_agent_turns": {
             "tester": [],
             "reviewer": [],
@@ -3866,6 +3882,13 @@ def cmd_record_evidence(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
             "reviewed": "reviewer",
             "doc_reviewed": "reviewer",
         }[args.kind]
+        pending_role_turn = ledger.get("pending_agent_turns", {}).get(required_role)
+        if isinstance(pending_role_turn, dict):
+            raise RuntimeProblem(
+                f"{args.kind} cannot be recorded while a {required_role} follow-up is pending",
+                code="EVIDENCE_ROLE_TURN_PENDING",
+                details={"required_role": required_role, "pending": pending_role_turn},
+            )
         value = ledger.get("agents", {}).get(required_role)
         if not isinstance(value, dict) or value.get("event") != "idle":
             raise RuntimeProblem(
@@ -3988,6 +4011,153 @@ def cmd_record_evidence(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         }, EXIT_PASS
 
 
+def cmd_prepare_follow_up(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
+    repo, run_id, _ = resolve_run_selector(args.repo, args.run)
+    role = str(args.role)
+    purpose = str(args.purpose)
+    if purpose not in FOLLOW_UP_PURPOSES[role]:
+        raise RuntimeProblem(
+            "follow-up purpose is not valid for this role",
+            code="AGENT_FOLLOW_UP_PURPOSE_INVALID",
+            details={"role": role, "purpose": purpose},
+        )
+    with locked_run(repo, run_id) as ledger:
+        reject_during_finalize_intent(ledger, "prepare-follow-up")
+        verify_plan_unchanged(ledger)
+        if ledger.get("phase") != "active":
+            raise RuntimeProblem(
+                "agent follow-up can only be prepared for an active run",
+                result="NEEDS_USER",
+                code="PHASE_NOT_ACTIVE",
+                details={"phase": ledger.get("phase")},
+                exit_code=EXIT_FAIL,
+            )
+        current = ledger.setdefault("agents", {}).get(role)
+        if not isinstance(current, dict) or current.get("event") != "idle":
+            raise RuntimeProblem(
+                "agent follow-up requires a completed role turn",
+                result="NEEDS_USER",
+                code="AGENT_FOLLOW_UP_ROLE_NOT_IDLE",
+                details={"role": role, "current": current},
+                exit_code=EXIT_FAIL,
+            )
+        if current.get("agent_id") != args.agent_id:
+            raise RuntimeProblem(
+                "agent follow-up must resume the existing role thread",
+                result="NEEDS_USER",
+                code="ROLE_AGENT_CONFLICT",
+                details={
+                    "role": role,
+                    "current_agent_id": current.get("agent_id"),
+                    "incoming_agent_id": args.agent_id,
+                },
+                exit_code=EXIT_FAIL,
+            )
+        pending_turns = ledger.setdefault(
+            "pending_agent_turns", {"tester": None, "reviewer": None}
+        )
+        existing = pending_turns.get(role)
+        if isinstance(existing, dict):
+            if (
+                existing.get("agent_id") == args.agent_id
+                and existing.get("purpose") == purpose
+                and existing.get("previous_turn_id") == current.get("turn_id")
+            ):
+                return {
+                    "status": "NOOP",
+                    "message": "the same agent follow-up is already prepared",
+                    "run_id": run_id,
+                    "role": role,
+                    **existing,
+                }, EXIT_PASS
+            raise RuntimeProblem(
+                "another agent follow-up is already pending for this role",
+                result="NEEDS_USER",
+                code="AGENT_FOLLOW_UP_ALREADY_PENDING",
+                details={"role": role, "pending": existing},
+                exit_code=EXIT_FAIL,
+            )
+
+        builder = Path(str(ledger["worktrees"]["builder"]["path"]))
+        role_worktree = (
+            Path(str(ledger["worktrees"]["tester"]["path"]))
+            if role == "tester"
+            else builder
+        )
+        candidate_head = full_head(builder)
+        candidate_dirty = bool(worktree_residue(builder))
+        if purpose == "blackbox":
+            integration = ledger.get("tester_integration", {})
+            if (
+                candidate_dirty
+                or integration.get("completed") is not True
+                or ledger.get("verified_head") != candidate_head
+            ):
+                raise RuntimeProblem(
+                    "Tester blackbox follow-up requires integrated tests and a verified clean candidate",
+                    result="NEEDS_USER",
+                    code="TESTER_BLACKBOX_PREREQUISITES_MISSING",
+                    details={
+                        "candidate_head": candidate_head,
+                        "candidate_dirty": candidate_dirty,
+                        "tester_integration_completed": integration.get("completed"),
+                        "verified_head": ledger.get("verified_head"),
+                    },
+                    exit_code=EXIT_FAIL,
+                )
+
+        review_start: dict[str, Any] | None = None
+        if role == "reviewer":
+            review_start = reviewer_prerequisite_snapshot(
+                repo,
+                ledger,
+                candidate_head=candidate_head,
+                candidate_dirty=candidate_dirty,
+            )
+            if review_start.get("satisfied") is not True:
+                raise RuntimeProblem(
+                    "Reviewer follow-up prerequisites are not bound to the live candidate",
+                    result="NEEDS_USER",
+                    code="REVIEW_PREREQUISITES_NOT_BOUND",
+                    details={"review_prerequisites": review_start},
+                    exit_code=EXIT_FAIL,
+                )
+
+        dispatch_id = uuid.uuid4().hex
+        invalidate_role_evidence(ledger, role, dispatch_id=dispatch_id)
+        if role == "tester" and purpose == "author":
+            ledger["tester_integration"]["completed"] = False
+        prepared = {
+            "dispatch_id": dispatch_id,
+            "agent_id": str(args.agent_id),
+            "purpose": purpose,
+            "previous_turn_id": str(current["turn_id"]),
+            "candidate_head": candidate_head,
+            "candidate_dirty": candidate_dirty,
+            "role_head": full_head(role_worktree),
+            "role_dirty": bool(worktree_residue(role_worktree)),
+            "prerequisite_manifest_sha256": ledger.get(
+                "prerequisite_publication", {}
+            ).get("manifest_sha256"),
+            "review_prerequisites_start": review_start,
+            "prepared_at": utc_now(),
+        }
+        pending_turns[role] = prepared
+        append_event(
+            ledger,
+            "agent_follow_up_prepared",
+            {"role": role, **prepared},
+        )
+        save_ledger(repo, ledger)
+        return {
+            "status": "READY",
+            "message": "agent follow-up prepared and previous role evidence invalidated",
+            "run_id": run_id,
+            "role": role,
+            **prepared,
+        }, EXIT_PASS
+
+
 def cmd_agent_event(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
     if os.environ.get("BUILDER_LOOP_HOOK_EVENT") != "1":
         raise RuntimeProblem(
@@ -4038,6 +4208,10 @@ def cmd_agent_event(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         completed_turns = ledger.setdefault("completed_agent_turns", {}).setdefault(
             args.role, []
         )
+        pending_turns = ledger.setdefault(
+            "pending_agent_turns", {"tester": None, "reviewer": None}
+        )
+        pending = pending_turns.get(args.role)
         if ledger.get("phase") == "continuity_failure":
             raise RuntimeProblem(
                 "run already lost agent or target continuity",
@@ -4122,6 +4296,18 @@ def cmd_agent_event(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                 details={"role": args.role, "agent_id": args.agent_id},
                 exit_code=EXIT_FAIL,
             )
+        prepared_same_agent = bool(
+            isinstance(pending, dict)
+            and current is not None
+            and current.get("event") == "idle"
+            and current.get("agent_id") == args.agent_id
+            and pending.get("agent_id") == args.agent_id
+            and pending.get("previous_turn_id") == current.get("turn_id")
+            and turn_id != current.get("turn_id")
+            and turn_id not in completed_turns
+        )
+        prepared_start = prepared_same_agent and args.event == "start"
+        prepared_terminal = prepared_same_agent and args.event in {"idle", "closed"}
         if args.event == "start" and turn_id in completed_turns:
             return {
                 "status": "NOOP",
@@ -4197,7 +4383,7 @@ def cmd_agent_event(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                 "agent_id": args.agent_id,
                 "event": args.event,
             }, EXIT_PASS
-        if args.event in {"idle", "closed"} and (
+        if args.event in {"idle", "closed"} and not prepared_terminal and (
             current.get("event") != "start" or current.get("turn_id") != turn_id
         ):
             raise RuntimeProblem(
@@ -4207,8 +4393,10 @@ def cmd_agent_event(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                 details={"role": args.role, "current": current, "incoming_turn_id": turn_id},
                 exit_code=EXIT_FAIL,
             )
-        if args.event == "start" or result_value != "pass":
-            invalidate_role_evidence(ledger, args.role, turn_id)
+        if not (prepared_start or prepared_terminal) and (
+            args.event == "start" or result_value != "pass"
+        ):
+            invalidate_role_evidence(ledger, args.role, turn_id=turn_id)
         builder = Path(str(ledger["worktrees"]["builder"]["path"]))
         role_worktree = (
             Path(str(ledger["worktrees"]["tester"]["path"]))
@@ -4217,6 +4405,14 @@ def cmd_agent_event(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         )
         candidate_head = full_head(builder)
         candidate_dirty = bool(worktree_residue(builder))
+        follow_up_dispatch_id: str | None = None
+        follow_up_purpose: str | None = None
+        if prepared_start or prepared_terminal:
+            follow_up_dispatch_id = str(pending["dispatch_id"])
+            follow_up_purpose = str(pending["purpose"])
+        elif current is not None and args.event in {"idle", "closed"}:
+            follow_up_dispatch_id = current.get("follow_up_dispatch_id")
+            follow_up_purpose = current.get("follow_up_purpose")
         review_prerequisites: dict[str, Any] | None = None
         if args.role == "reviewer":
             snapshot = reviewer_prerequisite_snapshot(
@@ -4226,15 +4422,22 @@ def cmd_agent_event(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                 candidate_dirty=candidate_dirty,
             )
             if args.event == "start":
-                start_snapshot: Any = snapshot
+                start_snapshot: Any = (
+                    pending.get("review_prerequisites_start")
+                    if prepared_start
+                    else snapshot
+                )
                 completion_snapshot: Any = None
             else:
-                previous_binding = current.get("review_prerequisites", {})
-                start_snapshot = (
-                    previous_binding.get("start")
-                    if isinstance(previous_binding, dict)
-                    else None
-                )
+                if prepared_terminal:
+                    start_snapshot = pending.get("review_prerequisites_start")
+                else:
+                    previous_binding = current.get("review_prerequisites", {})
+                    start_snapshot = (
+                        previous_binding.get("start")
+                        if isinstance(previous_binding, dict)
+                        else None
+                    )
                 completion_snapshot = snapshot
             review_prerequisites = {
                 "start": start_snapshot,
@@ -4263,9 +4466,13 @@ def cmd_agent_event(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                 "prerequisite_publication", {}
             ).get("manifest_sha256"),
             "review_prerequisites": review_prerequisites,
+            "follow_up_dispatch_id": follow_up_dispatch_id,
+            "follow_up_purpose": follow_up_purpose,
             "at": utc_now(),
         }
         ledger["agents"][args.role] = fact
+        if prepared_start or prepared_terminal:
+            pending_turns[args.role] = None
         if args.role == "tester" and args.event == "idle" and result_value == "tests_ready":
             integration = ledger["tester_integration"]
             integration["author_agent_id"] = args.agent_id
@@ -4404,6 +4611,15 @@ def cmd_integrate_tests(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         reject_during_finalize_intent(ledger, "integrate-tests")
         verify_plan_unchanged(ledger)
         tester = Path(str(ledger["worktrees"]["tester"]["path"]))
+        pending_tester_turn = ledger.get("pending_agent_turns", {}).get("tester")
+        if isinstance(pending_tester_turn, dict):
+            raise RuntimeProblem(
+                "test integration cannot use an author result while a Tester follow-up is pending",
+                result="NEEDS_USER",
+                code="TESTER_TURN_PENDING",
+                details={"pending": pending_tester_turn},
+                exit_code=EXIT_FAIL,
+            )
         tester_agent = ledger.get("agents", {}).get("tester")
         if (
             not isinstance(tester_agent, dict)
@@ -5888,6 +6104,18 @@ def build_parser() -> argparse.ArgumentParser:
     evidence.add_argument("--agent-id", required=True)
     evidence.add_argument("--details")
     evidence.set_defaults(handler=cmd_record_evidence)
+
+    prepare_follow_up = subparsers.add_parser("prepare-follow-up")
+    prepare_follow_up.add_argument("--repo", default=".")
+    prepare_follow_up.add_argument("--run", required=True)
+    prepare_follow_up.add_argument(
+        "--role", choices=["tester", "reviewer"], required=True
+    )
+    prepare_follow_up.add_argument("--agent-id", required=True)
+    prepare_follow_up.add_argument(
+        "--purpose", choices=["author", "blackbox", "review"], required=True
+    )
+    prepare_follow_up.set_defaults(handler=cmd_prepare_follow_up)
 
     agent_event = subparsers.add_parser("agent-event")
     agent_event.add_argument("--repo", default=".")
