@@ -22,6 +22,7 @@ from typing import Any, Iterable, Iterator, Sequence
 
 
 SCHEMA_VERSION = 1
+PLAN_SCHEMA_VERSION = 2
 EXIT_PASS = 0
 EXIT_FAIL = 1
 EXIT_FATAL = 2
@@ -95,6 +96,7 @@ class CommandResult:
 class PlanContract:
     source: str
     sha256: str
+    schema_version: int
     level: str
     spec_head: str | None
     plan_revision: int | None
@@ -114,6 +116,18 @@ class PlanContract:
 
     def as_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)
+
+
+@dataclasses.dataclass(frozen=True)
+class PlanPreflight:
+    spec_head: str
+    target_branch: str
+    target_start_head: str
+    commands: tuple[dict[str, Any], ...]
+    loop_config_sha256: str
+    effective_verification_source: str
+    max_iterations: int
+    runner_paths: tuple[str, ...]
 
 
 def utc_now() -> str:
@@ -224,7 +238,7 @@ def current_branch(repo: Path) -> str:
     result = git(repo, "symbolic-ref", "--quiet", "--short", "HEAD", check=False)
     if result.returncode != 0 or not result.stdout.strip():
         raise RuntimeProblem(
-            "start must run from a named branch",
+            "repository preflight requires a named target branch",
             code="DETACHED_HEAD",
         )
     return result.stdout.strip()
@@ -938,6 +952,23 @@ def is_template_placeholder(value: Any) -> bool:
     return isinstance(value, str) and bool(re.fullmatch(r"\s*<[^>]+>\s*", value))
 
 
+def require_plan_schema(parsed: dict[str, Any], contract_name: str) -> int:
+    raw = parsed.get("schema_version")
+    if type(raw) is not int or raw != PLAN_SCHEMA_VERSION:
+        raise RuntimeProblem(
+            f"{contract_name} schema_version is unsupported",
+            result="NEEDS_USER",
+            code="PLAN_SCHEMA_UNSUPPORTED",
+            details={
+                "contract": contract_name,
+                "schema_version": raw,
+                "supported_schema_versions": [PLAN_SCHEMA_VERSION],
+            },
+            exit_code=EXIT_FAIL,
+        )
+    return raw
+
+
 def parse_plan(text: str, source: str) -> PlanContract:
     checklist = extract_tag(text, "plan-checklist", required=True)
     items = checklist_items(checklist or "")
@@ -977,8 +1008,7 @@ def parse_plan(text: str, source: str) -> PlanContract:
                 code="PLAN_DOCUMENTATION_SPEC_INVALID",
                 details={"errors": ["documentation-spec"]},
             )
-        if type(parsed_doc.get("schema_version")) is not int or parsed_doc.get("schema_version") != 1:
-            errors.append("schema_version must equal 1")
+        schema_version = require_plan_schema(parsed_doc, "documentation-spec")
         spec_head = str(parsed_doc.get("spec_head", "")).strip()
         if not re.fullmatch(r"[0-9a-fA-F]{40}", spec_head):
             errors.append("spec_head must be a full 40-character commit SHA")
@@ -1028,6 +1058,7 @@ def parse_plan(text: str, source: str) -> PlanContract:
         return PlanContract(
             source=source,
             sha256=sha256_text(text),
+            schema_version=schema_version,
             level="L1",
             spec_head=spec_head.lower(),
             plan_revision=plan_revision,
@@ -1062,9 +1093,8 @@ def parse_plan(text: str, source: str) -> PlanContract:
             code="PLAN_UNIT_SPEC_INVALID",
             details={"errors": ["unit-test-spec"]},
         )
+    schema_version = require_plan_schema(parsed, "unit-test-spec")
     errors: list[str] = []
-    if type(parsed.get("schema_version")) is not int or parsed.get("schema_version") != 1:
-        errors.append("schema_version must equal 1")
     spec_head = str(parsed.get("spec_head", "")).strip()
     if not re.fullmatch(r"[0-9a-fA-F]{40}", spec_head):
         errors.append("spec_head must be a full 40-character commit SHA")
@@ -1158,17 +1188,15 @@ def parse_plan(text: str, source: str) -> PlanContract:
         errors.append("parallel plans cannot declare public prerequisites")
     if any(is_template_placeholder(item) for item in public_prerequisites_raw):
         errors.append("test_context.public_prerequisites contains an unresolved placeholder")
-    runner_raw = test_context.get("runner")
-    runner = runner_raw.strip() if isinstance(runner_raw, str) else ""
-    if not runner:
-        errors.append("test_context.runner is required")
-    elif is_template_placeholder(runner):
-        errors.append("test_context.runner contains an unresolved placeholder")
-    else:
-        try:
-            reject_tautological_command(runner)
-        except RuntimeProblem as exc:
-            errors.append(str(exc))
+    runner: str | None = None
+    if "runner" in test_context:
+        runner_raw = test_context.get("runner")
+        runner = runner_raw.strip() if isinstance(runner_raw, str) else ""
+        if not runner:
+            errors.append("test_context.runner must be a non-empty string when declared")
+            runner = None
+        elif is_template_placeholder(runner):
+            errors.append("test_context.runner contains an unresolved placeholder")
 
     ownership = parsed.get("ownership")
     if not isinstance(ownership, dict):
@@ -1235,27 +1263,6 @@ def parse_plan(text: str, source: str) -> PlanContract:
             "builder ownership overlaps test support paths: "
             + ", ".join(protected_support_overlap)
         )
-    if runner:
-        try:
-            runner_paths = runner_repository_paths(runner)
-        except RuntimeProblem as exc:
-            errors.append(str(exc))
-            runner_paths = []
-        for runner_path in runner_paths:
-            if not path_allowed(runner_path, support_paths):
-                errors.append(
-                    "runner repository script is missing from test_context.support_paths: "
-                    + runner_path
-                )
-            if path_allowed(runner_path, builder_write):
-                errors.append("verification runner script is builder-owned: " + runner_path)
-            if path_allowed(runner_path, tester_write):
-                errors.append("verification runner script is tester-owned: " + runner_path)
-        for control_path in runner_control_paths(runner):
-            if any(patterns_overlap(pattern, control_path) for pattern in builder_write):
-                errors.append("verification control file is builder-owned: " + control_path)
-            if any(patterns_overlap(pattern, control_path) for pattern in tester_write):
-                errors.append("verification control file is tester-owned: " + control_path)
     for directory in target_dirs:
         probe = directory[:-3].rstrip("/") + "/__probe__.test" if directory.endswith("/**") else directory
         if not any(path_allowed(probe, [pattern]) for pattern in tester_write):
@@ -1312,6 +1319,7 @@ def parse_plan(text: str, source: str) -> PlanContract:
     return PlanContract(
         source=source,
         sha256=sha256_text(text),
+        schema_version=schema_version,
         level="L2/L3",
         spec_head=spec_head.lower(),
         plan_revision=int(plan_revision),
@@ -1623,10 +1631,34 @@ def load_verification_commands(
         return [], sha256_text("L1:no-machine-runner"), "none", 5
     exists = git(repo, "cat-file", "-e", f"{spec_head}:.claude/loop.yml", check=False)
     if exists.returncode == 0:
-        commands, config_sha, max_iterations = load_loop_config(repo, spec_head)
+        if contract.runner is not None:
+            raise RuntimeProblem(
+                "v2 plans cannot declare test_context.runner when .claude/loop.yml exists at spec_head",
+                result="NEEDS_USER",
+                code="PLAN_RUNNER_DUPLICATE_SOURCE",
+                details={
+                    "spec_head": spec_head,
+                    "repository_source": ".claude/loop.yml",
+                    "plan_source": "test_context.runner",
+                },
+                exit_code=EXIT_FAIL,
+            )
+        try:
+            commands, config_sha, max_iterations = load_loop_config(repo, spec_head)
+        except RuntimeProblem as exc:
+            exc.details.setdefault(
+                "effective_verification_source", ".claude/loop.yml"
+            )
+            raise
         return commands, config_sha, ".claude/loop.yml", max_iterations
     if contract.runner:
-        reject_tautological_command(contract.runner)
+        try:
+            reject_tautological_command(contract.runner)
+        except RuntimeProblem as exc:
+            exc.details.setdefault(
+                "effective_verification_source", "plan:test_context.runner"
+            )
+            raise
         return (
             [{"stage": "plan-runner", "cmd": contract.runner, "timeout": 1800}],
             sha256_text(contract.runner),
@@ -1634,8 +1666,11 @@ def load_verification_commands(
             5,
         )
     raise RuntimeProblem(
-        "no .claude/loop.yml at spec_head and plan has no runner",
+        "v2 plans must declare test_context.runner when .claude/loop.yml is absent at spec_head",
+        result="NEEDS_USER",
         code="VERIFICATION_RUNNER_MISSING",
+        details={"spec_head": spec_head},
+        exit_code=EXIT_FAIL,
     )
 
 
@@ -2971,13 +3006,21 @@ def status_facts(repo: Path, ledger: dict[str, Any]) -> dict[str, Any]:
 
 
 def cmd_plan_validate(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
+    repo = resolve_repo(args.repo)
     text, source, _ = read_plan_source(args.plan)
     contract = parse_plan(text, source)
+    preflight = preflight_plan(
+        repo,
+        contract,
+        target_branch=args.target_branch,
+    )
     return {
         "status": "READY",
-        "message": "plan contract is valid",
-        "spec_head": contract.spec_head,
+        "message": "plan contract and repository preflight are valid",
+        "spec_head": preflight.spec_head,
+        "target_branch": preflight.target_branch,
         "parallel_ready": contract.parallel_ready,
+        "effective_verification_source": preflight.effective_verification_source,
         "contract": contract.as_dict(),
     }, EXIT_PASS
 
@@ -3045,6 +3088,62 @@ def validate_supersession(repo: Path, contract: PlanContract) -> None:
         )
 
 
+def preflight_plan(
+    repo: Path,
+    contract: PlanContract,
+    *,
+    target_branch: str | None = None,
+    explicit_spec_head: str | None = None,
+) -> PlanPreflight:
+    validate_supersession(repo, contract)
+    contract_spec_head = contract.spec_head or full_head(repo, "HEAD")
+    if explicit_spec_head:
+        resolved_explicit_head = full_head(repo, explicit_spec_head)
+        if resolved_explicit_head != contract_spec_head:
+            raise RuntimeProblem(
+                "explicit --spec-head does not match plan spec_head",
+                result="NEEDS_USER",
+                code="SPEC_HEAD_MISMATCH",
+                details={
+                    "plan_spec_head": contract_spec_head,
+                    "explicit_spec_head": resolved_explicit_head,
+                },
+                exit_code=EXIT_FAIL,
+            )
+    spec_head = full_head(repo, contract_spec_head)
+    resolved_target_branch = target_branch or current_branch(repo)
+    target_start_head = branch_head(repo, resolved_target_branch)
+    if target_start_head != spec_head:
+        raise RuntimeProblem(
+            "plan spec_head is stale relative to target branch",
+            result="NEEDS_USER",
+            code="TARGET_SPEC_MISMATCH",
+            details={"target_head": target_start_head, "spec_head": spec_head},
+            exit_code=EXIT_FAIL,
+        )
+    commands, config_sha256, verification_source, max_iterations = (
+        load_verification_commands(repo, spec_head, contract)
+    )
+    try:
+        validate_runner_ownership(contract, commands)
+        validate_runner_dependencies_at_spec_head(repo, spec_head, commands)
+    except RuntimeProblem as exc:
+        exc.details.setdefault(
+            "effective_verification_source", verification_source
+        )
+        raise
+    return PlanPreflight(
+        spec_head=spec_head,
+        target_branch=resolved_target_branch,
+        target_start_head=target_start_head,
+        commands=tuple(commands),
+        loop_config_sha256=config_sha256,
+        effective_verification_source=verification_source,
+        max_iterations=max_iterations,
+        runner_paths=tuple(verification_protected_paths(commands)),
+    )
+
+
 def cmd_start(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
     repo = resolve_repo(args.repo)
     with locked_repository_state(repo):
@@ -3088,36 +3187,20 @@ def cmd_start_locked(args: argparse.Namespace, repo: Path) -> tuple[dict[str, An
             code="SESSION_ALREADY_ACTIVE",
             details={"run_ids": [item[1]["run_id"] for item in same_session]},
         )
-    validate_supersession(repo, source_contract)
-
-    contract_spec_head = source_contract.spec_head
-    if contract_spec_head is None:
-        contract_spec_head = full_head(repo, "HEAD")
-    if args.spec_head:
-        explicit_spec_head = full_head(repo, args.spec_head)
-        if explicit_spec_head != contract_spec_head:
-            raise RuntimeProblem(
-                "explicit --spec-head does not match plan spec_head",
-                result="NEEDS_USER",
-                code="SPEC_HEAD_MISMATCH",
-                details={"plan_spec_head": contract_spec_head, "explicit_spec_head": explicit_spec_head},
-            )
-    spec_head = full_head(repo, contract_spec_head)
-    target_branch = args.target_branch or current_branch(repo)
-    target_start_head = branch_head(repo, target_branch)
-    if target_start_head != spec_head:
-        raise RuntimeProblem(
-            "plan spec_head is stale relative to target branch",
-            result="NEEDS_USER",
-            code="TARGET_SPEC_MISMATCH",
-            details={"target_head": target_start_head, "spec_head": spec_head},
-        )
-    commands, loop_config_sha256, loop_config_source, max_iterations = load_verification_commands(
-        repo, spec_head, source_contract
+    preflight = preflight_plan(
+        repo,
+        source_contract,
+        target_branch=args.target_branch,
+        explicit_spec_head=args.spec_head,
     )
-    validate_runner_ownership(source_contract, commands)
-    validate_runner_dependencies_at_spec_head(repo, spec_head, commands)
-    runner_paths = verification_protected_paths(commands)
+    spec_head = preflight.spec_head
+    target_branch = preflight.target_branch
+    target_start_head = preflight.target_start_head
+    commands = list(preflight.commands)
+    loop_config_sha256 = preflight.loop_config_sha256
+    loop_config_source = preflight.effective_verification_source
+    max_iterations = preflight.max_iterations
+    runner_paths = list(preflight.runner_paths)
     add_info_exclude(repo)
 
     root = state_root(repo)
@@ -6078,6 +6161,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     plan = subparsers.add_parser("plan-validate")
+    plan.add_argument("--repo", default=".", help="target Git repository")
+    plan.add_argument(
+        "--target-branch",
+        help="target branch; defaults to the repository's current branch",
+    )
     plan.add_argument("--plan", help="Markdown plan path; omit or use - to read stdin")
     plan.set_defaults(handler=cmd_plan_validate)
 

@@ -165,6 +165,109 @@ class StartContractTest(unittest.TestCase):
         self.assertEqual(result.data.get("code"), "CLI_USAGE_ERROR")
         self.assertIsInstance(result.data.get("message"), str)
 
+    def test_v1_plan_is_rejected_before_run_creation(self) -> None:
+        text = plan_markdown(head(self.repo)).replace(
+            "schema_version: 2", "schema_version: 1"
+        )
+        plan = write_plan(self.repo, text, name="v1-plan.md")
+
+        result = run_cli(
+            "start",
+            "--repo",
+            self.repo,
+            "--plan",
+            plan,
+            "--run",
+            "unsupported-v1",
+            "--session-id",
+            "unsupported-v1-session",
+        )
+
+        assert_status(result, "NEEDS_USER", rc=1)
+        self.assertEqual(result.data.get("code"), "PLAN_SCHEMA_UNSUPPORTED")
+        self.assertFalse((self.repo / ".builder-loop").exists())
+        self.assertEqual(
+            git(self.repo, "worktree", "list", "--porcelain").count("worktree "),
+            1,
+        )
+
+    def test_repository_verification_source_is_recorded_without_plan_runner(self) -> None:
+        loop_config = self.repo / ".claude" / "loop.yml"
+        loop_config.parent.mkdir(parents=True, exist_ok=True)
+        loop_config.write_text(
+            "pass_cmd:\n"
+            "  - stage: test\n"
+            "    cmd: bash verify.sh\n"
+            "    timeout: 30\n"
+        )
+        commit_all(self.repo, "add repository verification source")
+        plan = write_plan(
+            self.repo,
+            plan_markdown(head(self.repo), runner=None),
+            name="repository-runner-plan.md",
+        )
+
+        result = run_cli(
+            "start",
+            "--repo",
+            self.repo,
+            "--plan",
+            plan,
+            "--run",
+            "repository-runner",
+            "--session-id",
+            "repository-runner-session",
+        )
+
+        assert_status(result, "READY", rc=0)
+        ledger = load_ledger(Path(result.data["run_path"]))
+        self.assertIsNone(ledger["plan"]["runner"])
+        self.assertEqual(ledger["loop_config"]["path"], ".claude/loop.yml")
+
+    def test_plan_validate_and_start_reject_same_repository_runner(self) -> None:
+        loop_config = self.repo / ".claude" / "loop.yml"
+        loop_config.parent.mkdir(parents=True, exist_ok=True)
+        loop_config.write_text(
+            "pass_cmd:\n"
+            "  - stage: import\n"
+            "    cmd: python3 -c 'import app'\n"
+        )
+        commit_all(self.repo, "add unsupported inline repository runner")
+        plan = write_plan(
+            self.repo,
+            plan_markdown(head(self.repo), runner=None),
+            name="inline-repository-runner.md",
+        )
+        validated = run_cli(
+            "plan-validate", "--repo", self.repo, "--plan", plan
+        )
+        started = run_cli(
+            "start",
+            "--repo",
+            self.repo,
+            "--plan",
+            plan,
+            "--run",
+            "inline-repository-runner",
+            "--session-id",
+            "inline-repository-runner-session",
+        )
+
+        for result in (validated, started):
+            assert_status(result, "FATAL", rc=2)
+            self.assertEqual(
+                result.data.get("code"), "RUNNER_INLINE_CODE_UNSUPPORTED"
+            )
+            self.assertEqual(
+                result.data.get("effective_verification_source"),
+                ".claude/loop.yml",
+            )
+        self.assertFalse((self.repo / ".builder-loop").exists())
+        self.assertEqual(
+            git(self.repo, "worktree", "list", "--porcelain").count("worktree "),
+            1,
+        )
+
     def test_empty_loop_stage_is_fatal_before_worktree_creation(self) -> None:
         loop_config = self.repo / ".claude" / "loop.yml"
         loop_config.parent.mkdir(parents=True, exist_ok=True)
@@ -175,7 +278,11 @@ class StartContractTest(unittest.TestCase):
             "    timeout: 30\n"
         )
         commit_all(self.repo, "add invalid empty stage")
-        plan = write_plan(self.repo, plan_markdown(head(self.repo)), name="empty-stage-plan.md")
+        plan = write_plan(
+            self.repo,
+            plan_markdown(head(self.repo), runner=None),
+            name="empty-stage-plan.md",
+        )
         result = run_cli(
             "start",
             "--repo",

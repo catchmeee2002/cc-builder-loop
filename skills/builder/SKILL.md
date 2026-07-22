@@ -25,7 +25,9 @@ description: 显式执行已接受的 builder-loop 方案，在隔离 worktree �
 [保质期: run 完成, owner: builder-loop, 正向归宿: .builder-loop/codex/runs/<run_id>/ledger.json]
 ```
 
-6. 先用 `plan-validate --plan <path>` 重验物化文件。仅在 `status=READY` 时继续。
+6. 先用 `plan-validate --repo <repo> --plan <path>` 重验物化文件，并确认返回的
+   `effective_verification_source` 符合 `spec_head`：有 `.claude/loop.yml` 时必须是该文件，
+   否则必须是 `plan:test_context.runner`；L1 必须是 `none`。仅在 `status=READY` 时继续。
 7. 从 SessionStart developer context 取得 `session_id`。执行
    `start --repo <repo> --run <run_id> --session-id <session_id> --plan <path>`。不得省略
    session id，也不要自行增加当前 `--help` 未声明的参数。要求 `status=READY`，保存返回的

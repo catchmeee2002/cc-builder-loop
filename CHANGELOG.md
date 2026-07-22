@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- 将 `unit-test-spec` 与 `documentation-spec` 升级为 schema v2，并明确拒绝旧 v1 计划；非 L1
+  计划在 `spec_head` 存在 `.claude/loop.yml` 时必须省略 `test_context.runner`，不存在时才由计划
+  提供 runner，消除验证命令双来源。
+- 为 `plan-validate` 增加仓库上下文和 `effective_verification_source`，与 `start` 共享只读
+  preflight，在创建 run/worktree 前统一验证目标 HEAD、supersession、runner 安全、ownership
+  与冻结依赖。
 - 修复同一 Tester/Reviewer thread 的 follow-up 只有 `SubagentStop`、没有第二次
   `SubagentStart` 时 ledger 保留首次 turn 结果的问题。新增 `prepare-follow-up` dispatch 契约，
   在发送 follow-up 前失效旧 evidence、记录 pending turn，并由实际 terminal event 绑定新

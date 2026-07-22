@@ -10,7 +10,8 @@ description: 在 Codex Plan mode（/plan）中为代码或文档变更生成 bui
 ## 建立上下文
 
 1. 读取适用的 `AGENTS.md`、项目约束和设计哲学。
-2. 检查 Git 根目录、当前 `HEAD`、测试布局、可复制执行的验证命令和对外接口。
+2. 检查 Git 根目录、当前 `HEAD`、该 HEAD 是否存在 `.claude/loop.yml`、测试布局、可复制执行的
+   验证命令和对外接口。
 3. 修改或新建 Markdown 前，读取项目声明的适用文档政策；项目未声明时读取
    `${CODEX_HOME:-$HOME/.codex}/builder-loop/doc-policy.md`。政策不可读时停止文档方案，
    不自行发明替代规则。
@@ -28,7 +29,7 @@ description: 在 Codex Plan mode（/plan）中为代码或文档变更生成 bui
 
 ```markdown
 <!-- unit-test-spec -->
-schema_version: 1
+schema_version: 2
 spec_head: "<planning-time HEAD>"
 plan_revision: 1
 parallel_ready: true
@@ -38,6 +39,7 @@ test_context:
   target_test_dirs: ["tests"]
   support_paths: ["<test-only support paths>"]
   public_prerequisites: []
+  # 仅当 spec_head 不存在 .claude/loop.yml 时保留下一行；存在时整行省略。
   runner: "<one deterministic verification command>"
 ownership:
   builder_write: ["src/**", "<affected documentation paths when needed>"]
@@ -63,7 +65,7 @@ mock_strategy: {}
 预估改动级别：L1
 
 <!-- documentation-spec -->
-schema_version: 1
+schema_version: 2
 spec_head: "<planning-time HEAD>"
 plan_revision: 1
 ownership:
@@ -92,14 +94,16 @@ ownership:
 - 把测试目标写成输入、输出、边界和不变量，不写实现方式。
 - 每个 behavior 使用唯一 kebab-case id，并提供非空 `boundaries` 与 `invariants`；始终提供映射类型
   `mock_strategy`，即使当前为空。
-- 给出一个可直接运行的 `test_context.runner`，不要使用恒真或仅打印命令。
+- 只声明一个验证来源：`spec_head` 存在 `.claude/loop.yml` 时省略 `test_context.runner`，并按其中
+  实际命令把 repository wrapper 列入 `support_paths`；不存在时必须给出一个可直接运行的
+  `test_context.runner`。不要使用恒真或仅打印命令。
 - 把测试工具支持文件列入 `support_paths`，并保持其不属于 `builder_write`；Tester 需要修改时
   再显式列入 `tester_write`，不要借此扩大 Tester 的业务源码写权限。
 - `make`、pytest、包管理器等 runner 的 Makefile、测试配置、package manifest 等控制文件由
   runtime 自动保护；不要把这些路径授权给 Builder 或 Tester。复杂组合逻辑放进已声明的受保护
   repository wrapper，不用 `!`、动态 exit、PATH override 或内联 shell control flow 反转退出码。
   wrapper 必须在规划时 `spec_head` 已存在、位于仓库内且是普通文件而非 symlink，并列入
-  `support_paths`；v1 不允许在被它验证的同一个 run 中创建或修改。缺少 wrapper 时先做独立、
+  `support_paths`；当前版本不允许在被它验证的同一个 run 中创建或修改。缺少 wrapper 时先做独立、
   用户授权的准备提交，再基于新 HEAD 重新 `/plan`。
 - 先按文档政策判断本次是否触及文档面；触及时把具体 README/docs 路径加入
   `ownership.builder_write` 和 checklist，使 Builder 能在首次审查前同步文档。未触及时不添加
@@ -118,9 +122,9 @@ ownership:
 ## 验证方案
 
 1. 首次调用前运行 `codex-builder-loop plan-validate --help`，以当前 CLI 为准。
-2. 将完整方案通过 stdin 传给 `codex-builder-loop plan-validate`。
+2. 将完整方案通过 stdin 传给 `codex-builder-loop plan-validate --repo <git-root>`。
 3. 只解析 stdout 最后一行 JSON，并要求至少包含 `status` 与 `message`。
-4. `status=READY` 时输出该方案。
+4. `status=READY` 时核对 `effective_verification_source` 与 `spec_head` 的实际来源一致，再输出方案。
 5. `status=NEEDS_USER` 时使用 `request_user_input` 处理 JSON 指出的实质选择，更新方案后重验。
 6. `status=FATAL` 或输出不是合法 JSON 时停止，不猜测成功。
 7. 其他状态按 `message` 修正可修复的契约问题，再运行一次；不要绕过 validator。

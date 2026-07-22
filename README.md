@@ -13,8 +13,9 @@ $builder
 
 ## 核心行为
 
-- Planner 在输出前运行确定性 plan validator；缺少规划 HEAD/revision、行为边界与不变量、
-  mock 策略、角色写边界、串行公开前置产物或有效 checklist 的计划不能进入执行。
+- Planner 在输出前运行带仓库上下文的确定性 plan validator；缺少规划 HEAD/revision、行为边界
+  与不变量、mock 策略、角色写边界、串行公开前置产物或有效 checklist 的计划不能进入执行，
+  实际生效的验证配置不合法时也不会返回 `READY`。
 - `parallel_ready=true` 时 Builder 与 Tester 从同一个 `spec_head` 并行。为 `false` 时，Builder
   先发布计划声明的精确公开文件；runtime 从 `spec_head` 合成隔离 publication HEAD/manifest，
   将其设为 Tester 基线，并冻结这些文件后再接受 Tester author turn。
@@ -41,7 +42,8 @@ $builder
 `plan_revision` 且携带旧 run id/plan digest 的方案，并重新调用 `$builder`。runtime 会核对旧 run
 确已 abandoned 且 revision 单调增加。达到迭代上限时遵循同一流程。
 
-纯 Markdown 文档任务可由 Planner 标记为 L1，并用 `documentation-spec` 冻结规划 HEAD、revision
+计划契约只接受 `schema_version: 2`；旧 v1 计划必须重新规划。纯 Markdown 文档任务可由 Planner
+标记为 L1，并用 `documentation-spec` 冻结规划 HEAD、revision
 和精确文档写边界：Builder 只改授权的 `.md`，不启动 Tester，也不要求或伪造机器/E2E 证据；
 同一个 Reviewer 仍执行方案、内容与文档政策审计。其他任务必须包含 `unit-test-spec`，继续走
 独立 Tester 和机器验证。
@@ -74,7 +76,7 @@ hook 内容变化后，需要再次检查并信任新 hash。
 
 ## 项目配置
 
-v1 沿用 `.claude/loop.yml` 的文件路径，避免再维护第二份项目配置；Codex runtime 只消费
+Codex adapter 沿用 `.claude/loop.yml` 的文件路径，避免再维护第二份项目配置；runtime 只消费
 `pass_cmd` 和 `max_iterations`，Claude Code 版本的其他字段在本分支不生效：
 
 ```yaml
@@ -88,12 +90,16 @@ pass_cmd:
 max_iterations: 5
 ```
 
+非 L1 计划的验证来源必须唯一：若 `spec_head` 存在 `.claude/loop.yml`，计划必须省略
+`test_context.runner`；若不存在，则计划必须提供它。`plan-validate --repo <repo>` 与 `start` 共享
+同一套只读 preflight，并在 READY JSON 的 `effective_verification_source` 中返回实际来源。
+
 现有 `pass_cmd` 只有满足 Codex runner 安全契约时才能直接复用：至少一个真实 stage；不得恒真、
 反转退出码、覆盖 PATH 或包含无法静态解释的内联控制流。repository wrapper 必须在规划时
 `spec_head` 已存在，是仓库内普通文件而非 symlink，并写入 `test_context.support_paths`；引用
 `~/.claude/...` 等仓库外脚本的旧配置需要先迁为仓库内受保护 wrapper。Makefile、pytest/ruff
-配置、package manifest 等已识别控制文件自动进入只读保护面。没有 `.claude/loop.yml` 时使用
-计划里的 `test_context.runner`；两者都没有则停止。L1 文档任务不读取也不需要 runner。
+配置、package manifest 等已识别控制文件自动进入只读保护面。L1 文档任务不读取也不需要
+runner。
 
 `max_iterations` 限制单个 run 的机器验证尝试次数；到达上限后 abandon 会保留角色 worktree，
 修订方案必须进入新的 run。最终 squash commit 使用目标仓库配置的 Git 身份，并在临时

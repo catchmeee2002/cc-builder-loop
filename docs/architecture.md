@@ -22,11 +22,17 @@ temporary final ref/worktree → hooks → tree check → target CAS → cleanup
 
 ## 计划和并行门槛
 
-计划保留 `plan-checklist`，并在非 L1 使用 `unit-test-spec`、在 L1 使用
+计划契约只接受 `schema_version: 2`。计划保留 `plan-checklist`，并在非 L1 使用 `unit-test-spec`、在 L1 使用
 `documentation-spec`；运行时验收可再增加 `e2e-cases`。非 L1 spec 必须包含规划时 HEAD、计划
 版本、接口、测试上下文、角色写路径、行为边界/不变量和 mock 策略。串行计划还必须声明
 `public_prerequisites`。其中每项必须是 Builder-owned 的精确普通文件路径，不能是 glob、目录或
 symlink。具体字段以 validator 实现和 fixtures 为准。
+
+非 L1 的 effective verification source 只能有一个。`spec_head` 存在 `.claude/loop.yml` 时，
+该文件是唯一来源且计划必须省略 `test_context.runner`；不存在时，计划必须声明 runner。
+`plan-validate --repo <repo>` 与 `start` 调用同一只读 preflight，统一核对目标分支、supersession、
+effective runner、安全规则、ownership 和冻结依赖。前者不创建 ledger、run 目录或 worktree；
+只有完成这些上下文检查才返回 `READY`，并公开 `effective_verification_source`。
 
 `parallel_ready=true` 只用于 Tester 无需等待 Builder 产物即可依据冻结目标和公开契约写测的
 计划。为 `false` 时，计划必须明确可独立冻结的最终公开契约文件，例如 schema、header 或接口
@@ -144,6 +150,8 @@ final commit，不会覆盖其他 ref 变化。目标仓库 commit hooks
   `documentation-spec` 两类冻结契约。
 - 「每个事实只有一个家」要求 target、Builder、Tester 三个 worktree 不各存一份状态；由此状态
   留在启动 run 的目标 worktree，其他 worktree 只通过 Git worktree discovery 找到同一 ledger。
+- 同一原则要求机器验证只有一个 effective source；因此仓库 loop 配置与计划 runner 不能并存，
+  Planner 校验和 start 也必须复用同一 preflight，而不是各自解释一份 runner。
 - 「判据按独立性分层」要求 Tester pass 对实际 candidate 可追溯；由此 blackbox evidence 绑定
   candidate worktree、命令、退出码和前后 HEAD，而不是只信一行自然语言；同一原则也要求串行
   Tester 只看到冻结公开文件，因此 runtime 发布 exact-file isolation HEAD/manifest，而不是一般

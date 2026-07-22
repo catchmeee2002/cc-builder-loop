@@ -179,7 +179,7 @@ class VerifyContractTest(unittest.TestCase):
             }
         )
         self.repos.append(repo)
-        plan = write_plan(repo, plan_markdown(head(repo)))
+        plan = write_plan(repo, plan_markdown(head(repo), runner=None))
         started, run_path = start_run(repo, plan)
         builder, _tester = worktrees_from(started, run_path)
         (builder / "src" / "calc.py").write_text("def add(a, b):\n    return (\n")

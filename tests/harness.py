@@ -196,7 +196,7 @@ def plan_markdown(
     builder_write: list[str] | None = None,
     tester_write: list[str] | None = None,
     target_test_dirs: list[str] | None = None,
-    runner: str = "bash verify.sh",
+    runner: str | None = "bash verify.sh",
     include_e2e: bool = False,
     include_unit_spec: bool = True,
 ) -> str:
@@ -214,7 +214,7 @@ def plan_markdown(
         lines.extend(
             [
                 "<!-- unit-test-spec -->",
-                "schema_version: 1",
+                "schema_version: 2",
                 f'spec_head: "{spec_head}"',
                 "plan_revision: 1",
                 f"parallel_ready: {'true' if parallel_ready else 'false'}",
@@ -224,12 +224,13 @@ def plan_markdown(
                 f"  target_test_dirs: {json.dumps(target_test_dirs)}",
                 '  support_paths: ["verify.sh"]',
                 "  public_prerequisites: "
-                + json.dumps(
-                    []
-                    if parallel_ready
-                    else ["src/public_api.py"]
-                ),
-                f"  runner: {json.dumps(runner)}",
+                + json.dumps([] if parallel_ready else ["src/public_api.py"]),
+            ]
+        )
+        if runner is not None:
+            lines.append(f"  runner: {json.dumps(runner)}")
+        lines.extend(
+            [
                 "ownership:",
                 f"  builder_write: {json.dumps(builder_write)}",
                 f"  tester_write: {json.dumps(tester_write)}",
@@ -287,7 +288,7 @@ def l1_plan_markdown(
         "预估改动级别：L1",
         "",
         "<!-- documentation-spec -->",
-        "schema_version: 1",
+        "schema_version: 2",
         f'spec_head: "{spec_head}"',
         f"plan_revision: {plan_revision}",
     ]

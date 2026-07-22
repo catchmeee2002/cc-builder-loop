@@ -8,6 +8,7 @@ from harness import (
     CLI,
     assert_status,
     cleanup_repo,
+    commit_all,
     git,
     head,
     init_repo,
@@ -31,15 +32,130 @@ class PlanContractTest(unittest.TestCase):
         text = plan_markdown(self.spec_head, parallel_ready=True, include_e2e=True)
         plan = write_plan(self.repo, text)
 
-        by_path = run_cli("plan-validate", "--plan", plan)
+        by_path = run_cli("plan-validate", "--repo", self.repo, "--plan", plan)
         assert_status(by_path, "READY", rc=0)
         self.assertEqual(by_path.data.get("spec_head"), self.spec_head)
         self.assertIs(by_path.data.get("parallel_ready"), True)
+        self.assertEqual(
+            by_path.data.get("effective_verification_source"),
+            "plan:test_context.runner",
+        )
 
-        by_stdin = run_cli("plan-validate", input_text=text)
+        by_stdin = run_cli("plan-validate", "--repo", self.repo, input_text=text)
         assert_status(by_stdin, "READY", rc=0)
         self.assertEqual(by_stdin.data.get("spec_head"), self.spec_head)
         self.assertIs(by_stdin.data.get("parallel_ready"), True)
+
+    def test_plan_validate_rejects_stale_spec_head(self) -> None:
+        text = plan_markdown(self.spec_head)
+        (self.repo / "README.md").write_text("target moved\n")
+        commit_all(self.repo, "move target after planning")
+
+        result = run_cli(
+            "plan-validate",
+            "--repo",
+            self.repo,
+            input_text=text,
+        )
+
+        assert_status(result, "NEEDS_USER", rc=1)
+        self.assertEqual(result.data.get("code"), "TARGET_SPEC_MISMATCH")
+
+    def test_v1_unit_and_documentation_contracts_are_rejected_explicitly(self) -> None:
+        plans = (
+            plan_markdown(self.spec_head).replace("schema_version: 2", "schema_version: 1"),
+            l1_plan_markdown(self.spec_head).replace(
+                "schema_version: 2", "schema_version: 1"
+            ),
+        )
+        for text in plans:
+            with self.subTest(marker="documentation" if "documentation-spec" in text else "unit"):
+                result = run_cli(
+                    "plan-validate",
+                    "--repo",
+                    self.repo,
+                    input_text=text,
+                )
+                assert_status(result, "NEEDS_USER", rc=1)
+                self.assertEqual(result.data.get("code"), "PLAN_SCHEMA_UNSUPPORTED")
+                self.assertEqual(result.data.get("supported_schema_versions"), [2])
+
+    def test_effective_runner_source_is_exclusive(self) -> None:
+        missing = run_cli(
+            "plan-validate",
+            "--repo",
+            self.repo,
+            input_text=plan_markdown(self.spec_head, runner=None),
+        )
+        assert_status(missing, "NEEDS_USER", rc=1)
+        self.assertEqual(missing.data.get("code"), "VERIFICATION_RUNNER_MISSING")
+
+        loop_config = self.repo / ".claude" / "loop.yml"
+        loop_config.parent.mkdir(parents=True, exist_ok=True)
+        loop_config.write_text(
+            "pass_cmd:\n"
+            "  - stage: test\n"
+            "    cmd: bash verify.sh\n"
+            "    timeout: 30\n"
+        )
+        commit_all(self.repo, "add repository verification source")
+        self.spec_head = head(self.repo)
+
+        duplicate = run_cli(
+            "plan-validate",
+            "--repo",
+            self.repo,
+            input_text=plan_markdown(self.spec_head),
+        )
+        assert_status(duplicate, "NEEDS_USER", rc=1)
+        self.assertEqual(duplicate.data.get("code"), "PLAN_RUNNER_DUPLICATE_SOURCE")
+
+        repository_source = run_cli(
+            "plan-validate",
+            "--repo",
+            self.repo,
+            input_text=plan_markdown(self.spec_head, runner=None),
+        )
+        assert_status(repository_source, "READY", rc=0)
+        self.assertEqual(
+            repository_source.data.get("effective_verification_source"),
+            ".claude/loop.yml",
+        )
+
+    def test_invalid_repository_runner_is_rejected_without_validation_side_effects(self) -> None:
+        loop_config = self.repo / ".claude" / "loop.yml"
+        loop_config.parent.mkdir(parents=True, exist_ok=True)
+        loop_config.write_text(
+            "pass_cmd:\n"
+            "  - stage: import\n"
+            "    cmd: python3 -c 'import app'\n"
+        )
+        commit_all(self.repo, "add unsupported inline repository runner")
+        self.spec_head = head(self.repo)
+        plan = plan_markdown(self.spec_head, runner=None)
+        before_status = git(self.repo, "status", "--short")
+        before_worktrees = git(self.repo, "worktree", "list", "--porcelain")
+        exclude = self.repo / ".git" / "info" / "exclude"
+        before_exclude = exclude.read_text() if exclude.exists() else None
+
+        result = run_cli(
+            "plan-validate",
+            "--repo",
+            self.repo,
+            input_text=plan,
+        )
+
+        assert_status(result, "FATAL", rc=2)
+        self.assertEqual(result.data.get("code"), "RUNNER_INLINE_CODE_UNSUPPORTED")
+        self.assertEqual(
+            result.data.get("effective_verification_source"), ".claude/loop.yml"
+        )
+        self.assertEqual(git(self.repo, "status", "--short"), before_status)
+        self.assertEqual(
+            git(self.repo, "worktree", "list", "--porcelain"), before_worktrees
+        )
+        self.assertFalse((self.repo / ".builder-loop").exists())
+        self.assertEqual(exclude.read_text() if exclude.exists() else None, before_exclude)
 
     def test_parallel_plan_rejects_overlapping_ownership(self) -> None:
         plan = write_plan(
@@ -51,7 +167,7 @@ class PlanContractTest(unittest.TestCase):
                 tester_write=["tests/**"],
             ),
         )
-        result = run_cli("plan-validate", "--plan", plan)
+        result = run_cli("plan-validate", "--repo", self.repo, "--plan", plan)
         assert_status(result, "NEEDS_USER")
         self.assertNotEqual(result.returncode, 0)
         self.assertTrue(result.data.get("errors"), result.data)
@@ -66,7 +182,7 @@ class PlanContractTest(unittest.TestCase):
                 tester_write=["tests/**"],
             ),
         )
-        result = run_cli("plan-validate", "--plan", plan)
+        result = run_cli("plan-validate", "--repo", self.repo, "--plan", plan)
         assert_status(result, "NEEDS_USER", rc=1)
         self.assertTrue(
             any("ownership overlaps" in str(error) for error in result.data.get("errors", [])),
@@ -81,7 +197,7 @@ class PlanContractTest(unittest.TestCase):
                 builder_write=["src/**", "docs/**", "verify.sh"],
             ),
         )
-        result = run_cli("plan-validate", "--plan", plan)
+        result = run_cli("plan-validate", "--repo", self.repo, "--plan", plan)
         assert_status(result, "NEEDS_USER", rc=1)
         self.assertTrue(
             any("support paths" in str(error) for error in result.data.get("errors", [])),
@@ -93,36 +209,31 @@ class PlanContractTest(unittest.TestCase):
             self.spec_head,
             builder_write=["src/**", "docs/**", "verify.sh"],
         ).replace('  support_paths: ["verify.sh"]', "  support_paths: []")
-        result = run_cli("plan-validate", input_text=text)
+        result = run_cli("plan-validate", "--repo", self.repo, input_text=text)
         assert_status(result, "NEEDS_USER", rc=1)
-        self.assertTrue(
-            any("missing from" in str(error) for error in result.data.get("errors", [])),
-            result.data,
-        )
+        self.assertEqual(result.data.get("code"), "RUNNER_SUPPORT_PATH_MISSING")
 
     def test_wrapped_constant_success_runner_is_rejected(self) -> None:
         result = run_cli(
             "plan-validate",
+            "--repo",
+            self.repo,
             input_text=plan_markdown(self.spec_head, runner="bash -c 'exit 0'"),
         )
-        assert_status(result, "NEEDS_USER", rc=1)
-        self.assertTrue(
-            any("tautological" in str(error) for error in result.data.get("errors", [])),
-            result.data,
-        )
+        assert_status(result, "FATAL", rc=2)
+        self.assertEqual(result.data.get("code"), "TAUTOLOGICAL_PASS_COMMAND")
 
     def test_more_constant_success_runners_are_rejected(self) -> None:
         for runner in ("test 1 = 1", "bash -c 'true && true'", "bash -c 'pytest -q || true'"):
             with self.subTest(runner=runner):
                 result = run_cli(
                     "plan-validate",
+                    "--repo",
+                    self.repo,
                     input_text=plan_markdown(self.spec_head, runner=runner),
                 )
-                assert_status(result, "NEEDS_USER", rc=1)
-                self.assertTrue(
-                    any("tautological" in str(error) for error in result.data.get("errors", [])),
-                    result.data,
-                )
+                assert_status(result, "FATAL", rc=2)
+                self.assertEqual(result.data.get("code"), "TAUTOLOGICAL_PASS_COMMAND")
 
     def test_inverted_and_scripted_success_runners_are_rejected(self) -> None:
         runners = (
@@ -137,9 +248,11 @@ class PlanContractTest(unittest.TestCase):
             with self.subTest(runner=runner):
                 result = run_cli(
                     "plan-validate",
+                    "--repo",
+                    self.repo,
                     input_text=plan_markdown(self.spec_head, runner=runner),
                 )
-                assert_status(result, "NEEDS_USER", rc=1)
+                assert_status(result, "FATAL", rc=2)
 
     def test_behavior_mock_and_checklist_contracts_are_required(self) -> None:
         mutations = (
@@ -153,6 +266,8 @@ class PlanContractTest(unittest.TestCase):
             with self.subTest(mutate=mutate):
                 result = run_cli(
                     "plan-validate",
+                    "--repo",
+                    self.repo,
                     input_text=mutate(plan_markdown(self.spec_head)),
                 )
                 assert_status(result, "NEEDS_USER", rc=1)
@@ -162,7 +277,7 @@ class PlanContractTest(unittest.TestCase):
             '  public_prerequisites: ["src/public_api.py"]',
             "  public_prerequisites: []",
         )
-        result = run_cli("plan-validate", input_text=text)
+        result = run_cli("plan-validate", "--repo", self.repo, input_text=text)
         assert_status(result, "NEEDS_USER", rc=1)
         self.assertTrue(
             any("public_prerequisites" in str(error) for error in result.data.get("errors", [])),
@@ -184,6 +299,8 @@ class PlanContractTest(unittest.TestCase):
             with self.subTest(mutate=mutate):
                 result = run_cli(
                     "plan-validate",
+                    "--repo",
+                    self.repo,
                     input_text=mutate(plan_markdown(self.spec_head, parallel_ready=False)),
                 )
                 assert_status(result, "NEEDS_USER", rc=1)
@@ -193,6 +310,8 @@ class PlanContractTest(unittest.TestCase):
             with self.subTest(path=path):
                 result = run_cli(
                     "plan-validate",
+                    "--repo",
+                    self.repo,
                     input_text=l1_plan_markdown(self.spec_head, builder_write=[path]),
                 )
                 assert_status(result, "NEEDS_USER", rc=1)
@@ -202,18 +321,15 @@ class PlanContractTest(unittest.TestCase):
             with self.subTest(runner=runner):
                 result = run_cli(
                     "plan-validate",
+                    "--repo",
+                    self.repo,
                     input_text=plan_markdown(self.spec_head, runner=runner),
                 )
-                assert_status(result, "NEEDS_USER", rc=1)
+                assert_status(result, "FATAL", rc=2)
 
     def test_runner_wrapper_outside_tester_ownership_is_valid(self) -> None:
-        text = plan_markdown(
-            self.spec_head, runner="bash scripts/verify-all.sh"
-        ).replace(
-            '  support_paths: ["verify.sh"]',
-            '  support_paths: ["scripts/verify-all.sh"]',
-        )
-        result = run_cli("plan-validate", input_text=text)
+        text = plan_markdown(self.spec_head, runner="env bash verify.sh")
+        result = run_cli("plan-validate", "--repo", self.repo, input_text=text)
         assert_status(result, "READY", rc=0)
 
     def test_runner_control_files_cannot_be_builder_owned(self) -> None:
@@ -226,6 +342,8 @@ class PlanContractTest(unittest.TestCase):
             with self.subTest(runner=runner):
                 result = run_cli(
                     "plan-validate",
+                    "--repo",
+                    self.repo,
                     input_text=plan_markdown(
                         self.spec_head,
                         runner=runner,
@@ -237,8 +355,11 @@ class PlanContractTest(unittest.TestCase):
     def test_boolean_schema_and_revision_are_not_integers(self) -> None:
         for field in ("schema_version", "plan_revision"):
             with self.subTest(field=field):
-                text = plan_markdown(self.spec_head).replace(f"{field}: 1", f"{field}: true")
-                result = run_cli("plan-validate", input_text=text)
+                original = 2 if field == "schema_version" else 1
+                text = plan_markdown(self.spec_head).replace(
+                    f"{field}: {original}", f"{field}: true"
+                )
+                result = run_cli("plan-validate", "--repo", self.repo, input_text=text)
                 assert_status(result, "NEEDS_USER", rc=1)
 
     def test_wrapped_runner_entry_is_protected_from_both_roles(self) -> None:
@@ -246,6 +367,8 @@ class PlanContractTest(unittest.TestCase):
             with self.subTest(runner=runner, role="builder"):
                 result = run_cli(
                     "plan-validate",
+                    "--repo",
+                    self.repo,
                     input_text=plan_markdown(
                         self.spec_head,
                         runner=runner,
@@ -256,6 +379,8 @@ class PlanContractTest(unittest.TestCase):
             with self.subTest(runner=runner, role="tester"):
                 result = run_cli(
                     "plan-validate",
+                    "--repo",
+                    self.repo,
                     input_text=plan_markdown(
                         self.spec_head,
                         runner=runner,
@@ -267,6 +392,8 @@ class PlanContractTest(unittest.TestCase):
     def test_glob_intersection_is_rejected_conservatively(self) -> None:
         ownership = run_cli(
             "plan-validate",
+            "--repo",
+            self.repo,
             input_text=plan_markdown(
                 self.spec_head,
                 builder_write=["src/file?.py"],
@@ -280,19 +407,19 @@ class PlanContractTest(unittest.TestCase):
             runner="python3 -m unittest discover -s tests",
             builder_write=["src/**", "fixtures/exp*.txt"],
         ).replace('  support_paths: ["verify.sh"]', '  support_paths: ["fixtures/expected.txt"]')
-        support = run_cli("plan-validate", input_text=support_text)
+        support = run_cli("plan-validate", "--repo", self.repo, input_text=support_text)
         assert_status(support, "NEEDS_USER", rc=1)
 
     def test_builtin_yaml_fallback_accepts_quoted_colon_interface(self) -> None:
         text = plan_markdown(self.spec_head)
-        cp = run_process([sys.executable, "-S", CLI, "plan-validate"], input_text=text)
+        cp = run_process([sys.executable, "-S", CLI, "plan-validate", "--repo", self.repo], input_text=text)
         self.assertEqual(cp.returncode, 0, cp.stderr)
         payload = json.loads(cp.stdout.splitlines()[-1])
         self.assertEqual(payload.get("status"), "READY", payload)
 
     def test_builtin_yaml_fallback_accepts_documentation_spec(self) -> None:
         cp = run_process(
-            [sys.executable, "-S", CLI, "plan-validate"],
+            [sys.executable, "-S", CLI, "plan-validate", "--repo", self.repo],
             input_text=l1_plan_markdown(self.spec_head),
         )
         self.assertEqual(cp.returncode, 0, cp.stderr)
@@ -327,15 +454,16 @@ class PlanContractTest(unittest.TestCase):
         text = plan_markdown(self.spec_head)
         text = text.replace("target_test_dirs:", "test_dirs:")
         plan = write_plan(self.repo, text)
-        result = run_cli("plan-validate", "--plan", plan)
+        result = run_cli("plan-validate", "--repo", self.repo, "--plan", plan)
         assert_status(result, "NEEDS_USER")
         self.assertNotEqual(result.returncode, 0)
 
     def test_l1_plan_without_unit_test_spec_remains_valid_but_not_parallel(self) -> None:
         text = l1_plan_markdown(self.spec_head)
-        result = run_cli("plan-validate", input_text=text)
+        result = run_cli("plan-validate", "--repo", self.repo, input_text=text)
         assert_status(result, "READY", rc=0)
         self.assertIs(result.data.get("parallel_ready"), False)
+        self.assertEqual(result.data.get("effective_verification_source"), "none")
 
     def test_l1_plan_cannot_declare_e2e_cases(self) -> None:
         text = l1_plan_markdown(self.spec_head) + "\n".join(
@@ -345,7 +473,7 @@ class PlanContractTest(unittest.TestCase):
                 "<!-- /e2e-cases -->",
             ]
         )
-        result = run_cli("plan-validate", input_text=text)
+        result = run_cli("plan-validate", "--repo", self.repo, input_text=text)
         assert_status(result, "NEEDS_USER")
         self.assertEqual(result.data.get("code"), "PLAN_L1_E2E_INVALID")
 
@@ -358,7 +486,7 @@ class PlanContractTest(unittest.TestCase):
             '    invariants: ["stable"]\n'
             "mock_strategy: {}",
         )
-        result = run_cli("plan-validate", input_text=text)
+        result = run_cli("plan-validate", "--repo", self.repo, input_text=text)
         assert_status(result, "NEEDS_USER")
         self.assertTrue(
             any("unique" in str(error) for error in result.data.get("errors", [])),
@@ -376,7 +504,7 @@ class PlanContractTest(unittest.TestCase):
                 "",
             ]
         )
-        result = run_cli("plan-validate", input_text=text)
+        result = run_cli("plan-validate", "--repo", self.repo, input_text=text)
         assert_status(result, "NEEDS_USER")
         self.assertNotEqual(result.returncode, 0)
         errors = result.data.get("errors") or result.data.get("details", {}).get("errors") or []
