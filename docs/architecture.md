@@ -2,13 +2,17 @@
 
 ## 系统边界
 
-Codex 原生 Plan mode 负责探索和追问，Planner Skill 固定方案契约；根线程作为 Builder，Codex subagent threads 承担 Tester 与 Reviewer。runtime CLI 只处理可确定验证的内容，不替模型做产品或架构判断。
+Codex 原生 Plan mode 负责探索和追问；全局托管规则先让用户选择继续使用原生 Plan，或加载
+Planner Skill 固定 builder-loop 方案契约。根线程作为 Builder，Codex subagent threads 承担
+Tester 与 Reviewer。runtime CLI 只处理可确定验证的内容，不替模型做产品或架构判断。
 
 ```text
-/plan + Planner Skill
-        │ validated plan
-        ▼
-$builder ── Builder worktree
+/plan ── request_user_input
+   ├─ Codex 原生 Plan → proposed_plan
+   └─ Builder-loop Planner
+             │ validated plan
+             ▼
+        $builder ── Builder worktree
     ├─ parallel_ready=true  ── Tester thread 与 Builder 并行
     └─ parallel_ready=false ─ exact public files → isolated publication HEAD/manifest
                                                    └→ Tester author baseline

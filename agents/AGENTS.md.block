@@ -1,6 +1,8 @@
 <!-- BEGIN cc-builder-loop-codex -->
 ## Codex Builder Loop
 
-- 使用 `/plan` 为后续交付制定方案时，必须调用 `$builder-loop-planner`；只产出并验证计划，随后停止并提示用户显式调用 `$builder`，不得实现或启动 run。
+- 每次进入 Plan mode 为代码或文档变更制定方案时，必须先使用 `request_user_input` 询问用户选择「Codex 原生 Plan」或「Builder-loop Planner」；不得用纯文本问卷替代。
+- 选择「Codex 原生 Plan」时不加载 `$builder-loop-planner`，按 Codex 原生 Plan mode 产出方案。
+- 选择「Builder-loop Planner」时必须调用 `$builder-loop-planner`；只产出并验证计划，随后停止并提示用户显式调用 `$builder`，不得实现或启动 run。
 - 只有用户显式输入 `$builder` 时才启动 builder-loop；普通改码请求不要隐式触发。
 <!-- END cc-builder-loop-codex -->

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- 将全局 Plan mode 入口由强制加载 Planner 改为每次通过 `request_user_input` 选择 Codex 原生
+  Plan 或 Builder-loop Planner；只有后者生成可由 `$builder` 执行的冻结契约。
 - 将 `unit-test-spec` 与 `documentation-spec` 升级为 schema v2，并明确拒绝旧 v1 计划；非 L1
   计划在 `spec_head` 存在 `.claude/loop.yml` 时必须省略 `test_context.runner`，不存在时才由计划
   提供 runner，消除验证命令双来源。

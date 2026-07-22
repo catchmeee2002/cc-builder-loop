@@ -77,8 +77,13 @@ class InstallContractTest(unittest.TestCase):
                     if "builder-loop.py" in json.dumps(entry)
                 ]
                 self.assertEqual(len(managed), 1, (event, hooks))
-            self.assertIn("# User guidance", agents_path.read_text())
-            self.assertEqual(agents_path.read_text().count("BEGIN cc-builder-loop-codex"), 1)
+            agents = agents_path.read_text()
+            self.assertIn("# User guidance", agents)
+            self.assertEqual(agents.count("BEGIN cc-builder-loop-codex"), 1)
+            self.assertIn("request_user_input", agents)
+            self.assertIn("Codex 原生 Plan", agents)
+            self.assertIn("Builder-loop Planner", agents)
+            self.assertNotIn("使用 `/plan` 为后续交付制定方案时，必须调用", agents)
             policy = codex_home / "builder-loop" / "doc-policy.md"
             self.assertTrue(policy.is_symlink())
             self.assertEqual(policy.resolve(), (ROOT / "policies" / "doc-policy.md").resolve())

@@ -1,19 +1,21 @@
 # codex-builder-loop
 
-面向 Codex CLI 的独立判据交付闭环。用户只需要两步：
+面向 Codex CLI 的独立判据交付闭环。进入 Plan mode 后先选择规划方式：
 
 ```text
 /plan <需求>
-$builder
+├─ Codex 原生 Plan
+└─ Builder-loop Planner → $builder
 ```
 
-`/plan` 使用 Codex 原生 Plan mode，并按安装规则加载 Planner Skill，把行为、接口、测试目标、
-写入边界和验收方式冻结成可校验计划。`$builder` 按计划协调 Builder、独立 Tester、机器验证
-和 Reviewer；全部门禁通过后，将候选结果收敛为一个语义提交。
+全局托管规则会在每次进入 Plan mode 时通过选项卡询问。选择 Codex 原生 Plan 时不加载本项目
+Skill；选择 Builder-loop Planner 时，Planner Skill 把行为、接口、测试目标、写入边界和验收方式
+冻结成可校验计划。随后显式调用 `$builder`，由其协调 Builder、独立 Tester、机器验证和
+Reviewer；全部门禁通过后，将候选结果收敛为一个语义提交。
 
 ## 核心行为
 
-- Planner 在输出前运行带仓库上下文的确定性 plan validator；缺少规划 HEAD/revision、行为边界
+- Builder-loop Planner 在输出前运行带仓库上下文的确定性 plan validator；缺少规划 HEAD/revision、行为边界
   与不变量、mock 策略、角色写边界、串行公开前置产物或有效 checklist 的计划不能进入执行，
   实际生效的验证配置不合法时也不会返回 `READY`。
 - `parallel_ready=true` 时 Builder 与 Tester 从同一个 `spec_head` 并行。为 `false` 时，Builder
