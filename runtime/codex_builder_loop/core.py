@@ -123,6 +123,7 @@ class PlanPreflight:
     spec_head: str
     target_branch: str
     target_start_head: str
+    target_checkout: dict[str, Any]
     commands: tuple[dict[str, Any], ...]
     loop_config_sha256: str
     effective_verification_source: str
@@ -1414,21 +1415,48 @@ def git_changed_paths(worktree: Path, base: str) -> list[str]:
     return sorted(paths)
 
 
-def ignored_untracked_paths(worktree: Path) -> list[str]:
-    result = git(
-        worktree,
-        "ls-files",
-        "--others",
-        "--ignored",
-        "--exclude-standard",
-        "-z",
-        check=True,
-    )
+def worktree_excluded_paths(
+    worktree: Path, excluded_roots: Iterable[Path]
+) -> list[str]:
+    excluded: list[str] = []
+    worktree_root = worktree.resolve()
+    for root in excluded_roots:
+        try:
+            relative = root.resolve().relative_to(worktree_root).as_posix().rstrip("/")
+        except ValueError:
+            continue
+        if relative and relative != ".":
+            excluded.append(relative)
+    return excluded
+
+
+def ignored_untracked_paths(
+    worktree: Path, *, excluded_roots: Iterable[Path] = ()
+) -> list[str]:
+    args = ["ls-files", "--others", "--ignored", "--exclude-standard", "-z"]
+    excluded = worktree_excluded_paths(worktree, excluded_roots)
+    if excluded:
+        args.extend(["--", "."])
+        for relative in excluded:
+            args.extend(
+                [
+                    f":(exclude){relative}",
+                    f":(exclude){relative}/**",
+                ]
+            )
+    result = git(worktree, *args, check=True)
     return sorted(item for item in result.stdout.split("\0") if item)
 
 
-def dirty_paths(worktree: Path) -> list[str]:
-    result = git(worktree, "status", "--porcelain=v1", "-z", "--untracked-files=all", check=True)
+def status_paths(worktree: Path, *, untracked: str) -> list[str]:
+    result = git(
+        worktree,
+        "status",
+        "--porcelain=v1",
+        "-z",
+        f"--untracked-files={untracked}",
+        check=True,
+    )
     entries = result.stdout.split("\0")
     paths: set[str] = set()
     index = 0
@@ -1445,6 +1473,64 @@ def dirty_paths(worktree: Path) -> list[str]:
             paths.add(entries[index])
             index += 1
     return sorted(paths)
+
+
+def dirty_paths(worktree: Path) -> list[str]:
+    return status_paths(worktree, untracked="all")
+
+
+def categorized_worktree_paths(
+    worktree: Path, *, excluded_roots: Iterable[Path] = ()
+) -> dict[str, list[str]]:
+    args = [
+        "status",
+        "--porcelain=v1",
+        "-z",
+        "--untracked-files=all",
+        "--ignored=matching",
+    ]
+    excluded = worktree_excluded_paths(worktree, excluded_roots)
+    if excluded:
+        args.extend(["--", "."])
+        for relative in excluded:
+            args.extend(
+                [
+                    f":(exclude){relative}",
+                    f":(exclude){relative}/**",
+                ]
+            )
+    result = git(worktree, *args, check=True)
+    entries = result.stdout.split("\0")
+    categorized: dict[str, set[str]] = {
+        "tracked_dirty_paths": set(),
+        "untracked_paths": set(),
+        "ignored_paths": set(),
+    }
+    index = 0
+    while index < len(entries):
+        entry = entries[index]
+        index += 1
+        if not entry:
+            continue
+        status = entry[:2]
+        path = (entry[3:] if len(entry) >= 4 else "").rstrip("/")
+        if status == "!!":
+            bucket = "ignored_paths"
+        elif status == "??":
+            bucket = "untracked_paths"
+        else:
+            bucket = "tracked_dirty_paths"
+        if path:
+            categorized[bucket].add(path)
+        if status[0] in {"R", "C"} and index < len(entries) and entries[index]:
+            categorized["tracked_dirty_paths"].add(entries[index].rstrip("/"))
+            index += 1
+    return {key: sorted(paths) for key, paths in categorized.items()}
+
+
+def tracked_unstaged_paths(worktree: Path) -> list[str]:
+    result = git(worktree, "diff-files", "--name-only", "-z", check=True)
+    return sorted(item for item in result.stdout.split("\0") if item)
 
 
 def without_runtime_state_paths(
@@ -1478,23 +1564,207 @@ def worktree_residue(
     )
 
 
-def target_worktree_residue(repo: Path, worktree: Path) -> list[str]:
-    return worktree_residue(worktree, runtime_state_roots=(state_root(repo),))
-
-
 def target_worktree_unstaged_residue(repo: Path, worktree: Path) -> list[str]:
-    unstaged = git(
-        worktree, "diff-files", "--name-only", "-z", check=True
-    ).stdout.split("\0")
-    untracked = git(
-        worktree, "ls-files", "--others", "--exclude-standard", "-z", check=True
-    ).stdout.split("\0")
-    residue = {
-        path for path in [*unstaged, *untracked, *ignored_untracked_paths(worktree)] if path
-    }
+    residue = set(tracked_unstaged_paths(worktree))
     return without_runtime_state_paths(
         worktree, residue, runtime_state_roots=(state_root(repo),)
     )
+
+
+def changed_destination_paths(repo: Path, old_head: str, new_head: str) -> list[str]:
+    result = git(
+        repo,
+        "diff",
+        "--name-status",
+        "-z",
+        old_head,
+        new_head,
+        "--",
+        check=True,
+    )
+    entries = result.stdout.split("\0")
+    paths: set[str] = set()
+    index = 0
+    while index < len(entries):
+        status = entries[index]
+        index += 1
+        if not status:
+            continue
+        kind = status[0]
+        if kind in {"R", "C"}:
+            if index + 1 >= len(entries):
+                raise RuntimeProblem(
+                    "cannot parse renamed verification path",
+                    code="TARGET_DIFF_INVALID",
+                )
+            index += 1
+            destination = entries[index]
+            index += 1
+            if destination:
+                paths.add(destination)
+            continue
+        if index >= len(entries):
+            raise RuntimeProblem(
+                "cannot parse target verification path",
+                code="TARGET_DIFF_INVALID",
+            )
+        path = entries[index]
+        index += 1
+        if kind != "D" and path:
+            paths.add(path)
+    return sorted(paths)
+
+
+def paths_collide(left: str, right: str) -> bool:
+    return (
+        left == right
+        or left.startswith(f"{right}/")
+        or right.startswith(f"{left}/")
+    )
+
+
+def target_checkout_facts(
+    repo: Path,
+    branch: str,
+    *,
+    expected_head: str | None = None,
+    desired_head: str | None = None,
+    live_target_head: str | None = None,
+) -> dict[str, Any]:
+    target = worktree_for_branch(repo, branch)
+    empty_residue = {
+        "tracked_dirty_paths": [],
+        "untracked_paths": [],
+        "ignored_paths": [],
+    }
+    if target is None:
+        return {
+            "target_worktree": None,
+            "target_residue": empty_residue,
+            "finalize_blockers": [],
+        }
+
+    runtime_roots = (state_root(repo),)
+    categorized = categorized_worktree_paths(target, excluded_roots=runtime_roots)
+    untracked = without_runtime_state_paths(
+        target,
+        categorized["untracked_paths"],
+        runtime_state_roots=runtime_roots,
+    )
+    ignored = without_runtime_state_paths(
+        target,
+        categorized["ignored_paths"],
+        runtime_state_roots=runtime_roots,
+    )
+    tracked = without_runtime_state_paths(
+        target,
+        categorized["tracked_dirty_paths"],
+        runtime_state_roots=runtime_roots,
+    )
+    blockers: list[dict[str, Any]] = []
+    transition_required = bool(expected_head and desired_head and expected_head != desired_head)
+
+    if transition_required and live_target_head == desired_head:
+        expected_tree = git(
+            repo, "rev-parse", f"{expected_head}^{{tree}}", check=True
+        ).stdout.strip()
+        desired_tree = git(
+            repo, "rev-parse", f"{desired_head}^{{tree}}", check=True
+        ).stdout.strip()
+        index_result = git(target, "write-tree", check=False)
+        index_tree = index_result.stdout.strip()
+        if index_result.returncode != 0:
+            blockers.append(
+                {
+                    "code": "TARGET_SYNC_UNSAFE",
+                    "paths": tracked,
+                    "details": {
+                        "reason": "target index tree cannot be resolved",
+                        "returncode": index_result.returncode,
+                        "stdout": tail_text(index_result.stdout),
+                        "stderr": tail_text(index_result.stderr),
+                    },
+                }
+            )
+            transition_required = False
+        elif index_tree in {expected_tree, desired_tree}:
+            tracked = without_runtime_state_paths(
+                target,
+                tracked_unstaged_paths(target),
+                runtime_state_roots=runtime_roots,
+            )
+            transition_required = index_tree == expected_tree
+        else:
+            blockers.append(
+                {
+                    "code": "TARGET_SYNC_UNSAFE",
+                    "paths": tracked,
+                    "details": {
+                        "reason": "target index matches neither side of finalize intent",
+                        "index_tree": index_tree,
+                        "expected_tree": expected_tree,
+                        "desired_tree": desired_tree,
+                    },
+                }
+            )
+            transition_required = False
+
+    if tracked:
+        blockers.insert(
+            0,
+            {
+                "code": "TARGET_TRACKED_DIRTY",
+                "paths": tracked,
+            },
+        )
+
+    if transition_required and expected_head and desired_head:
+        destination_paths = changed_destination_paths(repo, expected_head, desired_head)
+        collision_paths = sorted(
+            path
+            for path in set([*untracked, *ignored])
+            if any(paths_collide(path, changed) for changed in destination_paths)
+        )
+        if collision_paths:
+            blockers.append(
+                {
+                    "code": "TARGET_PATH_COLLISION",
+                    "paths": collision_paths,
+                }
+            )
+        if not blockers:
+            dry_run = git(
+                target,
+                "read-tree",
+                "-n",
+                "-u",
+                "-m",
+                expected_head,
+                desired_head,
+                check=False,
+            )
+            if dry_run.returncode != 0:
+                blockers.append(
+                    {
+                        "code": "TARGET_SYNC_UNSAFE",
+                        "paths": destination_paths,
+                        "details": {
+                            "returncode": dry_run.returncode,
+                            "stdout": tail_text(dry_run.stdout),
+                            "stderr": tail_text(dry_run.stderr),
+                        },
+                    }
+                )
+
+    return {
+        "target_worktree": str(target),
+        "target_residue": {
+            "tracked_dirty_paths": tracked,
+            "untracked_paths": untracked,
+            "ignored_paths": ignored,
+        },
+        "finalize_blockers": blockers,
+    }
 
 
 def worktree_for_branch(repo: Path, branch: str) -> Path | None:
@@ -2958,12 +3228,50 @@ def status_facts(repo: Path, ledger: dict[str, Any]) -> dict[str, Any]:
         if exc.code != "INVALID_GIT_REF":
             raise
         target_head = None
+    intent = ledger.get("finalize_intent")
+    staged_final_head = (
+        str(intent.get("final_head")) if isinstance(intent, dict) else None
+    )
     expected_target_head = (
         ledger.get("final_head")
         if ledger.get("phase") in {"finalized_cleanup", "finalized"}
         else ledger["target_start_head"]
     )
-    target_continuous = bool(expected_target_head) and target_head == expected_target_head
+    accepted_target_heads = {expected_target_head}
+    if ledger.get("phase") == "active" and isinstance(intent, dict):
+        accepted_target_heads.add(intent.get("final_head"))
+    target_continuous = bool(target_head) and target_head in accepted_target_heads
+    desired_target_head = (
+        str(ledger.get("final_head") or "")
+        if ledger.get("phase") in {"finalized_cleanup", "finalized"}
+        else staged_final_head or builder_head
+    )
+    checkout_expected_head = (
+        str(intent.get("expected_target_head"))
+        if isinstance(intent, dict)
+        else str(expected_target_head or "")
+    )
+    delivery_gates_ready = bool(
+        ledger["phase"] == "active"
+        and builder_head
+        and not builder_dirty
+        and prerequisites_ready
+        and tester_fully_integrated
+        and target_continuous
+        and current_evidence
+    )
+    probe_desired_head = (
+        desired_target_head
+        if delivery_gates_ready or isinstance(intent, dict)
+        else None
+    )
+    target_checkout = target_checkout_facts(
+        repo,
+        str(ledger["target_branch"]),
+        expected_head=checkout_expected_head or None,
+        desired_head=probe_desired_head or None,
+        live_target_head=target_head,
+    )
     return {
         "run_id": ledger["run_id"],
         "owner_session_id": ledger["owner_session_id"],
@@ -2988,15 +3296,13 @@ def status_facts(repo: Path, ledger: dict[str, Any]) -> dict[str, Any]:
         "missing_gates": missing,
         "stale_gates": stale,
         "evidence_current": current_evidence,
+        "delivery_gates_ready": delivery_gates_ready,
+        "ready_to_stage_final": bool(delivery_gates_ready and not isinstance(intent, dict)),
+        "staged_final_head": staged_final_head,
         "ready_to_finalize": bool(
-            ledger["phase"] == "active"
-            and builder_head
-            and not builder_dirty
-            and prerequisites_ready
-            and tester_fully_integrated
-            and target_continuous
-            and current_evidence
+            delivery_gates_ready and not target_checkout["finalize_blockers"]
         ),
+        **target_checkout,
         "worktrees": {
             "builder": ledger["worktrees"]["builder"]["path"],
             "tester": ledger["worktrees"]["tester"]["path"],
@@ -3021,6 +3327,7 @@ def cmd_plan_validate(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         "target_branch": preflight.target_branch,
         "parallel_ready": contract.parallel_ready,
         "effective_verification_source": preflight.effective_verification_source,
+        **preflight.target_checkout,
         "contract": contract.as_dict(),
     }, EXIT_PASS
 
@@ -3136,6 +3443,11 @@ def preflight_plan(
         spec_head=spec_head,
         target_branch=resolved_target_branch,
         target_start_head=target_start_head,
+        target_checkout=target_checkout_facts(
+            repo,
+            resolved_target_branch,
+            live_target_head=target_start_head,
+        ),
         commands=tuple(commands),
         loop_config_sha256=config_sha256,
         effective_verification_source=verification_source,
@@ -3365,6 +3677,7 @@ def cmd_start_locked(args: argparse.Namespace, repo: Path) -> tuple[dict[str, An
             "builder": builder_branch,
             "tester": tester_branch,
         },
+        **preflight.target_checkout,
     }, EXIT_PASS
 
 
@@ -5196,6 +5509,22 @@ def cleanup_finalized_worktrees(repo: Path, ledger: dict[str, Any]) -> list[dict
     return failures
 
 
+def staged_target_blocked_result(
+    intent: dict[str, Any], target_facts: dict[str, Any]
+) -> tuple[dict[str, Any], int]:
+    return {
+        "status": "NEEDS_USER",
+        "message": "final commit is staged but target checkout blockers must be resolved",
+        "code": "FINAL_COMMIT_STAGED_TARGET_BLOCKED",
+        "candidate_head": intent.get("candidate_head"),
+        "staged_final_head": intent.get("final_head"),
+        "target_worktree": target_facts.get("target_worktree"),
+        "target_residue": target_facts.get("target_residue"),
+        "finalize_blockers": target_facts.get("finalize_blockers", []),
+        "preserved": True,
+    }, EXIT_FAIL
+
+
 def recover_finalize_intent(
     repo: Path, ledger: dict[str, Any]
 ) -> tuple[dict[str, Any], int] | None:
@@ -5327,16 +5656,18 @@ def recover_finalize_intent(
         }, EXIT_FAIL
 
     target, target_temporary = target_worktree(repo, ledger)
+    target_facts = target_checkout_facts(
+        repo,
+        target_branch_name,
+        expected_head=target_head,
+        desired_head=final_head,
+        live_target_head=live_target_head,
+    )
+    if target_facts["finalize_blockers"]:
+        return staged_target_blocked_result(intent, target_facts)
+
+    cas_performed = False
     if live_target_head == target_head:
-        target_dirty = target_worktree_residue(repo, target)
-        if target_dirty:
-            return {
-                "status": "NEEDS_USER",
-                "message": "target worktree is dirty before finalize intent recovery",
-                "code": "TARGET_DIRTY",
-                "target_worktree": str(target),
-                "dirty_paths": target_dirty,
-            }, EXIT_FAIL
         cas = git(
             repo,
             "update-ref",
@@ -5368,11 +5699,24 @@ def recover_finalize_intent(
                 "target_head": current,
                 "preserved": True,
             }, EXIT_FAIL
+        cas_performed = True
 
     expected_tree = git(
         repo, "rev-parse", f"{target_head}^{{tree}}", check=True
     ).stdout.strip()
-    index_tree = git(target, "write-tree", check=True).stdout.strip()
+    index_result = git(target, "write-tree", check=False)
+    if index_result.returncode != 0:
+        return {
+            "status": "NEEDS_USER",
+            "message": "target index changed while applying the finalize intent",
+            "code": "FINALIZE_RECOVERY_INDEX_MISMATCH",
+            "final_head": final_head,
+            "target_worktree": str(target),
+            "stdout": tail_text(index_result.stdout),
+            "stderr": tail_text(index_result.stderr),
+            "preserved": True,
+        }, EXIT_FAIL
+    index_tree = index_result.stdout.strip()
     unstaged = target_worktree_unstaged_residue(repo, target)
     if unstaged:
         return {
@@ -5394,9 +5738,52 @@ def recover_finalize_intent(
             check=False,
         )
         if checkout.returncode != 0:
+            if cas_performed:
+                rollback = git(
+                    repo,
+                    "update-ref",
+                    f"refs/heads/{target_branch_name}",
+                    target_head,
+                    final_head,
+                    check=False,
+                )
+                ledger["phase"] = (
+                    "finalize_conflict"
+                    if rollback.returncode == 0
+                    else "continuity_failure"
+                )
+                append_event(
+                    ledger,
+                    "finalize_worktree_sync_failed",
+                    {
+                        "candidate_head": candidate,
+                        "staged_final_head": final_head,
+                        "target_head": branch_head(repo, target_branch_name),
+                        "target_worktree": str(target),
+                        "checkout_stdout": tail_text(checkout.stdout),
+                        "checkout_stderr": tail_text(checkout.stderr),
+                        "rollback_returncode": rollback.returncode,
+                        "rollback_stderr": tail_text(rollback.stderr),
+                    },
+                )
+                save_ledger(repo, ledger)
+                return {
+                    "status": (
+                        "CONFLICT"
+                        if rollback.returncode == 0
+                        else "CONTINUITY_FAILURE"
+                    ),
+                    "message": "target ref update could not be synchronized to its worktree",
+                    "code": "FINALIZE_WORKTREE_SYNC_FAILED",
+                    "staged_final_head": final_head,
+                    "target_head": branch_head(repo, target_branch_name),
+                    "target_worktree": str(target),
+                    "ref_rolled_back": rollback.returncode == 0,
+                    "preserved": True,
+                }, EXIT_FAIL
             return {
                 "status": "NEEDS_USER",
-                "message": "final ref exists but its target worktree could not be synchronized",
+                "message": "final ref could not be synchronized to its target worktree",
                 "code": "FINALIZE_RECOVERY_SYNC_FAILED",
                 "final_head": final_head,
                 "target_worktree": str(target),
@@ -5415,17 +5802,58 @@ def recover_finalize_intent(
             "candidate_tree": candidate_tree,
             "preserved": True,
         }, EXIT_FAIL
-    if (
-        branch_head(repo, target_branch_name) != final_head
-        or git(target, "write-tree", check=True).stdout.strip() != candidate_tree
-        or target_worktree_residue(repo, target)
-    ):
+    post_target_head = branch_head(repo, target_branch_name)
+    post_index_result = git(target, "write-tree", check=False)
+    if post_index_result.returncode != 0:
+        return {
+            "status": "NEEDS_USER",
+            "message": "target index cannot prove the finalize postcondition",
+            "code": "FINALIZE_RECOVERY_POSTCONDITION",
+            "final_head": final_head,
+            "target_worktree": str(target),
+            "stdout": tail_text(post_index_result.stdout),
+            "stderr": tail_text(post_index_result.stderr),
+            "preserved": True,
+        }, EXIT_FAIL
+    post_index_tree = post_index_result.stdout.strip()
+    post_facts = target_checkout_facts(
+        repo,
+        target_branch_name,
+        expected_head=target_head,
+        desired_head=final_head,
+        live_target_head=post_target_head,
+    )
+    if post_target_head != final_head or post_index_tree != candidate_tree:
+        ledger["phase"] = "finalize_conflict"
+        append_event(
+            ledger,
+            "finalize_fast_forward_postcondition_failed",
+            {
+                "candidate_tree": candidate_tree,
+                "final_head": final_head,
+                "target_head": post_target_head,
+                "target_tree": post_index_tree,
+            },
+        )
+        save_ledger(repo, ledger)
+        return {
+            "status": "CONFLICT",
+            "message": "target fast-forward postcondition failed",
+            "code": "FINALIZE_FAST_FORWARD_POSTCONDITION",
+            "final_head": final_head,
+            "target_head": post_target_head,
+            "target_worktree": str(target),
+            "preserved": True,
+        }, EXIT_FAIL
+    if post_facts["finalize_blockers"]:
         return {
             "status": "NEEDS_USER",
             "message": "finalize intent recovery postcondition is not clean",
             "code": "FINALIZE_RECOVERY_POSTCONDITION",
             "final_head": final_head,
             "target_worktree": str(target),
+            "target_residue": post_facts["target_residue"],
+            "finalize_blockers": post_facts["finalize_blockers"],
             "preserved": True,
         }, EXIT_FAIL
     ledger["phase"] = "finalized_cleanup"
@@ -5445,6 +5873,102 @@ def recover_finalize_intent(
     return None
 
 
+def finish_finalized_cleanup(
+    repo: Path, ledger: dict[str, Any]
+) -> tuple[dict[str, Any], int]:
+    final_head = str(ledger.get("final_head") or "")
+    try:
+        live_target_head = branch_head(repo, str(ledger["target_branch"]))
+    except RuntimeProblem:
+        live_target_head = None
+    if not final_head or live_target_head != final_head:
+        ledger["phase"] = "continuity_failure"
+        append_event(
+            ledger,
+            "finalized_target_continuity_failure",
+            {
+                "expected_final_head": final_head or None,
+                "target_head": live_target_head,
+                "target_branch": ledger["target_branch"],
+            },
+        )
+        save_ledger(repo, ledger)
+        return {
+            "status": "CONTINUITY_FAILURE",
+            "message": "target branch no longer points to the staged final commit",
+            "code": "FINALIZED_TARGET_CONTINUITY_FAILURE",
+            "final_head": final_head or None,
+            "target_head": live_target_head,
+        }, EXIT_FAIL
+
+    target_facts = target_checkout_facts(
+        repo,
+        str(ledger["target_branch"]),
+        expected_head=final_head,
+        desired_head=final_head,
+        live_target_head=live_target_head,
+    )
+    if target_facts["finalize_blockers"]:
+        return {
+            "status": "NEEDS_USER",
+            "message": "final commit exists but the target worktree has tracked residue",
+            "code": "TARGET_DIRTY_AFTER_FINALIZE",
+            "final_head": final_head,
+            **target_facts,
+        }, EXIT_FAIL
+
+    cleanup_failures = cleanup_finalized_worktrees(repo, ledger)
+    if cleanup_failures:
+        append_event(ledger, "finalize_cleanup_retry_failed", {"failures": cleanup_failures})
+        save_ledger(repo, ledger)
+        return {
+            "status": "NEEDS_USER",
+            "message": "final commit exists but worktree cleanup is still incomplete",
+            "code": "FINALIZE_CLEANUP_INCOMPLETE",
+            "final_head": final_head,
+            "cleanup_failures": cleanup_failures,
+        }, EXIT_FAIL
+
+    live_target_head = branch_head(repo, str(ledger["target_branch"]))
+    if live_target_head != final_head:
+        ledger["phase"] = "continuity_failure"
+        append_event(
+            ledger,
+            "finalized_target_continuity_failure",
+            {
+                "expected_final_head": final_head,
+                "target_head": live_target_head,
+                "target_branch": ledger["target_branch"],
+                "after_cleanup": True,
+            },
+        )
+        save_ledger(repo, ledger)
+        return {
+            "status": "CONTINUITY_FAILURE",
+            "message": "target branch moved during finalize cleanup",
+            "code": "FINALIZED_TARGET_CONTINUITY_FAILURE",
+            "final_head": final_head,
+            "target_head": live_target_head,
+        }, EXIT_FAIL
+
+    ledger["phase"] = "finalized"
+    append_event(ledger, "finalize_cleanup_completed", {})
+    save_ledger(repo, ledger)
+    return {
+        "status": "COMPLETE",
+        "message": "candidate finalized as one squash commit",
+        "candidate_head": (
+            ledger.get("finalize_intent", {}).get("candidate_head")
+            if isinstance(ledger.get("finalize_intent"), dict)
+            else None
+        ),
+        "final_head": final_head,
+        "target_branch": ledger["target_branch"],
+        "commit_count": 1,
+        "cleanup_failures": [],
+    }, EXIT_PASS
+
+
 def cmd_finalize(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
     repo, run_id, _ = resolve_run_selector(args.repo, args.run)
     with locked_run(repo, run_id) as ledger:
@@ -5459,86 +5983,7 @@ def cmd_finalize(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         if recovered is not None:
             return recovered
         if ledger["phase"] == "finalized_cleanup":
-            final_head = str(ledger.get("final_head") or "")
-            try:
-                live_target_head = branch_head(repo, str(ledger["target_branch"]))
-            except RuntimeProblem:
-                live_target_head = None
-            if not final_head or live_target_head != final_head:
-                ledger["phase"] = "continuity_failure"
-                append_event(
-                    ledger,
-                    "finalized_target_continuity_failure",
-                    {
-                        "expected_final_head": final_head or None,
-                        "target_head": live_target_head,
-                        "target_branch": ledger["target_branch"],
-                    },
-                )
-                save_ledger(repo, ledger)
-                return {
-                    "status": "CONTINUITY_FAILURE",
-                    "message": "target branch no longer points to the staged final commit",
-                    "code": "FINALIZED_TARGET_CONTINUITY_FAILURE",
-                    "final_head": final_head or None,
-                    "target_head": live_target_head,
-                }, EXIT_FAIL
-            target_checkout = worktree_for_branch(repo, str(ledger["target_branch"]))
-            target_dirty = (
-                target_worktree_residue(repo, target_checkout)
-                if target_checkout is not None
-                else []
-            )
-            if target_dirty:
-                return {
-                    "status": "NEEDS_USER",
-                    "message": "final commit exists but the target worktree is dirty",
-                    "code": "TARGET_DIRTY_AFTER_FINALIZE",
-                    "final_head": ledger.get("final_head"),
-                    "target_worktree": str(target_checkout),
-                    "dirty_paths": target_dirty,
-                }, EXIT_FAIL
-            cleanup_failures = cleanup_finalized_worktrees(repo, ledger)
-            if cleanup_failures:
-                append_event(ledger, "finalize_cleanup_retry_failed", {"failures": cleanup_failures})
-                save_ledger(repo, ledger)
-                return {
-                    "status": "NEEDS_USER",
-                    "message": "final commit exists but worktree cleanup is still incomplete",
-                    "code": "FINALIZE_CLEANUP_INCOMPLETE",
-                    "final_head": ledger.get("final_head"),
-                    "cleanup_failures": cleanup_failures,
-                }, EXIT_FAIL
-            live_target_head = branch_head(repo, str(ledger["target_branch"]))
-            if live_target_head != final_head:
-                ledger["phase"] = "continuity_failure"
-                append_event(
-                    ledger,
-                    "finalized_target_continuity_failure",
-                    {
-                        "expected_final_head": final_head,
-                        "target_head": live_target_head,
-                        "target_branch": ledger["target_branch"],
-                        "after_cleanup": True,
-                    },
-                )
-                save_ledger(repo, ledger)
-                return {
-                    "status": "CONTINUITY_FAILURE",
-                    "message": "target branch moved during finalize cleanup",
-                    "code": "FINALIZED_TARGET_CONTINUITY_FAILURE",
-                    "final_head": final_head,
-                    "target_head": live_target_head,
-                }, EXIT_FAIL
-            ledger["phase"] = "finalized"
-            append_event(ledger, "finalize_cleanup_completed", {})
-            save_ledger(repo, ledger)
-            return {
-                "status": "COMPLETE",
-                "message": "final commit cleanup completed",
-                "final_head": ledger.get("final_head"),
-                "cleanup_failures": [],
-            }, EXIT_PASS
+            return finish_finalized_cleanup(repo, ledger)
         if ledger["phase"] != "active":
             phase_result = "NEEDS_USER"
             if ledger["phase"] in {"integration_conflict", "finalize_conflict"}:
@@ -5691,23 +6136,6 @@ def cmd_finalize(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                 "target_start_head": ledger["target_start_head"],
                 "preserved": True,
             }, EXIT_FAIL
-        existing_target = worktree_for_branch(repo, target_branch_name)
-        existing_target_dirty = (
-            target_worktree_residue(repo, existing_target)
-            if existing_target is not None
-            else []
-        )
-        if existing_target_dirty:
-            raise RuntimeProblem(
-                "target worktree is dirty; no finalize mutation was attempted",
-                result="NEEDS_USER",
-                code="TARGET_DIRTY",
-                details={
-                    "target_worktree": str(existing_target),
-                    "dirty_paths": existing_target_dirty,
-                },
-            )
-
         artifact_dir = run_dir(repo, str(ledger["run_id"])) / "artifacts"
         artifact_dir.mkdir(parents=True, exist_ok=True)
         patch_path = artifact_dir / f"candidate-{candidate[:12]}.patch"
@@ -5877,15 +6305,6 @@ def cmd_finalize(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                 "preserved": True,
             }, EXIT_FAIL
 
-        target, target_temporary = target_worktree(repo, ledger)
-        target_dirty = target_worktree_residue(repo, target)
-        if target_dirty:
-            raise RuntimeProblem(
-                "target worktree became dirty before fast-forward; staged commit was preserved",
-                result="NEEDS_USER",
-                code="TARGET_DIRTY",
-                details={"target_worktree": str(target), "dirty_paths": target_dirty},
-            )
         ledger["finalize_intent"] = {
             "candidate_head": candidate,
             "candidate_tree": candidate_tree,
@@ -5900,199 +6319,16 @@ def cmd_finalize(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
             dict(ledger["finalize_intent"]),
         )
         save_ledger(repo, ledger)
-        target_ref = f"refs/heads/{target_branch_name}"
-        fast_forward = git(
-            repo,
-            "update-ref",
-            target_ref,
-            final_head,
-            target_head,
-            check=False,
-        )
-        if fast_forward.returncode != 0:
-            ledger["phase"] = "continuity_failure"
-            current_target_head = branch_head(repo, target_branch_name)
-            append_event(
-                ledger,
-                "finalize_fast_forward_cas_failed",
-                {
-                    "candidate_head": candidate,
-                    "staged_final_head": final_head,
-                    "expected_target_head": target_head,
-                    "target_head": current_target_head,
-                    "target_worktree": str(target),
-                    "stdout": tail_text(fast_forward.stdout),
-                    "stderr": tail_text(fast_forward.stderr),
-                },
-            )
-            save_ledger(repo, ledger)
-            return {
-                "status": "CONTINUITY_FAILURE",
-                "message": "target branch changed before the compare-and-swap update",
-                "code": "FINALIZE_FAST_FORWARD_CAS_FAILED",
-                "staged_final_head": final_head,
-                "expected_target_head": target_head,
-                "target_head": current_target_head,
-                "target_worktree": str(target),
-                "preserved": True,
-            }, EXIT_FAIL
-        checkout = git(
-            target,
-            "read-tree",
-            "-u",
-            "-m",
-            target_head,
-            final_head,
-            check=False,
-        )
-        if checkout.returncode != 0:
-            rollback = git(
-                repo,
-                "update-ref",
-                target_ref,
-                target_head,
-                final_head,
-                check=False,
-            )
-            ledger["phase"] = (
-                "finalize_conflict" if rollback.returncode == 0 else "continuity_failure"
-            )
-            append_event(
-                ledger,
-                "finalize_worktree_sync_failed",
-                {
-                    "candidate_head": candidate,
-                    "staged_final_head": final_head,
-                    "target_head": branch_head(repo, target_branch_name),
-                    "target_worktree": str(target),
-                    "checkout_stdout": tail_text(checkout.stdout),
-                    "checkout_stderr": tail_text(checkout.stderr),
-                    "rollback_returncode": rollback.returncode,
-                    "rollback_stderr": tail_text(rollback.stderr),
-                },
-            )
-            save_ledger(repo, ledger)
-            return {
-                "status": (
-                    "CONFLICT" if rollback.returncode == 0 else "CONTINUITY_FAILURE"
-                ),
-                "message": "target ref update could not be synchronized to its worktree",
-                "code": "FINALIZE_WORKTREE_SYNC_FAILED",
-                "staged_final_head": final_head,
-                "target_head": branch_head(repo, target_branch_name),
-                "target_worktree": str(target),
-                "ref_rolled_back": rollback.returncode == 0,
-                "preserved": True,
-            }, EXIT_FAIL
-        moved_target_head = branch_head(repo, target_branch_name)
-        moved_target_tree = git(target, "write-tree", check=True).stdout.strip()
-        if moved_target_head != final_head or moved_target_tree != candidate_tree:
-            ledger["phase"] = "finalize_conflict"
-            append_event(
-                ledger,
-                "finalize_fast_forward_postcondition_failed",
-                {
-                    "candidate_tree": candidate_tree,
-                    "final_head": final_head,
-                    "target_head": moved_target_head,
-                    "target_tree": moved_target_tree,
-                },
-            )
-            save_ledger(repo, ledger)
+        recovered = recover_finalize_intent(repo, ledger)
+        if recovered is not None:
+            return recovered
+        if ledger["phase"] != "finalized_cleanup":
             raise RuntimeProblem(
-                "target fast-forward postcondition failed",
-                result="CONFLICT",
-                code="FINALIZE_FAST_FORWARD_POSTCONDITION",
-                details={"final_head": final_head, "target_head": moved_target_head},
-                exit_code=EXIT_FAIL,
+                "finalize intent did not reach cleanup state",
+                code="FINALIZE_INTENT_STATE_INVALID",
+                details={"phase": ledger["phase"], "finalize_intent": ledger["finalize_intent"]},
             )
-        moved_target_dirty = target_worktree_residue(repo, target)
-        if moved_target_dirty:
-            ledger["phase"] = "finalized_cleanup"
-            ledger["final_head"] = final_head
-            append_event(
-                ledger,
-                "finalize_target_worktree_dirty",
-                {
-                    "candidate_head": candidate,
-                    "final_head": final_head,
-                    "target_worktree": str(target),
-                    "dirty_paths": moved_target_dirty,
-                },
-            )
-            save_ledger(repo, ledger)
-            return {
-                "status": "NEEDS_USER",
-                "message": "target moved to the final commit but its worktree became dirty",
-                "code": "TARGET_DIRTY_AFTER_FINALIZE",
-                "candidate_head": candidate,
-                "final_head": final_head,
-                "target_branch": target_branch_name,
-                "target_worktree": str(target),
-                "dirty_paths": moved_target_dirty,
-            }, EXIT_FAIL
-        ledger["phase"] = "finalized_cleanup"
-        ledger["final_head"] = final_head
-        append_event(
-            ledger,
-            "finalized",
-            {
-                "candidate_head": candidate,
-                "final_head": final_head,
-                "target_previous_head": target_head,
-                "target_branch": target_branch_name,
-                "target_worktree_temporary": target_temporary,
-                "commit_count": 1,
-            },
-        )
-        save_ledger(repo, ledger)
-        cleanup_failures = cleanup_finalized_worktrees(repo, ledger)
-        if cleanup_failures:
-            append_event(ledger, "finalize_cleanup_incomplete", {"failures": cleanup_failures})
-            save_ledger(repo, ledger)
-            return {
-                "status": "NEEDS_USER",
-                "message": "final commit exists but worktree cleanup is incomplete",
-                "code": "FINALIZE_CLEANUP_INCOMPLETE",
-                "candidate_head": candidate,
-                "final_head": final_head,
-                "target_branch": target_branch_name,
-                "commit_count": 1,
-                "cleanup_failures": cleanup_failures,
-            }, EXIT_FAIL
-        live_target_head = branch_head(repo, target_branch_name)
-        if live_target_head != final_head:
-            ledger["phase"] = "continuity_failure"
-            append_event(
-                ledger,
-                "finalized_target_continuity_failure",
-                {
-                    "expected_final_head": final_head,
-                    "target_head": live_target_head,
-                    "target_branch": target_branch_name,
-                    "after_cleanup": True,
-                },
-            )
-            save_ledger(repo, ledger)
-            return {
-                "status": "CONTINUITY_FAILURE",
-                "message": "target branch moved during finalize cleanup",
-                "code": "FINALIZED_TARGET_CONTINUITY_FAILURE",
-                "final_head": final_head,
-                "target_head": live_target_head,
-            }, EXIT_FAIL
-        ledger["phase"] = "finalized"
-        append_event(ledger, "finalize_cleanup_completed", {})
-        save_ledger(repo, ledger)
-        return {
-            "status": "COMPLETE",
-            "message": "candidate finalized as one squash commit",
-            "candidate_head": candidate,
-            "final_head": final_head,
-            "target_branch": target_branch_name,
-            "commit_count": 1,
-            "cleanup_failures": cleanup_failures,
-        }, EXIT_PASS
+        return finish_finalized_cleanup(repo, ledger)
 
 
 def cmd_abandon(args: argparse.Namespace) -> tuple[dict[str, Any], int]:

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- 将 delivery gate readiness、final commit staging 与目标 checkout 同步 readiness 拆开；dirty target
+  现在会先冻结唯一 final intent，再以结构化 blocker 等待重试。tracked/index 改动继续 fail closed，
+  无关 untracked/ignored 文件不再阻塞或被清理，路径碰撞和 Git dry-run 不确定性仍在 CAS 前停止。
 - 将全局 Plan mode 入口由强制加载 Planner 改为每次通过 `request_user_input` 选择 Codex 原生
   Plan 或 Builder-loop Planner；只有后者生成可由 `$builder` 执行的冻结契约。
 - 将 `unit-test-spec` 与 `documentation-spec` 升级为 schema v2，并明确拒绝旧 v1 计划；非 L1

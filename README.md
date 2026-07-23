@@ -34,10 +34,14 @@ Reviewer；全部门禁通过后，将候选结果收敛为一个语义提交。
 - Builder 负责同步项目文档，Reviewer 在同一次审查中执行文档审计；非 L1 Reviewer turn 的
   开始和结束都必须已经绑定当前 Tester integration、机器验证和 blackbox evidence。
 - Reviewer 通过前目标分支不移动。finalize 在临时 ref/worktree 执行目标仓库 hooks，确认最终
-  tree 与已审 candidate 一致后，才用 expected-old compare-and-swap 更新目标分支。
+  tree 与已审 candidate 一致后先冻结唯一 final commit；目标 checkout 存在风险路径时保留该
+  commit 等待处理，安全后才用 expected-old compare-and-swap 更新目标分支。
+- `status` 分开公开 delivery gates、final commit staging 和真实 finalize readiness。tracked/index
+  改动始终阻塞目标同步；无关 `.env`、cache、日志等 untracked/ignored 文件会被保留且不阻塞，
+  只有与最终 tree 更新路径冲突或 Git 无法证明安全时才要求用户处理。
 - finalize 只更新本地目标分支，不自动 push、创建 PR 或合并远端分支。
 - 正常修复循环会自动继续；测试目标或 ownership 变化、计划过期、迭代上限、Reviewer
-  决策项、agent/target continuity 失败、目标 dirty 或 Git 冲突等安全停止会交还用户。
+  决策项、agent/target continuity 失败、目标同步 blocker 或 Git 冲突等安全停止会交还用户。
 
 测试目标、ownership 或验收标准一旦需要修订，不能在现有 frozen run 内批准。保持原目标时
 续接原 Tester/Reviewer thread；选择修订时先 abandon 当前 run 保留现场，再用 `/plan` 生成更高

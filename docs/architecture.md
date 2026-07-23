@@ -125,7 +125,8 @@ Hook 使用 Codex 提供的 `session_id` 找到唯一 active run：
 worktree 对集成 HEAD 产出 blackbox `pass` evidence。E2E/review/doc-review 只能通过
 `record-evidence` 写入，且必须携带 ledger 中已完成 agent turn 的 id；E2E 还必须携带可重放
 details。只有全部必需 evidence 指向当前候选 HEAD，Tester commits 与 dirty tree 已
-完整集成、worktree 无越界修改、目标分支仍在起始 HEAD 时，finalize 才能运行。
+完整集成、worktree 无越界修改、目标分支仍满足 continuity 时，finalize 才能冻结最终提交。
+目标 checkout 是否可同步是后续独立 gate，不再冒充 evidence readiness。
 
 候选 HEAD、计划 digest 或 Tester-owned tree 任一变化都会使旧 evidence 失效。Skills 和 hooks 只能通过 runtime 的公开命令记录 evidence，不能直接编辑 ledger。
 
@@ -135,17 +136,24 @@ Builder 与 Tester 内部 commits 保留到审查完成。finalize 从已审 can
 worktree，在其中生成 squash commit，并使用目标仓库 Git 身份执行 commit hooks。hook 拒绝提交、
 产生额外 commit 或令最终 tree 偏离 candidate 时，目标分支不移动，run 保留现场并停止。
 
-只有临时提交的 parent、tree 和 evidence 全部复核通过，runtime 才用 expected-old
-`git update-ref` compare-and-swap 更新目标分支，再同步干净 target worktree。CAS 前先把 candidate、
-final commit、expected-old 和 target branch 写成 finalize intent；若进程在 ref 更新后退出，下一次
-finalize 会重新核对全部 delivery gates，识别 final ref、补齐 worktree 同步并进入 cleanup。intent
-存在期间拒绝新的 agent turn、验证、集成和 evidence 写入，避免审查失效后仍移动目标。并发移动使 CAS 失败并保留 staged
-final commit，不会覆盖其他 ref 变化。目标仓库 commit hooks
-已在临时 final worktree 完整执行，内部 Builder/Tester checkpoint 与 integration commit 则显式
-禁用 hooks 和 GPG signing，因为它们不会进入最终历史。
-更新后再次核对 ref/tree/clean worktree，再清理临时 ref/worktree 与角色 worktree。若目标分支已移动、
-删除或 CAS/target worktree 同步失败，则保留
-现场，不自动 rebase、解决冲突或覆盖目标分支。内部 checkpoint 使用隔离身份且跳过目标 hooks。
+临时提交的 parent、tree 和 evidence 全部复核通过后，runtime 立即把 candidate、final commit、
+expected-old 和 target branch 写成 finalize intent。intent 是冻结交付物的唯一事实；目标 checkout
+residue 是实时文件系统事实，由 preflight、status、首次 finalize 和 recovery 共用的计算入口动态
+分类，不复制进 ledger。
+
+tracked/index 改动始终是同步 blocker。普通与 ignored untracked 路径只有在和最终 tree 的写入路径
+相同、形成文件/目录前缀冲突，或 `git read-tree -n -u -m` 无法证明安全时才阻塞；无关 `.env`、
+cache 和日志保留原状。存在 blocker 时 final intent 与 staging ref/worktree 保留，目标 ref 不移动；
+用户处理风险路径后重试同一 finalize，不重跑 hooks 或生成第二个提交。intent 存在期间拒绝新的
+agent turn、验证、集成和 evidence 写入，避免冻结后候选继续变化。
+
+blocker 为空时 runtime 才用 expected-old `git update-ref` compare-and-swap 更新目标分支并同步
+worktree。若进程在 ref 更新后退出，recovery 会重新核对全部 delivery gates，并识别 ref 尚未移动、
+ref 已为 final 但 index 仍为 expected-old tree、ref/index 均已为 final tree 三种安全状态。并发移动、
+无法解释的 index 或同步失败会保留现场，不自动 rebase、清理用户文件、解决冲突或覆盖目标分支。
+更新后的 postcondition 要求 final ref 和 candidate index tree，但允许同步前已存在且不冲突的
+untracked/ignored residue。目标仓库 hooks 只在临时 final worktree 执行一次；内部 Builder/Tester
+checkpoint 与 integration commit 继续跳过 hooks 和 GPG signing。
 
 ## 设计推导
 

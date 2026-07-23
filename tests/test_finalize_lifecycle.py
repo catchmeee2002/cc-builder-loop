@@ -39,10 +39,16 @@ class FinalizeLifecycleTest(unittest.TestCase):
     def tearDown(self) -> None:
         cleanup_repo(self.repo)
 
-    def ready_run(self) -> tuple[Path, Path, str]:
+    def ready_run(
+        self, files: dict[str, str] | None = None
+    ) -> tuple[Path, Path, str]:
         started, run_path = start_run(self.repo, self.plan)
         builder, _tester = worktrees_from(started, run_path)
-        (builder / "src" / "ready_feature.py").write_text("READY = True\n")
+        candidate_files = files or {"src/ready_feature.py": "READY = True\n"}
+        for relative, content in candidate_files.items():
+            path = builder / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content)
         commit_all(builder, "ready candidate")
         tester_agent_id = register_agent(run_path, "tester")
         assert_status(run_cli("integrate-tests", "--run", run_path), "NOOP", rc=0)
@@ -126,6 +132,10 @@ class FinalizeLifecycleTest(unittest.TestCase):
         commit_msg_hook.write_text("#!/bin/sh\ntouch \"$0.ran\"\n")
         commit_msg_hook.chmod(0o755)
 
+        ready = run_cli("status", "--run", run_path)
+        assert_status(ready, "ACTIVE", rc=0)
+        self.assertIs(ready.data.get("delivery_gates_ready"), True, ready.data)
+        self.assertIs(ready.data.get("ready_to_finalize"), True, ready.data)
         result = run_cli("finalize", "--run", run_path)
         assert_status(result, "COMPLETE", rc=0)
         self.assertEqual(result.data.get("final_head"), head(self.repo))
@@ -189,7 +199,7 @@ class FinalizeLifecycleTest(unittest.TestCase):
         self.assertTrue(tester.is_dir())
         self.assertEqual(head(self.repo), self.spec_head)
 
-    def test_non_runtime_ignored_target_residue_still_blocks_finalize(self) -> None:
+    def test_unrelated_ignored_target_residue_survives_finalize(self) -> None:
         run_path, _builder, _candidate = self.ready_run()
         git_common = Path(git(self.repo, "rev-parse", "--git-common-dir"))
         if not git_common.is_absolute():
@@ -197,13 +207,112 @@ class FinalizeLifecycleTest(unittest.TestCase):
         exclude = git_common / "info" / "exclude"
         with exclude.open("a", encoding="utf-8") as stream:
             stream.write("/target-local.cache\n")
-        (self.repo / "target-local.cache").write_text("local residue\n")
+        residue = self.repo / "target-local.cache"
+        residue.write_text("local residue\n")
+        ordinary = self.repo / "local-notes.txt"
+        ordinary.write_text("ordinary residue\n")
 
         result = run_cli("finalize", "--run", run_path)
 
-        assert_status(result, "NEEDS_USER", rc=1)
-        self.assertEqual(result.data.get("code"), "TARGET_DIRTY")
-        self.assertIn("target-local.cache", result.data.get("dirty_paths") or [])
+        assert_status(result, "COMPLETE", rc=0)
+        self.assertEqual(residue.read_text(), "local residue\n")
+        self.assertEqual(ordinary.read_text(), "ordinary residue\n")
+        self.assertEqual(git(self.repo, "ls-files", "target-local.cache"), "")
+        self.assertEqual(git(self.repo, "ls-files", "local-notes.txt"), "")
+        self.assertNotEqual(head(self.repo), self.spec_head)
+
+    def test_tracked_target_residue_stages_once_and_resumes_after_cleanup(self) -> None:
+        run_path, _builder, candidate = self.ready_run()
+        initially_ready = run_cli("status", "--run", run_path)
+        assert_status(initially_ready, "ACTIVE", rc=0)
+        self.assertIs(initially_ready.data.get("ready_to_finalize"), True)
+        readme = self.repo / "README.md"
+        original = readme.read_text()
+        readme.write_text(original + "local target edit\n")
+
+        git_common = Path(git(self.repo, "rev-parse", "--git-common-dir"))
+        if not git_common.is_absolute():
+            git_common = (self.repo / git_common).resolve()
+        hook = git_common / "hooks" / "commit-msg"
+        marker = git_common / "finalize-hook-ran"
+        hook.write_text(
+            "#!/bin/sh\n"
+            f'if [ -e "{marker}" ]; then exit 23; fi\n'
+            f': > "{marker}"\n'
+        )
+        hook.chmod(0o755)
+
+        status = run_cli("status", "--run", run_path)
+        assert_status(status, "ACTIVE", rc=0)
+        self.assertIs(status.data.get("delivery_gates_ready"), True, status.data)
+        self.assertIs(status.data.get("ready_to_stage_final"), True, status.data)
+        self.assertIs(status.data.get("ready_to_finalize"), False, status.data)
+        self.assertEqual(
+            [item.get("code") for item in status.data.get("finalize_blockers", [])],
+            ["TARGET_TRACKED_DIRTY"],
+            status.data,
+        )
+
+        blocked = run_cli("finalize", "--run", run_path)
+        assert_status(blocked, "NEEDS_USER", rc=1)
+        self.assertEqual(
+            blocked.data.get("code"), "FINAL_COMMIT_STAGED_TARGET_BLOCKED"
+        )
+        staged = blocked.data.get("staged_final_head")
+        self.assertIsInstance(staged, str, blocked.data)
+        self.assertEqual(head(self.repo), self.spec_head)
+        self.assertTrue(marker.is_file())
+        self.assertEqual(load_ledger(run_path)["finalize_intent"]["final_head"], staged)
+
+        unchanged = run_cli("finalize", "--run", run_path)
+        assert_status(unchanged, "NEEDS_USER", rc=1)
+        self.assertEqual(unchanged.data.get("staged_final_head"), staged)
+
+        staged_status = run_cli("status", "--run", run_path)
+        assert_status(staged_status, "ACTIVE", rc=0)
+        self.assertEqual(staged_status.data.get("staged_final_head"), staged)
+        self.assertIs(staged_status.data.get("ready_to_stage_final"), False)
+        self.assertIs(staged_status.data.get("ready_to_finalize"), False)
+
+        readme.write_text(original)
+        ready = run_cli("status", "--run", run_path)
+        assert_status(ready, "ACTIVE", rc=0)
+        self.assertIs(ready.data.get("ready_to_finalize"), True, ready.data)
+        completed = run_cli("finalize", "--run", run_path)
+        assert_status(completed, "COMPLETE", rc=0)
+        self.assertEqual(completed.data.get("final_head"), staged)
+        self.assertEqual(tree(self.repo), tree(self.repo, candidate))
+
+    def test_untracked_file_directory_collisions_stage_without_overwrite(self) -> None:
+        run_path, _builder, _candidate = self.ready_run(
+            {
+                "src/generated/value.txt": "generated\n",
+                "src/standalone": "tracked final file\n",
+            }
+        )
+        parent_collision = self.repo / "src" / "generated"
+        parent_collision.write_text("local parent file\n")
+        child_collision = self.repo / "src" / "standalone" / "local.log"
+        child_collision.parent.mkdir(parents=True)
+        child_collision.write_text("local child file\n")
+
+        blocked = run_cli("finalize", "--run", run_path)
+
+        assert_status(blocked, "NEEDS_USER", rc=1)
+        self.assertEqual(
+            blocked.data.get("code"), "FINAL_COMMIT_STAGED_TARGET_BLOCKED"
+        )
+        collision = next(
+            item
+            for item in blocked.data.get("finalize_blockers", [])
+            if item.get("code") == "TARGET_PATH_COLLISION"
+        )
+        self.assertEqual(
+            set(collision.get("paths") or []),
+            {"src/generated", "src/standalone/local.log"},
+        )
+        self.assertEqual(parent_collision.read_text(), "local parent file\n")
+        self.assertEqual(child_collision.read_text(), "local child file\n")
         self.assertEqual(head(self.repo), self.spec_head)
 
     def test_temporary_target_worktree_is_removed_after_success(self) -> None:
@@ -364,7 +473,8 @@ class FinalizeLifecycleTest(unittest.TestCase):
         wrapper = wrapper_dir / "git"
         wrapper.write_text(
             "#!/bin/sh\n"
-            "if [ ! -e \"$CRASH_MARKER\" ] && [ \"$3\" = read-tree ]; then\n"
+            "if [ ! -e \"$CRASH_MARKER\" ] && [ \"$3\" = read-tree ] "
+            "&& [ \"$4\" != -n ]; then\n"
             "  : > \"$CRASH_MARKER\"\n"
             "  kill -9 \"$PPID\"\n"
             "  exit 137\n"

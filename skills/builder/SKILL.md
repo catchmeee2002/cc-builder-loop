@@ -152,14 +152,19 @@ description: 显式执行已接受的 builder-loop 方案，在隔离 worktree �
    `record-evidence --run <run> --kind reviewed --head <head> --agent-id <reviewer_id>` 与
    `record-evidence --run <run> --kind doc_reviewed --head <head> --agent-id <reviewer_id>`。
    所有证据必须指向同一个 HEAD；只经 runtime 写入，不直接编辑 ledger。
-6. 再调用 `status --run <run>`，确认没有 missing/stale gate 后，从计划生成简洁的
-   Conventional Commit 消息并调用 `finalize --run <run> --message <message>`。runtime 必须在
-   临时 ref/worktree 执行目标仓库 hooks，核对 parent 与 tree 后才以 expected-old CAS 更新目标
-   分支。仅
-   `status=COMPLETE` 或幂等 `NOOP` 表示成功。
-7. `CONFLICT`、`CONTINUITY_FAILURE`、`NEEDS_USER`、`FATAL` 或
+6. 再调用 `status --run <run>`，确认没有 missing/stale gate 且
+   `delivery_gates_ready=true`。从计划生成简洁的 Conventional Commit 消息；当
+   `ready_to_stage_final=true` 或 `ready_to_finalize=true` 时调用
+   `finalize --run <run> --message <message>`。runtime 先在临时 ref/worktree 执行目标仓库 hooks、
+   核对 parent/tree 并持久化唯一 final intent，再在没有 `finalize_blockers` 时以 expected-old CAS
+   更新目标分支。
+7. `FINAL_COMMIT_STAGED_TARGET_BLOCKED` 表示已冻结 `staged_final_head`，不是 gate 失败。只向用户
+   展示 `finalize_blockers` 中的风险路径，请其处理后重试同一 `finalize`，或由用户明确选择
+   abandon；不要要求删除 `target_residue` 中未被列为 blocker 的 ignored/untracked 文件，也不要
+   重跑 hooks、Tester、验证或 Reviewer。仅 `status=COMPLETE` 或幂等 `NOOP` 表示成功。
+8. 其他 `CONFLICT`、`CONTINUITY_FAILURE`、`NEEDS_USER`、`FATAL` 或
    `FATAL_AMBIGUOUS` 时保留现场，并根据 `message` 请求用户决定。只有用户明确放弃时才调用
    `abandon --run <run>`。
-8. 成功时最后一行输出 `BUILDER_RESULT: pass run_id=<run_id>`；已按用户决定放弃时输出
+9. 成功时最后一行输出 `BUILDER_RESULT: pass run_id=<run_id>`；已按用户决定放弃时输出
    `BUILDER_RESULT: abandoned run_id=<run_id>`；需要用户时输出
    `BUILDER_RESULT: needs_user run_id=<run_id>`。不要在 runtime 未完成时声称交付完成。

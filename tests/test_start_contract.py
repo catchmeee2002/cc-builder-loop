@@ -89,6 +89,66 @@ class StartContractTest(unittest.TestCase):
         self.assertEqual(result.data.get("run_id"), "explicit-fixture-run")
         self.assert_public_paths(result)
 
+    def test_plan_validate_and_start_expose_dirty_target_without_blocking(self) -> None:
+        readme = self.repo / "README.md"
+        readme.write_text(readme.read_text() + "local target edit\n")
+        (self.repo / "local.tmp").write_text("ordinary untracked\n")
+        git_common = Path(git(self.repo, "rev-parse", "--git-common-dir"))
+        if not git_common.is_absolute():
+            git_common = (self.repo / git_common).resolve()
+        exclude = git_common / "info" / "exclude"
+        with exclude.open("a", encoding="utf-8") as stream:
+            stream.write("/ignored.cache\n")
+        (self.repo / "ignored.cache").write_text("ignored residue\n")
+
+        validated = run_cli(
+            "plan-validate", "--repo", self.repo, "--plan", self.plan
+        )
+        assert_status(validated, "READY", rc=0)
+        self.assertEqual(validated.data.get("target_worktree"), str(self.repo))
+        self.assertIn(
+            "README.md",
+            validated.data.get("target_residue", {}).get("tracked_dirty_paths", []),
+            validated.data,
+        )
+        self.assertIn(
+            "local.tmp",
+            validated.data.get("target_residue", {}).get("untracked_paths", []),
+            validated.data,
+        )
+        self.assertIn(
+            "ignored.cache",
+            validated.data.get("target_residue", {}).get("ignored_paths", []),
+            validated.data,
+        )
+        self.assertEqual(
+            [item.get("code") for item in validated.data.get("finalize_blockers", [])],
+            ["TARGET_TRACKED_DIRTY"],
+            validated.data,
+        )
+        self.assertFalse((self.repo / ".builder-loop").exists())
+
+        started = run_cli(
+            "start",
+            "--repo",
+            self.repo,
+            "--plan",
+            self.plan,
+            "--run",
+            "dirty-target-start",
+            "--session-id",
+            "dirty-target-session",
+        )
+        assert_status(started, "READY", rc=0)
+        self.assertEqual(
+            [item.get("code") for item in started.data.get("finalize_blockers", [])],
+            ["TARGET_TRACKED_DIRTY"],
+            started.data,
+        )
+        ledger = load_ledger(Path(started.data["run_path"]))
+        self.assertNotIn("target_residue", ledger)
+        self.assertNotIn("finalize_blockers", ledger)
+
     def test_start_requires_task_or_run(self) -> None:
         result = run_cli(
             "start",
