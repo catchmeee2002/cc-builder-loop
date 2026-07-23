@@ -49,6 +49,10 @@ Reviewer；全部门禁通过后，将候选结果收敛为一个语义提交。
 - `doctor` 只读报告 ledger、worktree、intake、evidence、progress 和 finalize 状态；`recover` 只重放
   已持久化事务，`cleanup` 只删除 terminal run 中 clean 且未漂移的 ledger-owned worktree。未知
   orphan 永不自动 adopt 或删除。
+- start 冻结实际运行的 adapter 类型、commit 和 dirty 状态。高信号交付完成后，Builder 将业务项目、
+  builder-loop 与外部平台事故按单一 owner 分流；跨边界因果链拆成两个原子事故，经用户授权才写
+  项目问题文档或 GitHub issue。工程问题处理后，剩余隐含知识委托 `$memory-review`，不再执行旧版
+  五问打分或直接写 memory。
 - finalize 只更新本地目标分支，不自动 push、创建 PR 或合并远端分支。
 - 正常修复循环会自动继续；测试目标或 ownership 变化、计划过期、迭代上限、Reviewer
   决策项、agent/target continuity 失败、目标同步 blocker 或 Git 冲突等安全停止会交还用户。

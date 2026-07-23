@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- 将旧版 Builder 末尾的五问打分与直接 memory 协议替换为交付后分层复盘：业务项目、builder-loop
+  和外部平台事故按单一 owner 落盘，跨边界因果链强制拆分；问题记录只含客观现场并经用户授权。
+  工程问题处理后，剩余隐含知识才以 `builder-loop delegated` 模式交给 `$memory-review`。
+- 新 run 在 ledger 中冻结 `runtime_identity`，记录 Codex/Claude Code adapter、实际 commit、dirty
+  状态和捕获状态；旧 ledger 明确标为 `legacy-unavailable`，事故版本不再依赖事后猜测。
 - 将未授权 dirty 的语义从“全局停止”修正为“默认隔离”：新增 exact-path `workspace-intake` 与
   `workspace-scan`，以不可变 Git snapshot 把用户授权输入交给 Builder，target 与全局 stash 在
   start/abandon 期间保持不变；finalize 只消费未漂移的 captured state。

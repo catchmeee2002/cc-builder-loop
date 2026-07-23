@@ -244,6 +244,40 @@ def branch_head(repo: Path, branch: str) -> str:
     return full_head(repo, f"refs/heads/{branch}")
 
 
+def unavailable_runtime_identity() -> dict[str, Any]:
+    return {
+        "adapter": "unknown",
+        "adapter_commit": None,
+        "adapter_dirty": None,
+        "capture_status": "legacy-unavailable",
+    }
+
+
+def capture_runtime_identity() -> dict[str, Any]:
+    source_root = Path(__file__).resolve().parents[2]
+    head = git(source_root, "rev-parse", "--verify", "HEAD^{commit}", check=False)
+    if head.returncode != 0 or not re.fullmatch(r"[0-9a-f]{40}", head.stdout.strip()):
+        return {
+            "adapter": "codex",
+            "adapter_commit": None,
+            "adapter_dirty": None,
+            "capture_status": "unavailable",
+        }
+    status = git(
+        source_root,
+        "status",
+        "--porcelain=v1",
+        "--untracked-files=all",
+        check=False,
+    )
+    return {
+        "adapter": "codex",
+        "adapter_commit": head.stdout.strip(),
+        "adapter_dirty": bool(status.stdout) if status.returncode == 0 else None,
+        "capture_status": "captured" if status.returncode == 0 else "partial",
+    }
+
+
 def current_branch(repo: Path) -> str:
     result = git(repo, "symbolic-ref", "--quiet", "--short", "HEAD", check=False)
     if result.returncode != 0 or not result.stdout.strip():
@@ -395,6 +429,7 @@ def read_json(path: Path) -> dict[str, Any]:
         )
     if value.get("schema_version") == LEGACY_SCHEMA_VERSION:
         value = migrate_ledger_v1(value)
+    value.setdefault("runtime_identity", unavailable_runtime_identity())
     return value
 
 
@@ -425,6 +460,7 @@ def migrate_ledger_v1(legacy: dict[str, Any]) -> dict[str, Any]:
         "resumes": [],
     }
     ledger["evidence"] = evidence
+    ledger.setdefault("runtime_identity", unavailable_runtime_identity())
     ledger.setdefault(
         "workspace_intake",
         {
@@ -3671,6 +3707,7 @@ def status_facts(repo: Path, ledger: dict[str, Any]) -> dict[str, Any]:
     )
     return {
         "run_id": ledger["run_id"],
+        "runtime_identity": ledger.get("runtime_identity"),
         "owner_session_id": ledger["owner_session_id"],
         "phase": ledger["phase"],
         "spec_head": ledger["spec_head"],
@@ -4065,6 +4102,7 @@ def cmd_start_locked(args: argparse.Namespace, repo: Path) -> tuple[dict[str, An
     now = utc_now()
     ledger: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
+        "runtime_identity": capture_runtime_identity(),
         "run_id": run_id,
         "owner_session_id": session_id,
         "phase": "active",
@@ -4194,6 +4232,7 @@ def cmd_start_locked(args: argparse.Namespace, repo: Path) -> tuple[dict[str, An
         "owner_session_id": session_id,
         "spec_head": spec_head,
         "plan_sha256": contract.sha256,
+        "runtime_identity": ledger["runtime_identity"],
         "frozen_plan": str(plan_path),
         "parallel_ready": contract.parallel_ready,
         "prerequisite_publication_required": (
@@ -7286,6 +7325,7 @@ def _doctor_ledgers(repo: Path) -> tuple[list[dict[str, Any]], list[dict[str, An
                     "run_id": run_id,
                     "phase": ledger.get("phase"),
                     "schema_version": ledger.get("schema_version"),
+                    "runtime_identity": ledger.get("runtime_identity"),
                     "ledger": str(path),
                     "worktrees": role_facts,
                     "workspace_intake": ledger.get("workspace_intake"),

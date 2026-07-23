@@ -6,6 +6,7 @@
   "additionalProperties": false,
   "required": [
     "schema_version",
+    "runtime_identity",
     "run_id",
     "owner_session_id",
     "phase",
@@ -33,6 +34,7 @@
   ],
   "properties": {
     "schema_version": {"const": 2},
+    "runtime_identity": {"$ref": "#/$defs/runtimeIdentity"},
     "run_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"},
     "owner_session_id": {"type": "string", "minLength": 1},
     "phase": {
@@ -374,6 +376,21 @@
       "oneOf": [{"$ref": "#/$defs/commit"}, {"type": "null"}]
     },
     "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "runtimeIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["adapter", "adapter_commit", "adapter_dirty", "capture_status"],
+      "properties": {
+        "adapter": {"enum": ["codex", "claude-code", "unknown"]},
+        "adapter_commit": {"$ref": "#/$defs/nullableCommit"},
+        "adapter_dirty": {
+          "oneOf": [{"type": "boolean"}, {"type": "null"}]
+        },
+        "capture_status": {
+          "enum": ["captured", "partial", "unavailable", "legacy-unavailable"]
+        }
+      }
+    },
     "workspacePlanEntry": {
       "type": "object",
       "additionalProperties": false,

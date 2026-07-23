@@ -123,6 +123,7 @@ class DiagnosticsAndProgressContractTest(unittest.TestCase):
         path = run_path / "ledger.json"
         ledger = json.loads(path.read_text())
         ledger["schema_version"] = 1
+        ledger.pop("runtime_identity")
         ledger["verification_attempts"] = len(ledger.pop("verification")["attempts"])
         evidence = ledger.pop("evidence")
         mapping = {
@@ -145,6 +146,29 @@ class DiagnosticsAndProgressContractTest(unittest.TestCase):
         self.assertEqual(migrated["schema_version"], 2)
         self.assertTrue(
             any(item.get("type") == "ledger_migrated" for item in migrated["events"])
+        )
+        self.assertEqual(
+            migrated["runtime_identity"]["capture_status"], "legacy-unavailable"
+        )
+        assert_ledger_schema(run_path)
+
+    def test_existing_v2_ledger_backfills_unavailable_runtime_identity(self) -> None:
+        repo = init_repo()
+        self.repos.append(repo)
+        plan = write_plan(repo, plan_markdown(head(repo)))
+        _started, run_path = start_run(repo, plan)
+        path = run_path / "ledger.json"
+        ledger = json.loads(path.read_text())
+        ledger.pop("runtime_identity")
+        path.write_text(json.dumps(ledger))
+
+        verified = run_cli("verify", "--run", run_path)
+        assert_status(verified, "PASS", rc=0)
+        backfilled = load_ledger(run_path)
+        self.assertEqual(backfilled["runtime_identity"]["adapter"], "unknown")
+        self.assertEqual(
+            backfilled["runtime_identity"]["capture_status"],
+            "legacy-unavailable",
         )
         assert_ledger_schema(run_path)
 

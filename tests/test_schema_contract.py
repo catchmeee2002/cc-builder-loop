@@ -45,10 +45,18 @@ class LedgerSchemaContractTest(unittest.TestCase):
         repo = init_repo()
         self.repos.append(repo)
         plan = write_plan(repo, plan_markdown(head(repo)))
-        _started, run_path = start_run(repo, plan, task="schema-l2")
+        started, run_path = start_run(repo, plan, task="schema-l2")
         ledger = load_ledger(run_path)
         self.validator.validate(ledger)
         self.assertEqual(ledger["schema_version"], 2)
+        self.assertEqual(ledger["runtime_identity"]["adapter"], "codex")
+        self.assertRegex(
+            ledger["runtime_identity"]["adapter_commit"], r"^[0-9a-f]{40}$"
+        )
+        self.assertIn(
+            ledger["runtime_identity"]["capture_status"], {"captured", "partial"}
+        )
+        self.assertEqual(started.data["runtime_identity"], ledger["runtime_identity"])
         self.assertIn("evidence", ledger)
         self.assertIn("workspace_intake", ledger)
         self.assertNotIn("verified_head", ledger)

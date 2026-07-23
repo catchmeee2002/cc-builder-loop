@@ -162,6 +162,27 @@ ledger-owned、clean 且 HEAD 未漂移的 worktree。未知 orphan 只报告人
 event。旧 run 没有 evidence scope，迁移后按全 tree 语义继续，run/session/agent/turn、candidate、
 intent 和 worktree 身份保持不变。
 
+start 还把实际执行 adapter 的 `runtime_identity` 冻结进 ledger，包括 Codex/Claude Code 类型、
+adapter commit、checkout dirty 状态和捕获状态。事故记录只能引用这份 planning-time/runtime-time
+事实；旧 ledger 没有该字段时明确标为 `legacy-unavailable`，不得用任务结束时的当前 checkout
+反推历史版本。
+
+## 交付后事故与知识复盘
+
+finalize 完成后，Builder 只在出现多轮失败、冲突/recovery、Tester correction、Reviewer finding、
+角色或 evidence 独立性异常、用户纠正的重要前提，或计划外工程缺陷时加载按需 retrospective
+reference。复盘不重新打开 delivery gate，也不写 runtime ledger。
+
+每个工程事故最终只能归属 `current_project`、`builder_loop` 或 `external_platform`。同一因果链
+跨越业务仓库与 builder-loop 时强制拆成两个原子事故；两条可以相互引用，但复现、责任和关闭条件
+彼此独立。提交前先只读搜索重复项，再通过 `request_user_input` 请求创建 issue、追加已有 issue、
+写入项目声明的问题文档或跳过。问题记录只包含触发场景、现场过程、现象、已确认事实、根因状态和
+复现条件，不包含建议或设计方向，并必须注明实际运行的是 Claude Code 版还是 Codex 版。
+
+工程问题完成分流后，Builder 才以 `builder-loop delegated` 模式主动加载 `$memory-review`，只交付
+不能通过代码、测试、正式契约、项目文档或 issue 固化的剩余知识。旧版五问打分和直接写 memory
+协议不再属于 Builder prompt；memory-review 的结果也不构成交付 evidence。
+
 ## Git 事务
 
 Builder 与 Tester 内部 commits 保留到审查完成。finalize 从已审 candidate 创建临时 ref 和
@@ -205,5 +226,7 @@ checkpoint 与 integration commit 继续跳过 hooks 和 GPG signing。
   覆盖风险才停止，而不是把 target 全局干净当成交付前提。
 - 「契约与成熟行为先于实现」要求迁移维护逐项 parity corpus；由此删除旧 fixture 前必须明确
   covered、rescue 或 retired，不能只用新 runtime 测试证明自身自洽。
+- 「每个事实只有一个家」要求工程事故按单一 owner 落盘；由此跨业务/loop 边界的因果链必须拆分，
+  adapter 版本必须由 start 冻结，剩余隐含知识才交给原生 memory skill。
 
 runtime 不自动 push、开 PR、解决冲突、adopt 未知 orphan 或恢复丢失的 subagent context。

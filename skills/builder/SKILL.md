@@ -177,6 +177,23 @@ description: 显式执行已接受的 builder-loop 方案，在隔离 worktree �
    `abandon --run <run>`。
    finalize/cleanup 中断时先用 `doctor` 查看 intent，再用 `recover` 重放已有安全事务；未知 orphan
    不 adopt、不删除。terminal run 只有用户明确要求丢弃且 `cleanup` 证明 head/residue 未漂移时才清理。
-9. 成功时最后一行输出 `BUILDER_RESULT: pass run_id=<run_id>`；已按用户决定放弃时输出
-   `BUILDER_RESULT: abandoned run_id=<run_id>`；需要用户时输出
+9. finalize 成功后进入「交付后事故与知识复盘」，完成或安全跳过后再输出最终结果。已按用户决定
+   abandon 时不做成功复盘。
+
+## 交付后事故与知识复盘
+
+1. 只在 runtime 已 `COMPLETE` 后检查高信号事实：多轮 verify/no-progress/architecture review、冲突或
+   recovery、Tester correction、Reviewer findings、角色/evidence 独立性异常、用户纠正的重要前提，
+   或本次任务中发现的计划外工程缺陷。普通一次通过且没有候选时直接跳过。
+2. 命中任一信号时完整读取 [references/post-delivery-retrospective.md](references/post-delivery-retrospective.md)，
+   先完成工程事故提取、单一归属、跨边界拆分、重复检查和用户授权；不得把可通过代码、测试、契约、
+   文档或 issue 固化的问题塞进 memory。
+3. 工程事故处理后，若仍有不可工程固化的稳定隐含知识，主动加载 `$memory-review`，明确使用
+   `builder-loop delegated` 聚焦模式并只传剩余候选。不得复制旧版五问、打分阈值或直接写
+   `$CODEX_HOME/memories/`。`$memory-review` 不可用时只报告跳过，不自行发明替代筛选规则。
+4. 复盘不是 delivery evidence，不写 ledger，不改变已经完成的 `BUILDER_RESULT`。创建/更新 issue 或
+   问题文档前必须使用 `request_user_input` 取得授权；当前 surface 不提供该工具时不执行写入，只报告
+   `RETROSPECTIVE_PENDING`，但交付结果仍为 pass。
+5. 成功时最后一行输出 `BUILDER_RESULT: pass run_id=<run_id>`；已按用户决定放弃时输出
+   `BUILDER_RESULT: abandoned run_id=<run_id>`；runtime 尚未完成且需要用户时输出
    `BUILDER_RESULT: needs_user run_id=<run_id>`。不要在 runtime 未完成时声称交付完成。

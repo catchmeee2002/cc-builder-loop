@@ -40,6 +40,9 @@ python3 "${CODEX_HOME:-$HOME/.codex}/skills/.system/skill-creator/scripts/quick_
 - no-progress/architecture-review 只能在用户确认后用 `resume --reason` 解除；不得重置 attempt 上限。
 - 诊断先用只读 `doctor`；`recover` 只重放 persisted intent，`cleanup` 只处理未漂移的 terminal
   worktree，未知 orphan 不 adopt、不删除。
+- 交付后工程事故只能归属 current project、builder-loop 或 external platform；跨边界因果链必须拆成
+  两个原子事故。先经用户授权写对应问题容器，再把不可工程固化的剩余知识委托 `$memory-review`；
+  memory 不得替代 issue、代码、测试、契约或项目文档。
 - Builder 写代码和文档，Tester 写计划允许的测试，Reviewer 只读审查。
 - 修复按 ownership 路由；测试实现问题回到原 Tester，契约变化进入 abandon/new plan。
 - Git 冲突只安全停止；runtime 不自动仲裁。
@@ -54,6 +57,8 @@ python3 "${CODEX_HOME:-$HOME/.codex}/skills/.system/skill-creator/scripts/quick_
 - repository runner wrapper 必须在 `spec_head` 已存在且为仓库内普通文件；拒绝 symlink、仓库外
   target 和 PATH override。
 - 不新增第二份计划、测试目标或 evidence 缓存。
+- 事故记录只写触发场景、现场过程、现象、已确认事实、根因状态和复现条件；不写建议或方案，并从
+  ledger.runtime_identity 标明 Claude Code/Codex adapter 及实际 commit。
 - 迁移或删除成熟能力时更新 legacy parity corpus，逐项标明 covered、rescue 或 retired；不能只
   用新实现的自洽 fixture 证明迁移成功。
 
