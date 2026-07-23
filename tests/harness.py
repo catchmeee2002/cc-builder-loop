@@ -199,6 +199,8 @@ def plan_markdown(
     runner: str | None = "bash verify.sh",
     include_e2e: bool = False,
     include_unit_spec: bool = True,
+    evidence_scopes: dict[str, dict[str, list[str]]] | None = None,
+    workspace_intake: list[dict[str, str]] | None = None,
 ) -> str:
     builder_write = builder_write or ["src/**", "docs/**"]
     tester_write = tester_write or ["tests/**"]
@@ -210,6 +212,22 @@ def plan_markdown(
         "Implement and independently verify addition behavior.",
         "",
     ]
+    if workspace_intake:
+        lines.extend(
+            [
+                "<!-- workspace-intake -->",
+                "schema_version: 1",
+                "files:",
+            ]
+        )
+        for item in workspace_intake:
+            lines.extend(
+                [
+                    f'  - path: {json.dumps(item["path"])}',
+                    f'    state_sha256: {json.dumps(item["state_sha256"])}',
+                ]
+            )
+        lines.extend(["<!-- /workspace-intake -->", ""])
     if include_unit_spec:
         lines.extend(
             [
@@ -234,6 +252,20 @@ def plan_markdown(
                 "ownership:",
                 f"  builder_write: {json.dumps(builder_write)}",
                 f"  tester_write: {json.dumps(tester_write)}",
+            ]
+        )
+        if evidence_scopes is not None:
+            lines.append("evidence_scopes:")
+            for key in ("machine", "blackbox"):
+                lines.extend(
+                    [
+                        f"  {key}:",
+                        f"    affects: {json.dumps(evidence_scopes[key]['affects'])}",
+                        f"    exempt: {json.dumps(evidence_scopes[key]['exempt'])}",
+                    ]
+                )
+        lines.extend(
+            [
                 "behaviors:",
                 "  - id: add-positive",
                 '    what: "add returns the arithmetic sum"',

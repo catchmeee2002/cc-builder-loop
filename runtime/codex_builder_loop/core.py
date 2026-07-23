@@ -20,8 +20,11 @@ import uuid
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, Iterator, Sequence
 
+from . import evidence as evidence_contract
+from . import workspace as workspace_contract
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+LEGACY_SCHEMA_VERSION = 1
 PLAN_SCHEMA_VERSION = 2
 EXIT_PASS = 0
 EXIT_FAIL = 1
@@ -33,18 +36,21 @@ ACTIVE_PHASES = {
     "finalize_conflict",
     "continuity_failure",
     "iteration_limit",
+    "no_progress",
+    "architecture_review_required",
     "finalized_cleanup",
 }
-EVIDENCE_FIELDS = (
-    "verified_head",
-    "e2e_verified_head",
-    "reviewed_head",
-    "doc_reviewed_head",
-)
+EVIDENCE_FIELDS = ("machine", "blackbox", "review", "doc_review")
+EVIDENCE_STATUS_FIELDS = {
+    "machine": "verified_head",
+    "blackbox": "e2e_verified_head",
+    "review": "reviewed_head",
+    "doc_review": "doc_reviewed_head",
+}
 PUBLIC_EVIDENCE_FIELDS = {
-    "e2e_verified": "e2e_verified_head",
-    "reviewed": "reviewed_head",
-    "doc_reviewed": "doc_reviewed_head",
+    "e2e_verified": "blackbox",
+    "reviewed": "review",
+    "doc_reviewed": "doc_review",
 }
 AGENT_RESULTS = {
     "tester": {"tests_ready", "pass", "fail", "target_change_required", "blocked"},
@@ -112,6 +118,8 @@ class PlanContract:
     supersedes_run_id: str | None
     supersedes_plan_sha256: str | None
     has_e2e_cases: bool
+    workspace_intake: tuple[dict[str, str], ...]
+    evidence_scopes: dict[str, dict[str, tuple[str, ...]]]
     tags: tuple[str, ...]
 
     def as_dict(self) -> dict[str, Any]:
@@ -129,6 +137,7 @@ class PlanPreflight:
     effective_verification_source: str
     max_iterations: int
     runner_paths: tuple[str, ...]
+    workspace_intake: tuple[dict[str, Any], ...]
 
 
 def utc_now() -> str:
@@ -376,12 +385,106 @@ def read_json(path: Path) -> dict[str, Any]:
             f"cannot read ledger: {exc}",
             code="LEDGER_INVALID",
         ) from exc
-    if not isinstance(value, dict) or value.get("schema_version") != SCHEMA_VERSION:
+    if not isinstance(value, dict) or value.get("schema_version") not in {
+        LEGACY_SCHEMA_VERSION,
+        SCHEMA_VERSION,
+    }:
         raise RuntimeProblem(
             "unsupported or invalid ledger schema",
             code="LEDGER_SCHEMA_ERROR",
         )
+    if value.get("schema_version") == LEGACY_SCHEMA_VERSION:
+        value = migrate_ledger_v1(value)
     return value
+
+
+def migrate_ledger_v1(legacy: dict[str, Any]) -> dict[str, Any]:
+    ledger = dict(legacy)
+    evidence: dict[str, Any] = {}
+    for key, legacy_field in EVIDENCE_STATUS_FIELDS.items():
+        head = ledger.pop(legacy_field, None)
+        evidence[key] = (
+            evidence_contract.make_record(
+                kind=key,
+                observed_head=str(head),
+                accepted_head=str(head),
+                input_sha256=sha256_text(f"legacy-v1:{key}:{head}"),
+                scope=["**"],
+                provenance={"migration": "ledger-v1", "legacy_field": legacy_field},
+            )
+            if isinstance(head, str) and head
+            else None
+        )
+    raw_attempts = ledger.pop("verification_attempts", 0)
+    attempt_count = raw_attempts if type(raw_attempts) is int and raw_attempts >= 0 else 0
+    ledger["verification"] = {
+        "attempts": [
+            {"attempt": index, "legacy": True}
+            for index in range(1, attempt_count + 1)
+        ],
+        "resumes": [],
+    }
+    ledger["evidence"] = evidence
+    ledger.setdefault(
+        "workspace_intake",
+        {
+            "required": False,
+            "paths": [],
+            "entries": [],
+            "snapshot_head": None,
+            "snapshot_tree": None,
+        },
+    )
+    plan = ledger.setdefault("plan", {})
+    if isinstance(plan, dict):
+        plan.setdefault(
+            "evidence_scopes",
+            {
+                "machine": {"affects": ["**"], "exempt": []},
+                "blackbox": {"affects": ["**"], "exempt": []},
+            },
+        )
+        plan.setdefault("workspace_intake", [])
+    ledger["schema_version"] = SCHEMA_VERSION
+    events = ledger.setdefault("events", [])
+    events.append(
+        {
+            "sequence": len(events) + 1,
+            "type": "ledger_migrated",
+            "at": utc_now(),
+            "facts": {
+                "from_schema_version": LEGACY_SCHEMA_VERSION,
+                "to_schema_version": SCHEMA_VERSION,
+            },
+        }
+    )
+    ledger["updated_at"] = utc_now()
+    return ledger
+
+
+def evidence_record(ledger: dict[str, Any], key: str) -> dict[str, Any] | None:
+    value = ledger.get("evidence", {}).get(key)
+    return value if isinstance(value, dict) else None
+
+
+def evidence_head(ledger: dict[str, Any], key: str) -> str | None:
+    return evidence_contract.record_head(evidence_record(ledger, key))
+
+
+def clear_evidence(ledger: dict[str, Any], key: str) -> dict[str, Any] | None:
+    previous = evidence_record(ledger, key)
+    ledger.setdefault("evidence", {})[key] = None
+    return previous
+
+
+def verification_attempt_records(ledger: dict[str, Any]) -> list[dict[str, Any]]:
+    verification = ledger.setdefault("verification", {"attempts": [], "resumes": []})
+    attempts = verification.setdefault("attempts", [])
+    return attempts if isinstance(attempts, list) else []
+
+
+def verification_attempt_count(ledger: dict[str, Any]) -> int:
+    return len(verification_attempt_records(ledger))
 
 
 @contextlib.contextmanager
@@ -412,15 +515,99 @@ def save_ledger(repo: Path, ledger: dict[str, Any]) -> None:
     write_json_atomic(ledger_path(repo, str(ledger["run_id"])), ledger)
 
 
-def invalidate_evidence(ledger: dict[str, Any], previous_head: str, current_head: str) -> None:
+def evidence_scope_patterns(ledger: dict[str, Any], key: str) -> list[str]:
+    scopes = ledger.get("plan", {}).get("evidence_scopes", {})
+    scope_name = "machine" if key == "machine" else "blackbox"
+    configured = scopes.get(scope_name, {}) if isinstance(scopes, dict) else {}
+    affects = configured.get("affects", []) if isinstance(configured, dict) else []
+    if not isinstance(affects, list) or not affects:
+        return ["**"]
+    patterns = [str(item) for item in affects if isinstance(item, str) and item]
+    if key == "machine":
+        patterns.extend(str(item) for item in ledger.get("loop_config", {}).get("runner_paths", []))
+    return sorted(set(patterns)) or ["**"]
+
+
+def evidence_digest_context(ledger: dict[str, Any], key: str) -> dict[str, Any]:
+    publication = ledger.get("prerequisite_publication", {})
+    integration = ledger.get("tester_integration", {})
+    context: dict[str, Any] = {
+        "kind": key,
+        "loop_config_sha256": ledger.get("loop_config", {}).get("spec_sha256"),
+        "tester_source_head": integration.get("source_head"),
+        "tester_integration_completed": integration.get("completed"),
+        "publication_manifest_sha256": publication.get("manifest_sha256"),
+    }
+    if key == "blackbox":
+        record = evidence_record(ledger, "blackbox")
+        if record:
+            context["command"] = record.get("provenance", {}).get("details", {}).get("command")
+    return context
+
+
+def scoped_input_digest(
+    repo: Path, ledger: dict[str, Any], key: str, head: str
+) -> tuple[str, list[str]]:
+    patterns = evidence_scope_patterns(ledger, key)
+    if key == "blackbox":
+        record = evidence_record(ledger, "blackbox")
+        command = (
+            record.get("provenance", {}).get("details", {}).get("command")
+            if record
+            else None
+        )
+        if isinstance(command, str) and command.strip():
+            try:
+                patterns = sorted(
+                    set(patterns) | set(runner_repository_paths(command))
+                )
+            except RuntimeProblem:
+                patterns = ["**"]
+    try:
+        digest = evidence_contract.input_digest(
+            repo,
+            head,
+            patterns=patterns,
+            plan_sha256=str(ledger.get("plan", {}).get("sha256") or ""),
+            context=evidence_digest_context(ledger, key),
+        )
+    except RuntimeError as exc:
+        raise RuntimeProblem(
+            "cannot compute evidence input digest",
+            code="EVIDENCE_DIGEST_FAILED",
+            details={"kind": key, "head": head, "error": str(exc)},
+        ) from exc
+    return digest, patterns
+
+
+def invalidate_evidence(
+    repo: Path, ledger: dict[str, Any], previous_head: str, current_head: str
+) -> None:
     if previous_head == current_head:
         return
-    cleared: dict[str, str] = {}
-    for field in EVIDENCE_FIELDS:
-        old = ledger.get(field)
-        if old is not None:
-            cleared[field] = str(old)
-        ledger[field] = None
+    cleared: dict[str, Any] = {}
+    reused: dict[str, Any] = {}
+    for key in EVIDENCE_FIELDS:
+        old = evidence_record(ledger, key)
+        if old is None:
+            continue
+        if key in {"machine", "blackbox"}:
+            digest, scope = scoped_input_digest(repo, ledger, key, current_head)
+            if old.get("input_digest") == digest:
+                old["accepted_head"] = current_head
+                provenance = old.setdefault("provenance", {})
+                reuses = provenance.setdefault("reuses", [])
+                reuses.append(
+                    {
+                        "from_head": previous_head,
+                        "accepted_head": current_head,
+                        "at": utc_now(),
+                    }
+                )
+                reused[key] = {"input_digest": digest, "scope": scope}
+                continue
+        cleared[key] = old
+        clear_evidence(ledger, key)
     append_event(
         ledger,
         "evidence_invalidated",
@@ -428,6 +615,7 @@ def invalidate_evidence(ledger: dict[str, Any], previous_head: str, current_head
             "previous_candidate_head": previous_head,
             "candidate_head": current_head,
             "cleared": cleared,
+            "reused": reused,
         },
     )
 
@@ -440,14 +628,14 @@ def invalidate_role_evidence(
     dispatch_id: str | None = None,
 ) -> None:
     fields = {
-        "tester": ("e2e_verified_head",),
-        "reviewer": ("reviewed_head", "doc_reviewed_head"),
+        "tester": ("blackbox",),
+        "reviewer": ("review", "doc_review"),
     }[role]
-    cleared = {field: ledger.get(field) for field in fields if ledger.get(field) is not None}
+    cleared = {field: evidence_record(ledger, field) for field in fields if evidence_record(ledger, field) is not None}
     if not cleared:
         return
     for field in fields:
-        ledger[field] = None
+        clear_evidence(ledger, field)
     facts: dict[str, Any] = {"role": role, "cleared": cleared}
     if turn_id is not None:
         facts["turn_id"] = turn_id
@@ -495,8 +683,8 @@ def reviewer_prerequisite_snapshot(
         and isinstance(author_turn_id, str)
         and author_turn_id
     )
-    verified_head = ledger.get("verified_head")
-    e2e_verified_head = ledger.get("e2e_verified_head")
+    verified_head = evidence_head(ledger, "machine")
+    e2e_verified_head = evidence_head(ledger, "blackbox")
     publication = ledger.get("prerequisite_publication", {})
     publication_required = bool(
         isinstance(publication, dict) and publication.get("required") is True
@@ -970,7 +1158,112 @@ def require_plan_schema(parsed: dict[str, Any], contract_name: str) -> int:
     return raw
 
 
+def parse_workspace_intake_marker(text: str) -> tuple[dict[str, str], ...]:
+    marker = extract_tag(text, "workspace-intake", required=False)
+    if marker is None:
+        return ()
+    parsed = yaml_load(marker)
+    errors: list[str] = []
+    if not isinstance(parsed, dict):
+        errors.append("workspace-intake must be a YAML mapping")
+        parsed = {}
+    if parsed.get("schema_version") != 1:
+        errors.append("workspace-intake schema_version must be 1")
+    raw_files = parsed.get("files")
+    files: list[dict[str, str]] = []
+    if not isinstance(raw_files, list) or not raw_files:
+        errors.append("workspace-intake.files must be a non-empty list")
+    else:
+        for index, item in enumerate(raw_files):
+            if not isinstance(item, dict):
+                errors.append(f"workspace-intake.files[{index}] must be a mapping")
+                continue
+            try:
+                path = workspace_contract.normalize_exact_path(str(item.get("path", "")))
+            except workspace_contract.WorkspaceError as exc:
+                errors.append(f"workspace-intake.files[{index}]: {exc}")
+                continue
+            state_sha = str(item.get("state_sha256", "")).lower()
+            if not re.fullmatch(r"[0-9a-f]{64}", state_sha):
+                errors.append(
+                    f"workspace-intake.files[{index}].state_sha256 must be a 64-character SHA-256"
+                )
+                continue
+            files.append({"path": path, "state_sha256": state_sha})
+    paths = [item["path"] for item in files]
+    if len(paths) != len(set(paths)):
+        errors.append("workspace-intake paths must be unique")
+    if errors:
+        raise RuntimeProblem(
+            "workspace intake plan contract needs correction",
+            result="NEEDS_USER",
+            code="PLAN_WORKSPACE_INTAKE_INVALID",
+            details={"errors": errors},
+            exit_code=EXIT_FAIL,
+        )
+    return tuple(sorted(files, key=lambda item: item["path"]))
+
+
+def parse_evidence_scopes(
+    parsed: dict[str, Any],
+    *,
+    builder_write: Sequence[str],
+    tester_write: Sequence[str],
+    support_paths: Sequence[str],
+    public_prerequisites: Sequence[str],
+    errors: list[str],
+) -> dict[str, dict[str, tuple[str, ...]]]:
+    raw = parsed.get("evidence_scopes")
+    if raw is None:
+        return {
+            "machine": {"affects": ("**",), "exempt": ()},
+            "blackbox": {"affects": ("**",), "exempt": ()},
+        }
+    if not isinstance(raw, dict):
+        errors.append("evidence_scopes must be a mapping")
+        return {}
+    result: dict[str, dict[str, tuple[str, ...]]] = {}
+    forced = tuple(sorted(set(tester_write) | set(support_paths) | set(public_prerequisites)))
+    for key in ("machine", "blackbox"):
+        item = raw.get(key)
+        if not isinstance(item, dict):
+            errors.append(f"evidence_scopes.{key} must be a mapping")
+            continue
+        try:
+            affects = string_list(
+                item.get("affects", []),
+                f"evidence_scopes.{key}.affects",
+                allow_empty=True,
+            )
+            exempt = string_list(
+                item.get("exempt", []),
+                f"evidence_scopes.{key}.exempt",
+                allow_empty=True,
+            )
+        except RuntimeProblem as exc:
+            errors.append(str(exc))
+            continue
+        affects = sorted(set(affects))
+        exempt = sorted(set(exempt))
+        overlap = sorted(set(affects) & set(exempt))
+        if overlap:
+            errors.append(f"evidence_scopes.{key} affects/exempt overlap: {', '.join(overlap)}")
+        classified = set(affects) | set(exempt)
+        missing = sorted(set(builder_write) - classified)
+        extra = sorted(classified - set(builder_write))
+        if missing or extra:
+            errors.append(
+                f"evidence_scopes.{key} must classify every builder_write entry exactly once"
+            )
+        result[key] = {
+            "affects": tuple(sorted(set(affects) | set(forced))),
+            "exempt": tuple(exempt),
+        }
+    return result
+
+
 def parse_plan(text: str, source: str) -> PlanContract:
+    workspace_intake = parse_workspace_intake_marker(text)
     checklist = extract_tag(text, "plan-checklist", required=True)
     items = checklist_items(checklist or "")
     if not checklist or not items or any(re.search(r"<[^>]+>", item) for item in items):
@@ -1049,6 +1342,12 @@ def parse_plan(text: str, source: str) -> PlanContract:
                 builder_write.append(normalized)
         if len(items) < 2:
             errors.append("L1 plan-checklist must include implementation and review items")
+        for item in workspace_intake:
+            if not path_allowed(item["path"], builder_write):
+                errors.append(
+                    "workspace-intake path is outside ownership.builder_write: "
+                    + item["path"]
+                )
         if errors:
             raise RuntimeProblem(
                 "documentation plan contract needs correction",
@@ -1075,7 +1374,15 @@ def parse_plan(text: str, source: str) -> PlanContract:
             supersedes_run_id=supersedes_run_id,
             supersedes_plan_sha256=supersedes_plan_sha256,
             has_e2e_cases=e2e is not None,
-            tags=("documentation-spec", "plan-checklist"),
+            workspace_intake=workspace_intake,
+            evidence_scopes={
+                "machine": {"affects": ("**",), "exempt": ()},
+                "blackbox": {"affects": ("**",), "exempt": ()},
+            },
+            tags=tuple(
+                ["documentation-spec", "plan-checklist"]
+                + (["workspace-intake"] if workspace_intake else [])
+            ),
         )
 
     if documentation_spec is not None:
@@ -1268,6 +1575,23 @@ def parse_plan(text: str, source: str) -> PlanContract:
         probe = directory[:-3].rstrip("/") + "/__probe__.test" if directory.endswith("/**") else directory
         if not any(path_allowed(probe, [pattern]) for pattern in tester_write):
             errors.append(f"target_test_dirs entry is not tester-owned: {directory}")
+    for item in workspace_intake:
+        path = item["path"]
+        if not path_allowed(path, builder_write):
+            errors.append("workspace-intake path is outside ownership.builder_write: " + path)
+        if path_allowed(path, tester_write):
+            errors.append("workspace-intake path cannot be tester-owned: " + path)
+        if path in support_paths or path in PROTECTED_RUNTIME_PATHS:
+            errors.append("workspace-intake path cannot be a runner/control path: " + path)
+
+    evidence_scopes = parse_evidence_scopes(
+        parsed,
+        builder_write=builder_write,
+        tester_write=tester_write,
+        support_paths=support_paths,
+        public_prerequisites=public_prerequisites,
+        errors=errors,
+    )
 
     behaviors = parsed.get("behaviors")
     behavior_ids: list[str] = []
@@ -1336,7 +1660,13 @@ def parse_plan(text: str, source: str) -> PlanContract:
         supersedes_run_id=supersedes_run_id,
         supersedes_plan_sha256=supersedes_plan_sha256,
         has_e2e_cases=e2e is not None,
-        tags=tuple(["unit-test-spec", "plan-checklist"] + (["e2e-cases"] if e2e is not None else [])),
+        workspace_intake=workspace_intake,
+        evidence_scopes=evidence_scopes,
+        tags=tuple(
+            ["unit-test-spec", "plan-checklist"]
+            + (["e2e-cases"] if e2e is not None else [])
+            + (["workspace-intake"] if workspace_intake else [])
+        ),
     )
 
 
@@ -1630,6 +1960,7 @@ def target_checkout_facts(
     expected_head: str | None = None,
     desired_head: str | None = None,
     live_target_head: str | None = None,
+    workspace_intake: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     target = worktree_for_branch(repo, branch)
     empty_residue = {
@@ -1641,6 +1972,8 @@ def target_checkout_facts(
         return {
             "target_worktree": None,
             "target_residue": empty_residue,
+            "workspace_intake_allowed_paths": [],
+            "workspace_intake_drift": [],
             "finalize_blockers": [],
         }
 
@@ -1662,6 +1995,50 @@ def target_checkout_facts(
         runtime_state_roots=runtime_roots,
     )
     blockers: list[dict[str, Any]] = []
+    allowed_intake: list[str] = []
+    intake_drift: list[dict[str, Any]] = []
+    raw_entries = (
+        workspace_intake.get("entries", [])
+        if isinstance(workspace_intake, dict) and workspace_intake.get("required") is True
+        else []
+    )
+    if isinstance(raw_entries, list) and raw_entries:
+        for captured in raw_entries:
+            if not isinstance(captured, dict) or not isinstance(captured.get("path"), str):
+                continue
+            path = str(captured["path"])
+            try:
+                current = workspace_contract.path_manifest(target, path, require_dirty=False)
+                final = (
+                    workspace_contract.tree_path_state(repo, desired_head, path)
+                    if desired_head
+                    else captured
+                )
+            except workspace_contract.WorkspaceError as exc:
+                intake_drift.append({"path": path, "code": exc.code, **exc.details})
+                continue
+            if workspace_contract.path_state_is_known(current, captured, final):
+                allowed_intake.append(path)
+            else:
+                intake_drift.append(
+                    {
+                        "path": path,
+                        "captured_state_sha256": captured.get("state_sha256"),
+                        "current_state_sha256": current.get("state_sha256"),
+                        "final_state_sha256": final.get("state_sha256"),
+                    }
+                )
+        tracked = [path for path in tracked if path not in set(allowed_intake)]
+        untracked = [path for path in untracked if path not in set(allowed_intake)]
+        ignored = [path for path in ignored if path not in set(allowed_intake)]
+        if intake_drift:
+            blockers.append(
+                {
+                    "code": "TARGET_INTAKE_DRIFT",
+                    "paths": [item["path"] for item in intake_drift],
+                    "details": intake_drift,
+                }
+            )
     transition_required = bool(expected_head and desired_head and expected_head != desired_head)
 
     if transition_required and live_target_head == desired_head:
@@ -1693,6 +2070,7 @@ def target_checkout_facts(
                 tracked_unstaged_paths(target),
                 runtime_state_roots=runtime_roots,
             )
+            tracked = [path for path in tracked if path not in set(allowed_intake)]
             transition_required = index_tree == expected_tree
         else:
             blockers.append(
@@ -1732,7 +2110,7 @@ def target_checkout_facts(
                     "paths": collision_paths,
                 }
             )
-        if not blockers:
+        if not blockers and not allowed_intake:
             dry_run = git(
                 target,
                 "read-tree",
@@ -1763,6 +2141,8 @@ def target_checkout_facts(
             "untracked_paths": untracked,
             "ignored_paths": ignored,
         },
+        "workspace_intake_allowed_paths": sorted(allowed_intake),
+        "workspace_intake_drift": intake_drift,
         "finalize_blockers": blockers,
     }
 
@@ -3190,10 +3570,14 @@ def active_ledgers_for_session(
     return found
 
 
-def required_evidence_fields(ledger: dict[str, Any]) -> list[str]:
+def required_evidence_keys(ledger: dict[str, Any]) -> list[str]:
     if ledger["plan"].get("level") == "L1":
-        return ["reviewed_head", "doc_reviewed_head"]
-    return ["verified_head", "e2e_verified_head", "reviewed_head", "doc_reviewed_head"]
+        return ["review", "doc_review"]
+    return ["machine", "blackbox", "review", "doc_review"]
+
+
+def required_evidence_fields(ledger: dict[str, Any]) -> list[str]:
+    return [EVIDENCE_STATUS_FIELDS[key] for key in required_evidence_keys(ledger)]
 
 
 def status_facts(repo: Path, ledger: dict[str, Any]) -> dict[str, Any]:
@@ -3203,10 +3587,22 @@ def status_facts(repo: Path, ledger: dict[str, Any]) -> dict[str, Any]:
     tester_head = full_head(tester) if tester.exists() else None
     builder_dirty = worktree_residue(builder) if builder.exists() else []
     tester_dirty = worktree_residue(tester) if tester.exists() else []
-    evidence = {field: ledger.get(field) for field in EVIDENCE_FIELDS}
-    required = required_evidence_fields(ledger)
-    missing = [field for field in required if ledger.get(field) is None]
-    stale = [field for field in required if ledger.get(field) not in {None, builder_head}]
+    evidence = {
+        EVIDENCE_STATUS_FIELDS[key]: evidence_head(ledger, key)
+        for key in EVIDENCE_FIELDS
+    }
+    required_keys = required_evidence_keys(ledger)
+    required = [EVIDENCE_STATUS_FIELDS[key] for key in required_keys]
+    missing = [
+        EVIDENCE_STATUS_FIELDS[key]
+        for key in required_keys
+        if evidence_head(ledger, key) is None
+    ]
+    stale = [
+        EVIDENCE_STATUS_FIELDS[key]
+        for key in required_keys
+        if evidence_head(ledger, key) not in {None, builder_head}
+    ]
     current_evidence = bool(builder_head) and not missing and not stale
     tester_source = ledger["tester_integration"].get("source_head")
     prerequisite_publication = ledger.get("prerequisite_publication", {})
@@ -3271,6 +3667,7 @@ def status_facts(repo: Path, ledger: dict[str, Any]) -> dict[str, Any]:
         expected_head=checkout_expected_head or None,
         desired_head=probe_desired_head or None,
         live_target_head=target_head,
+        workspace_intake=ledger.get("workspace_intake"),
     )
     return {
         "run_id": ledger["run_id"],
@@ -3284,12 +3681,14 @@ def status_facts(repo: Path, ledger: dict[str, Any]) -> dict[str, Any]:
         "target_head": target_head,
         "expected_target_head": expected_target_head,
         "target_continuous": target_continuous,
-        "verification_attempts": ledger.get("verification_attempts", 0),
+        "verification_attempts": verification_attempt_count(ledger),
         "max_iterations": ledger.get("loop_config", {}).get("max_iterations"),
         "builder_dirty_paths": builder_dirty,
         "tester_dirty_paths": tester_dirty,
         "prerequisites_ready": prerequisites_ready,
         "prerequisite_publication": prerequisite_publication,
+        "workspace_intake": ledger.get("workspace_intake"),
+        "evidence_records": ledger.get("evidence"),
         "tester_fully_integrated": tester_fully_integrated,
         **evidence,
         "required_gates": required,
@@ -3327,8 +3726,29 @@ def cmd_plan_validate(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         "target_branch": preflight.target_branch,
         "parallel_ready": contract.parallel_ready,
         "effective_verification_source": preflight.effective_verification_source,
+        "workspace_intake": list(preflight.workspace_intake),
         **preflight.target_checkout,
         "contract": contract.as_dict(),
+    }, EXIT_PASS
+
+
+def cmd_workspace_scan(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
+    repo = resolve_repo(args.repo)
+    try:
+        entries = workspace_contract.scan_paths(repo, args.path, require_dirty=True)
+    except workspace_contract.WorkspaceError as exc:
+        raise RuntimeProblem(
+            str(exc),
+            result="NEEDS_USER",
+            code=exc.code,
+            details=exc.details,
+            exit_code=EXIT_FAIL,
+        ) from exc
+    return {
+        "status": "READY",
+        "message": "workspace intake paths were scanned without changing the checkout",
+        "repo": str(repo),
+        "entries": entries,
     }, EXIT_PASS
 
 
@@ -3439,6 +3859,49 @@ def preflight_plan(
             "effective_verification_source", verification_source
         )
         raise
+    workspace_entries: list[dict[str, Any]] = []
+    if contract.workspace_intake:
+        target = worktree_for_branch(repo, resolved_target_branch)
+        if target is None:
+            raise RuntimeProblem(
+                "workspace intake requires a checked-out target branch",
+                result="NEEDS_USER",
+                code="WORKSPACE_TARGET_NOT_CHECKED_OUT",
+                details={"target_branch": resolved_target_branch},
+                exit_code=EXIT_FAIL,
+            )
+        try:
+            workspace_entries = workspace_contract.scan_paths(
+                target,
+                [item["path"] for item in contract.workspace_intake],
+                require_dirty=True,
+            )
+        except workspace_contract.WorkspaceError as exc:
+            raise RuntimeProblem(
+                str(exc),
+                result="NEEDS_USER",
+                code=exc.code,
+                details=exc.details,
+                exit_code=EXIT_FAIL,
+            ) from exc
+        expected = {item["path"]: item["state_sha256"] for item in contract.workspace_intake}
+        drift = [
+            {
+                "path": item["path"],
+                "expected_state_sha256": expected[item["path"]],
+                "actual_state_sha256": item["state_sha256"],
+            }
+            for item in workspace_entries
+            if expected.get(item["path"]) != item["state_sha256"]
+        ]
+        if drift:
+            raise RuntimeProblem(
+                "workspace intake changed after planning",
+                result="NEEDS_USER",
+                code="WORKSPACE_INTAKE_DRIFT",
+                details={"drift": drift},
+                exit_code=EXIT_FAIL,
+            )
     return PlanPreflight(
         spec_head=spec_head,
         target_branch=resolved_target_branch,
@@ -3453,6 +3916,7 @@ def preflight_plan(
         effective_verification_source=verification_source,
         max_iterations=max_iterations,
         runner_paths=tuple(verification_protected_paths(commands)),
+        workspace_intake=tuple(workspace_entries),
     )
 
 
@@ -3515,6 +3979,46 @@ def cmd_start_locked(args: argparse.Namespace, repo: Path) -> tuple[dict[str, An
     runner_paths = list(preflight.runner_paths)
     add_info_exclude(repo)
 
+    snapshot_head = spec_head
+    snapshot_tree = git(repo, "rev-parse", f"{spec_head}^{{tree}}", check=True).stdout.strip()
+    if preflight.workspace_intake:
+        target_checkout = worktree_for_branch(repo, target_branch)
+        if target_checkout is None:
+            raise RuntimeProblem(
+                "workspace intake target checkout disappeared before start",
+                code="WORKSPACE_TARGET_NOT_CHECKED_OUT",
+            )
+        try:
+            snapshot_head, snapshot_tree = workspace_contract.create_snapshot_commit(
+                target_checkout,
+                spec_head,
+                preflight.workspace_intake,
+                message=f"chore(codex-loop): workspace intake {run_id}",
+            )
+            after_snapshot = workspace_contract.scan_paths(
+                target_checkout,
+                [str(item["path"]) for item in preflight.workspace_intake],
+                require_dirty=True,
+            )
+        except workspace_contract.WorkspaceError as exc:
+            raise RuntimeProblem(str(exc), code=exc.code, details=exc.details) from exc
+        before_digests = {
+            str(item["path"]): str(item["state_sha256"])
+            for item in preflight.workspace_intake
+        }
+        after_digests = {
+            str(item["path"]): str(item["state_sha256"])
+            for item in after_snapshot
+        }
+        if after_digests != before_digests:
+            raise RuntimeProblem(
+                "workspace intake changed while creating its immutable snapshot",
+                result="NEEDS_USER",
+                code="WORKSPACE_INTAKE_DRIFT",
+                details={"before": before_digests, "after": after_digests},
+                exit_code=EXIT_FAIL,
+            )
+
     root = state_root(repo)
     current_run_dir = run_dir(repo, run_id)
     current_run_dir.mkdir(parents=True, exist_ok=False)
@@ -3534,13 +4038,16 @@ def cmd_start_locked(args: argparse.Namespace, repo: Path) -> tuple[dict[str, An
     tester_branch = f"codex-loop/{run_id}/tester"
     created: list[tuple[Path, str]] = []
     try:
-        for path, branch in ((builder_path, builder_branch), (tester_path, tester_branch)):
+        for path, branch, base in (
+            (builder_path, builder_branch, snapshot_head),
+            (tester_path, tester_branch, spec_head),
+        ):
             if path.exists():
                 raise RuntimeProblem(
                     f"worktree path already exists: {path}",
                     code="WORKTREE_PATH_EXISTS",
                 )
-            result = git(repo, "worktree", "add", "-b", branch, str(path), spec_head, check=False)
+            result = git(repo, "worktree", "add", "-b", branch, str(path), base, check=False)
             if result.returncode != 0:
                 raise RuntimeProblem(
                     f"cannot create {branch} worktree",
@@ -3584,6 +4091,17 @@ def cmd_start_locked(args: argparse.Namespace, repo: Path) -> tuple[dict[str, An
             "supersedes_run_id": contract.supersedes_run_id,
             "supersedes_plan_sha256": contract.supersedes_plan_sha256,
             "has_e2e_cases": contract.has_e2e_cases,
+            "workspace_intake": [dict(item) for item in contract.workspace_intake],
+            "evidence_scopes": {
+                key: {
+                    "affects": sorted(
+                        set(value.get("affects", ()))
+                        | (set(runner_paths) if key == "machine" else set())
+                    ),
+                    "exempt": list(value.get("exempt", ())),
+                }
+                for key, value in contract.evidence_scopes.items()
+            },
         },
         "loop_config": {
             "path": loop_config_source,
@@ -3592,7 +4110,7 @@ def cmd_start_locked(args: argparse.Namespace, repo: Path) -> tuple[dict[str, An
             "runner_paths": runner_paths,
             "max_iterations": max_iterations,
         },
-        "verification_attempts": 0,
+        "verification": {"attempts": [], "resumes": []},
         "worktrees": {
             "builder": {"path": str(builder_path), "branch": builder_branch},
             "tester": {"path": str(tester_path), "branch": tester_branch},
@@ -3634,10 +4152,19 @@ def cmd_start_locked(args: argparse.Namespace, repo: Path) -> tuple[dict[str, An
             "tester": [],
             "reviewer": [],
         },
-        "verified_head": None,
-        "e2e_verified_head": None,
-        "reviewed_head": None,
-        "doc_reviewed_head": None,
+        "evidence": {
+            "machine": None,
+            "blackbox": None,
+            "review": None,
+            "doc_review": None,
+        },
+        "workspace_intake": {
+            "required": bool(preflight.workspace_intake),
+            "paths": [str(item["path"]) for item in preflight.workspace_intake],
+            "entries": [dict(item) for item in preflight.workspace_intake],
+            "snapshot_head": snapshot_head if preflight.workspace_intake else None,
+            "snapshot_tree": snapshot_tree if preflight.workspace_intake else None,
+        },
         "finalize_intent": None,
         "final_head": None,
         "created_at": now,
@@ -3652,6 +4179,9 @@ def cmd_start_locked(args: argparse.Namespace, repo: Path) -> tuple[dict[str, An
             "spec_head": spec_head,
             "builder_head": full_head(builder_path),
             "tester_head": full_head(tester_path),
+            "workspace_intake_snapshot_head": (
+                snapshot_head if preflight.workspace_intake else None
+            ),
         },
     )
     save_ledger(repo, ledger)
@@ -3669,6 +4199,7 @@ def cmd_start_locked(args: argparse.Namespace, repo: Path) -> tuple[dict[str, An
         "prerequisite_publication_required": (
             contract.level != "L1" and not contract.parallel_ready
         ),
+        "workspace_intake": ledger["workspace_intake"],
         "worktrees": {
             "builder": str(builder_path),
             "tester": str(tester_path),
@@ -3760,12 +4291,18 @@ def cmd_publish_prerequisites(args: argparse.Namespace) -> tuple[dict[str, Any],
         spec_head = str(ledger["spec_head"])
         declared = sorted(str(path) for path in publication.get("paths", []))
         changed = git_changed_paths(builder, spec_head)
-        if changed != declared:
+        intake_paths = set(ledger.get("workspace_intake", {}).get("paths", []))
+        publication_changes = sorted(set(changed) - (intake_paths - set(declared)))
+        if publication_changes != declared:
             raise RuntimeProblem(
                 "the prerequisite snapshot must change exactly the declared public files",
                 result="NEEDS_USER",
                 code="PREREQUISITE_PATH_MISMATCH",
-                details={"declared_paths": declared, "changed_paths": changed},
+                details={
+                    "declared_paths": declared,
+                    "changed_paths": changed,
+                    "workspace_intake_paths": sorted(intake_paths),
+                },
                 exit_code=EXIT_FAIL,
             )
         _, builder_head, checkpointed = checkpoint(
@@ -3806,32 +4343,21 @@ def cmd_publish_prerequisites(args: argparse.Namespace) -> tuple[dict[str, Any],
                 exit_code=EXIT_FAIL,
             )
 
-        tree = git(builder, "rev-parse", f"{builder_head}^{{tree}}", check=True).stdout.strip()
+        try:
+            publication_entries = workspace_contract.scan_paths(
+                builder, declared, require_dirty=False
+            )
+            isolated_head, tree = workspace_contract.create_snapshot_commit(
+                builder,
+                spec_head,
+                publication_entries,
+                message=f"chore(codex-loop): publish prerequisites {ledger['run_id']}",
+            )
+        except workspace_contract.WorkspaceError as exc:
+            raise RuntimeProblem(str(exc), code=exc.code, details=exc.details) from exc
         publication_head: str
         if tester_head_before == expected_tester_head:
-            created = git(
-                repo,
-                "-c",
-                "user.name=Codex Builder Loop",
-                "-c",
-                "user.email=codex-builder-loop@localhost",
-                "commit-tree",
-                tree,
-                "-p",
-                spec_head,
-                input_text=f"chore(codex-loop): publish prerequisites {ledger['run_id']}\n",
-                check=False,
-            )
-            if created.returncode != 0:
-                raise RuntimeProblem(
-                    "cannot create isolated prerequisite commit",
-                    code="PREREQUISITE_COMMIT_FAILED",
-                    details={
-                        "stdout": tail_text(created.stdout),
-                        "stderr": tail_text(created.stderr),
-                    },
-                )
-            publication_head = created.stdout.strip()
+            publication_head = isolated_head
             reset = git(tester, "reset", "--hard", publication_head, check=False)
             if reset.returncode != 0:
                 raise RuntimeProblem(
@@ -3938,13 +4464,22 @@ def cmd_publish_prerequisites(args: argparse.Namespace) -> tuple[dict[str, Any],
 
 def verify_machine(repo: Path, ledger: dict[str, Any]) -> tuple[dict[str, Any], int]:
     reject_during_finalize_intent(ledger, "verify")
-    if ledger["phase"] == "iteration_limit":
+    if ledger["phase"] in {
+        "iteration_limit",
+        "no_progress",
+        "architecture_review_required",
+    }:
         raise RuntimeProblem(
-            "verification iteration limit was reached",
+            "verification is waiting for an explicit user decision",
             result="NEEDS_USER",
-            code="ITERATION_LIMIT_REACHED",
+            code={
+                "iteration_limit": "ITERATION_LIMIT_REACHED",
+                "no_progress": "NO_PROGRESS",
+                "architecture_review_required": "ARCHITECTURE_REVIEW_REQUIRED",
+            }[str(ledger["phase"])],
             details={
-                "verification_attempts": ledger.get("verification_attempts", 0),
+                "phase": ledger["phase"],
+                "verification_attempts": verification_attempt_count(ledger),
                 "max_iterations": ledger.get("loop_config", {}).get("max_iterations"),
             },
             exit_code=EXIT_FAIL,
@@ -3969,7 +4504,7 @@ def verify_machine(repo: Path, ledger: dict[str, Any]) -> tuple[dict[str, Any], 
         )
     ensure_role_pass(repo, ledger, "builder")
     before, candidate, checkpointed = checkpoint(builder, str(ledger["run_id"]), "builder")
-    invalidate_evidence(ledger, before, candidate)
+    invalidate_evidence(repo, ledger, before, candidate)
     if before != candidate:
         append_event(
             ledger,
@@ -3997,7 +4532,22 @@ def verify_machine(repo: Path, ledger: dict[str, Any]) -> tuple[dict[str, Any], 
             code="LOOP_CONFIG_DRIFT",
         )
 
-    previous_attempts = int(ledger.get("verification_attempts", 0))
+    current_machine = evidence_record(ledger, "machine")
+    if current_machine is not None and evidence_head(ledger, "machine") == candidate:
+        save_ledger(repo, ledger)
+        return {
+            "status": "PASS",
+            "message": "machine evidence inputs are unchanged and the prior result remains valid",
+            "head": candidate,
+            "verified_head": candidate,
+            "reused": True,
+            "evidence": current_machine,
+            "attempt": verification_attempt_count(ledger),
+            "max_iterations": max_iterations,
+        }, EXIT_PASS
+
+    attempts = verification_attempt_records(ledger)
+    previous_attempts = len(attempts)
     if previous_attempts >= max_iterations:
         ledger["phase"] = "iteration_limit"
         append_event(
@@ -4017,7 +4567,14 @@ def verify_machine(repo: Path, ledger: dict[str, Any]) -> tuple[dict[str, Any], 
             exit_code=EXIT_FAIL,
         )
     attempt = previous_attempts + 1
-    ledger["verification_attempts"] = attempt
+    attempt_record: dict[str, Any] = {
+        "attempt": attempt,
+        "candidate_head": candidate,
+        "started_at": utc_now(),
+        "outcome": "running",
+        "stages": [],
+    }
+    attempts.append(attempt_record)
     append_event(
         ledger,
         "verification_attempt_started",
@@ -4101,6 +4658,7 @@ def verify_machine(repo: Path, ledger: dict[str, Any]) -> tuple[dict[str, Any], 
                 "log": str(log_path),
             }
             stage_results.append(stage_fact)
+            attempt_record["stages"] = stage_results
 
             verification_tree_changes = git(
                 verify_path,
@@ -4121,10 +4679,63 @@ def verify_machine(repo: Path, ledger: dict[str, Any]) -> tuple[dict[str, Any], 
                 or live_builder_dirty
                 or post_role["violations"]
             ):
-                ledger["verified_head"] = None
+                clear_evidence(ledger, "machine")
+                failure_text = json.dumps(
+                    {
+                        "code": "VERIFY_MUTATED_CANDIDATE",
+                        "stage": item["stage"],
+                        "returncode": completed.returncode,
+                        "verification_head_changed": verification_head != candidate,
+                        "verification_tree_changes": verification_tree_changes,
+                        "builder_head_changed": live_builder_head != candidate,
+                        "builder_dirty_paths": live_builder_dirty,
+                        "role_violations": post_role["violations"],
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
+                raw_digest, failure_fingerprint = evidence_contract.failure_digests(
+                    failure_text,
+                    stage=str(item["stage"]),
+                    returncode=int(completed.returncode),
+                )
+                attempt_record.update(
+                    {
+                        "outcome": "fail",
+                        "code": "VERIFY_MUTATED_CANDIDATE",
+                        "stage": item["stage"],
+                        "returncode": completed.returncode,
+                        "raw_log_digest": raw_digest,
+                        "failure_fingerprint": failure_fingerprint,
+                        "log_path": str(log_path),
+                        "completed_at": utc_now(),
+                    }
+                )
+                same_candidate_failures = [
+                    prior
+                    for prior in attempts
+                    if prior.get("outcome") == "fail"
+                    and prior.get("candidate_head") == candidate
+                ]
+                repeated_candidates = {
+                    str(prior.get("candidate_head"))
+                    for prior in attempts
+                    if prior.get("outcome") == "fail"
+                    and prior.get("failure_fingerprint") == failure_fingerprint
+                    and prior.get("candidate_head")
+                }
                 limit_reached = attempt >= max_iterations
                 if limit_reached:
                     ledger["phase"] = "iteration_limit"
+                elif len(repeated_candidates) >= 3:
+                    ledger["phase"] = "architecture_review_required"
+                elif len(same_candidate_failures) >= 2:
+                    ledger["phase"] = "no_progress"
+                stop_code = {
+                    "iteration_limit": "ITERATION_LIMIT_REACHED",
+                    "architecture_review_required": "ARCHITECTURE_REVIEW_REQUIRED",
+                    "no_progress": "NO_PROGRESS",
+                }.get(str(ledger.get("phase")))
                 append_event(
                     ledger,
                     "machine_verification_tree_changed",
@@ -4137,6 +4748,8 @@ def verify_machine(repo: Path, ledger: dict[str, Any]) -> tuple[dict[str, Any], 
                         "role_violations": post_role["violations"],
                         "attempt": attempt,
                         "iteration_limit_reached": limit_reached,
+                        "failure_fingerprint": failure_fingerprint,
+                        "stop_code": stop_code,
                         **stage_fact,
                     },
                 )
@@ -4156,15 +4769,57 @@ def verify_machine(repo: Path, ledger: dict[str, Any]) -> tuple[dict[str, Any], 
                         "attempt": attempt,
                         "max_iterations": max_iterations,
                         "iteration_limit_reached": limit_reached,
+                        "failure_fingerprint": failure_fingerprint,
+                        "progress_stop": stop_code,
                     },
                     EXIT_FAIL,
                 )
                 break
             if completed.returncode != 0:
-                ledger["verified_head"] = None
+                clear_evidence(ledger, "machine")
+                log_text = log_path.read_text(encoding="utf-8")
+                raw_digest, failure_fingerprint = evidence_contract.failure_digests(
+                    log_text,
+                    stage=str(item["stage"]),
+                    returncode=int(completed.returncode),
+                )
+                attempt_record.update(
+                    {
+                        "outcome": "fail",
+                        "code": "PASS_COMMAND_FAILED",
+                        "stage": item["stage"],
+                        "returncode": completed.returncode,
+                        "raw_log_digest": raw_digest,
+                        "failure_fingerprint": failure_fingerprint,
+                        "log_path": str(log_path),
+                        "completed_at": utc_now(),
+                    }
+                )
+                same_candidate_failures = [
+                    item
+                    for item in attempts
+                    if item.get("outcome") == "fail"
+                    and item.get("candidate_head") == candidate
+                ]
+                repeated_candidates = {
+                    str(item.get("candidate_head"))
+                    for item in attempts
+                    if item.get("outcome") == "fail"
+                    and item.get("failure_fingerprint") == failure_fingerprint
+                    and item.get("candidate_head")
+                }
                 limit_reached = attempt >= max_iterations
                 if limit_reached:
                     ledger["phase"] = "iteration_limit"
+                elif len(repeated_candidates) >= 3:
+                    ledger["phase"] = "architecture_review_required"
+                elif len(same_candidate_failures) >= 2:
+                    ledger["phase"] = "no_progress"
+                stop_code = {
+                    "iteration_limit": "ITERATION_LIMIT_REACHED",
+                    "architecture_review_required": "ARCHITECTURE_REVIEW_REQUIRED",
+                    "no_progress": "NO_PROGRESS",
+                }.get(str(ledger.get("phase")))
                 append_event(
                     ledger,
                     "machine_verification_failed",
@@ -4173,6 +4828,8 @@ def verify_machine(repo: Path, ledger: dict[str, Any]) -> tuple[dict[str, Any], 
                         "attempt": attempt,
                         "max_iterations": max_iterations,
                         "iteration_limit_reached": limit_reached,
+                        "failure_fingerprint": failure_fingerprint,
+                        "stop_code": stop_code,
                         **stage_fact,
                     },
                 )
@@ -4190,6 +4847,8 @@ def verify_machine(repo: Path, ledger: dict[str, Any]) -> tuple[dict[str, Any], 
                         "attempt": attempt,
                         "max_iterations": max_iterations,
                         "iteration_limit_reached": limit_reached,
+                        "failure_fingerprint": failure_fingerprint,
+                        "progress_stop": stop_code,
                     },
                     EXIT_FAIL,
                 )
@@ -4197,7 +4856,7 @@ def verify_machine(repo: Path, ledger: dict[str, Any]) -> tuple[dict[str, Any], 
     finally:
         removed = git(repo, "worktree", "remove", "--force", str(verify_path), check=False)
         if removed.returncode != 0:
-            ledger["verified_head"] = None
+            clear_evidence(ledger, "machine")
             ledger["phase"] = "continuity_failure"
             append_event(
                 ledger,
@@ -4216,11 +4875,27 @@ def verify_machine(repo: Path, ledger: dict[str, Any]) -> tuple[dict[str, Any], 
     if outcome is not None:
         save_ledger(repo, ledger)
         return outcome
-    ledger["verified_head"] = candidate
+    digest, scope = scoped_input_digest(repo, ledger, "machine", candidate)
+    machine_record = evidence_contract.make_record(
+        kind="machine",
+        observed_head=candidate,
+        accepted_head=candidate,
+        input_sha256=digest,
+        scope=scope,
+        provenance={"attempt": attempt, "stages": stage_results},
+    )
+    ledger.setdefault("evidence", {})["machine"] = machine_record
+    attempt_record.update(
+        {
+            "outcome": "pass",
+            "completed_at": utc_now(),
+            "input_digest": digest,
+        }
+    )
     append_event(
         ledger,
         "machine_verification_passed",
-        {"verified_head": candidate, "stages": stage_results},
+        {"verified_head": candidate, "input_digest": digest, "scope": scope, "stages": stage_results},
     )
     save_ledger(repo, ledger)
     return {
@@ -4228,6 +4903,7 @@ def verify_machine(repo: Path, ledger: dict[str, Any]) -> tuple[dict[str, Any], 
         "message": "all deterministic verification stages passed",
         "head": candidate,
         "verified_head": candidate,
+        "evidence": machine_record,
         "stages": stage_results,
         "attempt": attempt,
         "max_iterations": max_iterations,
@@ -4383,14 +5059,51 @@ def cmd_record_evidence(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                         "supplied": details,
                     },
                 )
-        ledger[field] = supplied
+        if field == "blackbox":
+            scope = evidence_scope_patterns(ledger, "blackbox")
+            try:
+                command_paths = runner_repository_paths(str(details.get("command", "")))
+            except RuntimeProblem:
+                command_paths = []
+                scope = ["**"]
+            scope = sorted(set(scope) | set(command_paths))
+            digest = evidence_contract.input_digest(
+                repo,
+                supplied,
+                patterns=scope,
+                plan_sha256=str(ledger.get("plan", {}).get("sha256") or ""),
+                context={
+                    **evidence_digest_context(ledger, "blackbox"),
+                    "command": details.get("command"),
+                },
+            )
+        else:
+            scope = ["**"]
+            digest = evidence_contract.input_digest(
+                repo,
+                supplied,
+                patterns=scope,
+                plan_sha256=str(ledger.get("plan", {}).get("sha256") or ""),
+                context={"kind": field},
+            )
+        record = evidence_contract.make_record(
+            kind=field,
+            observed_head=supplied,
+            accepted_head=supplied,
+            input_sha256=digest,
+            scope=scope,
+            provenance={"agent": agent_fact, "details": details},
+        )
+        ledger.setdefault("evidence", {})[field] = record
         append_event(
             ledger,
             "evidence_recorded",
             {
                 "kind": args.kind,
-                "field": field,
+                "field": EVIDENCE_STATUS_FIELDS[field],
                 "head": supplied,
+                "input_digest": digest,
+                "scope": scope,
                 "candidate_head_at_record": candidate,
                 "agent": agent_fact,
                 "details": details,
@@ -4401,9 +5114,10 @@ def cmd_record_evidence(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
             "status": "READY",
             "run_id": ledger["run_id"],
             "kind": args.kind,
-            "field": field,
+            "field": EVIDENCE_STATUS_FIELDS[field],
             "head": supplied,
             "candidate_head": candidate,
+            "evidence": record,
         }, EXIT_PASS
 
 
@@ -4487,7 +5201,7 @@ def cmd_prepare_follow_up(args: argparse.Namespace) -> tuple[dict[str, Any], int
             if (
                 candidate_dirty
                 or integration.get("completed") is not True
-                or ledger.get("verified_head") != candidate_head
+                or evidence_head(ledger, "machine") != candidate_head
             ):
                 raise RuntimeProblem(
                     "Tester blackbox follow-up requires integrated tests and a verified clean candidate",
@@ -4497,7 +5211,7 @@ def cmd_prepare_follow_up(args: argparse.Namespace) -> tuple[dict[str, Any], int
                         "candidate_head": candidate_head,
                         "candidate_dirty": candidate_dirty,
                         "tester_integration_completed": integration.get("completed"),
-                        "verified_head": ledger.get("verified_head"),
+                        "verified_head": evidence_head(ledger, "machine"),
                     },
                     exit_code=EXIT_FAIL,
                 )
@@ -4986,7 +5700,7 @@ def finalize_integration(
     ownership["pending"] = None
     ownership["completed"] = True
     ledger["phase"] = "active"
-    invalidate_evidence(ledger, builder_before, candidate)
+    invalidate_evidence(repo, ledger, builder_before, candidate)
     append_event(
         ledger,
         "tester_integrated",
@@ -5188,7 +5902,7 @@ def cmd_integrate_tests(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
             )
 
         before, builder_head, _ = checkpoint(builder, str(ledger["run_id"]), "builder")
-        invalidate_evidence(ledger, before, builder_head)
+        invalidate_evidence(repo, ledger, before, builder_head)
         ensure_role_pass(repo, ledger, "builder")
         overlap = sorted(set(changed) & set(git_changed_paths(builder, str(ledger["spec_head"]))))
         prior_owned = set(ownership.get("owned_paths", []))
@@ -5313,6 +6027,17 @@ def cmd_status(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                 "message": "verification iteration limit was reached",
                 **facts,
             }, EXIT_FAIL
+        if ledger["phase"] in {"no_progress", "architecture_review_required"}:
+            return {
+                "status": "NEEDS_USER",
+                "message": "verification progress requires an explicit user decision",
+                "code": (
+                    "NO_PROGRESS"
+                    if ledger["phase"] == "no_progress"
+                    else "ARCHITECTURE_REVIEW_REQUIRED"
+                ),
+                **facts,
+            }, EXIT_FAIL
         if ledger["phase"] == "finalized_cleanup":
             return {
                 "status": "NEEDS_USER",
@@ -5375,6 +6100,17 @@ def cmd_status(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         return {
             "status": "NEEDS_USER",
             "message": "verification iteration limit was reached",
+            **facts,
+        }, EXIT_FAIL
+    if ledger["phase"] in {"no_progress", "architecture_review_required"}:
+        return {
+            "status": "NEEDS_USER",
+            "message": "verification progress requires an explicit user decision",
+            "code": (
+                "NO_PROGRESS"
+                if ledger["phase"] == "no_progress"
+                else "ARCHITECTURE_REVIEW_REQUIRED"
+            ),
             **facts,
         }, EXIT_FAIL
     return {"status": "ACTIVE", "message": "one active run matched the session", **facts}, EXIT_PASS
@@ -5447,14 +6183,20 @@ def predicted_conflicts(repo: Path, target_head: str, candidate_head: str) -> li
     return sorted(set(conflicts))
 
 
-def cleanup_role_worktrees(repo: Path, ledger: dict[str, Any]) -> list[dict[str, Any]]:
+def cleanup_role_worktrees(
+    repo: Path, ledger: dict[str, Any], *, force: bool = True
+) -> list[dict[str, Any]]:
     failures: list[dict[str, Any]] = []
     for role in ("builder", "tester"):
         entry = ledger["worktrees"][role]
         path = Path(str(entry["path"]))
         branch = str(entry["branch"])
         if path.exists():
-            removed = git(repo, "worktree", "remove", "--force", str(path), check=False)
+            remove_args = ["worktree", "remove"]
+            if force:
+                remove_args.append("--force")
+            remove_args.append(str(path))
+            removed = git(repo, *remove_args, check=False)
             if removed.returncode != 0:
                 failures.append(
                     {"role": role, "operation": "worktree_remove", "stderr": tail_text(removed.stderr)}
@@ -5553,9 +6295,9 @@ def recover_finalize_intent(
             "preserved": True,
         }, EXIT_FAIL
     stale_gates = [
-        field
-        for field in required_evidence_fields(ledger)
-        if ledger.get(field) != candidate
+        EVIDENCE_STATUS_FIELDS[key]
+        for key in required_evidence_keys(ledger)
+        if evidence_head(ledger, key) != candidate
     ]
     reviewer = ledger.get("agents", {}).get("reviewer")
     gate_errors: list[str] = []
@@ -5662,6 +6404,7 @@ def recover_finalize_intent(
         expected_head=target_head,
         desired_head=final_head,
         live_target_head=live_target_head,
+        workspace_intake=ledger.get("workspace_intake"),
     )
     if target_facts["finalize_blockers"]:
         return staged_target_blocked_result(intent, target_facts)
@@ -5701,107 +6444,154 @@ def recover_finalize_intent(
             }, EXIT_FAIL
         cas_performed = True
 
-    expected_tree = git(
-        repo, "rev-parse", f"{target_head}^{{tree}}", check=True
-    ).stdout.strip()
-    index_result = git(target, "write-tree", check=False)
-    if index_result.returncode != 0:
-        return {
-            "status": "NEEDS_USER",
-            "message": "target index changed while applying the finalize intent",
-            "code": "FINALIZE_RECOVERY_INDEX_MISMATCH",
-            "final_head": final_head,
-            "target_worktree": str(target),
-            "stdout": tail_text(index_result.stdout),
-            "stderr": tail_text(index_result.stderr),
-            "preserved": True,
-        }, EXIT_FAIL
-    index_tree = index_result.stdout.strip()
-    unstaged = target_worktree_unstaged_residue(repo, target)
-    if unstaged:
-        return {
-            "status": "NEEDS_USER",
-            "message": "target worktree changed while recovering the finalize intent",
-            "code": "TARGET_DIRTY_AFTER_FINALIZE",
-            "final_head": final_head,
-            "target_worktree": str(target),
-            "dirty_paths": unstaged,
-        }, EXIT_FAIL
-    if index_tree == expected_tree:
-        checkout = git(
-            target,
-            "read-tree",
-            "-u",
-            "-m",
-            target_head,
-            final_head,
-            check=False,
-        )
-        if checkout.returncode != 0:
-            if cas_performed:
-                rollback = git(
-                    repo,
-                    "update-ref",
-                    f"refs/heads/{target_branch_name}",
-                    target_head,
-                    final_head,
-                    check=False,
+    intake_sync = bool(target_facts.get("workspace_intake_allowed_paths"))
+    if intake_sync:
+        for captured in ledger.get("workspace_intake", {}).get("entries", []):
+            if not isinstance(captured, dict) or not isinstance(captured.get("path"), str):
+                continue
+            try:
+                final_state = workspace_contract.tree_path_state(
+                    repo, final_head, str(captured["path"])
                 )
-                ledger["phase"] = (
-                    "finalize_conflict"
-                    if rollback.returncode == 0
-                    else "continuity_failure"
-                )
-                append_event(
-                    ledger,
-                    "finalize_worktree_sync_failed",
-                    {
-                        "candidate_head": candidate,
-                        "staged_final_head": final_head,
-                        "target_head": branch_head(repo, target_branch_name),
-                        "target_worktree": str(target),
-                        "checkout_stdout": tail_text(checkout.stdout),
-                        "checkout_stderr": tail_text(checkout.stderr),
-                        "rollback_returncode": rollback.returncode,
-                        "rollback_stderr": tail_text(rollback.stderr),
-                    },
-                )
-                save_ledger(repo, ledger)
+            except workspace_contract.WorkspaceError as exc:
                 return {
-                    "status": (
-                        "CONFLICT"
-                        if rollback.returncode == 0
-                        else "CONTINUITY_FAILURE"
-                    ),
-                    "message": "target ref update could not be synchronized to its worktree",
-                    "code": "FINALIZE_WORKTREE_SYNC_FAILED",
-                    "staged_final_head": final_head,
-                    "target_head": branch_head(repo, target_branch_name),
-                    "target_worktree": str(target),
-                    "ref_rolled_back": rollback.returncode == 0,
+                    "status": "NEEDS_USER",
+                    "message": "final workspace intake state cannot be proven",
+                    "code": exc.code,
+                    "path": captured.get("path"),
+                    "details": exc.details,
                     "preserved": True,
                 }, EXIT_FAIL
+            if final_state.get("worktree") is None:
+                entry_path = target / str(captured["path"])
+                if entry_path.is_file() and not entry_path.is_symlink():
+                    entry_path.unlink()
+        checkout = git(target, "reset", "--hard", final_head, check=False)
+        if checkout.returncode != 0:
+            append_event(
+                ledger,
+                "finalize_intake_sync_incomplete",
+                {
+                    "final_head": final_head,
+                    "target_worktree": str(target),
+                    "paths": target_facts.get("workspace_intake_allowed_paths"),
+                    "stdout": tail_text(checkout.stdout),
+                    "stderr": tail_text(checkout.stderr),
+                },
+            )
+            save_ledger(repo, ledger)
             return {
                 "status": "NEEDS_USER",
-                "message": "final ref could not be synchronized to its target worktree",
-                "code": "FINALIZE_RECOVERY_SYNC_FAILED",
+                "message": "authorized workspace intake could not yet be synchronized",
+                "code": "FINALIZE_INTAKE_SYNC_INCOMPLETE",
                 "final_head": final_head,
                 "target_worktree": str(target),
+                "paths": target_facts.get("workspace_intake_allowed_paths"),
                 "stderr": tail_text(checkout.stderr),
                 "preserved": True,
             }, EXIT_FAIL
-    elif index_tree != candidate_tree:
-        return {
-            "status": "NEEDS_USER",
-            "message": "target index no longer matches either side of the finalize intent",
-            "code": "FINALIZE_RECOVERY_INDEX_MISMATCH",
-            "final_head": final_head,
-            "target_worktree": str(target),
-            "index_tree": index_tree,
-            "expected_tree": expected_tree,
-            "candidate_tree": candidate_tree,
-            "preserved": True,
-        }, EXIT_FAIL
+    else:
+        expected_tree = git(
+            repo, "rev-parse", f"{target_head}^{{tree}}", check=True
+        ).stdout.strip()
+        index_result = git(target, "write-tree", check=False)
+        if index_result.returncode != 0:
+            return {
+                "status": "NEEDS_USER",
+                "message": "target index changed while applying the finalize intent",
+                "code": "FINALIZE_RECOVERY_INDEX_MISMATCH",
+                "final_head": final_head,
+                "target_worktree": str(target),
+                "stdout": tail_text(index_result.stdout),
+                "stderr": tail_text(index_result.stderr),
+                "preserved": True,
+            }, EXIT_FAIL
+        index_tree = index_result.stdout.strip()
+        unstaged = target_worktree_unstaged_residue(repo, target)
+        if unstaged:
+            return {
+                "status": "NEEDS_USER",
+                "message": "target worktree changed while recovering the finalize intent",
+                "code": "TARGET_DIRTY_AFTER_FINALIZE",
+                "final_head": final_head,
+                "target_worktree": str(target),
+                "dirty_paths": unstaged,
+            }, EXIT_FAIL
+        if index_tree == expected_tree:
+            checkout = git(
+                target,
+                "read-tree",
+                "-u",
+                "-m",
+                target_head,
+                final_head,
+                check=False,
+            )
+            if checkout.returncode != 0:
+                if cas_performed:
+                    rollback = git(
+                        repo,
+                        "update-ref",
+                        f"refs/heads/{target_branch_name}",
+                        target_head,
+                        final_head,
+                        check=False,
+                    )
+                    ledger["phase"] = (
+                        "finalize_conflict"
+                        if rollback.returncode == 0
+                        else "continuity_failure"
+                    )
+                    append_event(
+                        ledger,
+                        "finalize_worktree_sync_failed",
+                        {
+                            "candidate_head": candidate,
+                            "staged_final_head": final_head,
+                            "target_head": branch_head(repo, target_branch_name),
+                            "target_worktree": str(target),
+                            "checkout_stdout": tail_text(checkout.stdout),
+                            "checkout_stderr": tail_text(checkout.stderr),
+                            "rollback_returncode": rollback.returncode,
+                            "rollback_stderr": tail_text(rollback.stderr),
+                        },
+                    )
+                    save_ledger(repo, ledger)
+                    return {
+                        "status": (
+                            "CONFLICT"
+                            if rollback.returncode == 0
+                            else "CONTINUITY_FAILURE"
+                        ),
+                        "message": "target ref update could not be synchronized to its worktree",
+                        "code": "FINALIZE_WORKTREE_SYNC_FAILED",
+                        "staged_final_head": final_head,
+                        "target_head": branch_head(repo, target_branch_name),
+                        "target_worktree": str(target),
+                        "ref_rolled_back": rollback.returncode == 0,
+                        "preserved": True,
+                    }, EXIT_FAIL
+                return {
+                    "status": "NEEDS_USER",
+                    "message": "final ref could not be synchronized to its target worktree",
+                    "code": "FINALIZE_RECOVERY_SYNC_FAILED",
+                    "final_head": final_head,
+                    "target_worktree": str(target),
+                    "stderr": tail_text(checkout.stderr),
+                    "preserved": True,
+                }, EXIT_FAIL
+        elif index_tree != candidate_tree:
+            return {
+                "status": "NEEDS_USER",
+                "message": "target index no longer matches either side of the finalize intent",
+                "code": "FINALIZE_RECOVERY_INDEX_MISMATCH",
+                "final_head": final_head,
+                "target_worktree": str(target),
+                "index_tree": index_tree,
+                "expected_tree": expected_tree,
+                "candidate_tree": candidate_tree,
+                "preserved": True,
+            }, EXIT_FAIL
     post_target_head = branch_head(repo, target_branch_name)
     post_index_result = git(target, "write-tree", check=False)
     if post_index_result.returncode != 0:
@@ -5822,6 +6612,7 @@ def recover_finalize_intent(
         expected_head=target_head,
         desired_head=final_head,
         live_target_head=post_target_head,
+        workspace_intake=ledger.get("workspace_intake"),
     )
     if post_target_head != final_head or post_index_tree != candidate_tree:
         ledger["phase"] = "finalize_conflict"
@@ -5907,6 +6698,7 @@ def finish_finalized_cleanup(
         expected_head=final_head,
         desired_head=final_head,
         live_target_head=live_target_head,
+        workspace_intake=ledger.get("workspace_intake"),
     )
     if target_facts["finalize_blockers"]:
         return {
@@ -6048,8 +6840,13 @@ def cmd_finalize(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                     details={"tester_integration": integration},
                     exit_code=EXIT_FAIL,
                 )
-        required = required_evidence_fields(ledger)
-        stale = {field: ledger.get(field) for field in required if ledger.get(field) != candidate}
+        required_keys = required_evidence_keys(ledger)
+        required = [EVIDENCE_STATUS_FIELDS[key] for key in required_keys]
+        stale = {
+            EVIDENCE_STATUS_FIELDS[key]: evidence_head(ledger, key)
+            for key in required_keys
+            if evidence_head(ledger, key) != candidate
+        }
         if stale:
             raise RuntimeProblem(
                 "all evidence heads must equal candidate before finalize",
@@ -6141,16 +6938,21 @@ def cmd_finalize(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         patch_path = artifact_dir / f"candidate-{candidate[:12]}.patch"
         patch = git(builder, "diff", "--binary", "--full-index", str(ledger["spec_head"]), candidate, "--", check=True).stdout
         patch_path.write_text(patch, encoding="utf-8")
-        if not patch:
+        intake_required = ledger.get("workspace_intake", {}).get("required") is True
+        if not patch and not intake_required:
             raise RuntimeProblem(
                 "candidate has no diff from spec_head",
                 result="NEEDS_USER",
                 code="EMPTY_CANDIDATE",
             )
         staging, finalize_branch = staging_worktree(repo, ledger, target_head)
-        apply_result = run_process(
-            ["git", "-C", str(staging), "apply", "--3way", "--index", str(patch_path)],
-            check=False,
+        apply_result = (
+            run_process(
+                ["git", "-C", str(staging), "apply", "--3way", "--index", str(patch_path)],
+                check=False,
+            )
+            if patch
+            else CommandResult(0, "", "")
         )
         if apply_result.returncode != 0:
             conflicts = unmerged_paths(staging)
@@ -6207,13 +7009,11 @@ def cmd_finalize(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                 },
             )
         message = args.message or f"feat: codex builder loop {ledger['run_id']}"
-        commit = git(
-            staging,
-            "commit",
-            "-m",
-            message,
-            check=False,
-        )
+        commit_args = ["commit"]
+        if not patch:
+            commit_args.append("--allow-empty")
+        commit_args.extend(["-m", message])
+        commit = git(staging, *commit_args, check=False)
         if commit.returncode != 0:
             ledger["phase"] = "finalize_conflict"
             append_event(
@@ -6388,6 +7188,249 @@ def cmd_abandon(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         }, EXIT_PASS
 
 
+def cmd_resume(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
+    repo, run_id, _ = resolve_run_selector(args.repo, args.run)
+    reason = str(args.reason or "").strip()
+    if not reason:
+        raise RuntimeProblem("resume requires a non-empty --reason", code="RESUME_REASON_REQUIRED")
+    with locked_run(repo, run_id) as ledger:
+        phase = str(ledger.get("phase"))
+        if phase not in {"no_progress", "architecture_review_required"}:
+            raise RuntimeProblem(
+                "resume is only valid for a progress stop",
+                result="NEEDS_USER",
+                code="RESUME_NOT_APPLICABLE",
+                details={"phase": phase},
+                exit_code=EXIT_FAIL,
+            )
+        attempts = verification_attempt_count(ledger)
+        maximum = int(ledger.get("loop_config", {}).get("max_iterations", 0))
+        if attempts >= maximum:
+            ledger["phase"] = "iteration_limit"
+            append_event(
+                ledger,
+                "iteration_limit_reached",
+                {"verification_attempts": attempts, "max_iterations": maximum},
+            )
+            save_ledger(repo, ledger)
+            raise RuntimeProblem(
+                "verification iteration limit was reached",
+                result="NEEDS_USER",
+                code="ITERATION_LIMIT_REACHED",
+                details={"verification_attempts": attempts, "max_iterations": maximum},
+                exit_code=EXIT_FAIL,
+            )
+        resume = {
+            "from_phase": phase,
+            "reason": reason,
+            "attempts": attempts,
+            "at": utc_now(),
+        }
+        ledger.setdefault("verification", {}).setdefault("resumes", []).append(resume)
+        ledger["phase"] = "active"
+        append_event(ledger, "verification_resumed", resume)
+        save_ledger(repo, ledger)
+        return {
+            "status": "READY",
+            "message": "verification progress stop was explicitly resumed",
+            "run_id": run_id,
+            "reason": reason,
+            "verification_attempts": attempts,
+            "max_iterations": maximum,
+        }, EXIT_PASS
+
+
+def _doctor_ledgers(repo: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    reports: list[dict[str, Any]] = []
+    issues: list[dict[str, Any]] = []
+    referenced_worktrees: set[str] = set()
+    runs_root = state_root(repo) / "runs"
+    for path in sorted(runs_root.glob("*/ledger.json")) if runs_root.exists() else []:
+        try:
+            ledger = read_json(path)
+            recorded_repo = resolve_repo(str(ledger["repo_root"]))
+            if recorded_repo != repo:
+                raise RuntimeProblem("ledger repo_root mismatch", code="RUN_PATH_MISMATCH")
+            run_id = str(ledger["run_id"])
+            terminal_cleaned = any(
+                item.get("type") == "terminal_worktrees_cleaned"
+                for item in ledger.get("events", [])
+                if isinstance(item, dict)
+            )
+            role_facts: dict[str, Any] = {}
+            for role in ("builder", "tester"):
+                entry = ledger.get("worktrees", {}).get(role, {})
+                raw_role_path = str(entry.get("path") or "")
+                role_path = Path(raw_role_path) if raw_role_path else None
+                if raw_role_path:
+                    referenced_worktrees.add(str(role_path.resolve()))
+                exists = bool(role_path and role_path.exists())
+                role_facts[role] = {
+                    "path": raw_role_path or None,
+                    "branch": entry.get("branch"),
+                    "exists": exists,
+                    "head": full_head(role_path) if exists and role_path is not None else None,
+                    "residue": worktree_residue(role_path) if exists and role_path is not None else [],
+                }
+                if not exists and ledger.get("phase") not in {"finalized"} and not terminal_cleaned:
+                    issues.append(
+                        {
+                            "code": "OWNED_WORKTREE_MISSING",
+                            "run_id": run_id,
+                            "role": role,
+                            "path": raw_role_path,
+                        }
+                    )
+            reports.append(
+                {
+                    "run_id": run_id,
+                    "phase": ledger.get("phase"),
+                    "schema_version": ledger.get("schema_version"),
+                    "ledger": str(path),
+                    "worktrees": role_facts,
+                    "workspace_intake": ledger.get("workspace_intake"),
+                    "evidence": ledger.get("evidence"),
+                    "finalize_intent": ledger.get("finalize_intent"),
+                    "verification_attempts": verification_attempt_count(ledger),
+                }
+            )
+        except (KeyError, RuntimeProblem) as exc:
+            issues.append(
+                {"code": "LEDGER_INVALID", "ledger": str(path), "error": str(exc)}
+            )
+    for candidate in repository_worktrees(repo):
+        resolved = str(candidate.resolve())
+        if candidate == repo or resolved in referenced_worktrees:
+            continue
+        try:
+            branch = current_branch(candidate) if candidate.exists() else None
+        except RuntimeProblem:
+            branch = None
+        if branch and branch.startswith("codex-loop/"):
+            issues.append(
+                {
+                    "code": "ORPHAN_LOOP_WORKTREE",
+                    "path": resolved,
+                    "branch": branch,
+                    "head": full_head(candidate),
+                    "residue": worktree_residue(candidate),
+                    "action": "inspect manually; unknown worktrees are never adopted or deleted automatically",
+                }
+            )
+    return reports, issues
+
+
+def cmd_doctor(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
+    repo = resolve_repo(args.repo)
+    reports, issues = _doctor_ledgers(repo)
+    if args.run:
+        reports = [item for item in reports if item.get("run_id") == args.run]
+        issues = [item for item in issues if item.get("run_id") in {None, args.run}]
+        if not reports:
+            raise RuntimeProblem(f"run not found: {args.run}", code="RUN_NOT_FOUND")
+    return {
+        "status": "READY" if not issues else "NEEDS_USER",
+        "message": (
+            "repository builder-loop state is healthy"
+            if not issues
+            else "repository builder-loop state has preserved issues"
+        ),
+        "repo": str(repo),
+        "runs": reports,
+        "issues": issues,
+        "read_only": True,
+    }, EXIT_PASS if not issues else EXIT_FAIL
+
+
+def cmd_recover(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
+    repo, run_id, _ = resolve_run_selector(args.repo, args.run)
+    with locked_run(repo, run_id) as ledger:
+        recovered = recover_finalize_intent(repo, ledger)
+        if recovered is not None:
+            return recovered
+        if ledger.get("phase") == "finalized_cleanup":
+            return finish_finalized_cleanup(repo, ledger)
+        return {
+            "status": "NOOP",
+            "message": "run has no persisted safe recovery transaction",
+            "run_id": run_id,
+            "phase": ledger.get("phase"),
+        }, EXIT_PASS
+
+
+def _terminal_expected_heads(ledger: dict[str, Any]) -> dict[str, str | None]:
+    if ledger.get("phase") == "abandoned":
+        for event in reversed(ledger.get("events", [])):
+            if event.get("type") == "abandoned":
+                facts = event.get("facts", {})
+                return {
+                    "builder": facts.get("builder_head"),
+                    "tester": facts.get("tester_head"),
+                }
+    return {
+        "builder": ledger.get("finalize_intent", {}).get("candidate_head")
+        if isinstance(ledger.get("finalize_intent"), dict)
+        else None,
+        "tester": ledger.get("tester_integration", {}).get("source_head"),
+    }
+
+
+def cmd_cleanup(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
+    repo, run_id, _ = resolve_run_selector(args.repo, args.run)
+    with locked_run(repo, run_id) as ledger:
+        if ledger.get("phase") not in {"finalized", "abandoned"}:
+            raise RuntimeProblem(
+                "safe cleanup only accepts terminal runs",
+                result="NEEDS_USER",
+                code="CLEANUP_NOT_TERMINAL",
+                details={"phase": ledger.get("phase")},
+                exit_code=EXIT_FAIL,
+            )
+        expected = _terminal_expected_heads(ledger)
+        blockers: list[dict[str, Any]] = []
+        for role in ("builder", "tester"):
+            entry = ledger.get("worktrees", {}).get(role, {})
+            path = Path(str(entry.get("path") or ""))
+            if not path.exists():
+                continue
+            live_head = full_head(path)
+            residue = worktree_residue(path)
+            if residue or (expected.get(role) and live_head != expected.get(role)):
+                blockers.append(
+                    {
+                        "role": role,
+                        "path": str(path),
+                        "expected_head": expected.get(role),
+                        "head": live_head,
+                        "residue": residue,
+                    }
+                )
+        if blockers:
+            return {
+                "status": "NEEDS_USER",
+                "message": "terminal worktrees drifted and were preserved",
+                "code": "CLEANUP_WORKTREE_DRIFT",
+                "run_id": run_id,
+                "blockers": blockers,
+            }, EXIT_FAIL
+        failures = cleanup_role_worktrees(repo, ledger, force=False)
+        if failures:
+            return {
+                "status": "NEEDS_USER",
+                "message": "safe terminal cleanup is incomplete",
+                "code": "CLEANUP_INCOMPLETE",
+                "run_id": run_id,
+                "failures": failures,
+            }, EXIT_FAIL
+        append_event(ledger, "terminal_worktrees_cleaned", {})
+        save_ledger(repo, ledger)
+        return {
+            "status": "COMPLETE",
+            "message": "ledger-owned terminal worktrees were safely cleaned",
+            "run_id": run_id,
+        }, EXIT_PASS
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = RuntimeArgumentParser(prog="codex-builder-loop")
     subparsers = parser.add_subparsers(
@@ -6404,6 +7447,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     plan.add_argument("--plan", help="Markdown plan path; omit or use - to read stdin")
     plan.set_defaults(handler=cmd_plan_validate)
+
+    workspace_scan = subparsers.add_parser("workspace-scan")
+    workspace_scan.add_argument("--repo", default=".")
+    workspace_scan.add_argument("--path", action="append", required=True)
+    workspace_scan.set_defaults(handler=cmd_workspace_scan)
 
     start = subparsers.add_parser("start")
     start.add_argument("--repo", default=".")
@@ -6474,6 +7522,27 @@ def build_parser() -> argparse.ArgumentParser:
     selector.add_argument("--run")
     selector.add_argument("--session-id")
     status.set_defaults(handler=cmd_status)
+
+    doctor = subparsers.add_parser("doctor")
+    doctor.add_argument("--repo", default=".")
+    doctor.add_argument("--run")
+    doctor.set_defaults(handler=cmd_doctor)
+
+    recover = subparsers.add_parser("recover")
+    recover.add_argument("--repo", default=".")
+    recover.add_argument("--run", required=True)
+    recover.set_defaults(handler=cmd_recover)
+
+    resume = subparsers.add_parser("resume")
+    resume.add_argument("--repo", default=".")
+    resume.add_argument("--run", required=True)
+    resume.add_argument("--reason", required=True)
+    resume.set_defaults(handler=cmd_resume)
+
+    cleanup = subparsers.add_parser("cleanup")
+    cleanup.add_argument("--repo", default=".")
+    cleanup.add_argument("--run", required=True)
+    cleanup.set_defaults(handler=cmd_cleanup)
 
     finalize = subparsers.add_parser("finalize")
     finalize.add_argument("--repo", default=".")

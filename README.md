@@ -18,19 +18,24 @@ Reviewer；全部门禁通过后，将候选结果收敛为一个语义提交。
 - Builder-loop Planner 在输出前运行带仓库上下文的确定性 plan validator；缺少规划 HEAD/revision、行为边界
   与不变量、mock 策略、角色写边界、串行公开前置产物或有效 checklist 的计划不能进入执行，
   实际生效的验证配置不合法时也不会返回 `READY`。
+- 主仓 dirty 默认留在原处且不进入 run。任务确实依赖现有改动时，Planner 取得 exact-path 授权并用
+  `workspace-scan` 冻结 state digest；`start` 合成不可变 snapshot 给 Builder，主仓和全局 stash
+  全程不动。finalize 只在授权路径未漂移时消费 snapshot。
 - `parallel_ready=true` 时 Builder 与 Tester 从同一个 `spec_head` 并行。为 `false` 时，Builder
   先发布计划声明的精确公开文件；runtime 从 `spec_head` 合成隔离 publication HEAD/manifest，
   将其设为 Tester 基线，并冻结这些文件后再接受 Tester author turn。
 - Tester 首次写测不接收候选 diff，并按角色契约不得读取 Builder worktree；Builder 在 Tester
   提交后可以读测试，但不能修改。串行场景只向 Tester 暴露计划声明的公开前置产物和黑盒面，
-  不提供实现 diff。v1 的读隔离依赖独立 thread 与角色契约，写隔离由 runtime 机械执行。
+  不提供实现 diff。当前读隔离依赖独立 thread 与角色契约，写隔离由 runtime 机械执行。
 - Tester、Reviewer 在后续 iteration 续接原 agent thread，不以同名新 agent 冒充原上下文。
 - 所有非 L1 run 都必须持久化 Tester author `tests_ready` 及其 integration，再由同一 thread 在
   candidate worktree 对集成 HEAD 完成 blackbox `pass`；可重放命令、数值 returncode、执行前后
   HEAD 与零 tracked/untracked/ignored residue 随 E2E evidence 绑定同一 candidate。
 - `PASS / FAIL / FATAL` 来自真实命令退出状态；模型不能自述通过。显式退出码反转、动态 exit、
   内联 shell control flow 和已知 runner 控制文件弱化会在执行前被拒绝。
-- 机器验证在 candidate 的临时干净 worktree 中执行，不允许验证命令改写候选现场。
+- 机器验证在 candidate 的临时干净 worktree 中执行，不允许验证命令改写候选现场。连续两次验证
+  同一 candidate 失败会进入 no-progress，同一 failure fingerprint 跨三个 candidate 重现会要求
+  架构复核；显式 resume 不重置迭代上限。
 - Builder 负责同步项目文档，Reviewer 在同一次审查中执行文档审计；非 L1 Reviewer turn 的
   开始和结束都必须已经绑定当前 Tester integration、机器验证和 blackbox evidence。
 - Reviewer 通过前目标分支不移动。finalize 在临时 ref/worktree 执行目标仓库 hooks，确认最终
@@ -39,6 +44,11 @@ Reviewer；全部门禁通过后，将候选结果收敛为一个语义提交。
 - `status` 分开公开 delivery gates、final commit staging 和真实 finalize readiness。tracked/index
   改动始终阻塞目标同步；无关 `.env`、cache、日志等 untracked/ignored 文件会被保留且不阻塞，
   只有与最终 tree 更新路径冲突或 Git 无法证明安全时才要求用户处理。
+- machine/blackbox evidence 可按计划冻结的 affects/exempt scope 绑定真实输入 digest；scope 外改动
+  只推进 accepted HEAD 并保留 observed HEAD，Reviewer/doc-review 仍对任意 candidate 变化失效。
+- `doctor` 只读报告 ledger、worktree、intake、evidence、progress 和 finalize 状态；`recover` 只重放
+  已持久化事务，`cleanup` 只删除 terminal run 中 clean 且未漂移的 ledger-owned worktree。未知
+  orphan 永不自动 adopt 或删除。
 - finalize 只更新本地目标分支，不自动 push、创建 PR 或合并远端分支。
 - 正常修复循环会自动继续；测试目标或 ownership 变化、计划过期、迭代上限、Reviewer
   决策项、agent/target continuity 失败、目标同步 blocker 或 Git 冲突等安全停止会交还用户。
@@ -111,6 +121,21 @@ runner。
 修订方案必须进入新的 run。最终 squash commit 使用目标仓库配置的 Git 身份，并在临时
 ref/worktree 执行该仓库的 commit hooks；最终 tree 复核通过后才以 expected-old CAS 更新目标分支。
 内部 Builder/Tester checkpoint 不进入目标分支。
+
+计划只有在用户明确接入 planning-time dirty 文件时才增加：
+
+```markdown
+<!-- workspace-intake -->
+schema_version: 1
+files:
+  - path: "src/exact-file.py"
+    state_sha256: "<workspace-scan 输出>"
+<!-- /workspace-intake -->
+```
+
+`unit-test-spec.evidence_scopes` 可把每个 Builder-owned pattern 分到 machine/blackbox 的
+`affects` 或 `exempt`；省略即保持全 tree 失效。Tester、runner、support、publication 与实际
+blackbox command 依赖始终强制属于 affects。
 
 ## 开发验证
 

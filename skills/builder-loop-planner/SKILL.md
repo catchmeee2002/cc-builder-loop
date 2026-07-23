@@ -11,12 +11,15 @@ description: 在 Codex Plan mode（/plan）中为代码或文档变更生成 bui
 
 1. 读取适用的 `AGENTS.md`、项目约束和设计哲学。
 2. 检查 Git 根目录、当前 `HEAD`、该 HEAD 是否存在 `.claude/loop.yml`、测试布局、可复制执行的
-   验证命令和对外接口。
+   验证命令、对外接口和 target checkout residue。
 3. 修改或新建 Markdown 前，读取项目声明的适用文档政策；项目未声明时读取
    `${CODEX_HOME:-$HOME/.codex}/builder-loop/doc-policy.md`。政策不可读时停止文档方案，
    不自行发明替代规则。
 4. 只在答案会实质改变方案时使用 `request_user_input`。不要用纯文本问题替代。
 5. 不按 diff 大小决定验证深度。按行为变化、接口契约、数据风险和用户可见影响定义证据。
+6. target dirty 默认不带入任务。只有任务明确依赖某个 dirty 文件时，使用选项卡取得 exact-path
+   授权，再运行 `workspace-scan --repo <repo> --path <path>`；把返回的 path/state digest 原样写入
+   `workspace-intake` marker。不得自行选择、复制、stash 或概括成目录/glob。
 
 ## 固定方案契约
 
@@ -44,6 +47,14 @@ test_context:
 ownership:
   builder_write: ["src/**", "<affected documentation paths when needed>"]
   tester_write: ["tests/**"]
+# 可选；省略时 machine/blackbox 都按全 tree 失效。
+evidence_scopes:
+  machine:
+    affects: ["src/**"]
+    exempt: ["README.md"]
+  blackbox:
+    affects: ["src/**"]
+    exempt: ["README.md"]
 behaviors:
   - id: <kebab-case-id>
     what: "<observable behavior>"
@@ -57,6 +68,17 @@ mock_strategy: {}
 - [ ] <machine verification evidence>
 - [ ] <tester, reviewer, and documentation evidence target the integrated HEAD>
 <!-- /plan-checklist -->
+```
+
+任务明确接入 planning-time dirty 文件时，在 spec 前增加：
+
+```markdown
+<!-- workspace-intake -->
+schema_version: 1
+files:
+  - path: "src/exact-file.py"
+    state_sha256: "<workspace-scan 返回的 64 位摘要>"
+<!-- /workspace-intake -->
 ```
 
 纯文档任务使用：
@@ -81,6 +103,13 @@ ownership:
 满足以下约束：
 
 - 让 `spec_head` 等于规划时 Git `HEAD`。
+- `workspace-intake` 只能列用户明确授权、属于 `builder_write` 的 exact regular file 或 tracked
+  deletion。ignored、symlink、目录、Tester-owned、support/runner/control 路径不得接入；marker
+  省略表示全部 target dirty 留在原处且不进入 Builder。
+- `evidence_scopes` 省略时保持全 tree fail-closed。使用时，machine 与 blackbox 必须分别把每个
+  `builder_write` pattern 恰好放入 affects 或 exempt；Tester、support、runner、publication 和
+  blackbox 实际命令依赖由 runtime 强制加入 affects。只有能证明不影响该 gate 的路径才能 exempt，
+  Reviewer/doc-review 永不跨 HEAD 复用。
 - 始终让 builder 与 tester 写路径互斥；只有 Tester 能完全依据 `spec_head`、冻结目标和既有公开
   黑盒面写测时才设置 `parallel_ready: true`。
 - 设置 `parallel_ready: false` 时，在方案正文和 checklist 中明确 Builder 必须先提交的公开前置
@@ -121,7 +150,8 @@ ownership:
 
 ## 验证方案
 
-1. 首次调用前运行 `codex-builder-loop plan-validate --help`，以当前 CLI 为准。
+1. 首次调用前运行 `codex-builder-loop plan-validate --help`，需要 intake 时再运行
+   `codex-builder-loop workspace-scan --help`，以当前 CLI 为准。
 2. 将完整方案通过 stdin 传给 `codex-builder-loop plan-validate --repo <git-root>`。
 3. 只解析 stdout 最后一行 JSON，并要求至少包含 `status` 与 `message`。
 4. `status=READY` 时核对 `effective_verification_source` 与 `spec_head` 的实际来源一致，再输出方案。

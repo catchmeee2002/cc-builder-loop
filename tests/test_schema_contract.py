@@ -46,7 +46,13 @@ class LedgerSchemaContractTest(unittest.TestCase):
         self.repos.append(repo)
         plan = write_plan(repo, plan_markdown(head(repo)))
         _started, run_path = start_run(repo, plan, task="schema-l2")
-        self.validator.validate(load_ledger(run_path))
+        ledger = load_ledger(run_path)
+        self.validator.validate(ledger)
+        self.assertEqual(ledger["schema_version"], 2)
+        self.assertIn("evidence", ledger)
+        self.assertIn("workspace_intake", ledger)
+        self.assertNotIn("verified_head", ledger)
+        self.assertNotIn("verification_attempts", ledger)
 
     def test_l1_ledger_matches_published_schema(self) -> None:
         repo = init_repo()

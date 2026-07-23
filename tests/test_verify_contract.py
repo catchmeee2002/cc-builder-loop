@@ -44,7 +44,10 @@ class VerifyContractTest(unittest.TestCase):
         assert_status(result, "PASS", rc=0)
         self.assertEqual(result.data.get("head"), head(builder))
         ledger = load_ledger(run_path)
-        self.assertEqual(ledger.get("verified_head"), head(builder))
+        self.assertEqual(
+            ledger.get("evidence", {}).get("machine", {}).get("accepted_head"),
+            head(builder),
+        )
 
         status = run_cli("status", "--run", run_path)
         assert_status(status, "ACTIVE", rc=0)
@@ -60,7 +63,7 @@ class VerifyContractTest(unittest.TestCase):
         assert_status(result, "FAIL", rc=1)
         self.assertTrue(result.data.get("stage") or result.data.get("runner"), result.data)
         ledger = load_ledger(run_path)
-        self.assertNotEqual(ledger.get("verified_head"), head(builder))
+        self.assertIsNone(ledger.get("evidence", {}).get("machine"))
 
     def test_missing_runner_is_blocked_and_can_never_be_pass(self) -> None:
         _repo, builder, run_path = self.start()
@@ -147,11 +150,13 @@ class VerifyContractTest(unittest.TestCase):
         started, run_path = start_run(repo, plan)
         builder, _tester = worktrees_from(started, run_path)
 
-        for _ in range(2):
+        for attempt in range(2):
             result = run_cli("verify", "--run", run_path)
             assert_status(result, "FAIL", rc=1)
             self.assertFalse((builder / "src" / "runner_generated.py").exists())
             self.assertFalse((builder.parent / "verify").exists())
+            if attempt == 1:
+                self.assertEqual(result.data.get("progress_stop"), "NO_PROGRESS")
 
     def test_ignored_builder_file_cannot_influence_clean_verification(self) -> None:
         repo = init_repo({".gitignore": ".env\n"})
@@ -224,7 +229,7 @@ class VerifyContractTest(unittest.TestCase):
         result = run_cli("verify", "--run", run_path)
         assert_status(result, "PASS", rc=0)
 
-    def test_repeated_verify_keeps_attempt_logs_immutable(self) -> None:
+    def test_repeated_verify_reuses_immutable_machine_evidence(self) -> None:
         _repo, _builder, run_path = self.start()
         first = run_cli("verify", "--run", run_path)
         assert_status(first, "PASS", rc=0)
@@ -233,12 +238,10 @@ class VerifyContractTest(unittest.TestCase):
 
         second = run_cli("verify", "--run", run_path)
         assert_status(second, "PASS", rc=0)
-        second_log = Path(second.data["stages"][0]["log"])
-
-        self.assertNotEqual(first_log, second_log)
+        self.assertIs(second.data.get("reused"), True, second.data)
         self.assertIn("attempt-0001", str(first_log))
-        self.assertIn("attempt-0002", str(second_log))
         self.assertEqual(first_log.read_text(), first_content)
+        self.assertEqual(second.data.get("attempt"), 1)
 
     def test_internal_builder_checkpoint_ignores_repository_gpg_signing(self) -> None:
         repo, builder, run_path = self.start()

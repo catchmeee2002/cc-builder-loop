@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://openai.local/codex-builder-loop/ledger-v1.schema.json",
-  "title": "Codex Builder Loop Ledger v1",
+  "$id": "https://openai.local/codex-builder-loop/ledger-v2.schema.json",
+  "title": "Codex Builder Loop Ledger v2",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -18,14 +18,13 @@
     "worktrees",
     "branches",
     "prerequisite_publication",
-    "verification_attempts",
+    "verification",
     "tester_integration",
     "agents",
+    "pending_agent_turns",
     "completed_agent_turns",
-    "verified_head",
-    "e2e_verified_head",
-    "reviewed_head",
-    "doc_reviewed_head",
+    "evidence",
+    "workspace_intake",
     "finalize_intent",
     "final_head",
     "created_at",
@@ -33,7 +32,7 @@
     "events"
   ],
   "properties": {
-    "schema_version": {"const": 1},
+    "schema_version": {"const": 2},
     "run_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"},
     "owner_session_id": {"type": "string", "minLength": 1},
     "phase": {
@@ -43,6 +42,8 @@
         "finalize_conflict",
         "continuity_failure",
         "iteration_limit",
+        "no_progress",
+        "architecture_review_required",
         "finalized_cleanup",
         "finalized",
         "abandoned"
@@ -73,7 +74,9 @@
         "behavior_ids",
         "supersedes_run_id",
         "supersedes_plan_sha256",
-        "has_e2e_cases"
+        "has_e2e_cases",
+        "workspace_intake",
+        "evidence_scopes"
       ],
       "properties": {
         "path": {"type": "string", "minLength": 1},
@@ -127,7 +130,13 @@
         "supersedes_plan_sha256": {
           "oneOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]
         },
-        "has_e2e_cases": {"type": "boolean"}
+        "has_e2e_cases": {"type": "boolean"},
+        "workspace_intake": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/workspacePlanEntry"}
+        },
+        "evidence_scopes": {"$ref": "#/$defs/evidenceScopes"}
       }
     },
     "loop_config": {
@@ -190,7 +199,21 @@
         }
       }
     },
-    "verification_attempts": {"type": "integer", "minimum": 0},
+    "verification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["attempts", "resumes"],
+      "properties": {
+        "attempts": {
+          "type": "array",
+          "items": {"type": "object"}
+        },
+        "resumes": {
+          "type": "array",
+          "items": {"type": "object"}
+        }
+      }
+    },
     "tester_integration": {
       "type": "object",
       "additionalProperties": false,
@@ -290,10 +313,18 @@
         }
       }
     },
-    "verified_head": {"$ref": "#/$defs/nullableCommit"},
-    "e2e_verified_head": {"$ref": "#/$defs/nullableCommit"},
-    "reviewed_head": {"$ref": "#/$defs/nullableCommit"},
-    "doc_reviewed_head": {"$ref": "#/$defs/nullableCommit"},
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["machine", "blackbox", "review", "doc_review"],
+      "properties": {
+        "machine": {"$ref": "#/$defs/nullableEvidence"},
+        "blackbox": {"$ref": "#/$defs/nullableEvidence"},
+        "review": {"$ref": "#/$defs/nullableEvidence"},
+        "doc_review": {"$ref": "#/$defs/nullableEvidence"}
+      }
+    },
+    "workspace_intake": {"$ref": "#/$defs/workspaceIntake"},
     "finalize_intent": {
       "oneOf": [
         {"type": "null"},
@@ -343,6 +374,99 @@
       "oneOf": [{"$ref": "#/$defs/commit"}, {"type": "null"}]
     },
     "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "workspacePlanEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "state_sha256"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "state_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "workspaceStateEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "index", "worktree", "state_sha256", "dirty"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "index": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["mode", "oid"],
+              "properties": {
+                "mode": {"enum": ["100644", "100755"]},
+                "oid": {"type": "string", "pattern": "^[0-9a-f]{40,64}$"}
+              }
+            },
+            {"type": "null"}
+          ]
+        },
+        "worktree": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["mode", "sha256"],
+              "properties": {
+                "mode": {"enum": ["100644", "100755"]},
+                "sha256": {"$ref": "#/$defs/sha256"}
+              }
+            },
+            {"type": "null"}
+          ]
+        },
+        "state_sha256": {"$ref": "#/$defs/sha256"},
+        "dirty": {"type": "boolean"}
+      }
+    },
+    "workspaceIntake": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["required", "paths", "entries", "snapshot_head", "snapshot_tree"],
+      "properties": {
+        "required": {"type": "boolean"},
+        "paths": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
+        "entries": {"type": "array", "items": {"$ref": "#/$defs/workspaceStateEntry"}},
+        "snapshot_head": {"$ref": "#/$defs/nullableCommit"},
+        "snapshot_tree": {"$ref": "#/$defs/nullableCommit"}
+      }
+    },
+    "evidenceScope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["affects", "exempt"],
+      "properties": {
+        "affects": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
+        "exempt": {"type": "array", "uniqueItems": true, "items": {"type": "string"}}
+      }
+    },
+    "evidenceScopes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["machine", "blackbox"],
+      "properties": {
+        "machine": {"$ref": "#/$defs/evidenceScope"},
+        "blackbox": {"$ref": "#/$defs/evidenceScope"}
+      }
+    },
+    "evidenceRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "observed_head", "accepted_head", "input_digest", "scope", "provenance"],
+      "properties": {
+        "kind": {"enum": ["machine", "blackbox", "review", "doc_review"]},
+        "observed_head": {"$ref": "#/$defs/commit"},
+        "accepted_head": {"$ref": "#/$defs/commit"},
+        "input_digest": {"$ref": "#/$defs/sha256"},
+        "scope": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
+        "provenance": {"type": "object"}
+      }
+    },
+    "nullableEvidence": {
+      "oneOf": [{"$ref": "#/$defs/evidenceRecord"}, {"type": "null"}]
+    },
     "worktree": {
       "type": "object",
       "additionalProperties": false,

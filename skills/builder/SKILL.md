@@ -15,7 +15,8 @@ description: 显式执行已接受的 builder-loop 方案，在隔离 worktree �
    替代规则。
 3. 在第一次使用每个子命令前分别运行其 `--help`：
    `plan-validate`、`start`、`role-check`、`publish-prerequisites`、`integrate-tests`、`verify`、`status`、
-   `record-evidence`、`finalize`、`abandon`。当前帮助优先于本文件中的调用示例。
+   `record-evidence`、`doctor`、`recover`、`resume`、`cleanup`、`finalize`、`abandon`。当前帮助优先于
+   本文件中的调用示例。
 4. 对每次 runtime 调用只解析 stdout 最后一行 JSON。要求存在 `status` 与 `message`；
    非 JSON、缺字段或命令异常一律视为 `FATAL`，不要根据前面的日志猜测结果。
 5. 生成一个只含小写字母、数字和连字符的唯一 `run_id`，在启动 run 的目标 worktree 根创建
@@ -36,6 +37,8 @@ description: 显式执行已接受的 builder-loop 方案，在隔离 worktree �
    与 tester worktree、分支和证据 HEAD，不在 prompt 或旁路文件缓存副本。
 9. 从 ledger 读取 `plan.level`。只有 runtime 明确返回 `L1` 时才走下方纯文档
    分支；不得由 Builder 自行把可执行行为变更降级为 L1。
+10. 若 plan 含 `workspace-intake`，只接受 runtime 返回的 snapshot head/tree/manifest；不得在
+    target 手工 stash、清理、复制或重新捕获 dirty。start 报 digest drift 时保留 target，回到新 plan。
 
 ## L1 纯文档分支
 
@@ -93,7 +96,7 @@ description: 显式执行已接受的 builder-loop 方案，在隔离 worktree �
 
 1. 执行 `verify --run <run>`。runtime 必须在当前 candidate commit 派生的临时干净 worktree
    中运行机器判据；Builder 不在验证 worktree 中修代码或保留运行产物。
-2. `status=FAIL` 时读取返回的 `stage` 与 `log_path`，按 ownership 路由：Builder-owned
+2. `status=FAIL` 时读取返回的 `stage`、`log_path`、failure fingerprint 与 progress stop，按 ownership 路由：Builder-owned
    实现/文档错误由 Builder 修；冻结目标不变的 Tester-owned 测试或测试支持实现错误，先以
    `purpose=author` prepare，再 follow-up 同一 Tester 进入 author correction，返回新的
    `tests_ready` 后重新 role-check 和
@@ -102,8 +105,13 @@ description: 显式执行已接受的 builder-loop 方案，在隔离 worktree �
    返回 `iteration_limit_reached=true` 时停止当前 frozen run，不继续调用 verify。使用选项卡让
    用户选择 abandon，或先 abandon 保留现场、再 `/plan` 提升 `plan_revision` 并重新调用
    `$builder`；不得在同一 run 内重置计数或批准修订。
+   返回 `NO_PROGRESS` 或 `ARCHITECTURE_REVIEW_REQUIRED` 时先调用 `doctor --run <run>`，展示重复
+   candidate/fingerprint 和现场；只有用户明确确认目标不变且继续尝试时才调用
+   `resume --run <run> --reason <decision>`。resume 不重置 max_iterations。
 3. `status=FATAL` 时停止；不要把“判据未执行”当作测试失败，更不要返回 PASS。
-4. `status=PASS` 后先执行
+4. `status=PASS` 后先调用 `status --run <run>`。若 scoped evidence 已让
+   `e2e_verified_head` 等于当前 candidate，说明 blackbox 的真实输入未变，可跳过重复执行但必须把
+   observed/accepted HEAD provenance 交给 Reviewer；否则执行
    `prepare-follow-up --run <run> --role tester --agent-id <tester_id> --purpose blackbox`，再
    follow-up 同一个 tester thread，传入 `phase=blackbox`、集成 HEAD、
    `candidate_worktree` 的绝对路径、runner 和公开黑盒入口。所有非 L1 run 都必须执行本步骤；
@@ -162,9 +170,13 @@ description: 显式执行已接受的 builder-loop 方案，在隔离 worktree �
    展示 `finalize_blockers` 中的风险路径，请其处理后重试同一 `finalize`，或由用户明确选择
    abandon；不要要求删除 `target_residue` 中未被列为 blocker 的 ignored/untracked 文件，也不要
    重跑 hooks、Tester、验证或 Reviewer。仅 `status=COMPLETE` 或幂等 `NOOP` 表示成功。
+   `TARGET_INTAKE_DRIFT` 表示用户授权路径在 start 后又变化；不得覆盖、重新 capture 或在原 run
+   放宽 digest，只能让用户恢复 planning-time 状态后重试同一 intent，或 abandon/new plan。
 8. 其他 `CONFLICT`、`CONTINUITY_FAILURE`、`NEEDS_USER`、`FATAL` 或
    `FATAL_AMBIGUOUS` 时保留现场，并根据 `message` 请求用户决定。只有用户明确放弃时才调用
    `abandon --run <run>`。
+   finalize/cleanup 中断时先用 `doctor` 查看 intent，再用 `recover` 重放已有安全事务；未知 orphan
+   不 adopt、不删除。terminal run 只有用户明确要求丢弃且 `cleanup` 证明 head/residue 未漂移时才清理。
 9. 成功时最后一行输出 `BUILDER_RESULT: pass run_id=<run_id>`；已按用户决定放弃时输出
    `BUILDER_RESULT: abandoned run_id=<run_id>`；需要用户时输出
    `BUILDER_RESULT: needs_user run_id=<run_id>`。不要在 runtime 未完成时声称交付完成。

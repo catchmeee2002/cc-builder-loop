@@ -84,6 +84,7 @@ class InstallContractTest(unittest.TestCase):
             self.assertIn("Codex 原生 Plan", agents)
             self.assertIn("Builder-loop Planner", agents)
             self.assertNotIn("使用 `/plan` 为后续交付制定方案时，必须调用", agents)
+            self.assertNotIn("用户明确说", agents)
             policy = codex_home / "builder-loop" / "doc-policy.md"
             self.assertTrue(policy.is_symlink())
             self.assertEqual(policy.resolve(), (ROOT / "policies" / "doc-policy.md").resolve())

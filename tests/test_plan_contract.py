@@ -46,6 +46,52 @@ class PlanContractTest(unittest.TestCase):
         self.assertEqual(by_stdin.data.get("spec_head"), self.spec_head)
         self.assertIs(by_stdin.data.get("parallel_ready"), True)
 
+    def test_evidence_scopes_must_classify_every_builder_pattern(self) -> None:
+        valid = plan_markdown(
+            self.spec_head,
+            builder_write=["src/**", "docs/**"],
+            evidence_scopes={
+                "machine": {"affects": ["src/**"], "exempt": ["docs/**"]},
+                "blackbox": {"affects": ["src/**"], "exempt": ["docs/**"]},
+            },
+        )
+        assert_status(
+            run_cli("plan-validate", "--repo", self.repo, input_text=valid),
+            "READY",
+            rc=0,
+        )
+        invalid = valid.replace('    exempt: ["docs/**"]', "    exempt: []", 1)
+        rejected = run_cli("plan-validate", "--repo", self.repo, input_text=invalid)
+        assert_status(rejected, "NEEDS_USER", rc=1)
+        self.assertTrue(
+            any("classify every builder_write" in str(item) for item in rejected.data.get("errors", [])),
+            rejected.data,
+        )
+
+    def test_workspace_intake_must_be_exact_digest_bound_and_builder_owned(self) -> None:
+        target = self.repo / "src" / "calc.py"
+        target.write_text("# dirty\ndef add(a, b):\n    return a + b\n")
+        scanned = run_cli(
+            "workspace-scan", "--repo", self.repo, "--path", "src/calc.py"
+        )
+        assert_status(scanned, "READY", rc=0)
+        entry = scanned.data["entries"][0]
+        valid = plan_markdown(
+            self.spec_head,
+            workspace_intake=[
+                {"path": entry["path"], "state_sha256": entry["state_sha256"]}
+            ],
+        )
+        assert_status(
+            run_cli("plan-validate", "--repo", self.repo, input_text=valid),
+            "READY",
+            rc=0,
+        )
+        outside = valid.replace('path: "src/calc.py"', 'path: "README.md"')
+        rejected = run_cli("plan-validate", "--repo", self.repo, input_text=outside)
+        assert_status(rejected, "NEEDS_USER", rc=1)
+        self.assertEqual(rejected.data.get("code"), "PLAN_CONTRACT_INVALID")
+
     def test_plan_validate_rejects_stale_spec_head(self) -> None:
         text = plan_markdown(self.spec_head)
         (self.repo / "README.md").write_text("target moved\n")

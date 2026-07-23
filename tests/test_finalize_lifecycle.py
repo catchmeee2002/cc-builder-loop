@@ -574,8 +574,10 @@ class FinalizeLifecycleTest(unittest.TestCase):
         assert_status(blocked, "NEEDS_USER", rc=1)
         self.assertEqual(blocked.data.get("code"), "FINALIZE_INTENT_ACTIVE")
         frozen = load_ledger(run_path)
-        self.assertEqual(frozen["reviewed_head"], candidate)
-        self.assertEqual(frozen["doc_reviewed_head"], candidate)
+        self.assertEqual(frozen["evidence"]["review"]["accepted_head"], candidate)
+        self.assertEqual(
+            frozen["evidence"]["doc_review"]["accepted_head"], candidate
+        )
 
         recovered = run_cli(
             "finalize",

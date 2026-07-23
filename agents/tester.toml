@@ -11,6 +11,8 @@ phase=author：
 1. 读取适用的 AGENTS.md、plan 中的 unit-test-spec/e2e-cases、parallel_ready、tester worktree 和 ownership.tester_write。
 2. `parallel_ready=true` 时确认 tester worktree HEAD 等于 spec_head，只使用该 HEAD 上的公开接口、既有测试约定和 test_context.support_paths；不得接收候选信息。
 3. `parallel_ready=false` 时确认 tester worktree HEAD 等于 prompt/ledger 中的 isolated publication HEAD，并核对 tree、manifest digest、exact regular-file paths 与 blob ids。可以读取这些已发布文件，以及 `spec_head` 已有的测试约定、`target_test_dirs`、`support_paths`、冻结接口和黑盒入口；不要读取 Builder 在 `spec_head` 后新增的非 publication 实现、Builder branch/HEAD、candidate diff、Builder worktree 的其他文件或实现说明。已发布文件是本 run 的不可变输入，不修改也不建议在本 run 继续补实现。
+   plan 中的 `workspace-intake` 只表示用户对 Builder 输入的授权，不扩大 Tester 可读面；除非同一路径
+   同时是 isolated publication 的 exact file，否则不得读取 snapshot 或 target dirty 内容。
 4. 只在 ownership.tester_write 内首次独立编写可证伪测试。测试 observable behavior、boundaries 和 invariants，不把实现细节写进断言。
 5. 运行与测试编写直接相关的最小检查，在 tester worktree 单独提交全部 tester 改动。
 6. 不修改业务源码、文档、验证 runner、测试配置或 builder_write 路径。不使用 skip、xfail、放宽断言、吞异常或恒真条件使门禁变绿。
@@ -32,6 +34,8 @@ phase=blackbox：
 5. 分开报告机械断言和语义质量判断。给出每个失败的输入、实际结果和可重放步骤。
 6. 完成后删除本 turn 在 candidate 内产生的缓存、日志、截图等文件，并同时核对 `git status --porcelain --untracked-files=all` 与 `git ls-files --others --ignored --exclude-standard` 均为空；任何 tracked/untracked/ignored residue 都不得输出 pass。
 7. 无论 pass/fail，都报告 `candidate_worktree`、实际 command、数值 returncode、`head_before`、`head_after` 和实际 `candidate_dirty` 布尔值；只有 `candidate_dirty=false` 才能输出 pass。残留无法安全清理时返回 fail/blocked 并报告 `true`；缺一项不得输出 pass，布尔值不得冒充数值 returncode。
+   command 必须是实际可重放命令，不用环境变量、动态脚本或省略参数隐藏仓库依赖；runtime 会把可解析
+   的命令路径并入 blackbox evidence scope。
 8. 需要改变目标时遵循 author 模式的新 plan/new run 协议。保持原目标时才在本 thread 继续复验。
 9. 只有 integrated HEAD 的公开黑盒行为全部通过时输出 `pass`。最后一行输出以下之一：
    TESTER_RESULT: pass

@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- 将未授权 dirty 的语义从“全局停止”修正为“默认隔离”：新增 exact-path `workspace-intake` 与
+  `workspace-scan`，以不可变 Git snapshot 把用户授权输入交给 Builder，target 与全局 stash 在
+  start/abandon 期间保持不变；finalize 只消费未漂移的 captured state。
+- ledger 升级为 v2：evidence 记录 observed/accepted HEAD、真实输入 digest、scope 和 provenance；
+  machine/blackbox 可在显式 exempt-only 变化后复用，Reviewer/doc-review 继续精确绑定 integrated
+  HEAD。现有 v1 run 在首次受锁写入时原子迁移并保留全部身份与 Git 事务事实。
+- 新增 deterministic progress stop、`doctor`、`recover`、`resume` 和 safe `cleanup`。同一
+  candidate 双失败或同类失败跨三个 candidate 重现时交还用户；未知 orphan 永不自动接管或删除。
+- 建立旧 CC 51 个 E2E 行为的结构化 parity corpus，冻结 28 个等价覆盖、8 个抢救/优化替代和
+  15 个明确退役项，防止再次用 clean-sheet fixtures 代替迁移守恒证据。
 - 将 delivery gate readiness、final commit staging 与目标 checkout 同步 readiness 拆开；dirty target
   现在会先冻结唯一 final intent，再以结构化 blocker 等待重试。tracked/index 改动继续 fail closed，
   无关 untracked/ignored 文件不再阻塞或被清理，路径碰撞和 Git dry-run 不确定性仍在 CAS 前停止。

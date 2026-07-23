@@ -2,7 +2,7 @@
 
 - `skills/`：Planner 与 Builder 的 Codex Skills；保持精简，详细契约引用 schema 或脚本帮助。
 - `agents/`：Tester 与 Reviewer custom-agent 配置。
-- `runtime/`：确定性计划、Git、验证、ownership 和 evidence 实现。
+- `runtime/`：确定性计划、workspace snapshot、Git 收尾、验证、ownership、evidence 和诊断实现。
 - `scripts/codex-builder-loop.py`：runtime 的稳定 CLI 入口；`codex-builder-loop-config.py` 负责
   安装/卸载时跨 hooks 与 AGENTS 的事务更新。
 - `hooks/`：只记录 agent 身份并做完成门禁，不承担循环编排。
@@ -25,7 +25,10 @@ python3 "${CODEX_HOME:-$HOME/.codex}/skills/.system/skill-creator/scripts/quick_
 
 - 先定义或修改 CLI/schema 契约，再改 runtime、Skills 和 fixtures。
 - runtime ledger 是执行事实唯一来源；Skills、hooks 和 agents 不直接改 JSON。
-- 任何候选 HEAD 变化都会使旧 verify、E2E、review 和 doc-review evidence 失效。
+- 候选变化后按冻结 scope digest 处理 machine/blackbox evidence；未声明 scope 时全 tree 失效。
+  Reviewer 与 doc-review 对任何 candidate 变化都失效。
+- target dirty 默认隔离；只有用户显式授权的 exact path/state digest 才能经 workspace snapshot 进入
+  Builder。不得手工 stash、复制或清理 target 来绕过 intake contract。
 - Tester 与 Reviewer 必须续接原 thread；续接失败时停止并保留现场。
 - Tester author/integration 与 blackbox 是两个独立 gate；blackbox details 必须绑定 candidate
   worktree、命令、returncode 和前后 HEAD。
@@ -34,9 +37,12 @@ python3 "${CODEX_HOME:-$HOME/.codex}/skills/.system/skill-creator/scripts/quick_
 - Reviewer turn 必须在所需 Tester integration、机器验证和 blackbox evidence 已绑定 candidate 后
   启动；过早 review 不能靠事后补证据变成有效审查。
 - finalize intent 写入后冻结 run mutation；恢复时重新核对全部 gate，再同步 target 和 cleanup。
+- no-progress/architecture-review 只能在用户确认后用 `resume --reason` 解除；不得重置 attempt 上限。
+- 诊断先用只读 `doctor`；`recover` 只重放 persisted intent，`cleanup` 只处理未漂移的 terminal
+  worktree，未知 orphan 不 adopt、不删除。
 - Builder 写代码和文档，Tester 写计划允许的测试，Reviewer 只读审查。
 - 修复按 ownership 路由；测试实现问题回到原 Tester，契约变化进入 abandon/new plan。
-- Git 冲突只安全停止；v1 不自动仲裁。
+- Git 冲突只安全停止；runtime 不自动仲裁。
 
 # Common Pitfalls
 
@@ -48,6 +54,8 @@ python3 "${CODEX_HOME:-$HOME/.codex}/skills/.system/skill-creator/scripts/quick_
 - repository runner wrapper 必须在 `spec_head` 已存在且为仓库内普通文件；拒绝 symlink、仓库外
   target 和 PATH override。
 - 不新增第二份计划、测试目标或 evidence 缓存。
+- 迁移或删除成熟能力时更新 legacy parity corpus，逐项标明 covered、rescue 或 retired；不能只
+  用新实现的自洽 fixture 证明迁移成功。
 
 # Collaboration
 

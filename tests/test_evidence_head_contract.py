@@ -101,10 +101,12 @@ class EvidenceHeadContractTest(unittest.TestCase):
         self.assertEqual(stale_record.data.get("code"), "EVIDENCE_HEAD_MISMATCH")
 
         ledger = load_ledger(run_path)
-        self.assertEqual(ledger.get("verified_head"), second_candidate)
-        self.assertIsNone(ledger.get("e2e_verified_head"), ledger)
-        self.assertIsNone(ledger.get("reviewed_head"), ledger)
-        self.assertIsNone(ledger.get("doc_reviewed_head"), ledger)
+        self.assertEqual(
+            ledger["evidence"]["machine"]["accepted_head"], second_candidate
+        )
+        self.assertIsNone(ledger["evidence"]["blackbox"], ledger)
+        self.assertIsNone(ledger["evidence"]["review"], ledger)
+        self.assertIsNone(ledger["evidence"]["doc_review"], ledger)
 
         stale = run_cli("status", "--run", run_path)
         assert_status(stale, "ACTIVE", rc=0)
@@ -172,13 +174,15 @@ class EvidenceHeadContractTest(unittest.TestCase):
             result="findings",
         )
         after_findings = load_ledger(run_path)
-        self.assertIsNone(after_findings["reviewed_head"])
-        self.assertIsNone(after_findings["doc_reviewed_head"])
-        self.assertEqual(after_findings["e2e_verified_head"], candidate)
+        self.assertIsNone(after_findings["evidence"]["review"])
+        self.assertIsNone(after_findings["evidence"]["doc_review"])
+        self.assertEqual(
+            after_findings["evidence"]["blackbox"]["accepted_head"], candidate
+        )
 
         register_agent(run_path, "tester", agent_id=tester_agent_id, result="fail")
         after_failure = load_ledger(run_path)
-        self.assertIsNone(after_failure["e2e_verified_head"])
+        self.assertIsNone(after_failure["evidence"]["blackbox"])
         self.assertFalse(run_cli("status", "--run", run_path).data.get("ready_to_finalize"))
 
     def test_blackbox_evidence_requires_author_integration_and_replay_details(self) -> None:

@@ -12,7 +12,7 @@ Tester 与 Reviewer。runtime CLI 只处理可确定验证的内容，不替模�
    └─ Builder-loop Planner
              │ validated plan
              ▼
-        $builder ── Builder worktree
+        $builder ── optional exact dirty snapshot ── Builder worktree
     ├─ parallel_ready=true  ── Tester thread 与 Builder 并行
     └─ parallel_ready=false ─ exact public files → isolated publication HEAD/manifest
                                                    └→ Tester author baseline
@@ -23,6 +23,18 @@ clean candidate worktree verify → same-thread black-box pass → Reviewer(code
         ▼
 temporary final ref/worktree → hooks → tree check → target CAS → cleanup
 ```
+
+## Workspace intake
+
+Target dirty 默认不进入 run，也不要求全局清理。Planner 只有在任务明确依赖某个 dirty 文件时才取得
+exact-path 授权，并用只读 `workspace-scan` 冻结 index/worktree state digest。`start` 从
+`spec_head` 和这些普通文件合成不可变 snapshot commit，Builder 从 snapshot 起步；target checkout
+的字节与 index 状态不变，因此 abandon 不需要 stash 恢复，也不污染全局 stash。
+
+Finalize 把 snapshot state 与最终 tree 一起纳入持久化 intent。只有授权路径仍处于
+captured/final 可证明状态时，runtime 才允许覆盖；任何第三种内容都是 `TARGET_INTAKE_DRIFT`。
+CAS 或 checkout 中断后，snapshot、final commit 和 intent 足以识别 expected、captured、partial
+和 final 状态并幂等完成。无关 untracked/ignored residue 继续保留。
 
 ## 计划和并行门槛
 
@@ -44,7 +56,7 @@ effective runner、安全规则、ownership 和冻结依赖。前者不创建 le
 先自动 checkpoint Builder，再验证相对 `spec_head` 的最终 tree 只改变声明文件，从该 tree 合成
 一个 parent 为 `spec_head` 的隔离 publication commit，并将 HEAD、tree、每个 blob 与 manifest
 digest 写入 ledger。Tester 以 publication HEAD 为 author baseline，不接收 Builder branch HEAD、
-candidate diff 或其他实现内容。中间 Builder 历史不会进入 Tester baseline；v1 仍不宣称 Git
+candidate diff 或其他实现内容。中间 Builder 历史不会进入 Tester baseline；当前版本仍不宣称 Git
 object database 具有操作系统级读 ACL。
 
 `plan_revision=1` 表示首次契约。更高 revision 必须携带被替代 run id 与旧 plan digest；start 只在
@@ -66,7 +78,7 @@ Builder 与 Tester 使用冻结基线协作：
 - Tester author 必须返回 `tests_ready`，runtime 将该 turn 与 Tester HEAD 持久化；即使测试 tree
   无变化，也必须显式完成 integration attestation。它只依据冻结计划、公开接口、计划声明的前置产物、
   测试支持文件和运行结果写测；不向它提供 candidate diff，并由 prompt 禁止读取其他 Builder
-  实现。该读边界不是 v1 的文件系统 ACL。
+  实现。该读边界不是文件系统 ACL。
 - Tester commit 集成后，Builder 可以读取测试并修复实现，但 ownership gate 阻止其修改测试。
 - 所有非 L1 run 都必须由原 Tester thread 在 candidate worktree 对集成 HEAD 完成 blackbox
   `pass`。candidate worktree 必须没有 tracked、untracked 或 ignored residue；evidence 同时记录
@@ -89,7 +101,8 @@ Builder 与 Tester 使用冻结基线协作：
 稳定入口是 `codex-builder-loop` CLI。运行状态位于启动 run 的目标 worktree 下
 `.builder-loop/codex/runs/`，不写 Codex 的受保护配置目录；Hook 从同一 Git repository 的 target、
 Builder 或 Tester worktree 出发都会发现这一个状态家。ledger 只记录计划摘要、worktree/branch、
-agent/turn 身份、候选 HEAD、证据 HEAD、Git 结果和事件，不保存模型推理或复制测试目标。
+agent/turn 身份、候选、workspace snapshot、evidence provenance、Git 结果和事件，不保存模型推理
+或复制测试目标。
 
 Hook 使用 Codex 提供的 `session_id` 找到唯一 active run：
 
@@ -109,8 +122,11 @@ Hook 使用 Codex 提供的 `session_id` 找到唯一 active run：
   完成或歧义状态均允许停止并展示原因。
 - Agent thread 一旦 closed 就不能由新 id 接管；目标分支移动也会进入稳定的
   `CONTINUITY_FAILURE`，直到用户放弃现场或启动新 run。
-- 每次机器验证都在 candidate commit 派生的临时干净 worktree 中执行，并增加 ledger 中的
-  attempt；验证命令改写 worktree 或 HEAD 时不产生有效 evidence。达到 `max_iterations` 后，
+- 每次机器验证都在 candidate commit 派生的临时干净 worktree 中执行，并在 ledger v2 记录
+  candidate、stage、returncode、日志摘要和 failure fingerprint；验证命令改写 worktree 或 HEAD
+  时不产生有效 evidence。同一 candidate 连续失败两次进入 `no_progress`，同一 fingerprint 在三个
+  不同 candidate 重现进入 `architecture_review_required`。显式 `resume` 记录用户理由但不重置
+  attempt；达到 `max_iterations` 后，
   当前 frozen run 不再继续 verify；每个 attempt 使用独立日志目录，历史 evidence 不被后续重跑
   覆盖。abandon 保留现场，修订方案进入新 run。
 - repository runner entry、Makefile、pytest/ruff 配置和 package manifest 等可静态识别的控制面
@@ -120,15 +136,31 @@ Hook 使用 Codex 提供的 `session_id` 找到唯一 active run：
 
 ## Evidence 与失效
 
-机器验证、Tester blackbox、Reviewer 和文档审查都记录对应的 commit HEAD。所有非 L1 run
+ledger v2 为每类 evidence 记录 `observed_head`、`accepted_head`、输入 digest、scope 和 provenance。
+所有非 L1 run
 必须先取得 Tester author `tests_ready` 并完成 integration，再由同一 thread 在 candidate
 worktree 对集成 HEAD 产出 blackbox `pass` evidence。E2E/review/doc-review 只能通过
 `record-evidence` 写入，且必须携带 ledger 中已完成 agent turn 的 id；E2E 还必须携带可重放
-details。只有全部必需 evidence 指向当前候选 HEAD，Tester commits 与 dirty tree 已
+details。只有全部必需 evidence 接受当前候选 HEAD，Tester commits 与 dirty tree 已
 完整集成、worktree 无越界修改、目标分支仍满足 continuity 时，finalize 才能冻结最终提交。
 目标 checkout 是否可同步是后续独立 gate，不再冒充 evidence readiness。
 
-候选 HEAD、计划 digest 或 Tester-owned tree 任一变化都会使旧 evidence 失效。Skills 和 hooks 只能通过 runtime 的公开命令记录 evidence，不能直接编辑 ledger。
+计划可把每个 Builder-owned pattern 对 machine/blackbox 分为 `affects` 或 `exempt`；Tester、runner、
+support、publication 和实际 blackbox command 依赖强制属于 affects。候选变化后 runtime 重新计算
+scope digest：相同才推进 `accepted_head` 并保留原 `observed_head`，不同则失效。未声明 scope 或
+依赖不可静态说明时退化为全 tree。Reviewer/doc-review 对任意候选变化都失效。Skills 和 hooks
+只能通过 runtime 公开命令记录 evidence，不能直接编辑 ledger。
+
+## Diagnostics 与恢复
+
+`doctor` 是只读事实汇总：列出 ledger/schema、owned/missing/orphan worktree、branch/head/residue、
+workspace intake、evidence provenance、progress stop、finalize 与 cleanup 状态。它不修复、不 adopt
+也不删除。`recover` 只重放已经持久化的 final/cleanup 事务；`cleanup` 只处理 terminal run 中
+ledger-owned、clean 且 HEAD 未漂移的 worktree。未知 orphan 只报告人工检查入口。
+
+新 start 写 ledger v2。读取 v1 时先在内存规范化；首次受锁写操作原子写回 v2 并追加 migration
+event。旧 run 没有 evidence scope，迁移后按全 tree 语义继续，run/session/agent/turn、candidate、
+intent 和 worktree 身份保持不变。
 
 ## Git 事务
 
@@ -141,7 +173,8 @@ expected-old 和 target branch 写成 finalize intent。intent 是冻结交付�
 residue 是实时文件系统事实，由 preflight、status、首次 finalize 和 recovery 共用的计算入口动态
 分类，不复制进 ledger。
 
-tracked/index 改动始终是同步 blocker。普通与 ignored untracked 路径只有在和最终 tree 的写入路径
+未授权 tracked/index 改动始终是同步 blocker；workspace-intake 路径只有仍等于 planning-time
+snapshot 或 final state 时才是可恢复输入。普通与 ignored untracked 路径只有在和最终 tree 的写入路径
 相同、形成文件/目录前缀冲突，或 `git read-tree -n -u -m` 无法证明安全时才阻塞；无关 `.env`、
 cache 和日志保留原状。存在 blocker 时 final intent 与 staging ref/worktree 保留，目标 ref 不移动；
 用户处理风险路径后重试同一 finalize，不重跑 hooks 或生成第二个提交。intent 存在期间拒绝新的
@@ -168,7 +201,9 @@ checkpoint 与 integration commit 继续跳过 hooks 和 GPG signing。
   candidate worktree、命令、退出码和前后 HEAD，而不是只信一行自然语言；同一原则也要求串行
   Tester 只看到冻结公开文件，因此 runtime 发布 exact-file isolation HEAD/manifest，而不是一般
   Builder HEAD 或 candidate diff。
-- 「显式授权，默认拒绝」要求修复不能跨 ownership、runner 控制文件不能由被测角色改写；由此
-  findings 按 Builder/Tester/contract 路由，无法静态解释的验证逻辑停止而非猜测放行。
+- 「显式授权，默认隔离」要求未知 dirty 留在原处、精确授权输入冻结成 snapshot；由此只有真实
+  覆盖风险才停止，而不是把 target 全局干净当成交付前提。
+- 「契约与成熟行为先于实现」要求迁移维护逐项 parity corpus；由此删除旧 fixture 前必须明确
+  covered、rescue 或 retired，不能只用新 runtime 测试证明自身自洽。
 
-v1 不自动 push、开 PR、解决冲突或恢复丢失的 subagent context。
+runtime 不自动 push、开 PR、解决冲突、adopt 未知 orphan 或恢复丢失的 subagent context。
