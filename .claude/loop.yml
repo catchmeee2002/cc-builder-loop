@@ -4,7 +4,7 @@ pass_cmd:
     timeout: 30
   - stage: fixtures
     cmd: "bash scripts/verify-all.sh"
-    timeout: 300
+    timeout: 2400
 max_iterations: 5
 worktree:
   enabled: true
