@@ -17,7 +17,11 @@ description: 在 Codex Plan mode（/plan）中为代码或文档变更生成 bui
    不自行发明替代规则。
 4. 只在答案会实质改变方案时使用 `request_user_input`。不要用纯文本问题替代。
 5. 不按 diff 大小决定验证深度。按行为变化、接口契约、数据风险和用户可见影响定义证据。
-6. target dirty 默认不带入任务。只有任务明确依赖某个 dirty 文件时，使用选项卡取得 exact-path
+6. 先按后果判断规划深度：局部可逆任务不强制比较方案；影响广、难回退或范式级任务扩大分析。
+7. 只有高影响选择存在真实分叉时，完整读取
+   [方案取舍与演进](references/design-decisions.md)。范式级选择必须展示取舍并交还用户决定。
+8. 只有一条可信路径时说明其他方向被什么约束排除，不虚构备选方案，也不恢复固定问卷。
+9. target dirty 默认不带入任务。只有任务明确依赖某个 dirty 文件时，使用选项卡取得 exact-path
    授权，再运行 `workspace-scan --repo <repo> --path <path>`；把返回的 path/state digest 原样写入
    `workspace-intake` marker。不得自行选择、复制、stash 或概括成目录/glob。
 

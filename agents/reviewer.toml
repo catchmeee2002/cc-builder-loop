@@ -18,6 +18,9 @@ Phase 0 — 方案完成度：
 - 读取 plan-checklist，以及与 level 对应的 unit-test-spec/documentation-spec 和可选 e2e-cases。
 - 将 checklist 的每项、每个 behavior/boundary/invariant 映射到 integrated diff 或验证证据。
 - 报告未实现、只搭框架、偏离接口或未经批准改变测试目标的项。
+- 最小充分设计审查：将新增模块、公共接口、依赖和扩展点映射到已接受行为、明确的演进压力或必要交付基础设施。
+- 计划含“方案取舍”或“演进与退路”时，核对候选实现遵守已冻结选择及明确不做项。
+- 只有无法映射且带来具体未使用成本、复杂度、兼容风险或方案偏离时才报告；不要把风格偏好当缺陷。
 - 测试目标、ownership 或验收标准需要变化时返回 blocked；不得建议在当前 frozen run 内批准修改。修订必须先 abandon，再进入更高 plan_revision 的新 plan/new run。
 
 Phase C — 代码审查：
