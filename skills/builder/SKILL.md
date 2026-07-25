@@ -14,9 +14,9 @@ description: 显式执行已接受的 builder-loop 方案，在隔离 worktree �
    `${CODEX_HOME:-$HOME/.codex}/builder-loop/doc-policy.md`。政策不可读时停止，不自行发明
    替代规则。
 3. 在第一次使用每个子命令前分别运行其 `--help`：
-   `plan-validate`、`start`、`role-check`、`publish-prerequisites`、`integrate-tests`、`verify`、`status`、
-   `record-evidence`、`doctor`、`recover`、`resume`、`cleanup`、`finalize`、`abandon`。当前帮助优先于
-   本文件中的调用示例。
+   `plan-validate`、`start`、`role-check`、`publish-prerequisites`、`integrate-tests`、`verify`、
+   `prove-tests`、`status`、`record-evidence`、`doctor`、`recover`、`resume`、`cleanup`、
+   `finalize`、`abandon`。当前帮助优先于本文件中的调用示例。
 4. 对每次 runtime 调用只解析 stdout 最后一行 JSON。要求存在 `status` 与 `message`；
    非 JSON、缺字段或命令异常一律视为 `FATAL`，不要根据前面的日志猜测结果。
 5. 生成一个只含小写字母、数字和连字符的唯一 `run_id`，在启动 run 的目标 worktree 根创建
@@ -67,6 +67,13 @@ description: 显式执行已接受的 builder-loop 方案，在隔离 worktree �
 4. spawn Tester 时传入 `phase=author`、`run_id`、`plan_path`、tester worktree、完整
    `unit-test-spec`、`e2e-cases`、`parallel_ready` 及允许查看的公开前置产物。保存返回的
    tester agent/thread id；一个 run 只 spawn 一次 Tester。
+   v3 author prompt 另要求仅依据 `spec_head` 或 isolated publication 可见的公共
+   `schema/codex-test-proof.schema.json` 及其 examples 返回一次性 `prove-tests` JSON；基线先红写
+   失败类型，变异写 patch，
+   边界证明写 reason 和四类 `reviewed_boundaries` test ids。证明命令只用 `python -m
+   unittest/pytest`、`pytest`，或计划已声明且在 `spec_head` 受保护的仓库脚本；不确定的组合命令先
+   下沉到该脚本。基线先红的 `claimed_failure_kind` 固定为 `assertion-failure`，不能用零测试、导入、
+   语法、收集、配置、用法、启动错误或超时替代。该 JSON 只随 turn 返回，不落仓库。
    首次 spawn 由 `SubagentStart` 绑定 thread；此后每次调用 `followup_task` 前必须先调用
    `prepare-follow-up --run <run> --role <role> --agent-id <id> --purpose <purpose>`。Tester 写测或
    澄清用 `purpose=author`，黑盒复验用 `purpose=blackbox`，Reviewer 复审用
@@ -77,6 +84,13 @@ description: 显式执行已接受的 builder-loop 方案，在隔离 worktree �
    从 publication HEAD 出发并核对 manifest；两者都只在 `ownership.tester_write` 内独立写测并
    提交。Builder 不读取未提交的 Tester 测试来反向迎合
    断言，也不修改 `tester_write`、runner、测试配置或 runtime 自动保护的验证控制文件。
+   故障修复首次 edit 前用现有证据确认：观察到的失败、支持的机制、修到因果源头的最小改动，以及
+   能区分修复前后的回归判据。普通改动不承担重型诊断；机制不清、同类失败重复出现、方案只修症状
+   或 Reviewer 指出因果错误时，完整读取 [根因修复](references/root-cause-repair.md)。证据仍不足就
+   继续诊断或停止，不堆兜底，也不建立第二份诊断状态。
+   每完成一个 plan-checklist 实现单元，做一次廉价局部自检：单模块核对计划/ownership 映射、查看
+   局部 diff、运行最小相关检查，并确认没有削弱测试或增加计划外功能；跨模块 checklist 和 Tester
+   correction 也各自作为独立实现单元自检。它不写 ledger，也不替代最终验证。
 6. 等待 Tester 返回；只有最后一行 `TESTER_RESULT: tests_ready` 且包含 tester commit/head、
    changed paths 和最小执行证据时才继续。
 7. Tester 报 `target_change_required` 时冻结当前 run，不修改 plan 或测试目标。主线程使用
@@ -109,33 +123,48 @@ description: 显式执行已接受的 builder-loop 方案，在隔离 worktree �
    candidate/fingerprint 和现场；只有用户明确确认目标不变且继续尝试时才调用
    `resume --run <run> --reason <decision>`。resume 不重置 max_iterations。
 3. `status=FATAL` 时停止；不要把“判据未执行”当作测试失败，更不要返回 PASS。
-4. `status=PASS` 后先调用 `status --run <run>`。若 scoped evidence 已让
+4. `status=PASS` 后，仅 `contract_schema_version=3` 必须把 Tester author 返回的
+   `schema_version=1` 测试鉴别 JSON 原样通过 stdin 交给
+   `prove-tests --repo <repo> --run <run> --spec -`。它必须精确覆盖冻结 behavior，并按要求完成
+   基线先红、受控变异，或允许的边界/不变量映射；只接受 `READY` 或同一输入的幂等 `NOOP`。
+   `READY` 必须返回当前 `test_effectiveness_head`；`TEST_PROOF_SPEC_INVALID` 表示输入不符合冻结
+   proof schema，不能降级成运行失败继续黑盒。
+   runtime 必须把允许的裸 Python/pytest 命令固定为受信任绝对解释器，记录实际 executable identity，
+   并把候选和反例输出分类为真实测试通过或命中声明 test id 的 `assertion-failure`；未分类和基础设施
+   失败一律拒绝。
+   既有 v2 ledger 只按原冻结门禁续接，不回填该证据。证明失败按 ownership 路由；需要改变冻结
+   强度、目标或行为映射时 abandon/new plan。
+5. v3 测试鉴别证明通过后，或既有 v2 ledger 的机器验证通过后，先调用 `status --run <run>`。若 scoped evidence 已让
    `e2e_verified_head` 等于当前 candidate，说明 blackbox 的真实输入未变，可跳过重复执行但必须把
    observed/accepted HEAD provenance 交给 Reviewer；否则执行
    `prepare-follow-up --run <run> --role tester --agent-id <tester_id> --purpose blackbox`，再
    follow-up 同一个 tester thread，传入 `phase=blackbox`、集成 HEAD、
    `candidate_worktree` 的绝对路径、runner 和公开黑盒入口。所有非 L1 run 都必须执行本步骤；
-   禁止 spawn 新 Tester。
-5. 要求 Tester 先在 `candidate_worktree` 执行 `git rev-parse HEAD` 并核对 integrated HEAD，
+   禁止 spawn 新 Tester。v3 含结构化端到端用例时，prompt 还要给出冻结 cases，并要求逐例返回
+   `case_id/level/mechanical/verify/quality/outcome`。
+6. 要求 Tester 先在 `candidate_worktree` 执行 `git rev-parse HEAD` 并核对 integrated HEAD，
    再只从公开接口、CLI/API/UI、运行时输出和测试结果做黑盒验收；不读取实现 diff、不改业务
    源码、不改既定测试目标。日志、截图、缓存优先写到 candidate 外的临时目录；结束前清理本 turn
    产生的 tracked/untracked/ignored residue，并同时核对普通 status 与 ignored files 均为空。
    返回实际 command、数值 returncode、执行前后 HEAD、worktree 路径和 `candidate_dirty=false`。
-6. Tester 报 FAIL 且可重放公开行为确为产品实现错误时由 Builder 修实现，重新 `role-check`
-   和 `verify`，再以 `purpose=blackbox` prepare 并 follow-up 同一 Tester；若失败来自 Tester 的
+7. Tester 报 FAIL 且可重放公开行为确为产品实现错误时由 Builder 修实现，重新 `role-check`、
+   `verify`，并仅对 v3 重新执行测试鉴别证明，再以 `purpose=blackbox` prepare 并 follow-up 同一 Tester；既有 v2
+   ledger 不补写该证明。若失败来自 Tester 的
    执行方法或测试支持实现，则仍以 `purpose=blackbox` prepare 后续接同一 Tester，不让 Builder
    修改 tester-owned 内容。
-7. Tester 提议改变测试目标、ownership 或验收标准时，执行上一节的 frozen-run 协议；即使
+8. Tester 提议改变测试目标、ownership 或验收标准时，执行上一节的 frozen-run 协议；即使
    用户选择修订，也不得在当前 run 更新测试。新方案必须进入新 run。
-8. 只有同一 Tester thread 返回 `TESTER_RESULT: pass` 后，才对当前 integrated HEAD 执行
+9. 只有同一 Tester thread 返回 `TESTER_RESULT: pass` 后，才对当前 integrated HEAD 执行
    `record-evidence --run <run> --kind e2e_verified --head <head> --agent-id <tester_id>
    --details '<json>'`。details 必须原样包含 Tester 返回的 `candidate_worktree`、`head_before`、
-   `head_after`、`command` 和数值 `returncode=0`；runtime 会绑定 live candidate。只接受
-   `READY` 或幂等 `NOOP`。
+   `head_after`、`command` 和数值 `returncode=0`。v3 计划含结构化端到端用例时，details 还必须
+   原样包含逐例 `cases`，分别报告机械检查、功能观察、质量观察和汇总结果；runtime 会绑定 live
+   candidate 并校验冻结 case id。只接受 `READY` 或幂等 `NOOP`。
 
 ## 审查与收尾
 
 1. 非 L1 计划在 Tester author `tests_ready`、机器验证和同 thread blackbox `pass` 均通过后，
+   且 `contract_schema_version=3` 时测试鉴别证明也已通过，
    spawn 一次
    `reviewer` custom agent；L1 计划在 builder role-check 通过后 spawn。传入 plan、
    candidate/integrated HEAD、相对 `spec_head` 的完整 diff、与 plan level 匹配的验证
@@ -149,8 +178,8 @@ description: 显式执行已接受的 builder-loop 方案，在隔离 worktree �
    修正、重新 `tests_ready` 并集成。随后执行
    `prepare-follow-up --run <run> --role reviewer --agent-id <reviewer_id> --purpose review`，再
    follow-up 同一 Reviewer thread 复审，不新建 reviewer。
-   非 L1 必须重新 `role-check`、`verify` 和 tester blackbox；L1 只重新执行 builder
-   role-check，不为通过门禁临时添加虚假测试。
+   非 L1 必须重新 `role-check`、`verify` 和 tester blackbox；仅 `contract_schema_version=3` 重新执行
+   测试鉴别证明，既有 v2 ledger 不补写。L1 只重新执行 builder role-check，不为通过门禁临时添加虚假测试。
    finding 需要改变测试目标、ownership 或验收标准时，先 abandon，再进入新 plan/new run。
 4. reviewer 或 tester 要求用户决策时，先调用 `status --run <run>`，再使用
    `request_user_input`。在等待前独立一行输出 `BUILDER_INPUT_REQUIRED:<run_id>`。

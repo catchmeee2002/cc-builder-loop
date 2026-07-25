@@ -22,7 +22,22 @@ class LegacyParityContractTest(unittest.TestCase):
             self.assertTrue(item["replacement"])
             self.assertTrue(item["rationale"])
             self.assertTrue(item["test_ids"])
+            for test_id in item["test_ids"]:
+                self.assertTrue(
+                    (ROOT / "tests" / f"{test_id}.py").is_file(),
+                    f"legacy disposition references missing test module: {test_id}",
+                )
         self.assertEqual(counts, {"covered": 28, "rescue": 8, "retired": 15})
+
+        by_fixture = {item["fixture"]: item for item in entries}
+        self.assertEqual(
+            by_fixture["test-extract-e2e-cases.sh"]["replacement"],
+            "canonical v3 structured e2e-cases marker",
+        )
+        self.assertIn(
+            "test_planning_v3_e2e_contract",
+            by_fixture["test-old-state-compat.sh"]["test_ids"],
+        )
 
 
 if __name__ == "__main__":

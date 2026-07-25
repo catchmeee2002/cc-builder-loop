@@ -227,7 +227,7 @@ class StartContractTest(unittest.TestCase):
 
     def test_v1_plan_is_rejected_before_run_creation(self) -> None:
         text = plan_markdown(head(self.repo)).replace(
-            "schema_version: 2", "schema_version: 1"
+            "schema_version: 3", "schema_version: 1"
         )
         plan = write_plan(self.repo, text, name="v1-plan.md")
 

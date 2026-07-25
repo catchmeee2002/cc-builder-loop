@@ -6,7 +6,9 @@ import unittest
 
 from harness import (
     CLI,
+    ProcessResult,
     assert_status,
+    assert_status_one_of,
     cleanup_repo,
     commit_all,
     git,
@@ -27,6 +29,19 @@ class PlanContractTest(unittest.TestCase):
 
     def tearDown(self) -> None:
         cleanup_repo(self.repo)
+
+    def test_success_status_set_still_requires_zero_returncode(self) -> None:
+        assert_status_one_of(
+            ProcessResult((), 0, "", "", {"status": "NOOP"}),
+            {"READY", "NOOP"},
+            rc=0,
+        )
+        with self.assertRaisesRegex(AssertionError, r"rc=1, expected=0"):
+            assert_status_one_of(
+                ProcessResult((), 1, "", "", {"status": "READY"}),
+                {"READY", "NOOP"},
+                rc=0,
+            )
 
     def test_valid_parallel_plan_from_path_and_stdin(self) -> None:
         text = plan_markdown(self.spec_head, parallel_ready=True, include_e2e=True)
@@ -107,15 +122,17 @@ class PlanContractTest(unittest.TestCase):
         assert_status(result, "NEEDS_USER", rc=1)
         self.assertEqual(result.data.get("code"), "TARGET_SPEC_MISMATCH")
 
-    def test_v1_unit_and_documentation_contracts_are_rejected_explicitly(self) -> None:
-        plans = (
-            plan_markdown(self.spec_head).replace("schema_version: 2", "schema_version: 1"),
-            l1_plan_markdown(self.spec_head).replace(
-                "schema_version: 2", "schema_version: 1"
-            ),
+    def test_unstarted_v1_and_v2_contracts_are_rejected_explicitly(self) -> None:
+        plans = tuple(
+            base.replace("schema_version: 3", f"schema_version: {version}", 1)
+            for base in (plan_markdown(self.spec_head), l1_plan_markdown(self.spec_head))
+            for version in (1, 2)
         )
         for text in plans:
-            with self.subTest(marker="documentation" if "documentation-spec" in text else "unit"):
+            with self.subTest(
+                marker="documentation" if "documentation-spec" in text else "unit",
+                version=2 if "schema_version: 2" in text else 1,
+            ):
                 result = run_cli(
                     "plan-validate",
                     "--repo",
@@ -124,7 +141,71 @@ class PlanContractTest(unittest.TestCase):
                 )
                 assert_status(result, "NEEDS_USER", rc=1)
                 self.assertEqual(result.data.get("code"), "PLAN_SCHEMA_UNSUPPORTED")
-                self.assertEqual(result.data.get("supported_schema_versions"), [2])
+                self.assertEqual(result.data.get("supported_schema_versions"), [3])
+
+    def test_v3_requires_exact_test_effectiveness_mapping(self) -> None:
+        valid = plan_markdown(self.spec_head)
+        reviewed = valid.replace("minimum: strong", "minimum: reviewed-boundaries")
+        assert_status(
+            run_cli("plan-validate", "--repo", self.repo, input_text=reviewed),
+            "READY",
+            rc=0,
+        )
+        mutations = (
+            valid.replace(
+                "test_effectiveness:\n  requirements:\n"
+                "    - behavior_id: add-positive\n      minimum: strong\n",
+                "",
+            ),
+            valid.replace("behavior_id: add-positive", "behavior_id: unknown"),
+            valid.replace(
+                "    - behavior_id: add-positive\n      minimum: strong\n",
+                "    - behavior_id: add-positive\n"
+                "      minimum: strong\n"
+                "    - behavior_id: add-positive\n"
+                "      minimum: reviewed-boundaries\n",
+            ),
+            valid.replace("minimum: strong", "minimum: weak"),
+        )
+        for text in mutations:
+            with self.subTest(text=text):
+                result = run_cli(
+                    "plan-validate", "--repo", self.repo, input_text=text
+                )
+                assert_status(result, "NEEDS_USER", rc=1)
+                self.assertEqual(result.data.get("code"), "PLAN_CONTRACT_INVALID")
+
+    def test_structured_e2e_cases_reject_missing_duplicate_and_unknown_coverage(self) -> None:
+        valid = plan_markdown(self.spec_head, include_e2e=True)
+        assert_status(
+            run_cli("plan-validate", "--repo", self.repo, input_text=valid),
+            "READY",
+            rc=0,
+        )
+        duplicate = valid.replace(
+            "<!-- /e2e-cases -->",
+            "  - id: add-cli\n"
+            "    covers: [add-positive]\n"
+            "    input: duplicate\n"
+            "    level: fast\n"
+            "    hard_rules:\n"
+            "      response_contains: [duplicate]\n"
+            "<!-- /e2e-cases -->",
+        )
+        unknown = valid.replace("covers: [add-positive]", "covers: [unknown]")
+        missing_quality = valid.replace(
+            "    quality:\n      criteria: [\"The response is concise.\"]\n", ""
+        )
+        failed_rule_shape = valid.replace(
+            "response_contains: [\"3\"]", "unknown_rule: [\"3\"]"
+        )
+        for text in (duplicate, unknown, missing_quality, failed_rule_shape):
+            with self.subTest(text=text):
+                result = run_cli(
+                    "plan-validate", "--repo", self.repo, input_text=text
+                )
+                assert_status(result, "NEEDS_USER", rc=1)
+                self.assertEqual(result.data.get("code"), "PLAN_CONTRACT_INVALID")
 
     def test_effective_runner_source_is_exclusive(self) -> None:
         missing = run_cli(
@@ -401,7 +482,7 @@ class PlanContractTest(unittest.TestCase):
     def test_boolean_schema_and_revision_are_not_integers(self) -> None:
         for field in ("schema_version", "plan_revision"):
             with self.subTest(field=field):
-                original = 2 if field == "schema_version" else 1
+                original = 3 if field == "schema_version" else 1
                 text = plan_markdown(self.spec_head).replace(
                     f"{field}: {original}", f"{field}: true"
                 )
@@ -523,14 +604,41 @@ class PlanContractTest(unittest.TestCase):
         assert_status(result, "NEEDS_USER")
         self.assertEqual(result.data.get("code"), "PLAN_L1_E2E_INVALID")
 
+    def test_new_run_rejects_legacy_bare_list_e2e_format(self) -> None:
+        text = plan_markdown(self.spec_head, include_e2e=True)
+        start = text.index("<!-- e2e-cases -->")
+        end = text.index("<!-- /e2e-cases -->") + len("<!-- /e2e-cases -->")
+        legacy = "\n".join(
+            [
+                "<!-- e2e-cases -->",
+                "- id: add-cli",
+                '  input: "add 1 2"',
+                "  hard_rules:",
+                '    response_contains: ["3"]',
+                "  judge:",
+                '    verify: "result is 3"',
+                '    quality: "concise"',
+                "  level: full",
+                "<!-- /e2e-cases -->",
+            ]
+        )
+        result = run_cli(
+            "plan-validate",
+            "--repo",
+            self.repo,
+            input_text=text[:start] + legacy + text[end:],
+        )
+        assert_status(result, "NEEDS_USER", rc=1)
+        self.assertIsInstance(result.data.get("code"), str, result.data)
+
     def test_behavior_ids_must_be_unique(self) -> None:
         text = plan_markdown(self.spec_head).replace(
-            "mock_strategy: {}",
+            "test_effectiveness:\n",
             "  - id: add-positive\n"
             '    what: "duplicate behavior id"\n'
             '    boundaries: ["one"]\n'
             '    invariants: ["stable"]\n'
-            "mock_strategy: {}",
+            "test_effectiveness:\n",
         )
         result = run_cli("plan-validate", "--repo", self.repo, input_text=text)
         assert_status(result, "NEEDS_USER")

@@ -1,0 +1,1050 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/catchmeee2002/cc-builder-loop/schema/codex-test-proof.schema.json",
+  "title": "Codex Builder Loop Test Effectiveness Proof",
+  "description": "prove-tests 的版本化公共输入契约；$defs.proofEvidence 与 $defs.proofFailure 分别定义成功证据和冻结错误面的可验证结构。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "groups"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "groups": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "oneOf": [
+          {
+            "$ref": "#/$defs/baselineRedInput"
+          },
+          {
+            "$ref": "#/$defs/mutationInput"
+          },
+          {
+            "$ref": "#/$defs/reviewedBoundariesInput"
+          }
+        ]
+      }
+    }
+  },
+  "examples": [
+    {
+      "schema_version": 1,
+      "groups": [
+        {
+          "behavior_ids": [
+            "reject-empty-widget"
+          ],
+          "method": "baseline-red",
+          "argv": [
+            "python3",
+            "-m",
+            "unittest",
+            "tests.test_widget.WidgetTests.test_rejects_empty"
+          ],
+          "test_ids": [
+            "tests.test_widget.WidgetTests.test_rejects_empty"
+          ],
+          "timeout_seconds": 120,
+          "claimed_failure_kind": "assertion-failure"
+        }
+      ]
+    },
+    {
+      "schema_version": 1,
+      "groups": [
+        {
+          "behavior_ids": [
+            "reject-empty-widget"
+          ],
+          "method": "mutation",
+          "argv": [
+            "python3",
+            "-m",
+            "pytest",
+            "tests/test_widget.py::test_rejects_empty"
+          ],
+          "test_ids": [
+            "tests/test_widget.py::test_rejects_empty"
+          ],
+          "timeout_seconds": 120,
+          "patch": "diff --git a/src/widget.py b/src/widget.py\n--- a/src/widget.py\n+++ b/src/widget.py\n@@ -1 +1 @@\n-return value\n+return None\n"
+        }
+      ]
+    }
+  ],
+  "$defs": {
+    "nonEmptyUniqueStrings": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "\\S"
+      }
+    },
+    "argv": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "^[^\\u0000]+$"
+      }
+    },
+    "timeoutSeconds": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 600
+    },
+    "reviewedBoundaries": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "positive_test_ids",
+        "negative_test_ids",
+        "boundary_test_ids",
+        "invariant_test_ids"
+      ],
+      "properties": {
+        "positive_test_ids": {
+          "$ref": "#/$defs/nonEmptyUniqueStrings"
+        },
+        "negative_test_ids": {
+          "$ref": "#/$defs/nonEmptyUniqueStrings"
+        },
+        "boundary_test_ids": {
+          "$ref": "#/$defs/nonEmptyUniqueStrings"
+        },
+        "invariant_test_ids": {
+          "$ref": "#/$defs/nonEmptyUniqueStrings"
+        }
+      }
+    },
+    "baselineRedInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "behavior_ids",
+        "method",
+        "argv",
+        "test_ids",
+        "timeout_seconds",
+        "claimed_failure_kind"
+      ],
+      "properties": {
+        "behavior_ids": {
+          "$ref": "#/$defs/nonEmptyUniqueStrings"
+        },
+        "method": {
+          "const": "baseline-red"
+        },
+        "argv": {
+          "$ref": "#/$defs/argv"
+        },
+        "test_ids": {
+          "$ref": "#/$defs/nonEmptyUniqueStrings"
+        },
+        "timeout_seconds": {
+          "$ref": "#/$defs/timeoutSeconds"
+        },
+        "claimed_failure_kind": {
+          "const": "assertion-failure"
+        }
+      }
+    },
+    "mutationInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "behavior_ids",
+        "method",
+        "argv",
+        "test_ids",
+        "timeout_seconds",
+        "patch"
+      ],
+      "properties": {
+        "behavior_ids": {
+          "$ref": "#/$defs/nonEmptyUniqueStrings"
+        },
+        "method": {
+          "const": "mutation"
+        },
+        "argv": {
+          "$ref": "#/$defs/argv"
+        },
+        "test_ids": {
+          "$ref": "#/$defs/nonEmptyUniqueStrings"
+        },
+        "timeout_seconds": {
+          "$ref": "#/$defs/timeoutSeconds"
+        },
+        "patch": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^\\s*diff --git "
+        }
+      }
+    },
+    "reviewedBoundariesInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "behavior_ids",
+        "method",
+        "argv",
+        "test_ids",
+        "timeout_seconds",
+        "reason",
+        "reviewed_boundaries"
+      ],
+      "properties": {
+        "behavior_ids": {
+          "$ref": "#/$defs/nonEmptyUniqueStrings"
+        },
+        "method": {
+          "const": "reviewed-boundaries"
+        },
+        "argv": {
+          "$ref": "#/$defs/argv"
+        },
+        "test_ids": {
+          "$ref": "#/$defs/nonEmptyUniqueStrings"
+        },
+        "timeout_seconds": {
+          "$ref": "#/$defs/timeoutSeconds"
+        },
+        "reason": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "reviewed_boundaries": {
+          "$ref": "#/$defs/reviewedBoundaries"
+        }
+      }
+    },
+    "repositoryPaths": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "path",
+          "blob"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "pattern": "\\S"
+          },
+          "blob": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{40}$"
+          }
+        }
+      }
+    },
+    "executableIdentity": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "requested",
+            "path",
+            "sha256",
+            "size"
+          ],
+          "properties": {
+            "kind": {
+              "const": "trusted-python"
+            },
+            "requested": {
+              "type": "string",
+              "pattern": "\\S"
+            },
+            "path": {
+              "type": "string",
+              "pattern": "\\S"
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "size": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "requested",
+            "path",
+            "sha256",
+            "size",
+            "repository_paths"
+          ],
+          "properties": {
+            "kind": {
+              "enum": [
+                "trusted-system-launcher",
+                "absolute-launcher"
+              ]
+            },
+            "requested": {
+              "type": "string",
+              "pattern": "\\S"
+            },
+            "path": {
+              "type": "string",
+              "pattern": "\\S"
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "size": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "repository_paths": {
+              "$ref": "#/$defs/repositoryPaths"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "requested",
+            "repository_paths"
+          ],
+          "properties": {
+            "kind": {
+              "const": "frozen-repository-entry"
+            },
+            "requested": {
+              "type": "string",
+              "pattern": "\\S"
+            },
+            "repository_paths": {
+              "$ref": "#/$defs/repositoryPaths"
+            }
+          }
+        }
+      ]
+    },
+    "testCounts": {
+      "type": "object",
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_]*$"
+      },
+      "additionalProperties": {
+        "type": "integer",
+        "minimum": 0
+      }
+    },
+    "passTestResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "framework",
+        "classification",
+        "counts"
+      ],
+      "properties": {
+        "framework": {
+          "enum": [
+            "unittest",
+            "pytest"
+          ]
+        },
+        "classification": {
+          "const": "pass"
+        },
+        "counts": {
+          "$ref": "#/$defs/testCounts"
+        }
+      }
+    },
+    "assertionFailureTestResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "framework",
+        "classification",
+        "counts",
+        "matched_test_ids"
+      ],
+      "properties": {
+        "framework": {
+          "enum": [
+            "unittest",
+            "pytest"
+          ]
+        },
+        "classification": {
+          "const": "assertion-failure"
+        },
+        "counts": {
+          "$ref": "#/$defs/testCounts"
+        },
+        "matched_test_ids": {
+          "$ref": "#/$defs/nonEmptyUniqueStrings"
+        }
+      }
+    },
+    "classifiedTestResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "framework",
+        "classification",
+        "counts"
+      ],
+      "properties": {
+        "framework": {
+          "enum": [
+            "unittest",
+            "pytest",
+            "auto",
+            "unknown"
+          ]
+        },
+        "classification": {
+          "enum": [
+            "pass",
+            "assertion-failure",
+            "zero-tests",
+            "zero-effective-tests",
+            "import-error",
+            "syntax-error",
+            "collection-error",
+            "configuration-error",
+            "usage-error",
+            "launch-error",
+            "timeout",
+            "non-assertion-test-failure",
+            "unclassified-failure",
+            "unmapped-assertion-failure"
+          ]
+        },
+        "counts": {
+          "$ref": "#/$defs/testCounts"
+        },
+        "matched_test_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "\\S"
+          }
+        }
+      }
+    },
+    "testRunCommon": {
+      "type": "object",
+      "required": [
+        "argv",
+        "returncode",
+        "timed_out",
+        "test_result",
+        "duration_ms",
+        "log_path",
+        "log_sha256",
+        "log_tail",
+        "worktree_residue"
+      ],
+      "properties": {
+        "argv": {
+          "$ref": "#/$defs/argv"
+        },
+        "returncode": {
+          "type": "integer"
+        },
+        "timed_out": {
+          "type": "boolean"
+        },
+        "test_result": {},
+        "duration_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "log_path": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "log_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "log_tail": {
+          "type": "string"
+        },
+        "worktree_residue": {
+          "type": "array",
+          "maxItems": 0,
+          "items": {
+            "type": "string",
+            "pattern": "\\S"
+          }
+        }
+      }
+    },
+    "passTestRun": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/testRunCommon"
+        },
+        {
+          "type": "object",
+          "required": [
+            "returncode",
+            "timed_out",
+            "test_result"
+          ],
+          "properties": {
+            "returncode": {
+              "const": 0
+            },
+            "timed_out": {
+              "const": false
+            },
+            "test_result": {
+              "$ref": "#/$defs/passTestResult"
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "assertionFailureTestRun": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/testRunCommon"
+        },
+        {
+          "type": "object",
+          "required": [
+            "returncode",
+            "timed_out",
+            "test_result"
+          ],
+          "properties": {
+            "returncode": {
+              "type": "integer",
+              "not": {
+                "const": 0
+              }
+            },
+            "timed_out": {
+              "const": false
+            },
+            "test_result": {
+              "$ref": "#/$defs/assertionFailureTestResult"
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "mutationTestRun": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/testRunCommon"
+        },
+        {
+          "type": "object",
+          "required": [
+            "returncode",
+            "timed_out",
+            "test_result",
+            "patch_sha256",
+            "applied_diff_sha256",
+            "changed_paths",
+            "head_before",
+            "head_after"
+          ],
+          "properties": {
+            "returncode": {
+              "type": "integer",
+              "not": {
+                "const": 0
+              }
+            },
+            "timed_out": {
+              "const": false
+            },
+            "test_result": {
+              "$ref": "#/$defs/assertionFailureTestResult"
+            },
+            "patch_sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "applied_diff_sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "changed_paths": {
+              "$ref": "#/$defs/nonEmptyUniqueStrings"
+            },
+            "head_before": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{40}$"
+            },
+            "head_after": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{40}$"
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "proofGroupCommon": {
+      "type": "object",
+      "required": [
+        "behavior_ids",
+        "method",
+        "argv",
+        "execution_argv",
+        "framework",
+        "executable_identity",
+        "test_ids",
+        "timeout_seconds"
+      ],
+      "properties": {
+        "behavior_ids": {
+          "$ref": "#/$defs/nonEmptyUniqueStrings"
+        },
+        "method": {
+          "enum": [
+            "baseline-red",
+            "mutation",
+            "reviewed-boundaries"
+          ]
+        },
+        "argv": {
+          "$ref": "#/$defs/argv"
+        },
+        "execution_argv": {
+          "$ref": "#/$defs/argv"
+        },
+        "framework": {
+          "enum": [
+            "unittest",
+            "pytest",
+            "auto"
+          ]
+        },
+        "executable_identity": {
+          "$ref": "#/$defs/executableIdentity"
+        },
+        "test_ids": {
+          "$ref": "#/$defs/nonEmptyUniqueStrings"
+        },
+        "timeout_seconds": {
+          "$ref": "#/$defs/timeoutSeconds"
+        }
+      }
+    },
+    "baselineRedEvidence": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/proofGroupCommon"
+        },
+        {
+          "type": "object",
+          "required": [
+            "method",
+            "claimed_failure_kind",
+            "candidate",
+            "baseline"
+          ],
+          "properties": {
+            "method": {
+              "const": "baseline-red"
+            },
+            "claimed_failure_kind": {
+              "const": "assertion-failure"
+            },
+            "candidate": {
+              "$ref": "#/$defs/passTestRun"
+            },
+            "baseline": {
+              "$ref": "#/$defs/assertionFailureTestRun"
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "mutationEvidence": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/proofGroupCommon"
+        },
+        {
+          "type": "object",
+          "required": [
+            "method",
+            "candidate",
+            "mutation"
+          ],
+          "properties": {
+            "method": {
+              "const": "mutation"
+            },
+            "candidate": {
+              "$ref": "#/$defs/passTestRun"
+            },
+            "mutation": {
+              "$ref": "#/$defs/mutationTestRun"
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "reviewedBoundariesEvidence": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/proofGroupCommon"
+        },
+        {
+          "type": "object",
+          "required": [
+            "method",
+            "reason",
+            "reviewed_boundaries",
+            "machine_evidence_head"
+          ],
+          "properties": {
+            "method": {
+              "const": "reviewed-boundaries"
+            },
+            "reason": {
+              "type": "string",
+              "pattern": "\\S"
+            },
+            "reviewed_boundaries": {
+              "$ref": "#/$defs/reviewedBoundaries"
+            },
+            "machine_evidence_head": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{40}$"
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "proofGroupEvidence": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/baselineRedEvidence"
+        },
+        {
+          "$ref": "#/$defs/mutationEvidence"
+        },
+        {
+          "$ref": "#/$defs/reviewedBoundariesEvidence"
+        }
+      ]
+    },
+    "evidenceRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "observed_head",
+        "accepted_head",
+        "input_digest",
+        "scope",
+        "provenance"
+      ],
+      "properties": {
+        "kind": {
+          "const": "test_effectiveness"
+        },
+        "observed_head": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "accepted_head": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "input_digest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "scope": {
+          "$ref": "#/$defs/nonEmptyUniqueStrings"
+        },
+        "provenance": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "spec_sha256",
+            "groups"
+          ],
+          "properties": {
+            "spec_sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "groups": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "$ref": "#/$defs/proofGroupEvidence"
+              }
+            }
+          }
+        }
+      }
+    },
+    "proofEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "message",
+        "run_id",
+        "head",
+        "test_effectiveness_head",
+        "tester_source_head",
+        "tester_manifest_sha256",
+        "spec_sha256",
+        "groups",
+        "evidence"
+      ],
+      "properties": {
+        "status": {
+          "const": "READY"
+        },
+        "message": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "run_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+        },
+        "head": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "test_effectiveness_head": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "tester_source_head": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "tester_manifest_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "spec_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "groups": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/proofGroupEvidence"
+          }
+        },
+        "evidence": {
+          "$ref": "#/$defs/evidenceRecord"
+        }
+      }
+    },
+    "classifiedTestRun": {
+      "type": "object",
+      "required": [
+        "argv",
+        "returncode",
+        "timed_out",
+        "test_result"
+      ],
+      "properties": {
+        "argv": {
+          "$ref": "#/$defs/argv"
+        },
+        "returncode": {
+          "type": "integer"
+        },
+        "timed_out": {
+          "type": "boolean"
+        },
+        "test_result": {
+          "$ref": "#/$defs/classifiedTestResult"
+        },
+        "duration_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "log_path": {
+          "type": "string"
+        },
+        "log_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "log_tail": {
+          "type": "string"
+        },
+        "worktree_residue": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "\\S"
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "proofFailure": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "status",
+            "code",
+            "message",
+            "errors"
+          ],
+          "properties": {
+            "status": {
+              "const": "NEEDS_USER"
+            },
+            "code": {
+              "const": "TEST_PROOF_SPEC_INVALID"
+            },
+            "message": {
+              "type": "string",
+              "pattern": "\\S"
+            },
+            "errors": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string",
+                "pattern": "\\S"
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "status",
+            "code",
+            "message",
+            "group",
+            "result"
+          ],
+          "properties": {
+            "status": {
+              "const": "FAIL"
+            },
+            "code": {
+              "const": "TEST_PROOF_CANDIDATE_FAILED"
+            },
+            "message": {
+              "type": "string",
+              "pattern": "\\S"
+            },
+            "group": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "result": {
+              "$ref": "#/$defs/classifiedTestRun"
+            }
+          },
+          "additionalProperties": true
+        },
+        {
+          "type": "object",
+          "required": [
+            "status",
+            "code",
+            "message",
+            "group",
+            "result"
+          ],
+          "properties": {
+            "status": {
+              "const": "FAIL"
+            },
+            "code": {
+              "const": "TEST_BASELINE_RED_NOT_PROVEN"
+            },
+            "message": {
+              "type": "string",
+              "pattern": "\\S"
+            },
+            "group": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "result": {
+              "$ref": "#/$defs/classifiedTestRun"
+            }
+          },
+          "additionalProperties": true
+        },
+        {
+          "type": "object",
+          "required": [
+            "status",
+            "code",
+            "message",
+            "group",
+            "result"
+          ],
+          "properties": {
+            "status": {
+              "const": "FAIL"
+            },
+            "code": {
+              "const": "TEST_MUTATION_SURVIVED"
+            },
+            "message": {
+              "type": "string",
+              "pattern": "\\S"
+            },
+            "group": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "result": {
+              "$ref": "#/$defs/classifiedTestRun"
+            }
+          },
+          "additionalProperties": true
+        }
+      ]
+    }
+  }
+}

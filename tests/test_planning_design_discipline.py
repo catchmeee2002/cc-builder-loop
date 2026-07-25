@@ -7,10 +7,12 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SPEC_HEAD = "29a036f7b720182fba10eed57fcefecfbaa82130"
+SPEC_HEAD = "1b512b120a673470a4ee154b7c8dd8ac3c3f7e1f"
+PLANNER_BLOB = "1ae64ff974d9440b1031f82990656b0763946c5a"
 PLANNER_PATH = Path("skills/builder-loop-planner/SKILL.md")
 REFERENCE_PATH = Path("skills/builder-loop-planner/references/design-decisions.md")
 REVIEWER_PATH = Path("agents/reviewer.toml")
+TESTER_PATH = Path("agents/tester.toml")
 PHILOSOPHY_PATH = Path("docs/design-philosophy.md")
 ARCHITECTURE_PATH = Path("docs/architecture.md")
 
@@ -259,6 +261,32 @@ def git_text(revision: str, path: Path) -> str:
     if result.returncode != 0:
         raise AssertionError(result.stderr)
     return result.stdout
+
+
+def git_blob(revision: str, path: Path) -> str:
+    result = subprocess.run(
+        ["git", "rev-parse", f"{revision}:{path.as_posix()}"],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise AssertionError(result.stderr)
+    return result.stdout.strip()
+
+
+def worktree_blob(path: Path) -> str:
+    result = subprocess.run(
+        ["git", "hash-object", path.as_posix()],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise AssertionError(result.stderr)
+    return result.stdout.strip()
 
 
 def changed_paths() -> list[str]:
@@ -535,11 +563,13 @@ class PlanningDesignDisciplineTest(unittest.TestCase):
         self.assertNotIn(REFERENCE_PATH.name, reviewer)
 
     def test_role_prompts_stay_within_frozen_line_budgets(self) -> None:
-        planner_baseline = git_text(SPEC_HEAD, PLANNER_PATH).splitlines()
         reviewer_baseline = git_text(SPEC_HEAD, REVIEWER_PATH).splitlines()
+        tester_baseline = git_text(SPEC_HEAD, TESTER_PATH).splitlines()
 
-        self.assertLessEqual(len(read(PLANNER_PATH).splitlines()), len(planner_baseline) + 15)
-        self.assertLessEqual(len(read(REVIEWER_PATH).splitlines()), len(reviewer_baseline) + 8)
+        self.assertEqual(git_blob("HEAD", PLANNER_PATH), PLANNER_BLOB)
+        self.assertEqual(worktree_blob(PLANNER_PATH), PLANNER_BLOB)
+        self.assertLessEqual(len(read(REVIEWER_PATH).splitlines()), len(reviewer_baseline) + 24)
+        self.assertLessEqual(len(read(TESTER_PATH).splitlines()), len(tester_baseline) + 24)
 
     def test_reference_is_not_duplicated_into_always_loaded_roles_or_docs(self) -> None:
         reference = read(REFERENCE_PATH)
@@ -572,16 +602,27 @@ class PlanningDesignDisciplineTest(unittest.TestCase):
 
     def test_candidate_changes_stay_inside_frozen_delivery_surface(self) -> None:
         allowed_exact = {
-            PLANNER_PATH.as_posix(),
-            REFERENCE_PATH.as_posix(),
+            "AGENTS.md",
+            "CHANGELOG.md",
             REVIEWER_PATH.as_posix(),
+            TESTER_PATH.as_posix(),
             PHILOSOPHY_PATH.as_posix(),
             ARCHITECTURE_PATH.as_posix(),
+            "schema/codex-loop-ledger.schema.json",
+            "schema/codex-test-proof.schema.json",
         }
+        allowed_prefixes = (
+            "experiments/agent-behavior/",
+            "runtime/codex_builder_loop/",
+            "skills/builder-loop-planner/",
+            "skills/builder/",
+            "tests/",
+        )
         unexpected = [
             path
             for path in changed_paths()
-            if path not in allowed_exact and not path.startswith("tests/")
+            if path not in allowed_exact
+            and not any(path.startswith(prefix) for prefix in allowed_prefixes)
         ]
 
         self.assertEqual(unexpected, [])

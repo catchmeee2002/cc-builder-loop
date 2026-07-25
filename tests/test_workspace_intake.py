@@ -8,6 +8,7 @@ from pathlib import Path
 
 from harness import (
     assert_status,
+    assert_status_one_of,
     cleanup_repo,
     git,
     head,
@@ -54,7 +55,11 @@ class WorkspaceIntakeContractTest(unittest.TestCase):
 
     def bind_delivery_evidence(self, run_path: Path, builder: Path) -> str:
         tester_id = register_agent(run_path, "tester")
-        assert_status(run_cli("integrate-tests", "--run", run_path), "NOOP", rc=0)
+        assert_status_one_of(
+            run_cli("integrate-tests", "--run", run_path),
+            {"READY", "NOOP"},
+            rc=0,
+        )
         assert_status(run_cli("verify", "--run", run_path), "PASS", rc=0)
         candidate = head(builder)
         register_agent(run_path, "tester", agent_id=tester_id, result="pass")

@@ -4,6 +4,7 @@ import unittest
 
 from harness import (
     assert_status,
+    assert_status_one_of,
     cleanup_repo,
     commit_all,
     head,
@@ -45,7 +46,7 @@ class DocAuditGateTest(unittest.TestCase):
         )
         tester_agent_id = register_agent(run_path, "tester")
         tests_integration = run_cli("integrate-tests", "--run", run_path)
-        self.assertIn(tests_integration.data.get("status"), {"READY", "NOOP"})
+        assert_status_one_of(tests_integration, {"READY", "NOOP"}, rc=0)
         verified = run_cli("verify", "--run", run_path)
         assert_status(verified, "PASS", rc=0)
         candidate = head(builder)

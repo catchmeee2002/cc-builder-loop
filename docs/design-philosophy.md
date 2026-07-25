@@ -14,6 +14,11 @@ Codex 负责理解、实现和协调；builder-loop 只固定完成条件、角�
 
 Evidence 绑定的是产生结论的真实输入 digest，不是碰巧承载这些输入的全局 HEAD。只有冻结 scope 内的输入完全不变时，机器或黑盒证据才能跨 HEAD 复用；Reviewer 和文档审查始终面对完整 integrated HEAD。
 
+独立 Tester thread 产出并通过 ownership、Git/source manifest、integration 和 Reviewer 审查绑定的
+Tester-owned 测试源码，是测试判据的可信输入。这里的独立性来自角色、来源和证据链，不等同于
+操作系统级敌手隔离；runtime 必须抵抗环境、runner、输出和空壳证明的误导，但不承诺在同一解释器内
+隔离任意恶意 Python 测试代码。敌手模型若改变，必须重新冻结产品契约，不能把更多输出特判冒充安全边界。
+
 ## 二、每个事实只有一个家
 
 计划定义目标和授权，Tester branch 定义测试实现，runtime ledger 记录执行事实，schema 定义结构，Git 保存交付历史。消费者只引用源头，不维护旁路副本。兼容输出必须由唯一事实派生，不能反向成为第二状态源。

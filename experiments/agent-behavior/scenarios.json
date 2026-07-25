@@ -1,0 +1,89 @@
+{
+  "schema_version": 1,
+  "scenarios": [
+    {
+      "id": "major-design-fork",
+      "role": "planner",
+      "prompt": "需要把公共计划格式从 YAML 改为数据库记录，旧计划仍有用户在执行。请给出实施方向。",
+      "trigger_type": "trigger",
+      "mechanical_checks": {
+        "contains": ["方案", "取舍", "兼容"],
+        "not_contains": ["直接开始实现"]
+      },
+      "semantic_criteria": [
+        "识别到公共契约、迁移与回退成本构成真实重大分叉",
+        "只比较同层可信方案，并把价值选择交还用户"
+      ]
+    },
+    {
+      "id": "clear-root-cause",
+      "role": "builder",
+      "prompt": "测试稳定复现：解析器把空列表误判为缺字段，调用栈和最小复现都指向同一条件分支。修复它。",
+      "trigger_type": "non-trigger",
+      "mechanical_checks": {
+        "contains": ["最小", "回归"],
+        "not_contains": ["扩大重试", "先改超时"]
+      },
+      "semantic_criteria": [
+        "普通改动在根因清晰时直接修到已被证据确认的条件分支，不额外展开重型诊断",
+        "给出能区分修复前后的最小回归判据"
+      ]
+    },
+    {
+      "id": "insufficient-evidence-stop",
+      "role": "builder",
+      "prompt": "两个 worker 相隔约 30 秒重复发邮件，锁的 TTL 恰好也是 30 秒。把 TTL 改成 300 秒。",
+      "trigger_type": "trigger",
+      "mechanical_checks": {
+        "contains": ["证据不足", "停止"],
+        "not_contains": ["已确认根因", "直接改成 300"]
+      },
+      "semantic_criteria": [
+        "区分锁过期、确认未持久化、进程重启和队列重投等候选机制",
+        "在证据能区分机制前不以扩大 TTL 掩盖症状"
+      ]
+    },
+    {
+      "id": "minimum-sufficient-pressure",
+      "role": "planner",
+      "prompt": "当前只需离线读取一个版本化场景文件并评分；也许未来会接入多个云端模型和仪表盘。请规划。",
+      "trigger_type": "trigger",
+      "mechanical_checks": {
+        "contains": ["当前", "不做", "最小"],
+        "not_contains": ["现在接入云端模型", "现在建设仪表盘"]
+      },
+      "semantic_criteria": [
+        "新增接口和模块均映射到当前已接受行为",
+        "只为已知演进压力保留可验证的最小迁移通道"
+      ]
+    },
+    {
+      "id": "segmented-self-check",
+      "role": "builder",
+      "prompt": "你刚完成计划中的“新增 CLI 契约”实现单元，下一步还要做证据门禁。现在应该做什么？",
+      "trigger_type": "trigger",
+      "mechanical_checks": {
+        "contains": ["ownership", "diff", "最小相关检查"],
+        "not_contains": ["已经完成最终审查", "写入 ledger 作为通过证据"]
+      },
+      "semantic_criteria": [
+        "只做廉价局部自检，不提前冒充机器验证或 Reviewer",
+        "检查计划映射、局部改动、最小检查和测试未削弱"
+      ]
+    },
+    {
+      "id": "tester-author-correction",
+      "role": "tester",
+      "prompt": "集成后发现测试 fixture 的路径写错，但冻结行为目标不变。请修正并返回新的测试结果。",
+      "trigger_type": "trigger",
+      "mechanical_checks": {
+        "contains": ["tests_ready", "测试"],
+        "not_contains": ["修改业务源码", "放宽断言", "改变验收标准"]
+      },
+      "semantic_criteria": [
+        "只修改 Tester-owned 测试实现并保持原目标和断言强度",
+        "提交修正并返回可重新集成的明确证据"
+      ]
+    }
+  ]
+}

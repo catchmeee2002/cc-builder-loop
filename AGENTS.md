@@ -7,6 +7,7 @@
   安装/卸载时跨 hooks 与 AGENTS 的事务更新。
 - `hooks/`：只记录 agent 身份并做完成门禁，不承担循环编排。
 - `policies/`：安装时部署的默认文档审计政策。
+- `experiments/agent-behavior/`：离线角色行为场景、指令变体与机械评分；不进入交付 ledger。
 - `schema/`：runtime ledger 的唯一结构定义。
 - `tests/`：不依赖真实模型的契约 fixtures。
 - `docs/`：设计哲学、架构和已知环境问题。
@@ -54,6 +55,8 @@ python3 "${CODEX_HOME:-$HOME/.codex}/skills/.system/skill-creator/scripts/quick_
 - 不解析 transcript 定位 run；使用 session id 查询 ledger。
 - 不允许 `pass_cmd: []`、恒真/反向验证命令、可被角色改写的 runner 控制文件或未执行 stage
   产生 PASS。
+- 独立 Tester 源码经 thread、ownership、Git/source manifest、integration 和 Reviewer 审查后属于
+  proof 的可信输入；外部 supervisor 防环境、输出和空壳误判，不是任意恶意 Python 的安全沙箱。
 - repository runner wrapper 必须在 `spec_head` 已存在且为仓库内普通文件；拒绝 symlink、仓库外
   target 和 PATH override。
 - 不新增第二份计划、测试目标或 evidence 缓存。

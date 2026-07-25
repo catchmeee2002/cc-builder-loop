@@ -84,6 +84,7 @@
         "path": {"type": "string", "minLength": 1},
         "source_path": {"type": "string", "minLength": 1},
         "sha256": {"$ref": "#/$defs/sha256"},
+        "contract_schema_version": {"enum": [2, 3]},
         "level": {"enum": ["L1", "L2/L3"]},
         "spec_head": {"$ref": "#/$defs/commit"},
         "plan_revision": {"type": "integer", "minimum": 1},
@@ -133,6 +134,33 @@
           "oneOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]
         },
         "has_e2e_cases": {"type": "boolean"},
+        "e2e_case_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+          }
+        },
+        "e2e_cases_sha256": {
+          "oneOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]
+        },
+        "test_effectiveness_requirements": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["behavior_id", "minimum"],
+            "properties": {
+              "behavior_id": {
+                "type": "string",
+                "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+              },
+              "minimum": {"enum": ["strong", "reviewed-boundaries"]}
+            }
+          }
+        },
         "workspace_intake": {
           "type": "array",
           "uniqueItems": true,
@@ -321,6 +349,7 @@
       "required": ["machine", "blackbox", "review", "doc_review"],
       "properties": {
         "machine": {"$ref": "#/$defs/nullableEvidence"},
+        "test_effectiveness": {"$ref": "#/$defs/nullableEvidence"},
         "blackbox": {"$ref": "#/$defs/nullableEvidence"},
         "review": {"$ref": "#/$defs/nullableEvidence"},
         "doc_review": {"$ref": "#/$defs/nullableEvidence"}
@@ -370,6 +399,35 @@
       }
     }
   },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "plan": {
+            "required": ["contract_schema_version"],
+            "properties": {
+              "contract_schema_version": {"const": 3}
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "plan": {
+            "required": [
+              "contract_schema_version",
+              "e2e_case_ids",
+              "e2e_cases_sha256",
+              "test_effectiveness_requirements"
+            ]
+          },
+          "evidence": {
+            "required": ["test_effectiveness"]
+          }
+        }
+      }
+    }
+  ],
   "$defs": {
     "commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
     "nullableCommit": {
@@ -473,12 +531,23 @@
       "additionalProperties": false,
       "required": ["kind", "observed_head", "accepted_head", "input_digest", "scope", "provenance"],
       "properties": {
-        "kind": {"enum": ["machine", "blackbox", "review", "doc_review"]},
+        "kind": {
+          "enum": [
+            "machine",
+            "test_effectiveness",
+            "blackbox",
+            "review",
+            "doc_review"
+          ]
+        },
         "observed_head": {"$ref": "#/$defs/commit"},
         "accepted_head": {"$ref": "#/$defs/commit"},
         "input_digest": {"$ref": "#/$defs/sha256"},
         "scope": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
-        "provenance": {"type": "object"}
+        "provenance": {"type": "object"},
+        "details": {"type": "object"},
+        "tester_source_head": {"$ref": "#/$defs/commit"},
+        "tester_manifest_sha256": {"$ref": "#/$defs/sha256"}
       }
     },
     "nullableEvidence": {
@@ -646,6 +715,8 @@
         },
         "prerequisite_bound": {"type": "boolean"},
         "verified_head": {"$ref": "#/$defs/nullableCommit"},
+        "test_effectiveness_required": {"type": "boolean"},
+        "test_effectiveness_head": {"$ref": "#/$defs/nullableCommit"},
         "e2e_verified_head": {"$ref": "#/$defs/nullableCommit"},
         "satisfied": {"type": "boolean"}
       }

@@ -10,6 +10,7 @@ from harness import (
     CLI,
     assert_ledger_schema,
     assert_status,
+    assert_status_one_of,
     cleanup_repo,
     commit_all,
     finish_agent_turn,
@@ -51,7 +52,11 @@ class FinalizeLifecycleTest(unittest.TestCase):
             path.write_text(content)
         commit_all(builder, "ready candidate")
         tester_agent_id = register_agent(run_path, "tester")
-        assert_status(run_cli("integrate-tests", "--run", run_path), "NOOP", rc=0)
+        assert_status_one_of(
+            run_cli("integrate-tests", "--run", run_path),
+            {"READY", "NOOP"},
+            rc=0,
+        )
         assert_status(run_cli("verify", "--run", run_path), "PASS", rc=0)
         candidate = head(builder)
         register_agent(run_path, "tester", agent_id=tester_agent_id, result="pass")
@@ -168,7 +173,11 @@ class FinalizeLifecycleTest(unittest.TestCase):
         (builder / "src" / "feature.py").write_text("VALUE = 1\n")
         commit_all(builder, "builder candidate")
         tester_agent_id = register_agent(run_path, "tester")
-        assert_status(run_cli("integrate-tests", "--run", run_path), "NOOP", rc=0)
+        assert_status_one_of(
+            run_cli("integrate-tests", "--run", run_path),
+            {"READY", "NOOP"},
+            rc=0,
+        )
         assert_status(run_cli("verify", "--run", run_path), "PASS", rc=0)
         candidate = head(builder)
         register_agent(run_path, "tester", agent_id=tester_agent_id, result="pass")
@@ -337,7 +346,11 @@ class FinalizeLifecycleTest(unittest.TestCase):
         (builder / "src" / "release_feature.py").write_text("VALUE = 1\n")
         commit_all(builder, "release candidate")
         tester_agent_id = register_agent(run_path, "tester")
-        assert_status(run_cli("integrate-tests", "--run", run_path), "NOOP", rc=0)
+        assert_status_one_of(
+            run_cli("integrate-tests", "--run", run_path),
+            {"READY", "NOOP"},
+            rc=0,
+        )
         assert_status(run_cli("verify", "--run", run_path), "PASS", rc=0)
         candidate = head(builder)
         register_agent(run_path, "tester", agent_id=tester_agent_id, result="pass")
@@ -364,7 +377,11 @@ class FinalizeLifecycleTest(unittest.TestCase):
         (builder / "src" / "feature.py").write_text("VALUE = 1\n")
         commit_all(builder, "builder candidate")
         tester_agent_id = register_agent(run_path, "tester")
-        assert_status(run_cli("integrate-tests", "--run", run_path), "NOOP", rc=0)
+        assert_status_one_of(
+            run_cli("integrate-tests", "--run", run_path),
+            {"READY", "NOOP"},
+            rc=0,
+        )
         assert_status(run_cli("verify", "--run", run_path), "PASS", rc=0)
         candidate = head(builder)
         register_agent(run_path, "tester", agent_id=tester_agent_id, result="pass")

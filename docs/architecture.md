@@ -18,7 +18,7 @@ Tester 与 Reviewer。runtime CLI 只处理可确定验证的内容，不替模�
                                                    └→ Tester author baseline
         │ Tester author tests_ready → integrate tester commit
         ▼
-clean candidate worktree verify → same-thread black-box pass → Reviewer(code/test/docs)
+clean candidate verify → test-effectiveness proof → same-thread black-box pass → Reviewer(code/test/docs)
         │ all evidence points to candidate HEAD
         ▼
 temporary final ref/worktree → hooks → tree check → target CAS → cleanup
@@ -38,9 +38,10 @@ CAS 或 checkout 中断后，snapshot、final commit 和 intent 足以识别 exp
 
 ## 计划和并行门槛
 
-计划契约只接受 `schema_version: 2`。计划保留 `plan-checklist`，并在非 L1 使用 `unit-test-spec`、在 L1 使用
-`documentation-spec`；运行时验收可再增加 `e2e-cases`。非 L1 spec 必须包含规划时 HEAD、计划
-版本、接口、测试上下文、角色写路径、行为边界/不变量和 mock 策略。串行计划还必须声明
+新计划契约只接受 `schema_version: 3`。计划保留 `plan-checklist`，并在非 L1 使用
+`unit-test-spec`、在 L1 使用 `documentation-spec`；运行时验收可再增加 `e2e-cases`。非 L1
+spec 必须包含规划时 HEAD、计划版本、接口、测试上下文、角色写路径、行为边界/不变量、逐行为测试
+鉴别最低强度和 mock 策略。串行计划还必须声明
 `public_prerequisites`。其中每项必须是 Builder-owned 的精确普通文件路径，不能是 glob、目录或
 symlink。具体字段以 validator 实现和 fixtures 为准。
 
@@ -58,6 +59,12 @@ effective runner、安全规则、ownership 和冻结依赖。前者不创建 le
 digest 写入 ledger。Tester 以 publication HEAD 为 author baseline，不接收 Builder branch HEAD、
 candidate diff 或其他实现内容。中间 Builder 历史不会进入 Tester baseline；当前版本仍不宣称 Git
 object database 具有操作系统级读 ACL。
+
+v3 的 `e2e-cases` 只有一个 `schema_version=1 + cases` 格式。完整 case 继续只存在冻结计划；
+ledger 保存 case ids 和规范摘要，blackbox evidence 保存逐例机械、功能、质量与汇总结果。fast case
+只执行机械规则，full case 必须声明正向、反向和质量标准；任何缺失、重复、未知或汇总不一致都不能
+形成 `e2e_verified`。逐例结果使用 `case_id/level/outcome`，`mechanical/verify/quality`
+分别取 `pass|fail|not_applicable`；不适用维度必须显式写 `not_applicable`。
 
 `plan_revision=1` 表示首次契约。更高 revision 必须携带被替代 run id 与旧 plan digest；start 只在
 旧 run 已 abandoned、digest 匹配且 revision 增加时接受，避免把原地放宽伪装成新证据。
@@ -78,6 +85,15 @@ Planner 先按后果决定分析深度。局部可逆任务直接形成最小方
 无法映射且产生具体成本或偏离时才形成 finding。真实模型
 对这些规则的服从率属于角色行为试验，不写入 runtime ledger，也不冒充确定性交付证据。
 
+Builder 对故障修复只常驻四个轻量问题：失败、机制、因果源头的最小改动和前后可区分判据。机制
+不清或同类失败重现时才加载根因参考。每个实现单元完成后做局部 diff、ownership 和最小检查自检；
+这两项都是角色纪律，不新增状态或 gate。
+
+`experiments/agent-behavior/` 保存版本化场景、按角色匹配的指令来源和离线准备/评分器。prepare
+临时解析摘要绑定的指令正文并与场景一起输出，角色不匹配时拒绝；它不调用模型、不联网，默认只写
+stdout，真实响应和结果只能进入忽略目录或仓库外。未来原生评测平台证明等价后，只迁移
+场景和评分语义并删除本地 runner。
+
 ## 角色协作
 
 Builder 与 Tester 使用冻结基线协作：
@@ -90,6 +106,13 @@ Builder 与 Tester 使用冻结基线协作：
   无变化，也必须显式完成 integration attestation。它只依据冻结计划、公开接口、计划声明的前置产物、
   测试支持文件和运行结果写测；不向它提供 candidate diff，并由 prompt 禁止读取其他 Builder
   实现。该读边界不是文件系统 ACL。
+- Tester-owned 源码在独立 author thread 中提交，经 ownership gate、Git/source manifest、integration
+  和 Reviewer 测试完整性审查后进入可信输入边界。Tester 不得主动篡改测试采集器或伪造框架事件；
+  runtime 不以同解释器权限隔离任意恶意 Tester 代码，也不把 Git 可见性或 agent sandbox 描述成
+  操作系统级安全边界。
+- v3 Tester author 同时返回一次性测试鉴别 JSON。机器验证通过后，runtime 在隔离 worktree 中执行
+  基线先红或受控变异；允许弱证明的行为可以映射正向、反向、边界和不变量测试，但必须由 Reviewer
+  审核理由。证明不会写回测试目标，也不经 shell 执行命令。
 - Tester commit 集成后，Builder 可以读取测试并修复实现，但 ownership gate 阻止其修改测试。
 - 所有非 L1 run 都必须由原 Tester thread 在 candidate worktree 对集成 HEAD 完成 blackbox
   `pass`。candidate worktree 必须没有 tracked、untracked 或 ignored residue；evidence 同时记录
@@ -99,9 +122,10 @@ Builder 与 Tester 使用冻结基线协作：
 - 测试实现错误在目标不变时由原 Tester thread 修正。测试目标、ownership 或验收标准需要变化
   时，不在 frozen run 内批准：先 abandon 保留现场，再通过 `/plan` 生成更高 revision 的新方案
   并由 `$builder` 启动新 run。
-- Reviewer 在机器验证和黑盒验收后启动。runtime 会在 Reviewer turn 开始和完成时分别冻结
-  prerequisite snapshot；非 L1 只有 Tester integration、publication attestation（串行时）、
-  `verified_head` 与 `e2e_verified_head` 均绑定当前 candidate 才接受 review evidence。finding 按 ownership 路由：已授权路径内的实现/文档
+- Reviewer 在机器验证和黑盒验收后启动；非 L1 v3 还必须先完成测试鉴别证明。runtime 会在 Reviewer turn
+  开始和完成时分别冻结 prerequisite snapshot；非 L1 只有 Tester integration、publication attestation
+  （串行时）、`verified_head`、`e2e_verified_head`，以及 v3 适用时的 `test_effectiveness_head` 均绑定当前 candidate
+  才接受 review evidence。finding 按 ownership 路由：已授权路径内的实现/文档
   由 Builder 修，测试实现由原 Tester author correction 修；需要新增写路径时进入 contract
   修订。目标不变的修复必须重新验证并 follow-up 同一
   Reviewer；需要修改冻结契约时转入新 run。
@@ -148,13 +172,57 @@ Hook 使用 Codex 提供的 `session_id` 找到唯一 active run：
 ## Evidence 与失效
 
 ledger v2 为每类 evidence 记录 `observed_head`、`accepted_head`、输入 digest、scope 和 provenance。
-所有非 L1 run
-必须先取得 Tester author `tests_ready` 并完成 integration，再由同一 thread 在 candidate
-worktree 对集成 HEAD 产出 blackbox `pass` evidence。E2E/review/doc-review 只能通过
+所有非 L1 v3 run 的顺序固定为 Tester integration、机器验证、测试鉴别证明、同 thread blackbox、
+Reviewer。测试鉴别证明绑定 candidate、Tester source HEAD、Tester-owned manifest、命令/变异和
+日志摘要；candidate 或 Tester integration 变化时立即失效，不能跨 HEAD 复用。E2E/review/doc-review 只能通过
 `record-evidence` 写入，且必须携带 ledger 中已完成 agent turn 的 id；E2E 还必须携带可重放
 details。只有全部必需 evidence 接受当前候选 HEAD，Tester commits 与 dirty tree 已
 完整集成、worktree 无越界修改、目标分支仍满足 continuity 时，finalize 才能冻结最终提交。
 目标 checkout 是否可同步是后续独立 gate，不再冒充 evidence readiness。
+
+`schema/codex-test-proof.schema.json` 是 `prove-tests` 输入和成功 evidence 的唯一结构来源，使用
+JSON Schema Draft 2020-12，并在标准 examples 中提供 unittest 基线先红与 pytest 受控变异正例；
+runtime parser 实现该契约，不维护第二份字段定义。`prove-tests --spec -` 接受
+`schema_version=1` JSON。每个 group 都含 `behavior_ids`、
+`method`、直接执行的 `argv`、`test_ids` 和 1..600 秒 `timeout_seconds`，所有 group 必须
+恰好覆盖冻结 behavior。JSON Schema 视为整数的有限 number（例如 `1.0`、`30.0`）由 parser
+规范化为整数；布尔值、非整数、NaN 和 Infinity 拒绝。成功 evidence 的 `run_id` 与 runtime/ledger
+共用同一事务身份规则，不生成别名。基线先红还含 `claimed_failure_kind`；`mutation` 另含 unified Git
+`patch`；`reviewed-boundaries` 含 `reason`，且 `reviewed_boundaries` 必须分别提供
+`positive_test_ids`、`negative_test_ids`、`boundary_test_ids`、`invariant_test_ids`
+四个非空列表。`argv` 只接受明确支持的非内联测试运行器形态，或 `spec_head` 已存在、由
+`test_context.support_paths` 声明且双方都不可改的仓库脚本；其他命令默认拒绝。allowlisted runner
+必须显式选择全部声明 test id，每个 id 还必须解析到 Tester source HEAD 中 Tester-owned 的普通文件
+与 blob；仓库外 discovery、父路径和 pytest 路径重定向拒绝。runtime 还拒绝
+env/PATH/PYTHONPATH 字段、命令分发器、内联 shell/解释器控制流或跨 ownership 变异。裸
+`python/pytest` 会规范化为当前 runtime 的绝对 Python 可执行文件，仓库脚本 launcher 也会在执行前
+固定并记录路径、摘要和冻结 blob。proof 子进程不继承调用方 PATH，而使用 runtime Python 所在目录
+加系统默认路径，因此 wrapper 的 shebang 和内部裸命令也不能二次解析到 hostile PATH。候选阶段必须
+从独立监督进程取得声明测试的逐项状态。监督进程独占最终结果 FD，不把它或对应环境变量传给测试
+进程；pytest 的临时插件和 unittest 的临时 runner 只写原始框架事件，监督进程核对事件唯一性与真实
+退出码后才写最终结果。原始 stdout/stderr 只进入日志，不能授权 PASS 或断言失败。受保护 wrapper
+必须保留 runtime 注入的原始事件 FD 与环境，使其中唯一一次受支持的 pytest 执行返回事件；缺失、
+重复或与进程退出码不一致时 fail closed。wrapper 显式转发受支持的 unittest/pytest 命令时，runtime
+从冻结脚本后的命令后缀识别框架，把嵌套可执行文件规范化为可信 Python，并继续执行同一套测试来源、
+完整 id 与结构化采集校验；无法唯一识别、嵌套 dispatcher 或绝对外部可执行文件在 spec 阶段直接拒绝，
+不回落到 `auto` 或文本 PASS。proof supervisor 与测试子进程从最小可信环境启动，只继承基础身份、
+临时目录、locale 和必要系统字段；外部 shell function、`BASH_ENV`、动态加载器、Python/pytest 启动
+注入和调用方 PATH 均不进入执行链。runtime 只注入本次 proof 的 channel、缓存和随机临时插件路径，
+禁用用户 site 与第三方 pytest 插件自动加载，并把缓存写入候选外，避免宿主环境、测试打印或可导入的
+持久结果模块冒充测试结论。
+基线先红和受控变异必须解析为 `assertion-failure`。零测试、导入、语法、收集、
+配置、用法、启动错误、超时或无法识别的 runner 输出都不能形成测试鉴别 evidence。unittest 只按
+完整 `module.Class.method`、pytest 只按完整 node id 精确映射声明测试；短方法名、任意子串、同名歧义
+和未声明断言失败均保持未映射。candidate 的每个声明 id 必须在结构化结果中唯一、完整且普通通过；
+skip、xfail、xpass、未执行或额外测试不能借其他通过测试形成 strong proof。失败类型取框架提供的真实
+异常类型；同一 id 的 setup/call/teardown 和 subTest 事件保留累计计数，skip 或非断言错误支配普通
+通过与断言失败。captured stdout、结束摘要或 atexit 追加文本都不参与分类。
+
+上述监督进程用于把最终证据写入权、进程退出码和原始输出从普通测试结果判定中分离，防止误用、
+环境污染和空壳证明；它不是对可信 Tester 源码的恶意代码沙箱。同权限 Python 测试可反射或
+monkeypatch 同进程对象这一事实不被隐藏，安全边界是受审 Tester source identity，而不是 reporter
+对象本身。若未来需要执行不可信测试代码，必须另行引入并验证操作系统级隔离，不能在当前 reporter
+上继续叠加特判。
 
 计划可把每个 Builder-owned pattern 对 machine/blackbox 分为 `affects` 或 `exempt`；Tester、runner、
 support、publication 和实际 blackbox command 依赖强制属于 affects。候选变化后 runtime 重新计算
@@ -169,9 +237,11 @@ workspace intake、evidence provenance、progress stop、finalize 与 cleanup �
 也不删除。`recover` 只重放已经持久化的 final/cleanup 事务；`cleanup` 只处理 terminal run 中
 ledger-owned、clean 且 HEAD 未漂移的 worktree。未知 orphan 只报告人工检查入口。
 
-新 start 写 ledger v2。读取 v1 时先在内存规范化；首次受锁写操作原子写回 v2 并追加 migration
-event。旧 run 没有 evidence scope，迁移后按全 tree 语义继续，run/session/agent/turn、candidate、
-intent 和 worktree 身份保持不变。
+新 start 写 ledger v2，并在 plan 摘要中标明 contract schema v3。读取 ledger v1 时先在内存规范化；
+首次受锁写操作原子写回 v2 并追加 migration event。既有 plan v2 ledger 缺少新字段时按历史语义
+解释，可继续诊断、恢复、清理和完成原事务，但不能补写 v3 测试鉴别 gate；未启动的 v2 计划必须
+重新规划。旧 run 没有 evidence scope，迁移后按全 tree 语义继续，run/session/agent/turn、
+candidate、intent 和 worktree 身份保持不变。
 
 start 还把实际执行 adapter 的 `runtime_identity` 冻结进 ledger，包括 Codex/Claude Code 类型、
 adapter commit、checkout dirty 状态和捕获状态。事故记录只能引用这份 planning-time/runtime-time
@@ -233,6 +303,9 @@ checkpoint 与 integration commit 继续跳过 hooks 和 GPG signing。
   candidate worktree、命令、退出码和前后 HEAD，而不是只信一行自然语言；同一原则也要求串行
   Tester 只看到冻结公开文件，因此 runtime 发布 exact-file isolation HEAD/manifest，而不是一般
   Builder HEAD 或 candidate diff。
+- 同一原则要求先明确判据的可信输入：独立 Tester 源码经 thread、ownership、Git/source manifest、
+  integration 和 Reviewer 绑定后视为可信；由此 runtime 负责环境与证据完整性，而不把同解释器
+  reporter 包装成任意恶意 Python 的安全沙箱。
 - 「显式授权，默认隔离」要求未知 dirty 留在原处、精确授权输入冻结成 snapshot；由此只有真实
   覆盖风险才停止，而不是把 target 全局干净当成交付前提。
 - 「契约与成熟行为先于实现」要求迁移维护逐项 parity corpus；由此删除旧 fixture 前必须明确

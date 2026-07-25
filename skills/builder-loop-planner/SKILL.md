@@ -36,7 +36,7 @@ description: 在 Codex Plan mode（/plan）中为代码或文档变更生成 bui
 
 ```markdown
 <!-- unit-test-spec -->
-schema_version: 2
+schema_version: 3
 spec_head: "<planning-time HEAD>"
 plan_revision: 1
 parallel_ready: true
@@ -64,6 +64,10 @@ behaviors:
     what: "<observable behavior>"
     boundaries: ["<boundary>"]
     invariants: ["<must remain true>"]
+test_effectiveness:
+  requirements:
+    - behavior_id: <same-kebab-case-id>
+      minimum: strong
 mock_strategy: {}
 <!-- /unit-test-spec -->
 
@@ -73,6 +77,29 @@ mock_strategy: {}
 - [ ] <tester, reviewer, and documentation evidence target the integrated HEAD>
 <!-- /plan-checklist -->
 ```
+
+需要运行时行为验收时，使用唯一规范格式：
+
+```markdown
+<!-- e2e-cases -->
+schema_version: 1
+cases:
+  - id: <unique-kebab-case-id>
+    covers: [<behavior-id>]
+    input: "<actual trigger>"
+    level: full
+    hard_rules:
+      response_contains: ["<mechanical signal>"]
+    verify:
+      must: ["<positive observable>"]
+      must_not: ["<negative observable>"]
+    quality:
+      criteria: ["<semantic quality criterion>"]
+<!-- /e2e-cases -->
+```
+
+`fast` case 必须有非空 `hard_rules`，且省略 `verify/quality`；`full` case 必须同时提供
+`verify.must`、`verify.must_not` 和 `quality.criteria`，可省略 `hard_rules`。
 
 任务明确接入 planning-time dirty 文件时，在 spec 前增加：
 
@@ -91,7 +118,7 @@ files:
 预估改动级别：L1
 
 <!-- documentation-spec -->
-schema_version: 2
+schema_version: 3
 spec_head: "<planning-time HEAD>"
 plan_revision: 1
 ownership:
@@ -127,6 +154,14 @@ ownership:
 - 把测试目标写成输入、输出、边界和不变量，不写实现方式。
 - 每个 behavior 使用唯一 kebab-case id，并提供非空 `boundaries` 与 `invariants`；始终提供映射类型
   `mock_strategy`，即使当前为空。
+- `test_effectiveness.requirements` 必须让每个 behavior id 恰好出现一次。缺陷修复、新行为、
+  公共接口、协议或 schema 变化使用 `minimum: strong`；纯重构或冻结行为已经正确且无法形成
+  有意义反例时才用 `minimum: reviewed-boundaries`。后者仍须由 Tester 映射正向、反向、边界和
+  不变量测试，并由 Reviewer 审核理由；不能自动把 strong 降级。
+- 测试有效性证明把独立 Tester thread 产出、经 ownership、Git/source manifest、integration 和
+  Reviewer 审查绑定的 Tester-owned 源码视为可信输入。runtime 仍须阻断 hostile PATH、runner
+  篡改、输出伪造、空壳执行和基础设施错误，但当前契约不承诺隔离任意恶意 Python 测试代码；
+  不得把同进程 reporter 或外部 supervisor 描述成操作系统级安全边界。
 - 只声明一个验证来源：`spec_head` 存在 `.claude/loop.yml` 时省略 `test_context.runner`，并按其中
   实际命令把 repository wrapper 列入 `support_paths`；不存在时必须给出一个可直接运行的
   `test_context.runner`。不要使用恒真或仅打印命令。
@@ -144,7 +179,10 @@ ownership:
 - 让 checklist 同时覆盖功能完成、机器判据、黑盒验收、代码审查和文档审计。
 - 对所有非 L1 计划，把 Tester author `tests_ready` 和同一 thread 针对 integrated HEAD 的
   blackbox `pass` 写入 checklist；不能只依赖机器测试或 Reviewer。
-- 对 UI、CLI、API、跨进程或集成行为增加 `e2e-cases`；其中机械断言与语义质量标准分开。
+- 对 UI、CLI、API、跨进程或集成行为增加 `e2e-cases`；case id 唯一且 `covers` 只能引用冻结
+  behavior。只允许 `tools_called`、`tools_not_called`、`min_tools`、`max_tools`、
+  `max_steps`、`response_contains`、`response_not_contains` 作为机械规则，并保持正反断言
+  无冲突。
 - 测试目标、ownership 或验收标准一旦需要变化，不设计“当前 run 内批准”路径。保持原契约时
   续接原 thread；选择修订时先 abandon 当前 run 保留现场，再由 `/plan` 提升 `plan_revision`
   生成新方案，并由用户重新调用 `$builder`。

@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-import json
+import sys
 import unittest
 
 from harness import (
     assert_status,
+    assert_status_one_of,
     cleanup_repo,
     head,
     init_repo,
@@ -54,7 +55,11 @@ class EvidenceScopeContractTest(unittest.TestCase):
         started, run_path = start_run(self.repo, self.plan)
         builder, _tester = worktrees_from(started, run_path)
         tester_id = register_agent(run_path, "tester")
-        assert_status(run_cli("integrate-tests", "--run", run_path), "NOOP", rc=0)
+        assert_status_one_of(
+            run_cli("integrate-tests", "--run", run_path),
+            {"READY", "NOOP"},
+            rc=0,
+        )
         assert_status(run_cli("verify", "--run", run_path), "PASS", rc=0)
         candidate = head(builder)
         register_agent(run_path, "tester", agent_id=tester_id, result="pass")
@@ -97,30 +102,20 @@ class EvidenceScopeContractTest(unittest.TestCase):
         started, run_path = start_run(self.repo, self.plan)
         builder, _tester = worktrees_from(started, run_path)
         tester_id = register_agent(run_path, "tester")
-        assert_status(run_cli("integrate-tests", "--run", run_path), "NOOP", rc=0)
+        assert_status_one_of(
+            run_cli("integrate-tests", "--run", run_path),
+            {"READY", "NOOP"},
+            rc=0,
+        )
         assert_status(run_cli("verify", "--run", run_path), "PASS", rc=0)
         candidate = head(builder)
         register_agent(run_path, "tester", agent_id=tester_id, result="pass")
-        recorded = run_cli(
-            "record-evidence",
-            "--run",
+        recorded = record_evidence(
             run_path,
-            "--kind",
             "e2e_verified",
-            "--head",
             candidate,
-            "--agent-id",
-            tester_id,
-            "--details",
-            json.dumps(
-                {
-                    "candidate_worktree": str(builder),
-                    "head_before": candidate,
-                    "head_after": candidate,
-                    "command": "python3 tools/blackbox.py",
-                    "returncode": 0,
-                }
-            ),
+            agent_id=tester_id,
+            command_argv=[sys.executable, "tools/blackbox.py"],
         )
         assert_status(recorded, "READY", rc=0)
         self.assertIn("tools/blackbox.py", recorded.data["evidence"]["scope"])

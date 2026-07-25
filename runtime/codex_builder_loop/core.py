@@ -8,24 +8,27 @@ import datetime as dt
 import fcntl
 import hashlib
 import json
+import math
 import os
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
 import time
 import uuid
 from pathlib import Path, PurePosixPath
-from typing import Any, Iterable, Iterator, Sequence
+from typing import Any, Iterable, Iterator, Mapping, Sequence
 
 from . import evidence as evidence_contract
 from . import workspace as workspace_contract
 
 SCHEMA_VERSION = 2
 LEGACY_SCHEMA_VERSION = 1
-PLAN_SCHEMA_VERSION = 2
+PLAN_SCHEMA_VERSION = 3
+LEGACY_PLAN_SCHEMA_VERSION = 2
 EXIT_PASS = 0
 EXIT_FAIL = 1
 EXIT_FATAL = 2
@@ -40,9 +43,10 @@ ACTIVE_PHASES = {
     "architecture_review_required",
     "finalized_cleanup",
 }
-EVIDENCE_FIELDS = ("machine", "blackbox", "review", "doc_review")
+EVIDENCE_FIELDS = ("machine", "test_effectiveness", "blackbox", "review", "doc_review")
 EVIDENCE_STATUS_FIELDS = {
     "machine": "verified_head",
+    "test_effectiveness": "test_effectiveness_head",
     "blackbox": "e2e_verified_head",
     "review": "reviewed_head",
     "doc_review": "doc_reviewed_head",
@@ -118,12 +122,20 @@ class PlanContract:
     supersedes_run_id: str | None
     supersedes_plan_sha256: str | None
     has_e2e_cases: bool
+    e2e_case_ids: tuple[str, ...]
+    e2e_cases_sha256: str | None
+    e2e_cases: tuple[dict[str, Any], ...]
+    test_effectiveness_requirements: tuple[dict[str, str], ...]
     workspace_intake: tuple[dict[str, str], ...]
     evidence_scopes: dict[str, dict[str, tuple[str, ...]]]
     tags: tuple[str, ...]
 
     def as_dict(self) -> dict[str, Any]:
-        return dataclasses.asdict(self)
+        value = dataclasses.asdict(self)
+        # The frozen Markdown remains the only complete test target. Validation
+        # output exposes only the normalized ids/digest, not a second case copy.
+        value.pop("e2e_cases", None)
+        return value
 
 
 @dataclasses.dataclass(frozen=True)
@@ -154,6 +166,14 @@ def emit(payload: dict[str, Any], exit_code: int = EXIT_PASS) -> int:
 
 def sha256_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def tail_text(value: str, limit: int = 8000) -> str:
@@ -430,6 +450,15 @@ def read_json(path: Path) -> dict[str, Any]:
     if value.get("schema_version") == LEGACY_SCHEMA_VERSION:
         value = migrate_ledger_v1(value)
     value.setdefault("runtime_identity", unavailable_runtime_identity())
+    plan = value.get("plan")
+    if isinstance(plan, dict):
+        plan.setdefault("contract_schema_version", LEGACY_PLAN_SCHEMA_VERSION)
+        plan.setdefault("test_effectiveness_requirements", [])
+        plan.setdefault("e2e_case_ids", [])
+        plan.setdefault("e2e_cases_sha256", None)
+    evidence = value.get("evidence")
+    if isinstance(evidence, dict):
+        evidence.setdefault("test_effectiveness", None)
     return value
 
 
@@ -501,6 +530,18 @@ def migrate_ledger_v1(legacy: dict[str, Any]) -> dict[str, Any]:
 def evidence_record(ledger: dict[str, Any], key: str) -> dict[str, Any] | None:
     value = ledger.get("evidence", {}).get(key)
     return value if isinstance(value, dict) else None
+
+
+def recorded_evidence_details(record: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(record, dict):
+        return {}
+    details = record.get("details")
+    if isinstance(details, dict):
+        return details
+    legacy = record.get("provenance", {})
+    if isinstance(legacy, dict) and isinstance(legacy.get("details"), dict):
+        return legacy["details"]
+    return {}
 
 
 def evidence_head(ledger: dict[str, Any], key: str) -> str | None:
@@ -577,7 +618,7 @@ def evidence_digest_context(ledger: dict[str, Any], key: str) -> dict[str, Any]:
     if key == "blackbox":
         record = evidence_record(ledger, "blackbox")
         if record:
-            context["command"] = record.get("provenance", {}).get("details", {}).get("command")
+            context["command"] = recorded_evidence_details(record).get("command")
     return context
 
 
@@ -587,11 +628,7 @@ def scoped_input_digest(
     patterns = evidence_scope_patterns(ledger, key)
     if key == "blackbox":
         record = evidence_record(ledger, "blackbox")
-        command = (
-            record.get("provenance", {}).get("details", {}).get("command")
-            if record
-            else None
-        )
+        command = recorded_evidence_details(record).get("command")
         if isinstance(command, str) and command.strip():
             try:
                 patterns = sorted(
@@ -660,13 +697,18 @@ def invalidate_role_evidence(
     ledger: dict[str, Any],
     role: str,
     *,
+    purpose: str | None = None,
     turn_id: str | None = None,
     dispatch_id: str | None = None,
 ) -> None:
-    fields = {
-        "tester": ("blackbox",),
-        "reviewer": ("review", "doc_review"),
-    }[role]
+    if role == "tester":
+        fields = (
+            ("test_effectiveness", "blackbox")
+            if purpose == "author"
+            else ("blackbox",)
+        )
+    else:
+        fields = ("review", "doc_review")
     cleared = {field: evidence_record(ledger, field) for field in fields if evidence_record(ledger, field) is not None}
     if not cleared:
         return
@@ -720,7 +762,9 @@ def reviewer_prerequisite_snapshot(
         and author_turn_id
     )
     verified_head = evidence_head(ledger, "machine")
+    test_effectiveness_head = evidence_head(ledger, "test_effectiveness")
     e2e_verified_head = evidence_head(ledger, "blackbox")
+    test_effectiveness_required = requires_test_effectiveness(ledger)
     publication = ledger.get("prerequisite_publication", {})
     publication_required = bool(
         isinstance(publication, dict) and publication.get("required") is True
@@ -765,6 +809,10 @@ def reviewer_prerequisite_snapshot(
             integration_completed
             and publication_bound
             and verified_head == candidate_head
+            and (
+                not test_effectiveness_required
+                or test_effectiveness_head == candidate_head
+            )
             and e2e_verified_head == candidate_head
         )
     )
@@ -783,6 +831,8 @@ def reviewer_prerequisite_snapshot(
         "tester_author_prerequisite_manifest_sha256": author_publication_manifest,
         "prerequisite_bound": publication_bound,
         "verified_head": verified_head,
+        "test_effectiveness_required": test_effectiveness_required,
+        "test_effectiveness_head": test_effectiveness_head,
         "e2e_verified_head": e2e_verified_head,
         "satisfied": satisfied,
     }
@@ -824,11 +874,20 @@ def reviewer_prerequisite_snapshot_matches(
         or snapshot.get("prerequisite_bound") is not True
     ):
         return False
+    test_effectiveness_required = requires_test_effectiveness(ledger)
+    snapshot_requirement = snapshot.get("test_effectiveness_required")
+    test_effectiveness_matches = (
+        snapshot_requirement is True
+        and snapshot.get("test_effectiveness_head") == candidate_head
+        if test_effectiveness_required
+        else snapshot_requirement is None or snapshot_requirement is False
+    )
     return bool(
         snapshot.get("tester_integration_completed") is True
         and isinstance(snapshot.get("tester_author_turn_id"), str)
         and snapshot.get("tester_author_turn_id")
         and snapshot.get("verified_head") == candidate_head
+        and test_effectiveness_matches
         and snapshot.get("e2e_verified_head") == candidate_head
     )
 
@@ -866,11 +925,40 @@ def read_plan_source(plan_arg: str | None) -> tuple[str, str, Path | None]:
     return sys.stdin.read(), "stdin", None
 
 
+def mask_markdown_fences(text: str) -> str:
+    output: list[str] = []
+    fence_char: str | None = None
+    fence_length = 0
+    for line in text.splitlines(keepends=True):
+        match = re.match(r"^[ \t]*([\`~]{3,})", line)
+        marker = match.group(1) if match else ""
+        if fence_char is None and marker:
+            fence_char = marker[0]
+            fence_length = len(marker)
+            output.append("".join("\n" if char == "\n" else "\r" if char == "\r" else " " for char in line))
+            continue
+        if fence_char is not None:
+            output.append("".join("\n" if char == "\n" else "\r" if char == "\r" else " " for char in line))
+            if (
+                marker
+                and marker[0] == fence_char
+                and len(marker) >= fence_length
+                and match is not None
+                and not line[match.end(1) :].strip()
+            ):
+                fence_char = None
+                fence_length = 0
+            continue
+        output.append(line)
+    return "".join(output)
+
+
 def extract_tag(text: str, name: str, *, required: bool) -> str | None:
     open_re = re.compile(rf"<!--\s*{re.escape(name)}\s*-->", re.IGNORECASE)
     close_re = re.compile(rf"<!--\s*/{re.escape(name)}\s*-->", re.IGNORECASE)
-    opens = list(open_re.finditer(text))
-    closes = list(close_re.finditer(text))
+    searchable = mask_markdown_fences(text)
+    opens = list(open_re.finditer(searchable))
+    closes = list(close_re.finditer(searchable))
     if not opens and not closes and not required:
         return None
     if len(opens) != 1 or len(closes) != 1 or opens[0].end() > closes[0].start():
@@ -1177,21 +1265,291 @@ def is_template_placeholder(value: Any) -> bool:
     return isinstance(value, str) and bool(re.fullmatch(r"\s*<[^>]+>\s*", value))
 
 
-def require_plan_schema(parsed: dict[str, Any], contract_name: str) -> int:
+def require_plan_schema(
+    parsed: dict[str, Any],
+    contract_name: str,
+    *,
+    allow_legacy_v2: bool = False,
+) -> int:
     raw = parsed.get("schema_version")
-    if type(raw) is not int or raw != PLAN_SCHEMA_VERSION:
+    supported = (
+        {PLAN_SCHEMA_VERSION, LEGACY_PLAN_SCHEMA_VERSION}
+        if allow_legacy_v2
+        else {PLAN_SCHEMA_VERSION}
+    )
+    if type(raw) is not int or raw not in supported:
         raise RuntimeProblem(
-            f"{contract_name} schema_version is unsupported",
+            (
+                f"{contract_name} schema_version {raw!r} is unsupported; "
+                f"regenerate the plan with schema_version {PLAN_SCHEMA_VERSION} using /plan"
+            ),
             result="NEEDS_USER",
             code="PLAN_SCHEMA_UNSUPPORTED",
             details={
                 "contract": contract_name,
                 "schema_version": raw,
-                "supported_schema_versions": [PLAN_SCHEMA_VERSION],
+                "supported_schema_versions": sorted(supported),
             },
             exit_code=EXIT_FAIL,
         )
     return raw
+
+
+def _non_empty_strings(value: Any, field: str, errors: list[str]) -> list[str]:
+    if (
+        not isinstance(value, list)
+        or not value
+        or any(not isinstance(item, str) or not item.strip() for item in value)
+    ):
+        errors.append(f"{field} must be a non-empty string list")
+        return []
+    normalized = [str(item).strip() for item in value]
+    if len(normalized) != len(set(normalized)):
+        errors.append(f"{field} must not contain duplicates")
+    return normalized
+
+
+def parse_test_effectiveness_requirements(
+    parsed: dict[str, Any],
+    behavior_ids: Sequence[str],
+    errors: list[str],
+) -> tuple[dict[str, str], ...]:
+    raw = parsed.get("test_effectiveness")
+    if not isinstance(raw, dict):
+        errors.append("test_effectiveness must be a mapping")
+        return ()
+    unknown = sorted(set(raw) - {"requirements"})
+    if unknown:
+        errors.append("test_effectiveness has unknown fields: " + ", ".join(unknown))
+    requirements = raw.get("requirements")
+    if not isinstance(requirements, list) or not requirements:
+        errors.append("test_effectiveness.requirements must be a non-empty list")
+        if behavior_ids:
+            errors.append(
+                "test_effectiveness requirements do not cover behavior ids: "
+                + ", ".join(sorted(behavior_ids))
+            )
+        return ()
+    normalized: list[dict[str, str]] = []
+    seen: list[str] = []
+    allowed_minimums = {"strong", "reviewed-boundaries"}
+    for index, item in enumerate(requirements):
+        field = f"test_effectiveness.requirements[{index}]"
+        if not isinstance(item, dict):
+            errors.append(f"{field} must be a mapping")
+            continue
+        extra = sorted(set(item) - {"behavior_id", "minimum"})
+        if extra:
+            errors.append(f"{field} has unknown fields: " + ", ".join(extra))
+        behavior_id = item.get("behavior_id")
+        minimum = item.get("minimum")
+        if not isinstance(behavior_id, str) or not behavior_id.strip():
+            errors.append(f"{field}.behavior_id must be a non-empty string")
+            continue
+        behavior_id = behavior_id.strip()
+        if behavior_id not in behavior_ids:
+            errors.append(f"{field}.behavior_id is unknown: {behavior_id}")
+        if minimum not in allowed_minimums:
+            errors.append(
+                f"{field}.minimum {minimum!r} must be strong or reviewed-boundaries"
+            )
+            continue
+        seen.append(behavior_id)
+        normalized.append({"behavior_id": behavior_id, "minimum": str(minimum)})
+    duplicates = sorted(item for item in set(seen) if seen.count(item) > 1)
+    missing = sorted(set(behavior_ids) - set(seen))
+    if duplicates:
+        errors.append(
+            "test_effectiveness requirements duplicate behavior ids: "
+            + ", ".join(duplicates)
+        )
+    if missing:
+        errors.append(
+            "test_effectiveness requirements do not cover behavior ids: "
+            + ", ".join(missing)
+        )
+    return tuple(sorted(normalized, key=lambda item: item["behavior_id"]))
+
+
+E2E_LIST_RULES = {
+    "tools_called",
+    "tools_not_called",
+    "response_contains",
+    "response_not_contains",
+}
+E2E_INTEGER_RULES = {"min_tools", "max_tools", "max_steps"}
+E2E_HARD_RULES = E2E_LIST_RULES | E2E_INTEGER_RULES
+
+
+def parse_e2e_cases(
+    raw_marker: str | None,
+    behavior_ids: Sequence[str],
+    errors: list[str],
+) -> tuple[tuple[dict[str, Any], ...], str | None]:
+    if raw_marker is None:
+        return (), evidence_contract.canonical_digest(
+            {"schema_version": 1, "cases": []}
+        )
+    try:
+        parsed = yaml_load(raw_marker)
+    except RuntimeProblem as exc:
+        if exc.code != "PLAN_YAML_INVALID":
+            raise
+        errors.append(
+            "e2e-cases schema_version/cases contain invalid YAML: " + str(exc)
+        )
+        return (), None
+    if not isinstance(parsed, dict):
+        errors.append("e2e-cases.schema_version must be 1")
+        errors.append("e2e-cases.cases must be a non-empty list")
+        return (), None
+    extra = sorted(set(parsed) - {"schema_version", "cases"})
+    if extra:
+        errors.append("e2e-cases has unknown fields: " + ", ".join(extra))
+    schema_version = parsed.get("schema_version")
+    if type(schema_version) is not int or schema_version != 1:
+        errors.append("e2e-cases.schema_version must be 1")
+    cases = parsed.get("cases")
+    if not isinstance(cases, list) or not cases:
+        errors.append("e2e-cases.cases must be a non-empty list")
+        return (), None
+    normalized: list[dict[str, Any]] = []
+    case_ids: list[str] = []
+    for index, item in enumerate(cases):
+        field = f"e2e-cases.cases[{index}]"
+        if not isinstance(item, dict):
+            errors.append(f"{field} must be a mapping")
+            continue
+        allowed = {"id", "covers", "input", "level", "hard_rules", "verify", "quality"}
+        unknown = sorted(set(item) - allowed)
+        if unknown:
+            errors.append(f"{field} has unknown fields: " + ", ".join(unknown))
+        case_id = item.get("id")
+        if not isinstance(case_id, str) or not re.fullmatch(
+            r"[a-z0-9]+(?:-[a-z0-9]+)*", case_id
+        ):
+            errors.append(f"{field}.id must be unique kebab-case")
+            case_id = ""
+        else:
+            case_ids.append(case_id)
+        field = f"e2e-cases.cases[{index}:{case_id or '?'}]"
+        covers = _non_empty_strings(item.get("covers"), f"{field}.covers", errors)
+        unknown_covers = sorted(set(covers) - set(behavior_ids))
+        if unknown_covers:
+            errors.append(
+                f"{field}.covers references unknown behavior ids: "
+                + ", ".join(unknown_covers)
+            )
+        input_value = item.get("input")
+        if not isinstance(input_value, str) or not input_value.strip():
+            errors.append(f"{field}.input must be a non-empty string")
+            input_value = ""
+        level = item.get("level")
+        if level not in {"fast", "full"}:
+            errors.append(f"{field}.level must be fast or full")
+        hard_rules_raw = item.get("hard_rules")
+        hard_rules: dict[str, Any] = {}
+        if hard_rules_raw is not None:
+            if not isinstance(hard_rules_raw, dict):
+                errors.append(f"{field}.hard_rules must be a mapping")
+            else:
+                unknown_rules = sorted(set(hard_rules_raw) - E2E_HARD_RULES)
+                if unknown_rules:
+                    errors.append(
+                        f"{field}.hard_rules has unknown fields: "
+                        + ", ".join(unknown_rules)
+                    )
+                for key, value in hard_rules_raw.items():
+                    if key in E2E_LIST_RULES:
+                        hard_rules[key] = _non_empty_strings(
+                            value, f"{field}.hard_rules.{key}", errors
+                        )
+                    elif key in E2E_INTEGER_RULES:
+                        if type(value) is not int or value < 0:
+                            errors.append(
+                                f"{field}.hard_rules.{key} must be a non-negative integer"
+                            )
+                        else:
+                            hard_rules[key] = value
+        if (
+            "min_tools" in hard_rules
+            and "max_tools" in hard_rules
+            and hard_rules["min_tools"] > hard_rules["max_tools"]
+        ):
+            errors.append(f"{field}.hard_rules min_tools cannot exceed max_tools")
+        for positive, negative in (
+            ("tools_called", "tools_not_called"),
+            ("response_contains", "response_not_contains"),
+        ):
+            overlap = sorted(
+                set(hard_rules.get(positive, []))
+                & set(hard_rules.get(negative, []))
+            )
+            if overlap:
+                errors.append(
+                    f"{field}.hard_rules {positive}/{negative} conflict: "
+                    + ", ".join(overlap)
+                )
+
+        normalized_case: dict[str, Any] = {
+            "id": case_id,
+            "covers": covers,
+            "input": input_value.strip() if isinstance(input_value, str) else "",
+            "level": level,
+        }
+        if hard_rules_raw is not None:
+            normalized_case["hard_rules"] = hard_rules
+        if level == "fast":
+            if not hard_rules:
+                errors.append(f"{field}.fast requires non-empty hard_rules")
+            if item.get("verify") is not None or item.get("quality") is not None:
+                errors.append(f"{field}.fast cannot declare verify or quality")
+        elif level == "full":
+            verify = item.get("verify")
+            quality = item.get("quality")
+            if not isinstance(verify, dict):
+                errors.append(f"{field}.verify must be a mapping")
+                verify = {}
+            if not isinstance(quality, dict):
+                errors.append(f"{field}.quality must be a mapping")
+                quality = {}
+            verify_extra = sorted(set(verify) - {"must", "must_not"})
+            quality_extra = sorted(set(quality) - {"criteria"})
+            if verify_extra:
+                errors.append(
+                    f"{field}.verify has unknown fields: " + ", ".join(verify_extra)
+                )
+            if quality_extra:
+                errors.append(
+                    f"{field}.quality has unknown fields: " + ", ".join(quality_extra)
+                )
+            verify_must = _non_empty_strings(
+                    verify.get("must"), f"{field}.verify.must", errors
+                )
+            verify_must_not = _non_empty_strings(
+                    verify.get("must_not"), f"{field}.verify.must_not", errors
+                )
+            verify_overlap = sorted(set(verify_must) & set(verify_must_not))
+            if verify_overlap:
+                errors.append(
+                    f"{field}.verify must/must_not conflict: "
+                    + ", ".join(verify_overlap)
+                )
+            normalized_case["verify"] = {
+                "must": verify_must,
+                "must_not": verify_must_not,
+            }
+            normalized_case["quality"] = {
+                "criteria": _non_empty_strings(
+                    quality.get("criteria"), f"{field}.quality.criteria", errors
+                )
+            }
+        normalized.append(normalized_case)
+    duplicates = sorted(item for item in set(case_ids) if case_ids.count(item) > 1)
+    if duplicates:
+        errors.append("e2e case ids must be unique: " + ", ".join(duplicates))
+    canonical = {"schema_version": 1, "cases": normalized}
+    return tuple(normalized), evidence_contract.canonical_digest(canonical)
 
 
 def parse_workspace_intake_marker(text: str) -> tuple[dict[str, str], ...]:
@@ -1203,7 +1561,8 @@ def parse_workspace_intake_marker(text: str) -> tuple[dict[str, str], ...]:
     if not isinstance(parsed, dict):
         errors.append("workspace-intake must be a YAML mapping")
         parsed = {}
-    if parsed.get("schema_version") != 1:
+    schema_version = parsed.get("schema_version")
+    if type(schema_version) is not int or schema_version != 1:
         errors.append("workspace-intake schema_version must be 1")
     raw_files = parsed.get("files")
     files: list[dict[str, str]] = []
@@ -1298,7 +1657,12 @@ def parse_evidence_scopes(
     return result
 
 
-def parse_plan(text: str, source: str) -> PlanContract:
+def parse_plan(
+    text: str,
+    source: str,
+    *,
+    allow_legacy_v2: bool = False,
+) -> PlanContract:
     workspace_intake = parse_workspace_intake_marker(text)
     checklist = extract_tag(text, "plan-checklist", required=True)
     items = checklist_items(checklist or "")
@@ -1338,7 +1702,11 @@ def parse_plan(text: str, source: str) -> PlanContract:
                 code="PLAN_DOCUMENTATION_SPEC_INVALID",
                 details={"errors": ["documentation-spec"]},
             )
-        schema_version = require_plan_schema(parsed_doc, "documentation-spec")
+        schema_version = require_plan_schema(
+            parsed_doc,
+            "documentation-spec",
+            allow_legacy_v2=allow_legacy_v2,
+        )
         spec_head = str(parsed_doc.get("spec_head", "")).strip()
         if not re.fullmatch(r"[0-9a-fA-F]{40}", spec_head):
             errors.append("spec_head must be a full 40-character commit SHA")
@@ -1410,6 +1778,10 @@ def parse_plan(text: str, source: str) -> PlanContract:
             supersedes_run_id=supersedes_run_id,
             supersedes_plan_sha256=supersedes_plan_sha256,
             has_e2e_cases=e2e is not None,
+            e2e_case_ids=(),
+            e2e_cases_sha256=None,
+            e2e_cases=(),
+            test_effectiveness_requirements=(),
             workspace_intake=workspace_intake,
             evidence_scopes={
                 "machine": {"affects": ("**",), "exempt": ()},
@@ -1437,7 +1809,11 @@ def parse_plan(text: str, source: str) -> PlanContract:
             code="PLAN_UNIT_SPEC_INVALID",
             details={"errors": ["unit-test-spec"]},
         )
-    schema_version = require_plan_schema(parsed, "unit-test-spec")
+    schema_version = require_plan_schema(
+        parsed,
+        "unit-test-spec",
+        allow_legacy_v2=allow_legacy_v2,
+    )
     errors: list[str] = []
     spec_head = str(parsed.get("spec_head", "")).strip()
     if not re.fullmatch(r"[0-9a-fA-F]{40}", spec_head):
@@ -1669,6 +2045,18 @@ def parse_plan(text: str, source: str) -> PlanContract:
     )
     if duplicate_behavior_ids:
         errors.append("behavior ids must be unique: " + ", ".join(duplicate_behavior_ids))
+    if schema_version == PLAN_SCHEMA_VERSION:
+        test_effectiveness_requirements = parse_test_effectiveness_requirements(
+            parsed, behavior_ids, errors
+        )
+        e2e_cases, e2e_cases_sha256 = parse_e2e_cases(e2e, behavior_ids, errors)
+    else:
+        # Existing v2 ledgers retain their frozen legacy marker only for
+        # continuation/diagnostics. New plan validation and start never enter
+        # this branch.
+        test_effectiveness_requirements = ()
+        e2e_cases = ()
+        e2e_cases_sha256 = None
     if errors:
         raise RuntimeProblem(
             "plan contract needs correction",
@@ -1696,6 +2084,10 @@ def parse_plan(text: str, source: str) -> PlanContract:
         supersedes_run_id=supersedes_run_id,
         supersedes_plan_sha256=supersedes_plan_sha256,
         has_e2e_cases=e2e is not None,
+        e2e_case_ids=tuple(str(item["id"]) for item in e2e_cases),
+        e2e_cases_sha256=e2e_cases_sha256,
+        e2e_cases=e2e_cases,
+        test_effectiveness_requirements=test_effectiveness_requirements,
         workspace_intake=workspace_intake,
         evidence_scopes=evidence_scopes,
         tags=tuple(
@@ -1706,7 +2098,11 @@ def parse_plan(text: str, source: str) -> PlanContract:
     )
 
 
-def load_plan_file(path: Path) -> tuple[str, PlanContract]:
+def load_plan_file(
+    path: Path,
+    *,
+    allow_legacy_v2: bool = False,
+) -> tuple[str, PlanContract]:
     try:
         text = path.read_text(encoding="utf-8")
     except OSError as exc:
@@ -1714,12 +2110,22 @@ def load_plan_file(path: Path) -> tuple[str, PlanContract]:
             f"cannot read plan: {exc}",
             code="PLAN_READ_ERROR",
         ) from exc
-    return text, parse_plan(text, str(path))
+    return text, parse_plan(
+        text,
+        str(path),
+        allow_legacy_v2=allow_legacy_v2,
+    )
 
 
 def verify_plan_unchanged(ledger: dict[str, Any]) -> PlanContract:
     path = Path(str(ledger["plan"]["path"]))
-    _, contract = load_plan_file(path)
+    contract_version = ledger.get("plan", {}).get("contract_schema_version")
+    if type(contract_version) is not int:
+        contract_version = LEGACY_PLAN_SCHEMA_VERSION
+    _, contract = load_plan_file(
+        path,
+        allow_legacy_v2=contract_version == LEGACY_PLAN_SCHEMA_VERSION,
+    )
     expected = str(ledger["plan"]["sha256"])
     if contract.sha256 != expected:
         raise RuntimeProblem(
@@ -3606,10 +4012,23 @@ def active_ledgers_for_session(
     return found
 
 
+def requires_test_effectiveness(ledger: dict[str, Any]) -> bool:
+    plan = ledger.get("plan", {})
+    version = plan.get("contract_schema_version")
+    return (
+        plan.get("level") != "L1"
+        and type(version) is int
+        and version >= PLAN_SCHEMA_VERSION
+    )
+
+
 def required_evidence_keys(ledger: dict[str, Any]) -> list[str]:
     if ledger["plan"].get("level") == "L1":
         return ["review", "doc_review"]
-    return ["machine", "blackbox", "review", "doc_review"]
+    keys = ["machine"]
+    if requires_test_effectiveness(ledger):
+        keys.append("test_effectiveness")
+    return [*keys, "blackbox", "review", "doc_review"]
 
 
 def required_evidence_fields(ledger: dict[str, Any]) -> list[str]:
@@ -3762,6 +4181,9 @@ def cmd_plan_validate(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         "spec_head": preflight.spec_head,
         "target_branch": preflight.target_branch,
         "parallel_ready": contract.parallel_ready,
+        "contract_schema_version": contract.schema_version,
+        "e2e_case_ids": list(contract.e2e_case_ids),
+        "e2e_cases_sha256": contract.e2e_cases_sha256,
         "effective_verification_source": preflight.effective_verification_source,
         "workspace_intake": list(preflight.workspace_intake),
         **preflight.target_checkout,
@@ -4114,6 +4536,7 @@ def cmd_start_locked(args: argparse.Namespace, repo: Path) -> tuple[dict[str, An
             "path": str(plan_path),
             "source_path": str(source_plan_path),
             "sha256": contract.sha256,
+            "contract_schema_version": contract.schema_version,
             "level": contract.level,
             "spec_head": contract.spec_head,
             "plan_revision": contract.plan_revision,
@@ -4129,6 +4552,11 @@ def cmd_start_locked(args: argparse.Namespace, repo: Path) -> tuple[dict[str, An
             "supersedes_run_id": contract.supersedes_run_id,
             "supersedes_plan_sha256": contract.supersedes_plan_sha256,
             "has_e2e_cases": contract.has_e2e_cases,
+            "e2e_case_ids": list(contract.e2e_case_ids),
+            "e2e_cases_sha256": contract.e2e_cases_sha256,
+            "test_effectiveness_requirements": [
+                dict(item) for item in contract.test_effectiveness_requirements
+            ],
             "workspace_intake": [dict(item) for item in contract.workspace_intake],
             "evidence_scopes": {
                 key: {
@@ -4192,6 +4620,7 @@ def cmd_start_locked(args: argparse.Namespace, repo: Path) -> tuple[dict[str, An
         },
         "evidence": {
             "machine": None,
+            "test_effectiveness": None,
             "blackbox": None,
             "review": None,
             "doc_review": None,
@@ -4955,6 +5384,2385 @@ def cmd_verify(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         return verify_machine(repo, ledger)
 
 
+def reject_nonstandard_json_number(value: str) -> Any:
+    raise ValueError(f"non-standard JSON number is not allowed: {value}")
+
+
+def read_json_input(path_value: str) -> dict[str, Any]:
+    if path_value == "-":
+        raw = sys.stdin.read()
+    else:
+        path = Path(path_value).expanduser().resolve()
+        try:
+            raw = path.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise RuntimeProblem(
+                f"cannot read proof spec: {exc}",
+                code="TEST_PROOF_SPEC_READ_ERROR",
+            ) from exc
+    try:
+        value = json.loads(raw, parse_constant=reject_nonstandard_json_number)
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise RuntimeProblem(
+            f"test proof spec is not valid JSON: {exc}",
+            result="NEEDS_USER",
+            code="TEST_PROOF_SPEC_INVALID",
+            details={"errors": [f"invalid JSON: {exc}"]},
+            exit_code=EXIT_FAIL,
+        ) from exc
+    if not isinstance(value, dict):
+        raise RuntimeProblem(
+            "test proof spec must be a JSON object",
+            result="NEEDS_USER",
+            code="TEST_PROOF_SPEC_INVALID",
+            details={"errors": ["proof spec must be a JSON object"]},
+            exit_code=EXIT_FAIL,
+        )
+    return value
+
+
+def json_schema_integer(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and math.isfinite(value) and value.is_integer():
+        return int(value)
+    return None
+
+
+def executable_identity(path: Path, *, requested: str, kind: str) -> dict[str, Any]:
+    try:
+        resolved = path.expanduser().resolve(strict=True)
+        mode = os.stat(resolved).st_mode
+    except OSError as exc:
+        raise RuntimeProblem(
+            f"cannot resolve proof executable: {exc}",
+            result="NEEDS_USER",
+            code="TEST_PROOF_EXECUTABLE_INVALID",
+            details={"requested": requested},
+            exit_code=EXIT_FAIL,
+        ) from exc
+    if not stat.S_ISREG(mode) or not os.access(resolved, os.X_OK):
+        raise RuntimeProblem(
+            "proof executable must resolve to an executable regular file",
+            result="NEEDS_USER",
+            code="TEST_PROOF_EXECUTABLE_INVALID",
+            details={"requested": requested, "resolved": str(resolved)},
+            exit_code=EXIT_FAIL,
+        )
+    return {
+        "kind": kind,
+        "requested": requested,
+        "path": str(resolved),
+        "sha256": sha256_file(resolved),
+        "size": int(os.stat(resolved).st_size),
+    }
+
+
+def proof_pytest_args(args: Sequence[str]) -> list[str]:
+    values = [
+        item
+        for item in args
+        if item != "--quiet" and not re.fullmatch(r"-q+", item)
+    ]
+    cache_disabled = any(
+        item == "-pno:cacheprovider"
+        or (
+            item == "-p"
+            and index + 1 < len(values)
+            and values[index + 1] == "no:cacheprovider"
+        )
+        for index, item in enumerate(values)
+    )
+    values = ["-vv", *values]
+    return values if cache_disabled else ["-p", "no:cacheprovider", *values]
+
+
+def proof_unittest_args(args: Sequence[str]) -> list[str]:
+    values = [item for item in args if item not in {"-q", "--quiet"}]
+    return values if any(item in {"-v", "--verbose"} for item in values) else ["-v", *values]
+
+
+def allowlisted_proof_runner(argv: Sequence[str]) -> dict[str, Any] | None:
+    executable = Path(argv[0]).name.lower()
+    normalized = executable[:-4] if executable.endswith(".exe") else executable
+    python_match = re.fullmatch(
+        r"python(?P<version>[0-9]+(?:\.[0-9]+)*)?m?", normalized
+    )
+    if python_match:
+        requested_version = python_match.group("version")
+        if requested_version:
+            parts = tuple(int(item) for item in requested_version.split("."))
+            current = (sys.version_info.major, sys.version_info.minor)
+            if parts[0] != current[0] or (len(parts) > 1 and parts[1] != current[1]):
+                return None
+        trusted_python = executable_identity(
+            Path(sys.executable), requested=argv[0], kind="trusted-python"
+        )
+        module_positions = [index for index, item in enumerate(argv[1:], 1) if item == "-m"]
+        if len(module_positions) != 1:
+            return None
+        module_index = module_positions[0]
+        harmless_flags = {
+            "-B",
+            "-E",
+            "-I",
+            "-O",
+            "-OO",
+            "-P",
+            "-S",
+            "-s",
+            "-u",
+        }
+        if any(item not in harmless_flags for item in argv[1:module_index]):
+            return None
+        if len(argv) <= module_index + 1:
+            return None
+        module = argv[module_index + 1]
+        if module not in {"pytest", "unittest"}:
+            return None
+        flags = list(argv[1:module_index])
+        args = list(argv[module_index + 2 :])
+        execution_args = (
+            proof_pytest_args(args) if module == "pytest" else proof_unittest_args(args)
+        )
+        return {
+            "argv": list(argv),
+            "execution_argv": [
+                trusted_python["path"],
+                *flags,
+                "-m",
+                module,
+                *execution_args,
+            ],
+            "control_argv": [module, *execution_args],
+            "framework": module,
+            "executable_identity": trusted_python,
+        }
+    if normalized in {"py.test", "pytest"}:
+        trusted_python = executable_identity(
+            Path(sys.executable), requested=argv[0], kind="trusted-python"
+        )
+        args = proof_pytest_args(argv[1:])
+        return {
+            "argv": list(argv),
+            "execution_argv": [trusted_python["path"], "-m", "pytest", *args],
+            "control_argv": ["pytest", *args],
+            "framework": "pytest",
+            "executable_identity": trusted_python,
+        }
+    return None
+
+
+def repository_wrapper_runner(
+    argv: Sequence[str], repository_paths: Sequence[str]
+) -> dict[str, Any] | None:
+    frozen_paths = set(repository_paths)
+    for index, token in enumerate(argv):
+        if token.startswith("-") or "$" in token or "`" in token:
+            continue
+        try:
+            normalized = normalize_allowed_path(token, directory_hint=False)
+        except RuntimeProblem:
+            continue
+        if normalized not in frozen_paths:
+            continue
+        nested_start = index + 1
+        if list(argv[nested_start : nested_start + 1]) == ["--"]:
+            nested_start += 1
+        nested = list(argv[nested_start:])
+        if not nested or "/" in nested[0] or "\\" in nested[0]:
+            return None
+        try:
+            runner = allowlisted_proof_runner(nested)
+        except RuntimeProblem:
+            return None
+        if runner is None:
+            return None
+        framework = str(runner.get("framework", ""))
+        if framework not in {"unittest", "pytest"}:
+            return None
+        return {**runner, "nested_start": nested_start}
+    return None
+
+
+def validate_allowlisted_test_selectors(
+    argv: Sequence[str],
+    framework: str,
+    test_ids: Sequence[str],
+    field: str,
+    errors: list[str],
+) -> None:
+    if framework not in {"unittest", "pytest"}:
+        return
+    declared = {normalize_proof_test_id(item) for item in test_ids}
+    values = list(argv)
+    try:
+        module_index = values.index(framework)
+    except ValueError:
+        module_index = 0
+    args = values[module_index + 1 :]
+    if framework == "unittest" and "discover" in args:
+        errors.append(f"{field} unittest discovery is not content-bound to declared test_ids")
+    path_override_options = {
+        "--basetemp",
+        "--confcutdir",
+        "--rootdir",
+        "--pyargs",
+        "-c",
+    }
+    for index, item in enumerate(args):
+        option = item.split("=", 1)[0]
+        attached_pytest_config = (
+            framework == "pytest"
+            and item.startswith("-c")
+            and item != "-c"
+            and not item.startswith("--")
+        )
+        if framework == "pytest" and (
+            option in path_override_options or attached_pytest_config
+        ):
+            errors.append(f"{field} cannot redirect pytest discovery or configuration: {item}")
+            continue
+        candidate = normalize_proof_test_id(item)
+        if item.startswith("-"):
+            continue
+        if Path(candidate).is_absolute() or ".." in PurePosixPath(candidate).parts:
+            errors.append(f"{field} test selector escapes the repository: {item}")
+            continue
+        if framework == "unittest" or ".py" in candidate or "::" in candidate:
+            if candidate not in declared:
+                errors.append(
+                    f"{field} test selector is not an exact declared test id: {item}"
+                )
+    selected = {normalize_proof_test_id(item) for item in args if not item.startswith("-")}
+    missing = sorted(declared - selected)
+    if missing:
+        errors.append(
+            f"{field} must explicitly select every declared test id: " + ", ".join(missing)
+        )
+
+
+def repository_runner_identity(
+    repo: Path,
+    spec_head: str,
+    argv: Sequence[str],
+    repository_paths: Sequence[str],
+) -> tuple[list[str], dict[str, Any]]:
+    frozen_paths: list[dict[str, str]] = []
+    for path in repository_paths:
+        entry = git(repo, "ls-tree", spec_head, "--", path, check=False).stdout.strip()
+        fields = entry.split(None, 3)
+        if len(fields) < 3:
+            raise RuntimeProblem(
+                "proof repository runner is missing from spec_head",
+                result="NEEDS_USER",
+                code="TEST_PROOF_EXECUTABLE_INVALID",
+                details={"path": path, "spec_head": spec_head},
+                exit_code=EXIT_FAIL,
+            )
+        frozen_paths.append({"path": path, "blob": fields[2]})
+
+    execution_argv = list(argv)
+    requested = argv[0]
+    requested_path = Path(requested)
+    if "/" not in requested and "\\" not in requested:
+        resolved = shutil.which(requested, path=os.defpath)
+        if resolved is None:
+            raise RuntimeProblem(
+                "proof repository runner launcher is not available on the trusted system path",
+                result="NEEDS_USER",
+                code="TEST_PROOF_EXECUTABLE_INVALID",
+                details={"requested": requested},
+                exit_code=EXIT_FAIL,
+            )
+        launcher = executable_identity(
+            Path(resolved), requested=requested, kind="trusted-system-launcher"
+        )
+        execution_argv[0] = launcher["path"]
+    elif requested_path.is_absolute():
+        launcher = executable_identity(
+            requested_path, requested=requested, kind="absolute-launcher"
+        )
+        execution_argv[0] = launcher["path"]
+    else:
+        launcher = {
+            "kind": "frozen-repository-entry",
+            "requested": requested,
+        }
+    return execution_argv, {
+        **launcher,
+        "repository_paths": frozen_paths,
+    }
+
+
+def validate_proof_argv(
+    value: Any,
+    field: str,
+    errors: list[str],
+    *,
+    repo: Path,
+    spec_head: str,
+    contract: PlanContract,
+) -> dict[str, Any]:
+    fallback = {
+        "argv": [],
+        "execution_argv": [],
+        "framework": "unknown",
+        "executable_identity": {},
+    }
+    initial_error_count = len(errors)
+    if (
+        not isinstance(value, list)
+        or not value
+        or any(not isinstance(item, str) or not item or "\x00" in item for item in value)
+    ):
+        errors.append(f"{field} must be a non-empty string array")
+        return fallback
+    argv = [str(item) for item in value]
+    executable = Path(argv[0]).name.lower()
+    normalized_executable = (
+        executable[:-4] if executable.endswith(".exe") else executable
+    )
+    if normalized_executable == "env":
+        errors.append(f"{field} cannot override process environment or PATH")
+
+    command_dispatchers = {
+        "busybox",
+        "chroot",
+        "command",
+        "doas",
+        "exec",
+        "ionice",
+        "nice",
+        "nohup",
+        "parallel",
+        "script",
+        "setsid",
+        "stdbuf",
+        "sudo",
+        "taskset",
+        "timeout",
+        "toybox",
+        "unbuffer",
+        "watch",
+        "xargs",
+    }
+    if normalized_executable in command_dispatchers:
+        errors.append(
+            f"{field} cannot use a command dispatcher to hide nested inline control "
+            "flow; invoke the test command directly or move complex control flow "
+            "into a protected repository script"
+        )
+
+    lowered_args = [item.lower() for item in argv[1:]]
+
+    def short_inline_option(item: str, options: set[str]) -> bool:
+        return any(item == option or item.startswith(option) for option in options)
+
+    def long_inline_option(item: str, options: set[str]) -> bool:
+        return any(item == option or item.startswith(option + "=") for option in options)
+
+    shell_executable = re.fullmatch(
+        r"(?:"
+        r"(?:sh|ash|bash|csh|dash|elvish|es|fish|ksh|lksh|mksh|nu|oksh|"
+        r"osh|pdksh|rc|rksh|tcsh|xonsh|yash|ysh|zsh)"
+        r"(?:[0-9]+(?:\.[0-9]+)*)?|"
+        r"cmd|powershell(?:[0-9]+(?:\.[0-9]+)*)?|"
+        r"pwsh(?:[0-9]+(?:\.[0-9]+)*)?"
+        r")",
+        normalized_executable,
+    )
+    shell_inline = any(
+        short_inline_option(item, {"-c", "/c", "/k"})
+        or long_inline_option(
+            item,
+            {
+                "-command",
+                "--command",
+                "--commands",
+                "-encodedcommand",
+                "--encoded-command",
+            },
+        )
+        or (
+            item.startswith("-")
+            and not item.startswith("--")
+            and "c" in item[1:]
+            and item[1:].isalpha()
+        )
+        for item in lowered_args
+    )
+    if shell_executable and shell_inline:
+        errors.append(f"{field} cannot use inline shell control flow")
+
+    interpreter_family: str | None = None
+    interpreter_patterns = {
+        "python": r"(?:python|pypy)(?:[0-9]+(?:\.[0-9]+)*)?m?",
+        "node": r"node(?:js)?(?:[0-9]+(?:\.[0-9]+)*)?",
+        "ruby": r"ruby(?:[0-9]+(?:\.[0-9]+)*)?",
+        "perl": r"perl(?:[0-9]+(?:\.[0-9]+)*)?",
+        "php": r"php(?:[0-9]+(?:\.[0-9]+)*)?",
+        "eval": r"(?:lua|rscript|julia)(?:[0-9]+(?:\.[0-9]+)*)?",
+    }
+    for family, pattern in interpreter_patterns.items():
+        if re.fullmatch(pattern, normalized_executable):
+            interpreter_family = family
+            break
+    inline_options = {
+        "python": ({"-c"}, {"--command"}),
+        "node": ({"-e", "-p"}, {"--eval", "--print", "--command"}),
+        "ruby": ({"-e"}, {"--eval", "--command"}),
+        "perl": ({"-e"}, {"--eval", "--command"}),
+        "php": ({"-r"}, {"--run", "--command"}),
+        "eval": ({"-e"}, {"--eval", "--expression", "--command"}),
+    }
+    interpreter_inline = False
+    if interpreter_family is not None:
+        short_options, long_options = inline_options[interpreter_family]
+        interpreter_inline = any(
+            short_inline_option(item, short_options)
+            or long_inline_option(item, long_options)
+            for item in lowered_args
+        )
+    if interpreter_inline:
+        errors.append(f"{field} cannot use inline interpreter control flow")
+
+    if len(errors) > initial_error_count:
+        return {**fallback, "argv": argv, "execution_argv": argv}
+
+    allowlisted_runner = None
+    if "/" not in argv[0] and "\\" not in argv[0]:
+        try:
+            allowlisted_runner = allowlisted_proof_runner(argv)
+        except RuntimeProblem as exc:
+            errors.append(f"{field} executable is not trusted: {exc} [{exc.code}]")
+    if allowlisted_runner is not None:
+        try:
+            validate_runner_ownership(
+                contract,
+                [
+                    {
+                        "stage": "test-proof",
+                        "cmd": shlex.join(allowlisted_runner["control_argv"]),
+                        "timeout": 1,
+                    }
+                ],
+            )
+        except RuntimeProblem as exc:
+            errors.append(
+                f"{field} test runner control files are not protected: "
+                f"{exc} [{exc.code}]"
+            )
+        return {
+            **allowlisted_runner,
+            "selector_argv": allowlisted_runner["control_argv"],
+        }
+
+    command = shlex.join(argv)
+    try:
+        repository_paths = runner_repository_paths(command)
+    except RuntimeProblem as exc:
+        errors.append(
+            f"{field} repository command is unsafe: {exc} [{exc.code}] "
+            + json.dumps(exc.details, ensure_ascii=False, sort_keys=True)
+        )
+        return {**fallback, "argv": argv, "execution_argv": argv}
+    commands = [{"stage": "test-proof", "cmd": command, "timeout": 1}]
+    if repository_paths:
+        try:
+            validate_runner_dependencies_at_spec_head(repo, spec_head, commands)
+            validate_runner_ownership(contract, commands)
+        except RuntimeProblem as exc:
+            errors.append(
+                f"{field} repository test wrapper is not frozen and protected: "
+                f"{exc} [{exc.code}] "
+                + json.dumps(exc.details, ensure_ascii=False, sort_keys=True)
+            )
+        try:
+            execution_argv, identity = repository_runner_identity(
+                repo, spec_head, argv, repository_paths
+            )
+        except RuntimeProblem as exc:
+            errors.append(f"{field} executable is not trusted: {exc} [{exc.code}]")
+            execution_argv = argv
+            identity = {}
+        nested_runner = repository_wrapper_runner(argv, repository_paths)
+        if nested_runner is None:
+            errors.append(
+                f"{field} repository wrapper must explicitly forward one supported "
+                "unittest or pytest command with a trusted executable"
+            )
+            return {
+                "argv": argv,
+                "execution_argv": execution_argv,
+                "framework": "unknown",
+                "executable_identity": identity,
+                "selector_argv": argv,
+            }
+        try:
+            validate_runner_ownership(
+                contract,
+                [
+                    {
+                        "stage": "test-proof",
+                        "cmd": shlex.join(nested_runner["control_argv"]),
+                        "timeout": 1,
+                    }
+                ],
+            )
+        except RuntimeProblem as exc:
+            errors.append(
+                f"{field} nested test runner control files are not protected: "
+                f"{exc} [{exc.code}]"
+            )
+        nested_start = int(nested_runner["nested_start"])
+        execution_argv = [
+            *execution_argv[:nested_start],
+            *list(nested_runner["execution_argv"]),
+        ]
+        return {
+            "argv": argv,
+            "execution_argv": execution_argv,
+            "framework": nested_runner["framework"],
+            "executable_identity": identity,
+            "selector_argv": nested_runner["control_argv"],
+        }
+
+    errors.append(
+        f"{field} must use an allowlisted non-inline test runner "
+        "(python -m unittest/pytest or pytest) or a test_context.support_paths "
+        "repository script that already exists at spec_head"
+    )
+    return {**fallback, "argv": argv, "execution_argv": argv}
+
+
+def normalize_test_proof_spec(
+    value: dict[str, Any],
+    requirements: Sequence[dict[str, str]],
+    *,
+    repo: Path,
+    spec_head: str,
+    contract: PlanContract,
+) -> dict[str, Any]:
+    errors: list[str] = []
+    unknown_root = sorted(set(value) - {"schema_version", "groups"})
+    if unknown_root:
+        errors.append("proof spec has unknown fields: " + ", ".join(unknown_root))
+    schema_version = json_schema_integer(value.get("schema_version"))
+    if schema_version != 1:
+        errors.append("proof spec schema_version must be 1")
+    groups = value.get("groups")
+    if not isinstance(groups, list) or not groups:
+        errors.append("proof spec groups must be a non-empty list")
+        groups = []
+    required_by_behavior = {
+        str(item["behavior_id"]): str(item["minimum"]) for item in requirements
+    }
+    normalized_groups: list[dict[str, Any]] = []
+    seen_behaviors: list[str] = []
+    for index, item in enumerate(groups):
+        field = f"groups[{index}]"
+        if not isinstance(item, dict):
+            errors.append(f"{field} must be a mapping")
+            continue
+        method = item.get("method")
+        if method not in {"baseline-red", "mutation", "reviewed-boundaries"}:
+            errors.append(
+                f"{field}.method must be baseline-red, mutation, or reviewed-boundaries"
+            )
+            continue
+        common = {
+            "behavior_ids",
+            "method",
+            "argv",
+            "test_ids",
+            "timeout_seconds",
+        }
+        method_fields = {
+            "baseline-red": {"claimed_failure_kind"},
+            "mutation": {"patch"},
+            "reviewed-boundaries": {"reason", "reviewed_boundaries"},
+        }[str(method)]
+        unknown = sorted(set(item) - common - method_fields)
+        if unknown:
+            errors.append(f"{field} has unknown fields: " + ", ".join(unknown))
+        behavior_ids = _non_empty_strings(
+            item.get("behavior_ids"), f"{field}.behavior_ids", errors
+        )
+        for behavior_id in behavior_ids:
+            if behavior_id not in required_by_behavior:
+                errors.append(f"{field} references unknown behavior id: {behavior_id}")
+            seen_behaviors.append(behavior_id)
+        if method == "reviewed-boundaries":
+            strong = sorted(
+                behavior_id
+                for behavior_id in behavior_ids
+                if required_by_behavior.get(behavior_id) == "strong"
+            )
+            if strong:
+                errors.append(
+                    f"{field} cannot downgrade strong behaviors: " + ", ".join(strong)
+                )
+        runner = validate_proof_argv(
+            item.get("argv"),
+            f"{field}.argv",
+            errors,
+            repo=repo,
+            spec_head=spec_head,
+            contract=contract,
+        )
+        selector_argv = runner.get("selector_argv", runner["argv"])
+        timeout = json_schema_integer(item.get("timeout_seconds"))
+        if timeout is None or not 1 <= timeout <= 600:
+            errors.append(f"{field}.timeout_seconds must be an integer from 1 to 600")
+            timeout = 1
+        normalized: dict[str, Any] = {
+            "behavior_ids": behavior_ids,
+            "method": method,
+            "argv": runner["argv"],
+            "execution_argv": runner["execution_argv"],
+            "framework": runner["framework"],
+            "executable_identity": runner["executable_identity"],
+            "timeout_seconds": timeout,
+        }
+        if method == "reviewed-boundaries":
+            reason = item.get("reason")
+            if not isinstance(reason, str) or not reason.strip():
+                errors.append(f"{field}.reason must be a non-empty string")
+                reason = ""
+            normalized["test_ids"] = _non_empty_strings(
+                item.get("test_ids"), f"{field}.test_ids", errors
+            )
+            raw_boundaries = item.get("reviewed_boundaries")
+            categories = (
+                "positive_test_ids",
+                "negative_test_ids",
+                "boundary_test_ids",
+                "invariant_test_ids",
+            )
+            if not isinstance(raw_boundaries, dict):
+                errors.append(f"{field}.reviewed_boundaries must be a mapping")
+                raw_boundaries = {}
+            extra_categories = sorted(set(raw_boundaries) - set(categories))
+            if extra_categories:
+                errors.append(
+                    f"{field}.reviewed_boundaries has unknown fields: "
+                    + ", ".join(extra_categories)
+                )
+            normalized["reviewed_boundaries"] = {
+                category: _non_empty_strings(
+                    raw_boundaries.get(category),
+                    f"{field}.reviewed_boundaries.{category}",
+                    errors,
+                )
+                for category in categories
+            }
+            normalized["reason"] = reason.strip()
+        else:
+            normalized["test_ids"] = _non_empty_strings(
+                item.get("test_ids"), f"{field}.test_ids", errors
+            )
+            if method == "baseline-red":
+                claimed = item.get("claimed_failure_kind")
+                if claimed != "assertion-failure":
+                    errors.append(
+                        f"{field}.claimed_failure_kind must be assertion-failure"
+                    )
+                    claimed = "assertion-failure"
+                normalized["claimed_failure_kind"] = claimed
+            else:
+                patch = item.get("patch")
+                if (
+                    not isinstance(patch, str)
+                    or not patch.strip()
+                    or not patch.lstrip().startswith("diff --git ")
+                ):
+                    errors.append(f"{field}.patch must be a non-empty unified Git patch")
+                    patch = ""
+                normalized["patch"] = patch
+        validate_allowlisted_test_selectors(
+            selector_argv,
+            str(normalized["framework"]),
+            normalized["test_ids"],
+            f"{field}.argv",
+            errors,
+        )
+        normalized_groups.append(normalized)
+    missing = sorted(set(required_by_behavior) - set(seen_behaviors))
+    if missing:
+        errors.append("proof groups do not cover behavior ids: " + ", ".join(missing))
+    if errors:
+        raise RuntimeProblem(
+            "test proof spec does not match the frozen requirements",
+            result="NEEDS_USER",
+            code="TEST_PROOF_SPEC_INVALID",
+            details={"errors": errors},
+            exit_code=EXIT_FAIL,
+        )
+    return {"schema_version": 1, "groups": normalized_groups}
+
+
+def proof_manifest(
+    repo: Path,
+    head: str,
+    patterns: Sequence[str],
+) -> tuple[list[dict[str, str]], str]:
+    try:
+        entries = evidence_contract.tree_entries(repo, head, patterns)
+    except RuntimeError as exc:
+        raise RuntimeProblem(
+            "cannot compute Tester-owned proof manifest",
+            code="TEST_PROOF_MANIFEST_ERROR",
+            details={"head": head, "error": str(exc)},
+        ) from exc
+    return entries, evidence_contract.canonical_digest(entries)
+
+
+def proof_test_source_path(
+    repo: Path,
+    tester_head: str,
+    framework: str,
+    test_id: str,
+    tester_patterns: Sequence[str],
+) -> str | None:
+    normalized = normalize_proof_test_id(test_id)
+    candidates: list[str] = []
+    if framework == "pytest":
+        candidates.append(normalized.split("::", 1)[0])
+    elif framework == "unittest":
+        parts = normalized.split(".")
+        candidates.extend(
+            "/".join(parts[:index]) + ".py"
+            for index in range(len(parts), 0, -1)
+        )
+    for path in candidates:
+        if (
+            not path
+            or Path(path).is_absolute()
+            or ".." in PurePosixPath(path).parts
+            or not path_allowed(path, tester_patterns)
+        ):
+            continue
+        entry = git(repo, "ls-tree", tester_head, "--", path, check=False).stdout.strip()
+        fields = entry.split(None, 3)
+        if len(fields) >= 3 and fields[0] in {"100644", "100755"} and fields[1] == "blob":
+            return path
+    return None
+
+
+def validate_proof_test_sources(
+    repo: Path,
+    tester_head: str,
+    tester_patterns: Sequence[str],
+    groups: Sequence[dict[str, Any]],
+) -> None:
+    errors: list[str] = []
+    for index, group in enumerate(groups):
+        framework = str(group["framework"])
+        if framework not in {"unittest", "pytest"}:
+            continue
+        for test_id in group["test_ids"]:
+            if proof_test_source_path(
+                repo, tester_head, framework, str(test_id), tester_patterns
+            ) is None:
+                errors.append(
+                    f"groups[{index}].test_ids is not bound to a Tester-owned "
+                    f"regular file at {tester_head}: {test_id}"
+                )
+    if errors:
+        raise RuntimeProblem(
+            "proof test ids are outside the frozen Tester source manifest",
+            result="NEEDS_USER",
+            code="TEST_PROOF_SPEC_INVALID",
+            details={"errors": errors},
+            exit_code=EXIT_FAIL,
+        )
+
+
+def add_detached_worktree(repo: Path, path: Path, head: str) -> None:
+    if path.exists():
+        raise RuntimeProblem(
+            "test proof worktree path already exists",
+            code="TEST_PROOF_WORKTREE_EXISTS",
+            details={"path": str(path)},
+        )
+    result = git(repo, "worktree", "add", "--detach", str(path), head, check=False)
+    if result.returncode != 0:
+        raise RuntimeProblem(
+            "cannot create isolated test proof worktree",
+            code="TEST_PROOF_WORKTREE_CREATE_FAILED",
+            details={
+                "path": str(path),
+                "head": head,
+                "stdout": tail_text(result.stdout),
+                "stderr": tail_text(result.stderr),
+            },
+        )
+
+
+def remove_proof_worktrees(repo: Path, paths: Sequence[Path]) -> None:
+    failures: list[dict[str, str]] = []
+    for path in reversed(paths):
+        if not path.exists():
+            continue
+        result = git(repo, "worktree", "remove", "--force", str(path), check=False)
+        if result.returncode != 0:
+            failures.append({"path": str(path), "stderr": tail_text(result.stderr)})
+    if failures:
+        raise RuntimeProblem(
+            "isolated test proof worktree cleanup failed",
+            result="CONTINUITY_FAILURE",
+            code="TEST_PROOF_WORKTREE_CLEANUP_FAILED",
+            details={"failures": failures},
+            exit_code=EXIT_FAIL,
+        )
+
+
+def normalize_proof_test_id(value: str) -> str:
+    normalized = value.strip().replace("\\", "/")
+    while normalized.startswith("./"):
+        normalized = normalized[2:]
+    return normalized
+
+
+def exact_declared_test_matches(
+    test_ids: Sequence[str], reported_ids: Iterable[str]
+) -> tuple[list[str], bool]:
+    declared: dict[str, list[str]] = {}
+    for test_id in test_ids:
+        declared.setdefault(normalize_proof_test_id(test_id), []).append(test_id)
+    reported = {normalize_proof_test_id(item) for item in reported_ids if item.strip()}
+    matched = sorted(
+        originals[0]
+        for normalized, originals in declared.items()
+        if normalized in reported and len(originals) == 1
+    )
+    fully_mapped = all(
+        normalized in declared and len(declared[normalized]) == 1
+        for normalized in reported
+    )
+    return matched, fully_mapped
+
+
+def unittest_failure_ids(output: str) -> set[str]:
+    reported: set[str] = set()
+    for line in output.splitlines():
+        match = re.match(
+            r"^FAIL:\s+(?:[^\s(]+\s+\(([^)]+)\)|([^\s(]+))\s*$",
+            line.strip(),
+        )
+        if match:
+            reported.add(match.group(1) or match.group(2))
+    return reported
+
+
+def pytest_failure_ids(output: str) -> set[str]:
+    return set(pytest_failure_reasons(output))
+
+
+def pytest_failure_reasons(output: str) -> dict[str, str]:
+    reported: dict[str, str] = {}
+    for line in output.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("FAILED "):
+            raw = stripped[len("FAILED ") :]
+            node_id, separator, reason = raw.partition(" - ")
+            node_id = node_id.strip()
+            if ".py::" in node_id:
+                reported[node_id] = reason.strip() if separator else ""
+    return reported
+
+
+def unittest_pass_ids(output: str) -> set[str]:
+    reported: set[str] = set()
+    for line in output.splitlines():
+        match = re.match(r"^[^\s(]+\s+\(([^)]+)\)\s+\.\.\.\s+ok\s*$", line.strip())
+        if match:
+            reported.add(match.group(1))
+    return reported
+
+
+def pytest_pass_ids(output: str) -> set[str]:
+    reported: set[str] = set()
+    for line in output.splitlines():
+        stripped = line.strip()
+        marker = " PASSED"
+        if marker in stripped:
+            node_id = stripped.split(marker, 1)[0].strip()
+            if ".py::" in node_id:
+                reported.add(node_id)
+    return reported
+
+
+def declared_tests_all_passed(
+    output: str, framework: str, test_ids: Sequence[str]
+) -> bool:
+    reported = unittest_pass_ids(output) if framework == "unittest" else pytest_pass_ids(output)
+    matched, _ = exact_declared_test_matches(test_ids, reported)
+    return set(matched) == set(test_ids)
+
+
+def pytest_declared_tests_passed_cleanly(
+    output: str, counts: Mapping[str, int], test_ids: Sequence[str]
+) -> bool:
+    declared = {normalize_proof_test_id(item) for item in test_ids}
+    disallowed = (
+        "failed",
+        "errors",
+        "skipped",
+        "xfailed",
+        "xpassed",
+        "deselected",
+    )
+    return (
+        counts.get("passed", 0) == len(declared)
+        and all(counts.get(label, 0) == 0 for label in disallowed)
+        and declared_tests_all_passed(output, "pytest", test_ids)
+    )
+
+
+def classify_text_proof_test_result(
+    output: str,
+    *,
+    framework: str,
+    returncode: int,
+    timed_out: bool,
+    test_ids: Sequence[str],
+    launch_error: bool = False,
+) -> dict[str, Any]:
+    lowered = output.lower()
+    unittest_runs = list(re.finditer(r"Ran\s+(\d+)\s+tests?\b", output))
+    selected_framework = framework
+    if selected_framework == "auto":
+        selected_framework = "unittest" if unittest_runs else "pytest"
+    if launch_error:
+        return {
+            "framework": selected_framework,
+            "classification": "launch-error",
+            "counts": {},
+        }
+    if timed_out:
+        return {
+            "framework": selected_framework,
+            "classification": "timeout",
+            "counts": {},
+        }
+
+    syntax_error = bool(re.search(r"\bSyntaxError\b|invalid syntax", output))
+    import_error = bool(
+        re.search(
+            r"\b(?:ImportError|ModuleNotFoundError)\b|"
+            r"Failed to import test module|import file mismatch",
+            output,
+        )
+    )
+    configuration_error = bool(
+        re.search(
+            r"(?:unknown config option|error loading plugin|"
+            r"could not load initial conftests?|"
+            r"(?:error|failed).*?(?:pytest\.ini|pyproject\.toml|"
+            r"setup\.cfg|tox\.ini|configuration|config file)|"
+            r"error:\s+.*?\.ini:\d+:\s+unexpected line)",
+            lowered,
+        )
+    )
+
+    if selected_framework == "unittest":
+        if syntax_error:
+            return {
+                "framework": "unittest",
+                "classification": "syntax-error",
+                "counts": {},
+            }
+        if import_error:
+            return {
+                "framework": "unittest",
+                "classification": "import-error",
+                "counts": {},
+            }
+        if not unittest_runs:
+            return {
+                "framework": "unittest",
+                "classification": (
+                    "usage-error"
+                    if "usage:" in lowered
+                    else "zero-effective-tests"
+                    if returncode == 0
+                    else "unclassified-failure"
+                ),
+                "counts": {},
+            }
+        tests = int(unittest_runs[-1].group(1))
+        counts = {"tests": tests, "failures": 0, "errors": 0}
+        failed = list(re.finditer(r"FAILED\s*\(([^)]*)\)", output))
+        if failed:
+            for key, raw_count in re.findall(
+                r"([A-Za-z_ ]+)=(\d+)", failed[-1].group(1)
+            ):
+                normalized_key = key.strip().lower().replace(" ", "_")
+                counts[normalized_key] = int(raw_count)
+        if tests == 0:
+            classification = "zero-tests"
+        elif (
+            returncode == 0
+            and re.search(r"(?m)^OK(?:\s|$)", output)
+            and declared_tests_all_passed(output, "unittest", test_ids)
+        ):
+            classification = "pass"
+        elif counts.get("failures", 0) > 0 and counts.get("errors", 0) == 0:
+            classification = "assertion-failure"
+        elif counts.get("errors", 0) > 0:
+            classification = "non-assertion-test-failure"
+        else:
+            classification = "unclassified-failure"
+        result = {
+            "framework": "unittest",
+            "classification": classification,
+            "counts": counts,
+        }
+        if classification == "assertion-failure":
+            matched, fully_mapped = exact_declared_test_matches(
+                test_ids, unittest_failure_ids(output)
+            )
+            result["matched_test_ids"] = matched
+            if not matched or not fully_mapped:
+                result["classification"] = "unmapped-assertion-failure"
+        return result
+
+    counts: dict[str, int] = {}
+    for raw_count, label in re.findall(
+        r"(\d+)\s+(failed|passed|errors?|skipped|xfailed|xpassed|deselected)\b",
+        lowered,
+    ):
+        key = "errors" if label in {"error", "errors"} else label
+        counts[key] = int(raw_count)
+    if syntax_error:
+        classification = "syntax-error"
+    elif import_error:
+        classification = "import-error"
+    elif configuration_error:
+        classification = "configuration-error"
+    elif returncode == 5 or "no tests ran" in lowered:
+        classification = "zero-tests"
+    elif returncode == 4 or "usageerror" in lowered:
+        classification = "usage-error"
+    elif returncode == 3 or "internalerror" in lowered:
+        classification = "unclassified-failure"
+    elif (
+        returncode == 2
+        or "error collecting" in lowered
+        or "error during collection" in lowered
+        or "errors during collection" in lowered
+    ):
+        classification = "collection-error"
+    elif counts.get("errors", 0) > 0:
+        classification = "non-assertion-test-failure"
+    elif (
+        returncode == 0
+        and counts.get("passed", 0) > 0
+        and pytest_declared_tests_passed_cleanly(output, counts, test_ids)
+    ):
+        classification = "pass"
+    elif returncode != 0 and counts.get("failed", 0) > 0:
+        failure_reasons = pytest_failure_reasons(output)
+        assertion_signal = bool(failure_reasons) and all(
+            re.match(r"(?:AssertionError\b|assert\b|Failed:)", reason)
+            for reason in failure_reasons.values()
+        )
+        classification = (
+            "assertion-failure" if assertion_signal else "non-assertion-test-failure"
+        )
+    elif returncode == 0:
+        classification = "zero-effective-tests"
+    else:
+        classification = "unclassified-failure"
+    result = {
+        "framework": "pytest",
+        "classification": classification,
+        "counts": counts,
+    }
+    if classification == "assertion-failure":
+        matched, fully_mapped = exact_declared_test_matches(
+            test_ids, pytest_failure_ids(output)
+        )
+        result["matched_test_ids"] = matched
+        if not matched or not fully_mapped:
+            result["classification"] = "unmapped-assertion-failure"
+    return result
+
+
+PROOF_FINAL_FD_ENV = "CODEX_BUILDER_PROOF_FINAL_FD"
+PROOF_RAW_FD_ENV = "CODEX_BUILDER_PROOF_RAW_FD"
+PROOF_SUPERVISOR_ENV = "CODEX_BUILDER_INTERNAL_PROOF_SUPERVISOR"
+
+TRUSTED_PROOF_INHERITED_ENV = (
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "TMPDIR",
+    "TMP",
+    "TEMP",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "TZ",
+    "SYSTEMROOT",
+    "WINDIR",
+    "COMSPEC",
+    "PATHEXT",
+)
+
+
+def trusted_proof_environment() -> dict[str, str]:
+    environment = {
+        key: value
+        for key in TRUSTED_PROOF_INHERITED_ENV
+        if (value := os.environ.get(key))
+    }
+    environment.update(
+        {
+            "PATH": os.pathsep.join(
+                dict.fromkeys(
+                    [
+                        str(Path(sys.executable).resolve().parent),
+                        *[item for item in os.defpath.split(os.pathsep) if item],
+                    ]
+                )
+            ),
+            "PYTHONDONTWRITEBYTECODE": "1",
+            "PYTHONNOUSERSITE": "1",
+            "PYTHONUTF8": "1",
+            "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
+        }
+    )
+    return environment
+
+PYTEST_PROOF_PLUGIN_SOURCE = r'''
+from __future__ import annotations
+
+import json
+import os
+import pytest
+
+
+def pytest_configure(config):
+    raw_fd = int(os.environ.pop("CODEX_BUILDER_PROOF_RAW_FD"))
+    records = {}
+    event_counts = {}
+    count_keys = {
+        "passed": "passed",
+        "failed": "failed",
+        "error": "errors",
+        "skipped": "skipped",
+        "xfailed": "xfailed",
+        "xpassed": "xpassed",
+    }
+    priority = {
+        "passed": 1,
+        "failed:assertion": 3,
+        "skipped": 4,
+        "xfailed": 4,
+        "xpassed": 4,
+        "failed:non-assertion": 5,
+        "error": 5,
+    }
+
+    def merge(node_id, outcome, failure_kind=""):
+        count_key = count_keys[outcome]
+        node_counts = event_counts.setdefault(node_id, {})
+        node_counts[count_key] = node_counts.get(count_key, 0) + 1
+        key = outcome + ((":" + failure_kind) if outcome == "failed" else "")
+        current = records.get(node_id)
+        if current is not None:
+            current_key = current["outcome"] + (
+                (":" + current.get("failure_kind", ""))
+                if current["outcome"] == "failed"
+                else ""
+            )
+            if priority[key] < priority[current_key]:
+                return
+        item = {"id": node_id, "outcome": outcome}
+        if failure_kind:
+            item["failure_kind"] = failure_kind
+        records[node_id] = item
+
+    class Recorder:
+        @pytest.hookimpl(hookwrapper=True, trylast=True)
+        def pytest_runtest_makereport(self, item, call):
+            outcome = yield
+            report = outcome.get_result()
+            if report.when == "setup":
+                if report.skipped:
+                    merge(report.nodeid, "skipped")
+                elif report.failed:
+                    merge(report.nodeid, "error", "non-assertion")
+                return
+            if report.when == "call":
+                was_xfail = bool(getattr(report, "wasxfail", False))
+                if report.passed:
+                    merge(report.nodeid, "xpassed" if was_xfail else "passed")
+                elif report.skipped:
+                    merge(report.nodeid, "xfailed" if was_xfail else "skipped")
+                elif report.failed:
+                    exception_type = (
+                        call.excinfo.type if call.excinfo is not None else None
+                    )
+                    assertion = (
+                        isinstance(exception_type, type)
+                        and (
+                            issubclass(exception_type, AssertionError)
+                            or exception_type.__name__ == "Failed"
+                        )
+                    )
+                    merge(
+                        report.nodeid,
+                        "failed",
+                        "assertion" if assertion else "non-assertion",
+                    )
+                return
+            if report.when == "teardown":
+                if report.skipped:
+                    merge(report.nodeid, "skipped")
+                elif report.failed:
+                    merge(report.nodeid, "error", "non-assertion")
+
+        @pytest.hookimpl(trylast=True)
+        def pytest_sessionfinish(self, session, exitstatus):
+            payload = {
+                "schema_version": 1,
+                "framework": "pytest",
+                "exitstatus": int(exitstatus),
+                "tests": [
+                    {**records[node_id], "counts": event_counts[node_id]}
+                    for node_id in sorted(records)
+                ],
+            }
+            encoded = (
+                json.dumps(
+                    payload,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                + "\n"
+            ).encode("utf-8")
+            try:
+                os.write(raw_fd, encoded)
+            finally:
+                os.close(raw_fd)
+
+    config.pluginmanager.register(Recorder(), "codex-proof-recorder")
+'''
+
+UNITTEST_PROOF_CHILD_SOURCE = r'''
+from __future__ import annotations
+
+import json
+import os
+import sys
+import unittest
+
+
+def main():
+    raw_fd = int(os.environ.pop("CODEX_BUILDER_PROOF_RAW_FD"))
+    records = {}
+    event_counts = {}
+    count_keys = {
+        "passed": "passed",
+        "failed": "failures",
+        "error": "errors",
+        "skipped": "skipped",
+        "xfailed": "xfailed",
+        "xpassed": "xpassed",
+    }
+    priority = {
+        "passed": 1,
+        "failed:assertion": 3,
+        "skipped": 4,
+        "xfailed": 4,
+        "xpassed": 4,
+        "failed:non-assertion": 5,
+        "error": 5,
+    }
+
+    def merge(test, outcome, failure_kind=""):
+        node_id = test.id()
+        count_key = count_keys[outcome]
+        node_counts = event_counts.setdefault(node_id, {})
+        node_counts[count_key] = node_counts.get(count_key, 0) + 1
+        key = outcome + ((":" + failure_kind) if outcome == "failed" else "")
+        current = records.get(node_id)
+        if current is not None:
+            current_key = current["outcome"] + (
+                (":" + current.get("failure_kind", ""))
+                if current["outcome"] == "failed"
+                else ""
+            )
+            if priority[key] < priority[current_key]:
+                return
+        item = {"id": node_id, "outcome": outcome}
+        if failure_kind:
+            item["failure_kind"] = failure_kind
+        records[node_id] = item
+
+    class Result(unittest.TextTestResult):
+        def addSuccess(self, test):
+            super().addSuccess(test)
+            merge(test, "passed")
+
+        def addFailure(self, test, err):
+            super().addFailure(test, err)
+            assertion = isinstance(err[0], type) and issubclass(
+                err[0], AssertionError
+            )
+            merge(
+                test,
+                "failed",
+                "assertion" if assertion else "non-assertion",
+            )
+
+        def addError(self, test, err):
+            super().addError(test, err)
+            merge(test, "error", "non-assertion")
+
+        def addSkip(self, test, reason):
+            super().addSkip(test, reason)
+            merge(test, "skipped")
+
+        def addExpectedFailure(self, test, err):
+            super().addExpectedFailure(test, err)
+            merge(test, "xfailed")
+
+        def addUnexpectedSuccess(self, test):
+            super().addUnexpectedSuccess(test)
+            merge(test, "xpassed")
+
+        def addSubTest(self, test, subtest, err):
+            super().addSubTest(test, subtest, err)
+            if err is None:
+                return
+            assertion = isinstance(err[0], type) and issubclass(
+                err[0], AssertionError
+            )
+            merge(
+                test,
+                "failed" if assertion else "error",
+                "assertion" if assertion else "non-assertion",
+            )
+
+    class Runner(unittest.TextTestRunner):
+        resultclass = Result
+
+    cwd = os.getcwd()
+    if not sys.path or sys.path[0] != cwd:
+        sys.path.insert(0, cwd)
+    exitstatus = 2
+    try:
+        program = unittest.main(
+            module=None,
+            argv=["unittest", *sys.argv[1:]],
+            testRunner=Runner,
+            exit=False,
+        )
+        result = program.result
+        exitstatus = 0 if result.wasSuccessful() else 1
+    except SystemExit as exc:
+        exitstatus = exc.code if isinstance(exc.code, int) else 2
+    payload = {
+        "schema_version": 1,
+        "framework": "unittest",
+        "exitstatus": exitstatus,
+        "tests": [
+            {**records[node_id], "counts": event_counts[node_id]}
+            for node_id in sorted(records)
+        ],
+    }
+    encoded = (
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\n"
+    ).encode("utf-8")
+    try:
+        os.write(raw_fd, encoded)
+    finally:
+        os.close(raw_fd)
+    return exitstatus
+
+
+raise SystemExit(main())
+'''
+
+
+def proof_supervisor_argv(argv: Sequence[str], framework: str) -> list[str]:
+    return [
+        str(Path(sys.executable).resolve()),
+        "-B",
+        "-m",
+        "codex_builder_loop.cli",
+        "--framework",
+        framework,
+        "--",
+        *list(argv),
+    ]
+
+
+def proof_supervised_child_argv(
+    argv: Sequence[str], framework: str
+) -> list[str]:
+    values = list(argv)
+    if framework != "unittest":
+        return values
+    for index, item in enumerate(values[:-1]):
+        if item == "-m" and values[index + 1] == "unittest":
+            return [
+                *values[:index],
+                "-c",
+                UNITTEST_PROOF_CHILD_SOURCE,
+                *values[index + 2 :],
+            ]
+    return values
+
+
+def parse_structured_proof_payloads(raw: str) -> list[dict[str, Any]]:
+    payloads: list[dict[str, Any]] = []
+    for line in raw.splitlines():
+        if not line.strip():
+            continue
+        try:
+            value = json.loads(line)
+        except json.JSONDecodeError:
+            return []
+        if not isinstance(value, dict):
+            return []
+        payloads.append(value)
+    return payloads
+
+
+def cmd_internal_proof_supervisor(
+    args: argparse.Namespace,
+) -> tuple[dict[str, Any], int]:
+    raw_final_fd = os.environ.pop(PROOF_FINAL_FD_ENV, "")
+    try:
+        final_fd = int(raw_final_fd)
+    except ValueError as exc:
+        raise RuntimeProblem(
+            "internal proof supervisor is missing its final result channel",
+            code="TEST_PROOF_SUPERVISOR_INVALID",
+        ) from exc
+    requested_argv = list(args.argv)
+    if requested_argv[:1] == ["--"]:
+        requested_argv = requested_argv[1:]
+    if not requested_argv:
+        os.close(final_fd)
+        raise RuntimeProblem(
+            "internal proof supervisor is missing the test command",
+            code="TEST_PROOF_SUPERVISOR_INVALID",
+        )
+
+    child_argv = proof_supervised_child_argv(requested_argv, str(args.framework))
+    child_env = trusted_proof_environment()
+    cache_prefix = os.environ.get("PYTHONPYCACHEPREFIX")
+    if cache_prefix:
+        child_env["PYTHONPYCACHEPREFIX"] = cache_prefix
+
+    completed: subprocess.CompletedProcess[str]
+    structured_raw = ""
+    with tempfile.TemporaryDirectory(prefix="codex-proof-plugin-") as plugin_dir:
+        plugin_name = "_codex_proof_" + uuid.uuid4().hex
+        Path(plugin_dir, plugin_name + ".py").write_text(
+            PYTEST_PROOF_PLUGIN_SOURCE,
+            encoding="utf-8",
+        )
+        with tempfile.TemporaryFile(mode="w+b") as raw_channel:
+            child_env.update(
+                {
+                    PROOF_RAW_FD_ENV: str(raw_channel.fileno()),
+                    "PYTHONPATH": plugin_dir,
+                    "PYTEST_PLUGINS": plugin_name,
+                }
+            )
+            try:
+                completed = subprocess.run(
+                    child_argv,
+                    shell=False,
+                    text=True,
+                    env=child_env,
+                    pass_fds=(raw_channel.fileno(),),
+                    check=False,
+                )
+            except OSError as exc:
+                completed = subprocess.CompletedProcess(
+                    child_argv,
+                    126,
+                    stdout="",
+                    stderr=f"{type(exc).__name__}: {exc}",
+                )
+                print(completed.stderr, file=sys.stderr)
+            raw_channel.seek(0)
+            structured_raw = raw_channel.read().decode(
+                "utf-8", errors="replace"
+            )
+
+    payloads = parse_structured_proof_payloads(structured_raw)
+    accepted_payload: dict[str, Any] | None = None
+    if len(payloads) == 1:
+        payload_exitstatus = payloads[0].get("exitstatus")
+        if (
+            not isinstance(payload_exitstatus, bool)
+            and isinstance(payload_exitstatus, int)
+            and payload_exitstatus == int(completed.returncode)
+        ):
+            accepted_payload = payloads[0]
+    try:
+        if accepted_payload is not None:
+            encoded = (
+                json.dumps(
+                    accepted_payload,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                + "\n"
+            ).encode("utf-8")
+            os.write(final_fd, encoded)
+    finally:
+        os.close(final_fd)
+    return {
+        "status": "PASS" if completed.returncode == 0 else "FAIL",
+        "message": "internal proof supervisor completed",
+        "framework": args.framework,
+        "structured_result": accepted_payload is not None,
+    }, int(completed.returncode)
+
+
+def internal_proof_supervisor_main(argv: Sequence[str]) -> int:
+    parser = RuntimeArgumentParser(prog="codex-builder-loop-proof-supervisor")
+    parser.add_argument(
+        "--framework",
+        choices=["auto", "pytest", "unittest"],
+        required=True,
+    )
+    parser.add_argument("argv", nargs=argparse.REMAINDER)
+    try:
+        args = parser.parse_args(argv)
+        payload, exit_code = cmd_internal_proof_supervisor(args)
+        return emit(payload, exit_code)
+    except RuntimeProblem as exc:
+        payload = {
+            "status": exc.result,
+            "code": exc.code,
+            "message": str(exc),
+        }
+        if exc.details:
+            payload.update(exc.details)
+        return emit(payload, exc.exit_code)
+    except Exception as exc:
+        return emit(
+            {
+                "status": "FATAL",
+                "code": "UNEXPECTED_ERROR",
+                "message": f"{type(exc).__name__}: {exc}",
+            },
+            EXIT_FATAL,
+        )
+
+
+def without_textual_positive(result: dict[str, Any]) -> dict[str, Any]:
+    sanitized = dict(result)
+    if sanitized.get("classification") in {
+        "pass",
+        "assertion-failure",
+        "unmapped-assertion-failure",
+    }:
+        sanitized["classification"] = "unclassified-failure"
+        sanitized.pop("matched_test_ids", None)
+    return sanitized
+
+
+def classify_structured_proof_test_result(
+    payloads: Sequence[Mapping[str, Any]],
+    *,
+    framework: str,
+    returncode: int,
+    test_ids: Sequence[str],
+    fallback: dict[str, Any],
+) -> dict[str, Any]:
+    if len(payloads) != 1:
+        return without_textual_positive(fallback)
+    payload = payloads[0]
+    payload_framework = payload.get("framework")
+    payload_exitstatus = payload.get("exitstatus")
+    raw_tests = payload.get("tests")
+    if (
+        payload.get("schema_version") != 1
+        or payload_framework not in {"unittest", "pytest"}
+        or (framework != "auto" and payload_framework != framework)
+        or isinstance(payload_exitstatus, bool)
+        or not isinstance(payload_exitstatus, int)
+        or payload_exitstatus != returncode
+        or not isinstance(raw_tests, list)
+    ):
+        return without_textual_positive(fallback)
+
+    declared: dict[str, str] = {}
+    for test_id in test_ids:
+        normalized = normalize_proof_test_id(test_id)
+        if normalized in declared:
+            return without_textual_positive(fallback)
+        declared[normalized] = test_id
+
+    allowed_outcomes = {
+        "passed",
+        "failed",
+        "error",
+        "skipped",
+        "xfailed",
+        "xpassed",
+    }
+    count_keys = {
+        "passed": "passed",
+        "failed": "failed",
+        "error": "errors",
+        "skipped": "skipped",
+        "xfailed": "xfailed",
+        "xpassed": "xpassed",
+    }
+    allowed_count_keys = {*count_keys.values(), "failures"}
+    records: dict[str, dict[str, Any]] = {}
+    for raw_item in raw_tests:
+        if not isinstance(raw_item, dict):
+            return without_textual_positive(fallback)
+        raw_id = raw_item.get("id")
+        outcome = raw_item.get("outcome")
+        failure_kind = raw_item.get("failure_kind", "")
+        raw_counts = raw_item.get("counts")
+        if (
+            not isinstance(raw_id, str)
+            or not raw_id.strip()
+            or outcome not in allowed_outcomes
+            or failure_kind not in {"", "assertion", "non-assertion"}
+            or not isinstance(raw_counts, dict)
+            or not raw_counts
+        ):
+            return without_textual_positive(fallback)
+        item_counts: dict[str, int] = {}
+        for key, value in raw_counts.items():
+            if (
+                key not in allowed_count_keys
+                or isinstance(value, bool)
+                or not isinstance(value, int)
+                or value < 0
+            ):
+                return without_textual_positive(fallback)
+            item_counts[str(key)] = value
+        expected_count_key = (
+            "failures"
+            if payload_framework == "unittest" and outcome == "failed"
+            else count_keys[str(outcome)]
+        )
+        if item_counts.get(expected_count_key, 0) == 0:
+            return without_textual_positive(fallback)
+        normalized = normalize_proof_test_id(raw_id)
+        if normalized in records:
+            return without_textual_positive(fallback)
+        records[normalized] = {
+            "id": raw_id,
+            "outcome": str(outcome),
+            "failure_kind": str(failure_kind),
+            "counts": item_counts,
+        }
+
+    counts: dict[str, int] = {}
+    for item in records.values():
+        for key, value in item["counts"].items():
+            counts[key] = counts.get(key, 0) + value
+    base = {"framework": payload_framework, "counts": counts}
+
+    if set(records) != set(declared):
+        return without_textual_positive(fallback)
+    outcomes = [item["outcome"] for item in records.values()]
+    if returncode == 0:
+        non_pass_count = sum(
+            value for key, value in counts.items() if key != "passed"
+        )
+        return {
+            **base,
+            "classification": (
+                "pass"
+                if (
+                    outcomes
+                    and all(outcome == "passed" for outcome in outcomes)
+                    and counts.get("passed", 0) == len(declared)
+                    and non_pass_count == 0
+                )
+                else "zero-effective-tests"
+            ),
+        }
+
+    failed = [
+        normalized
+        for normalized, item in records.items()
+        if item["outcome"] == "failed"
+    ]
+    non_assertion = counts.get("errors", 0) > 0 or any(
+        item["outcome"] == "error"
+        or (
+            item["outcome"] == "failed"
+            and item["failure_kind"] != "assertion"
+        )
+        or item["outcome"] in {"skipped", "xfailed", "xpassed"}
+        for item in records.values()
+    )
+    if failed and not non_assertion:
+        return {
+            **base,
+            "classification": "assertion-failure",
+            "matched_test_ids": sorted(declared[item] for item in failed),
+        }
+    if non_assertion:
+        return {**base, "classification": "non-assertion-test-failure"}
+    return without_textual_positive(fallback)
+
+
+def classify_proof_test_result(
+    output: str,
+    *,
+    framework: str,
+    returncode: int,
+    timed_out: bool,
+    test_ids: Sequence[str],
+    structured_payloads: Sequence[Mapping[str, Any]],
+    launch_error: bool = False,
+) -> dict[str, Any]:
+    fallback = classify_text_proof_test_result(
+        output,
+        framework=framework,
+        returncode=returncode,
+        timed_out=timed_out,
+        test_ids=test_ids,
+        launch_error=launch_error,
+    )
+    if launch_error or timed_out:
+        return fallback
+    return classify_structured_proof_test_result(
+        structured_payloads,
+        framework=framework,
+        returncode=returncode,
+        test_ids=test_ids,
+        fallback=fallback,
+    )
+
+
+def run_proof_argv(
+    argv: Sequence[str],
+    *,
+    framework: str,
+    test_ids: Sequence[str],
+    worktree: Path,
+    timeout: int,
+    log_path: Path,
+    cache_path: Path,
+) -> dict[str, Any]:
+    started = time.monotonic()
+    timed_out = False
+    launch_error = False
+    requested_argv = list(argv)
+    actual_argv = proof_supervisor_argv(requested_argv, framework)
+    proof_env = trusted_proof_environment()
+    structured_raw = ""
+    with tempfile.TemporaryFile(mode="w+b") as result_channel:
+        proof_env.update(
+            {
+                PROOF_FINAL_FD_ENV: str(result_channel.fileno()),
+                PROOF_SUPERVISOR_ENV: "1",
+                "PYTHONPYCACHEPREFIX": str(cache_path),
+                "PYTHONPATH": str(Path(__file__).resolve().parents[1]),
+            }
+        )
+        try:
+            completed = subprocess.run(
+                actual_argv,
+                cwd=worktree,
+                shell=False,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=timeout,
+                env=proof_env,
+                pass_fds=(result_channel.fileno(),),
+                check=False,
+            )
+        except OSError as exc:
+            completed = subprocess.CompletedProcess(
+                actual_argv,
+                126,
+                stdout="",
+                stderr=f"{type(exc).__name__}: {exc}",
+            )
+            launch_error = True
+        except subprocess.TimeoutExpired as exc:
+            completed = subprocess.CompletedProcess(
+                actual_argv,
+                124,
+                stdout=exc.stdout or "",
+                stderr=exc.stderr or "",
+            )
+            timed_out = True
+        result_channel.seek(0)
+        structured_raw = result_channel.read().decode("utf-8", errors="replace")
+    duration_ms = int((time.monotonic() - started) * 1000)
+    output = (
+        f"$ {shlex.join(requested_argv)}\n"
+        f"[returncode={completed.returncode} timeout={str(timed_out).lower()}]\n"
+        f"{completed.stdout}{completed.stderr}"
+    )
+    test_result = classify_proof_test_result(
+        f"{completed.stdout}{completed.stderr}",
+        framework=framework,
+        returncode=int(completed.returncode),
+        timed_out=timed_out,
+        test_ids=test_ids,
+        structured_payloads=parse_structured_proof_payloads(structured_raw),
+        launch_error=launch_error,
+    )
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_path.write_text(output, encoding="utf-8")
+    return {
+        "argv": requested_argv,
+        "returncode": int(completed.returncode),
+        "timed_out": timed_out,
+        "test_result": test_result,
+        "duration_ms": duration_ms,
+        "log_path": str(log_path),
+        "log_sha256": sha256_text(output),
+        "log_tail": tail_text(output),
+    }
+
+
+def proof_worktree_residue(
+    worktree: Path, *, allowed_tracked_paths: Sequence[str] = ()
+) -> list[str]:
+    allowed = set(allowed_tracked_paths)
+    return sorted(path for path in worktree_residue(worktree) if path not in allowed)
+
+
+def validate_mutation_paths(
+    worktree: Path,
+    candidate: str,
+    ledger: dict[str, Any],
+) -> list[str]:
+    changed = git_changed_paths(worktree, candidate)
+    if not changed:
+        raise RuntimeProblem(
+            "mutation patch did not change any files",
+            result="NEEDS_USER",
+            code="TEST_PROOF_SPEC_INVALID",
+            details={"errors": ["mutation patch did not change any files"]},
+            exit_code=EXIT_FAIL,
+        )
+    builder_patterns = list(ledger.get("plan", {}).get("builder_write", []))
+    tester_patterns = list(ledger.get("plan", {}).get("tester_write", []))
+    protected = (
+        set(ledger.get("plan", {}).get("support_paths", []))
+        | set(ledger.get("loop_config", {}).get("runner_paths", []))
+        | PROTECTED_RUNTIME_PATHS
+    )
+    violations: list[dict[str, str]] = []
+    for path in changed:
+        if (
+            not path_allowed(path, builder_patterns)
+            or path_allowed(path, tester_patterns)
+            or path in protected
+        ):
+            violations.append({"path": path, "reason": "ownership or control path"})
+            continue
+        entry = git(worktree, "ls-tree", candidate, "--", path, check=False).stdout.strip()
+        if not entry:
+            violations.append({"path": path, "reason": "path was not a candidate file"})
+            continue
+        mode = entry.split(None, 1)[0]
+        target = worktree / path
+        try:
+            target_mode = os.lstat(target).st_mode
+        except OSError:
+            violations.append({"path": path, "reason": "mutation removed the file"})
+            continue
+        if mode not in {"100644", "100755"} or not stat.S_ISREG(target_mode):
+            violations.append({"path": path, "reason": "path is not a regular file"})
+    if violations:
+        raise RuntimeProblem(
+            "mutation patch escaped Builder-owned regular implementation files",
+            result="NEEDS_USER",
+            code="TEST_PROOF_SPEC_INVALID",
+            details={
+                "errors": [
+                    "mutation patch escaped Builder-owned regular implementation files: "
+                    + json.dumps(violations, ensure_ascii=False, sort_keys=True)
+                ]
+            },
+            exit_code=EXIT_FAIL,
+        )
+    return changed
+
+
+def proof_failure_details(
+    index: int,
+    group: dict[str, Any],
+    result: dict[str, Any],
+    **extra: Any,
+) -> dict[str, Any]:
+    return {
+        "group": index,
+        "execution_argv": list(group["execution_argv"]),
+        "executable_identity": group["executable_identity"],
+        "test_ids": list(group["test_ids"]),
+        "result": result,
+        **extra,
+    }
+
+
+def cmd_prove_tests(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
+    repo, run_id, _ = resolve_run_selector(args.repo, args.run)
+    raw_spec = read_json_input(str(args.spec))
+    with locked_run(repo, run_id) as ledger:
+        reject_during_finalize_intent(ledger, "prove-tests")
+        if ledger.get("phase") != "active":
+            raise RuntimeProblem(
+                "test proof requires an active run",
+                result="NEEDS_USER",
+                code="PHASE_NOT_ACTIVE",
+                details={"phase": ledger.get("phase")},
+                exit_code=EXIT_FAIL,
+            )
+        if not requires_test_effectiveness(ledger):
+            return {
+                "status": "NOOP",
+                "message": "test proof is not applicable to this run",
+                "code": "TEST_PROOF_NOT_APPLICABLE",
+                "run_id": run_id,
+                "contract_schema_version": ledger.get("plan", {}).get(
+                    "contract_schema_version"
+                ),
+                "level": ledger.get("plan", {}).get("level"),
+            }, EXIT_PASS
+        contract = verify_plan_unchanged(ledger)
+        spec = normalize_test_proof_spec(
+            raw_spec,
+            contract.test_effectiveness_requirements,
+            repo=repo,
+            spec_head=str(ledger["spec_head"]),
+            contract=contract,
+        )
+        spec_digest = evidence_contract.canonical_digest(spec)
+        builder = Path(str(ledger["worktrees"]["builder"]["path"]))
+        if worktree_residue(builder):
+            raise RuntimeProblem(
+                "candidate worktree is dirty",
+                result="NEEDS_USER",
+                code="CANDIDATE_DIRTY",
+                exit_code=EXIT_FAIL,
+            )
+        candidate = full_head(builder)
+        integration = ledger.get("tester_integration", {})
+        tester_source_head = integration.get("source_head")
+        if (
+            integration.get("completed") is not True
+            or not isinstance(tester_source_head, str)
+            or not tester_source_head
+            or not integration.get("author_turn_id")
+        ):
+            raise RuntimeProblem(
+                "test proof requires completed Tester author integration",
+                result="NEEDS_USER",
+                code="TEST_PROOF_INTEGRATION_MISSING",
+                details={"tester_integration": integration},
+                exit_code=EXIT_FAIL,
+            )
+        if evidence_head(ledger, "machine") != candidate:
+            raise RuntimeProblem(
+                "test proof requires current machine verification",
+                result="NEEDS_USER",
+                code="TEST_PROOF_MACHINE_MISSING",
+                details={
+                    "candidate_head": candidate,
+                    "verified_head": evidence_head(ledger, "machine"),
+                },
+                exit_code=EXIT_FAIL,
+            )
+        existing = evidence_record(ledger, "test_effectiveness")
+        if existing is not None and evidence_head(
+            ledger, "test_effectiveness"
+        ) == candidate:
+            previous_digest = existing.get("provenance", {}).get("spec_sha256")
+            if previous_digest == spec_digest:
+                return {
+                    "status": "NOOP",
+                    "message": "the same test-effectiveness proof is already recorded",
+                    "run_id": run_id,
+                    "head": candidate,
+                    "test_effectiveness_head": candidate,
+                    "evidence": existing,
+                }, EXIT_PASS
+            raise RuntimeProblem(
+                "a different test proof is already frozen for this candidate",
+                result="NEEDS_USER",
+                code="TEST_PROOF_ALREADY_RECORDED",
+                exit_code=EXIT_FAIL,
+            )
+
+        tester_patterns = list(ledger.get("plan", {}).get("tester_write", []))
+        source_manifest, source_manifest_sha = proof_manifest(
+            repo, tester_source_head, tester_patterns
+        )
+        validate_proof_test_sources(
+            repo, tester_source_head, tester_patterns, spec["groups"]
+        )
+        candidate_manifest, candidate_manifest_sha = proof_manifest(
+            repo, candidate, tester_patterns
+        )
+        if (
+            source_manifest_sha != candidate_manifest_sha
+            or source_manifest != candidate_manifest
+        ):
+            raise RuntimeProblem(
+                "Tester-owned manifest differs between author source and candidate",
+                result="FAIL",
+                code="TEST_PROOF_MANIFEST_MISMATCH",
+                details={
+                    "tester_source_head": tester_source_head,
+                    "candidate_head": candidate,
+                    "source_manifest_sha256": source_manifest_sha,
+                    "candidate_manifest_sha256": candidate_manifest_sha,
+                },
+                exit_code=EXIT_FAIL,
+            )
+
+        proof_root = (
+            state_root(repo)
+            / "worktrees"
+            / run_id
+            / ("proof-" + uuid.uuid4().hex)
+        )
+        evidence_dir = (
+            run_dir(repo, run_id)
+            / "evidence"
+            / "test-effectiveness"
+            / candidate
+            / spec_digest[:16]
+        )
+        created: list[Path] = []
+        group_results: list[dict[str, Any]] = []
+        failure: RuntimeProblem | None = None
+        try:
+            for index, group in enumerate(spec["groups"]):
+                method = str(group["method"])
+                result: dict[str, Any] = {
+                    "behavior_ids": list(group["behavior_ids"]),
+                    "method": method,
+                    "argv": list(group["argv"]),
+                    "execution_argv": list(group["execution_argv"]),
+                    "framework": group["framework"],
+                    "executable_identity": group["executable_identity"],
+                    "test_ids": group["test_ids"],
+                    "timeout_seconds": group["timeout_seconds"],
+                }
+                if method == "reviewed-boundaries":
+                    result["reason"] = group["reason"]
+                    result["reviewed_boundaries"] = group[
+                        "reviewed_boundaries"
+                    ]
+                    result["machine_evidence_head"] = candidate
+                    group_results.append(result)
+                    continue
+
+                candidate_path = proof_root / f"{index + 1:02d}-candidate"
+                add_detached_worktree(repo, candidate_path, candidate)
+                created.append(candidate_path)
+                candidate_run = run_proof_argv(
+                    group["execution_argv"],
+                    framework=str(group["framework"]),
+                    test_ids=group["test_ids"],
+                    worktree=candidate_path,
+                    timeout=int(group["timeout_seconds"]),
+                    log_path=evidence_dir / f"{index + 1:02d}-{method}-candidate.log",
+                    cache_path=evidence_dir / "pycache" / f"{index + 1:02d}-candidate",
+                )
+                candidate_run["worktree_residue"] = proof_worktree_residue(
+                    candidate_path
+                )
+                if (
+                    candidate_run["timed_out"]
+                    or candidate_run["returncode"] != 0
+                    or candidate_run["test_result"].get("classification") != "pass"
+                    or full_head(candidate_path) != candidate
+                    or candidate_run["worktree_residue"]
+                ):
+                    raise RuntimeProblem(
+                        "test proof candidate command did not pass cleanly",
+                        result="FAIL",
+                        code="TEST_PROOF_CANDIDATE_FAILED",
+                        details=proof_failure_details(
+                            index, group, candidate_run
+                        ),
+                        exit_code=EXIT_FAIL,
+                    )
+                result["candidate"] = candidate_run
+
+                if method == "baseline-red":
+                    result["claimed_failure_kind"] = group[
+                        "claimed_failure_kind"
+                    ]
+                    baseline_path = proof_root / f"{index + 1:02d}-baseline"
+                    add_detached_worktree(repo, baseline_path, tester_source_head)
+                    created.append(baseline_path)
+                    baseline_run = run_proof_argv(
+                        group["execution_argv"],
+                        framework=str(group["framework"]),
+                        test_ids=group["test_ids"],
+                        worktree=baseline_path,
+                        timeout=int(group["timeout_seconds"]),
+                        log_path=evidence_dir
+                        / f"{index + 1:02d}-{method}-baseline.log",
+                        cache_path=evidence_dir
+                        / "pycache"
+                        / f"{index + 1:02d}-baseline",
+                    )
+                    baseline_run["worktree_residue"] = proof_worktree_residue(
+                        baseline_path
+                    )
+                    if (
+                        baseline_run["timed_out"]
+                        or baseline_run["returncode"] == 0
+                        or baseline_run["test_result"].get("classification")
+                        != group["claimed_failure_kind"]
+                        or full_head(baseline_path) != tester_source_head
+                        or baseline_run["worktree_residue"]
+                    ):
+                        raise RuntimeProblem(
+                            "baseline-red did not distinguish baseline from candidate",
+                            result="FAIL",
+                            code="TEST_BASELINE_RED_NOT_PROVEN",
+                            details=proof_failure_details(
+                                index, group, baseline_run
+                            ),
+                            exit_code=EXIT_FAIL,
+                        )
+                    result["baseline"] = baseline_run
+                else:
+                    mutation_path = proof_root / f"{index + 1:02d}-mutation"
+                    add_detached_worktree(repo, mutation_path, candidate)
+                    created.append(mutation_path)
+                    patch_result = run_process(
+                        ["git", "-C", str(mutation_path), "apply", "--check", "-"],
+                        input_text=str(group["patch"]),
+                        check=False,
+                    )
+                    if patch_result.returncode != 0:
+                        raise RuntimeProblem(
+                            "mutation patch does not apply to the candidate",
+                            result="NEEDS_USER",
+                            code="TEST_PROOF_SPEC_INVALID",
+                            details={
+                                "errors": [
+                                    "mutation patch does not apply to the candidate: "
+                                    + tail_text(patch_result.stderr)
+                                ]
+                            },
+                            exit_code=EXIT_FAIL,
+                        )
+                    applied = run_process(
+                        ["git", "-C", str(mutation_path), "apply", "-"],
+                        input_text=str(group["patch"]),
+                        check=False,
+                    )
+                    if applied.returncode != 0:
+                        raise RuntimeProblem(
+                            "mutation patch could not be applied",
+                            result="NEEDS_USER",
+                            code="TEST_PROOF_SPEC_INVALID",
+                            details={
+                                "errors": [
+                                    "mutation patch could not be applied: "
+                                    + tail_text(applied.stderr)
+                                ]
+                            },
+                            exit_code=EXIT_FAIL,
+                        )
+                    changed_paths = validate_mutation_paths(
+                        mutation_path, candidate, ledger
+                    )
+                    mutation_diff_sha = sha256_text(
+                        git(
+                            mutation_path,
+                            "diff",
+                            "--binary",
+                            "--full-index",
+                            candidate,
+                            "--",
+                            check=True,
+                        ).stdout
+                    )
+                    mutation_run = run_proof_argv(
+                        group["execution_argv"],
+                        framework=str(group["framework"]),
+                        test_ids=group["test_ids"],
+                        worktree=mutation_path,
+                        timeout=int(group["timeout_seconds"]),
+                        log_path=evidence_dir
+                        / f"{index + 1:02d}-{method}-mutation.log",
+                        cache_path=evidence_dir
+                        / "pycache"
+                        / f"{index + 1:02d}-mutation",
+                    )
+                    mutation_run["worktree_residue"] = proof_worktree_residue(
+                        mutation_path, allowed_tracked_paths=changed_paths
+                    )
+                    mutation_after_paths = git_changed_paths(
+                        mutation_path, candidate
+                    )
+                    mutation_after_sha = sha256_text(
+                        git(
+                            mutation_path,
+                            "diff",
+                            "--binary",
+                            "--full-index",
+                            candidate,
+                            "--",
+                            check=True,
+                        ).stdout
+                    )
+                    if (
+                        mutation_run["timed_out"]
+                        or mutation_run["returncode"] == 0
+                        or mutation_run["test_result"].get("classification")
+                        != "assertion-failure"
+                        or mutation_run["worktree_residue"]
+                        or mutation_after_paths != changed_paths
+                        or mutation_after_sha != mutation_diff_sha
+                    ):
+                        raise RuntimeProblem(
+                            "controlled mutation was not detected by the tests",
+                            result="FAIL",
+                            code="TEST_MUTATION_SURVIVED",
+                            details=proof_failure_details(
+                                index,
+                                group,
+                                mutation_run,
+                                changed_paths_before=changed_paths,
+                                changed_paths_after=mutation_after_paths,
+                                diff_sha256_before=mutation_diff_sha,
+                                diff_sha256_after=mutation_after_sha,
+                            ),
+                            exit_code=EXIT_FAIL,
+                        )
+                    result["mutation"] = {
+                        **mutation_run,
+                        "patch_sha256": sha256_text(str(group["patch"])),
+                        "applied_diff_sha256": mutation_diff_sha,
+                        "changed_paths": changed_paths,
+                        "head_before": candidate,
+                        "head_after": full_head(mutation_path),
+                    }
+                group_results.append(result)
+        except RuntimeProblem as exc:
+            failure = exc
+        finally:
+            try:
+                remove_proof_worktrees(repo, created)
+            except RuntimeProblem as cleanup_error:
+                ledger["phase"] = "continuity_failure"
+                append_event(
+                    ledger,
+                    "test_proof_worktree_cleanup_failed",
+                    cleanup_error.details,
+                )
+                save_ledger(repo, ledger)
+                raise
+        if failure is not None:
+            append_event(
+                ledger,
+                "test_effectiveness_proof_failed",
+                {
+                    "candidate_head": candidate,
+                    "tester_source_head": tester_source_head,
+                    "spec_sha256": spec_digest,
+                    "code": failure.code,
+                    "details": failure.details,
+                },
+            )
+            save_ledger(repo, ledger)
+            raise failure
+        if full_head(builder) != candidate or worktree_residue(builder):
+            raise RuntimeProblem(
+                "live candidate changed while test proof was running",
+                result="CONTINUITY_FAILURE",
+                code="TEST_PROOF_CANDIDATE_DRIFT",
+                exit_code=EXIT_FAIL,
+            )
+        if integration.get("source_head") != tester_source_head:
+            raise RuntimeProblem(
+                "Tester integration changed while test proof was running",
+                result="CONTINUITY_FAILURE",
+                code="TEST_PROOF_INTEGRATION_DRIFT",
+                exit_code=EXIT_FAIL,
+            )
+        scope = ["**"]
+        digest = evidence_contract.input_digest(
+            repo,
+            candidate,
+            patterns=scope,
+            plan_sha256=str(ledger.get("plan", {}).get("sha256") or ""),
+            context={
+                "kind": "test_effectiveness",
+                "spec_sha256": spec_digest,
+                "tester_source_head": tester_source_head,
+                "tester_manifest_sha256": source_manifest_sha,
+            },
+        )
+        record = evidence_contract.make_record(
+            kind="test_effectiveness",
+            observed_head=candidate,
+            accepted_head=candidate,
+            input_sha256=digest,
+            scope=scope,
+            provenance={
+                "spec_sha256": spec_digest,
+                "groups": group_results,
+            },
+        )
+        ledger.setdefault("evidence", {})["test_effectiveness"] = record
+        append_event(
+            ledger,
+            "test_effectiveness_proven",
+            {
+                "candidate_head": candidate,
+                "tester_source_head": tester_source_head,
+                "tester_manifest_sha256": source_manifest_sha,
+                "spec_sha256": spec_digest,
+                "methods": [item["method"] for item in group_results],
+            },
+        )
+        save_ledger(repo, ledger)
+        return {
+            "status": "READY",
+            "message": "test-effectiveness requirements are proven on isolated inputs",
+            "run_id": run_id,
+            "head": candidate,
+            "test_effectiveness_head": candidate,
+            "tester_source_head": tester_source_head,
+            "tester_manifest_sha256": source_manifest_sha,
+            "spec_sha256": spec_digest,
+            "groups": group_results,
+            "evidence": record,
+        }, EXIT_PASS
+
+
 def parse_details(raw: str | None) -> Any:
     if raw is None:
         return None
@@ -4962,6 +7770,112 @@ def parse_details(raw: str | None) -> Any:
         return json.loads(raw)
     except json.JSONDecodeError:
         return raw
+
+
+def validate_structured_e2e_results(
+    contract: PlanContract,
+    details: dict[str, Any],
+) -> None:
+    if not contract.e2e_cases:
+        return
+    raw_cases = details.get("cases")
+    if not isinstance(raw_cases, list):
+        raise RuntimeProblem(
+            "structured blackbox evidence requires per-case results",
+            code="E2E_CASE_RESULTS_INVALID",
+            details={"required_case_ids": list(contract.e2e_case_ids)},
+        )
+    errors: list[str] = []
+    by_id: dict[str, dict[str, Any]] = {}
+    seen: list[str] = []
+    for index, item in enumerate(raw_cases):
+        field = f"cases[{index}]"
+        if not isinstance(item, dict):
+            errors.append(f"{field} must be a mapping")
+            continue
+        unknown = sorted(
+            set(item)
+            - {
+                "case_id",
+                "level",
+                "mechanical",
+                "verify",
+                "quality",
+                "outcome",
+                "replay",
+            }
+        )
+        if unknown:
+            errors.append(f"{field} has unknown fields: " + ", ".join(unknown))
+        case_id = item.get("case_id")
+        if not isinstance(case_id, str) or not case_id:
+            errors.append(f"{field}.case_id must be a non-empty string")
+            continue
+        seen.append(case_id)
+        by_id[case_id] = item
+    duplicates = sorted(item for item in set(seen) if seen.count(item) > 1)
+    missing = sorted(set(contract.e2e_case_ids) - set(seen))
+    unknown_ids = sorted(set(seen) - set(contract.e2e_case_ids))
+    if duplicates:
+        errors.append("duplicate case ids: " + ", ".join(duplicates))
+    if missing:
+        errors.append("missing case ids: " + ", ".join(missing))
+    if unknown_ids:
+        errors.append("unknown case ids: " + ", ".join(unknown_ids))
+
+    for expected in contract.e2e_cases:
+        case_id = str(expected["id"])
+        actual = by_id.get(case_id)
+        if not isinstance(actual, dict):
+            continue
+        field = f"cases[{case_id}]"
+        level = expected.get("level")
+        if actual.get("level") != level:
+            errors.append(f"{field}.level does not match frozen plan")
+        mechanical = actual.get("mechanical")
+        verify = actual.get("verify")
+        quality = actual.get("quality")
+        for dimension, status in (
+            ("mechanical", mechanical),
+            ("verify", verify),
+            ("quality", quality),
+        ):
+            if not isinstance(status, str) or status not in {
+                "pass",
+                "fail",
+                "not_applicable",
+            }:
+                errors.append(f"{field}.{dimension} status is invalid")
+        if level == "fast":
+            if mechanical != "pass":
+                errors.append(f"{field}.mechanical must pass")
+            if verify != "not_applicable":
+                errors.append(f"{field}.verify must be not_applicable")
+            if quality != "not_applicable":
+                errors.append(f"{field}.quality must be not_applicable")
+        else:
+            has_hard_rules = bool(expected.get("hard_rules"))
+            expected_mechanical = "pass" if has_hard_rules else "not_applicable"
+            if mechanical != expected_mechanical:
+                errors.append(
+                    f"{field}.mechanical must be {expected_mechanical}"
+                )
+            if verify != "pass":
+                errors.append(f"{field}.verify must pass")
+            if quality != "pass":
+                errors.append(f"{field}.quality must pass")
+        if actual.get("outcome") != "pass":
+            errors.append(f"{field}.outcome must be mechanically derived as pass")
+    if errors:
+        raise RuntimeProblem(
+            "structured blackbox case results do not match the frozen plan",
+            code="E2E_CASE_RESULTS_INVALID",
+            details={
+                "errors": errors,
+                "required_case_ids": list(contract.e2e_case_ids),
+                "supplied_cases": raw_cases,
+            },
+        )
 
 
 def cmd_record_evidence(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
@@ -4974,6 +7888,7 @@ def cmd_record_evidence(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                 code="PHASE_NOT_ACTIVE",
                 details={"phase": ledger["phase"]},
             )
+        contract = verify_plan_unchanged(ledger)
         builder = Path(str(ledger["worktrees"]["builder"]["path"]))
         if worktree_residue(builder):
             raise RuntimeProblem(
@@ -5056,6 +7971,21 @@ def cmd_record_evidence(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                 code="E2E_AUTHOR_INTEGRATION_MISSING",
                 details={"tester_integration": ledger["tester_integration"]},
             )
+        if (
+            args.kind == "e2e_verified"
+            and requires_test_effectiveness(ledger)
+            and evidence_head(ledger, "test_effectiveness") != candidate
+        ):
+            raise RuntimeProblem(
+                "blackbox evidence requires current test-effectiveness proof",
+                code="TEST_EFFECTIVENESS_MISSING",
+                details={
+                    "candidate_head": candidate,
+                    "test_effectiveness_head": evidence_head(
+                        ledger, "test_effectiveness"
+                    ),
+                },
+            )
         agent_fact = value
         field = PUBLIC_EVIDENCE_FIELDS[args.kind]
         details = parse_details(args.details)
@@ -5088,6 +8018,13 @@ def cmd_record_evidence(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                 or not str(details.get("command")).strip()
                 or type(details.get("returncode")) is not int
                 or details.get("returncode") != 0
+                or (
+                    (
+                        "candidate_dirty" in details
+                        or requires_test_effectiveness(ledger)
+                    )
+                    and details.get("candidate_dirty") is not False
+                )
             ):
                 raise RuntimeProblem(
                     "blackbox evidence is not bound to a successful run on the live candidate",
@@ -5098,6 +8035,7 @@ def cmd_record_evidence(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                         "supplied": details,
                     },
                 )
+            validate_structured_e2e_results(contract, details)
         if field == "blackbox":
             scope = evidence_scope_patterns(ledger, "blackbox")
             try:
@@ -5131,8 +8069,10 @@ def cmd_record_evidence(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
             accepted_head=supplied,
             input_sha256=digest,
             scope=scope,
-            provenance={"agent": agent_fact, "details": details},
+            provenance={"agent": agent_fact},
         )
+        if field == "blackbox":
+            record["details"] = details
         ledger.setdefault("evidence", {})[field] = record
         append_event(
             ledger,
@@ -5156,6 +8096,9 @@ def cmd_record_evidence(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
             "field": EVIDENCE_STATUS_FIELDS[field],
             "head": supplied,
             "candidate_head": candidate,
+            "test_effectiveness_head": evidence_head(
+                ledger, "test_effectiveness"
+            ),
             "evidence": record,
         }, EXIT_PASS
 
@@ -5237,13 +8180,30 @@ def cmd_prepare_follow_up(args: argparse.Namespace) -> tuple[dict[str, Any], int
         candidate_dirty = bool(worktree_residue(builder))
         if purpose == "blackbox":
             integration = ledger.get("tester_integration", {})
+            test_effectiveness_ready = (
+                not requires_test_effectiveness(ledger)
+                or evidence_head(ledger, "test_effectiveness") == candidate_head
+            )
+            if not test_effectiveness_ready:
+                raise RuntimeProblem(
+                    "Tester blackbox follow-up requires current test-effectiveness proof",
+                    result="NEEDS_USER",
+                    code="TEST_EFFECTIVENESS_MISSING",
+                    details={
+                        "candidate_head": candidate_head,
+                        "test_effectiveness_head": evidence_head(
+                            ledger, "test_effectiveness"
+                        ),
+                    },
+                    exit_code=EXIT_FAIL,
+                )
             if (
                 candidate_dirty
                 or integration.get("completed") is not True
                 or evidence_head(ledger, "machine") != candidate_head
             ):
                 raise RuntimeProblem(
-                    "Tester blackbox follow-up requires integrated tests and a verified clean candidate",
+                    "Tester blackbox follow-up requires integrated tests, current proof, and a verified clean candidate",
                     result="NEEDS_USER",
                     code="TESTER_BLACKBOX_PREREQUISITES_MISSING",
                     details={
@@ -5251,6 +8211,12 @@ def cmd_prepare_follow_up(args: argparse.Namespace) -> tuple[dict[str, Any], int
                         "candidate_dirty": candidate_dirty,
                         "tester_integration_completed": integration.get("completed"),
                         "verified_head": evidence_head(ledger, "machine"),
+                        "test_effectiveness_required": requires_test_effectiveness(
+                            ledger
+                        ),
+                        "test_effectiveness_head": evidence_head(
+                            ledger, "test_effectiveness"
+                        ),
                     },
                     exit_code=EXIT_FAIL,
                 )
@@ -5273,7 +8239,12 @@ def cmd_prepare_follow_up(args: argparse.Namespace) -> tuple[dict[str, Any], int
                 )
 
         dispatch_id = uuid.uuid4().hex
-        invalidate_role_evidence(ledger, role, dispatch_id=dispatch_id)
+        invalidate_role_evidence(
+            ledger,
+            role,
+            purpose=purpose,
+            dispatch_id=dispatch_id,
+        )
         if role == "tester" and purpose == "author":
             ledger["tester_integration"]["completed"] = False
         prepared = {
@@ -5545,7 +8516,19 @@ def cmd_agent_event(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         if not (prepared_start or prepared_terminal) and (
             args.event == "start" or result_value != "pass"
         ):
-            invalidate_role_evidence(ledger, args.role, turn_id=turn_id)
+            invalidation_purpose = (
+                "author"
+                if args.role == "tester"
+                and args.event in {"idle", "closed"}
+                and result_value != "pass"
+                else None
+            )
+            invalidate_role_evidence(
+                ledger,
+                args.role,
+                purpose=invalidation_purpose,
+                turn_id=turn_id,
+            )
         builder = Path(str(ledger["worktrees"]["builder"]["path"]))
         role_worktree = (
             Path(str(ledger["worktrees"]["tester"]["path"]))
@@ -6016,6 +8999,19 @@ def cmd_integrate_tests(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
 
 
 def status_with_persisted_continuity(repo: Path, ledger: dict[str, Any]) -> dict[str, Any]:
+    if ledger.get("phase") == "active":
+        builder = Path(str(ledger.get("worktrees", {}).get("builder", {}).get("path", "")))
+        if builder.exists():
+            candidate = full_head(builder)
+            stale_heads = [
+                head
+                for key in EVIDENCE_FIELDS
+                if (head := evidence_head(ledger, key)) is not None
+                and head != candidate
+            ]
+            if stale_heads:
+                invalidate_evidence(repo, ledger, stale_heads[0], candidate)
+                save_ledger(repo, ledger)
     facts = status_facts(repo, ledger)
     intent = ledger.get("finalize_intent")
     target_matches_intent = bool(
@@ -7361,13 +10357,25 @@ def _doctor_ledgers(repo: Path) -> tuple[list[dict[str, Any]], list[dict[str, An
 
 
 def cmd_doctor(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
-    repo = resolve_repo(args.repo)
-    reports, issues = _doctor_ledgers(repo)
+    selected_run_id: str | None = None
     if args.run:
-        reports = [item for item in reports if item.get("run_id") == args.run]
-        issues = [item for item in issues if item.get("run_id") in {None, args.run}]
+        repo, selected_run_id, _ledger = resolve_run_selector(args.repo, args.run)
+    else:
+        repo = resolve_repo(args.repo)
+    reports, issues = _doctor_ledgers(repo)
+    if selected_run_id is not None:
+        reports = [
+            item for item in reports if item.get("run_id") == selected_run_id
+        ]
+        issues = [
+            item
+            for item in issues
+            if item.get("run_id") in {None, selected_run_id}
+        ]
         if not reports:
-            raise RuntimeProblem(f"run not found: {args.run}", code="RUN_NOT_FOUND")
+            raise RuntimeProblem(
+                f"run not found: {selected_run_id}", code="RUN_NOT_FOUND"
+            )
     return {
         "status": "READY" if not issues else "NEEDS_USER",
         "message": (
@@ -7507,6 +10515,19 @@ def build_parser() -> argparse.ArgumentParser:
     verify.add_argument("--repo", default=".")
     verify.add_argument("--run", required=True)
     verify.set_defaults(handler=cmd_verify)
+
+    prove_tests = subparsers.add_parser("prove-tests")
+    prove_tests.add_argument("--repo", default=".")
+    prove_tests.add_argument("--run", required=True)
+    prove_tests.add_argument(
+        "--spec",
+        required=True,
+        help=(
+            "JSON matching schema/codex-test-proof.schema.json; "
+            "use - to read stdin"
+        ),
+    )
+    prove_tests.set_defaults(handler=cmd_prove_tests)
 
     evidence = subparsers.add_parser("record-evidence")
     evidence.add_argument("--repo", default=".")

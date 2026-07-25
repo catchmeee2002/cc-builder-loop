@@ -6,7 +6,9 @@ import unittest
 from harness import (
     assert_ledger_schema,
     assert_status,
+    assert_status_one_of,
     cleanup_repo,
+    ensure_test_effectiveness,
     head,
     init_repo,
     load_ledger,
@@ -36,7 +38,11 @@ class EvidenceHeadContractTest(unittest.TestCase):
         builder, _tester = worktrees_from(started, run_path)
 
         tester_agent_id = register_agent(run_path, "tester")
-        assert_status(run_cli("integrate-tests", "--run", run_path), "NOOP", rc=0)
+        assert_status_one_of(
+            run_cli("integrate-tests", "--run", run_path),
+            {"READY", "NOOP"},
+            rc=0,
+        )
         verified = run_cli("verify", "--run", run_path)
         assert_status(verified, "PASS", rc=0)
         first_candidate = head(builder)
@@ -156,7 +162,11 @@ class EvidenceHeadContractTest(unittest.TestCase):
         started, run_path = start_run(self.repo, self.plan)
         builder, _tester = worktrees_from(started, run_path)
         tester_agent_id = register_agent(run_path, "tester")
-        assert_status(run_cli("integrate-tests", "--run", run_path), "NOOP", rc=0)
+        assert_status_one_of(
+            run_cli("integrate-tests", "--run", run_path),
+            {"READY", "NOOP"},
+            rc=0,
+        )
         assert_status(run_cli("verify", "--run", run_path), "PASS", rc=0)
         candidate = head(builder)
         register_agent(run_path, "tester", agent_id=tester_agent_id, result="pass")
@@ -206,8 +216,10 @@ class EvidenceHeadContractTest(unittest.TestCase):
                     "candidate_worktree": str(builder),
                     "head_before": candidate,
                     "head_after": candidate,
-                    "command": "fixture blackbox",
+                    "command": "/usr/bin/true",
                     "returncode": 0,
+                    "candidate_dirty": False,
+                    "cases": [{"case_id": "add-cli", "status": "pass"}],
                 }
             ),
         )
@@ -215,7 +227,14 @@ class EvidenceHeadContractTest(unittest.TestCase):
         self.assertEqual(no_author.data.get("code"), "E2E_AUTHOR_INTEGRATION_MISSING")
 
         register_agent(run_path, "tester", agent_id=tester_agent_id, result="tests_ready")
-        assert_status(run_cli("integrate-tests", "--run", run_path), "NOOP", rc=0)
+        assert_status_one_of(
+            run_cli("integrate-tests", "--run", run_path),
+            {"READY", "NOOP"},
+            rc=0,
+        )
+        candidate = head(builder)
+        assert_status(run_cli("verify", "--run", run_path), "PASS", rc=0)
+        ensure_test_effectiveness(run_path)
         register_agent(run_path, "tester", agent_id=tester_agent_id, result="pass")
         missing_details = run_cli(
             "record-evidence",
@@ -247,8 +266,10 @@ class EvidenceHeadContractTest(unittest.TestCase):
                     "candidate_worktree": str(builder),
                     "head_before": candidate,
                     "head_after": candidate,
-                    "command": "fixture blackbox",
+                    "command": "/usr/bin/true",
                     "returncode": False,
+                    "candidate_dirty": False,
+                    "cases": [{"case_id": "add-cli", "status": "pass"}],
                 }
             ),
         )
@@ -259,9 +280,14 @@ class EvidenceHeadContractTest(unittest.TestCase):
         started, run_path = start_run(self.repo, self.plan)
         builder, _tester = worktrees_from(started, run_path)
         tester_agent_id = register_agent(run_path, "tester", result="tests_ready")
-        assert_status(run_cli("integrate-tests", "--run", run_path), "NOOP", rc=0)
+        assert_status_one_of(
+            run_cli("integrate-tests", "--run", run_path),
+            {"READY", "NOOP"},
+            rc=0,
+        )
         verified = run_cli("verify", "--run", run_path)
         assert_status(verified, "PASS", rc=0)
+        ensure_test_effectiveness(run_path)
         candidate = head(builder)
 
         prepared = run_cli(

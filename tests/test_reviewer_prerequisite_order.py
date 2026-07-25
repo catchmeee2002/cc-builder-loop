@@ -6,6 +6,7 @@ from pathlib import Path
 from harness import (
     assert_ledger_schema,
     assert_status,
+    assert_status_one_of,
     cleanup_repo,
     commit_all,
     head,
@@ -69,7 +70,11 @@ class ReviewerPrerequisiteOrderTest(unittest.TestCase):
 
     def prepare_non_l1_gates(self, run_path: Path, builder: Path) -> tuple[str, str]:
         tester_agent_id = register_agent(run_path, "tester")
-        assert_status(run_cli("integrate-tests", "--run", run_path), "NOOP", rc=0)
+        assert_status_one_of(
+            run_cli("integrate-tests", "--run", run_path),
+            {"READY", "NOOP"},
+            rc=0,
+        )
         assert_status(run_cli("verify", "--run", run_path), "PASS", rc=0)
         candidate = head(builder)
         register_agent(run_path, "tester", agent_id=tester_agent_id, result="pass")

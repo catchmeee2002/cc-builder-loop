@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+- 冻结测试证明的可信输入边界：独立 Tester 源码经 thread、ownership、Git/source manifest、
+  integration 和 Reviewer 审查后视为可信；runtime 继续防 hostile 环境、runner、输出伪造、空壳
+  证明和基础设施错误，但不把同解释器 reporter 或外部 supervisor 描述成任意恶意 Python 的
+  操作系统级安全沙箱。
+- 将新计划契约升级为 schema v3：逐行为冻结测试鉴别最低强度，并把端到端用例统一为
+  `schema_version=1 + cases`。新 start 拒绝 v2 计划；既有 v2 ledger 仍按原门禁续接。
+- 新增版本化 `schema/codex-test-proof.schema.json` 与 `prove-tests` 隔离门禁；schema 提供
+  unittest 基线先红、pytest 受控变异正例及成功 evidence 定义，门禁以基线先红、受控变异或
+  Reviewer 审核的边界映射证明测试能鉴别冻结行为。证据绑定 candidate、Tester source HEAD、
+  Tester manifest、命令、变异和日志。证明
+  命令改为非内联测试运行器或冻结的受保护仓库脚本白名单，未知解释器与命令分发器默认拒绝；实际
+  executable 固定为受信任绝对路径并记录身份，proof 子进程使用可信系统 PATH，避免冻结 wrapper
+  内部二次劫持。反例只有完整测试 id 精确映射到真实断言失败时才成立；schema、parser 与 evidence
+  对 runtime 合法 run id 和 Draft 2020-12 integer 语义保持一致。allowlisted runner 还会把声明 id
+  绑定到 Tester source blob，拒绝仓库外测试目标；candidate 必须逐项执行并通过声明测试，pytest
+  与 unittest 的逐项状态和真实异常类型改由独立监督进程采集，测试进程不持有最终结果写入权；原始
+  stdout/stderr 只作日志，不能由 skip/xfail、无关通过测试、captured stdout 或结束后追加文本冒充
+  证明。
+- 结构化端到端证据改为逐例校验机械、功能、质量和汇总结果，并在 Tester integration、机器验证、
+  测试鉴别证明全部绑定候选后才允许 blackbox 与 Reviewer。
+- Builder 增加按需根因修复参考和每个实现单元的廉价分段自检；新增离线角色行为实验场，只准备和
+  评分版本化场景，不调用模型、不联网、不写交付 ledger 或提交实验结果。
 - 将旧版 Builder 末尾的五问打分与直接 memory 协议替换为交付后分层复盘：业务项目、builder-loop
   和外部平台事故按单一 owner 落盘，跨边界因果链强制拆分；问题记录只含客观现场并经用户授权。
   工程问题处理后，剩余隐含知识才以 `builder-loop delegated` 模式交给 `$memory-review`。

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -91,6 +93,27 @@ def assert_status(result: ProcessResult, expected: str, *, rc: int | None = None
         )
 
 
+def assert_status_one_of(
+    result: ProcessResult,
+    expected: Iterable[str],
+    *,
+    rc: int,
+) -> None:
+    allowed = tuple(expected)
+    actual = result.data.get("status")
+    if actual not in allowed:
+        raise AssertionError(
+            f"status={actual!r}, expected one of={allowed!r}\n"
+            f"argv={result.argv!r}\nrc={result.returncode}\n"
+            f"stdout={result.stdout}\nstderr={result.stderr}"
+        )
+    if result.returncode != rc:
+        raise AssertionError(
+            f"rc={result.returncode}, expected={rc}\n"
+            f"status={actual!r}\nstdout={result.stdout}\nstderr={result.stderr}"
+        )
+
+
 def git(repo: str | os.PathLike[str], *args: str, check: bool = True) -> str:
     cp = run_process(["git", "-C", repo, *args])
     if check and cp.returncode != 0:
@@ -115,6 +138,7 @@ def init_repo(files: Mapping[str, str] | None = None) -> Path:
     seed = {
         "README.md": "fixture\n",
         "src/calc.py": "def add(a, b):\n    return a + b\n",
+        "src/proof_fixture.py": "VALUE = 1\n",
         "tests/test_calc.py": (
             "from src.calc import add\n\n"
             "def test_add():\n"
@@ -169,6 +193,8 @@ def commit_all(repo: str | os.PathLike[str], message: str) -> str:
             repo,
             "-c",
             "core.hooksPath=/dev/null",
+            "-c",
+            "commit.gpgSign=false",
             "commit",
             "-q",
             "--allow-empty",
@@ -232,7 +258,7 @@ def plan_markdown(
         lines.extend(
             [
                 "<!-- unit-test-spec -->",
-                "schema_version: 2",
+                "schema_version: 3",
                 f'spec_head: "{spec_head}"',
                 "plan_revision: 1",
                 f"parallel_ready: {'true' if parallel_ready else 'false'}",
@@ -271,6 +297,10 @@ def plan_markdown(
                 '    what: "add returns the arithmetic sum"',
                 '    boundaries: ["zero", "negative"]',
                 '    invariants: ["inputs are not mutated"]',
+                "test_effectiveness:",
+                "  requirements:",
+                "    - behavior_id: add-positive",
+                "      minimum: strong",
                 "mock_strategy: {}",
                 "<!-- /unit-test-spec -->",
                 "",
@@ -290,14 +320,19 @@ def plan_markdown(
         lines.extend(
             [
                 "<!-- e2e-cases -->",
-                "- id: add-cli",
-                '  input: "add 1 2"',
-                "  hard_rules:",
-                '    response_contains: ["3"]',
-                "  judge:",
-                '    verify: "The result is 3 and no error is emitted."',
-                '    quality: "The response is concise."',
-                "  level: full",
+                "schema_version: 1",
+                "cases:",
+                "  - id: add-cli",
+                "    covers: [add-positive]",
+                '    input: "add 1 2"',
+                "    level: full",
+                "    hard_rules:",
+                '      response_contains: ["3"]',
+                "    verify:",
+                '      must: ["The result is 3."]',
+                '      must_not: ["An error is emitted."]',
+                "    quality:",
+                '      criteria: ["The response is concise."]',
                 "<!-- /e2e-cases -->",
                 "",
             ]
@@ -320,7 +355,7 @@ def l1_plan_markdown(
         "预估改动级别：L1",
         "",
         "<!-- documentation-spec -->",
-        "schema_version: 2",
+        "schema_version: 3",
         f'spec_head: "{spec_head}"',
         f"plan_revision: {plan_revision}",
     ]
@@ -458,6 +493,13 @@ def finish_agent_turn(
     result: str,
 ) -> None:
     ledger = load_ledger(run_path)
+    if role == "tester" and result == "tests_ready":
+        tester = Path(str(ledger["worktrees"]["tester"]["path"]))
+        source_head = str(ledger["tester_integration"]["source_head"])
+        changed = git(tester, "diff", "--name-only", source_head, "HEAD")
+        if changed:
+            _ensure_standard_proof_source(run_path)
+            ledger = load_ledger(run_path)
     event_result = run_cli(
         "agent-event",
         "--repo",
@@ -496,6 +538,8 @@ def register_agent(
     resolved_agent_id, turn_id = start_agent_turn(
         run_path, role, agent_id=agent_id
     )
+    if role == "tester" and resolved_result == "tests_ready":
+        _ensure_standard_proof_source(run_path)
     finish_agent_turn(
         run_path,
         role,
@@ -506,15 +550,159 @@ def register_agent(
     return resolved_agent_id
 
 
+def _ensure_standard_proof_source(run_path: Path) -> None:
+    ledger = load_ledger(run_path)
+    if ledger["tester_integration"]["completed"]:
+        return
+    tester = Path(str(ledger["worktrees"]["tester"]["path"]))
+    target = tester / "tests" / "test_effectiveness_contract.py"
+    package = tester / "tests" / "__init__.py"
+    changed = False
+    if not package.is_file():
+        package.write_text("")
+        changed = True
+    if not target.is_file():
+        target.write_text(
+            "import unittest\n"
+            "from src.proof_fixture import VALUE\n\n"
+            "class TestEffectivenessContract(unittest.TestCase):\n"
+            "    def test_frozen_invariant(self):\n"
+            "        self.assertEqual(VALUE, 1)\n"
+        )
+        changed = True
+    if changed:
+        commit_all(tester, "add standard test-effectiveness source")
+
+
+def _frozen_plan_text(ledger: dict[str, Any]) -> str:
+    path = Path(str(ledger.get("plan", {}).get("path", "")))
+    return path.read_text() if path.is_file() else ""
+
+
+def _planned_e2e_cases(ledger: dict[str, Any]) -> list[dict[str, str]]:
+    text = _frozen_plan_text(ledger)
+    if "<!-- e2e-cases -->" not in text or "<!-- /e2e-cases -->" not in text:
+        return []
+    body = text.split("<!-- e2e-cases -->", 1)[1].split(
+        "<!-- /e2e-cases -->", 1
+    )[0]
+    cases: list[dict[str, str]] = []
+    current: dict[str, str] | None = None
+    for line in body.splitlines():
+        case_match = re.match(r"^\s*- id:\s*([a-z0-9][a-z0-9-]*)\s*$", line)
+        if case_match:
+            if current is not None:
+                cases.append(current)
+            current = {"id": case_match.group(1)}
+            continue
+        level_match = re.match(r"^\s+level:\s*(full|fast)\s*$", line)
+        if current is not None and level_match:
+            current["level"] = level_match.group(1)
+    if current is not None:
+        cases.append(current)
+    return cases
+
+
+def _canonical_case_results(
+    ledger: dict[str, Any], *, passed: bool
+) -> list[dict[str, str]]:
+    results: list[dict[str, str]] = []
+    for case in _planned_e2e_cases(ledger):
+        level = case["level"]
+        results.append(
+            {
+                "case_id": case["id"],
+                "level": level,
+                "mechanical": "pass" if passed else "fail",
+                "verify": ("pass" if passed else "fail")
+                if level == "full"
+                else "not_applicable",
+                "quality": ("pass" if passed else "fail")
+                if level == "full"
+                else "not_applicable",
+                "outcome": "pass" if passed else "fail",
+            }
+        )
+    return results
+
+
+def ensure_test_effectiveness(run_path: Path) -> None:
+    ledger = load_ledger(run_path)
+    if "test_effectiveness:" not in _frozen_plan_text(ledger):
+        return
+    repo = Path(str(ledger["repo_root"]))
+    builder = Path(str(ledger["worktrees"]["builder"]["path"]))
+    candidate = head(builder)
+    proof_evidence = ledger.get("evidence", {}).get("test_effectiveness")
+    if isinstance(proof_evidence, dict) and candidate in {
+        proof_evidence.get("head"),
+        proof_evidence.get("observed_head"),
+        proof_evidence.get("accepted_head"),
+    }:
+        return
+    if ledger.get("evidence", {}).get("test_effectiveness_head") == candidate:
+        return
+    if ledger.get("verification", {}).get("test_effectiveness_head") == candidate:
+        return
+    patch = (
+        "diff --git a/src/proof_fixture.py b/src/proof_fixture.py\n"
+        "--- a/src/proof_fixture.py\n"
+        "+++ b/src/proof_fixture.py\n"
+        "@@ -1 +1 @@\n"
+        "-VALUE = 1\n"
+        "+VALUE = 0\n"
+    )
+    spec = {
+        "schema_version": 1,
+        "groups": [
+            {
+                "behavior_ids": ["add-positive"],
+                "method": "mutation",
+                "argv": [
+                    "python3",
+                    "-m",
+                    "unittest",
+                    "tests.test_effectiveness_contract."
+                    "TestEffectivenessContract.test_frozen_invariant",
+                ],
+                "test_ids": [
+                    "tests.test_effectiveness_contract."
+                    "TestEffectivenessContract.test_frozen_invariant"
+                ],
+                "timeout_seconds": 30,
+                "patch": patch,
+            }
+        ],
+    }
+    result = run_cli(
+        "prove-tests",
+        "--repo",
+        repo,
+        "--run",
+        run_path,
+        "--spec",
+        "-",
+        input_text=json.dumps(spec),
+    )
+    if result.returncode != 0 or result.data.get("status") not in {"READY", "NOOP"}:
+        raise AssertionError(
+            f"test-effectiveness proof failed: rc={result.returncode} "
+            f"data={result.data!r} stderr={result.stderr}"
+        )
+
+
 def record_evidence(
     run_path: Path,
     kind: str,
     evidence_head: str,
     *,
     agent_id: str | None = None,
+    command_argv: list[str] | None = None,
 ) -> ProcessResult:
     if not agent_id:
         raise AssertionError(f"agent_id is required for {kind} evidence")
+    if kind == "e2e_verified":
+        ensure_test_effectiveness(run_path)
     argv: list[str | os.PathLike[str]] = [
         "record-evidence",
         "--run",
@@ -528,18 +716,50 @@ def record_evidence(
     if kind == "e2e_verified":
         ledger = load_ledger(run_path)
         builder = Path(str(ledger["worktrees"]["builder"]["path"]))
+        command_argv = command_argv or [
+            sys.executable,
+            "-m",
+            "unittest",
+            "discover",
+            "-s",
+            "tests",
+            "-p",
+            "test_*.py",
+        ]
+        head_before = head(builder)
+        blackbox = run_process(
+            command_argv,
+            cwd=builder,
+            env={"PYTHONDONTWRITEBYTECODE": "1"},
+        )
+        head_after = head(builder)
+        dirty = bool(
+            git(builder, "status", "--porcelain", "--untracked-files=all")
+            or git(
+                builder,
+                "ls-files",
+                "--others",
+                "--ignored",
+                "--exclude-standard",
+            )
+        )
+        case_results = _canonical_case_results(
+            ledger, passed=blackbox.returncode == 0
+        )
+        details = {
+            "candidate_worktree": str(builder),
+            "head_before": head_before,
+            "head_after": head_after,
+            "command": shlex.join(command_argv),
+            "returncode": blackbox.returncode,
+            "candidate_dirty": dirty,
+        }
+        if case_results:
+            details["cases"] = case_results
         argv.extend(
             [
                 "--details",
-                json.dumps(
-                    {
-                        "candidate_worktree": str(builder),
-                        "head_before": evidence_head,
-                        "head_after": evidence_head,
-                        "command": "fixture blackbox verification",
-                        "returncode": 0,
-                    }
-                ),
+                json.dumps(details),
             ]
         )
     result = run_cli(*argv)

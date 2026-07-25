@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import unittest
 from pathlib import Path
@@ -106,6 +108,54 @@ class SerialPrerequisiteContractTest(unittest.TestCase):
             ledger["prerequisite_publication"]["manifest_sha256"],
         )
         assert_ledger_schema(run_path)
+
+    def test_multi_file_publication_manifest_binds_exact_regular_blobs(self) -> None:
+        repo = self.repo
+        spec_head = head(repo)
+        text = plan_markdown(
+            spec_head,
+            parallel_ready=False,
+            builder_write=["src/**", "contracts/**"],
+        ).replace(
+            '  public_prerequisites: ["src/public_api.py"]',
+            '  public_prerequisites: ["src/public_api.py", "contracts/proof.json"]',
+        )
+        plan = write_plan(repo, text, name="two-public-prerequisites.md")
+        started, run_path = start_run(repo, plan, task="two-file publication")
+        builder, tester = worktrees_from(started, run_path)
+        (builder / "src" / "public_api.py").write_text("API_VERSION = 1\n")
+        contract = builder / "contracts" / "proof.json"
+        contract.parent.mkdir(parents=True, exist_ok=True)
+        contract.write_text('{"schema_version": 1}\n')
+
+        published = run_cli("publish-prerequisites", "--run", run_path)
+        assert_status(published, "READY", rc=0)
+        publication_head = str(published.data["head"])
+        paths = ["contracts/proof.json", "src/public_api.py"]
+        files = {
+            path: git(tester, "rev-parse", f"{publication_head}:{path}")
+            for path in paths
+        }
+        self.assertEqual(sorted(published.data["paths"]), paths)
+        self.assertEqual(published.data["files"], files)
+        self.assertEqual(
+            sorted(git(tester, "diff", "--name-only", spec_head, publication_head).splitlines()),
+            paths,
+        )
+        manifest = {
+            "head": publication_head,
+            "paths": published.data["paths"],
+            "files": files,
+        }
+        digest = hashlib.sha256(
+            json.dumps(
+                manifest,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        ).hexdigest()
+        self.assertEqual(published.data["manifest_sha256"], digest)
 
     def test_builder_history_is_not_in_tester_publication_ancestry(self) -> None:
         _started, run_path, builder, tester = self.start()
