@@ -1,0 +1,134 @@
+{
+  "schema_version": 1,
+  "suite_id": "evidence-enriched-2026-07-26",
+  "projects": [
+    {
+      "project_id": "cc-builder-loop",
+      "goal": "在 Codex 原生推理和调度之下提供不能靠模型自述绕过的独立判据、角色边界、证据与 Git 交付闭环。",
+      "principles": [
+        {"id": "CC1", "text": "机器、Tester、Reviewer 判据按独立性分层，并绑定产生结论的真实输入。"},
+        {"id": "CC2", "text": "每个事实只有一个家；消费者引用权威源，不维护旁路副本。"},
+        {"id": "CC7", "text": "连续性属于原 thread 和事务身份，同名新角色不能冒充续接。"},
+        {"id": "CC8", "text": "契约与成熟行为先于实现；公共输入输出和副作用应先冻结。"},
+        {"id": "CC11", "text": "设计原则、公共契约或角色边界的增删改必须单独披露并取得用户接受。"}
+      ],
+      "cases": [
+        {
+          "id": "cc-e101",
+          "source_url": "https://github.com/catchmeee2002/cc-builder-loop/issues/101",
+          "title": "proof worktree 的未跟踪或 ignored 残留未进入清洁判断",
+          "facts": [
+            "proof 命令在隔离 worktree 中返回预期退出码。",
+            "命令创建未跟踪 Python 源码后，后续导入实际读取了该文件；创建 ignored __pycache__ 后，普通 tracked diff 仍为空。",
+            "原实现的清洁函数只调用 tracked diff；调用点没有第二层 residue 检查。",
+            "在同一候选上只增加 untracked/ignored 枚举后，受控复现被拒绝；无残留的正向 proof 仍被接受。",
+            "改动不改变 proof 的公共输入输出，只补齐既有 clean 不变量。"
+          ],
+          "gold": {"route": "derived", "cluster_id": "cc-e-worktree-cleanliness", "principle_ids": ["CC1", "CC8"]}
+        },
+        {
+          "id": "cc-e124",
+          "source_url": "https://github.com/catchmeee2002/cc-builder-loop/issues/124",
+          "title": "E2E case 无 hard_rules 时 mechanical 派生值未传给 Tester",
+          "facts": [
+            "冻结 schema 与 runtime 唯一规则都规定：full case 只有存在 hard_rules 时 mechanical 才可为 pass，否则必须为 not_applicable。",
+            "Tester 的七项检查属于 must/must_not/quality，不是 hard_rules；它们返回 0 不改变 mechanical 的适用性。",
+            "Builder 交接合同列出字段却漏掉上述权威规则的引用，Tester 首次因此返回 mechanical=pass。",
+            "保持 frozen case、候选和检查结果不变，只补充规则引用后，新鲜 Tester 稳定返回 not_applicable，record-evidence 接受。",
+            "不需要新增或修改公共字段、角色 ownership 或用户入口。"
+          ],
+          "gold": {"route": "derived", "cluster_id": "cc-e-mechanical-projection", "principle_ids": ["CC2", "CC8"]}
+        }
+      ]
+    },
+    {
+      "project_id": "generator",
+      "goal": "通过结构化世界状态、蓝图与叙事原文协作，生成长篇小说并对可判定的一致性错误执行可靠校验。",
+      "principles": [
+        {"id": "G2", "text": "每份数据有且只有一个职责；冲突应从数据分层消除。"},
+        {"id": "G3", "text": "生产、存储、消费全链路必须清晰，生产源唯一。"},
+        {"id": "G4", "text": "写入求真，读出求精；缺失可以显式暴露，幻觉或静默错误不能进入状态。"},
+        {"id": "G5", "text": "能确定性校验的绝不交给 LLM；执行状态转移后必须对账，校验事实必须显式注入。"},
+        {"id": "GE2", "text": "同类现象出现三处以上按系统性问题处理，不能逐点打补丁。"}
+      ],
+      "cases": [
+        {
+          "id": "gen-e2",
+          "source_url": "https://github.com/catchmeee2002/generator/issues/2",
+          "title": "一致性校验异常或 JSON 解析失败时章节仍被视为通过",
+          "facts": [
+            "两个受控测试分别让 validator.run_all 抛异常、让一致性模型返回非法 JSON。",
+            "两条路径都返回 passed=true、issues=[]，调用者与正常无问题章节无法区分。",
+            "所有消费者都把 passed=true 作为可继续条件；不存在另一个异常状态通道。",
+            "同一测试把两条异常路径改成显式 blocking 后稳定变红，正常合法 JSON 且无问题的路径仍通过。",
+            "代码库审计发现多个校验边界共享相同的“异常折叠为成功”策略，需要成组核对影响范围。"
+          ],
+          "gold": {"route": "batch_approval", "cluster_id": "gen-e-fail-open", "principle_ids": ["G4", "G5", "GE2"]}
+        },
+        {
+          "id": "gen-e89",
+          "source_url": "https://github.com/catchmeee2002/generator/issues/89",
+          "title": "单元测试遗漏 mock，意外调用真实 LLM",
+          "facts": [
+            "三个 finalize_chapter 单元测试使用默认真实 provider，只 mock 了 _extract_and_update_world。",
+            "调用轨迹显示 _finalize_chapter 随后进入未 mock 的 _generate_chapter_summary，并向网关发出真实请求。",
+            "网关 502 时三个测试失败；网关恢复后不改代码即可通过。",
+            "只在测试中 mock _generate_chapter_summary 后，断网环境下三个测试稳定通过，产品代码路径不变。",
+            "测试目标是 finalize 的状态与幂等性，不包含真实模型集成。"
+          ],
+          "gold": {"route": "derived", "cluster_id": "gen-e-unit-boundary", "principle_ids": ["G3", "G5"]}
+        }
+      ]
+    },
+    {
+      "project_id": "divine-word",
+      "goal": "让玩家通过一句短神谕可观察地改变文明历史，重点是视觉化因果、NPC 涌现和不可复现的叙事体验。",
+      "principles": [
+        {"id": "D0", "text": "产品定位是 AI 涌现文明纪录片；视觉叙事优先于默认阅读大量文字。"},
+        {"id": "D1", "text": "玩家神谕必须产生可追溯且路径可区分的因果链，因果感是生死线。"},
+        {"id": "D2", "text": "事件层 append-only 且权威，状态层是 events 的 fold，可从事件重算。"},
+        {"id": "D3", "text": "代码能算的状态、数值与关系一致性不交给 LLM。"},
+        {"id": "D7", "text": "涌现优先于编剧；搭舞台和交互规则，不预写剧情。"}
+      ],
+      "cases": [
+        {
+          "id": "dw-e38",
+          "source_url": "https://github.com/catchmeee2002/divine-word/issues/38",
+          "title": "fold 重建 WorldState 时新增字段可能丢失",
+          "facts": [
+            "事件载荷包含完整 doctrine_proposals，序列化与反序列化前后值一致。",
+            "逐事件 replay 轨迹显示该字段在 handler 返回的中间状态仍存在。",
+            "随后通用 WorldState 重建函数使用手写字段清单创建新对象，该清单缺少 doctrine_proposals，字段在这一行后变为空。",
+            "只补齐该字段后，原事件序列重放可恢复相同状态；其他字段和事件不变。",
+            "同一重建函数承载所有状态字段，新增字段仍可能再次漏入手写清单。"
+          ],
+          "gold": {"route": "derived", "cluster_id": "dw-e-fold-completeness", "principle_ids": ["D2", "D3"]}
+        },
+        {
+          "id": "dw-e46",
+          "source_url": "https://github.com/catchmeee2002/divine-word/issues/46",
+          "title": "冲突对象每轮分散，积怨无法累积",
+          "facts": [
+            "十三轮的神谕目标解析始终指向同一阵营冲突，关系账本的 NPC pair key 稳定且可重放。",
+            "候选生成会枚举所有 opposing NPC 对，评分函数不读取既有 grudge、上一轮冲突对象或 feud 状态；同分后随机选新对。",
+            "逐轮轨迹显示候选池中已有积怨对存在，但与陌生对权重完全相同，因此每轮选择分散。",
+            "固定种子模拟证明：保持现有数值和衰减不变，仅增加既有积怨连续性权重后，同一对可跨过 physical/lethal 阈值；关闭该权重又恢复长期 verbal。",
+            "需要决定连续性权重的产品强度，但无需改变事件权威、关系身份或涌现而非编剧的原则。"
+          ],
+          "gold": {"route": "batch_approval", "cluster_id": "dw-e-conflict-continuity", "principle_ids": ["D1", "D3", "D7"]}
+        },
+        {
+          "id": "dw-e29",
+          "source_url": "https://github.com/catchmeee2002/divine-word/issues/29",
+          "title": "四套视觉风格候选尚未选择",
+          "facts": [
+            "已有四套不同的像素视觉风格候选。",
+            "候选在细节密度、地图可读性、角色辨识度和整体气质上取舍不同。",
+            "项目尚未冻结最终视觉品味，也没有一个确定性指标能替代终审选择。"
+          ],
+          "gold": {"route": "needs_first_principles", "cluster_id": "dw-e-visual-taste", "principle_ids": ["D0"]}
+        }
+      ]
+    }
+  ]
+}

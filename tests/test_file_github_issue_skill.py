@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 import unittest
 
@@ -15,6 +16,16 @@ def compact(text: str) -> str:
     return re.sub(r"\s+", "", text).lower()
 
 
+def contract(text: str, name: str) -> dict:
+    start = f"<!-- {name}:v1 -->"
+    end = f"<!-- /{name}:v1 -->"
+    block = text.split(start, 1)[1].split(end, 1)[0]
+    payload = re.search(r"```json\s*(.*?)\s*```", block, flags=re.DOTALL)
+    if payload is None:
+        raise AssertionError(f"missing JSON payload for {name}")
+    return json.loads(payload.group(1))
+
+
 class FileGithubIssueSkillTest(unittest.TestCase):
     def test_skill_is_prompt_only_and_implicitly_discoverable(self) -> None:
         skill = SKILL_PATH.read_text()
@@ -25,14 +36,15 @@ class FileGithubIssueSkillTest(unittest.TestCase):
         self.assertIn("记录 bug", skill)
         self.assertIn("gh issue create", skill)
         self.assertIn("gh issue comment", skill)
+        self.assertIn("gh issue close --comment", skill)
         self.assertRegex(metadata, r"(?m)^\s*allow_implicit_invocation:\s*true\s*$")
 
-    def test_explicit_file_request_is_authorization_without_second_confirmation(self) -> None:
+    def test_explicit_issue_action_is_authorization_without_second_confirmation(self) -> None:
         skill = compact(SKILL_PATH.read_text())
 
-        self.assertIn(compact("这条指令已经授权创建或补充 Issue"), skill)
-        self.assertIn(compact("不要再次询问是否创建"), skill)
-        self.assertIn(compact("没有创建授权时，只向用户报告"), skill)
+        self.assertIn(compact("这条指令已经授权相应 GitHub 写操作"), skill)
+        self.assertIn(compact("不要再次询问是否执行"), skill)
+        self.assertIn(compact("没有 GitHub 写入授权时，只向用户报告"), skill)
         self.assertIn("request_user_input", skill)
 
     def test_issue_preserves_facts_without_anchoring_a_fix(self) -> None:
@@ -51,6 +63,53 @@ class FileGithubIssueSkillTest(unittest.TestCase):
             "清洗",
         ):
             self.assertIn(compact(term), skill)
+
+    def test_capture_and_resolution_contracts_are_separated(self) -> None:
+        skill = SKILL_PATH.read_text()
+
+        self.assertIn("<!-- issue-capture:v1 -->", skill)
+        self.assertIn("<!-- /issue-capture:v1 -->", skill)
+        self.assertIn("<!-- issue-resolution:v1 -->", skill)
+        self.assertIn("<!-- /issue-resolution:v1 -->", skill)
+        self.assertIn("incident_head", skill)
+        self.assertIn("resolved_head", skill)
+        self.assertIn("human_decision", skill)
+        self.assertIn("acceptance", skill)
+        self.assertIn("创建后不要改写原始正文", skill)
+        self.assertEqual(
+            set(contract(skill, "issue-capture")),
+            {"captured_at", "repository", "incident_head", "branch", "dirty", "root_cause_status"},
+        )
+        self.assertEqual(
+            set(contract(skill, "issue-resolution")),
+            {
+                "resolved_at",
+                "outcome",
+                "incident_head",
+                "resolved_head",
+                "fix_commits",
+                "root_cause_status",
+                "root_cause",
+                "violated_invariant",
+                "human_decision",
+                "acceptance",
+                "residual_uncertainty",
+            },
+        )
+
+    def test_resolution_records_facts_without_self_assigning_shadow_route(self) -> None:
+        skill = compact(SKILL_PATH.read_text())
+
+        for kind in (
+            "scope_approval",
+            "goal_or_principle",
+            "root_cause_correction",
+            "tradeoff",
+        ):
+            self.assertIn(kind, skill)
+        self.assertIn(compact("不要在结案评论中填写 `shadow_route`"), skill)
+        self.assertIn("batch_approval", skill)
+        self.assertIn("needs_first_principles", skill)
 
 
 if __name__ == "__main__":

@@ -61,8 +61,9 @@ Default mode 直接进入 Builder；也可显式调用 `$builder` 作为手工�
   builder-loop 与外部平台事故按单一 owner 分流；跨边界因果链拆成两个原子事故，经用户授权才写
   项目问题文档或 GitHub issue。工程问题处理后，剩余隐含知识委托 `$memory-review`，不再执行旧版
   五问打分或直接写 memory。
-- `$file-github-issue` 在用户要求提 Issue 时保留现场、查重并区分事实与根因状态，再由当前 Agent
-  直接调用 `gh` 创建或补充 Issue；用户的创建指令就是授权，不增加第二次确认，也不引入 Issue CLI。
+- `$file-github-issue` 在创建时冻结事故快照，在关闭时追加最终根因、人类决策和验收证据，再由当前
+  Agent 直接调用 `gh` 创建、补充或关闭；用户的动作指令就是授权，不增加第二次确认，也不引入
+  Issue CLI。结案语料可供按需离线影子评测，但影子结果不写回 GitHub。
 - finalize 只更新本地目标分支，不自动 push、创建 PR 或合并远端分支。
 - 正常修复循环会自动继续；测试目标或 ownership 变化、计划过期、迭代上限、Reviewer
   决策项、agent/target continuity 失败、目标同步 blocker 或 Git 冲突等安全停止会交还用户。
@@ -159,6 +160,10 @@ python3 -m pip install -r requirements-dev.txt
 python3 scripts/codex-builder-loop.py --help
 bash scripts/verify-all.sh
 ```
+
+按需运行的 Issue 根因与注意力分流实验位于
+[experiments/issue-triage/](experiments/issue-triage/README.md)。它不属于实时服务或交付 runtime；固定
+样本、真实 Issue 只读 shadow、结案语料边界和运行命令均由该模块维护。
 
 该命令只运行确定性契约 fixtures，不包含真实 Codex child spawn、follow-up、hook continuation
 和 sandbox live smoke；发布级实机验收条件见 [docs/known-issues.md](docs/known-issues.md)。

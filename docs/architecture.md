@@ -260,6 +260,16 @@ adapter commit、checkout dirty 状态和捕获状态。事故记录只能引用
 事实；旧 ledger 没有该字段时明确标为 `legacy-unavailable`，不得用任务结束时的当前 checkout
 反推历史版本。
 
+## 离线 Issue 分流实验
+
+`experiments/issue-triage/` 归本仓维护，但不属于 builder-loop runtime。它只在需要校准时读取固定
+fixtures 或真实 GitHub Issue，通过隔离的 Responses API 请求生成根因、攻击和分流建议；结果进入
+私有运行目录，不写 ledger，也不触发 Planner、Builder、标签、评论或修复动作。
+
+Issue 创建快照与关闭结论分别承担实验输入和事后对照。历史评测必须绑定事故 `incident_head` 并截断
+修复后材料，避免模型从当前代码或结案评论看到答案。详细样本契约、角色和运行入口只在
+[实验模块文档](../experiments/issue-triage/README.md) 维护，runtime 架构不复制其字段和路线快照。
+
 ## 交付后事故与知识复盘
 
 finalize 完成后，Builder 只在出现多轮失败、冲突/recovery、Tester correction、Reviewer finding、

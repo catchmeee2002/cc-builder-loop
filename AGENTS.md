@@ -9,6 +9,8 @@
 - `hooks/`：只记录 agent 身份并做完成门禁，不承担循环编排。
 - `policies/`：安装时部署的默认文档审计政策。
 - `experiments/agent-behavior/`：离线角色行为场景、指令变体与机械评分；不进入交付 ledger。
+- `experiments/issue-triage/`：按需运行的 GitHub Issue 根因与注意力分流实验；不进入 runtime 或
+  交付门禁。
 - `schema/`：runtime ledger 的唯一结构定义。
 - `tests/`：不依赖真实模型的契约 fixtures。
 - `docs/`：设计哲学、架构和已知环境问题。
@@ -22,6 +24,7 @@ bash scripts/verify-all.sh
 python3 "${CODEX_HOME:-$HOME/.codex}/skills/.system/skill-creator/scripts/quick_validate.py" skills/builder-loop-planner
 python3 "${CODEX_HOME:-$HOME/.codex}/skills/.system/skill-creator/scripts/quick_validate.py" skills/builder
 python3 "${CODEX_HOME:-$HOME/.codex}/skills/.system/skill-creator/scripts/quick_validate.py" skills/file-github-issue
+python3 -m unittest discover -s experiments/issue-triage/tests -p 'test_*.py'
 ```
 
 # Workflows
@@ -80,3 +83,4 @@ python3 "${CODEX_HOME:-$HOME/.codex}/skills/.system/skill-creator/scripts/quick_
 - Planner：`$builder-loop-planner`
 - 执行：`$builder`
 - 记录 GitHub Issue：`$file-github-issue`
+- 离线 Issue 分流实验：[experiments/issue-triage/README.md](experiments/issue-triage/README.md)

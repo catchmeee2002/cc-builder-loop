@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "profiles": {
+    "catchmeee2002/cc-builder-loop": {
+      "goal": "在 Codex 原生推理和调度之下提供不能靠模型自述绕过的独立判据、角色边界、证据与 Git 交付闭环。",
+      "principle_sources": [
+        {
+          "path": "docs/design-philosophy.md",
+          "heading_patterns": ["^零、", "^一、", "^二、", "^三、", "^四、", "^五、", "^六、", "^七、", "^八、", "^九、", "^十、", "^十一、"]
+        }
+      ]
+    },
+    "catchmeee2002/generator": {
+      "goal": "通过结构化世界状态、蓝图与叙事原文协作，生成长篇小说并对可判定的一致性错误执行可靠校验。",
+      "principle_sources": [
+        {
+          "path": "CLAUDE.md",
+          "heading_patterns": ["^[一二三四五六]、", "^核心设计约束$", "^开发过程纪律$"]
+        }
+      ]
+    },
+    "catchmeee2002/divine-word": {
+      "goal": "让玩家通过一句短神谕可观察地改变文明历史，重点是视觉化因果、NPC 涌现和不可复现的叙事体验。",
+      "principle_sources": [
+        {
+          "path": "CLAUDE.md",
+          "heading_patterns": ["^设计哲学$"]
+        },
+        {
+          "path": "docs/game-design.md",
+          "heading_patterns": ["^原则[一二三四五六七八九]："]
+        }
+      ]
+    }
+  }
+}

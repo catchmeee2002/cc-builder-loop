@@ -8,6 +8,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC_HEAD = "1b512b120a673470a4ee154b7c8dd8ac3c3f7e1f"
+DELIVERY_HEAD = "e238fe159ce16f225ab7e4dd35a19052f02b2122"
 PLANNER_BLOB = "bb54a98fe4ddbc291ed226efbdc1616d5c2ca297"
 PLANNER_PATH = Path("skills/builder-loop-planner/SKILL.md")
 REFERENCE_PATH = Path("skills/builder-loop-planner/references/design-decisions.md")
@@ -291,7 +292,7 @@ def worktree_blob(path: Path) -> str:
 
 def changed_paths() -> list[str]:
     result = subprocess.run(
-        ["git", "diff", "--name-only", SPEC_HEAD, "HEAD"],
+        ["git", "diff", "--name-only", SPEC_HEAD, DELIVERY_HEAD],
         cwd=ROOT,
         text=True,
         capture_output=True,

@@ -1,0 +1,259 @@
+{
+  "schema_version": 1,
+  "suite_id": "pilot-2026-07-26",
+  "projects": [
+    {
+      "project_id": "cc-builder-loop",
+      "goal": "在 Codex 原生推理和调度之下提供不能靠模型自述绕过的独立判据、角色边界、证据与 Git 交付闭环。",
+      "principles": [
+        {"id": "CC1", "text": "机器、Tester、Reviewer 判据按独立性分层，并绑定产生结论的真实输入。"},
+        {"id": "CC2", "text": "每个事实只有一个家；消费者引用权威源，不维护旁路副本。"},
+        {"id": "CC4", "text": "改输入条件，不堆输出特判。"},
+        {"id": "CC5", "text": "保持最小充分；只为当前行为或明确演进压力增加结构。"},
+        {"id": "CC6", "text": "同类问题重复出现说明缺少抽象、边界或正确问题定义，应停止重试并审视架构。"},
+        {"id": "CC7", "text": "连续性属于原 thread 和事务身份，同名新角色不能冒充续接。"},
+        {"id": "CC8", "text": "契约与成熟行为先于实现；公共输入输出和副作用应先冻结。"},
+        {"id": "CC10", "text": "出现产品取舍、测试目标变化或无进展时，把决定交还用户。"},
+        {"id": "CC11", "text": "设计原则、公共契约或角色边界的增删改必须单独披露并取得用户接受。"}
+      ],
+      "cases": [
+        {
+          "id": "cc-101",
+          "source_url": "https://github.com/catchmeee2002/cc-builder-loop/issues/101",
+          "title": "proof worktree 的未跟踪或 ignored 残留未进入清洁判断",
+          "facts": [
+            "proof 命令在隔离 worktree 中返回预期退出码。",
+            "命令可以创建未跟踪 Python 源码或 ignored 缓存，这些文件可能影响后续导入与测试。",
+            "原清洁检查只查看 tracked diff。",
+            "存在上述残留时，旧流程仍可以记录 proof evidence。"
+          ],
+          "gold": {"route": "derived", "cluster_id": "cc-proof-evidence-integrity", "principle_ids": ["CC1", "CC8"]}
+        },
+        {
+          "id": "cc-122",
+          "source_url": "https://github.com/catchmeee2002/cc-builder-loop/issues/122",
+          "title": "共享测试断言只检查 READY/NOOP 文本，不再检查进程 returncode",
+          "facts": [
+            "多处测试把同时检查 rc=0 与成功状态的断言，替换成只检查 stdout JSON status 属于 READY 或 NOOP。",
+            "若 CLI 返回非零但最后一行仍含 READY 或 NOOP，测试仍会通过。",
+            "正式运行契约要求成功状态同时具有成功进程 returncode。",
+            "完整 fixtures 当前仍为绿色。"
+          ],
+          "gold": {"route": "derived", "cluster_id": "cc-proof-evidence-integrity", "principle_ids": ["CC1", "CC8"]}
+        },
+        {
+          "id": "cc-123",
+          "source_url": "https://github.com/catchmeee2002/cc-builder-loop/issues/123",
+          "title": "计划 checklist 的额外机器检查未被 runtime evidence 覆盖",
+          "facts": [
+            "冻结计划要求运行仓库 fixtures 和两项 Skill validator。",
+            "有效 runner 只执行 runtime compile 与仓库 fixtures，全部返回 0。",
+            "plan-validate 与 start 均接受该计划。",
+            "最终 Reviewer 才发现两项 Skill validator 没有对应 machine evidence，并首次阻断批准。",
+            "补跑 validator 后同一 Reviewer 复审通过。"
+          ],
+          "gold": {"route": "batch_approval", "cluster_id": "cc-checklist-evidence-binding", "principle_ids": ["CC1", "CC2", "CC8"]}
+        },
+        {
+          "id": "cc-124",
+          "source_url": "https://github.com/catchmeee2002/cc-builder-loop/issues/124",
+          "title": "E2E case 无 hard_rules 时 mechanical 派生值未传给 Tester",
+          "facts": [
+            "冻结 case 为 full，包含 must、must_not 与 quality，但没有 hard_rules。",
+            "Tester 的七项真实检查均返回 0，并报告 mechanical=pass。",
+            "runtime 拒绝记录，要求该结构下 mechanical=not_applicable。",
+            "Builder 交接只列出返回字段，没有说明该派生规则。",
+            "改成 not_applicable 后 evidence 被接受。"
+          ],
+          "gold": {"route": "derived", "cluster_id": "cc-role-contract-projection", "principle_ids": ["CC2", "CC8"]}
+        },
+        {
+          "id": "cc-125",
+          "source_url": "https://github.com/catchmeee2002/cc-builder-loop/issues/125",
+          "title": "Reviewer blocked 后建议 fresh Reviewer，与连续性规则冲突",
+          "facts": [
+            "Reviewer 首次只因验证顺序证据缺失而 blocked，候选、测试目标和验收标准均未变化。",
+            "Reviewer 文本要求补证据后启动 fresh Reviewer。",
+            "Builder 的冻结规则要求后续审查续接原 Reviewer thread。",
+            "主线程实际续接原 Reviewer 后通过，evidence 绑定原 agent id。",
+            "Reviewer 自身角色合同只定义 blocked 输出，未声明 blocked 后的 thread 处理。"
+          ],
+          "gold": {"route": "derived", "cluster_id": "cc-role-contract-projection", "principle_ids": ["CC7", "CC8"]}
+        },
+        {
+          "id": "cc-91",
+          "source_url": "https://github.com/catchmeee2002/cc-builder-loop/issues/91",
+          "title": "Planner 应在什么条件下比较重大方案并保留演进通道",
+          "facts": [
+            "局部可逆任务若强制比较多个方案，会增加明显规划成本。",
+            "高影响、难回退且存在真实分叉的任务，如果不比较方案，可能过早冻结单一路径。",
+            "为未知未来预置抽象会违反最小充分，但完全不考虑已经明确的下一阶段可能堵死演进。",
+            "需要决定哪些方法应进入 Planner 常驻契约，哪些只按需加载。"
+          ],
+          "gold": {"route": "needs_first_principles", "cluster_id": "cc-planning-philosophy", "principle_ids": ["CC5", "CC10", "CC11"]}
+        }
+      ]
+    },
+    {
+      "project_id": "generator",
+      "goal": "通过结构化世界状态、蓝图与叙事原文协作，生成长篇小说并对可判定的一致性错误执行可靠校验。",
+      "principles": [
+        {"id": "G2", "text": "每份数据有且只有一个职责；冲突应从数据分层消除。"},
+        {"id": "G3", "text": "生产、存储、消费全链路必须清晰，生产源唯一。"},
+        {"id": "G4", "text": "写入求真，读出求精；缺失可以显式暴露，幻觉或静默错误不能进入状态。"},
+        {"id": "G5", "text": "能确定性校验的绝不交给 LLM；执行状态转移后必须对账，校验事实必须显式注入。"},
+        {"id": "GE1", "text": "修复前必须先把问题归入架构、数据合同、prompt、模型边界、实现或建模维度。"},
+        {"id": "GE2", "text": "同类现象出现三处以上按系统性问题处理，不能逐点打补丁。"}
+      ],
+      "cases": [
+        {
+          "id": "gen-2",
+          "source_url": "https://github.com/catchmeee2002/generator/issues/2",
+          "title": "一致性校验异常或 JSON 解析失败时章节仍被视为通过",
+          "facts": [
+            "validator.run_all 抛异常时，代码记录 warning 并把 validator_issues 设为空数组。",
+            "一致性模型输出无法解析为 JSON 时，解析函数返回 passed=true、issues=[]。",
+            "两条路径都会使境界倒退、死人复活和秘密泄露等 blocking 检查不再阻断章节。",
+            "调用者无法从返回值知道防线已经失效。"
+          ],
+          "gold": {"route": "derived", "cluster_id": "gen-fail-open-required-state", "principle_ids": ["G4", "G5"]}
+        },
+        {
+          "id": "gen-86",
+          "source_url": "https://github.com/catchmeee2002/generator/issues/86",
+          "title": "extraction 异常后整章 events 为空但流程继续",
+          "facts": [
+            "某次十章实验中有六章 events 表完全为空，但章节仍完成 submit 或 force_submit。",
+            "extraction 的模型调用或 JSON 解析失败会落入覆盖整段流程的 except Exception。",
+            "异常路径只记录日志并写空 world_update，调用链不重新抛出。",
+            "依赖 events 的确定性校验在这些章节无行可查。",
+            "代码库主链路还存在多处类似 catch-all，需要判断是否为同一系统性问题。"
+          ],
+          "gold": {"route": "batch_approval", "cluster_id": "gen-fail-open-required-state", "principle_ids": ["G3", "G4", "G5", "GE2"]}
+        },
+        {
+          "id": "gen-88",
+          "source_url": "https://github.com/catchmeee2002/generator/issues/88",
+          "title": "story_spine 文件损坏时被当作文件不存在",
+          "facts": [
+            "Engine 构造 StorySpine 时分别处理文件不存在和其他异常。",
+            "文件存在但格式损坏时，广泛异常捕获记录 warning 并把 story_spine 设为 None。",
+            "后续因果链、secret 与时间轴逻辑都把 None 当作该能力未启用并继续运行。",
+            "运行结果中没有结构化状态表明输入文件损坏。"
+          ],
+          "gold": {"route": "derived", "cluster_id": "gen-fail-open-required-state", "principle_ids": ["G2", "G4", "G5"]}
+        },
+        {
+          "id": "gen-87",
+          "source_url": "https://github.com/catchmeee2002/generator/issues/87",
+          "title": "snapshot 查询失败没有合适的现有断路器归属",
+          "facts": [
+            "character_learnings 查询失败会使 revealed_info 留空，随后一致性模型缺少关键事实。",
+            "若立刻增加 consistency 失败计数，后续 consistency-pass 会清零计数，导致累积无效。",
+            "verify 与 review 断路器的现有语义都不覆盖 snapshot 构建阶段。",
+            "可见的候选方向包括新增 snapshot 计数器，或把本章 snapshot 失败状态传入后续 consistency 阶段。",
+            "当前原则没有直接规定跨阶段失败应该归哪个断路器。"
+          ],
+          "gold": {"route": "needs_first_principles", "cluster_id": "gen-failure-counter-ownership", "principle_ids": ["G2", "G3", "G5"]}
+        },
+        {
+          "id": "gen-41",
+          "source_url": "https://github.com/catchmeee2002/generator/issues/41",
+          "title": "secret depth 的层级语义尚未确定",
+          "facts": [
+            "当前需要定义 secret depth 表示逐层揭示程度，还是同一秘密的不同信息角度。",
+            "两种定义会改变数据结构、prompt 消费方式和泄密校验语义。",
+            "团队尚未观察足够的真实模型消费行为来决定哪种定义更符合目标。"
+          ],
+          "gold": {"route": "needs_first_principles", "cluster_id": "gen-secret-semantics", "principle_ids": ["G2", "G3", "G4"]}
+        }
+      ]
+    },
+    {
+      "project_id": "divine-word",
+      "goal": "让玩家通过一句短神谕可观察地改变文明历史，重点是视觉化因果、NPC 涌现和不可复现的叙事体验。",
+      "principles": [
+        {"id": "D0", "text": "产品定位是 AI 涌现文明纪录片；视觉叙事优先于默认阅读大量文字。"},
+        {"id": "D1", "text": "玩家神谕必须产生可追溯且路径可区分的因果链，因果感是生死线。"},
+        {"id": "D2", "text": "事件层 append-only 且权威，状态层是 events 的 fold，可从事件重算。"},
+        {"id": "D3", "text": "代码能算的状态、数值与关系一致性不交给 LLM。"},
+        {"id": "D6", "text": "叙事连贯性由系统跨轮维护，不是每轮独立生成的副产品。"},
+        {"id": "D7", "text": "涌现优先于编剧；搭舞台和交互规则，不预写剧情。"},
+        {"id": "D9", "text": "LLM 调用有成本上限，按角色和事件触发分层。"}
+      ],
+      "cases": [
+        {
+          "id": "dw-38",
+          "source_url": "https://github.com/catchmeee2002/divine-word/issues/38",
+          "title": "fold 重建 WorldState 时新增字段可能丢失",
+          "facts": [
+            "doctrine_proposals 字段曾在事件处理后存在，但从 events 重建 WorldState 后消失。",
+            "该字段已单点修复。",
+            "状态重建逻辑需要显式复制各字段，新加字段如果漏进 fold 路径会出现同类丢失。",
+            "事件层被定义为权威，状态层应能从事件完整重算。"
+          ],
+          "gold": {"route": "derived", "cluster_id": "dw-fold-completeness", "principle_ids": ["D2", "D3"]}
+        },
+        {
+          "id": "dw-39",
+          "source_url": "https://github.com/catchmeee2002/divine-word/issues/39",
+          "title": "冲突关键词与数值平衡目前只能人眼检查",
+          "facts": [
+            "冲突触发依赖关键词和若干数值阈值。",
+            "当前没有自动化测试，只有实际游玩后人眼判断是否合理。",
+            "尚未冻结什么数值分布算合理，也没有确定哪些性质必须机械成立、哪些属于体验品味。"
+          ],
+          "gold": {"route": "needs_first_principles", "cluster_id": "dw-balance-oracle", "principle_ids": ["D1", "D3", "D7"]}
+        },
+        {
+          "id": "dw-45",
+          "source_url": "https://github.com/catchmeee2002/divine-word/issues/45",
+          "title": "真实游玩中 lethal 冲突长期不可达",
+          "facts": [
+            "连续十二轮使用极端煽动神谕，仍没有建筑损毁、信徒死亡或 lethal 冲突。",
+            "系统中存在 physical、lethal、grudge eruption 与 feud 等后果层级。",
+            "实际事件长期停在 verbal 层，玩家看不到高严重度后果。"
+          ],
+          "gold": {"route": "batch_approval", "cluster_id": "dw-conflict-escalation", "principle_ids": ["D1", "D7"]}
+        },
+        {
+          "id": "dw-46",
+          "source_url": "https://github.com/catchmeee2002/divine-word/issues/46",
+          "title": "冲突对象每轮分散，积怨无法累积",
+          "facts": [
+            "十三轮极端煽动后产生十八次冲突，全部 severity=verbal。",
+            "冲突分散到大量不同 NPC 对，每对只发生一到两次。",
+            "最高 grudge 为 6，而 grudge eruption、feud 和 lethal 阈值分别高得多。",
+            "每轮还会衰减 grudge。",
+            "玩家刻意针对同一群体制造世仇，系统仍持续选择新冲突对象。"
+          ],
+          "gold": {"route": "batch_approval", "cluster_id": "dw-conflict-escalation", "principle_ids": ["D1", "D7"]}
+        },
+        {
+          "id": "dw-29",
+          "source_url": "https://github.com/catchmeee2002/divine-word/issues/29",
+          "title": "四套视觉风格候选尚未选择",
+          "facts": [
+            "已有四套不同的像素视觉风格候选。",
+            "候选在细节密度、地图可读性、角色辨识度和整体气质上取舍不同。",
+            "项目尚未冻结最终视觉品味，也没有一个确定性指标能替代终审选择。"
+          ],
+          "gold": {"route": "needs_first_principles", "cluster_id": "dw-visual-taste", "principle_ids": ["D0"]}
+        },
+        {
+          "id": "dw-47",
+          "source_url": "https://github.com/catchmeee2002/divine-word/issues/47",
+          "title": "自动前端验收会抢占用户 Mac Chrome 焦点",
+          "facts": [
+            "自动验收经 CDP 隧道控制用户 Mac 上的可见 Chrome，工具会反复 bringToFront。",
+            "普通 Divine Word 验收不依赖 Mac 登录态或现有标签页。",
+            "关闭通知、最小化或移动 Space 都不能可靠避免抢焦点。",
+            "项目仍要求真实 Playwright 页面、Canvas、WebSocket 与截图验收，不能降级为 API 测试。",
+            "需要重新划分自动 E2E 与显式 Mac 浏览器上下文的边界。"
+          ],
+          "gold": {"route": "batch_approval", "cluster_id": "dw-browser-context-boundary", "principle_ids": ["D0", "D3"]}
+        }
+      ]
+    }
+  ]
+}
