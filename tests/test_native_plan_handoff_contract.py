@@ -260,6 +260,7 @@ class NativePlanHandoffContractTest(unittest.TestCase):
                 {
                     ".agents/skills/builder",
                     ".agents/skills/builder-loop-planner",
+                    ".agents/skills/file-github-issue",
                     ".codex/AGENTS.md",
                     ".codex/agents/reviewer.toml",
                     ".codex/agents/tester.toml",

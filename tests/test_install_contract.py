@@ -18,6 +18,9 @@ class InstallContractTest(unittest.TestCase):
             / "skills"
             / "builder-loop-planner",
             home / ".agents" / "skills" / "builder": ROOT / "skills" / "builder",
+            home / ".agents" / "skills" / "file-github-issue": ROOT
+            / "skills"
+            / "file-github-issue",
             codex_home / "agents" / "tester.toml": ROOT / "agents" / "tester.toml",
             codex_home / "agents" / "reviewer.toml": ROOT / "agents" / "reviewer.toml",
             codex_home / "hooks" / "builder-loop.py": ROOT
@@ -232,6 +235,7 @@ class InstallContractTest(unittest.TestCase):
             for expected in (
                 "skills/builder-loop-planner",
                 "skills/builder",
+                "skills/file-github-issue",
             ):
                 (foreign_checkout / expected).mkdir(parents=True)
             for expected in (

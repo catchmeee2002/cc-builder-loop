@@ -1,6 +1,7 @@
 # Project Map
 
-- `skills/`：Planner 与 Builder 的 Codex Skills；保持精简，详细契约引用 schema 或脚本帮助。
+- `skills/`：Planner、Builder 与 GitHub Issue 记录的 Codex Skills；保持精简，详细契约引用 schema
+  或脚本帮助。
 - `agents/`：Tester 与 Reviewer custom-agent 配置。
 - `runtime/`：确定性计划、workspace snapshot、Git 收尾、验证、ownership、evidence 和诊断实现。
 - `scripts/codex-builder-loop.py`：runtime 的稳定 CLI 入口；`codex-builder-loop-config.py` 负责
@@ -20,6 +21,7 @@ python3 scripts/codex-builder-loop.py --help
 bash scripts/verify-all.sh
 python3 "${CODEX_HOME:-$HOME/.codex}/skills/.system/skill-creator/scripts/quick_validate.py" skills/builder-loop-planner
 python3 "${CODEX_HOME:-$HOME/.codex}/skills/.system/skill-creator/scripts/quick_validate.py" skills/builder
+python3 "${CODEX_HOME:-$HOME/.codex}/skills/.system/skill-creator/scripts/quick_validate.py" skills/file-github-issue
 ```
 
 # Workflows
@@ -77,3 +79,4 @@ python3 "${CODEX_HOME:-$HOME/.codex}/skills/.system/skill-creator/scripts/quick_
 - 运行架构：[docs/architecture.md](docs/architecture.md)
 - Planner：`$builder-loop-planner`
 - 执行：`$builder`
+- 记录 GitHub Issue：`$file-github-issue`

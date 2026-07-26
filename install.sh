@@ -20,6 +20,7 @@ LINK_SOURCES=(
   "$REPO_DIR/hooks/builder-loop.py"
   "$REPO_DIR/scripts/codex-builder-loop.py"
   "$REPO_DIR/policies/doc-policy.md"
+  "$REPO_DIR/skills/file-github-issue"
 )
 LINK_TARGETS=(
   "$SKILLS_HOME/builder-loop-planner"
@@ -29,6 +30,7 @@ LINK_TARGETS=(
   "$CODEX_HOME/hooks/builder-loop.py"
   "$LOCAL_BIN/codex-builder-loop"
   "$DOC_POLICY"
+  "$SKILLS_HOME/file-github-issue"
 )
 LINK_PREEXISTED=()
 

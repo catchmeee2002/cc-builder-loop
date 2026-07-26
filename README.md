@@ -61,6 +61,8 @@ Default mode 直接进入 Builder；也可显式调用 `$builder` 作为手工�
   builder-loop 与外部平台事故按单一 owner 分流；跨边界因果链拆成两个原子事故，经用户授权才写
   项目问题文档或 GitHub issue。工程问题处理后，剩余隐含知识委托 `$memory-review`，不再执行旧版
   五问打分或直接写 memory。
+- `$file-github-issue` 在用户要求提 Issue 时保留现场、查重并区分事实与根因状态，再由当前 Agent
+  直接调用 `gh` 创建或补充 Issue；用户的创建指令就是授权，不增加第二次确认，也不引入 Issue CLI。
 - finalize 只更新本地目标分支，不自动 push、创建 PR 或合并远端分支。
 - 正常修复循环会自动继续；测试目标或 ownership 变化、计划过期、迭代上限、Reviewer
   决策项、agent/target continuity 失败、目标同步 blocker 或 Git 冲突等安全停止会交还用户。
@@ -92,7 +94,7 @@ cd /path/to/cc-builder-loop-codex
 安装器只配置 Codex。以下路径中的 Skills、custom agents、CLI、hook 脚本和默认文档政策均为
 指向当前 checkout 的符号链接；`hooks.json` 与 `AGENTS.md` 只合并托管注册：
 
-- Skills → `~/.agents/skills/`
+- Skills（Planner、Builder、GitHub Issue 记录）→ `~/.agents/skills/`
 - custom agents → `${CODEX_HOME:-$HOME/.codex}/agents/`
 - CLI → `~/.local/bin/codex-builder-loop`
 - lifecycle hook 注册 → `${CODEX_HOME:-$HOME/.codex}/hooks.json`
