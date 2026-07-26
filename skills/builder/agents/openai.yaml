@@ -1,7 +1,7 @@
 interface:
   display_name: "Builder Loop"
   short_description: "按独立测试、机器验证、黑盒复验与审查门禁交付代码变更"
-  default_prompt: "Use $builder to deliver the accepted plan through independent tests, verification, and review."
+  default_prompt: "Deliver the accepted builder-loop plan after explicit $builder or a validated native Plan handoff, using independent tests, verification, and review."
 
 policy:
-  allow_implicit_invocation: false
+  allow_implicit_invocation: true

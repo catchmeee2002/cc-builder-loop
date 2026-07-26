@@ -8,7 +8,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC_HEAD = "1b512b120a673470a4ee154b7c8dd8ac3c3f7e1f"
-PLANNER_BLOB = "1ae64ff974d9440b1031f82990656b0763946c5a"
+PLANNER_BLOB = "bb54a98fe4ddbc291ed226efbdc1616d5c2ca297"
 PLANNER_PATH = Path("skills/builder-loop-planner/SKILL.md")
 REFERENCE_PATH = Path("skills/builder-loop-planner/references/design-decisions.md")
 REVIEWER_PATH = Path("agents/reviewer.toml")
@@ -604,6 +604,8 @@ class PlanningDesignDisciplineTest(unittest.TestCase):
         allowed_exact = {
             "AGENTS.md",
             "CHANGELOG.md",
+            "README.md",
+            "agents/AGENTS.md.block",
             REVIEWER_PATH.as_posix(),
             TESTER_PATH.as_posix(),
             PHILOSOPHY_PATH.as_posix(),

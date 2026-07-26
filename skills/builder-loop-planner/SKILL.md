@@ -185,7 +185,7 @@ ownership:
   无冲突。
 - 测试目标、ownership 或验收标准一旦需要变化，不设计“当前 run 内批准”路径。保持原契约时
   续接原 thread；选择修订时先 abandon 当前 run 保留现场，再由 `/plan` 提升 `plan_revision`
-  生成新方案，并由用户重新调用 `$builder`。
+  生成新方案；方案验证通过后可使用原生“实施计划”动作交接，`$builder` 保留为手工入口。
 - `plan_revision=1` 不写 `supersedes`。从 abandoned run 修订时使用更高 revision，并在 spec 中
   增加 `supersedes.run_id` 与旧 ledger 的 `plan.sha256`；runtime 会验证旧 run 已 abandoned、摘要
   一致且 revision 单调增加。
@@ -201,5 +201,14 @@ ownership:
 6. `status=FATAL` 或输出不是合法 JSON 时停止，不猜测成功。
 7. 其他状态按 `message` 修正可修复的契约问题，再运行一次；不要绕过 validator。
 
-最终回答保留完整 marker 内容，并明确后续必须由用户显式调用 `$builder`。不要创建
-builder-loop run，也不要提前生成实现代码。
+最终回答保留完整计划 marker 内容。只有 `status=READY` 时，才在冻结方案正文之外、
+`<proposed_plan>` 结束后追加以下独立行：
+
+```text
+BUILDER_HANDOFF_READY
+```
+
+`status` 不是 `READY` 时不得输出 `BUILDER_HANDOFF_READY`。
+该行不进入 plan-validate 输入、计划 Markdown、plan digest 或 ledger。用户随后可使用 Codex 原生
+“实施计划”动作进入 Default mode 并交接 Builder，`$builder` 继续作为手工入口。不要创建
+或启动 builder-loop run，不写 ledger，也不要提前生成实现代码。

@@ -5,19 +5,24 @@
 ```text
 /plan <需求>
 ├─ Codex 原生 Plan
-└─ Builder-loop Planner → $builder
+└─ Builder-loop Planner → 原生“实施计划”
+                          └─ $builder 手工回退
 ```
 
 全局托管规则会在每次进入 Plan mode 时通过选项卡询问。选择 Codex 原生 Plan 时不加载本项目
 Skill；选择 Builder-loop Planner 时，Planner Skill 把行为、接口、测试目标、写入边界和验收方式
-冻结成可校验计划。随后显式调用 `$builder`，由其协调 Builder、独立 Tester、机器验证和
-Reviewer；全部门禁通过后，将候选结果收敛为一个语义提交。
+冻结成可校验计划，并在验证通过后输出一次性就绪标记。用户选择 Codex 原生“实施计划”后，下一轮
+Default mode 直接进入 Builder；也可显式调用 `$builder` 作为手工回退。Builder 协调独立 Tester、
+机器验证和 Reviewer；全部门禁通过后，将候选结果收敛为一个语义提交。
 
 ## 核心行为
 
 - Builder-loop Planner 在输出前运行带仓库上下文的确定性 plan validator；缺少规划 HEAD/revision、行为边界
   与不变量、mock 策略、角色写边界、串行公开前置产物或有效 checklist 的计划不能进入执行，
   实际生效的验证配置不合法时也不会返回 `READY`。
+- `READY` 后的 `BUILDER_HANDOFF_READY` 位于冻结方案之外，只对同 session 紧邻的原生“实施计划”
+  动作有效；标记缺失、过期、方案变化或 Codex 原生 Plan 不会隐式启动 builder-loop。标记不进入
+  plan digest 或 ledger，`$builder` 继续作为兼容入口。
 - 主仓 dirty 默认留在原处且不进入 run。任务确实依赖现有改动时，Planner 取得 exact-path 授权并用
   `workspace-scan` 冻结 state digest；`start` 合成不可变 snapshot 给 Builder，主仓和全局 stash
   全程不动。finalize 只在授权路径未漂移时消费 snapshot。
@@ -59,8 +64,9 @@ Reviewer；全部门禁通过后，将候选结果收敛为一个语义提交。
 
 测试目标、ownership 或验收标准一旦需要修订，不能在现有 frozen run 内批准。保持原目标时
 续接原 Tester/Reviewer thread；选择修订时先 abandon 当前 run 保留现场，再用 `/plan` 生成更高
-`plan_revision` 且携带旧 run id/plan digest 的方案，并重新调用 `$builder`。runtime 会核对旧 run
-确已 abandoned 且 revision 单调增加。达到迭代上限时遵循同一流程。
+`plan_revision` 且携带旧 run id/plan digest 的方案。runtime 会核对旧 run 确已 abandoned 且
+revision 单调增加。新方案验证后可使用原生“实施计划”动作交接，或显式调用 `$builder`。达到
+迭代上限时遵循同一流程。
 
 计划契约只接受 `schema_version: 2`；旧 v1 计划必须重新规划。纯 Markdown 文档任务可由 Planner
 标记为 L1，并用 `documentation-spec` 冻结规划 HEAD、revision

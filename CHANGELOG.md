@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- 将 Builder-loop Planner 验证成功后的 Codex 原生“实施计划”动作视为一次明确授权：方案外的
+  `BUILDER_HANDOFF_READY` 只对同 session 紧邻 Default turn 生效，Builder Skill 允许严格受限的
+  隐式发现；普通实施请求、Codex 原生 Plan、过期或缺失标记仍 fail closed，`$builder` 保留为手工
+  回退。交接不新增 Hook、runtime 状态、计划摘要或 ledger 字段。
 - 冻结测试证明的可信输入边界：独立 Tester 源码经 thread、ownership、Git/source manifest、
   integration 和 Reviewer 审查后视为可信；runtime 继续防 hostile 环境、runner、输出伪造、空壳
   证明和基础设施错误，但不把同解释器 reporter 或外部 supervisor 描述成任意恶意 Python 的
@@ -43,7 +47,8 @@
   现在会先冻结唯一 final intent，再以结构化 blocker 等待重试。tracked/index 改动继续 fail closed，
   无关 untracked/ignored 文件不再阻塞或被清理，路径碰撞和 Git dry-run 不确定性仍在 CAS 前停止。
 - 将全局 Plan mode 入口由强制加载 Planner 改为每次通过 `request_user_input` 选择 Codex 原生
-  Plan 或 Builder-loop Planner；只有后者生成可由 `$builder` 执行的冻结契约。
+  Plan 或 Builder-loop Planner；只有后者生成带一次性交接标记、可由原生实施动作或 `$builder`
+  执行的冻结契约。
 - 将 `unit-test-spec` 与 `documentation-spec` 升级为 schema v2，并明确拒绝旧 v1 计划；非 L1
   计划在 `spec_head` 存在 `.claude/loop.yml` 时必须省略 `test_context.runner`，不存在时才由计划
   提供 runner，消除验证命令双来源。

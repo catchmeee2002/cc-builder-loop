@@ -10,9 +10,9 @@ Tester 与 Reviewer。runtime CLI 只处理可确定验证的内容，不替模�
 /plan ── request_user_input
    ├─ Codex 原生 Plan → proposed_plan
    └─ Builder-loop Planner
-             │ validated plan
+             │ validated plan + BUILDER_HANDOFF_READY
              ▼
-        $builder ── optional exact dirty snapshot ── Builder worktree
+ 原生“实施计划” / $builder ─ optional exact dirty snapshot ─ Builder worktree
     ├─ parallel_ready=true  ── Tester thread 与 Builder 并行
     └─ parallel_ready=false ─ exact public files → isolated publication HEAD/manifest
                                                    └→ Tester author baseline
@@ -23,6 +23,12 @@ clean candidate verify → test-effectiveness proof → same-thread black-box pa
         ▼
 temporary final ref/worktree → hooks → tree check → target CAS → cleanup
 ```
+
+就绪标记只在带仓库上下文的 plan validator 返回 `READY` 后出现，并位于冻结方案之外。它只授权同一
+session 紧邻下一轮、已切回 Default mode 的 Codex 原生“实施计划”动作；消息插入、方案修订、session
+变化或 Codex 原生 Plan 都使该路径失效。Builder Skill 因此允许隐式发现，但会在计划物化和任何
+runtime 调用前核对完整条件；`$builder` 保留为不依赖标记的手工入口。该交接不写 Hook、计划摘要或
+ledger，run 启动后仍只以 ledger 为执行事实源。
 
 ## Workspace intake
 
@@ -120,8 +126,8 @@ Builder 与 Tester 使用冻结基线协作：
   blackbox 证据。日志、截图和缓存应写到 candidate 外的临时 artifact 目录；若工具仍在 candidate
   产生文件，Tester 必须清理并复核 residue 为空后才能返回 pass。
 - 测试实现错误在目标不变时由原 Tester thread 修正。测试目标、ownership 或验收标准需要变化
-  时，不在 frozen run 内批准：先 abandon 保留现场，再通过 `/plan` 生成更高 revision 的新方案
-  并由 `$builder` 启动新 run。
+  时，不在 frozen run 内批准：先 abandon 保留现场，再通过 `/plan` 生成更高 revision 的新方案；
+  验证通过后使用原生“实施计划”动作交接，或由 `$builder` 启动新 run。
 - Reviewer 在机器验证和黑盒验收后启动；非 L1 v3 还必须先完成测试鉴别证明。runtime 会在 Reviewer turn
   开始和完成时分别冻结 prerequisite snapshot；非 L1 只有 Tester integration、publication attestation
   （串行时）、`verified_head`、`e2e_verified_head`，以及 v3 适用时的 `test_effectiveness_head` 均绑定当前 candidate

@@ -1,6 +1,6 @@
 ---
 name: builder
-description: 显式执行已接受的 builder-loop 方案，在隔离 worktree 中协调 builder、独立 tester 与只读 reviewer，依次完成角色边界检查、测试集成、机器验证、黑盒复验、代码与文档审计及安全收尾。仅当用户明确输入 $builder 时使用；不要隐式触发，也不要用于只读分析或普通代码修改。
+description: 执行已接受的 builder-loop 方案，在隔离 worktree 中协调 builder、独立 tester 与只读 reviewer，依次完成角色边界检查、测试集成、机器验证、黑盒复验、代码与文档审计及安全收尾。仅当用户明确输入 $builder，或当前 Default turn 是同一 session 紧邻 BUILDER_HANDOFF_READY 的 Codex 原生 Implement the plan./“实施计划”动作时使用；其他普通实施请求、只读分析或改码请求不要使用。
 ---
 
 # Builder
@@ -9,7 +9,17 @@ description: 显式执行已接受的 builder-loop 方案，在隔离 worktree �
 
 ## 准备运行
 
-1. 确认用户显式调用了 `$builder`，并取得同一聊天中已接受的 Plan mode 最终方案。
+1. 先确认满足一种授权，并取得同一聊天中已接受的 Plan mode 最终方案：
+   - 用户在当前 turn 显式调用 `$builder`；或
+   - 紧邻的上一轮由 Builder-loop Planner 对带仓库上下文的方案完成 `plan-validate=READY`，在
+     `<proposed_plan>` 与冻结方案正文之外输出独立行 `BUILDER_HANDOFF_READY`；当前 developer
+     context 已是 Default mode，当前用户动作是 Codex 原生 `Implement the plan.`／“实施计划”，
+     且 session 相同、没有中间消息或方案修订。
+   就绪标记只由消息邻接关系消费，不复制进计划、摘要、运行目录或 ledger。若本 Skill 被隐式加载
+   但授权条件不完整，必须在计划物化、runtime 调用或文件写入之前停止；普通实施请求不能冒充授权。
+   一次原生实施动作最多启动一个 run。标记缺失、非紧邻消息、计划修订、用户继续讨论、session
+   变化、仍在 Plan mode 或来自 Codex 原生 Plan 时，旧标记不得消费；计划修订时旧标记无效；不得
+   解析 transcript 猜测授权。显式 `$builder` 是等价的手工入口，保持有效且不依赖就绪标记。
 2. 读取适用的 `AGENTS.md`、设计哲学和项目文档政策；项目未声明政策时读取
    `${CODEX_HOME:-$HOME/.codex}/builder-loop/doc-policy.md`。政策不可读时停止，不自行发明
    替代规则。
@@ -97,7 +107,8 @@ description: 显式执行已接受的 builder-loop 方案，在隔离 worktree �
    `request_user_input` 提供三类选择：保持冻结目标并先以 `purpose=author` prepare、再 follow-up
    同一 Tester 澄清；abandon；或
    修订契约。选择修订时先 `abandon --run <run>` 保留现场，再要求用户 `/plan` 生成更高
-   `plan_revision` 的新方案并重新调用 `$builder`；新 run 不冒充旧 Tester thread。
+   `plan_revision` 的新方案；验证通过后可使用原生“实施计划”动作交接，或显式调用 `$builder`。
+   新 run 不冒充旧 Tester thread。
 8. 对 builder 与 tester 分别执行 `role-check --run <run> --role <role>`。仅
    `status=READY` 可继续；`NEEDS_USER` 必须按上一步请求用户，禁止自行放宽 ownership
    或跳过 reward-hacking 告警。
@@ -117,8 +128,8 @@ description: 显式执行已接受的 builder-loop 方案，在隔离 worktree �
    `integrate-tests`；需要改变测试目标、ownership 或验收标准时 abandon/new plan。不得让
    Builder 越界修改测试或受保护 runner 控制文件。修复后再重跑。
    返回 `iteration_limit_reached=true` 时停止当前 frozen run，不继续调用 verify。使用选项卡让
-   用户选择 abandon，或先 abandon 保留现场、再 `/plan` 提升 `plan_revision` 并重新调用
-   `$builder`；不得在同一 run 内重置计数或批准修订。
+   用户选择 abandon，或先 abandon 保留现场、再 `/plan` 提升 `plan_revision`；新方案验证通过后
+   可使用原生“实施计划”动作交接，或显式调用 `$builder`。不得在同一 run 内重置计数或批准修订。
    返回 `NO_PROGRESS` 或 `ARCHITECTURE_REVIEW_REQUIRED` 时先调用 `doctor --run <run>`，展示重复
    candidate/fingerprint 和现场；只有用户明确确认目标不变且继续尝试时才调用
    `resume --run <run> --reason <decision>`。resume 不重置 max_iterations。
