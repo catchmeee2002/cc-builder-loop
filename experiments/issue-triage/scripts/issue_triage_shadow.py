@@ -24,7 +24,7 @@ import issue_triage_eval as evaluator  # noqa: E402
 
 
 meta = evaluator.meta
-SHADOW_SCHEMA_VERSION = 1
+SHADOW_SCHEMA_VERSION = 3
 PROFILES_PATH = EXPERIMENT_DIR / "profiles" / "projects.json"
 DEFAULT_RUN_ROOT = Path.home() / ".codex" / "issue-triage" / "runs"
 MAX_ISSUE_BODY_CHARS = 50_000
@@ -421,27 +421,22 @@ def _single_pass(
     )
     assessment = diagnosis["value"]["issue_assessments"][0]
     attack_row = attack["value"]["attacks"][0]
+    axes = evaluator.final_axes(assessment, attack_row)
     return {
         "effort": effort,
         "assessment": assessment,
         "attack": attack_row,
-        "route": evaluator.final_route(assessment, attack_row),
+        "axes": axes,
+        "work_queue": evaluator.work_queue(axes),
         "request_sha256": [diagnosis["request_sha256"], attack["request_sha256"]],
     }
 
 
 def _is_boundary(pass_result: dict[str, Any]) -> bool:
-    if pass_result["route"] != "needs_first_principles":
+    if pass_result["axes"]["human_attention"] == "none":
         return False
     assessment = pass_result["assessment"]
-    flags = assessment["flags"]
-    return (
-        assessment["root_cause_status"] == "established"
-        and not flags["goal_or_taste"]
-        and not flags["new_or_changed_principle"]
-        and not flags["principle_conflict"]
-        and flags["deterministic_acceptance"]
-    )
+    return evaluator.base_axes(assessment)["human_attention"] == "none"
 
 
 def run_shadow(
@@ -473,7 +468,9 @@ def run_shadow(
                 title=str(issue.get("title") or ""),
                 facts=tuple(facts),
                 gold=evaluator.Gold(
-                    route="needs_first_principles",
+                    diagnosis_state="needs_evidence",
+                    human_attention="first_principles",
+                    scope_inventory_required=False,
                     cluster_id="shadow-single",
                     principle_ids=(principles[0].id,),
                 ),
@@ -508,7 +505,7 @@ def run_shadow(
             run_dir=run_dir,
             prefix="boundary",
         )
-    recommended = boundary["route"] if boundary is not None else high["route"]
+    recommended = boundary if boundary is not None else high
     result = {
         "schema_version": SHADOW_SCHEMA_VERSION,
         "shadow_only": True,
@@ -520,7 +517,8 @@ def run_shadow(
         "input_sha256": digest,
         "main": high,
         "boundary": boundary,
-        "recommended_route": recommended,
+        "recommended_axes": recommended["axes"],
+        "recommended_work_queue": recommended["work_queue"],
         "notice": "只读影子结果；未修改 Issue、标签、Planner 或代码仓库",
     }
     _atomic_write_json(run_dir / "result.json", result)
@@ -552,7 +550,18 @@ def main(argv: list[str] | None = None) -> int:
             boundary_effort=None if args.no_boundary else args.boundary_effort,
             profiles_path=args.profiles,
         )
-        print(json.dumps({"status": "ok", "recommended_route": result["recommended_route"], "run_dir": result["run_dir"], "notice": result["notice"]}, ensure_ascii=False))
+        print(
+            json.dumps(
+                {
+                    "status": "ok",
+                    "recommended_axes": result["recommended_axes"],
+                    "recommended_work_queue": result["recommended_work_queue"],
+                    "run_dir": result["run_dir"],
+                    "notice": result["notice"],
+                },
+                ensure_ascii=False,
+            )
+        )
         return 0
     except meta.RunnerError as exc:
         print(json.dumps({"error": {"kind": exc.kind, "message": exc.safe_message}}, ensure_ascii=False), file=sys.stderr)

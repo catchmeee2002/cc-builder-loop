@@ -1,20 +1,47 @@
 {
-  "schema_version": 1,
-  "suite_id": "pilot-2026-07-26",
+  "schema_version": 3,
+  "suite_id": "pilot-axes-2026-07-27",
   "projects": [
     {
       "project_id": "cc-builder-loop",
       "goal": "在 Codex 原生推理和调度之下提供不能靠模型自述绕过的独立判据、角色边界、证据与 Git 交付闭环。",
       "principles": [
-        {"id": "CC1", "text": "机器、Tester、Reviewer 判据按独立性分层，并绑定产生结论的真实输入。"},
-        {"id": "CC2", "text": "每个事实只有一个家；消费者引用权威源，不维护旁路副本。"},
-        {"id": "CC4", "text": "改输入条件，不堆输出特判。"},
-        {"id": "CC5", "text": "保持最小充分；只为当前行为或明确演进压力增加结构。"},
-        {"id": "CC6", "text": "同类问题重复出现说明缺少抽象、边界或正确问题定义，应停止重试并审视架构。"},
-        {"id": "CC7", "text": "连续性属于原 thread 和事务身份，同名新角色不能冒充续接。"},
-        {"id": "CC8", "text": "契约与成熟行为先于实现；公共输入输出和副作用应先冻结。"},
-        {"id": "CC10", "text": "出现产品取舍、测试目标变化或无进展时，把决定交还用户。"},
-        {"id": "CC11", "text": "设计原则、公共契约或角色边界的增删改必须单独披露并取得用户接受。"}
+        {
+          "id": "CC1",
+          "text": "机器、Tester、Reviewer 判据按独立性分层，并绑定产生结论的真实输入。"
+        },
+        {
+          "id": "CC2",
+          "text": "每个事实只有一个家；消费者引用权威源，不维护旁路副本。"
+        },
+        {
+          "id": "CC4",
+          "text": "改输入条件，不堆输出特判。"
+        },
+        {
+          "id": "CC5",
+          "text": "保持最小充分；只为当前行为或明确演进压力增加结构。"
+        },
+        {
+          "id": "CC6",
+          "text": "同类问题重复出现说明缺少抽象、边界或正确问题定义，应停止重试并审视架构。"
+        },
+        {
+          "id": "CC7",
+          "text": "连续性属于原 thread 和事务身份，同名新角色不能冒充续接。"
+        },
+        {
+          "id": "CC8",
+          "text": "契约与成熟行为先于实现；公共输入输出和副作用应先冻结。"
+        },
+        {
+          "id": "CC10",
+          "text": "出现产品取舍、测试目标变化或无进展时，把决定交还用户。"
+        },
+        {
+          "id": "CC11",
+          "text": "设计原则、公共契约或角色边界的增删改必须单独披露并取得用户接受。"
+        }
       ],
       "cases": [
         {
@@ -27,7 +54,16 @@
             "原清洁检查只查看 tracked diff。",
             "存在上述残留时，旧流程仍可以记录 proof evidence。"
           ],
-          "gold": {"route": "derived", "cluster_id": "cc-proof-evidence-integrity", "principle_ids": ["CC1", "CC8"]}
+          "gold": {
+            "diagnosis_state": "established",
+            "human_attention": "none",
+            "scope_inventory_required": false,
+            "cluster_id": "cc-proof-evidence-integrity",
+            "principle_ids": [
+              "CC1",
+              "CC8"
+            ]
+          }
         },
         {
           "id": "cc-122",
@@ -39,7 +75,16 @@
             "正式运行契约要求成功状态同时具有成功进程 returncode。",
             "完整 fixtures 当前仍为绿色。"
           ],
-          "gold": {"route": "derived", "cluster_id": "cc-proof-evidence-integrity", "principle_ids": ["CC1", "CC8"]}
+          "gold": {
+            "diagnosis_state": "established",
+            "human_attention": "none",
+            "scope_inventory_required": false,
+            "cluster_id": "cc-proof-evidence-integrity",
+            "principle_ids": [
+              "CC1",
+              "CC8"
+            ]
+          }
         },
         {
           "id": "cc-123",
@@ -52,7 +97,17 @@
             "最终 Reviewer 才发现两项 Skill validator 没有对应 machine evidence，并首次阻断批准。",
             "补跑 validator 后同一 Reviewer 复审通过。"
           ],
-          "gold": {"route": "batch_approval", "cluster_id": "cc-checklist-evidence-binding", "principle_ids": ["CC1", "CC2", "CC8"]}
+          "gold": {
+            "diagnosis_state": "established",
+            "human_attention": "batch_approval",
+            "scope_inventory_required": true,
+            "cluster_id": "cc-checklist-evidence-binding",
+            "principle_ids": [
+              "CC1",
+              "CC2",
+              "CC8"
+            ]
+          }
         },
         {
           "id": "cc-124",
@@ -65,7 +120,16 @@
             "Builder 交接只列出返回字段，没有说明该派生规则。",
             "改成 not_applicable 后 evidence 被接受。"
           ],
-          "gold": {"route": "derived", "cluster_id": "cc-role-contract-projection", "principle_ids": ["CC2", "CC8"]}
+          "gold": {
+            "diagnosis_state": "established",
+            "human_attention": "none",
+            "scope_inventory_required": true,
+            "cluster_id": "cc-role-contract-projection",
+            "principle_ids": [
+              "CC2",
+              "CC8"
+            ]
+          }
         },
         {
           "id": "cc-125",
@@ -78,7 +142,16 @@
             "主线程实际续接原 Reviewer 后通过，evidence 绑定原 agent id。",
             "Reviewer 自身角色合同只定义 blocked 输出，未声明 blocked 后的 thread 处理。"
           ],
-          "gold": {"route": "derived", "cluster_id": "cc-role-contract-projection", "principle_ids": ["CC7", "CC8"]}
+          "gold": {
+            "diagnosis_state": "established",
+            "human_attention": "none",
+            "scope_inventory_required": true,
+            "cluster_id": "cc-role-contract-projection",
+            "principle_ids": [
+              "CC7",
+              "CC8"
+            ]
+          }
         },
         {
           "id": "cc-91",
@@ -90,7 +163,17 @@
             "为未知未来预置抽象会违反最小充分，但完全不考虑已经明确的下一阶段可能堵死演进。",
             "需要决定哪些方法应进入 Planner 常驻契约，哪些只按需加载。"
           ],
-          "gold": {"route": "needs_first_principles", "cluster_id": "cc-planning-philosophy", "principle_ids": ["CC5", "CC10", "CC11"]}
+          "gold": {
+            "diagnosis_state": "established",
+            "human_attention": "first_principles",
+            "scope_inventory_required": true,
+            "cluster_id": "cc-planning-philosophy",
+            "principle_ids": [
+              "CC5",
+              "CC10",
+              "CC11"
+            ]
+          }
         }
       ]
     },
@@ -98,12 +181,30 @@
       "project_id": "generator",
       "goal": "通过结构化世界状态、蓝图与叙事原文协作，生成长篇小说并对可判定的一致性错误执行可靠校验。",
       "principles": [
-        {"id": "G2", "text": "每份数据有且只有一个职责；冲突应从数据分层消除。"},
-        {"id": "G3", "text": "生产、存储、消费全链路必须清晰，生产源唯一。"},
-        {"id": "G4", "text": "写入求真，读出求精；缺失可以显式暴露，幻觉或静默错误不能进入状态。"},
-        {"id": "G5", "text": "能确定性校验的绝不交给 LLM；执行状态转移后必须对账，校验事实必须显式注入。"},
-        {"id": "GE1", "text": "修复前必须先把问题归入架构、数据合同、prompt、模型边界、实现或建模维度。"},
-        {"id": "GE2", "text": "同类现象出现三处以上按系统性问题处理，不能逐点打补丁。"}
+        {
+          "id": "G2",
+          "text": "每份数据有且只有一个职责；冲突应从数据分层消除。"
+        },
+        {
+          "id": "G3",
+          "text": "生产、存储、消费全链路必须清晰，生产源唯一。"
+        },
+        {
+          "id": "G4",
+          "text": "写入求真，读出求精；缺失可以显式暴露，幻觉或静默错误不能进入状态。"
+        },
+        {
+          "id": "G5",
+          "text": "能确定性校验的绝不交给 LLM；执行状态转移后必须对账，校验事实必须显式注入。"
+        },
+        {
+          "id": "GE1",
+          "text": "修复前必须先把问题归入架构、数据合同、prompt、模型边界、实现或建模维度。"
+        },
+        {
+          "id": "GE2",
+          "text": "同类现象出现三处以上按系统性问题处理，不能逐点打补丁。"
+        }
       ],
       "cases": [
         {
@@ -116,7 +217,16 @@
             "两条路径都会使境界倒退、死人复活和秘密泄露等 blocking 检查不再阻断章节。",
             "调用者无法从返回值知道防线已经失效。"
           ],
-          "gold": {"route": "derived", "cluster_id": "gen-fail-open-required-state", "principle_ids": ["G4", "G5"]}
+          "gold": {
+            "diagnosis_state": "established",
+            "human_attention": "none",
+            "scope_inventory_required": true,
+            "cluster_id": "gen-fail-open-required-state",
+            "principle_ids": [
+              "G4",
+              "G5"
+            ]
+          }
         },
         {
           "id": "gen-86",
@@ -129,7 +239,18 @@
             "依赖 events 的确定性校验在这些章节无行可查。",
             "代码库主链路还存在多处类似 catch-all，需要判断是否为同一系统性问题。"
           ],
-          "gold": {"route": "batch_approval", "cluster_id": "gen-fail-open-required-state", "principle_ids": ["G3", "G4", "G5", "GE2"]}
+          "gold": {
+            "diagnosis_state": "established",
+            "human_attention": "none",
+            "scope_inventory_required": true,
+            "cluster_id": "gen-fail-open-required-state",
+            "principle_ids": [
+              "G3",
+              "G4",
+              "G5",
+              "GE2"
+            ]
+          }
         },
         {
           "id": "gen-88",
@@ -141,7 +262,17 @@
             "后续因果链、secret 与时间轴逻辑都把 None 当作该能力未启用并继续运行。",
             "运行结果中没有结构化状态表明输入文件损坏。"
           ],
-          "gold": {"route": "derived", "cluster_id": "gen-fail-open-required-state", "principle_ids": ["G2", "G4", "G5"]}
+          "gold": {
+            "diagnosis_state": "established",
+            "human_attention": "none",
+            "scope_inventory_required": true,
+            "cluster_id": "gen-fail-open-required-state",
+            "principle_ids": [
+              "G2",
+              "G4",
+              "G5"
+            ]
+          }
         },
         {
           "id": "gen-87",
@@ -154,7 +285,17 @@
             "可见的候选方向包括新增 snapshot 计数器，或把本章 snapshot 失败状态传入后续 consistency 阶段。",
             "当前原则没有直接规定跨阶段失败应该归哪个断路器。"
           ],
-          "gold": {"route": "needs_first_principles", "cluster_id": "gen-failure-counter-ownership", "principle_ids": ["G2", "G3", "G5"]}
+          "gold": {
+            "diagnosis_state": "established",
+            "human_attention": "batch_approval",
+            "scope_inventory_required": true,
+            "cluster_id": "gen-failure-counter-ownership",
+            "principle_ids": [
+              "G2",
+              "G3",
+              "G5"
+            ]
+          }
         },
         {
           "id": "gen-41",
@@ -165,7 +306,17 @@
             "两种定义会改变数据结构、prompt 消费方式和泄密校验语义。",
             "团队尚未观察足够的真实模型消费行为来决定哪种定义更符合目标。"
           ],
-          "gold": {"route": "needs_first_principles", "cluster_id": "gen-secret-semantics", "principle_ids": ["G2", "G3", "G4"]}
+          "gold": {
+            "diagnosis_state": "established",
+            "human_attention": "first_principles",
+            "scope_inventory_required": true,
+            "cluster_id": "gen-secret-semantics",
+            "principle_ids": [
+              "G2",
+              "G3",
+              "G4"
+            ]
+          }
         }
       ]
     },
@@ -173,13 +324,34 @@
       "project_id": "divine-word",
       "goal": "让玩家通过一句短神谕可观察地改变文明历史，重点是视觉化因果、NPC 涌现和不可复现的叙事体验。",
       "principles": [
-        {"id": "D0", "text": "产品定位是 AI 涌现文明纪录片；视觉叙事优先于默认阅读大量文字。"},
-        {"id": "D1", "text": "玩家神谕必须产生可追溯且路径可区分的因果链，因果感是生死线。"},
-        {"id": "D2", "text": "事件层 append-only 且权威，状态层是 events 的 fold，可从事件重算。"},
-        {"id": "D3", "text": "代码能算的状态、数值与关系一致性不交给 LLM。"},
-        {"id": "D6", "text": "叙事连贯性由系统跨轮维护，不是每轮独立生成的副产品。"},
-        {"id": "D7", "text": "涌现优先于编剧；搭舞台和交互规则，不预写剧情。"},
-        {"id": "D9", "text": "LLM 调用有成本上限，按角色和事件触发分层。"}
+        {
+          "id": "D0",
+          "text": "产品定位是 AI 涌现文明纪录片；视觉叙事优先于默认阅读大量文字。"
+        },
+        {
+          "id": "D1",
+          "text": "玩家神谕必须产生可追溯且路径可区分的因果链，因果感是生死线。"
+        },
+        {
+          "id": "D2",
+          "text": "事件层 append-only 且权威，状态层是 events 的 fold，可从事件重算。"
+        },
+        {
+          "id": "D3",
+          "text": "代码能算的状态、数值与关系一致性不交给 LLM。"
+        },
+        {
+          "id": "D6",
+          "text": "叙事连贯性由系统跨轮维护，不是每轮独立生成的副产品。"
+        },
+        {
+          "id": "D7",
+          "text": "涌现优先于编剧；搭舞台和交互规则，不预写剧情。"
+        },
+        {
+          "id": "D9",
+          "text": "LLM 调用有成本上限，按角色和事件触发分层。"
+        }
       ],
       "cases": [
         {
@@ -192,7 +364,16 @@
             "状态重建逻辑需要显式复制各字段，新加字段如果漏进 fold 路径会出现同类丢失。",
             "事件层被定义为权威，状态层应能从事件完整重算。"
           ],
-          "gold": {"route": "derived", "cluster_id": "dw-fold-completeness", "principle_ids": ["D2", "D3"]}
+          "gold": {
+            "diagnosis_state": "established",
+            "human_attention": "none",
+            "scope_inventory_required": true,
+            "cluster_id": "dw-fold-completeness",
+            "principle_ids": [
+              "D2",
+              "D3"
+            ]
+          }
         },
         {
           "id": "dw-39",
@@ -203,7 +384,17 @@
             "当前没有自动化测试，只有实际游玩后人眼判断是否合理。",
             "尚未冻结什么数值分布算合理，也没有确定哪些性质必须机械成立、哪些属于体验品味。"
           ],
-          "gold": {"route": "needs_first_principles", "cluster_id": "dw-balance-oracle", "principle_ids": ["D1", "D3", "D7"]}
+          "gold": {
+            "diagnosis_state": "established",
+            "human_attention": "first_principles",
+            "scope_inventory_required": false,
+            "cluster_id": "dw-balance-oracle",
+            "principle_ids": [
+              "D1",
+              "D3",
+              "D7"
+            ]
+          }
         },
         {
           "id": "dw-45",
@@ -214,7 +405,16 @@
             "系统中存在 physical、lethal、grudge eruption 与 feud 等后果层级。",
             "实际事件长期停在 verbal 层，玩家看不到高严重度后果。"
           ],
-          "gold": {"route": "batch_approval", "cluster_id": "dw-conflict-escalation", "principle_ids": ["D1", "D7"]}
+          "gold": {
+            "diagnosis_state": "needs_evidence",
+            "human_attention": "none",
+            "scope_inventory_required": false,
+            "cluster_id": "dw-conflict-escalation",
+            "principle_ids": [
+              "D1",
+              "D7"
+            ]
+          }
         },
         {
           "id": "dw-46",
@@ -227,7 +427,16 @@
             "每轮还会衰减 grudge。",
             "玩家刻意针对同一群体制造世仇，系统仍持续选择新冲突对象。"
           ],
-          "gold": {"route": "batch_approval", "cluster_id": "dw-conflict-escalation", "principle_ids": ["D1", "D7"]}
+          "gold": {
+            "diagnosis_state": "established",
+            "human_attention": "none",
+            "scope_inventory_required": false,
+            "cluster_id": "dw-conflict-escalation",
+            "principle_ids": [
+              "D1",
+              "D7"
+            ]
+          }
         },
         {
           "id": "dw-29",
@@ -238,7 +447,15 @@
             "候选在细节密度、地图可读性、角色辨识度和整体气质上取舍不同。",
             "项目尚未冻结最终视觉品味，也没有一个确定性指标能替代终审选择。"
           ],
-          "gold": {"route": "needs_first_principles", "cluster_id": "dw-visual-taste", "principle_ids": ["D0"]}
+          "gold": {
+            "diagnosis_state": "established",
+            "human_attention": "first_principles",
+            "scope_inventory_required": false,
+            "cluster_id": "dw-visual-taste",
+            "principle_ids": [
+              "D0"
+            ]
+          }
         },
         {
           "id": "dw-47",
@@ -251,7 +468,16 @@
             "项目仍要求真实 Playwright 页面、Canvas、WebSocket 与截图验收，不能降级为 API 测试。",
             "需要重新划分自动 E2E 与显式 Mac 浏览器上下文的边界。"
           ],
-          "gold": {"route": "batch_approval", "cluster_id": "dw-browser-context-boundary", "principle_ids": ["D0", "D3"]}
+          "gold": {
+            "diagnosis_state": "established",
+            "human_attention": "batch_approval",
+            "scope_inventory_required": true,
+            "cluster_id": "dw-browser-context-boundary",
+            "principle_ids": [
+              "D0",
+              "D3"
+            ]
+          }
         }
       ]
     }

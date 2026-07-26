@@ -1,16 +1,31 @@
 {
-  "schema_version": 1,
-  "suite_id": "evidence-enriched-2026-07-26",
+  "schema_version": 3,
+  "suite_id": "evidence-enriched-axes-2026-07-27",
   "projects": [
     {
       "project_id": "cc-builder-loop",
       "goal": "在 Codex 原生推理和调度之下提供不能靠模型自述绕过的独立判据、角色边界、证据与 Git 交付闭环。",
       "principles": [
-        {"id": "CC1", "text": "机器、Tester、Reviewer 判据按独立性分层，并绑定产生结论的真实输入。"},
-        {"id": "CC2", "text": "每个事实只有一个家；消费者引用权威源，不维护旁路副本。"},
-        {"id": "CC7", "text": "连续性属于原 thread 和事务身份，同名新角色不能冒充续接。"},
-        {"id": "CC8", "text": "契约与成熟行为先于实现；公共输入输出和副作用应先冻结。"},
-        {"id": "CC11", "text": "设计原则、公共契约或角色边界的增删改必须单独披露并取得用户接受。"}
+        {
+          "id": "CC1",
+          "text": "机器、Tester、Reviewer 判据按独立性分层，并绑定产生结论的真实输入。"
+        },
+        {
+          "id": "CC2",
+          "text": "每个事实只有一个家；消费者引用权威源，不维护旁路副本。"
+        },
+        {
+          "id": "CC7",
+          "text": "连续性属于原 thread 和事务身份，同名新角色不能冒充续接。"
+        },
+        {
+          "id": "CC8",
+          "text": "契约与成熟行为先于实现；公共输入输出和副作用应先冻结。"
+        },
+        {
+          "id": "CC11",
+          "text": "设计原则、公共契约或角色边界的增删改必须单独披露并取得用户接受。"
+        }
       ],
       "cases": [
         {
@@ -24,7 +39,16 @@
             "在同一候选上只增加 untracked/ignored 枚举后，受控复现被拒绝；无残留的正向 proof 仍被接受。",
             "改动不改变 proof 的公共输入输出，只补齐既有 clean 不变量。"
           ],
-          "gold": {"route": "derived", "cluster_id": "cc-e-worktree-cleanliness", "principle_ids": ["CC1", "CC8"]}
+          "gold": {
+            "diagnosis_state": "established",
+            "human_attention": "none",
+            "scope_inventory_required": false,
+            "cluster_id": "cc-e-worktree-cleanliness",
+            "principle_ids": [
+              "CC1",
+              "CC8"
+            ]
+          }
         },
         {
           "id": "cc-e124",
@@ -33,11 +57,44 @@
           "facts": [
             "冻结 schema 与 runtime 唯一规则都规定：full case 只有存在 hard_rules 时 mechanical 才可为 pass，否则必须为 not_applicable。",
             "Tester 的七项检查属于 must/must_not/quality，不是 hard_rules；它们返回 0 不改变 mechanical 的适用性。",
-            "Builder 交接合同列出字段却漏掉上述权威规则的引用，Tester 首次因此返回 mechanical=pass。",
+            "Builder 交接合同列出字段却漏掉上述权威规则的引用，Tester 首次因此返回 mechanical=pass；runtime 依据 frozen case 确定性拒绝该值。",
             "保持 frozen case、候选和检查结果不变，只补充规则引用后，新鲜 Tester 稳定返回 not_applicable，record-evidence 接受。",
             "不需要新增或修改公共字段、角色 ownership 或用户入口。"
           ],
-          "gold": {"route": "derived", "cluster_id": "cc-e-mechanical-projection", "principle_ids": ["CC2", "CC8"]}
+          "gold": {
+            "diagnosis_state": "established",
+            "human_attention": "none",
+            "scope_inventory_required": true,
+            "cluster_id": "cc-e-mechanical-projection",
+            "principle_ids": [
+              "CC2",
+              "CC8"
+            ]
+          }
+        },
+        {
+          "id": "cc-e123",
+          "source_url": "https://github.com/catchmeee2002/cc-builder-loop/issues/123",
+          "title": "计划 checklist 的额外机器检查未被 runtime evidence 覆盖",
+          "facts": [
+            "冻结计划明确要求仓库 fixtures 与两项 Skill validator，plan-validate 和 start 均接受该计划。",
+            "effective runner 只执行 runtime compile 与仓库 fixtures，machine evidence 没有两项 validator 的记录。",
+            "Tester 与黑盒都已通过，最终 Reviewer 才首次发现 checklist 与 machine evidence 不闭合并阻断批准。",
+            "补跑两项 validator 后同一 Reviewer 复审通过，证明遗漏不在候选实现或测试目标。",
+            "要提前闭合缺口，必须在计划契约、runner/evidence 契约或 Reviewer 前置职责之间重新划定至少一处公共边界。"
+          ],
+          "gold": {
+            "diagnosis_state": "established",
+            "human_attention": "batch_approval",
+            "scope_inventory_required": true,
+            "cluster_id": "cc-e-checklist-evidence-binding",
+            "principle_ids": [
+              "CC1",
+              "CC2",
+              "CC8",
+              "CC11"
+            ]
+          }
         }
       ]
     },
@@ -45,11 +102,26 @@
       "project_id": "generator",
       "goal": "通过结构化世界状态、蓝图与叙事原文协作，生成长篇小说并对可判定的一致性错误执行可靠校验。",
       "principles": [
-        {"id": "G2", "text": "每份数据有且只有一个职责；冲突应从数据分层消除。"},
-        {"id": "G3", "text": "生产、存储、消费全链路必须清晰，生产源唯一。"},
-        {"id": "G4", "text": "写入求真，读出求精；缺失可以显式暴露，幻觉或静默错误不能进入状态。"},
-        {"id": "G5", "text": "能确定性校验的绝不交给 LLM；执行状态转移后必须对账，校验事实必须显式注入。"},
-        {"id": "GE2", "text": "同类现象出现三处以上按系统性问题处理，不能逐点打补丁。"}
+        {
+          "id": "G2",
+          "text": "每份数据有且只有一个职责；冲突应从数据分层消除。"
+        },
+        {
+          "id": "G3",
+          "text": "生产、存储、消费全链路必须清晰，生产源唯一。"
+        },
+        {
+          "id": "G4",
+          "text": "写入求真，读出求精；缺失可以显式暴露，幻觉或静默错误不能进入状态。"
+        },
+        {
+          "id": "G5",
+          "text": "能确定性校验的绝不交给 LLM；执行状态转移后必须对账，校验事实必须显式注入。"
+        },
+        {
+          "id": "GE2",
+          "text": "同类现象出现三处以上按系统性问题处理，不能逐点打补丁。"
+        }
       ],
       "cases": [
         {
@@ -63,7 +135,41 @@
             "同一测试把两条异常路径改成显式 blocking 后稳定变红，正常合法 JSON 且无问题的路径仍通过。",
             "代码库审计发现多个校验边界共享相同的“异常折叠为成功”策略，需要成组核对影响范围。"
           ],
-          "gold": {"route": "batch_approval", "cluster_id": "gen-e-fail-open", "principle_ids": ["G4", "G5", "GE2"]}
+          "gold": {
+            "diagnosis_state": "established",
+            "human_attention": "none",
+            "scope_inventory_required": true,
+            "cluster_id": "gen-e-fail-open",
+            "principle_ids": [
+              "G4",
+              "G5",
+              "GE2"
+            ]
+          }
+        },
+        {
+          "id": "gen-e86",
+          "source_url": "https://github.com/catchmeee2002/generator/issues/86",
+          "title": "extraction 异常后整章 events 为空但流程继续",
+          "facts": [
+            "在相同章节输入上，受控故障分别让 extraction 模型调用失败、让 JSON 解析失败；两条路径都会进入覆盖整段流程的 catch-all。",
+            "该 catch-all 只记录日志并写空 world_update，章节仍完成 submit 或 force_submit；不注入故障时同一输入会持久化非空 events。",
+            "下游依赖 events 的确定性校验因此无行可查，调用链没有独立失败状态或对账拒绝。",
+            "同一代码库中至少十四处 catch-all 需要按核心写入失败、可恢复模型失败和无关清理失败分类，不能只补当前 except。",
+            "把核心 extraction 失败改为有限重试后抛出，并保留合法零 event 的独立成功凭证，可机械区分失败与真实空结果。"
+          ],
+          "gold": {
+            "diagnosis_state": "established",
+            "human_attention": "none",
+            "scope_inventory_required": true,
+            "cluster_id": "gen-e-fail-open",
+            "principle_ids": [
+              "G3",
+              "G4",
+              "G5",
+              "GE2"
+            ]
+          }
         },
         {
           "id": "gen-e89",
@@ -76,7 +182,38 @@
             "只在测试中 mock _generate_chapter_summary 后，断网环境下三个测试稳定通过，产品代码路径不变。",
             "测试目标是 finalize 的状态与幂等性，不包含真实模型集成。"
           ],
-          "gold": {"route": "derived", "cluster_id": "gen-e-unit-boundary", "principle_ids": ["G3", "G5"]}
+          "gold": {
+            "diagnosis_state": "established",
+            "human_attention": "none",
+            "scope_inventory_required": false,
+            "cluster_id": "gen-e-unit-boundary",
+            "principle_ids": [
+              "G3",
+              "G5"
+            ]
+          }
+        },
+        {
+          "id": "gen-e41",
+          "source_url": "https://github.com/catchmeee2002/generator/issues/41",
+          "title": "secret depth 的层级语义尚未确定",
+          "facts": [
+            "当前需要定义 secret depth 表示同一秘密逐层揭示的深度，还是互不包含的不同信息角度。",
+            "两种定义都能形成自洽数据结构，但会分别改变生产字段、prompt 消费方式和泄密校验语义。",
+            "现有原则只要求数据职责唯一、链路清晰和静默泄密可检测，不能从中唯一推出哪种产品语义。",
+            "团队尚未观察足够的真实模型消费行为，也没有冻结玩家应体验到的揭示节奏。"
+          ],
+          "gold": {
+            "diagnosis_state": "established",
+            "human_attention": "first_principles",
+            "scope_inventory_required": true,
+            "cluster_id": "gen-e-secret-semantics",
+            "principle_ids": [
+              "G2",
+              "G3",
+              "G4"
+            ]
+          }
         }
       ]
     },
@@ -84,11 +221,26 @@
       "project_id": "divine-word",
       "goal": "让玩家通过一句短神谕可观察地改变文明历史，重点是视觉化因果、NPC 涌现和不可复现的叙事体验。",
       "principles": [
-        {"id": "D0", "text": "产品定位是 AI 涌现文明纪录片；视觉叙事优先于默认阅读大量文字。"},
-        {"id": "D1", "text": "玩家神谕必须产生可追溯且路径可区分的因果链，因果感是生死线。"},
-        {"id": "D2", "text": "事件层 append-only 且权威，状态层是 events 的 fold，可从事件重算。"},
-        {"id": "D3", "text": "代码能算的状态、数值与关系一致性不交给 LLM。"},
-        {"id": "D7", "text": "涌现优先于编剧；搭舞台和交互规则，不预写剧情。"}
+        {
+          "id": "D0",
+          "text": "产品定位是 AI 涌现文明纪录片；视觉叙事优先于默认阅读大量文字。"
+        },
+        {
+          "id": "D1",
+          "text": "玩家神谕必须产生可追溯且路径可区分的因果链，因果感是生死线。"
+        },
+        {
+          "id": "D2",
+          "text": "事件层 append-only 且权威，状态层是 events 的 fold，可从事件重算。"
+        },
+        {
+          "id": "D3",
+          "text": "代码能算的状态、数值与关系一致性不交给 LLM。"
+        },
+        {
+          "id": "D7",
+          "text": "涌现优先于编剧；搭舞台和交互规则，不预写剧情。"
+        }
       ],
       "cases": [
         {
@@ -102,7 +254,38 @@
             "只补齐该字段后，原事件序列重放可恢复相同状态；其他字段和事件不变。",
             "同一重建函数承载所有状态字段，新增字段仍可能再次漏入手写清单。"
           ],
-          "gold": {"route": "derived", "cluster_id": "dw-e-fold-completeness", "principle_ids": ["D2", "D3"]}
+          "gold": {
+            "diagnosis_state": "established",
+            "human_attention": "none",
+            "scope_inventory_required": true,
+            "cluster_id": "dw-e-fold-completeness",
+            "principle_ids": [
+              "D2",
+              "D3"
+            ]
+          }
+        },
+        {
+          "id": "dw-e45",
+          "source_url": "https://github.com/catchmeee2002/divine-word/issues/45",
+          "title": "真实游玩中 lethal 冲突长期不可达",
+          "facts": [
+            "连续十二轮使用极端煽动神谕后，系统仍没有建筑损毁、信徒死亡或 lethal 冲突。",
+            "人为构造 grudge 超阈值的集成 harness 能稳定触发建筑损毁和死亡，证明末端后果代码路径可工作。",
+            "真实事件长期停在 verbal 或 physical，单对 grudge 没有跨过阈值。",
+            "现有事实尚不能区分 grudge 累积过慢、冲突对象分散、每轮衰减抵消或神谕 intent 未持续落到同一对象。",
+            "项目既有设计已经要求极端因果路径可达，不需要重新决定是否保留 lethal 后果。"
+          ],
+          "gold": {
+            "diagnosis_state": "needs_evidence",
+            "human_attention": "none",
+            "scope_inventory_required": false,
+            "cluster_id": "dw-e-conflict-continuity",
+            "principle_ids": [
+              "D1",
+              "D7"
+            ]
+          }
         },
         {
           "id": "dw-e46",
@@ -113,9 +296,19 @@
             "候选生成会枚举所有 opposing NPC 对，评分函数不读取既有 grudge、上一轮冲突对象或 feud 状态；同分后随机选新对。",
             "逐轮轨迹显示候选池中已有积怨对存在，但与陌生对权重完全相同，因此每轮选择分散。",
             "固定种子模拟证明：保持现有数值和衰减不变，仅增加既有积怨连续性权重后，同一对可跨过 physical/lethal 阈值；关闭该权重又恢复长期 verbal。",
-            "需要决定连续性权重的产品强度，但无需改变事件权威、关系身份或涌现而非编剧的原则。"
+            "现有 D1 与 D7 已要求玩家针对同一群体的神谕留下可追溯关系后果；修复无需改变事件权威、关系身份或涌现而非编剧的原则。"
           ],
-          "gold": {"route": "batch_approval", "cluster_id": "dw-e-conflict-continuity", "principle_ids": ["D1", "D3", "D7"]}
+          "gold": {
+            "diagnosis_state": "established",
+            "human_attention": "none",
+            "scope_inventory_required": false,
+            "cluster_id": "dw-e-conflict-continuity",
+            "principle_ids": [
+              "D1",
+              "D3",
+              "D7"
+            ]
+          }
         },
         {
           "id": "dw-e29",
@@ -126,7 +319,39 @@
             "候选在细节密度、地图可读性、角色辨识度和整体气质上取舍不同。",
             "项目尚未冻结最终视觉品味，也没有一个确定性指标能替代终审选择。"
           ],
-          "gold": {"route": "needs_first_principles", "cluster_id": "dw-e-visual-taste", "principle_ids": ["D0"]}
+          "gold": {
+            "diagnosis_state": "established",
+            "human_attention": "first_principles",
+            "scope_inventory_required": false,
+            "cluster_id": "dw-e-visual-taste",
+            "principle_ids": [
+              "D0"
+            ]
+          }
+        },
+        {
+          "id": "dw-e47",
+          "source_url": "https://github.com/catchmeee2002/divine-word/issues/47",
+          "title": "自动前端验收会抢占用户 Mac Chrome 焦点",
+          "facts": [
+            "自动前端验收经 CDP 隧道控制用户 Mac 上的可见 Chrome，并会反复 bringToFront 抢占焦点。",
+            "普通 Divine Word 验收不依赖 Mac 登录态或现有标签页，但现有 Tester 默认仍复用该浏览器上下文。",
+            "项目要求保留真实 Playwright 页面、Canvas、WebSocket 和截图验收，不能退化为 API 或静态截图。",
+            "候选修法把自动 E2E 默认入口改为 Docker 内 isolated headless Chromium，同时把 Mac 持久浏览器保留为显式 opt-in。",
+            "该修法改变 Tester 的默认浏览器入口和自动验收与显式用户上下文之间的角色边界。",
+            "当前稳定版 Playwright MCP 的页面选择会执行 bringToFront，没有受支持的配置可在共享 Mac 上下文中关闭该行为。",
+            "落地需同步项目级 Playwright 与 Chrome DevTools 配置、Tester 浏览器路由、Mac opt-in 入口和 artifact 隔离约束。"
+          ],
+          "gold": {
+            "diagnosis_state": "established",
+            "human_attention": "batch_approval",
+            "scope_inventory_required": true,
+            "cluster_id": "dw-e-browser-context-boundary",
+            "principle_ids": [
+              "D0",
+              "D3"
+            ]
+          }
         }
       ]
     }

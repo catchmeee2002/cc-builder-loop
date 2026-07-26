@@ -21,12 +21,14 @@ EXPERIMENT_DIR = SCRIPT_DIR.parent
 import issue_triage_responses as meta  # noqa: E402
 
 
-SCHEMA_VERSION = 1
-ROUTES = ("derived", "batch_approval", "needs_first_principles")
-ROUTE_RANK = {route: index for index, route in enumerate(ROUTES)}
+SCHEMA_VERSION = 3
+DIAGNOSIS_STATES = ("established", "needs_evidence")
+HUMAN_ATTENTION = ("none", "batch_approval", "first_principles")
+ATTENTION_RANK = {attention: index for index, attention in enumerate(HUMAN_ATTENTION)}
+WORK_QUEUES = ("agent_execute", "agent_investigate", "batch_approval", "first_principles")
 ROOT_CAUSE_STATUSES = ("established", "candidate", "unknown")
 ATTACK_VERDICTS = ("stands", "fails", "underdetermined")
-ATTACK_ESCALATIONS = ("none", "batch_approval", "needs_first_principles")
+ATTACK_ATTENTION_ESCALATIONS = HUMAN_ATTENTION
 CLUSTER_ID = re.compile(r"[a-z0-9][a-z0-9-]{2,80}\Z")
 MAX_PROJECTS = 8
 MAX_CASES_PER_PROJECT = 24
@@ -45,7 +47,9 @@ CLUSTERER_PROMPT = EXPERIMENT_DIR / "roles" / "clusterer.md"
 
 @dataclasses.dataclass(frozen=True)
 class Gold:
-    route: str
+    diagnosis_state: str
+    human_attention: str
+    scope_inventory_required: bool
     cluster_id: str
     principle_ids: tuple[str, ...]
 
@@ -195,11 +199,35 @@ def load_suite(path: Path) -> Suite:
             gold_obj = _exact_object(
                 case_obj["gold"],
                 name=f"{case_id}.gold",
-                required=("route", "cluster_id", "principle_ids"),
+                required=(
+                    "diagnosis_state",
+                    "human_attention",
+                    "scope_inventory_required",
+                    "cluster_id",
+                    "principle_ids",
+                ),
             )
-            route = _string(gold_obj["route"], name=f"{case_id}.gold.route", limit=40)
-            if route not in ROUTES:
-                raise meta.RunnerError("input", f"{case_id}.gold.route 非法", meta.EXIT_INPUT)
+            diagnosis_state = _string(
+                gold_obj["diagnosis_state"],
+                name=f"{case_id}.gold.diagnosis_state",
+                limit=40,
+            )
+            if diagnosis_state not in DIAGNOSIS_STATES:
+                raise meta.RunnerError("input", f"{case_id}.gold.diagnosis_state 非法", meta.EXIT_INPUT)
+            human_attention = _string(
+                gold_obj["human_attention"],
+                name=f"{case_id}.gold.human_attention",
+                limit=40,
+            )
+            if human_attention not in HUMAN_ATTENTION:
+                raise meta.RunnerError("input", f"{case_id}.gold.human_attention 非法", meta.EXIT_INPUT)
+            scope_inventory_required = gold_obj["scope_inventory_required"]
+            if not isinstance(scope_inventory_required, bool):
+                raise meta.RunnerError(
+                    "input",
+                    f"{case_id}.gold.scope_inventory_required 必须是 boolean",
+                    meta.EXIT_INPUT,
+                )
             cluster_id = _string(gold_obj["cluster_id"], name=f"{case_id}.gold.cluster_id", limit=80)
             if not CLUSTER_ID.fullmatch(cluster_id):
                 raise meta.RunnerError("input", f"{case_id}.gold.cluster_id 格式非法", meta.EXIT_INPUT)
@@ -222,7 +250,13 @@ def load_suite(path: Path) -> Suite:
                     source_url=_string(case_obj["source_url"], name=f"{case_id}.source_url"),
                     title=_string(case_obj["title"], name=f"{case_id}.title"),
                     facts=tuple(facts),
-                    gold=Gold(route=route, cluster_id=cluster_id, principle_ids=tuple(gold_principles)),
+                    gold=Gold(
+                        diagnosis_state=diagnosis_state,
+                        human_attention=human_attention,
+                        scope_inventory_required=scope_inventory_required,
+                        cluster_id=cluster_id,
+                        principle_ids=tuple(gold_principles),
+                    ),
                 )
             )
         projects.append(Project(project_id, goal, tuple(principles), tuple(cases)))
@@ -291,7 +325,8 @@ def _diagnosis_schema(project: Project) -> dict[str, Any]:
             "new_or_changed_principle": {"type": "boolean"},
             "principle_conflict": {"type": "boolean"},
             "public_contract_or_role_boundary": {"type": "boolean"},
-            "wide_or_hard_to_reverse": {"type": "boolean"},
+            "wide_scope": {"type": "boolean"},
+            "hard_to_reverse": {"type": "boolean"},
             "deterministic_acceptance": {"type": "boolean"},
         },
         "required": [
@@ -299,7 +334,8 @@ def _diagnosis_schema(project: Project) -> dict[str, Any]:
             "new_or_changed_principle",
             "principle_conflict",
             "public_contract_or_role_boundary",
-            "wide_or_hard_to_reverse",
+            "wide_scope",
+            "hard_to_reverse",
             "deterministic_acceptance",
         ],
         "additionalProperties": False,
@@ -317,7 +353,7 @@ def _diagnosis_schema(project: Project) -> dict[str, Any]:
             "root_cause": {"type": "string"},
             "root_cause_status": {"type": "string", "enum": list(ROOT_CAUSE_STATUSES)},
             "surviving_alternatives": {"type": "array", "items": {"type": "string"}},
-            "decision_missing_evidence": {"type": "array", "items": {"type": "string"}},
+            "diagnostic_missing_evidence": {"type": "array", "items": {"type": "string"}},
             "scope_notes": {"type": "array", "items": {"type": "string"}},
             "flags": flags,
             "proposed_cluster_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]{2,80}$"},
@@ -329,7 +365,7 @@ def _diagnosis_schema(project: Project) -> dict[str, Any]:
             "root_cause",
             "root_cause_status",
             "surviving_alternatives",
-            "decision_missing_evidence",
+            "diagnostic_missing_evidence",
             "scope_notes",
             "flags",
             "proposed_cluster_id",
@@ -373,24 +409,33 @@ def _attack_schema(project: Project) -> dict[str, Any]:
         "type": "object",
         "properties": {
             "issue_id": {"type": "string", "enum": issue_ids},
-            "verdict": {"type": "string", "enum": list(ATTACK_VERDICTS)},
-            "escalation": {"type": "string", "enum": list(ATTACK_ESCALATIONS)},
+            "diagnosis_verdict": {"type": "string", "enum": list(ATTACK_VERDICTS)},
+            "cluster_verdict": {"type": "string", "enum": ["stands", "fails"]},
+            "cluster_reason": {"type": "string"},
+            "human_attention_escalation": {
+                "type": "string",
+                "enum": list(ATTACK_ATTENTION_ESCALATIONS),
+            },
             "reason": {"type": "string"},
             "surviving_alternative": {"type": "string", "enum": ["none", "survives"]},
             "surviving_alternative_reason": {"type": "string"},
-            "decision_missing_evidence": {"type": "array", "items": {"type": "string"}},
+            "diagnostic_missing_evidence": {"type": "array", "items": {"type": "string"}},
             "scope_notes": {"type": "array", "items": {"type": "string"}},
+            "scope_inventory_required": {"type": "boolean"},
             "principle_conflict": {"type": "boolean"},
         },
         "required": [
             "issue_id",
-            "verdict",
-            "escalation",
+            "diagnosis_verdict",
+            "cluster_verdict",
+            "cluster_reason",
+            "human_attention_escalation",
             "reason",
             "surviving_alternative",
             "surviving_alternative_reason",
-            "decision_missing_evidence",
+            "diagnostic_missing_evidence",
             "scope_notes",
+            "scope_inventory_required",
             "principle_conflict",
         ],
         "additionalProperties": False,
@@ -519,48 +564,85 @@ def validate_attacks(value: Any, project: Project) -> dict[str, Any]:
     expected_ids = {case.id for case in project.cases}
     attacks = _validate_unique_issue_rows(value["attacks"], expected_ids=expected_ids, name="attacks")
     for attack in attacks:
-        if attack.get("verdict") not in ATTACK_VERDICTS:
-            raise meta.RunnerError("response", f"{attack['issue_id']} verdict 非法", meta.EXIT_RESPONSE)
-        if attack.get("escalation") not in ATTACK_ESCALATIONS:
-            raise meta.RunnerError("response", f"{attack['issue_id']} escalation 非法", meta.EXIT_RESPONSE)
+        if attack.get("diagnosis_verdict") not in ATTACK_VERDICTS:
+            raise meta.RunnerError(
+                "response",
+                f"{attack['issue_id']} diagnosis_verdict 非法",
+                meta.EXIT_RESPONSE,
+            )
+        if attack.get("cluster_verdict") not in {"stands", "fails"}:
+            raise meta.RunnerError(
+                "response",
+                f"{attack['issue_id']} cluster_verdict 非法",
+                meta.EXIT_RESPONSE,
+            )
+        if attack.get("human_attention_escalation") not in ATTACK_ATTENTION_ESCALATIONS:
+            raise meta.RunnerError(
+                "response",
+                f"{attack['issue_id']} human_attention_escalation 非法",
+                meta.EXIT_RESPONSE,
+            )
         alternative = attack.get("surviving_alternative")
         if alternative not in {"none", "survives"}:
             raise meta.RunnerError("response", f"{attack['issue_id']} surviving_alternative 非法", meta.EXIT_RESPONSE)
     return value
 
 
-def base_route(assessment: dict[str, Any]) -> str:
+def _max_attention(first: str, second: str) -> str:
+    return first if ATTENTION_RANK[first] >= ATTENTION_RANK[second] else second
+
+
+def base_axes(assessment: dict[str, Any]) -> dict[str, Any]:
     flags = assessment["flags"]
-    must_defer = (
-        assessment["root_cause_status"] != "established"
-        or bool(assessment["surviving_alternatives"])
-        or bool(assessment["decision_missing_evidence"])
-        or flags["goal_or_taste"]
+    if (
+        flags["goal_or_taste"]
         or flags["new_or_changed_principle"]
         or flags["principle_conflict"]
         or not flags["deterministic_acceptance"]
-    )
-    if must_defer:
-        return "needs_first_principles"
-    if flags["public_contract_or_role_boundary"] or flags["wide_or_hard_to_reverse"]:
-        return "batch_approval"
-    return "derived"
+    ):
+        human_attention = "first_principles"
+    elif flags["public_contract_or_role_boundary"] or flags["hard_to_reverse"]:
+        human_attention = "batch_approval"
+    else:
+        human_attention = "none"
+    diagnosis_state = "needs_evidence" if (
+        assessment["root_cause_status"] != "established"
+        or bool(assessment["surviving_alternatives"])
+        or bool(assessment["diagnostic_missing_evidence"])
+    ) else "established"
+    return {
+        "diagnosis_state": diagnosis_state,
+        "human_attention": human_attention,
+        "scope_inventory_required": flags["wide_scope"],
+    }
 
 
-def final_route(assessment: dict[str, Any], attack: dict[str, Any]) -> str:
-    route = base_route(assessment)
-    attack_requires_human = (
-        attack["verdict"] != "stands"
+def final_axes(assessment: dict[str, Any], attack: dict[str, Any]) -> dict[str, Any]:
+    axes = base_axes(assessment)
+    axes["diagnosis_state"] = "needs_evidence" if (
+        assessment["root_cause_status"] != "established"
+        or attack["diagnosis_verdict"] != "stands"
         or attack["surviving_alternative"] == "survives"
-        or bool(attack["decision_missing_evidence"])
-        or attack["principle_conflict"]
-        or attack["escalation"] == "needs_first_principles"
+        or bool(attack["diagnostic_missing_evidence"])
+    ) else "established"
+    escalation = attack["human_attention_escalation"]
+    if attack["principle_conflict"]:
+        escalation = "first_principles"
+    axes["human_attention"] = _max_attention(axes["human_attention"], escalation)
+    axes["scope_inventory_required"] = False if axes["diagnosis_state"] == "needs_evidence" else (
+        axes["scope_inventory_required"] or attack["scope_inventory_required"]
     )
-    if attack_requires_human:
-        return "needs_first_principles"
-    if attack["escalation"] == "batch_approval" and ROUTE_RANK[route] < ROUTE_RANK["batch_approval"]:
+    return axes
+
+
+def work_queue(axes: dict[str, Any]) -> str:
+    if axes["diagnosis_state"] == "needs_evidence":
+        return "agent_investigate"
+    if axes["human_attention"] == "first_principles":
+        return "first_principles"
+    if axes["human_attention"] == "batch_approval":
         return "batch_approval"
-    return route
+    return "agent_execute"
 
 
 def _run_project(client: meta.ResponsesClient, project: Project, reasoning_effort: str) -> dict[str, Any]:
@@ -641,13 +723,21 @@ def _run_project(client: meta.ResponsesClient, project: Project, reasoning_effor
     for case in project.cases:
         assessment = assessments[case.id]
         attack = attacks[case.id]
+        predicted_axes = final_axes(assessment, attack)
+        gold_axes = {
+            "diagnosis_state": case.gold.diagnosis_state,
+            "human_attention": case.gold.human_attention,
+            "scope_inventory_required": case.gold.scope_inventory_required,
+        }
         cases.append(
             {
                 "issue_id": case.id,
                 "source_url": case.source_url,
                 "title": case.title,
-                "predicted_route": final_route(assessment, attack),
-                "gold_route": case.gold.route,
+                "predicted_axes": predicted_axes,
+                "gold_axes": gold_axes,
+                "predicted_work_queue": work_queue(predicted_axes),
+                "gold_work_queue": work_queue(gold_axes),
                 "gold_cluster_id": case.gold.cluster_id,
                 "gold_principle_ids": list(case.gold.principle_ids),
                 "assessment": assessment,
@@ -682,20 +772,48 @@ def _same_cluster_pairs(case_rows: list[dict[str, Any]], *, predicted: bool) -> 
 def score(project_results: list[dict[str, Any]]) -> dict[str, Any]:
     rows = [row for project in project_results for row in project["cases"]]
     total = len(rows)
-    exact = sum(row["predicted_route"] == row["gold_route"] for row in rows)
-    under = [
+    axis_exact = sum(row["predicted_axes"] == row["gold_axes"] for row in rows)
+    queue_exact = sum(row["predicted_work_queue"] == row["gold_work_queue"] for row in rows)
+    diagnosis_exact = sum(
+        row["predicted_axes"]["diagnosis_state"] == row["gold_axes"]["diagnosis_state"]
+        for row in rows
+    )
+    attention_exact = sum(
+        row["predicted_axes"]["human_attention"] == row["gold_axes"]["human_attention"]
+        for row in rows
+    )
+    scope_exact = sum(
+        row["predicted_axes"]["scope_inventory_required"]
+        == row["gold_axes"]["scope_inventory_required"]
+        for row in rows
+    )
+    unsafe_auto_execute = [
         row["issue_id"]
         for row in rows
-        if ROUTE_RANK[row["predicted_route"]] < ROUTE_RANK[row["gold_route"]]
+        if row["predicted_work_queue"] == "agent_execute"
+        and row["gold_work_queue"] != "agent_execute"
     ]
-    over = [
+    attention_under = [
         row["issue_id"]
         for row in rows
-        if ROUTE_RANK[row["predicted_route"]] > ROUTE_RANK[row["gold_route"]]
+        if ATTENTION_RANK[row["predicted_axes"]["human_attention"]]
+        < ATTENTION_RANK[row["gold_axes"]["human_attention"]]
     ]
-    predicted_derived = [row for row in rows if row["predicted_route"] == "derived"]
-    correctly_derived = [row for row in predicted_derived if row["gold_route"] == "derived"]
-    deep_review = [row for row in rows if row["predicted_route"] == "needs_first_principles"]
+    unnecessary_human_interrupt = [
+        row["issue_id"]
+        for row in rows
+        if row["predicted_work_queue"] in {"batch_approval", "first_principles"}
+        and row["gold_work_queue"] in {"agent_execute", "agent_investigate"}
+    ]
+    predicted_execute = [row for row in rows if row["predicted_work_queue"] == "agent_execute"]
+    correctly_execute = [row for row in predicted_execute if row["gold_work_queue"] == "agent_execute"]
+    agent_owned = [
+        row for row in rows if row["predicted_work_queue"] in {"agent_execute", "agent_investigate"}
+    ]
+    human_interrupt = [
+        row for row in rows if row["predicted_work_queue"] in {"batch_approval", "first_principles"}
+    ]
+    first_principles = [row for row in rows if row["predicted_work_queue"] == "first_principles"]
     principle_hits = sum(
         bool(set(row["assessment"]["principle_ids"]) & set(row["gold_principle_ids"]))
         for row in rows
@@ -713,29 +831,34 @@ def score(project_results: list[dict[str, Any]]) -> dict[str, Any]:
         if pair_precision + pair_recall
         else 0.0
     )
-    confusion = {
-        gold: {predicted: 0 for predicted in ROUTES}
-        for gold in ROUTES
-    }
+    confusion = {gold: {predicted: 0 for predicted in WORK_QUEUES} for gold in WORK_QUEUES}
     for row in rows:
-        confusion[row["gold_route"]][row["predicted_route"]] += 1
+        confusion[row["gold_work_queue"]][row["predicted_work_queue"]] += 1
     return {
         "case_count": total,
-        "route_exact_accuracy": exact / total if total else 0.0,
-        "unsafe_under_escalation_count": len(under),
-        "unsafe_under_escalation_issue_ids": under,
-        "over_escalation_count": len(over),
-        "over_escalation_issue_ids": over,
-        "hands_off_rate": len(predicted_derived) / total if total else 0.0,
-        "hands_off_precision": len(correctly_derived) / len(predicted_derived) if predicted_derived else 1.0,
-        "deep_review_rate": len(deep_review) / total if total else 0.0,
+        "axis_exact_accuracy": axis_exact / total if total else 0.0,
+        "work_queue_exact_accuracy": queue_exact / total if total else 0.0,
+        "diagnosis_state_accuracy": diagnosis_exact / total if total else 0.0,
+        "human_attention_accuracy": attention_exact / total if total else 0.0,
+        "scope_inventory_accuracy": scope_exact / total if total else 0.0,
+        "unsafe_auto_execute_count": len(unsafe_auto_execute),
+        "unsafe_auto_execute_issue_ids": unsafe_auto_execute,
+        "human_attention_underestimate_count": len(attention_under),
+        "human_attention_underestimate_issue_ids": attention_under,
+        "unnecessary_human_interrupt_count": len(unnecessary_human_interrupt),
+        "unnecessary_human_interrupt_issue_ids": unnecessary_human_interrupt,
+        "agent_execute_rate": len(predicted_execute) / total if total else 0.0,
+        "agent_execute_precision": len(correctly_execute) / len(predicted_execute) if predicted_execute else 1.0,
+        "agent_owned_rate": len(agent_owned) / total if total else 0.0,
+        "human_interrupt_rate": len(human_interrupt) / total if total else 0.0,
+        "first_principles_rate": len(first_principles) / total if total else 0.0,
         "principle_any_overlap_rate": principle_hits / total if total else 0.0,
         "cluster_pair_precision": pair_precision,
         "cluster_pair_recall": pair_recall,
         "cluster_pair_f1": pair_f1,
         "predicted_cluster_count": sum(len(project["diagnosis"]["clusters"]) for project in project_results),
         "gold_cluster_count": len({(project["project_id"], row["gold_cluster_id"]) for project in project_results for row in project["cases"]}),
-        "route_confusion": confusion,
+        "work_queue_confusion": confusion,
     }
 
 

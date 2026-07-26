@@ -37,14 +37,15 @@ class FakeClient:
                         "root_cause": "异常状态被折叠",
                         "root_cause_status": "established",
                         "surviving_alternatives": [],
-                        "decision_missing_evidence": [],
+                        "diagnostic_missing_evidence": [],
                         "scope_notes": [],
                         "flags": {
                             "goal_or_taste": False,
                             "new_or_changed_principle": False,
                             "principle_conflict": False,
                             "public_contract_or_role_boundary": False,
-                            "wide_or_hard_to_reverse": False,
+                            "wide_scope": False,
+                            "hard_to_reverse": False,
                             "deterministic_acceptance": True,
                         },
                         "proposed_cluster_id": "single-issue",
@@ -64,13 +65,16 @@ class FakeClient:
                 "attacks": [
                     {
                         "issue_id": issue_id,
-                        "verdict": "stands",
-                        "escalation": "none",
+                        "diagnosis_verdict": "stands",
+                        "cluster_verdict": "stands",
+                        "cluster_reason": "单例",
+                        "human_attention_escalation": "none",
                         "reason": "证据闭合",
                         "surviving_alternative": "none",
                         "surviving_alternative_reason": "没有竞争解释",
-                        "decision_missing_evidence": [],
+                        "diagnostic_missing_evidence": [],
                         "scope_notes": [],
+                        "scope_inventory_required": False,
                         "principle_conflict": False,
                     }
                 ]
@@ -127,7 +131,13 @@ class IssueTriageShadowTests(unittest.TestCase):
                     source_url="https://example.invalid/1",
                     title="问题",
                     facts=("事实",),
-                    gold=evaluator.Gold("derived", "shadow-single", ("P1",)),
+                    gold=evaluator.Gold(
+                        diagnosis_state="established",
+                        human_attention="none",
+                        scope_inventory_required=False,
+                        cluster_id="shadow-single",
+                        principle_ids=("P1",),
+                    ),
                 ),
             ),
         )
@@ -150,8 +160,8 @@ class IssueTriageShadowTests(unittest.TestCase):
                 prefix="main",
             )
 
-        self.assertEqual(first["route"], "derived")
-        self.assertEqual(second["route"], "derived")
+        self.assertEqual(first["work_queue"], "agent_execute")
+        self.assertEqual(second["work_queue"], "agent_execute")
         self.assertEqual(client.calls, 2)
 
     def test_profile_extracts_referenced_sections(self):
