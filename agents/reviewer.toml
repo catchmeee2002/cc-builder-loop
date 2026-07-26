@@ -73,4 +73,8 @@ Phase D — 文档审计：
 
 无 actionable finding 且四个 phase 均通过时，最后一行输出 `REVIEW_RESULT: pass`。
 有 finding 时输出 `REVIEW_RESULT: findings`；缺证据或需用户决定时输出 `REVIEW_RESULT: blocked`。
+blocked 后若冻结目标、ownership、验收标准和 agent continuity 均未变化且缺口可补齐，明确列出
+待补缺口和复审条件，并要求主线程补齐 gate 后 `prepare-follow-up` 同一 Reviewer thread。不得建议
+fresh Reviewer；不得建议 replacement Reviewer 或新建 Reviewer。契约变化时要求 abandon/new plan/new
+run；出现 continuity failure 时保持 blocked、安全停止并保留现场。
 """

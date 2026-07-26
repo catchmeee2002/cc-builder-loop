@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Tester 与 Reviewer initial spawn 现在显式使用 `fork_turns="none"` 和最小冻结 brief，后续阶段仍续接
+  原 thread；文档同步区分 conversation、Git/artifact、filesystem 与平台 attestation 边界。Reviewer
+  因可补齐前置缺口 blocked 时只允许原 thread 复审，不再建议 fresh Reviewer（#88、#125）。
 - 将 Builder-loop Planner 验证成功后的 Codex 原生“实施计划”动作视为一次明确授权：方案外的
   `BUILDER_HANDOFF_READY` 只对同 session 紧邻 Default turn 生效，Builder Skill 允许严格受限的
   隐式发现；普通实施请求、Codex 原生 Plan、过期或缺失标记仍 fail closed，`$builder` 保留为手工

@@ -65,16 +65,17 @@ description: 执行已接受的 builder-loop 方案，在隔离 worktree 中协�
 `plan.level=L1` 时跳过本节。其他计划执行：
 
 1. 从 ledger 读取 `parallel_ready`、tester worktree 和冻结测试目标。
-2. `parallel_ready=true` 时立即 spawn 一次 `tester` custom agent，并在其运行期间实现
-   `ownership.builder_write` 内的代码。
+2. `parallel_ready=true` 时立即用 `spawn_agent(agent_type="tester", fork_turns="none")`
+   创建唯一 Tester，并在其运行期间实现 `ownership.builder_write` 内的代码。
 3. `parallel_ready=false` 时，从 frozen `test_context.public_prerequisites` 读取公开前置产物，
    先在 builder worktree 只产出这些精确普通文件，不提前写其他实现；执行
    `publish-prerequisites --run <run>`，只接受 `READY` 或同一 publication 的幂等 `NOOP`。runtime
    会自动 checkpoint、验证最终 diff、合成 parent 为 `spec_head` 的隔离 publication HEAD，并
-   返回 head/tree/manifest/files。随后才 spawn Tester，只传 publication 元数据、tester worktree、
+   返回 head/tree/manifest/files。随后才按上一步的 `fork_turns="none"` 形式 spawn Tester，只传 publication 元数据、tester worktree、
    冻结接口和黑盒入口，不传 Builder HEAD、candidate diff 或其他实现。已发布文件在本 run
    不可再改；后续实现必须落到其他 Builder-owned 文件。
-4. spawn Tester 时传入 `phase=author`、`run_id`、`plan_path`、tester worktree、完整
+4. spawn Tester 时使用 `spawn_agent(agent_type="tester", fork_turns="none")`，并只传入最小 brief：
+   `phase=author`、`run_id`、`plan_path`、tester worktree、完整
    `unit-test-spec`、`e2e-cases`、`parallel_ready` 及允许查看的公开前置产物。保存返回的
    tester agent/thread id；一个 run 只 spawn 一次 Tester。
    v3 author prompt 另要求仅依据 `spec_head` 或 isolated publication 可见的公共
@@ -84,7 +85,8 @@ description: 执行已接受的 builder-loop 方案，在隔离 worktree 中协�
    unittest/pytest`、`pytest`，或计划已声明且在 `spec_head` 受保护的仓库脚本；不确定的组合命令先
    下沉到该脚本。基线先红的 `claimed_failure_kind` 固定为 `assertion-failure`，不能用零测试、导入、
    语法、收集、配置、用法、启动错误或超时替代。该 JSON 只随 turn 返回，不落仓库。
-   首次 spawn 由 `SubagentStart` 绑定 thread；此后每次调用 `followup_task` 前必须先调用
+   initial task 不得夹带父线程讨论、用户倾向、Builder 辩护或候选信息。首次 spawn 由
+   `SubagentStart` 绑定 thread；此后不再 spawn 或清空上下文，每次调用 `followup_task` 前必须先调用
    `prepare-follow-up --run <run> --role <role> --agent-id <id> --purpose <purpose>`。Tester 写测或
    澄清用 `purpose=author`，黑盒复验用 `purpose=blackbox`，Reviewer 复审用
    `purpose=review`。只有 `READY` 或同一 pending turn 的幂等 `NOOP` 才能发送 follow-up；不得
@@ -151,7 +153,7 @@ description: 执行已接受的 builder-loop 方案，在隔离 worktree 中协�
    `prepare-follow-up --run <run> --role tester --agent-id <tester_id> --purpose blackbox`，再
    follow-up 同一个 tester thread，传入 `phase=blackbox`、集成 HEAD、
    `candidate_worktree` 的绝对路径、runner 和公开黑盒入口。所有非 L1 run 都必须执行本步骤；
-   禁止 spawn 新 Tester。v3 含结构化端到端用例时，prompt 还要给出冻结 cases，并要求逐例返回
+   禁止 spawn 新 Tester，也不得清空上下文或角色历史。v3 含结构化端到端用例时，prompt 还要给出冻结 cases，并要求逐例返回
    `case_id/level/mechanical/verify/quality/outcome`。
 6. 要求 Tester 先在 `candidate_worktree` 执行 `git rev-parse HEAD` 并核对 integrated HEAD，
    再只从公开接口、CLI/API/UI、运行时输出和测试结果做黑盒验收；不读取实现 diff、不改业务
@@ -176,19 +178,21 @@ description: 执行已接受的 builder-loop 方案，在隔离 worktree 中协�
 
 1. 非 L1 计划在 Tester author `tests_ready`、机器验证和同 thread blackbox `pass` 均通过后，
    且 `contract_schema_version=3` 时测试鉴别证明也已通过，
-   spawn 一次
-   `reviewer` custom agent；L1 计划在 builder role-check 通过后 spawn。传入 plan、
-   candidate/integrated HEAD、相对 `spec_head` 的完整 diff、与 plan level 匹配的验证
-   证据、`verification_mode` 和文档政策路径。串行计划还传入 publication head/tree/manifest、
+   用 `spawn_agent(agent_type="reviewer", fork_turns="none")` spawn 一次 Reviewer；L1 计划在
+   builder role-check 通过后同样按此形式 spawn。initial task 只传入最小 brief：plan、
+   candidate/integrated HEAD、相对 `spec_head` 的完整 diff、与 plan level 匹配的验证证据、
+   `verification_mode` 和文档政策路径。串行计划还传入 publication head/tree/manifest、
    exact files 及 Tester author manifest attestation。Reviewer turn 开始前再次确认这些 gate 已绑定
-   当前 candidate；不能先启动 Reviewer 再补机器或 blackbox evidence。
+   当前 candidate；initial task 不得夹带父线程讨论、用户倾向或 Builder 辩护，但 candidate/integrated
+   HEAD 和完整 diff 是 Reviewer 的必要审查输入，必须保留。不能先启动 Reviewer 再补机器或
+   blackbox evidence。
 2. 要求 reviewer 依次执行 Phase 0 方案完成度、代码缺陷、测试完整性与防篡改、Phase D
    文档政策审计。等待最后一行 `REVIEW_RESULT`。
 3. Reviewer 有 actionable findings 且冻结契约不变时，按 ownership 路由：Builder-owned
    实现/文档由 Builder 修；Tester-owned 测试实现或测试支持由同一 Tester author correction
    修正、重新 `tests_ready` 并集成。随后执行
    `prepare-follow-up --run <run> --role reviewer --agent-id <reviewer_id> --purpose review`，再
-   follow-up 同一 Reviewer thread 复审，不新建 reviewer。
+   follow-up 同一 Reviewer thread 复审，不新建 reviewer，也不清空上下文或角色历史。
    非 L1 必须重新 `role-check`、`verify` 和 tester blackbox；仅 `contract_schema_version=3` 重新执行
    测试鉴别证明，既有 v2 ledger 不补写。L1 只重新执行 builder role-check，不为通过门禁临时添加虚假测试。
    finding 需要改变测试目标、ownership 或验收标准时，先 abandon，再进入新 plan/new run。

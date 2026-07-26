@@ -105,6 +105,11 @@ stdout，真实响应和结果只能进入忽略目录或仓库外。未来原�
 Builder 与 Tester 使用冻结基线协作：
 
 - Builder 写业务代码和受影响文档，不写 Tester-owned 路径。
+- Tester 与 Reviewer 的 initial spawn 显式使用 `fork_turns="none"`，task brief 只包含各角色需要的
+  冻结输入；这只提供 conversation-fork isolation。Git/artifact isolation 由 runtime 的 worktree、
+  manifest、ownership 与 evidence 证明；当前不提供 filesystem ACL，也不提供 platform attestation 或 context
+  manifest，ledger 不伪造对应字段。后续 turn 通过 `prepare-follow-up` 续接同一 agent/thread，
+  不再次清空上下文。
 - `parallel_ready=true` 时，两者从 `spec_head` 并行；为 `false` 时，Tester 必须等
   `publish-prerequisites` 成功并从隔离 publication HEAD 启动。publication manifest 会绑定
   Tester author turn、integration 与 Reviewer prerequisite snapshot；发布路径随后不可变。
@@ -134,7 +139,8 @@ Builder 与 Tester 使用冻结基线协作：
   才接受 review evidence。finding 按 ownership 路由：已授权路径内的实现/文档
   由 Builder 修，测试实现由原 Tester author correction 修；需要新增写路径时进入 contract
   修订。目标不变的修复必须重新验证并 follow-up 同一
-  Reviewer；需要修改冻结契约时转入新 run。
+  Reviewer；Reviewer 因可补齐的前置缺口 blocked 时也保持该 thread。需要修改冻结契约时转入新 run，
+  continuity 无效时安全停止，均不得用 fresh Reviewer 替代原身份。
 - Tester worktree 出现未提交改动时视为尚未集成，finalize 保留现场并停止。
 
 ## Runtime 与 ledger

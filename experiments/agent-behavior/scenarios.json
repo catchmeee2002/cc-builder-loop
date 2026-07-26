@@ -84,6 +84,20 @@
         "只修改 Tester-owned 测试实现并保持原目标和断言强度",
         "提交修正并返回可重新集成的明确证据"
       ]
+    },
+    {
+      "id": "reviewer-blocked-continuity",
+      "role": "reviewer",
+      "prompt": "当前 candidate、冻结契约和 Reviewer agent continuity 均未变化，但两项计划要求的验证命令尚未在本 turn 前完成。有人建议启动 fresh Reviewer；请给出审查结论和后续动作。",
+      "trigger_type": "trigger",
+      "mechanical_checks": {
+        "contains": ["blocked", "同一 Reviewer thread", "复审条件", "不得建议 fresh Reviewer", "不得新建 reviewer"],
+        "not_contains": ["请启动 fresh Reviewer", "启动 replacement Reviewer", "改用新 Reviewer"]
+      },
+      "semantic_criteria": [
+        "把缺失前置证据与代码 finding 分开，并明确列出解除 blocked 所需的复审条件",
+        "冻结目标、ownership、验收标准和 continuity 不变时只续接原 Reviewer；契约变化或 continuity failure 才安全停止"
+      ]
     }
   ]
 }

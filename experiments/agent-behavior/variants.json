@@ -13,7 +13,7 @@
       "roles": ["builder"],
       "instruction_source": {
         "path": "skills/builder/SKILL.md",
-        "sha256": "126cf52e73073e029c4779121cdc33b5afcfdce6b1450f78a9d24919ee0cd7d8",
+        "sha256": "a834ede377fa3ca6617fa168e8218dec22041010386c325771d37a6dd57b81c0",
         "revision": "WORKTREE"
       }
     },
@@ -24,6 +24,16 @@
       "instruction_source": {
         "path": "skills/builder-loop-planner/references/design-decisions.md",
         "sha256": "c8eba1707b0aeabae45c30c2c591130850e9bd28ae2d460738f4af5727ef05da",
+        "revision": "WORKTREE"
+      }
+    },
+    {
+      "id": "reviewer-current",
+      "kind": "instruction",
+      "roles": ["reviewer"],
+      "instruction_source": {
+        "path": "agents/reviewer.toml",
+        "sha256": "69a2f85069a745b31b4c24825aa2603d1e10daef01e52b0cd60d774b43b9213c",
         "revision": "WORKTREE"
       }
     },

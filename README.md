@@ -31,8 +31,11 @@ Default mode 直接进入 Builder；也可显式调用 `$builder` 作为手工�
   将其设为 Tester 基线，并冻结这些文件后再接受 Tester author turn。
 - Tester 首次写测不接收候选 diff，并按角色契约不得读取 Builder worktree；Builder 在 Tester
   提交后可以读测试，但不能修改。串行场景只向 Tester 暴露计划声明的公开前置产物和黑盒面，
-  不提供实现 diff。当前读隔离依赖独立 thread 与角色契约，写隔离由 runtime 机械执行。
-- Tester、Reviewer 在后续 iteration 续接原 agent thread，不以同名新 agent 冒充原上下文。
+  不提供实现 diff。Tester、Reviewer 首次创建都显式使用 `fork_turns="none"`，只接收完成冻结角色
+  所需的最小 brief，从而切断父线程 conversation fork；本项目不提供 filesystem ACL，也不提供
+  platform attestation 或 context manifest。Git/artifact 基线与写隔离继续由 runtime 机械执行。
+- Tester、Reviewer 在后续 iteration 续接原 agent thread，不重新 spawn、清空角色历史或以同名
+  新 agent 冒充原上下文。
 - 所有非 L1 run 都必须持久化 Tester author `tests_ready` 及其 integration，再由同一 thread 在
   candidate worktree 对集成 HEAD 完成 blackbox `pass`；可重放命令、数值 returncode、执行前后
   HEAD 与零 tracked/untracked/ignored residue 随 E2E evidence 绑定同一 candidate。
