@@ -13,7 +13,7 @@
       "roles": ["builder"],
       "instruction_source": {
         "path": "skills/builder/SKILL.md",
-        "sha256": "a834ede377fa3ca6617fa168e8218dec22041010386c325771d37a6dd57b81c0",
+        "sha256": "7379564aeda06177d5a97869a3417adf1b9836d319489b586439a09e0624a669",
         "revision": "WORKTREE"
       }
     },
@@ -33,7 +33,7 @@
       "roles": ["reviewer"],
       "instruction_source": {
         "path": "agents/reviewer.toml",
-        "sha256": "69a2f85069a745b31b4c24825aa2603d1e10daef01e52b0cd60d774b43b9213c",
+        "sha256": "85a8a5b0e034e9a571c955c9867fa3de65796e44eccc33e2ddc73b2739e5941c",
         "revision": "WORKTREE"
       }
     },

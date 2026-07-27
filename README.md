@@ -37,15 +37,28 @@ Default mode 直接进入 Builder；也可显式调用 `$builder` 作为手工�
 - Tester、Reviewer 在后续 iteration 续接原 agent thread，不重新 spawn、清空角色历史或以同名
   新 agent 冒充原上下文。
 - 所有非 L1 run 都必须持久化 Tester author `tests_ready` 及其 integration，再由同一 thread 在
-  candidate worktree 对集成 HEAD 完成 blackbox `pass`；可重放命令、数值 returncode、执行前后
-  HEAD 与零 tracked/untracked/ignored residue 随 E2E evidence 绑定同一 candidate。
+  candidate worktree 对集成 HEAD 完成 blackbox `pass`。新 run 使用 schema v2 report 保存每条真实
+  execution、存在冻结 case 时的逐例结果、逐维度 observation 与执行前后 HEAD；Tester 另行证明零 residue。即使没有
+  冻结 case，也必须至少有一条 `method=command` 的 accepted execution。其他 method 的执行错误保留
+  reason，但不计入结论或 dependency scope；全部
+  accepted command 的可解析仓库依赖取并集，只有真实解析失败才回退全 tree。既有 active run 继续
+  单 command v1，不用合成命令替换真实 provenance。unittest 只有显式 `.py` target 与 discover
+  start directory 可以窄化；默认或仅 options 的 discovery 绑定当前目录，bare、dotted 和无 `.py`
+  的 slash target 因无法区分 module/package 而 fail closed 到全 tree，不能猜成同名文件。
 - `PASS / FAIL / FATAL` 来自真实命令退出状态；模型不能自述通过。显式退出码反转、动态 exit、
   内联 shell control flow 和已知 runner 控制文件弱化会在执行前被拒绝。
+- Python Tester 文件的 skip/xfail/flaky/rerun 检测按真实 pytest、unittest、subprocess import binding
+  解析 module/from-import alias 与 module-level `pytestmark`；局部定义、参数、赋值和容器造成的
+  shadowing 不按同名字符串误判。非 Python 文件继续使用文本门禁，现有常量断言、吞异常和删除测试
+  检测保持不变。
 - 机器验证在 candidate 的临时干净 worktree 中执行，不允许验证命令改写候选现场。连续两次验证
   同一 candidate 失败会进入 no-progress，同一 failure fingerprint 跨三个 candidate 重现会要求
   架构复核；显式 resume 不重置迭代上限。
 - Builder 负责同步项目文档，Reviewer 在同一次审查中执行文档审计；非 L1 Reviewer turn 的
   开始和结束都必须已经绑定当前 Tester integration、机器验证和 blackbox evidence。
+- Reviewer custom-agent 是 `pass/findings/blocked` 终态的唯一来源；Builder 的 initial/follow-up
+  brief 只传输入和目的，不得重定义终态、增加别名或要求未声明值。非法或缺失终态保持 fail-closed，
+  findings 修复后续接原 Reviewer thread。
 - Reviewer 通过前目标分支不移动。finalize 在临时 ref/worktree 执行目标仓库 hooks，确认最终
   tree 与已审 candidate 一致后先冻结唯一 final commit；目标 checkout 存在风险路径时保留该
   commit 等待处理，安全后才用 expected-old compare-and-swap 更新目标分支。
@@ -74,7 +87,9 @@ Default mode 直接进入 Builder；也可显式调用 `$builder` 作为手工�
 revision 单调增加。新方案验证后可使用原生“实施计划”动作交接，或显式调用 `$builder`。达到
 迭代上限时遵循同一流程。
 
-计划契约只接受 `schema_version: 2`；旧 v1 计划必须重新规划。纯 Markdown 文档任务可由 Planner
+计划契约只接受 `schema_version: 3`；旧 v1/v2 计划必须重新规划。`plan-validate` 返回
+canonical-v2 identity：只规范换行、唯一受管生命周期 header 和末尾换行，同时单独公开 raw source
+digest；start 另存 frozen-file digest。纯 Markdown 文档任务可由 Planner
 标记为 L1，并用 `documentation-spec` 冻结规划 HEAD、revision
 和精确文档写边界：Builder 只改授权的 `.md`，不启动 Tester，也不要求或伪造机器/E2E 证据；
 同一个 Reviewer 仍执行方案、内容与文档政策审计。其他任务必须包含 `unit-test-spec`，继续走
@@ -151,7 +166,11 @@ files:
 
 `unit-test-spec.evidence_scopes` 可把每个 Builder-owned pattern 分到 machine/blackbox 的
 `affects` 或 `exempt`；省略即保持全 tree 失效。Tester、runner、support、publication 与实际
-blackbox command 依赖始终强制属于 affects。
+blackbox accepted execution 的全部 command 依赖始终强制属于 affects。
+
+稳定 `scripts/codex-builder-loop.py` 入口会在导入 runtime 前禁止当前进程写 bytecode，并把该设置
+传给正常子进程，避免只读 CLI 或测试 harness 在调用方 worktree 产生 `__pycache__`。显式
+`py_compile` 和绕过稳定入口的任意 Python import 不在此承诺内，runtime 也不会删除既有 residue。
 
 ## 开发验证
 

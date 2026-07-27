@@ -99,7 +99,9 @@ cases:
 ```
 
 `fast` case 必须有非空 `hard_rules`，且省略 `verify/quality`；`full` case 必须同时提供
-`verify.must`、`verify.must_not` 和 `quality.criteria`，可省略 `hard_rules`。
+`verify.must`、`verify.must_not` 和 `quality.criteria`，可省略 `hard_rules`。不要在计划或 prompt 中
+另存 fast/full 的结果状态映射；runtime 在 `prepare-follow-up --purpose blackbox` 时从这份冻结
+cases 派生唯一 `blackbox_report_contract`。
 
 任务明确接入 planning-time dirty 文件时，在 spec 前增加：
 
@@ -196,7 +198,10 @@ ownership:
    `codex-builder-loop workspace-scan --help`，以当前 CLI 为准。
 2. 将完整方案通过 stdin 传给 `codex-builder-loop plan-validate --repo <git-root>`。
 3. 只解析 stdout 最后一行 JSON，并要求至少包含 `status` 与 `message`。
-4. `status=READY` 时核对 `effective_verification_source` 与 `spec_head` 的实际来源一致，再输出方案。
+4. `status=READY` 时核对 `effective_verification_source` 与 `spec_head` 的实际来源一致，并保存返回的
+   canonical-v2 `plan_sha256`、`plan_source_sha256` 和 `plan_digest_kind`。最终方案正文必须与本次
+   验证输入一致；Builder 后续只能增加或替换唯一受管生命周期 header，重验后的 `plan_sha256`
+   必须保持相同，raw source digest 继续作为字节级审计事实。
 5. `status=NEEDS_USER` 时使用 `request_user_input` 处理 JSON 指出的实质选择，更新方案后重验。
 6. `status=FATAL` 或输出不是合法 JSON 时停止，不猜测成功。
 7. 其他状态按 `message` 修正可修复的契约问题，再运行一次；不要绕过 validator。

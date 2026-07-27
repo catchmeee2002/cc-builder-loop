@@ -598,6 +598,9 @@ def _planned_e2e_cases(ledger: dict[str, Any]) -> list[dict[str, str]]:
         level_match = re.match(r"^\s+level:\s*(full|fast)\s*$", line)
         if current is not None and level_match:
             current["level"] = level_match.group(1)
+            continue
+        if current is not None and re.match(r"^\s+hard_rules:\s*$", line):
+            current["has_hard_rules"] = "true"
     if current is not None:
         cases.append(current)
     return cases
@@ -624,6 +627,83 @@ def _canonical_case_results(
             }
         )
     return results
+
+
+def _v2_case_results(ledger: dict[str, Any], *, passed: bool) -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    for case in _planned_e2e_cases(ledger):
+        level = case["level"]
+        mechanical_applicable = level == "fast" or case.get("has_hard_rules") == "true"
+
+        def dimension(name: str, applicable: bool) -> dict[str, str]:
+            if not applicable:
+                return {
+                    "status": "not_applicable",
+                    "observation": f"{name} is not applicable to the frozen {level} case.",
+                }
+            return {
+                "status": "pass" if passed else "fail",
+                "observation": (
+                    f"{name} passed for the frozen {level} case."
+                    if passed
+                    else f"{name} failed for the frozen {level} case."
+                ),
+            }
+
+        results.append(
+            {
+                "case_id": case["id"],
+                "mechanical": dimension("mechanical", mechanical_applicable),
+                "verify": dimension("verify", level == "full"),
+                "quality": dimension("quality", level == "full"),
+                "outcome": "pass" if passed else "fail",
+            }
+        )
+    return results
+
+
+def blackbox_report_details(
+    ledger: dict[str, Any],
+    *,
+    candidate_worktree: str | os.PathLike[str],
+    head_before: str,
+    head_after: str,
+    command: str,
+    returncode: int,
+    candidate_dirty: bool,
+    timed_out: bool = False,
+) -> dict[str, Any]:
+    report_version = ledger.get("plan", {}).get("blackbox_report_schema_version", 1)
+    if report_version == 2:
+        details: dict[str, Any] = {
+            "schema_version": 2,
+            "candidate_worktree": str(candidate_worktree),
+            "head_before": head_before,
+            "head_after": head_after,
+            "candidate_dirty": candidate_dirty,
+            "executions": [
+                {
+                    "method": "command",
+                    "command": command,
+                    "returncode": returncode,
+                    "timed_out": timed_out,
+                }
+            ],
+        }
+        cases = _v2_case_results(ledger, passed=returncode == 0 and not timed_out)
+    else:
+        details = {
+            "candidate_worktree": str(candidate_worktree),
+            "head_before": head_before,
+            "head_after": head_after,
+            "command": command,
+            "returncode": returncode,
+            "candidate_dirty": candidate_dirty,
+        }
+        cases = _canonical_case_results(ledger, passed=returncode == 0)
+    if cases:
+        details["cases"] = cases
+    return details
 
 
 def ensure_test_effectiveness(run_path: Path) -> None:
@@ -743,19 +823,15 @@ def record_evidence(
                 "--exclude-standard",
             )
         )
-        case_results = _canonical_case_results(
-            ledger, passed=blackbox.returncode == 0
+        details = blackbox_report_details(
+            ledger,
+            candidate_worktree=builder,
+            head_before=head_before,
+            head_after=head_after,
+            command=shlex.join(command_argv),
+            returncode=blackbox.returncode,
+            candidate_dirty=dirty,
         )
-        details = {
-            "candidate_worktree": str(builder),
-            "head_before": head_before,
-            "head_after": head_after,
-            "command": shlex.join(command_argv),
-            "returncode": blackbox.returncode,
-            "candidate_dirty": dirty,
-        }
-        if case_results:
-            details["cases"] = case_results
         argv.extend(
             [
                 "--details",

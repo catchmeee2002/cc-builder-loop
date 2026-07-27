@@ -7,6 +7,7 @@ from harness import (
     assert_ledger_schema,
     assert_status,
     assert_status_one_of,
+    blackbox_report_details,
     cleanup_repo,
     ensure_test_effectiveness,
     head,
@@ -212,15 +213,15 @@ class EvidenceHeadContractTest(unittest.TestCase):
             tester_agent_id,
             "--details",
             json.dumps(
-                {
-                    "candidate_worktree": str(builder),
-                    "head_before": candidate,
-                    "head_after": candidate,
-                    "command": "/usr/bin/true",
-                    "returncode": 0,
-                    "candidate_dirty": False,
-                    "cases": [{"case_id": "add-cli", "status": "pass"}],
-                }
+                blackbox_report_details(
+                    load_ledger(run_path),
+                    candidate_worktree=builder,
+                    head_before=candidate,
+                    head_after=candidate,
+                    command="/usr/bin/true",
+                    returncode=0,
+                    candidate_dirty=False,
+                )
             ),
         )
         assert_status(no_author, "FATAL", rc=2)
@@ -262,15 +263,15 @@ class EvidenceHeadContractTest(unittest.TestCase):
             tester_agent_id,
             "--details",
             json.dumps(
-                {
-                    "candidate_worktree": str(builder),
-                    "head_before": candidate,
-                    "head_after": candidate,
-                    "command": "/usr/bin/true",
-                    "returncode": False,
-                    "candidate_dirty": False,
-                    "cases": [{"case_id": "add-cli", "status": "pass"}],
-                }
+                blackbox_report_details(
+                    load_ledger(run_path),
+                    candidate_worktree=builder,
+                    head_before=candidate,
+                    head_after=candidate,
+                    command="/usr/bin/true",
+                    returncode=False,
+                    candidate_dirty=False,
+                )
             ),
         )
         assert_status(boolean_returncode, "FATAL", rc=2)

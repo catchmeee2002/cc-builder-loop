@@ -29,14 +29,18 @@ description: 执行已接受的 builder-loop 方案，在隔离 worktree 中协�
    `finalize`、`abandon`。当前帮助优先于本文件中的调用示例。
 4. 对每次 runtime 调用只解析 stdout 最后一行 JSON。要求存在 `status` 与 `message`；
    非 JSON、缺字段或命令异常一律视为 `FATAL`，不要根据前面的日志猜测结果。
-5. 生成一个只含小写字母、数字和连字符的唯一 `run_id`，在启动 run 的目标 worktree 根创建
-   `.builder-loop/codex/inbox/`，将接受的方案原样物化为 `<run_id>.md`，并在顶部加入：
+5. 保存 Planner `READY` 返回的 `plan_sha256` 作为 canonical identity。生成一个只含小写字母、
+   数字和连字符的唯一 `run_id`，在启动 run 的目标 worktree 根创建 `.builder-loop/codex/inbox/`，
+   将接受的方案正文逐字物化为 `<run_id>.md`，并在顶部加入下列唯一受管 header；若首行已经是
+   同格式的临时受管 header，则只替换该首行，不保留两份，也不改正文空白：
 
 ```text
 [保质期: run 完成, owner: builder-loop, 正向归宿: .builder-loop/codex/runs/<run_id>/ledger.json]
 ```
 
-6. 先用 `plan-validate --repo <repo> --plan <path>` 重验物化文件，并确认返回的
+6. 先用 `plan-validate --repo <repo> --plan <path>` 重验物化文件，要求返回的 canonical
+   `plan_sha256` 与 Planner 保存值相同；`plan_source_sha256` 作为物化文件原始字节审计值，允许因
+   唯一受管 header 不同而变化。再确认
    `effective_verification_source` 符合 `spec_head`：有 `.claude/loop.yml` 时必须是该文件，
    否则必须是 `plan:test_context.runner`；L1 必须是 `none`。仅在 `status=READY` 时继续。
 7. 从 SessionStart developer context 取得 `session_id`。执行
@@ -150,16 +154,22 @@ description: 执行已接受的 builder-loop 方案，在隔离 worktree 中协�
 5. v3 测试鉴别证明通过后，或既有 v2 ledger 的机器验证通过后，先调用 `status --run <run>`。若 scoped evidence 已让
    `e2e_verified_head` 等于当前 candidate，说明 blackbox 的真实输入未变，可跳过重复执行但必须把
    observed/accepted HEAD provenance 交给 Reviewer；否则执行
-   `prepare-follow-up --run <run> --role tester --agent-id <tester_id> --purpose blackbox`，再
+   `prepare-follow-up --run <run> --role tester --agent-id <tester_id> --purpose blackbox`，只在
+   `READY/NOOP` 时把返回的 `blackbox_report_contract` 原样传给 Tester，再
    follow-up 同一个 tester thread，传入 `phase=blackbox`、集成 HEAD、
    `candidate_worktree` 的绝对路径、runner 和公开黑盒入口。所有非 L1 run 都必须执行本步骤；
-   禁止 spawn 新 Tester，也不得清空上下文或角色历史。v3 含结构化端到端用例时，prompt 还要给出冻结 cases，并要求逐例返回
-   `case_id/level/mechanical/verify/quality/outcome`。
+   禁止 spawn 新 Tester，也不得清空上下文或角色历史。冻结 cases 仍是目标唯一来源；report
+   contract 只派生版本、schema 路径和各维度适用性，不另存一份目标。schema v2 逐例维度返回
+   `{status, observation}`，legacy v1 按返回 contract 保持状态字符串。
 6. 要求 Tester 先在 `candidate_worktree` 执行 `git rev-parse HEAD` 并核对 integrated HEAD，
    再只从公开接口、CLI/API/UI、运行时输出和测试结果做黑盒验收；不读取实现 diff、不改业务
    源码、不改既定测试目标。日志、截图、缓存优先写到 candidate 外的临时目录；结束前清理本 turn
    产生的 tracked/untracked/ignored residue，并同时核对普通 status 与 ignored files 均为空。
-   返回实际 command、数值 returncode、执行前后 HEAD、worktree 路径和 `candidate_dirty=false`。
+   schema v2 返回每条真实 `executions`：`method=command` 表示 accepted execution，必须
+   returncode=0、未超时并与逐例结果共同覆盖 frozen cases；其他 method 携带 reason，表示执行方法
+   错误并原样保留，但不计入结论。不得把多条命令拼成一条
+   未真实执行的 aggregate command。legacy v1 才返回单个实际 command/returncode。两种版本都返回
+   执行前后 HEAD、worktree 路径、`candidate_dirty=false` 和零 ordinary/ignored residue。
 7. Tester 报 FAIL 且可重放公开行为确为产品实现错误时由 Builder 修实现，重新 `role-check`、
    `verify`，并仅对 v3 重新执行测试鉴别证明，再以 `purpose=blackbox` prepare 并 follow-up 同一 Tester；既有 v2
    ledger 不补写该证明。若失败来自 Tester 的
@@ -169,10 +179,11 @@ description: 执行已接受的 builder-loop 方案，在隔离 worktree 中协�
    用户选择修订，也不得在当前 run 更新测试。新方案必须进入新 run。
 9. 只有同一 Tester thread 返回 `TESTER_RESULT: pass` 后，才对当前 integrated HEAD 执行
    `record-evidence --run <run> --kind e2e_verified --head <head> --agent-id <tester_id>
-   --details '<json>'`。details 必须原样包含 Tester 返回的 `candidate_worktree`、`head_before`、
-   `head_after`、`command` 和数值 `returncode=0`。v3 计划含结构化端到端用例时，details 还必须
-   原样包含逐例 `cases`，分别报告机械检查、功能观察、质量观察和汇总结果；runtime 会绑定 live
-   candidate 并校验冻结 case id。只接受 `READY` 或幂等 `NOOP`。
+   --details '<json>'`。details 必须原样使用 `blackbox_report_contract` 对应版本：schema v2 包含
+   candidate/worktree/HEAD、全部真实 executions 和逐例 cases；Tester 同时返回零 residue，legacy v1 包含单个实际
+   command/returncode 及适用的逐例状态。不得删掉 method_error、改写 observations 或生成旁路
+   `commands` 字段；runtime 会绑定 live candidate、校验冻结 case coverage/维度并机械派生 outcome。
+   只接受 `READY` 或幂等 `NOOP`。
 
 ## 审查与收尾
 
@@ -185,9 +196,12 @@ description: 执行已接受的 builder-loop 方案，在隔离 worktree 中协�
    exact files 及 Tester author manifest attestation。Reviewer turn 开始前再次确认这些 gate 已绑定
    当前 candidate；initial task 不得夹带父线程讨论、用户倾向或 Builder 辩护，但 candidate/integrated
    HEAD 和完整 diff 是 Reviewer 的必要审查输入，必须保留。不能先启动 Reviewer 再补机器或
-   blackbox evidence。
+   blackbox evidence。Reviewer 终态值只由 `agents/reviewer.toml` custom-agent 契约定义；initial/follow-up brief 不得
+   重定义、增加别名或要求未声明的 `REVIEW_RESULT` 值。
 2. 要求 reviewer 依次执行 Phase 0 方案完成度、代码缺陷、测试完整性与防篡改、Phase D
-   文档政策审计。等待最后一行 `REVIEW_RESULT`。
+   文档政策审计。合法终态只有 `REVIEW_RESULT: pass`、`REVIEW_RESULT: findings` 和
+   `REVIEW_RESULT: blocked`。等待 `agents/reviewer.toml` 声明的最后一行 `REVIEW_RESULT`；缺失或非法值按连续性
+   失败安全停止，不做兼容映射。
 3. Reviewer 有 actionable findings 且冻结契约不变时，按 ownership 路由：Builder-owned
    实现/文档由 Builder 修；Tester-owned 测试实现或测试支持由同一 Tester author correction
    修正、重新 `tests_ready` 并集成。随后执行

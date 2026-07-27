@@ -7,6 +7,7 @@ import dataclasses
 import datetime as dt
 import fcntl
 import hashlib
+import io
 import json
 import math
 import os
@@ -18,6 +19,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import tokenize
 import uuid
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, Iterator, Mapping, Sequence
@@ -29,6 +31,10 @@ SCHEMA_VERSION = 2
 LEGACY_SCHEMA_VERSION = 1
 PLAN_SCHEMA_VERSION = 3
 LEGACY_PLAN_SCHEMA_VERSION = 2
+BLACKBOX_REPORT_SCHEMA_VERSION = 2
+LEGACY_BLACKBOX_REPORT_SCHEMA_VERSION = 1
+CANONICAL_PLAN_DIGEST_KIND = "canonical-v2"
+LEGACY_PLAN_DIGEST_KIND = "raw-v1"
 EXIT_PASS = 0
 EXIT_FAIL = 1
 EXIT_FATAL = 2
@@ -66,6 +72,11 @@ FOLLOW_UP_PURPOSES = {
 }
 PROTECTED_RUNTIME_PATHS = {".claude/loop.yml"}
 RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+MANAGED_PLAN_HEADER_RE = re.compile(
+    r"^\[保质期: run 完成, owner: builder-loop, 正向归宿: "
+    r"(?:新 run ledger\.json|\.builder-loop/codex/runs/"
+    r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}/ledger\.json)\]$"
+)
 
 
 class RuntimeProblem(Exception):
@@ -106,6 +117,8 @@ class CommandResult:
 class PlanContract:
     source: str
     sha256: str
+    source_sha256: str
+    digest_kind: str
     schema_version: int
     level: str
     spec_head: str | None
@@ -132,6 +145,7 @@ class PlanContract:
 
     def as_dict(self) -> dict[str, Any]:
         value = dataclasses.asdict(self)
+        value["raw_sha256"] = self.source_sha256
         # The frozen Markdown remains the only complete test target. Validation
         # output exposes only the normalized ids/digest, not a second case copy.
         value.pop("e2e_cases", None)
@@ -166,6 +180,30 @@ def emit(payload: dict[str, Any], exit_code: int = EXIT_PASS) -> int:
 
 def sha256_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def sha256_bytes(value: bytes) -> str:
+    return hashlib.sha256(value).hexdigest()
+
+
+def decode_plan_bytes(value: bytes, source: str) -> str:
+    try:
+        return value.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise RuntimeProblem(
+            f"plan is not valid UTF-8: {source}",
+            code="PLAN_READ_ERROR",
+        ) from exc
+
+
+def canonicalize_plan_text(text: str) -> str:
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    lines = normalized.splitlines(keepends=True)
+    if lines and MANAGED_PLAN_HEADER_RE.fullmatch(lines[0].rstrip("\n")):
+        normalized = "".join(lines[1:])
+        if normalized.startswith("\n"):
+            normalized = normalized[1:]
+    return normalized.rstrip("\n") + "\n"
 
 
 def sha256_file(path: Path) -> str:
@@ -456,6 +494,13 @@ def read_json(path: Path) -> dict[str, Any]:
         plan.setdefault("test_effectiveness_requirements", [])
         plan.setdefault("e2e_case_ids", [])
         plan.setdefault("e2e_cases_sha256", None)
+        plan.setdefault("digest_kind", LEGACY_PLAN_DIGEST_KIND)
+        plan.setdefault("source_sha256", plan.get("sha256"))
+        plan.setdefault("frozen_sha256", plan.get("sha256"))
+        plan.setdefault(
+            "blackbox_report_schema_version",
+            LEGACY_BLACKBOX_REPORT_SCHEMA_VERSION,
+        )
     evidence = value.get("evidence")
     if isinstance(evidence, dict):
         evidence.setdefault("test_effectiveness", None)
@@ -544,6 +589,52 @@ def recorded_evidence_details(record: dict[str, Any] | None) -> dict[str, Any]:
     return {}
 
 
+def plan_digest_context(ledger: Mapping[str, Any]) -> dict[str, str]:
+    digest_kind = str(
+        ledger.get("plan", {}).get("digest_kind") or LEGACY_PLAN_DIGEST_KIND
+    )
+    if digest_kind == CANONICAL_PLAN_DIGEST_KIND:
+        return {"plan_digest_kind": digest_kind}
+    return {}
+
+
+def blackbox_report_schema_version(ledger: Mapping[str, Any]) -> int:
+    raw = ledger.get("plan", {}).get(
+        "blackbox_report_schema_version",
+        LEGACY_BLACKBOX_REPORT_SCHEMA_VERSION,
+    )
+    if type(raw) is not int or raw not in {
+        LEGACY_BLACKBOX_REPORT_SCHEMA_VERSION,
+        BLACKBOX_REPORT_SCHEMA_VERSION,
+    }:
+        raise RuntimeProblem(
+            "ledger has an unsupported blackbox report schema version",
+            code="BLACKBOX_REPORT_VERSION_INVALID",
+            details={"blackbox_report_schema_version": raw},
+        )
+    return raw
+
+
+def accepted_blackbox_commands(
+    ledger: Mapping[str, Any], details: Mapping[str, Any]
+) -> list[str]:
+    version = blackbox_report_schema_version(ledger)
+    if version == LEGACY_BLACKBOX_REPORT_SCHEMA_VERSION:
+        command = details.get("command")
+        return [str(command)] if isinstance(command, str) and command.strip() else []
+    executions = details.get("executions")
+    if not isinstance(executions, list):
+        return []
+    return [
+        str(item["command"])
+        for item in executions
+        if isinstance(item, dict)
+        and item.get("method") == "command"
+        and isinstance(item.get("command"), str)
+        and str(item["command"]).strip()
+    ]
+
+
 def evidence_head(ledger: dict[str, Any], key: str) -> str | None:
     return evidence_contract.record_head(evidence_record(ledger, key))
 
@@ -596,16 +687,51 @@ def evidence_scope_patterns(ledger: dict[str, Any], key: str) -> list[str]:
     scopes = ledger.get("plan", {}).get("evidence_scopes", {})
     scope_name = "machine" if key == "machine" else "blackbox"
     configured = scopes.get(scope_name, {}) if isinstance(scopes, dict) else {}
-    affects = configured.get("affects", []) if isinstance(configured, dict) else []
-    if not isinstance(affects, list) or not affects:
+    if not isinstance(configured, dict) or "affects" not in configured:
+        return ["**"]
+    affects = configured.get("affects")
+    if not isinstance(affects, list):
         return ["**"]
     patterns = [str(item) for item in affects if isinstance(item, str) and item]
     if key == "machine":
         patterns.extend(str(item) for item in ledger.get("loop_config", {}).get("runner_paths", []))
-    return sorted(set(patterns)) or ["**"]
+    else:
+        tester_patterns = {
+            str(item)
+            for item in ledger.get("plan", {}).get("tester_write", [])
+            if isinstance(item, str) and item
+        }
+        support_patterns = {
+            str(item)
+            for item in ledger.get("plan", {}).get("support_paths", [])
+            if isinstance(item, str) and item
+        }
+        patterns = [
+            item
+            for item in patterns
+            if item not in tester_patterns and item not in support_patterns
+        ]
+    normalized = sorted(set(patterns))
+    if key == "blackbox":
+        return normalized
+    return normalized or ["**"]
 
 
-def evidence_digest_context(ledger: dict[str, Any], key: str) -> dict[str, Any]:
+def merge_evidence_scope_patterns(
+    base_patterns: Iterable[str], command_paths: Iterable[str]
+) -> list[str]:
+    commands = set(command_paths)
+    if "**" in commands:
+        return ["**"]
+    return sorted(set(base_patterns) | commands)
+
+
+def evidence_digest_context(
+    ledger: dict[str, Any],
+    key: str,
+    *,
+    details: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     publication = ledger.get("prerequisite_publication", {})
     integration = ledger.get("tester_integration", {})
     context: dict[str, Any] = {
@@ -614,11 +740,20 @@ def evidence_digest_context(ledger: dict[str, Any], key: str) -> dict[str, Any]:
         "tester_source_head": integration.get("source_head"),
         "tester_integration_completed": integration.get("completed"),
         "publication_manifest_sha256": publication.get("manifest_sha256"),
+        **plan_digest_context(ledger),
     }
     if key == "blackbox":
-        record = evidence_record(ledger, "blackbox")
-        if record:
-            context["command"] = recorded_evidence_details(record).get("command")
+        report = dict(details) if details is not None else recorded_evidence_details(
+            evidence_record(ledger, "blackbox")
+        )
+        version = blackbox_report_schema_version(ledger)
+        if version == BLACKBOX_REPORT_SCHEMA_VERSION:
+            context["blackbox_report_schema_version"] = version
+            context["blackbox_report_sha256"] = evidence_contract.canonical_digest(
+                report
+            )
+        else:
+            context["command"] = report.get("command")
     return context
 
 
@@ -628,14 +763,23 @@ def scoped_input_digest(
     patterns = evidence_scope_patterns(ledger, key)
     if key == "blackbox":
         record = evidence_record(ledger, "blackbox")
-        command = recorded_evidence_details(record).get("command")
-        if isinstance(command, str) and command.strip():
+        details = recorded_evidence_details(record)
+        commands = accepted_blackbox_commands(ledger, details)
+        if commands:
             try:
-                patterns = sorted(
-                    set(patterns) | set(runner_repository_paths(command))
-                )
+                command_paths: set[str] = set()
+                for command in commands:
+                    command_paths.update(
+                        runner_repository_paths(
+                            command,
+                            resolve_blackbox_dependencies=True,
+                        )
+                    )
+                patterns = merge_evidence_scope_patterns(patterns, command_paths)
             except RuntimeProblem:
                 patterns = ["**"]
+        elif blackbox_report_schema_version(ledger) == BLACKBOX_REPORT_SCHEMA_VERSION:
+            patterns = ["**"]
     try:
         digest = evidence_contract.input_digest(
             repo,
@@ -907,11 +1051,14 @@ def reviewer_prerequisites_bound(
     )
 
 
-def read_plan_source(plan_arg: str | None) -> tuple[str, str, Path | None]:
+def read_plan_source(
+    plan_arg: str | None,
+) -> tuple[str, str, Path | None, str]:
     if plan_arg and plan_arg != "-":
         path = Path(plan_arg).expanduser().resolve()
         try:
-            return path.read_text(encoding="utf-8"), str(path), path
+            raw = path.read_bytes()
+            return decode_plan_bytes(raw, str(path)), str(path), path, sha256_bytes(raw)
         except OSError as exc:
             raise RuntimeProblem(
                 f"cannot read plan: {exc}",
@@ -922,7 +1069,12 @@ def read_plan_source(plan_arg: str | None) -> tuple[str, str, Path | None]:
             "plan-validate requires --plan PATH or Markdown on stdin",
             code="PLAN_REQUIRED",
         )
-    return sys.stdin.read(), "stdin", None
+    binary_stream = getattr(sys.stdin, "buffer", None)
+    if binary_stream is not None:
+        raw = binary_stream.read()
+        return decode_plan_bytes(raw, "stdin"), "stdin", None, sha256_bytes(raw)
+    text = sys.stdin.read()
+    return text, "stdin", None, sha256_text(text)
 
 
 def mask_markdown_fences(text: str) -> str:
@@ -1662,7 +1814,10 @@ def parse_plan(
     source: str,
     *,
     allow_legacy_v2: bool = False,
+    source_sha256: str | None = None,
 ) -> PlanContract:
+    raw_source_sha256 = source_sha256 or sha256_text(text)
+    canonical_sha256 = sha256_text(canonicalize_plan_text(text))
     workspace_intake = parse_workspace_intake_marker(text)
     checklist = extract_tag(text, "plan-checklist", required=True)
     items = checklist_items(checklist or "")
@@ -1761,7 +1916,9 @@ def parse_plan(
             )
         return PlanContract(
             source=source,
-            sha256=sha256_text(text),
+            sha256=canonical_sha256,
+            source_sha256=raw_source_sha256,
+            digest_kind=CANONICAL_PLAN_DIGEST_KIND,
             schema_version=schema_version,
             level="L1",
             spec_head=spec_head.lower(),
@@ -2067,7 +2224,9 @@ def parse_plan(
 
     return PlanContract(
         source=source,
-        sha256=sha256_text(text),
+        sha256=canonical_sha256,
+        source_sha256=raw_source_sha256,
+        digest_kind=CANONICAL_PLAN_DIGEST_KIND,
         schema_version=schema_version,
         level="L2/L3",
         spec_head=spec_head.lower(),
@@ -2104,16 +2263,18 @@ def load_plan_file(
     allow_legacy_v2: bool = False,
 ) -> tuple[str, PlanContract]:
     try:
-        text = path.read_text(encoding="utf-8")
+        raw = path.read_bytes()
     except OSError as exc:
         raise RuntimeProblem(
             f"cannot read plan: {exc}",
             code="PLAN_READ_ERROR",
         ) from exc
+    text = decode_plan_bytes(raw, str(path))
     return text, parse_plan(
         text,
         str(path),
         allow_legacy_v2=allow_legacy_v2,
+        source_sha256=sha256_bytes(raw),
     )
 
 
@@ -2126,13 +2287,27 @@ def verify_plan_unchanged(ledger: dict[str, Any]) -> PlanContract:
         path,
         allow_legacy_v2=contract_version == LEGACY_PLAN_SCHEMA_VERSION,
     )
-    expected = str(ledger["plan"]["sha256"])
-    if contract.sha256 != expected:
+    plan = ledger["plan"]
+    digest_kind = str(plan.get("digest_kind") or LEGACY_PLAN_DIGEST_KIND)
+    expected = str(plan["sha256"])
+    actual = (
+        contract.sha256
+        if digest_kind == CANONICAL_PLAN_DIGEST_KIND
+        else contract.source_sha256
+    )
+    expected_frozen = str(plan.get("frozen_sha256") or expected)
+    if actual != expected or contract.source_sha256 != expected_frozen:
         raise RuntimeProblem(
             "plan changed after start; start a new run from the new contract",
             result="NEEDS_USER",
             code="PLAN_CHANGED",
-            details={"expected_sha256": expected, "actual_sha256": contract.sha256},
+            details={
+                "digest_kind": digest_kind,
+                "expected_sha256": expected,
+                "actual_sha256": actual,
+                "expected_frozen_sha256": expected_frozen,
+                "actual_frozen_sha256": contract.source_sha256,
+            },
             exit_code=EXIT_FAIL,
         )
     return contract
@@ -2975,6 +3150,98 @@ def python_snippet_is_tautological(body: str) -> bool:
     return True
 
 
+def is_python_executable_name(value: str) -> bool:
+    name = Path(value).name.lower()
+    if name.endswith(".exe"):
+        name = name[:-4]
+    return re.fullmatch(r"python(?:[0-9]+(?:\.[0-9]+)*)?m?", name) is not None
+
+
+PYTHON_INTERPRETER_FLAG_OPTIONS = {
+    "-b",
+    "-B",
+    "-d",
+    "-E",
+    "-h",
+    "--help",
+    "-i",
+    "-I",
+    "-O",
+    "-OO",
+    "-P",
+    "-q",
+    "-R",
+    "-s",
+    "-S",
+    "-u",
+    "-v",
+    "-V",
+    "--version",
+    "-x",
+}
+PYTHON_INTERPRETER_VALUE_OPTIONS = {"-W", "-X", "--check-hash-based-pycs"}
+
+
+def split_python_invocation(
+    values: Sequence[str], *, command: str, fail_closed_unknown: bool
+) -> tuple[str, str | None, list[str]]:
+    """Return the Python entrypoint kind, value and remaining arguments.
+
+    Repository dependency and runner-control inspection must agree about where
+    interpreter options end and a ``-m`` module begins.  Unknown options are
+    either rejected by fail-closed callers or reported as an opaque invocation.
+    """
+
+    args = list(values)
+    index = 0
+    while index < len(args):
+        token = args[index]
+        if token == "--":
+            index += 1
+            break
+        if token == "-c":
+            return "inline", None, args[index + 1 :]
+        if token == "-m":
+            if index + 1 >= len(args):
+                raise RuntimeProblem(
+                    "python -m has no module",
+                    code="RUNNER_DEPENDENCY_UNRESOLVED",
+                    details={"runner": command},
+                )
+            return "module", args[index + 1], args[index + 2 :]
+        if token in PYTHON_INTERPRETER_FLAG_OPTIONS:
+            index += 1
+            continue
+        if token in PYTHON_INTERPRETER_VALUE_OPTIONS:
+            if index + 1 >= len(args):
+                raise RuntimeProblem(
+                    "python interpreter option has no value",
+                    code="RUNNER_DEPENDENCY_UNRESOLVED",
+                    details={"runner": command, "option": token},
+                )
+            index += 2
+            continue
+        if (
+            token.startswith("-W")
+            or token.startswith("-X")
+            or token.startswith("--check-hash-based-pycs=")
+        ):
+            index += 1
+            continue
+        if token.startswith("-"):
+            if fail_closed_unknown:
+                raise RuntimeProblem(
+                    "Python interpreter options cannot be determined statically",
+                    code="RUNNER_DEPENDENCY_UNRESOLVED",
+                    details={"runner": command, "option": token},
+                )
+            return "opaque", None, []
+        break
+    if index < len(args):
+        return "script", args[index], args[index + 1 :]
+    return "none", None, []
+
+
 def reject_unsafe_runner_constructs(command: str) -> None:
     if re.search(r"\bexit\s+\$\(\(\s*0\s*\)\)", command):
         raise RuntimeProblem(
@@ -3029,7 +3296,7 @@ def reject_unsafe_runner_constructs(command: str) -> None:
             flag = remaining.index("-c")
             if len(remaining) > flag + 1:
                 reject_unsafe_runner_constructs(remaining[flag + 1])
-        if executable_name in {"python", "python3"} and len(remaining) >= 3 and remaining[1] == "-c":
+        if is_python_executable_name(executable_name) and len(remaining) >= 3 and remaining[1] == "-c":
             if python_snippet_is_tautological(remaining[2]):
                 raise RuntimeProblem(
                     "pass_cmd Python snippet is tautological",
@@ -3070,7 +3337,7 @@ def command_truth(tokens: Sequence[str]) -> bool | None:
             flag = remaining.index("-c")
             if len(remaining) > flag + 1:
                 return shell_truth(remaining[flag + 1])
-    if executable in {"python", "python3"} and len(remaining) >= 3 and remaining[1] == "-c":
+    if is_python_executable_name(executable) and len(remaining) >= 3 and remaining[1] == "-c":
         python_body = re.sub(r"\s+", " ", remaining[2].strip()).rstrip(";")
         if re.fullmatch(r"(?:pass|(?:sys\.)?exit\(0\)|print\(.*\))", python_body):
             return True
@@ -3127,7 +3394,9 @@ def reject_tautological_command(command: str) -> None:
         )
 
 
-def runner_repository_paths(command: str) -> list[str]:
+def runner_repository_paths(
+    command: str, *, resolve_blackbox_dependencies: bool = False
+) -> list[str]:
     candidates: list[str] = []
 
     def combine(directory: str, value: str) -> str:
@@ -3148,8 +3417,220 @@ def runner_repository_paths(command: str) -> list[str]:
                 details={"runner": command, "directory": value},
             )
         joined = str(PurePosixPath(directory) / value) if directory else value
+        if str(PurePosixPath(joined)) == ".":
+            return ""
         normalized = normalize_allowed_path(joined, directory_hint=True)
         return normalized[:-3].rstrip("/") if normalized.endswith("/**") else normalized
+
+    def add_directory_target(directory: str, value: str) -> None:
+        resolved = next_directory(directory, value)
+        candidates.append(f"{resolved}/**" if resolved else "**")
+
+    def add_unittest_target(directory: str, value: str) -> None:
+        if "$" in value or "`" in value:
+            raise RuntimeProblem(
+                "blackbox unittest target cannot be determined statically",
+                code="RUNNER_DEPENDENCY_UNRESOLVED",
+                details={"runner": command, "target": value},
+            )
+        target = value.split("::", 1)[0]
+        if target.endswith(".py"):
+            candidates.append(combine(directory, target))
+            return
+        raise RuntimeProblem(
+            "blackbox unittest target cannot be distinguished as a file or package",
+            code="RUNNER_DEPENDENCY_UNRESOLVED",
+            details={"runner": command, "target": value},
+        )
+
+    def inspect_unittest(values: Sequence[str], directory: str) -> None:
+        args = list(values)
+        if args and args[0] == "discover":
+            start = "."
+            for index, token in enumerate(args[1:]):
+                if token in {"-s", "--start-directory"} and index + 2 < len(args):
+                    start = args[index + 2]
+                    break
+                if token.startswith("--start-directory="):
+                    start = token.split("=", 1)[1]
+                    break
+            add_directory_target(directory, start)
+            return
+        skip_next = False
+        targets = 0
+        for token in args:
+            if skip_next:
+                skip_next = False
+                continue
+            if token in {"-k", "--durations"}:
+                skip_next = True
+                continue
+            if token.startswith("-"):
+                continue
+            add_unittest_target(directory, token)
+            targets += 1
+        if targets == 0:
+            add_directory_target(directory, ".")
+
+    def inspect_pytest(values: Sequence[str], directory: str) -> None:
+        value_options = {
+            "-k",
+            "-m",
+            "-o",
+            "-p",
+            "--basetemp",
+            "--capture",
+            "--color",
+            "--durations",
+            "--durations-min",
+            "--junit-prefix",
+            "--junit-suite-name",
+            "--junitxml",
+            "--maxfail",
+            "--tb",
+            "--verbosity",
+        }
+        flag_options = {
+            "-q",
+            "--quiet",
+            "-v",
+            "--verbose",
+            "-x",
+            "--exitfirst",
+            "-s",
+            "--collect-only",
+            "--co",
+            "--disable-warnings",
+            "--strict-config",
+            "--strict-markers",
+        }
+        directory_options = {"--confcutdir", "--rootdir"}
+        targets = 0
+        index = 0
+        positional_only = False
+        while index < len(values):
+            token = values[index]
+            if not positional_only and token == "--":
+                positional_only = True
+                index += 1
+                continue
+            if not positional_only and token == "-c":
+                if index + 1 >= len(values):
+                    raise RuntimeProblem(
+                        "pytest config option has no path",
+                        code="RUNNER_DEPENDENCY_UNRESOLVED",
+                        details={"runner": command},
+                    )
+                candidates.append(combine(directory, values[index + 1]))
+                index += 2
+                continue
+            if not positional_only and token.startswith("-c="):
+                candidates.append(combine(directory, token.split("=", 1)[1]))
+                index += 1
+                continue
+            matched_directory = (
+                next(
+                    (
+                        name
+                        for name in directory_options
+                        if token == name or token.startswith(name + "=")
+                    ),
+                    None,
+                )
+                if not positional_only
+                else None
+            )
+            if matched_directory is not None:
+                if token == matched_directory:
+                    if index + 1 >= len(values):
+                        raise RuntimeProblem(
+                            "pytest directory option has no path",
+                            code="RUNNER_DEPENDENCY_UNRESOLVED",
+                            details={"runner": command, "option": matched_directory},
+                        )
+                    value = values[index + 1]
+                    index += 2
+                else:
+                    value = token.split("=", 1)[1]
+                    index += 1
+                add_directory_target(directory, value)
+                continue
+            if not positional_only and token in value_options:
+                if index + 1 >= len(values):
+                    raise RuntimeProblem(
+                        "pytest option has no value",
+                        code="RUNNER_DEPENDENCY_UNRESOLVED",
+                        details={"runner": command, "option": token},
+                    )
+                index += 2
+                continue
+            if not positional_only and any(
+                token.startswith(option + "=") for option in value_options
+            ):
+                index += 1
+                continue
+            if not positional_only and token in flag_options:
+                index += 1
+                continue
+            if not positional_only and token.startswith("-"):
+                raise RuntimeProblem(
+                    "pytest option arity cannot be determined statically",
+                    code="RUNNER_DEPENDENCY_UNRESOLVED",
+                    details={"runner": command, "option": token},
+                )
+            target = token.split("::", 1)[0]
+            if "$" in target or "`" in target:
+                raise RuntimeProblem(
+                    "blackbox pytest target cannot be determined statically",
+                    code="RUNNER_DEPENDENCY_UNRESOLVED",
+                    details={"runner": command, "target": target},
+                )
+            if target.endswith(".py"):
+                candidates.append(combine(directory, target))
+            else:
+                add_directory_target(directory, target)
+            targets += 1
+            index += 1
+        if targets == 0:
+            add_directory_target(directory, ".")
+
+    def inspect_python(values: Sequence[str], directory: str) -> None:
+        kind, entrypoint, entrypoint_args = split_python_invocation(
+            values,
+            command=command,
+            fail_closed_unknown=resolve_blackbox_dependencies,
+        )
+        if kind == "inline":
+            if resolve_blackbox_dependencies:
+                raise RuntimeProblem(
+                    "inline blackbox code dependencies cannot be determined statically",
+                    code="RUNNER_DEPENDENCY_UNRESOLVED",
+                    details={"runner": command},
+                )
+            return
+        if kind == "module":
+            if not resolve_blackbox_dependencies:
+                return
+            if entrypoint == "unittest":
+                inspect_unittest(entrypoint_args, directory)
+                return
+            if entrypoint in {"pytest", "py.test"}:
+                inspect_pytest(entrypoint_args, directory)
+                return
+            raise RuntimeProblem(
+                "blackbox Python module dependencies cannot be determined statically",
+                code="RUNNER_DEPENDENCY_UNRESOLVED",
+                details={"runner": command, "module": entrypoint},
+            )
+        if kind == "script" and entrypoint is not None:
+            candidates.append(combine(directory, entrypoint))
+            return
+        if resolve_blackbox_dependencies:
+            raise RuntimeProblem(
+                "blackbox Python command has no repository entry point",
+                code="RUNNER_DEPENDENCY_UNRESOLVED",
+                details={"runner": command},
+            )
 
     def inspect_body(body: str, directory: str) -> None:
         commands, _operators = shell_commands(body)
@@ -3193,15 +3674,47 @@ def runner_repository_paths(command: str) -> list[str]:
             if script:
                 candidates.append(combine(directory, script))
             return
-        if executable_name in {"python", "python3", "ruby", "node"}:
-            if len(remaining) <= 1 or remaining[1] in {"-c", "-m", "-e"}:
+        if is_python_executable_name(executable_name):
+            inspect_python(remaining[1:], directory)
+            return
+        if executable_name in {"ruby", "node"}:
+            if len(remaining) <= 1:
+                return
+            if remaining[1] in {"-c", "-e"}:
+                if resolve_blackbox_dependencies:
+                    raise RuntimeProblem(
+                        "inline blackbox code dependencies cannot be determined statically",
+                        code="RUNNER_DEPENDENCY_UNRESOLVED",
+                        details={"runner": command},
+                    )
+                return
+            if remaining[1] == "-m":
+                if resolve_blackbox_dependencies and len(remaining) >= 3:
+                    module = remaining[2]
+                    if module == "unittest":
+                        inspect_unittest(remaining[3:], directory)
+                    elif module in {"pytest", "py.test"}:
+                        inspect_pytest(remaining[3:], directory)
                 return
             script = next((item for item in remaining[1:] if not item.startswith("-")), None)
             if script:
                 candidates.append(combine(directory, script))
             return
+        if resolve_blackbox_dependencies and executable_name == "unittest":
+            inspect_unittest(remaining[1:], directory)
+            return
+        if resolve_blackbox_dependencies and executable_name in {"pytest", "py.test"}:
+            inspect_pytest(remaining[1:], directory)
+            return
         if "/" in executable:
             candidates.append(combine(directory, executable))
+            return
+        if resolve_blackbox_dependencies:
+            raise RuntimeProblem(
+                "blackbox command dependencies cannot be determined statically",
+                code="RUNNER_DEPENDENCY_UNRESOLVED",
+                details={"runner": command, "executable": executable},
+            )
 
     inspect_body(command, "")
     normalized: list[str] = []
@@ -3284,8 +3797,12 @@ def runner_control_paths(command: str) -> list[str]:
             if len(remaining) > flag + 1:
                 inspect_body(remaining[flag + 1], base_dir)
             return
-        if executable in {"python", "python3"} and len(remaining) >= 3 and remaining[1] == "-m":
-            inspect([remaining[2], *remaining[3:]], base_dir)
+        if is_python_executable_name(executable):
+            kind, entrypoint, entrypoint_args = split_python_invocation(
+                remaining[1:], command=command, fail_closed_unknown=True
+            )
+            if kind == "module" and entrypoint is not None:
+                inspect([entrypoint, *entrypoint_args], base_dir)
             return
         if executable in {"poetry", "pipenv"} and "run" in remaining[1:]:
             run_index = remaining.index("run")
@@ -3595,6 +4112,365 @@ def python_test_findings(path: str, base_text: str | None, current_text: str) ->
     return findings
 
 
+def python_weakening_marker(current_text: str) -> str | None:
+    def literal_strings(node: ast.AST) -> list[str]:
+        return [
+            str(item.value)
+            for item in ast.walk(node)
+            if isinstance(item, ast.Constant) and isinstance(item.value, str)
+        ]
+
+    def contains_reruns_argument(value: str) -> bool:
+        if value == "--reruns" or value.startswith("--reruns="):
+            return True
+        with contextlib.suppress(ValueError):
+            return any(
+                token == "--reruns" or token.startswith("--reruns=")
+                for token in shlex.split(value)
+            )
+        return False
+
+    def contains_test_runner_argument(values: Sequence[str]) -> bool:
+        tokens: list[str] = []
+        for value in values:
+            with contextlib.suppress(ValueError):
+                tokens.extend(shlex.split(value))
+            tokens.append(value)
+        normalized = {Path(token).name.lower() for token in tokens}
+        return bool(normalized & {"pytest", "py.test", "unittest"})
+
+    try:
+        tree = ast.parse(current_text)
+    except SyntaxError:
+        try:
+            tokens = [
+                token.string
+                for token in tokenize.generate_tokens(io.StringIO(current_text).readline)
+                if token.type
+                not in {
+                    tokenize.COMMENT,
+                    tokenize.STRING,
+                    tokenize.ENCODING,
+                    tokenize.ENDMARKER,
+                    tokenize.INDENT,
+                    tokenize.DEDENT,
+                    tokenize.NEWLINE,
+                    tokenize.NL,
+                }
+            ]
+        except (tokenize.TokenError, IndentationError):
+            return None
+        executable = "".join(tokens)
+        aliases: dict[str, str] = {}
+        for match in re.finditer(
+            r"import(pytest|unittest|subprocess)(?:as([A-Za-z_]\w*))?",
+            executable,
+            re.IGNORECASE,
+        ):
+            module = match.group(1).lower()
+            aliases[(match.group(2) or module).lower()] = module
+        for alias, module in aliases.items():
+            if module == "pytest" and re.search(
+                rf"{re.escape(alias)}\.mark\.(?:skip|skipif|xfail|flaky)",
+                executable,
+                re.IGNORECASE,
+            ):
+                return f"{alias}.mark"
+            if module == "unittest" and re.search(
+                rf"{re.escape(alias)}\.skip(?:if|unless)?",
+                executable,
+                re.IGNORECASE,
+            ):
+                return f"{alias}.skip"
+        match = re.search(
+            r"pytest\.mark\.(?:skip|skipif|xfail|flaky)|"
+            r"unittest\.skip(?:If|Unless)?|@skip\b|"
+            r"(?:pytest\.)?xfail\s*\(|\bflaky\s*\(",
+            executable,
+            re.IGNORECASE,
+        )
+        return match.group(0) if match else None
+
+    class LocalBindingCollector(ast.NodeVisitor):
+        def __init__(self, node: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef) -> None:
+            self.names: set[str] = set()
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                arguments = [
+                    *node.args.posonlyargs,
+                    *node.args.args,
+                    *node.args.kwonlyargs,
+                ]
+                if node.args.vararg is not None:
+                    arguments.append(node.args.vararg)
+                if node.args.kwarg is not None:
+                    arguments.append(node.args.kwarg)
+                self.names.update(argument.arg for argument in arguments)
+            for statement in node.body:
+                self.visit(statement)
+
+        def visit_Name(self, node: ast.Name) -> None:
+            if isinstance(node.ctx, (ast.Store, ast.Del)):
+                self.names.add(node.id)
+
+        def visit_Import(self, node: ast.Import) -> None:
+            self.names.update(alias.asname or alias.name.split(".", 1)[0] for alias in node.names)
+
+        def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+            self.names.update(alias.asname or alias.name for alias in node.names if alias.name != "*")
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            self.names.add(node.name)
+
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+            self.names.add(node.name)
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:
+            self.names.add(node.name)
+
+        def visit_Lambda(self, node: ast.Lambda) -> None:
+            return
+
+        def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
+            if node.name:
+                self.names.add(node.name)
+            for statement in node.body:
+                self.visit(statement)
+
+    class WeakeningVisitor(ast.NodeVisitor):
+        supported_roots = {"pytest", "unittest", "subprocess", "flaky"}
+        suspicious_targets = {
+            "pytest.skip",
+            "pytest.xfail",
+            "pytest.mark.skip",
+            "pytest.mark.skipif",
+            "pytest.mark.xfail",
+            "pytest.mark.flaky",
+            "unittest.skip",
+            "unittest.skipif",
+            "unittest.skipunless",
+            "flaky.flaky",
+        }
+        runner_targets = {
+            "pytest.main",
+            "subprocess.run",
+            "subprocess.popen",
+            "subprocess.call",
+            "subprocess.check_call",
+            "subprocess.check_output",
+            "trusted.run_process",
+            "trusted.run_cli",
+        }
+        pytestmark_targets = {
+            "pytest.mark.skip",
+            "pytest.mark.skipif",
+            "pytest.mark.xfail",
+            "pytest.mark.flaky",
+        }
+
+        def __init__(self) -> None:
+            self.scopes: list[dict[str, str | None]] = [{}]
+            self.marker: str | None = None
+
+        def bind(self, name: str, target: str | None) -> None:
+            self.scopes[-1][name] = target
+
+        def bind_target(self, node: ast.AST) -> None:
+            if isinstance(node, ast.Name):
+                self.bind(node.id, None)
+            elif isinstance(node, (ast.Tuple, ast.List)):
+                for item in node.elts:
+                    self.bind_target(item)
+
+        def lookup(self, name: str) -> str:
+            for scope in reversed(self.scopes):
+                if name in scope:
+                    return scope[name] or ""
+            if name in {"run_process", "run_cli"}:
+                return f"trusted.{name}"
+            return ""
+
+        def resolve(self, node: ast.AST) -> str:
+            if isinstance(node, ast.Name):
+                return self.lookup(node.id)
+            if isinstance(node, ast.Attribute):
+                prefix = self.resolve(node.value)
+                return f"{prefix}.{node.attr}" if prefix else ""
+            return ""
+
+        def import_target(self, module: str) -> str | None:
+            return module if module.split(".", 1)[0] in self.supported_roots else None
+
+        def enter_scope(self, node: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef) -> None:
+            local_names = LocalBindingCollector(node).names
+            self.scopes.append({name: None for name in local_names})
+
+        def leave_scope(self) -> None:
+            self.scopes.pop()
+
+        def inspect_decorator(self, node: ast.AST) -> None:
+            target = node.func if isinstance(node, ast.Call) else node
+            resolved = self.resolve(target).lower()
+            if resolved in self.suspicious_targets and self.marker is None:
+                self.marker = resolved
+
+        def inspect_pytestmark_assignment(
+            self, targets: Sequence[ast.AST], value: ast.AST
+        ) -> None:
+            if len(self.scopes) != 1 or not any(
+                isinstance(target, ast.Name) and target.id == "pytestmark"
+                for target in targets
+            ):
+                return
+            values = (
+                value.elts
+                if isinstance(value, (ast.List, ast.Tuple, ast.Set))
+                else [value]
+            )
+            for item in values:
+                target = item.func if isinstance(item, ast.Call) else item
+                resolved = self.resolve(target).lower()
+                if resolved in self.pytestmark_targets and self.marker is None:
+                    self.marker = resolved
+                    return
+
+        def visit_Import(self, node: ast.Import) -> None:
+            for alias in node.names:
+                local = alias.asname or alias.name.split(".", 1)[0]
+                self.bind(local, self.import_target(alias.name))
+
+        def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+            module = node.module or ""
+            for alias in node.names:
+                if alias.name == "*":
+                    continue
+                local = alias.asname or alias.name
+                self.bind(local, self.import_target(f"{module}.{alias.name}"))
+
+        def visit_Assign(self, node: ast.Assign) -> None:
+            self.inspect_pytestmark_assignment(node.targets, node.value)
+            self.visit(node.value)
+            for target in node.targets:
+                self.bind_target(target)
+
+        def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+            self.visit(node.annotation)
+            if node.value is not None:
+                self.inspect_pytestmark_assignment([node.target], node.value)
+                self.visit(node.value)
+            self.bind_target(node.target)
+
+        def visit_AugAssign(self, node: ast.AugAssign) -> None:
+            self.visit(node.target)
+            self.visit(node.value)
+            self.bind_target(node.target)
+
+        def visit_NamedExpr(self, node: ast.NamedExpr) -> None:
+            self.visit(node.value)
+            self.bind_target(node.target)
+
+        def visit_For(self, node: ast.For) -> None:
+            self.visit(node.iter)
+            self.bind_target(node.target)
+            for statement in [*node.body, *node.orelse]:
+                self.visit(statement)
+
+        visit_AsyncFor = visit_For
+
+        def visit_With(self, node: ast.With) -> None:
+            for item in node.items:
+                self.visit(item.context_expr)
+                if item.optional_vars is not None:
+                    self.bind_target(item.optional_vars)
+            for statement in node.body:
+                self.visit(statement)
+
+        visit_AsyncWith = visit_With
+
+        def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
+            if node.type is not None:
+                self.visit(node.type)
+            if node.name:
+                self.bind(node.name, None)
+            for statement in node.body:
+                self.visit(statement)
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            for decorator in node.decorator_list:
+                self.inspect_decorator(decorator)
+                self.visit(decorator)
+            for value in [*node.args.defaults, *node.args.kw_defaults]:
+                if value is not None:
+                    self.visit(value)
+            if node.returns is not None:
+                self.visit(node.returns)
+            self.bind(node.name, None)
+            self.enter_scope(node)
+            for statement in node.body:
+                self.visit(statement)
+            self.leave_scope()
+
+        visit_AsyncFunctionDef = visit_FunctionDef
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:
+            for decorator in node.decorator_list:
+                self.inspect_decorator(decorator)
+                self.visit(decorator)
+            for base in node.bases:
+                self.visit(base)
+            for keyword in node.keywords:
+                self.visit(keyword.value)
+            self.bind(node.name, None)
+            self.enter_scope(node)
+            for statement in node.body:
+                self.visit(statement)
+            self.leave_scope()
+
+        def visit_Lambda(self, node: ast.Lambda) -> None:
+            local = {
+                argument.arg: None
+                for argument in [
+                    *node.args.posonlyargs,
+                    *node.args.args,
+                    *node.args.kwonlyargs,
+                ]
+            }
+            if node.args.vararg is not None:
+                local[node.args.vararg.arg] = None
+            if node.args.kwarg is not None:
+                local[node.args.kwarg.arg] = None
+            self.scopes.append(local)
+            self.visit(node.body)
+            self.leave_scope()
+
+        def visit_Call(self, node: ast.Call) -> None:
+            target = self.resolve(node.func).lower()
+            if target in self.suspicious_targets and self.marker is None:
+                self.marker = target
+            if target in self.runner_targets and self.marker is None:
+                argument_nodes = list(node.args)
+                argument_nodes.extend(
+                    keyword.value
+                    for keyword in node.keywords
+                    if keyword.arg in {"args", "argv", "command", "cmd"}
+                )
+                literals = [
+                    value
+                    for argument in argument_nodes
+                    for value in literal_strings(argument)
+                ]
+                if any(contains_reruns_argument(value) for value in literals):
+                    self.marker = "--reruns"
+                elif target.startswith("subprocess.") and contains_test_runner_argument(
+                    literals
+                ):
+                    self.marker = target
+            self.generic_visit(node)
+
+    visitor = WeakeningVisitor()
+    visitor.visit(tree)
+    return visitor.marker
+
+
 def reward_hacking_findings(worktree: Path, base: str, paths: Iterable[str]) -> list[dict[str, str]]:
     suspicious = re.compile(
         r"pytest\.mark\.(?:skip|skipif|xfail|flaky)|"
@@ -3609,6 +4485,28 @@ def reward_hacking_findings(worktree: Path, base: str, paths: Iterable[str]) -> 
         if base_blob.returncode == 0 and not current_path.exists():
             findings.append(
                 {"kind": "reward_hacking", "path": path, "reason": "existing test file was deleted"}
+            )
+            continue
+        if path.endswith(".py") and current_path.is_file():
+            try:
+                current_text = current_path.read_text(encoding="utf-8")
+            except (OSError, UnicodeError):
+                continue
+            marker = python_weakening_marker(current_text)
+            if marker:
+                findings.append(
+                    {
+                        "kind": "reward_hacking",
+                        "path": path,
+                        "reason": f"suspicious test weakening marker: {marker}",
+                    }
+                )
+            findings.extend(
+                python_test_findings(
+                    path,
+                    base_blob.stdout if base_blob.returncode == 0 else None,
+                    current_text,
+                )
             )
             continue
         diff = git(worktree, "diff", "--no-ext-diff", "--unified=0", base, "--", path, check=False)
@@ -3627,30 +4525,6 @@ def reward_hacking_findings(worktree: Path, base: str, paths: Iterable[str]) -> 
                     }
                 )
                 break
-        if path.endswith(".py") and current_path.is_file():
-            try:
-                current_text = current_path.read_text(encoding="utf-8")
-            except (OSError, UnicodeError):
-                continue
-            match = suspicious.search(current_text)
-            if match and not any(
-                item.get("path") == path and "suspicious test weakening marker" in item.get("reason", "")
-                for item in findings
-            ):
-                findings.append(
-                    {
-                        "kind": "reward_hacking",
-                        "path": path,
-                        "reason": f"suspicious test weakening marker: {match.group(0)}",
-                    }
-                )
-            findings.extend(
-                python_test_findings(
-                    path,
-                    base_blob.stdout if base_blob.returncode == 0 else None,
-                    current_text,
-                )
-            )
     return findings
 
 
@@ -4168,8 +5042,8 @@ def status_facts(repo: Path, ledger: dict[str, Any]) -> dict[str, Any]:
 
 def cmd_plan_validate(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
     repo = resolve_repo(args.repo)
-    text, source, _ = read_plan_source(args.plan)
-    contract = parse_plan(text, source)
+    text, source, _, source_sha256 = read_plan_source(args.plan)
+    contract = parse_plan(text, source, source_sha256=source_sha256)
     preflight = preflight_plan(
         repo,
         contract,
@@ -4182,6 +5056,10 @@ def cmd_plan_validate(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         "target_branch": preflight.target_branch,
         "parallel_ready": contract.parallel_ready,
         "contract_schema_version": contract.schema_version,
+        "plan_sha256": contract.sha256,
+        "plan_source_sha256": contract.source_sha256,
+        "plan_digest_kind": contract.digest_kind,
+        "blackbox_report_schema_version": BLACKBOX_REPORT_SCHEMA_VERSION,
         "e2e_case_ids": list(contract.e2e_case_ids),
         "e2e_cases_sha256": contract.e2e_cases_sha256,
         "effective_verification_source": preflight.effective_verification_source,
@@ -4536,6 +5414,10 @@ def cmd_start_locked(args: argparse.Namespace, repo: Path) -> tuple[dict[str, An
             "path": str(plan_path),
             "source_path": str(source_plan_path),
             "sha256": contract.sha256,
+            "source_sha256": source_contract.source_sha256,
+            "frozen_sha256": contract.source_sha256,
+            "digest_kind": contract.digest_kind,
+            "blackbox_report_schema_version": BLACKBOX_REPORT_SCHEMA_VERSION,
             "contract_schema_version": contract.schema_version,
             "level": contract.level,
             "spec_head": contract.spec_head,
@@ -4661,6 +5543,10 @@ def cmd_start_locked(args: argparse.Namespace, repo: Path) -> tuple[dict[str, An
         "owner_session_id": session_id,
         "spec_head": spec_head,
         "plan_sha256": contract.sha256,
+        "plan_source_sha256": source_contract.source_sha256,
+        "plan_frozen_sha256": contract.source_sha256,
+        "plan_digest_kind": contract.digest_kind,
+        "blackbox_report_schema_version": BLACKBOX_REPORT_SCHEMA_VERSION,
         "runtime_identity": ledger["runtime_identity"],
         "frozen_plan": str(plan_path),
         "parallel_ready": contract.parallel_ready,
@@ -7723,6 +8609,7 @@ def cmd_prove_tests(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                 "spec_sha256": spec_digest,
                 "tester_source_head": tester_source_head,
                 "tester_manifest_sha256": source_manifest_sha,
+                **plan_digest_context(ledger),
             },
         )
         record = evidence_contract.make_record(
@@ -7772,11 +8659,282 @@ def parse_details(raw: str | None) -> Any:
         return raw
 
 
-def validate_structured_e2e_results(
+def blackbox_report_schema_path() -> Path:
+    return Path(__file__).resolve().parents[2] / "schema" / "codex-blackbox-report.schema.json"
+
+
+def validate_blackbox_report_v2_schema(details: dict[str, Any]) -> None:
+    path = blackbox_report_schema_path()
+    if not path.is_file():
+        raise RuntimeProblem(
+            "blackbox report schema is unavailable",
+            code="BLACKBOX_REPORT_SCHEMA_UNAVAILABLE",
+            details={"schema_path": str(path)},
+        )
+    errors: list[str] = []
+    required = {
+        "schema_version",
+        "candidate_worktree",
+        "head_before",
+        "head_after",
+        "candidate_dirty",
+        "executions",
+    }
+    allowed = required | {"normal_residue", "ignored_residue", "cases"}
+    unknown = sorted(set(details) - allowed)
+    missing = sorted(required - set(details))
+    if unknown:
+        errors.append("unknown fields: " + ", ".join(unknown))
+    if missing:
+        errors.append("missing fields: " + ", ".join(missing))
+    if details.get("schema_version") != BLACKBOX_REPORT_SCHEMA_VERSION:
+        errors.append("schema_version must be 2")
+    if not isinstance(details.get("candidate_worktree"), str) or not str(
+        details.get("candidate_worktree", "")
+    ).strip():
+        errors.append("candidate_worktree must be a non-empty string")
+    for field in ("head_before", "head_after"):
+        if not isinstance(details.get(field), str) or not re.fullmatch(
+            r"[0-9a-f]{40}", str(details.get(field, ""))
+        ):
+            errors.append(f"{field} must be a full lowercase commit SHA")
+    if details.get("candidate_dirty") is not False:
+        errors.append("candidate_dirty must be false")
+    for field in ("normal_residue", "ignored_residue"):
+        if field in details and details.get(field) != []:
+            errors.append(f"{field} must be an empty array")
+
+    executions = details.get("executions")
+    if not isinstance(executions, list) or not executions:
+        errors.append("executions must be a non-empty array")
+        executions = []
+    def is_schema_integer(value: Any) -> bool:
+        return (
+            isinstance(value, int)
+            and not isinstance(value, bool)
+        ) or (
+            isinstance(value, float)
+            and math.isfinite(value)
+            and value.is_integer()
+        )
+
+    for index, execution in enumerate(executions):
+        field = f"executions[{index}]"
+        if not isinstance(execution, dict):
+            errors.append(f"{field} must be an object")
+            continue
+        method = execution.get("method")
+        if method == "command":
+            item_allowed = {
+                "method",
+                "command",
+                "returncode",
+                "duration_ms",
+                "timed_out",
+                "log_sha256",
+            }
+            item_required = {"method", "command", "returncode", "timed_out"}
+        else:
+            item_allowed = {"method", "reason", "duration_ms", "log_sha256"}
+            item_required = {"method", "reason"}
+        item_unknown = sorted(set(execution) - item_allowed)
+        item_missing = sorted(item_required - set(execution))
+        if item_unknown:
+            errors.append(f"{field} has unknown fields: " + ", ".join(item_unknown))
+        if item_missing:
+            errors.append(f"{field} is missing fields: " + ", ".join(item_missing))
+        if not isinstance(method, str) or not method.strip():
+            errors.append(f"{field}.method must be a non-empty string")
+        reason = execution.get("reason")
+        if method == "command":
+            command = execution.get("command")
+            if not isinstance(command, str) or not command.strip():
+                errors.append(f"{field}.command must be a non-empty string")
+            if not is_schema_integer(execution.get("returncode")):
+                errors.append(f"{field}.returncode must be an integer")
+            if not isinstance(execution.get("timed_out"), bool):
+                errors.append(f"{field}.timed_out must be boolean")
+        elif not isinstance(reason, str) or not reason.strip():
+            errors.append(f"{field}.method error requires a non-empty reason")
+        if "duration_ms" in execution and (
+            not is_schema_integer(execution.get("duration_ms"))
+            or execution["duration_ms"] < 0
+        ):
+            errors.append(f"{field}.duration_ms must be a non-negative integer")
+        if "log_sha256" in execution and (
+            not isinstance(execution.get("log_sha256"), str)
+            or not re.fullmatch(r"[0-9a-f]{64}", str(execution["log_sha256"]))
+        ):
+            errors.append(f"{field}.log_sha256 must be a SHA-256 digest")
+
+    cases = details.get("cases", [])
+    if "cases" in details and not isinstance(cases, list):
+        errors.append("cases must be an array")
+        cases = []
+    case_required = {"case_id", "mechanical", "verify", "quality", "outcome"}
+    for index, case in enumerate(cases):
+        field = f"cases[{index}]"
+        if not isinstance(case, dict):
+            errors.append(f"{field} must be an object")
+            continue
+        item_unknown = sorted(set(case) - case_required)
+        item_missing = sorted(case_required - set(case))
+        if item_unknown:
+            errors.append(f"{field} has unknown fields: " + ", ".join(item_unknown))
+        if item_missing:
+            errors.append(f"{field} is missing fields: " + ", ".join(item_missing))
+        if not isinstance(case.get("case_id"), str) or not re.fullmatch(
+            r"[a-z0-9]+(?:-[a-z0-9]+)*", str(case.get("case_id", ""))
+        ):
+            errors.append(f"{field}.case_id is invalid")
+        for dimension in ("mechanical", "verify", "quality"):
+            value = case.get(dimension)
+            dimension_field = f"{field}.{dimension}"
+            if not isinstance(value, dict):
+                errors.append(f"{dimension_field} must be an object")
+                continue
+            if set(value) != {"status", "observation"}:
+                errors.append(
+                    f"{dimension_field} must contain only status and observation"
+                )
+            if value.get("status") not in {"pass", "fail", "not_applicable"}:
+                errors.append(f"{dimension_field}.status is invalid")
+            if not isinstance(value.get("observation"), str) or not str(
+                value.get("observation", "")
+            ).strip():
+                errors.append(
+                    f"{dimension_field}.observation must be a non-empty string"
+                )
+        if case.get("outcome") not in {"pass", "fail"}:
+            errors.append(f"{field}.outcome is invalid")
+    if errors:
+        raise RuntimeProblem(
+            "blackbox report does not match schema v2",
+            code="E2E_DETAILS_INVALID",
+            details={
+                "schema_path": str(path),
+                "errors": errors,
+            },
+        )
+
+
+def case_dimension_contract(expected: Mapping[str, Any]) -> dict[str, str]:
+    level = str(expected.get("level"))
+    if level == "fast":
+        return {
+            "mechanical": "required",
+            "verify": "not_applicable",
+            "quality": "not_applicable",
+        }
+    return {
+        "mechanical": "required" if expected.get("hard_rules") else "not_applicable",
+        "verify": "required",
+        "quality": "required",
+    }
+
+
+def derived_blackbox_report_contract(
+    ledger: Mapping[str, Any], contract: PlanContract
+) -> dict[str, Any]:
+    version = blackbox_report_schema_version(ledger)
+    return {
+        "schema_version": version,
+        "schema_path": (
+            "schema/codex-blackbox-report.schema.json"
+            if version == BLACKBOX_REPORT_SCHEMA_VERSION
+            else None
+        ),
+        "summary": (
+            "record every real execution; accepted executions cover every frozen "
+            "case while method_error executions remain visible but excluded"
+            if version == BLACKBOX_REPORT_SCHEMA_VERSION
+            else "legacy single-command report retained for this active run"
+        ),
+        "dimension_shape": (
+            "status-observation-object"
+            if version == BLACKBOX_REPORT_SCHEMA_VERSION
+            else "legacy-status-string"
+        ),
+        "cases": [
+            {
+                "case_id": str(expected["id"]),
+                "level": str(expected["level"]),
+                **case_dimension_contract(expected),
+            }
+            for expected in contract.e2e_cases
+        ],
+    }
+
+
+def dimension_status(
+    value: Any,
+    *,
+    report_version: int,
+    field: str,
+    errors: list[str],
+) -> str | None:
+    if report_version == BLACKBOX_REPORT_SCHEMA_VERSION:
+        if not isinstance(value, dict):
+            errors.append(f"{field} must contain status and observation")
+            return None
+        status = value.get("status")
+        observation = value.get("observation")
+        if not isinstance(observation, str) or not observation.strip():
+            errors.append(f"{field}.observation must be a non-empty string")
+    else:
+        status = value
+    if not isinstance(status, str) or status not in {
+        "pass",
+        "fail",
+        "not_applicable",
+    }:
+        errors.append(f"{field} status is invalid")
+        return None
+    return status
+
+
+def validate_blackbox_execution_coverage(
     contract: PlanContract,
     details: dict[str, Any],
 ) -> None:
+    executions = details.get("executions")
+    if not isinstance(executions, list):
+        return
+    errors: list[str] = []
+    accepted_count = 0
+    for index, execution in enumerate(executions):
+        if not isinstance(execution, dict):
+            continue
+        if execution.get("method") == "command":
+            accepted_count += 1
+            if execution.get("returncode") != 0:
+                errors.append(f"executions[{index}] accepted returncode must be zero")
+            if execution.get("timed_out", False) is not False:
+                errors.append(f"executions[{index}] accepted execution must not time out")
+    if accepted_count == 0:
+        errors.append("blackbox report requires at least one accepted execution")
+    if errors:
+        raise RuntimeProblem(
+            "blackbox executions do not cover the frozen cases",
+            code="E2E_EXECUTION_COVERAGE_INVALID",
+            details={"errors": errors, "required_case_ids": list(contract.e2e_case_ids)},
+        )
+
+
+def validate_structured_e2e_results(
+    contract: PlanContract,
+    details: dict[str, Any],
+    *,
+    report_version: int,
+) -> None:
     if not contract.e2e_cases:
+        raw_cases = details.get("cases", [])
+        if raw_cases:
+            raise RuntimeProblem(
+                "blackbox report cannot introduce cases absent from the frozen plan",
+                code="E2E_CASE_RESULTS_INVALID",
+                details={"required_case_ids": [], "supplied_cases": raw_cases},
+            )
         return
     raw_cases = details.get("cases")
     if not isinstance(raw_cases, list):
@@ -7797,12 +8955,15 @@ def validate_structured_e2e_results(
             set(item)
             - {
                 "case_id",
-                "level",
                 "mechanical",
                 "verify",
                 "quality",
                 "outcome",
-                "replay",
+                *(
+                    {"level", "replay"}
+                    if report_version == LEGACY_BLACKBOX_REPORT_SCHEMA_VERSION
+                    else set()
+                ),
             }
         )
         if unknown:
@@ -7830,42 +8991,33 @@ def validate_structured_e2e_results(
             continue
         field = f"cases[{case_id}]"
         level = expected.get("level")
-        if actual.get("level") != level:
-            errors.append(f"{field}.level does not match frozen plan")
-        mechanical = actual.get("mechanical")
-        verify = actual.get("verify")
-        quality = actual.get("quality")
-        for dimension, status in (
-            ("mechanical", mechanical),
-            ("verify", verify),
-            ("quality", quality),
+        if (
+            report_version == LEGACY_BLACKBOX_REPORT_SCHEMA_VERSION
+            and actual.get("level") != level
         ):
-            if not isinstance(status, str) or status not in {
-                "pass",
-                "fail",
-                "not_applicable",
-            }:
-                errors.append(f"{field}.{dimension} status is invalid")
-        if level == "fast":
-            if mechanical != "pass":
-                errors.append(f"{field}.mechanical must pass")
-            if verify != "not_applicable":
-                errors.append(f"{field}.verify must be not_applicable")
-            if quality != "not_applicable":
-                errors.append(f"{field}.quality must be not_applicable")
-        else:
-            has_hard_rules = bool(expected.get("hard_rules"))
-            expected_mechanical = "pass" if has_hard_rules else "not_applicable"
-            if mechanical != expected_mechanical:
-                errors.append(
-                    f"{field}.mechanical must be {expected_mechanical}"
-                )
-            if verify != "pass":
-                errors.append(f"{field}.verify must pass")
-            if quality != "pass":
-                errors.append(f"{field}.quality must pass")
-        if actual.get("outcome") != "pass":
-            errors.append(f"{field}.outcome must be mechanically derived as pass")
+            errors.append(f"{field}.level does not match frozen plan")
+        requirements = case_dimension_contract(expected)
+        statuses = {
+            dimension: dimension_status(
+                actual.get(dimension),
+                report_version=report_version,
+                field=f"{field}.{dimension}",
+                errors=errors,
+            )
+            for dimension in ("mechanical", "verify", "quality")
+        }
+        derived_outcome = "pass"
+        for dimension, requirement in requirements.items():
+            expected_status = "pass" if requirement == "required" else "not_applicable"
+            if statuses.get(dimension) != expected_status:
+                errors.append(f"{field}.{dimension} must be {expected_status}")
+                derived_outcome = "fail"
+        if actual.get("outcome") != derived_outcome:
+            errors.append(
+                f"{field}.outcome must equal the runtime-derived {derived_outcome}"
+            )
+        if derived_outcome != "pass":
+            errors.append(f"{field} does not satisfy passing blackbox evidence")
     if errors:
         raise RuntimeProblem(
             "structured blackbox case results do not match the frozen plan",
@@ -7990,19 +9142,36 @@ def cmd_record_evidence(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         field = PUBLIC_EVIDENCE_FIELDS[args.kind]
         details = parse_details(args.details)
         if args.kind == "e2e_verified":
-            required_details = {
-                "candidate_worktree",
-                "head_before",
-                "head_after",
-                "command",
-                "returncode",
-            }
+            report_version = blackbox_report_schema_version(ledger)
+            required_details = (
+                {
+                    "candidate_worktree",
+                    "head_before",
+                    "head_after",
+                    "candidate_dirty",
+                    "executions",
+                }
+                if report_version == BLACKBOX_REPORT_SCHEMA_VERSION
+                else {
+                    "candidate_worktree",
+                    "head_before",
+                    "head_after",
+                    "command",
+                    "returncode",
+                }
+            )
             if not isinstance(details, dict) or not required_details.issubset(details):
                 raise RuntimeProblem(
                     "blackbox evidence requires replayable candidate-worktree details",
                     code="E2E_DETAILS_REQUIRED",
-                    details={"required": sorted(required_details)},
+                    details={
+                        "blackbox_report_schema_version": report_version,
+                        "required": sorted(required_details),
+                    },
                 )
+            if report_version == BLACKBOX_REPORT_SCHEMA_VERSION:
+                validate_blackbox_report_v2_schema(details)
+                validate_blackbox_execution_coverage(contract, details)
             try:
                 evidence_worktree = Path(str(details["candidate_worktree"])).resolve()
             except OSError as exc:
@@ -8014,10 +9183,15 @@ def cmd_record_evidence(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                 evidence_worktree != builder.resolve()
                 or details.get("head_before") != candidate
                 or details.get("head_after") != candidate
-                or not isinstance(details.get("command"), str)
-                or not str(details.get("command")).strip()
-                or type(details.get("returncode")) is not int
-                or details.get("returncode") != 0
+                or (
+                    report_version == LEGACY_BLACKBOX_REPORT_SCHEMA_VERSION
+                    and (
+                        not isinstance(details.get("command"), str)
+                        or not str(details.get("command")).strip()
+                        or type(details.get("returncode")) is not int
+                        or details.get("returncode") != 0
+                    )
+                )
                 or (
                     (
                         "candidate_dirty" in details
@@ -8035,23 +9209,43 @@ def cmd_record_evidence(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                         "supplied": details,
                     },
                 )
-            validate_structured_e2e_results(contract, details)
+            validate_structured_e2e_results(
+                contract,
+                details,
+                report_version=report_version,
+            )
         if field == "blackbox":
             scope = evidence_scope_patterns(ledger, "blackbox")
+            commands = accepted_blackbox_commands(ledger, details)
+            if not commands:
+                raise RuntimeProblem(
+                    "blackbox report has no accepted command",
+                    code="E2E_EXECUTION_COVERAGE_INVALID",
+                )
             try:
-                command_paths = runner_repository_paths(str(details.get("command", "")))
+                command_paths: set[str] = set()
+                for command in commands:
+                    command_paths.update(
+                        runner_repository_paths(
+                            command,
+                            resolve_blackbox_dependencies=True,
+                        )
+                    )
             except RuntimeProblem:
-                command_paths = []
+                command_paths = set()
                 scope = ["**"]
-            scope = sorted(set(scope) | set(command_paths))
+            scope = merge_evidence_scope_patterns(scope, command_paths)
             digest = evidence_contract.input_digest(
                 repo,
                 supplied,
                 patterns=scope,
                 plan_sha256=str(ledger.get("plan", {}).get("sha256") or ""),
                 context={
-                    **evidence_digest_context(ledger, "blackbox"),
-                    "command": details.get("command"),
+                    **evidence_digest_context(
+                        ledger,
+                        "blackbox",
+                        details=details,
+                    ),
                 },
             )
         else:
@@ -8061,7 +9255,7 @@ def cmd_record_evidence(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                 supplied,
                 patterns=scope,
                 plan_sha256=str(ledger.get("plan", {}).get("sha256") or ""),
-                context={"kind": field},
+                context={"kind": field, **plan_digest_context(ledger)},
             )
         record = evidence_contract.make_record(
             kind=field,
@@ -8112,10 +9306,15 @@ def cmd_prepare_follow_up(args: argparse.Namespace) -> tuple[dict[str, Any], int
             "follow-up purpose is not valid for this role",
             code="AGENT_FOLLOW_UP_PURPOSE_INVALID",
             details={"role": role, "purpose": purpose},
-        )
+    )
     with locked_run(repo, run_id) as ledger:
         reject_during_finalize_intent(ledger, "prepare-follow-up")
-        verify_plan_unchanged(ledger)
+        contract = verify_plan_unchanged(ledger)
+        report_contract = (
+            derived_blackbox_report_contract(ledger, contract)
+            if purpose == "blackbox"
+            else None
+        )
         if ledger.get("phase") != "active":
             raise RuntimeProblem(
                 "agent follow-up can only be prepared for an active run",
@@ -8160,6 +9359,11 @@ def cmd_prepare_follow_up(args: argparse.Namespace) -> tuple[dict[str, Any], int
                     "message": "the same agent follow-up is already prepared",
                     "run_id": run_id,
                     "role": role,
+                    **(
+                        {"blackbox_report_contract": report_contract}
+                        if report_contract is not None
+                        else {}
+                    ),
                     **existing,
                 }, EXIT_PASS
             raise RuntimeProblem(
@@ -8274,6 +9478,11 @@ def cmd_prepare_follow_up(args: argparse.Namespace) -> tuple[dict[str, Any], int
             "message": "agent follow-up prepared and previous role evidence invalidated",
             "run_id": run_id,
             "role": role,
+            **(
+                {"blackbox_report_contract": report_contract}
+                if report_contract is not None
+                else {}
+            ),
             **prepared,
         }, EXIT_PASS
 

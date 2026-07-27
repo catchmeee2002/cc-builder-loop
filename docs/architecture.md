@@ -57,6 +57,11 @@ symlink。具体字段以 validator 实现和 fixtures 为准。
 effective runner、安全规则、ownership 和冻结依赖。前者不创建 ledger、run 目录或 worktree；
 只有完成这些上下文检查才返回 `READY`，并公开 `effective_verification_source`。
 
+新计划 identity 为 `canonical-v2`：CRLF/CR 统一为 LF，唯一严格受管的首行生命周期 header 被移除，
+末尾换行规范为一个；其余 Markdown 字节全部参与摘要。`plan-validate` 同时返回 canonical identity 与
+raw source digest，start 在 ledger 另存 raw source/frozen-file digest。冻结文件随后同时核对 canonical
+identity 和 frozen raw digest。既有 ledger 缺少这些字段时保持 `raw-v1`，不事后重算。
+
 `parallel_ready=true` 只用于 Tester 无需等待 Builder 产物即可依据冻结目标和公开契约写测的
 计划。为 `false` 时，计划必须明确可独立冻结的最终公开契约文件，例如 schema、header 或接口
 定义；后续实现必须落在其他 Builder-owned 文件，不能在同一 run 继续修改已发布文件。runtime
@@ -66,11 +71,20 @@ digest 写入 ledger。Tester 以 publication HEAD 为 author baseline，不接�
 candidate diff 或其他实现内容。中间 Builder 历史不会进入 Tester baseline；当前版本仍不宣称 Git
 object database 具有操作系统级读 ACL。
 
-v3 的 `e2e-cases` 只有一个 `schema_version=1 + cases` 格式。完整 case 继续只存在冻结计划；
-ledger 保存 case ids 和规范摘要，blackbox evidence 保存逐例机械、功能、质量与汇总结果。fast case
-只执行机械规则，full case 必须声明正向、反向和质量标准；任何缺失、重复、未知或汇总不一致都不能
-形成 `e2e_verified`。逐例结果使用 `case_id/level/outcome`，`mechanical/verify/quality`
-分别取 `pass|fail|not_applicable`；不适用维度必须显式写 `not_applicable`。
+v3 的 `e2e-cases` 只有一个 `schema_version=1 + cases` 格式。完整 case 继续只存在冻结计划；ledger
+只保存 case ids 和规范摘要。`prepare-follow-up --purpose blackbox` 每次从 frozen cases 派生 report
+版本、schema 路径及 mechanical/verify/quality 的 `required|not_applicable`，不持久化第二份 case
+缓存。fast 只要求机械规则；full 的 verify/quality 必须通过，mechanical 是否适用由 hard_rules
+决定。
+
+新 run 冻结 blackbox report v2，唯一结构定义是 `schema/codex-blackbox-report.schema.json`。报告保存
+全部真实 executions；无论是否存在冻结 case 都至少需要一条 `method=command` 的 accepted execution，
+其必须零退出、未超时；存在冻结 case 时还必须与逐例结果共同覆盖声明 case。其他 method 携带 reason，但不计入结论。
+Schema 与 dependency-free runtime parser
+共同拒绝只含空白的 worktree、command、reason 和 observation。逐例三个维度各使用
+`{status, observation}`，runtime 校验适用性并机械派生 outcome；
+禁止用合成 aggregate command 或旁路 `commands` 数组代替 provenance。既有 active ledger 缺少版本
+字段时继续 v1 单 command 结构，保持 run、agent 和 evidence identity。
 
 `plan_revision=1` 表示首次契约。更高 revision 必须携带被替代 run id 与旧 plan digest；start 只在
 旧 run 已 abandoned、digest 匹配且 revision 增加时接受，避免把原地放宽伪装成新证据。
@@ -126,8 +140,9 @@ Builder 与 Tester 使用冻结基线协作：
   审核理由。证明不会写回测试目标，也不经 shell 执行命令。
 - Tester commit 集成后，Builder 可以读取测试并修复实现，但 ownership gate 阻止其修改测试。
 - 所有非 L1 run 都必须由原 Tester thread 在 candidate worktree 对集成 HEAD 完成 blackbox
-  `pass`。candidate worktree 必须没有 tracked、untracked 或 ignored residue；evidence 同时记录
-  worktree、执行命令、returncode 和执行前后 HEAD。仅看到 agent 文本或 Builder HEAD 不构成
+  `pass`。candidate worktree 必须没有 tracked、untracked 或 ignored residue；v2 evidence 同时记录
+  worktree、全部真实 execution、case observations 和执行前后 HEAD。仅看到 agent 文本、Builder
+  HEAD 或合成命令不构成
   blackbox 证据。日志、截图和缓存应写到 candidate 外的临时 artifact 目录；若工具仍在 candidate
   产生文件，Tester 必须清理并复核 residue 为空后才能返回 pass。
 - 测试实现错误在目标不变时由原 Tester thread 修正。测试目标、ownership 或验收标准需要变化
@@ -141,6 +156,8 @@ Builder 与 Tester 使用冻结基线协作：
   修订。目标不变的修复必须重新验证并 follow-up 同一
   Reviewer；Reviewer 因可补齐的前置缺口 blocked 时也保持该 thread。需要修改冻结契约时转入新 run，
   continuity 无效时安全停止，均不得用 fresh Reviewer 替代原身份。
+- Reviewer custom-agent 配置是终态 `pass/findings/blocked` 的唯一来源。协调器 brief 不复制或扩展
+  这组值；adapter 收到缺失或非法结果时保持连续性失败，不把未知值映射成 finding 或 pass。
 - Tester worktree 出现未提交改动时视为尚未集成，finalize 保留现场并停止。
 
 ## Runtime 与 ledger
@@ -150,6 +167,10 @@ Builder 与 Tester 使用冻结基线协作：
 Builder 或 Tester worktree 出发都会发现这一个状态家。ledger 只记录计划摘要、worktree/branch、
 agent/turn 身份、候选、workspace snapshot、evidence provenance、Git 结果和事件，不保存模型推理
 或复制测试目标。
+
+稳定 Python 入口在导入 runtime package 前设置当前解释器及子进程的 no-bytecode 条件，普通 CLI
+调用因此不会向调用方 worktree 写入 runtime `__pycache__`。显式 `py_compile` 与绕过稳定入口的
+任意 import 保持 Python 原语义；runtime 不以清理 residue 冒充预防。
 
 Hook 使用 Codex 提供的 `session_id` 找到唯一 active run：
 
@@ -237,7 +258,13 @@ monkeypatch 同进程对象这一事实不被隐藏，安全边界是受审 Test
 上继续叠加特判。
 
 计划可把每个 Builder-owned pattern 对 machine/blackbox 分为 `affects` 或 `exempt`；Tester、runner、
-support、publication 和实际 blackbox command 依赖强制属于 affects。候选变化后 runtime 重新计算
+support、publication 和所有 accepted blackbox command 依赖强制属于 affects。runtime 先拒绝零
+accepted execution，再逐条解析并合并全部 `method=command` 的仓库路径；其他 method 不参与 scope，
+只有 accepted command 确实无法静态解析时才回退全 tree。unittest resolver 只把显式 `.py` target
+和 discover start directory 视为可证明的窄输入；默认或仅 options 的 discovery 绑定当前目录，
+bare、dotted 与无 `.py` 的 slash target 不查询 candidate tree，也不猜同名文件，而是产生
+`RUNNER_DEPENDENCY_UNRESOLVED`，使整份 report scope 回退全 tree。完整规范化 report digest 进入
+blackbox input context。候选变化后 runtime 重新计算
 scope digest：相同才推进 `accepted_head` 并保留原 `observed_head`，不同则失效。未声明 scope 或
 依赖不可静态说明时退化为全 tree。Reviewer/doc-review 对任意候选变化都失效。Skills 和 hooks
 只能通过 runtime 公开命令记录 evidence，不能直接编辑 ledger。
@@ -249,7 +276,8 @@ workspace intake、evidence provenance、progress stop、finalize 与 cleanup �
 也不删除。`recover` 只重放已经持久化的 final/cleanup 事务；`cleanup` 只处理 terminal run 中
 ledger-owned、clean 且 HEAD 未漂移的 worktree。未知 orphan 只报告人工检查入口。
 
-新 start 写 ledger v2，并在 plan 摘要中标明 contract schema v3。读取 ledger v1 时先在内存规范化；
+新 start 写 ledger v2，并在 plan 摘要中标明 contract schema v3、blackbox report v2 与
+canonical-v2/raw digests。读取 ledger v1 时先在内存规范化；
 首次受锁写操作原子写回 v2 并追加 migration event。既有 plan v2 ledger 缺少新字段时按历史语义
 解释，可继续诊断、恢复、清理和完成原事务，但不能补写 v3 测试鉴别 gate；未启动的 v2 计划必须
 重新规划。旧 run 没有 evidence scope，迁移后按全 tree 语义继续，run/session/agent/turn、
@@ -322,7 +350,8 @@ checkpoint 与 integration commit 继续跳过 hooks 和 GPG signing。
 - 同一原则要求机器验证只有一个 effective source；因此仓库 loop 配置与计划 runner 不能并存，
   Planner 校验和 start 也必须复用同一 preflight，而不是各自解释一份 runner。
 - 「判据按独立性分层」要求 Tester pass 对实际 candidate 可追溯；由此 blackbox evidence 绑定
-  candidate worktree、命令、退出码和前后 HEAD，而不是只信一行自然语言；同一原则也要求串行
+  candidate worktree、每条真实 execution、case observation 和前后 HEAD，而不是只信一行自然语言
+  或伪造 aggregate command；同一原则也要求串行
   Tester 只看到冻结公开文件，因此 runtime 发布 exact-file isolation HEAD/manifest，而不是一般
   Builder HEAD 或 candidate diff。
 - 同一原则要求先明确判据的可信输入：独立 Tester 源码经 thread、ownership、Git/source manifest、
@@ -332,6 +361,11 @@ checkpoint 与 integration commit 继续跳过 hooks 和 GPG signing。
   覆盖风险才停止，而不是把 target 全局干净当成交付前提。
 - 「契约与成熟行为先于实现」要求迁移维护逐项 parity corpus；由此删除旧 fixture 前必须明确
   covered、rescue 或 retired，不能只用新 runtime 测试证明自身自洽。
+- 「改输入条件，不堆输出特判」要求 Python role hygiene 在 AST/token 层区分可执行 skip/xfail/
+  rerun、module-level `pytestmark` 与 comments/string fixtures，并按 import binding 解析 alias 与局部
+  shadowing；稳定 CLI 则在
+  runtime import 前禁写 bytecode，而不是事后清理 residue。Reviewer 终态同理由 custom-agent 单点
+  定义，协调器只传输入，不再用 prompt 特判重写输出值。
 - 「每个事实只有一个家」要求工程事故按单一 owner 落盘；由此跨业务/loop 边界的因果链必须拆分，
   adapter 版本必须由 start 冻结，剩余隐含知识才交给原生 memory skill。
 

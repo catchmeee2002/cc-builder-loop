@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- 新增 schema v2 blackbox report，逐条保存 command/method-error execution、逐例结果和维度
+  observations；新 run 冻结 v2，legacy active run 保留单 command v1。`prepare-follow-up` 现在从
+  frozen cases 派生适用性，evidence digest/scope 覆盖完整 report 和全部 accepted commands。v2 现在
+  无条件要求至少一条 accepted execution，并精确合并可解析 command scope；Schema/runtime 同步拒绝
+  report 的纯空白关键字段。unittest dependency resolver 仅窄化显式 `.py` 与 discover directory，
+  并将默认 discovery 或歧义 module/package target fail closed 到全 tree，停止猜测同名 `.py`。
+- 计划 identity 升级为 canonical-v2，并分别审计 raw source/frozen digest；legacy ledger 保持
+  raw-v1。稳定 CLI 在 runtime import 前禁写 bytecode，Tester role-check 改用 Python AST/token
+  区分真实 skip/xfail/rerun、module-level `pytestmark` 与 comments/string fixtures，并解析
+  pytest/unittest/subprocess alias 与局部 shadowing。Reviewer brief 不再重定义 custom-agent 的
+  pass/findings/blocked 终态
+  （#98、#105、#106、#117、#124、#132、#134）。
 - Tester 与 Reviewer initial spawn 现在显式使用 `fork_turns="none"` 和最小冻结 brief，后续阶段仍续接
   原 thread；文档同步区分 conversation、Git/artifact、filesystem 与平台 attestation 边界。Reviewer
   因可补齐前置缺口 blocked 时只允许原 thread 复审，不再建议 fresh Reviewer（#88、#125）。

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import re
@@ -14,6 +15,7 @@ from harness import (
     _canonical_case_results,
     assert_status,
     assert_status_one_of,
+    blackbox_report_details,
     cleanup_repo,
     commit_all,
     git,
@@ -160,14 +162,15 @@ class PlanningV3E2EContractTest(unittest.TestCase):
             )
         )
         self.assertFalse(candidate_dirty)
-        base = {
-            "candidate_worktree": str(fixture.builder),
-            "head_before": head_before,
-            "head_after": head_after,
-            "command": shlex.join(command),
-            "returncode": executed.returncode,
-            "candidate_dirty": candidate_dirty,
-        }
+        base = blackbox_report_details(
+            load_ledger(fixture.run_path),
+            candidate_worktree=fixture.builder,
+            head_before=head_before,
+            head_after=head_after,
+            command=shlex.join(command),
+            returncode=executed.returncode,
+            candidate_dirty=candidate_dirty,
+        )
         before = run_cli(
             "record-evidence",
             "--run",
@@ -179,12 +182,7 @@ class PlanningV3E2EContractTest(unittest.TestCase):
             "--agent-id",
             fixture.tester_agent_id,
             "--details",
-            json.dumps(
-                {
-                    **base,
-                    "cases": [{"case_id": "add-cli", "status": "pass"}],
-                }
-            ),
+            json.dumps(base),
         )
         rejection(self, before)
         self.assertIn("proof", str(before.data).lower())
@@ -199,17 +197,22 @@ class PlanningV3E2EContractTest(unittest.TestCase):
             result="pass",
         )
 
+        missing_cases = copy.deepcopy(base)
+        missing_cases.pop("cases")
+        duplicate_cases = copy.deepcopy(base)
+        duplicate_cases["cases"].append(copy.deepcopy(duplicate_cases["cases"][0]))
+        unknown_case = copy.deepcopy(base)
+        unknown_case["cases"][0]["case_id"] = "unknown"
+        inconsistent_outcome = copy.deepcopy(base)
+        inconsistent_outcome["cases"][0]["verify"] = {
+            "status": "fail",
+            "observation": "The frozen behavior failed.",
+        }
         malformed = (
-            base,
-            {
-                **base,
-                "cases": [
-                    {"case_id": "add-cli", "status": "pass"},
-                    {"case_id": "add-cli", "status": "pass"},
-                ],
-            },
-            {**base, "cases": [{"case_id": "unknown", "status": "pass"}]},
-            {**base, "cases": [{"case_id": "add-cli", "status": "fail"}]},
+            missing_cases,
+            duplicate_cases,
+            unknown_case,
+            inconsistent_outcome,
         )
         for details in malformed:
             with self.subTest(details=details):

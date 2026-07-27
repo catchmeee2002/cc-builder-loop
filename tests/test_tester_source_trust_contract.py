@@ -10,6 +10,7 @@ from pathlib import Path
 
 from harness import (
     assert_status,
+    blackbox_report_details,
     cleanup_repo,
     commit_all,
     finish_agent_turn,
@@ -102,14 +103,15 @@ class TesterSourceTrustContractTest(unittest.TestCase):
             fixture.tester_agent_id,
             "--details",
             json.dumps(
-                {
-                    "candidate_worktree": str(fixture.builder),
-                    "head_before": head_before,
-                    "head_after": head_after,
-                    "command": shlex.join(command),
-                    "returncode": blackbox_run.returncode,
-                    "candidate_dirty": candidate_dirty,
-                }
+                blackbox_report_details(
+                    load_ledger(fixture.run_path),
+                    candidate_worktree=fixture.builder,
+                    head_before=head_before,
+                    head_after=head_after,
+                    command=shlex.join(command),
+                    returncode=blackbox_run.returncode,
+                    candidate_dirty=candidate_dirty,
+                )
             ),
         )
         assert_status(blackbox, "READY", rc=0)
