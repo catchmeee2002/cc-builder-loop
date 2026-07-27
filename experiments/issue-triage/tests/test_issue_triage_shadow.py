@@ -15,8 +15,53 @@ import issue_triage_eval as evaluator  # noqa: E402
 import issue_triage_shadow as shadow  # noqa: E402
 
 
-def run_git(repo: Path, *args: str) -> None:
-    subprocess.run(["git", *args], cwd=repo, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+def run_git(repo: Path, *args: str) -> str:
+    completed = subprocess.run(
+        ["git", *args],
+        cwd=repo,
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if completed.returncode != 0:
+        raise AssertionError(f"git {' '.join(args)} failed: {completed.stderr}")
+    return completed.stdout.strip()
+
+
+def commit(repo: Path, message: str) -> str:
+    run_git(repo, "add", ".")
+    run_git(
+        repo,
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.invalid",
+        "-c",
+        "commit.gpgSign=false",
+        "commit",
+        "-m",
+        f"test(issue-triage): [cr_id_skip] {message.capitalize()}",
+    )
+    return run_git(repo, "rev-parse", "HEAD")
+
+
+def capture_body(repository: str, head: str, *, dirty: bool) -> str:
+    return f"""复现 `src/demo.py:1` 与 `run_step`。
+
+<!-- issue-capture:v1 -->
+```json
+{{
+  "captured_at": "2026-07-27T00:00:00Z",
+  "repository": "{repository}",
+  "incident_head": "{head}",
+  "branch": "main",
+  "dirty": {str(dirty).lower()},
+  "root_cause_status": "unknown"
+}}
+```
+<!-- /issue-capture:v1 -->
+"""
 
 
 class FakeClient:
@@ -83,6 +128,40 @@ class FakeClient:
 
 
 class IssueTriageShadowTests(unittest.TestCase):
+    def test_capture_and_resolution_markers_are_exact_and_validated(self):
+        head = "a" * 40
+        body = capture_body("catch/repo", head, dirty=False)
+        resolution_body = f"""<!-- issue-resolution:v1 -->
+```json
+{{
+  "resolved_at": "2026-07-27T01:00:00Z",
+  "outcome": "fixed",
+  "incident_head": "{head}",
+  "resolved_head": "{'b' * 40}",
+  "fix_commits": ["{'b' * 40}"],
+  "root_cause_status": "confirmed",
+  "root_cause": "状态被错误折叠",
+  "violated_invariant": "失败不能冒充成功",
+  "human_decision": {{"required": false, "kinds": [], "evidence": []}},
+  "acceptance": {{"deterministic": true, "evidence": ["tests pass"]}},
+  "residual_uncertainty": []
+}}
+```
+<!-- /issue-resolution:v1 -->"""
+
+        capture = shadow.parse_capture(body, expected_repository="catch/repo")
+        resolution = shadow.parse_latest_resolution([{"body": resolution_body}], capture=capture)
+
+        self.assertEqual(capture["incident_head"], head)
+        self.assertEqual(resolution["outcome"], "fixed")
+        with self.assertRaises(evaluator.meta.RunnerError):
+            shadow.parse_capture(body + body, expected_repository="catch/repo")
+        with self.assertRaises(evaluator.meta.RunnerError):
+            shadow.parse_marker_json(
+                "<!-- /issue-capture:v1 -->\n<!-- issue-capture:v1 -->\n```json\n{}\n```",
+                shadow.CAPTURE_MARKER,
+            )
+
     def test_remote_credentials_are_redacted_and_slug_is_stable(self):
         remote = "https://user:ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ@github.com/catch/repo.git"
 
@@ -195,6 +274,140 @@ class IssueTriageShadowTests(unittest.TestCase):
         self.assertEqual(len(principles), 1)
         self.assertIn("## Keep", principles[0].text)
         self.assertNotIn("## Skip", principles[0].text)
+
+    def test_historical_shadow_uses_exact_incident_checkout(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repo = root / "repo"
+            repo.mkdir()
+            run_git(repo, "init")
+            (repo / "principles.md").write_text("# Root\n\n## Keep\n原则\n", encoding="utf-8")
+            (repo / "src").mkdir()
+            (repo / "src" / "demo.py").write_text("def run_step():\n    return 'incident'\n", encoding="utf-8")
+            incident_head = commit(repo, "incident")
+            (repo / "src" / "demo.py").write_text("def run_step():\n    return 'fixed'\n", encoding="utf-8")
+            commit(repo, "fixed")
+            profiles = root / "profiles.json"
+            profiles.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "profiles": {
+                            "catch/repo": {
+                                "goal": "目标",
+                                "principle_sources": [
+                                    {"path": "principles.md", "heading_patterns": ["^Keep$"]}
+                                ],
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            body = capture_body("catch/repo", incident_head, dirty=False)
+            capture = shadow.parse_capture(body, expected_repository="catch/repo")
+            client = FakeClient()
+            result = shadow.run_shadow_from_issue(
+                repo=repo,
+                github_repo="catch/repo",
+                issue={
+                    "number": 1,
+                    "title": "问题",
+                    "body": body,
+                    "createdAt": "2026-07-27T00:00:00Z",
+                    "url": "https://example.invalid/1",
+                    "author": {"login": "tester"},
+                    "comments": [{"body": "不能泄漏的事后结论"}],
+                },
+                capture=capture,
+                run_root=root / "runs",
+                main_effort="high",
+                boundary_effort=None,
+                profiles_path=profiles,
+                work_root=root / "worktrees",
+                client=client,
+            )
+            repeated = shadow.run_shadow_from_issue(
+                repo=repo,
+                github_repo="catch/repo",
+                issue={
+                    "number": 1,
+                    "title": "问题",
+                    "body": body,
+                    "createdAt": "2026-07-27T00:00:00Z",
+                    "url": "https://example.invalid/1",
+                    "author": {"login": "tester"},
+                    "comments": [{"body": "不同的事后评论仍不能进入历史输入"}],
+                },
+                capture=capture,
+                run_root=root / "runs",
+                main_effort="high",
+                boundary_effort=None,
+                profiles_path=profiles,
+                work_root=root / "worktrees",
+                client=client,
+            )
+            payload = json.loads((Path(result["run_dir"]) / "input.json").read_text(encoding="utf-8"))
+
+        serialized = json.dumps(payload, ensure_ascii=False)
+        self.assertIn("incident", serialized)
+        self.assertNotIn("return 'fixed'", serialized)
+        self.assertNotIn("不能泄漏的事后结论", serialized)
+        self.assertEqual(repeated["run_dir"], result["run_dir"])
+        self.assertEqual(client.calls, 2)
+
+    def test_dirty_capture_disables_file_and_identifier_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repo = root / "repo"
+            repo.mkdir()
+            run_git(repo, "init")
+            (repo / "principles.md").write_text("# Root\n\n## Keep\n原则\n", encoding="utf-8")
+            (repo / "src").mkdir()
+            (repo / "src" / "demo.py").write_text("def run_step():\n    return 'secret-dirty'\n", encoding="utf-8")
+            incident_head = commit(repo, "incident")
+            profiles = root / "profiles.json"
+            profiles.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "profiles": {
+                            "catch/repo": {
+                                "goal": "目标",
+                                "principle_sources": [
+                                    {"path": "principles.md", "heading_patterns": ["^Keep$"]}
+                                ],
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            body = capture_body("catch/repo", incident_head, dirty=True)
+            capture = shadow.parse_capture(body, expected_repository="catch/repo")
+            result = shadow.run_shadow_from_issue(
+                repo=repo,
+                github_repo="catch/repo",
+                issue={
+                    "number": 2,
+                    "title": "问题",
+                    "body": body,
+                    "createdAt": "2026-07-27T00:00:00Z",
+                    "url": "https://example.invalid/2",
+                    "author": {"login": "tester"},
+                },
+                capture=capture,
+                run_root=root / "runs",
+                main_effort="high",
+                boundary_effort=None,
+                profiles_path=profiles,
+                client=FakeClient(),
+            )
+            payload = json.loads((Path(result["run_dir"]) / "input.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(payload["evidence"]["file_refs"], [])
+        self.assertEqual(payload["evidence"]["identifier_searches"], [])
+        self.assertIn("未提交 dirty 现场不可重建", payload["evidence"]["repo_identity"]["evidence_limitation"])
 
 
 if __name__ == "__main__":

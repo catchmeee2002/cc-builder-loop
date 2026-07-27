@@ -9,8 +9,8 @@
 - `hooks/`：只记录 agent 身份并做完成门禁，不承担循环编排。
 - `policies/`：安装时部署的默认文档审计政策。
 - `experiments/agent-behavior/`：离线角色行为场景、指令变体与机械评分；不进入交付 ledger。
-- `experiments/issue-triage/`：按需运行的 GitHub Issue 根因与注意力分流实验；不进入 runtime 或
-  交付门禁。
+- `experiments/issue-triage/`：按需或由本地 cron 运行的只读 GitHub Issue 分流实验；不进入 runtime、
+  ledger 或交付门禁。
 - `schema/`：runtime ledger 的唯一结构定义。
 - `tests/`：不依赖真实模型的契约 fixtures。
 - `docs/`：设计哲学、架构和已知环境问题。

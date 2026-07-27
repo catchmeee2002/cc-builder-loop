@@ -4,14 +4,18 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 import dataclasses
+import datetime as dt
 import hashlib
 import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 from typing import Any, Callable
 from urllib.parse import urlsplit, urlunsplit
 
@@ -25,11 +29,14 @@ import issue_triage_eval as evaluator  # noqa: E402
 
 meta = evaluator.meta
 SHADOW_SCHEMA_VERSION = 3
+CAPTURE_SCHEMA_VERSION = 1
+RESOLUTION_SCHEMA_VERSION = 1
 PROFILES_PATH = EXPERIMENT_DIR / "profiles" / "projects.json"
 DEFAULT_RUN_ROOT = Path.home() / ".codex" / "issue-triage" / "runs"
-MAX_ISSUE_BODY_CHARS = 50_000
+MAX_ISSUE_BODY_CHARS = 100_000
 MAX_COMMENT_CHARS = 4_000
 MAX_COMMENTS = 8
+MAX_FETCHED_COMMENTS = 100
 MAX_EVIDENCE_FACTS = 20
 MAX_FACT_CHARS = 18_000
 MAX_FILE_BYTES = 2_000_000
@@ -43,6 +50,17 @@ HEADING = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
 BACKTICK = re.compile(r"`([^`\n]{1,240})`")
 PATH_TOKEN = re.compile(r"(?<![A-Za-z0-9_.-])((?:[A-Za-z0-9_.-]+/)+[A-Za-z0-9_.-]+(?::[0-9]+)?)")
 IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_.]{2,100}\Z")
+COMMIT = re.compile(r"[0-9a-f]{40}\Z")
+CAPTURE_MARKER = f"issue-capture:v{CAPTURE_SCHEMA_VERSION}"
+RESOLUTION_MARKER = f"issue-resolution:v{RESOLUTION_SCHEMA_VERSION}"
+ROOT_CAUSE_STATUSES = {"unknown", "candidate", "confirmed"}
+RESOLUTION_OUTCOMES = {"fixed", "duplicate", "not-a-bug", "cannot-reproduce", "wontfix"}
+HUMAN_DECISION_KINDS = {
+    "scope_approval",
+    "goal_or_principle",
+    "root_cause_correction",
+    "tradeoff",
+}
 
 
 @dataclasses.dataclass(frozen=True)
@@ -58,6 +76,180 @@ def _canonical_json(value: Any) -> str:
 
 def _sha256_text(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def prompt_hashes() -> dict[str, str]:
+    return {
+        "diagnostician": hashlib.sha256(evaluator.DIAGNOSTICIAN_PROMPT.read_bytes()).hexdigest(),
+        "attacker": hashlib.sha256(evaluator.ATTACKER_PROMPT.read_bytes()).hexdigest(),
+    }
+
+
+def _utc_timestamp(value: Any, *, name: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise meta.RunnerError("input", f"{name} 必须是 UTC ISO-8601 字符串", meta.EXIT_INPUT)
+    normalized = value.replace("Z", "+00:00")
+    try:
+        parsed = dt.datetime.fromisoformat(normalized)
+    except ValueError:
+        raise meta.RunnerError("input", f"{name} 不是有效 ISO-8601 时间", meta.EXIT_INPUT) from None
+    if parsed.tzinfo is None or parsed.utcoffset() != dt.timedelta(0):
+        raise meta.RunnerError("input", f"{name} 必须使用 UTC 时区", meta.EXIT_INPUT)
+    return value
+
+
+def _exact_object(value: Any, *, name: str, keys: set[str]) -> dict[str, Any]:
+    if not isinstance(value, dict) or set(value) != keys:
+        raise meta.RunnerError("input", f"{name} 字段集合非法", meta.EXIT_INPUT)
+    return value
+
+
+def _nonempty_string(value: Any, *, name: str, limit: int = 20_000) -> str:
+    if not isinstance(value, str) or not value.strip() or len(value) > limit:
+        raise meta.RunnerError("input", f"{name} 必须是非空字符串", meta.EXIT_INPUT)
+    return value
+
+
+def _string_list(value: Any, *, name: str, max_items: int = 100) -> list[str]:
+    if not isinstance(value, list) or len(value) > max_items:
+        raise meta.RunnerError("input", f"{name} 必须是字符串数组", meta.EXIT_INPUT)
+    rows: list[str] = []
+    for index, item in enumerate(value):
+        rows.append(_nonempty_string(item, name=f"{name}[{index}]"))
+    return rows
+
+
+def parse_marker_json(text: str, marker: str) -> dict[str, Any] | None:
+    """Parse one exact fenced JSON marker; reject duplicates and malformed markers."""
+
+    opening = f"<!-- {marker} -->"
+    closing = f"<!-- /{marker} -->"
+    opening_count = text.count(opening)
+    closing_count = text.count(closing)
+    if opening_count == 0 and closing_count == 0:
+        return None
+    if opening_count != 1 or closing_count != 1:
+        raise meta.RunnerError("input", f"{marker} marker 数量非法", meta.EXIT_INPUT)
+    start = text.index(opening) + len(opening)
+    end = text.find(closing, start)
+    if end < 0:
+        raise meta.RunnerError("input", f"{marker} marker 顺序非法", meta.EXIT_INPUT)
+    if text.find(opening, start) != -1 or text.find(closing, end + len(closing)) != -1:
+        raise meta.RunnerError("input", f"{marker} marker 重复", meta.EXIT_INPUT)
+    payload = text[start:end].strip()
+    match = re.fullmatch(r"```json\s*\n(.*?)\n```", payload, flags=re.DOTALL)
+    if match is None:
+        raise meta.RunnerError("input", f"{marker} 必须包含唯一 JSON fenced block", meta.EXIT_INPUT)
+    try:
+        value = json.loads(match.group(1))
+    except json.JSONDecodeError:
+        raise meta.RunnerError("input", f"{marker} 包含非法 JSON", meta.EXIT_INPUT) from None
+    if not isinstance(value, dict):
+        raise meta.RunnerError("input", f"{marker} JSON 必须是 object", meta.EXIT_INPUT)
+    return value
+
+
+def validate_capture(value: Any, *, expected_repository: str | None = None) -> dict[str, Any]:
+    capture = _exact_object(
+        value,
+        name=CAPTURE_MARKER,
+        keys={"captured_at", "repository", "incident_head", "branch", "dirty", "root_cause_status"},
+    )
+    _utc_timestamp(capture["captured_at"], name="capture.captured_at")
+    repository = _nonempty_string(capture["repository"], name="capture.repository", limit=200)
+    if expected_repository is not None and repository != expected_repository:
+        raise meta.RunnerError("input", "capture.repository 与目标仓库不一致", meta.EXIT_INPUT)
+    incident_head = capture["incident_head"]
+    if incident_head != "unavailable" and (not isinstance(incident_head, str) or not COMMIT.fullmatch(incident_head)):
+        raise meta.RunnerError("input", "capture.incident_head 必须是 40 位 commit 或 unavailable", meta.EXIT_INPUT)
+    _nonempty_string(capture["branch"], name="capture.branch", limit=300)
+    if not isinstance(capture["dirty"], bool):
+        raise meta.RunnerError("input", "capture.dirty 必须是 boolean", meta.EXIT_INPUT)
+    if capture["root_cause_status"] not in ROOT_CAUSE_STATUSES:
+        raise meta.RunnerError("input", "capture.root_cause_status 非法", meta.EXIT_INPUT)
+    return capture
+
+
+def parse_capture(text: str, *, expected_repository: str | None = None) -> dict[str, Any] | None:
+    value = parse_marker_json(text, CAPTURE_MARKER)
+    return None if value is None else validate_capture(value, expected_repository=expected_repository)
+
+
+def validate_resolution(value: Any, *, capture: dict[str, Any] | None = None) -> dict[str, Any]:
+    resolution = _exact_object(
+        value,
+        name=RESOLUTION_MARKER,
+        keys={
+            "resolved_at",
+            "outcome",
+            "incident_head",
+            "resolved_head",
+            "fix_commits",
+            "root_cause_status",
+            "root_cause",
+            "violated_invariant",
+            "human_decision",
+            "acceptance",
+            "residual_uncertainty",
+        },
+    )
+    _utc_timestamp(resolution["resolved_at"], name="resolution.resolved_at")
+    if resolution["outcome"] not in RESOLUTION_OUTCOMES:
+        raise meta.RunnerError("input", "resolution.outcome 非法", meta.EXIT_INPUT)
+    for field in ("incident_head", "resolved_head"):
+        head = resolution[field]
+        if head != "unavailable" and (not isinstance(head, str) or not COMMIT.fullmatch(head)):
+            raise meta.RunnerError("input", f"resolution.{field} 非法", meta.EXIT_INPUT)
+    if capture is not None and resolution["incident_head"] != capture["incident_head"]:
+        raise meta.RunnerError("input", "resolution.incident_head 与 capture 不一致", meta.EXIT_INPUT)
+    commits = _string_list(resolution["fix_commits"], name="resolution.fix_commits")
+    if any(not COMMIT.fullmatch(commit) for commit in commits):
+        raise meta.RunnerError("input", "resolution.fix_commits 必须是 40 位 commit", meta.EXIT_INPUT)
+    if resolution["root_cause_status"] not in ROOT_CAUSE_STATUSES:
+        raise meta.RunnerError("input", "resolution.root_cause_status 非法", meta.EXIT_INPUT)
+    _nonempty_string(resolution["root_cause"], name="resolution.root_cause")
+    _nonempty_string(resolution["violated_invariant"], name="resolution.violated_invariant")
+    decision = _exact_object(
+        resolution["human_decision"],
+        name="resolution.human_decision",
+        keys={"required", "kinds", "evidence"},
+    )
+    if not isinstance(decision["required"], bool):
+        raise meta.RunnerError("input", "resolution.human_decision.required 必须是 boolean", meta.EXIT_INPUT)
+    kinds = _string_list(decision["kinds"], name="resolution.human_decision.kinds")
+    if len(kinds) != len(set(kinds)) or set(kinds) - HUMAN_DECISION_KINDS:
+        raise meta.RunnerError("input", "resolution.human_decision.kinds 非法", meta.EXIT_INPUT)
+    if decision["required"] != bool(kinds):
+        raise meta.RunnerError("input", "resolution.human_decision.required 与 kinds 不一致", meta.EXIT_INPUT)
+    _string_list(decision["evidence"], name="resolution.human_decision.evidence")
+    acceptance = _exact_object(
+        resolution["acceptance"],
+        name="resolution.acceptance",
+        keys={"deterministic", "evidence"},
+    )
+    if not isinstance(acceptance["deterministic"], bool):
+        raise meta.RunnerError("input", "resolution.acceptance.deterministic 必须是 boolean", meta.EXIT_INPUT)
+    _string_list(acceptance["evidence"], name="resolution.acceptance.evidence")
+    _string_list(resolution["residual_uncertainty"], name="resolution.residual_uncertainty")
+    return resolution
+
+
+def parse_latest_resolution(
+    comments: list[dict[str, Any]],
+    *,
+    capture: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    resolutions: list[dict[str, Any]] = []
+    for comment in comments:
+        body = str(comment.get("body") or "") if isinstance(comment, dict) else ""
+        value = parse_marker_json(body, RESOLUTION_MARKER)
+        if value is not None:
+            resolutions.append(validate_resolution(value, capture=capture))
+    return resolutions[-1] if resolutions else None
+
+
+def contract_digest(value: dict[str, Any]) -> str:
+    return _sha256_text(_canonical_json(value))
 
 
 def redact_secrets(value: str) -> str:
@@ -220,10 +412,10 @@ def load_profile(repo: Path, github_repo: str, profiles_path: Path = PROFILES_PA
     return goal, principles
 
 
-def fetch_issue(repo: Path, github_repo: str, issue_number: int) -> dict[str, Any]:
+def fetch_issue(repo: Path, github_repo: str, issue_number: int, *, gh_bin: str = "gh") -> dict[str, Any]:
     fields = "number,title,body,state,labels,comments,createdAt,updatedAt,url,author"
     result = run_command(
-        ["gh", "issue", "view", str(issue_number), "--repo", github_repo, "--json", fields],
+        [gh_bin, "issue", "view", str(issue_number), "--repo", github_repo, "--json", fields],
         cwd=repo,
         timeout=45,
         max_chars=300_000,
@@ -245,7 +437,7 @@ def fetch_issue(repo: Path, github_repo: str, issue_number: int) -> dict[str, An
                 "createdAt": comment.get("createdAt") if isinstance(comment, dict) else None,
                 "body": str(comment.get("body") or "")[:MAX_COMMENT_CHARS] if isinstance(comment, dict) else "",
             }
-            for comment in comments[-MAX_COMMENTS:]
+            for comment in comments[-MAX_FETCHED_COMMENTS:]
         ]
     else:
         issue["comments"] = []
@@ -348,7 +540,7 @@ def evidence_facts(issue: dict[str, Any], evidence: dict[str, Any]) -> list[str]
     ]
     comments = issue.get("comments") or []
     if comments:
-        facts.append("Issue 最近评论：\n" + _canonical_json(comments)[:MAX_FACT_CHARS])
+        facts.append("Issue 最近评论：\n" + _canonical_json(comments[-MAX_COMMENTS:])[:MAX_FACT_CHARS])
     for reference in evidence["file_refs"]:
         facts.append(
             f"显式引用文件 {reference['path']}，sha256={reference['sha256']}，"
@@ -439,31 +631,92 @@ def _is_boundary(pass_result: dict[str, Any]) -> bool:
     return evaluator.base_axes(assessment)["human_attention"] == "none"
 
 
-def run_shadow(
+def prediction_idempotency_key(
     *,
-    repo: Path,
+    github_repo: str,
     issue_number: int,
-    run_root: Path,
-    main_effort: str,
-    boundary_effort: str | None,
-    profiles_path: Path = PROFILES_PATH,
-) -> dict[str, Any]:
-    repo_identity = collect_repo_identity(repo)
-    github_repo = repo_identity.get("github_repo")
-    if not github_repo:
-        raise meta.RunnerError("input", "origin 不是可识别的 GitHub repository", meta.EXIT_INPUT)
-    goal, principles = load_profile(repo.resolve(), github_repo, profiles_path)
-    issue = fetch_issue(repo.resolve(), github_repo, issue_number)
-    evidence = collect_evidence(repo.resolve(), issue, repo_identity)
-    facts = evidence_facts(issue, evidence)
-    case_id = f"issue-{issue_number}"
-    project = evaluator.Project(
+    capture: dict[str, Any],
+) -> str:
+    material = {
+        "github_repo": github_repo,
+        "issue_number": issue_number,
+        "incident_head": capture["incident_head"],
+        "capture_sha256": contract_digest(capture),
+        "capture_schema_version": CAPTURE_SCHEMA_VERSION,
+        "shadow_schema_version": SHADOW_SCHEMA_VERSION,
+        "prompt_sha256": prompt_hashes(),
+    }
+    return _sha256_text(_canonical_json(material))
+
+
+def _commit_exists(repo: Path, head: str) -> bool:
+    result = run_command(["git", "cat-file", "-e", f"{head}^{{commit}}"], cwd=repo, timeout=15)
+    return result.returncode == 0
+
+
+def ensure_incident_commit(repo: Path, head: str) -> None:
+    if not COMMIT.fullmatch(head):
+        raise meta.RunnerError("input", "事故 commit 不可用，禁止回退当前 HEAD", meta.EXIT_INPUT)
+    if _commit_exists(repo, head):
+        return
+    fetched = run_command(
+        ["git", "fetch", "--no-tags", "origin", head],
+        cwd=repo,
+        timeout=120,
+        max_chars=20_000,
+    )
+    if fetched.returncode != 0 or not _commit_exists(repo, head):
+        raise meta.RunnerError("transport", "无法获取精确事故 commit，禁止回退当前 HEAD", meta.EXIT_TRANSPORT)
+
+
+@contextmanager
+def incident_worktree(repo: Path, head: str, *, work_root: Path | None = None):
+    repo = repo.resolve()
+    ensure_incident_commit(repo, head)
+    if work_root is not None:
+        work_root.expanduser().mkdir(parents=True, exist_ok=True)
+    temporary = Path(
+        tempfile.mkdtemp(
+            prefix="issue-triage-incident-",
+            dir=str(work_root.expanduser()) if work_root is not None else None,
+        )
+    )
+    checkout = temporary / "checkout"
+    added = run_command(
+        ["git", "worktree", "add", "--detach", str(checkout), head],
+        cwd=repo,
+        timeout=120,
+        max_chars=20_000,
+    )
+    if added.returncode != 0:
+        shutil.rmtree(temporary, ignore_errors=True)
+        raise meta.RunnerError("input", "无法创建事故 commit 隔离 checkout", meta.EXIT_INPUT)
+    try:
+        actual = run_command(["git", "rev-parse", "HEAD"], cwd=checkout, timeout=15)
+        if actual.returncode != 0 or actual.stdout.strip() != head:
+            raise meta.RunnerError("input", "事故 checkout 未绑定精确 commit", meta.EXIT_INPUT)
+        yield checkout
+    finally:
+        run_command(["git", "worktree", "remove", "--force", str(checkout)], cwd=repo, timeout=60)
+        shutil.rmtree(temporary, ignore_errors=True)
+
+
+def _shadow_project(
+    *,
+    github_repo: str,
+    issue: dict[str, Any],
+    facts: list[str],
+    goal: str,
+    principles: list[evaluator.Principle],
+) -> evaluator.Project:
+    issue_number = int(issue["number"])
+    return evaluator.Project(
         project_id=github_repo,
         goal=goal,
         principles=tuple(principles),
         cases=(
             evaluator.Case(
-                id=case_id,
+                id=f"issue-{issue_number}",
                 source_url=str(issue.get("url") or ""),
                 title=str(issue.get("title") or ""),
                 facts=tuple(facts),
@@ -477,6 +730,30 @@ def run_shadow(
             ),
         ),
     )
+
+
+def _run_prepared_shadow(
+    *,
+    github_repo: str,
+    issue: dict[str, Any],
+    evidence: dict[str, Any],
+    goal: str,
+    principles: list[evaluator.Principle],
+    run_root: Path,
+    main_effort: str,
+    boundary_effort: str | None,
+    client: meta.ResponsesClient | None = None,
+    extra_input: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    issue_number = int(issue["number"])
+    facts = evidence_facts(issue, evidence)
+    project = _shadow_project(
+        github_repo=github_repo,
+        issue=issue,
+        facts=facts,
+        goal=goal,
+        principles=principles,
+    )
     input_payload = {
         "schema_version": SHADOW_SCHEMA_VERSION,
         "github_repo": github_repo,
@@ -486,20 +763,19 @@ def run_shadow(
         "principles": [dataclasses.asdict(principle) for principle in principles],
         "main_effort": main_effort,
         "boundary_effort": boundary_effort,
-        "prompt_sha256": {
-            "diagnostician": hashlib.sha256(evaluator.DIAGNOSTICIAN_PROMPT.read_bytes()).hexdigest(),
-            "attacker": hashlib.sha256(evaluator.ATTACKER_PROMPT.read_bytes()).hexdigest(),
-        },
+        "prompt_sha256": prompt_hashes(),
     }
+    if extra_input:
+        input_payload.update(extra_input)
     digest = _sha256_text(_canonical_json(input_payload))
     run_dir = run_root.expanduser() / github_repo.replace("/", "-") / f"issue-{issue_number}-{digest[:16]}"
     _atomic_write_json(run_dir / "input.json", input_payload)
-    client = meta.ResponsesClient(meta.load_runtime_config())
-    high = _single_pass(client=client, project=project, effort=main_effort, run_dir=run_dir, prefix="main")
+    responses = client or meta.ResponsesClient(meta.load_runtime_config())
+    high = _single_pass(client=responses, project=project, effort=main_effort, run_dir=run_dir, prefix="main")
     boundary: dict[str, Any] | None = None
     if boundary_effort is not None and _is_boundary(high):
         boundary = _single_pass(
-            client=client,
+            client=responses,
             project=project,
             effort=boundary_effort,
             run_dir=run_dir,
@@ -525,6 +801,119 @@ def run_shadow(
     return result
 
 
+def run_shadow(
+    *,
+    repo: Path,
+    issue_number: int,
+    run_root: Path,
+    main_effort: str,
+    boundary_effort: str | None,
+    profiles_path: Path = PROFILES_PATH,
+    gh_bin: str = "gh",
+) -> dict[str, Any]:
+    repo_identity = collect_repo_identity(repo)
+    github_repo = repo_identity.get("github_repo")
+    if not github_repo:
+        raise meta.RunnerError("input", "origin 不是可识别的 GitHub repository", meta.EXIT_INPUT)
+    goal, principles = load_profile(repo.resolve(), github_repo, profiles_path)
+    issue = fetch_issue(repo.resolve(), github_repo, issue_number, gh_bin=gh_bin)
+    evidence = collect_evidence(repo.resolve(), issue, repo_identity)
+    return _run_prepared_shadow(
+        github_repo=github_repo,
+        issue=issue,
+        evidence=evidence,
+        goal=goal,
+        principles=principles,
+        run_root=run_root,
+        main_effort=main_effort,
+        boundary_effort=boundary_effort,
+    )
+
+
+def run_shadow_from_issue(
+    *,
+    repo: Path,
+    github_repo: str,
+    issue: dict[str, Any],
+    capture: dict[str, Any],
+    run_root: Path,
+    main_effort: str,
+    boundary_effort: str | None,
+    profiles_path: Path = PROFILES_PATH,
+    work_root: Path | None = None,
+    client: meta.ResponsesClient | None = None,
+) -> dict[str, Any]:
+    """Predict from immutable creation input and the exact incident commit."""
+
+    capture = validate_capture(capture, expected_repository=github_repo)
+    issue_number = issue.get("number")
+    if not isinstance(issue_number, int) or issue_number <= 0:
+        raise meta.RunnerError("input", "Issue number 非法", meta.EXIT_INPUT)
+    stable_issue = {
+        "number": issue_number,
+        "title": str(issue.get("title") or ""),
+        "body": str(issue.get("body") or "")[:MAX_ISSUE_BODY_CHARS],
+        "createdAt": issue.get("createdAt"),
+        "url": issue.get("url"),
+        "author": issue.get("author"),
+        "comments": [],
+    }
+    run_key = prediction_idempotency_key(
+        github_repo=github_repo,
+        issue_number=issue_number,
+        capture=capture,
+    )
+    incident_head = capture["incident_head"]
+    if incident_head == "unavailable":
+        raise meta.RunnerError("input", "capture 未提供事故 commit，禁止回退当前 HEAD", meta.EXIT_INPUT)
+    with incident_worktree(repo, incident_head, work_root=work_root) as checkout:
+        goal, principles = load_profile(checkout, github_repo, profiles_path)
+        checkout_identity = collect_repo_identity(checkout)
+        incident_identity = {
+            **checkout_identity,
+            "repo_path": f"{github_repo}@{incident_head}",
+            "branch": capture["branch"],
+            "dirty": capture["dirty"],
+            "captured_at": capture["captured_at"],
+            "evidence_checkout": "incident_head",
+        }
+        if capture["dirty"]:
+            incident_identity.update(
+                {
+                    "dirty_entry_count": None,
+                    "dirty_entries_preview": [],
+                    "dirty_status_sha256": None,
+                    "evidence_mode": "issue-body-and-incident-principles-only",
+                    "evidence_limitation": "未提交 dirty 现场不可重建；禁止读取文件摘录和标识符命中",
+                }
+            )
+            evidence = {
+                "repo_identity": incident_identity,
+                "file_refs": [],
+                "identifier_searches": [],
+            }
+        else:
+            evidence = collect_evidence(checkout, stable_issue, incident_identity)
+            evidence["repo_identity"]["evidence_mode"] = "clean-incident-checkout"
+        return _run_prepared_shadow(
+            github_repo=github_repo,
+            issue=stable_issue,
+            evidence=evidence,
+            goal=goal,
+            principles=principles,
+            run_root=run_root,
+            main_effort=main_effort,
+            boundary_effort=boundary_effort,
+            client=client,
+            extra_input={
+                "capture": capture,
+                "capture_sha256": contract_digest(capture),
+                "prediction_idempotency_key": run_key,
+                "historical_input_boundary": "creation body plus exact incident commit; comments and resolution excluded",
+            },
+        )
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -533,6 +922,7 @@ def _parser() -> argparse.ArgumentParser:
     shadow.add_argument("--issue", type=int, required=True)
     shadow.add_argument("--run-root", type=Path, default=DEFAULT_RUN_ROOT)
     shadow.add_argument("--profiles", type=Path, default=PROFILES_PATH)
+    shadow.add_argument("--gh-bin", default="gh")
     shadow.add_argument("--effort", choices=evaluator.ALLOWED_REASONING_EFFORTS, default="high")
     shadow.add_argument("--boundary-effort", choices=evaluator.ALLOWED_REASONING_EFFORTS, default="xhigh")
     shadow.add_argument("--no-boundary", action="store_true")
@@ -549,6 +939,7 @@ def main(argv: list[str] | None = None) -> int:
             main_effort=args.effort,
             boundary_effort=None if args.no_boundary else args.boundary_effort,
             profiles_path=args.profiles,
+            gh_bin=args.gh_bin,
         )
         print(
             json.dumps(
