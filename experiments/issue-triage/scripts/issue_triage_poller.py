@@ -54,6 +54,13 @@ def _state_path(state_root: Path) -> Path:
     return state_root.expanduser() / "state.json"
 
 
+def _secure_state_root(state_root: Path) -> Path:
+    root = state_root.expanduser()
+    root.mkdir(parents=True, exist_ok=True)
+    root.chmod(0o700)
+    return root
+
+
 def _repo_key(repo: Path) -> str:
     return str(repo.expanduser().resolve())
 
@@ -74,8 +81,7 @@ def initialize_state(
     *,
     now: str | None = None,
 ) -> dict[str, Any]:
-    state_root = state_root.expanduser()
-    state_root.mkdir(parents=True, exist_ok=True)
+    state_root = _secure_state_root(state_root)
     path = _state_path(state_root)
     if path.exists():
         return load_state(state_root, repositories)
@@ -89,6 +95,7 @@ def initialize_state(
         },
     }
     shadow._atomic_write_json(path, state)
+    path.chmod(0o600)
     return state
 
 
@@ -117,7 +124,10 @@ def load_state(state_root: Path, repositories: Iterable[Path] = ()) -> dict[str,
 
 
 def _save_state(state_root: Path, state: dict[str, Any]) -> None:
-    shadow._atomic_write_json(_state_path(state_root), state)
+    root = _secure_state_root(state_root)
+    path = _state_path(root)
+    shadow._atomic_write_json(path, state)
+    path.chmod(0o600)
 
 
 def fetch_changed_issue_refs(
@@ -397,6 +407,7 @@ def process_issue(
                 evaluation["evaluation_idempotency_key"],
             )
             shadow._atomic_write_json(path, {**evaluation, "resolution": resolution})
+            path.chmod(0o600)
             entry["evaluation"] = {**evaluation, "path": str(path), "evaluated_at": now}
         entry["status"] = "evaluated"
     elif state == "closed":
@@ -659,7 +670,10 @@ def managed_cron_line(
     command = " ".join(shlex.quote(value) for value in args)
     lock = shlex.quote(str(state_root / "cron.lock"))
     log = shlex.quote(str(state_root / "cron.log"))
-    return f"*/10 * * * * {shlex.quote(flock_bin)} -n {lock} {command} >> {log} 2>&1 {MANAGED_CRON_MARKER}"
+    return (
+        f"*/10 * * * * umask 077; {shlex.quote(flock_bin)} -n {lock} {command} "
+        f">> {log} 2>&1 {MANAGED_CRON_MARKER}"
+    )
 
 
 def install_cron(
@@ -746,6 +760,7 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    os.umask(0o077)
     args = _parser().parse_args(argv)
     try:
         repositories = _repositories(args.repo)

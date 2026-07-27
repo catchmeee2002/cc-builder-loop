@@ -343,11 +343,16 @@ class IssueTriagePollerTests(unittest.TestCase):
                 write_crontab=second_writes.append,
             )
             removed = poller.render_managed_crontab(rendered, None)
+            state_mode = (root / "state").stat().st_mode & 0o777
+            state_file_mode = (root / "state" / "state.json").stat().st_mode & 0o777
 
         self.assertTrue(first["installed"])
         self.assertIn("MAILTO=test@example.invalid", rendered)
         self.assertIn("/bin/backup", rendered)
+        self.assertIn("umask 077;", rendered)
         self.assertEqual(rendered.count(poller.MANAGED_CRON_MARKER), 1)
+        self.assertEqual(state_mode, 0o700)
+        self.assertEqual(state_file_mode, 0o600)
         self.assertEqual(second_writes, [])
         self.assertNotIn(poller.MANAGED_CRON_MARKER, removed)
         self.assertIn("/bin/backup", removed)
