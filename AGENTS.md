@@ -51,6 +51,8 @@ python3 -m unittest discover -s experiments/issue-triage/tests -p 'test_*.py'
   memory 不得替代 issue、代码、测试、契约或项目文档。
 - Builder 写代码和文档，Tester 写计划允许的测试，Reviewer 只读审查。
 - 修复按 ownership 路由；测试实现问题回到原 Tester，契约变化进入 abandon/new plan。
+- Tester/Reviewer 报出需要修复或决定的问题后，先经 `record-problems` 逐条写入 ledger；abandon
+  封存问题清单，更高 revision 用 `prior-problems` 逐条处理。旧 ledger 无清单时先显式补录。
 - Git 冲突只安全停止；runtime 不自动仲裁。
 
 # Common Pitfalls

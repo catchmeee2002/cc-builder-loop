@@ -87,7 +87,10 @@ Schema 与 dependency-free runtime parser
 字段时继续 v1 单 command 结构，保持 run、agent 和 evidence identity。
 
 `plan_revision=1` 表示首次契约。更高 revision 必须携带被替代 run id 与旧 plan digest；start 只在
-旧 run 已 abandoned、digest 匹配且 revision 增加时接受，避免把原地放宽伪装成新证据。
+旧 run 已 abandoned、digest 匹配且 revision 增加时接受，避免把原地放宽伪装成新证据。abandon
+同时把本轮逐条问题和继承问题封成唯一 snapshot；更高 revision 的 `prior-problems` 必须绑定该摘要，
+并让每个 problem id 恰好选择 `include`、`handled_elsewhere` 或 `discard`。`include` 项进入新 ledger，
+若再次 abandon 继续保留；旧 ledger 没有 snapshot 时先一次性补录，不能把缺少历史记录解释为空清单。
 
 唯一例外是显式 `预估改动级别：L1` 的纯 Markdown 文档任务。它用
 `documentation-spec` 冻结 planning-time HEAD、revision 和精确 `builder_write`，不包含
@@ -158,6 +161,9 @@ Builder 与 Tester 使用冻结基线协作：
   continuity 无效时安全停止，均不得用 fresh Reviewer 替代原身份。
 - Reviewer custom-agent 配置是终态 `pass/findings/blocked` 的唯一来源。协调器 brief 不复制或扩展
   这组值；adapter 收到缺失或非法结果时保持连续性失败，不把未知值映射成 finding 或 pass。
+- Reviewer `findings/blocked` 与 Tester `fail/target_change_required/blocked` 还必须返回结构化
+  `PROBLEM_REPORT`。协调器原样调用 `record-problems`，runtime 绑定真实 role turn；报告未登记时
+  follow-up 与 abandon 均失败。Hook 仍只解析最终结果标记，不读取或重建问题内容。
 - Tester worktree 出现未提交改动时视为尚未集成，finalize 保留现场并停止。
 
 ## Runtime 与 ledger
@@ -165,8 +171,10 @@ Builder 与 Tester 使用冻结基线协作：
 稳定入口是 `codex-builder-loop` CLI。运行状态位于启动 run 的目标 worktree 下
 `.builder-loop/codex/runs/`，不写 Codex 的受保护配置目录；Hook 从同一 Git repository 的 target、
 Builder 或 Tester worktree 出发都会发现这一个状态家。ledger 只记录计划摘要、worktree/branch、
-agent/turn 身份、候选、workspace snapshot、evidence provenance、Git 结果和事件，不保存模型推理
-或复制测试目标。
+agent/turn 身份、候选、workspace snapshot、逐条问题与跨 revision 处理决定、evidence provenance、
+Git 结果和事件，不保存模型推理或复制测试目标。问题内容由
+`schema/codex-problem-report.schema.json` 定义，计划处理由
+`schema/codex-prior-problems.schema.json` 定义，不另建 Issue 缓存或 transcript 索引。
 
 稳定 Python 入口在导入 runtime package 前设置当前解释器及子进程的 no-bytecode 条件，普通 CLI
 调用因此不会向调用方 worktree 写入 runtime `__pycache__`。显式 `py_compile` 与绕过稳定入口的
@@ -197,6 +205,10 @@ Hook 使用 Codex 提供的 `session_id` 找到唯一 active run：
   attempt；达到 `max_iterations` 后，
   当前 frozen run 不再继续 verify；每个 attempt 使用独立日志目录，历史 evidence 不被后续重跑
   覆盖。abandon 保留现场，修订方案进入新 run。
+- `record-problems` 以 run/source/source-id/key 生成稳定 id，同一报告幂等、冲突重放拒绝。
+  abandon 在改变 phase 前检查全部必须报告的角色结果，并原子封存问题 snapshot；`status`/`doctor`
+  公开缺报告来源、继承数量和 snapshot 摘要。`backfill-problems` 只允许对旧 abandoned ledger 追加
+  一次清单，完全相同内容幂等，不能覆盖已有 snapshot、plan、evidence、worktree 或 phase。
 - repository runner entry、Makefile、pytest/ruff 配置和 package manifest 等可静态识别的控制面
   会进入 runtime 保护路径；显式反转、动态 exit 和内联 control flow 被拒绝。无法静态说明的复杂
   逻辑应下沉到计划声明的受保护 wrapper。wrapper 必须在 `spec_head` 已存在、位于仓库内且为
@@ -302,7 +314,8 @@ Issue 创建快照与关闭结论分别承担实验输入和事后对照。历�
 
 finalize 完成后，Builder 只在出现多轮失败、冲突/recovery、Tester correction、Reviewer finding、
 角色或 evidence 独立性异常、用户纠正的重要前提，或计划外工程缺陷时加载按需 retrospective
-reference。复盘不重新打开 delivery gate，也不写 runtime ledger。
+reference。复盘读取最终 ledger 的问题清单和老一轮逐项处理决定，不再依赖已经离开上下文的旧角色
+文本；复盘不重新打开 delivery gate，也不写 runtime ledger。
 
 每个工程事故最终只能归属 `current_project`、`builder_loop` 或 `external_platform`。同一因果链
 跨越业务仓库与 builder-loop 时强制拆成两个原子事故；两条可以相互引用，但复现、责任和关闭条件

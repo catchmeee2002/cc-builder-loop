@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openai.local/codex-builder-loop/problem-report-v1.schema.json",
+  "title": "Codex Builder Loop Problem Report v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "problems"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "problems": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/problem"}
+    }
+  },
+  "$defs": {
+    "problem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key", "summary", "details", "owner"],
+      "properties": {
+        "key": {
+          "type": "string",
+          "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+        },
+        "summary": {"type": "string", "minLength": 1, "pattern": "\\S"},
+        "details": {"type": "string", "minLength": 1, "pattern": "\\S"},
+        "owner": {
+          "enum": [
+            "builder",
+            "tester",
+            "plan",
+            "current_project",
+            "builder_loop",
+            "external_platform"
+          ]
+        }
+      }
+    }
+  }
+}

@@ -33,6 +33,11 @@ PLAN_SCHEMA_VERSION = 3
 LEGACY_PLAN_SCHEMA_VERSION = 2
 BLACKBOX_REPORT_SCHEMA_VERSION = 2
 LEGACY_BLACKBOX_REPORT_SCHEMA_VERSION = 1
+PROBLEM_REPORT_SCHEMA_VERSION = 1
+PRIOR_PROBLEMS_SCHEMA_VERSION = 1
+PRIOR_PROBLEM_PLAN_REF_RE = re.compile(
+    r"^(?:behavior:[a-z0-9]+(?:-[a-z0-9]+)*|checklist:[1-9][0-9]*)$"
+)
 CANONICAL_PLAN_DIGEST_KIND = "canonical-v2"
 LEGACY_PLAN_DIGEST_KIND = "raw-v1"
 EXIT_PASS = 0
@@ -65,6 +70,18 @@ PUBLIC_EVIDENCE_FIELDS = {
 AGENT_RESULTS = {
     "tester": {"tests_ready", "pass", "fail", "target_change_required", "blocked"},
     "reviewer": {"pass", "findings", "blocked"},
+}
+PROBLEM_REPORT_RESULTS = {
+    "tester": {"fail", "target_change_required", "blocked"},
+    "reviewer": {"findings", "blocked"},
+}
+PROBLEM_OWNERS = {
+    "builder",
+    "tester",
+    "plan",
+    "current_project",
+    "builder_loop",
+    "external_platform",
 }
 FOLLOW_UP_PURPOSES = {
     "tester": {"author", "blackbox"},
@@ -134,6 +151,8 @@ class PlanContract:
     behavior_ids: tuple[str, ...]
     supersedes_run_id: str | None
     supersedes_plan_sha256: str | None
+    prior_problem_snapshot_sha256: str | None
+    prior_problem_items: tuple[dict[str, Any], ...]
     has_e2e_cases: bool
     e2e_case_ids: tuple[str, ...]
     e2e_cases_sha256: str | None
@@ -164,6 +183,7 @@ class PlanPreflight:
     max_iterations: int
     runner_paths: tuple[str, ...]
     workspace_intake: tuple[dict[str, Any], ...]
+    prior_problem_snapshot: dict[str, Any] | None
 
 
 def utc_now() -> str:
@@ -184,6 +204,24 @@ def sha256_text(text: str) -> str:
 
 def sha256_bytes(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
+
+
+def canonical_json(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def canonical_json_sha256(value: Any) -> str:
+    return sha256_text(canonical_json(value))
+
+
+def empty_problem_inventory() -> dict[str, Any]:
+    return {
+        "schema_version": PROBLEM_REPORT_SCHEMA_VERSION,
+        "items": [],
+        "sources": [],
+        "inherited_from": None,
+        "snapshot": None,
+    }
 
 
 def decode_plan_bytes(value: bytes, source: str) -> str:
@@ -504,6 +542,13 @@ def read_json(path: Path) -> dict[str, Any]:
     evidence = value.get("evidence")
     if isinstance(evidence, dict):
         evidence.setdefault("test_effectiveness", None)
+    inventory = value.setdefault("problem_inventory", empty_problem_inventory())
+    if isinstance(inventory, dict):
+        inventory.setdefault("schema_version", PROBLEM_REPORT_SCHEMA_VERSION)
+        inventory.setdefault("items", [])
+        inventory.setdefault("sources", [])
+        inventory.setdefault("inherited_from", None)
+        inventory.setdefault("snapshot", None)
     return value
 
 
@@ -545,6 +590,7 @@ def migrate_ledger_v1(legacy: dict[str, Any]) -> dict[str, Any]:
             "snapshot_tree": None,
         },
     )
+    ledger.setdefault("problem_inventory", empty_problem_inventory())
     plan = ledger.setdefault("plan", {})
     if isinstance(plan, dict):
         plan.setdefault(
@@ -1413,6 +1459,139 @@ def checklist_items(checklist: str) -> list[str]:
     ]
 
 
+def parse_prior_problems_marker(
+    raw_marker: str | None,
+    *,
+    plan_revision: int | None,
+    behavior_ids: Sequence[str],
+    checklist_count: int,
+    level: str,
+    allow_missing_for_legacy: bool = False,
+    errors: list[str],
+) -> tuple[str | None, tuple[dict[str, Any], ...]]:
+    if plan_revision == 1:
+        if raw_marker is not None:
+            errors.append("plan_revision 1 cannot declare prior-problems")
+        return None, ()
+    if plan_revision is None:
+        return None, ()
+    if raw_marker is None:
+        if allow_missing_for_legacy:
+            return None, ()
+        errors.append("plan_revision greater than 1 requires prior-problems")
+        return None, ()
+    try:
+        parsed = yaml_load(raw_marker)
+    except RuntimeProblem as exc:
+        errors.append(f"prior-problems is invalid: {exc}")
+        return None, ()
+    if not isinstance(parsed, dict):
+        errors.append("prior-problems must be a YAML mapping")
+        return None, ()
+    extra = sorted(set(parsed) - {"schema_version", "snapshot_sha256", "items"})
+    if extra:
+        errors.append("prior-problems has unknown fields: " + ", ".join(extra))
+    if parsed.get("schema_version") != PRIOR_PROBLEMS_SCHEMA_VERSION:
+        errors.append(
+            f"prior-problems.schema_version must be {PRIOR_PROBLEMS_SCHEMA_VERSION}"
+        )
+    raw_sha = parsed.get("snapshot_sha256")
+    snapshot_sha = (
+        raw_sha
+        if isinstance(raw_sha, str) and re.fullmatch(r"[0-9a-f]{64}", raw_sha)
+        else None
+    )
+    if snapshot_sha is None:
+        errors.append("prior-problems.snapshot_sha256 must be a 64-character SHA-256")
+    raw_items = parsed.get("items")
+    if not isinstance(raw_items, list):
+        errors.append("prior-problems.items must be a list")
+        return snapshot_sha, ()
+    normalized: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    allowed_behaviors = set(behavior_ids)
+    for index, raw in enumerate(raw_items):
+        field = f"prior-problems.items[{index}]"
+        if not isinstance(raw, dict):
+            errors.append(f"{field} must be a mapping")
+            continue
+        problem_id = raw.get("problem_id")
+        handling = raw.get("handling")
+        if not isinstance(problem_id, str) or not re.fullmatch(
+            r"[0-9a-f]{64}", problem_id
+        ):
+            errors.append(f"{field}.problem_id must be a 64-character SHA-256")
+            continue
+        if problem_id in seen:
+            errors.append(f"prior-problems contains duplicate problem id: {problem_id}")
+            continue
+        seen.add(problem_id)
+        if handling == "include":
+            expected = {"problem_id", "handling", "plan_refs"}
+            if set(raw) != expected:
+                errors.append(f"{field} include must contain only problem_id, handling, plan_refs")
+                continue
+            refs = raw.get("plan_refs")
+            if (
+                not isinstance(refs, list)
+                or not refs
+                or any(
+                    not isinstance(item, str)
+                    or not PRIOR_PROBLEM_PLAN_REF_RE.fullmatch(item)
+                    for item in refs
+                )
+            ):
+                errors.append(
+                    f"{field}.plan_refs must match behavior:<id> or checklist:<positive-index>"
+                )
+                continue
+            refs = [str(item) for item in refs]
+            if len(refs) != len(set(refs)):
+                errors.append(f"{field}.plan_refs must be unique")
+                continue
+            for ref in refs:
+                if ref.startswith("behavior:"):
+                    behavior_id = ref.split(":", 1)[1]
+                    if level == "L1" or behavior_id not in allowed_behaviors:
+                        errors.append(f"{field}.plan_refs references unknown behavior: {ref}")
+                elif ref.startswith("checklist:"):
+                    raw_index = ref.split(":", 1)[1]
+                    if not raw_index.isdigit() or not 1 <= int(raw_index) <= checklist_count:
+                        errors.append(f"{field}.plan_refs references unknown checklist item: {ref}")
+                else:
+                    errors.append(f"{field}.plan_refs has invalid reference: {ref}")
+            normalized.append(
+                {"problem_id": problem_id, "handling": handling, "plan_refs": refs}
+            )
+        elif handling == "handled_elsewhere":
+            expected = {"problem_id", "handling", "reference"}
+            reference = raw.get("reference")
+            if set(raw) != expected or not isinstance(reference, str) or not reference.strip():
+                errors.append(
+                    f"{field} handled_elsewhere requires only a non-empty reference"
+                )
+                continue
+            normalized.append(
+                {
+                    "problem_id": problem_id,
+                    "handling": handling,
+                    "reference": reference.strip(),
+                }
+            )
+        elif handling == "discard":
+            expected = {"problem_id", "handling", "reason"}
+            reason = raw.get("reason")
+            if set(raw) != expected or not isinstance(reason, str) or not reason.strip():
+                errors.append(f"{field} discard requires only a non-empty reason")
+                continue
+            normalized.append(
+                {"problem_id": problem_id, "handling": handling, "reason": reason.strip()}
+            )
+        else:
+            errors.append(f"{field}.handling is invalid")
+    return snapshot_sha, tuple(normalized)
+
+
 def is_template_placeholder(value: Any) -> bool:
     return isinstance(value, str) and bool(re.fullmatch(r"\s*<[^>]+>\s*", value))
 
@@ -1814,6 +1993,7 @@ def parse_plan(
     source: str,
     *,
     allow_legacy_v2: bool = False,
+    allow_missing_prior_problems: bool = False,
     source_sha256: str | None = None,
 ) -> PlanContract:
     raw_source_sha256 = source_sha256 or sha256_text(text)
@@ -1831,6 +2011,7 @@ def parse_plan(
     unit_spec = extract_tag(text, "unit-test-spec", required=False)
     documentation_spec = extract_tag(text, "documentation-spec", required=False)
     e2e = extract_tag(text, "e2e-cases", required=False)
+    prior_problems = extract_tag(text, "prior-problems", required=False)
     if unit_spec is None:
         if documentation_spec is None:
             raise RuntimeProblem(
@@ -1907,6 +2088,15 @@ def parse_plan(
                     "workspace-intake path is outside ownership.builder_write: "
                     + item["path"]
                 )
+        prior_problem_snapshot_sha256, prior_problem_items = parse_prior_problems_marker(
+            prior_problems,
+            plan_revision=plan_revision,
+            behavior_ids=(),
+            checklist_count=len(items),
+            level="L1",
+            allow_missing_for_legacy=allow_missing_prior_problems,
+            errors=errors,
+        )
         if errors:
             raise RuntimeProblem(
                 "documentation plan contract needs correction",
@@ -1934,6 +2124,8 @@ def parse_plan(
             behavior_ids=(),
             supersedes_run_id=supersedes_run_id,
             supersedes_plan_sha256=supersedes_plan_sha256,
+            prior_problem_snapshot_sha256=prior_problem_snapshot_sha256,
+            prior_problem_items=prior_problem_items,
             has_e2e_cases=e2e is not None,
             e2e_case_ids=(),
             e2e_cases_sha256=None,
@@ -1947,6 +2139,7 @@ def parse_plan(
             tags=tuple(
                 ["documentation-spec", "plan-checklist"]
                 + (["workspace-intake"] if workspace_intake else [])
+                + (["prior-problems"] if prior_problems is not None else [])
             ),
         )
 
@@ -2214,6 +2407,15 @@ def parse_plan(
         test_effectiveness_requirements = ()
         e2e_cases = ()
         e2e_cases_sha256 = None
+    prior_problem_snapshot_sha256, prior_problem_items = parse_prior_problems_marker(
+        prior_problems,
+        plan_revision=plan_revision,
+        behavior_ids=behavior_ids,
+        checklist_count=len(items),
+        level="L2/L3",
+        allow_missing_for_legacy=allow_missing_prior_problems,
+        errors=errors,
+    )
     if errors:
         raise RuntimeProblem(
             "plan contract needs correction",
@@ -2242,6 +2444,8 @@ def parse_plan(
         behavior_ids=tuple(behavior_ids),
         supersedes_run_id=supersedes_run_id,
         supersedes_plan_sha256=supersedes_plan_sha256,
+        prior_problem_snapshot_sha256=prior_problem_snapshot_sha256,
+        prior_problem_items=prior_problem_items,
         has_e2e_cases=e2e is not None,
         e2e_case_ids=tuple(str(item["id"]) for item in e2e_cases),
         e2e_cases_sha256=e2e_cases_sha256,
@@ -2253,6 +2457,7 @@ def parse_plan(
             ["unit-test-spec", "plan-checklist"]
             + (["e2e-cases"] if e2e is not None else [])
             + (["workspace-intake"] if workspace_intake else [])
+            + (["prior-problems"] if prior_problems is not None else [])
         ),
     )
 
@@ -2261,6 +2466,7 @@ def load_plan_file(
     path: Path,
     *,
     allow_legacy_v2: bool = False,
+    allow_missing_prior_problems: bool = False,
 ) -> tuple[str, PlanContract]:
     try:
         raw = path.read_bytes()
@@ -2274,20 +2480,26 @@ def load_plan_file(
         text,
         str(path),
         allow_legacy_v2=allow_legacy_v2,
+        allow_missing_prior_problems=allow_missing_prior_problems,
         source_sha256=sha256_bytes(raw),
     )
 
 
 def verify_plan_unchanged(ledger: dict[str, Any]) -> PlanContract:
     path = Path(str(ledger["plan"]["path"]))
-    contract_version = ledger.get("plan", {}).get("contract_schema_version")
+    plan = ledger["plan"]
+    contract_version = plan.get("contract_schema_version")
     if type(contract_version) is not int:
         contract_version = LEGACY_PLAN_SCHEMA_VERSION
+    legacy_problem_contract = (
+        "prior_problem_snapshot_sha256" not in plan
+        and "prior_problem_items" not in plan
+    )
     _, contract = load_plan_file(
         path,
         allow_legacy_v2=contract_version == LEGACY_PLAN_SCHEMA_VERSION,
+        allow_missing_prior_problems=legacy_problem_contract,
     )
-    plan = ledger["plan"]
     digest_kind = str(plan.get("digest_kind") or LEGACY_PLAN_DIGEST_KIND)
     expected = str(plan["sha256"])
     actual = (
@@ -4933,6 +5145,7 @@ def status_facts(repo: Path, ledger: dict[str, Any]) -> dict[str, Any]:
         if evidence_head(ledger, key) not in {None, builder_head}
     ]
     current_evidence = bool(builder_head) and not missing and not stale
+    problem_facts = problem_inventory_facts(ledger)
     tester_source = ledger["tester_integration"].get("source_head")
     prerequisite_publication = ledger.get("prerequisite_publication", {})
     prerequisites_ready = (
@@ -4984,6 +5197,7 @@ def status_facts(repo: Path, ledger: dict[str, Any]) -> dict[str, Any]:
         and tester_fully_integrated
         and target_continuous
         and current_evidence
+        and not problem_facts["missing_problem_sources"]
     )
     probe_desired_head = (
         desired_target_head
@@ -5018,6 +5232,19 @@ def status_facts(repo: Path, ledger: dict[str, Any]) -> dict[str, Any]:
         "prerequisites_ready": prerequisites_ready,
         "prerequisite_publication": prerequisite_publication,
         "workspace_intake": ledger.get("workspace_intake"),
+        "problem_inventory": problem_facts,
+        "pending_problem_sources": [
+            str(item.get("source_id"))
+            for item in problem_facts["missing_problem_sources"]
+        ],
+        "problem_count": problem_facts["problem_count"],
+        "inherited_problem_count": problem_facts["inherited_problem_count"],
+        "problem_snapshot_sha256": problem_facts["snapshot_sha256"],
+        "problem_ids": problem_facts["snapshot_problem_ids"],
+        "legacy_problem_snapshot_required": bool(
+            ledger.get("phase") == "abandoned"
+            and problem_facts["snapshot_sha256"] is None
+        ),
         "evidence_records": ledger.get("evidence"),
         "tester_fully_integrated": tester_fully_integrated,
         **evidence,
@@ -5099,9 +5326,9 @@ def generated_run_id(task: str, plan_sha: str) -> str:
     return ensure_run_id(f"{slug[:available]}-{stamp}-{suffix}")
 
 
-def validate_supersession(repo: Path, contract: PlanContract) -> None:
+def validate_supersession(repo: Path, contract: PlanContract) -> dict[str, Any] | None:
     if contract.plan_revision == 1:
-        return
+        return None
     run_id = contract.supersedes_run_id
     expected_sha = contract.supersedes_plan_sha256
     if run_id is None or expected_sha is None:
@@ -5150,6 +5377,46 @@ def validate_supersession(repo: Path, contract: PlanContract) -> None:
             },
             exit_code=EXIT_FAIL,
         )
+    inventory = previous.get("problem_inventory", {})
+    snapshot = inventory.get("snapshot") if isinstance(inventory, dict) else None
+    if not isinstance(snapshot, dict) or not isinstance(snapshot.get("sha256"), str):
+        raise RuntimeProblem(
+            "旧一轮没有问题清单，必须先补录后才能创建新一轮",
+            result="NEEDS_USER",
+            code="LEGACY_PROBLEM_SNAPSHOT_REQUIRED",
+            details={"run_id": run_id, "ledger": str(path)},
+            exit_code=EXIT_FAIL,
+        )
+    if contract.prior_problem_snapshot_sha256 != snapshot.get("sha256"):
+        raise RuntimeProblem(
+            "新一轮引用的问题清单与老一轮不一致",
+            result="NEEDS_USER",
+            code="PRIOR_PROBLEM_SNAPSHOT_MISMATCH",
+            details={
+                "run_id": run_id,
+                "recorded_snapshot_sha256": snapshot.get("sha256"),
+                "requested_snapshot_sha256": contract.prior_problem_snapshot_sha256,
+            },
+            exit_code=EXIT_FAIL,
+        )
+    recorded_ids = {
+        str(item.get("problem_id"))
+        for item in snapshot.get("problems", [])
+        if isinstance(item, dict) and isinstance(item.get("problem_id"), str)
+    }
+    requested_ids = {str(item.get("problem_id")) for item in contract.prior_problem_items}
+    if recorded_ids != requested_ids:
+        raise RuntimeProblem(
+            "新一轮没有逐条处理老一轮的全部问题",
+            result="NEEDS_USER",
+            code="PRIOR_PROBLEM_SET_MISMATCH",
+            details={
+                "missing_problem_ids": sorted(recorded_ids - requested_ids),
+                "unknown_problem_ids": sorted(requested_ids - recorded_ids),
+            },
+            exit_code=EXIT_FAIL,
+        )
+    return previous
 
 
 def preflight_plan(
@@ -5159,7 +5426,7 @@ def preflight_plan(
     target_branch: str | None = None,
     explicit_spec_head: str | None = None,
 ) -> PlanPreflight:
-    validate_supersession(repo, contract)
+    previous = validate_supersession(repo, contract)
     contract_spec_head = contract.spec_head or full_head(repo, "HEAD")
     if explicit_spec_head:
         resolved_explicit_head = full_head(repo, explicit_spec_head)
@@ -5254,6 +5521,11 @@ def preflight_plan(
         max_iterations=max_iterations,
         runner_paths=tuple(verification_protected_paths(commands)),
         workspace_intake=tuple(workspace_entries),
+        prior_problem_snapshot=(
+            previous.get("problem_inventory", {}).get("snapshot")
+            if isinstance(previous, dict)
+            else None
+        ),
     )
 
 
@@ -5400,6 +5672,22 @@ def cmd_start_locked(args: argparse.Namespace, repo: Path) -> tuple[dict[str, An
         raise
 
     now = utc_now()
+    prior_snapshot = preflight.prior_problem_snapshot
+    prior_decisions = [dict(item) for item in contract.prior_problem_items]
+    prior_problem_by_id = {
+        str(item.get("problem_id")): dict(item)
+        for item in (
+            prior_snapshot.get("problems", [])
+            if isinstance(prior_snapshot, dict)
+            else []
+        )
+        if isinstance(item, dict) and isinstance(item.get("problem_id"), str)
+    }
+    inherited_problems = [
+        prior_problem_by_id[str(item["problem_id"])]
+        for item in prior_decisions
+        if item.get("handling") == "include"
+    ]
     ledger: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "runtime_identity": capture_runtime_identity(),
@@ -5433,6 +5721,8 @@ def cmd_start_locked(args: argparse.Namespace, repo: Path) -> tuple[dict[str, An
             "behavior_ids": list(contract.behavior_ids),
             "supersedes_run_id": contract.supersedes_run_id,
             "supersedes_plan_sha256": contract.supersedes_plan_sha256,
+            "prior_problem_snapshot_sha256": contract.prior_problem_snapshot_sha256,
+            "prior_problem_items": prior_decisions,
             "has_e2e_cases": contract.has_e2e_cases,
             "e2e_case_ids": list(contract.e2e_case_ids),
             "e2e_cases_sha256": contract.e2e_cases_sha256,
@@ -5513,6 +5803,21 @@ def cmd_start_locked(args: argparse.Namespace, repo: Path) -> tuple[dict[str, An
             "entries": [dict(item) for item in preflight.workspace_intake],
             "snapshot_head": snapshot_head if preflight.workspace_intake else None,
             "snapshot_tree": snapshot_tree if preflight.workspace_intake else None,
+        },
+        "problem_inventory": {
+            "schema_version": PROBLEM_REPORT_SCHEMA_VERSION,
+            "items": inherited_problems,
+            "sources": [],
+            "inherited_from": (
+                {
+                    "run_id": contract.supersedes_run_id,
+                    "snapshot_sha256": contract.prior_problem_snapshot_sha256,
+                    "decisions": prior_decisions,
+                }
+                if contract.plan_revision and contract.plan_revision > 1
+                else None
+            ),
+            "snapshot": None,
         },
         "finalize_intent": None,
         "final_head": None,
@@ -6305,6 +6610,474 @@ def read_json_input(path_value: str) -> dict[str, Any]:
             exit_code=EXIT_FAIL,
         )
     return value
+
+
+def read_problem_manifest(path_value: str, *, allow_empty: bool) -> dict[str, Any]:
+    if path_value == "-":
+        raw = sys.stdin.read()
+    else:
+        path = Path(path_value).expanduser().resolve()
+        try:
+            raw = path.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise RuntimeProblem(
+                f"cannot read problem report: {exc}",
+                code="PROBLEM_REPORT_READ_ERROR",
+            ) from exc
+    try:
+        value = json.loads(raw, parse_constant=reject_nonstandard_json_number)
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise RuntimeProblem(
+            f"problem report is not valid JSON: {exc}",
+            result="NEEDS_USER",
+            code="PROBLEM_REPORT_INVALID",
+            details={"errors": [f"invalid JSON: {exc}"]},
+            exit_code=EXIT_FAIL,
+        ) from exc
+    errors: list[str] = []
+    if not isinstance(value, dict):
+        errors.append("problem report must be a JSON object")
+        value = {}
+    if set(value) != {"schema_version", "problems"}:
+        errors.append("problem report must contain only schema_version and problems")
+    if value.get("schema_version") != PROBLEM_REPORT_SCHEMA_VERSION:
+        errors.append(f"schema_version must be {PROBLEM_REPORT_SCHEMA_VERSION}")
+    raw_problems = value.get("problems")
+    if not isinstance(raw_problems, list) or (not allow_empty and not raw_problems):
+        errors.append(
+            "problems must be a list" + ("" if allow_empty else " with at least one item")
+        )
+        raw_problems = []
+    normalized: list[dict[str, str]] = []
+    keys: set[str] = set()
+    for index, item in enumerate(raw_problems):
+        field = f"problems[{index}]"
+        if not isinstance(item, dict):
+            errors.append(f"{field} must be an object")
+            continue
+        expected = {"key", "summary", "details", "owner"}
+        if set(item) != expected:
+            errors.append(f"{field} must contain only key, summary, details, owner")
+            continue
+        key = item.get("key")
+        summary = item.get("summary")
+        details = item.get("details")
+        owner = item.get("owner")
+        if not isinstance(key, str) or not re.fullmatch(
+            r"[a-z0-9]+(?:-[a-z0-9]+)*", key
+        ):
+            errors.append(f"{field}.key must be kebab-case")
+            continue
+        if key in keys:
+            errors.append(f"problem keys must be unique: {key}")
+            continue
+        keys.add(key)
+        if not isinstance(summary, str) or not summary.strip():
+            errors.append(f"{field}.summary must be non-empty")
+        if not isinstance(details, str) or not details.strip():
+            errors.append(f"{field}.details must be non-empty")
+        if owner not in PROBLEM_OWNERS:
+            errors.append(f"{field}.owner is invalid")
+        if (
+            isinstance(summary, str)
+            and summary.strip()
+            and isinstance(details, str)
+            and details.strip()
+            and owner in PROBLEM_OWNERS
+        ):
+            normalized.append(
+                {
+                    "key": key,
+                    "summary": summary.strip(),
+                    "details": details.strip(),
+                    "owner": str(owner),
+                }
+            )
+    if errors:
+        raise RuntimeProblem(
+            "problem report does not match codex-problem-report-v1",
+            result="NEEDS_USER",
+            code="PROBLEM_REPORT_INVALID",
+            details={"errors": errors},
+            exit_code=EXIT_FAIL,
+        )
+    return {
+        "schema_version": PROBLEM_REPORT_SCHEMA_VERSION,
+        "problems": sorted(normalized, key=lambda item: item["key"]),
+    }
+
+
+def completed_problem_source(
+    ledger: Mapping[str, Any], role: str, source_id: str
+) -> dict[str, Any] | None:
+    for event in reversed(list(ledger.get("events", []))):
+        if not isinstance(event, dict) or event.get("type") != "agent_event":
+            continue
+        facts = event.get("facts")
+        if (
+            isinstance(facts, dict)
+            and facts.get("role") == role
+            and facts.get("turn_id") == source_id
+            and facts.get("event") == "idle"
+            and facts.get("result") in PROBLEM_REPORT_RESULTS.get(role, set())
+        ):
+            return dict(facts)
+    return None
+
+
+def problem_inventory(ledger: dict[str, Any]) -> dict[str, Any]:
+    value = ledger.setdefault("problem_inventory", empty_problem_inventory())
+    if not isinstance(value, dict):
+        raise RuntimeProblem("problem inventory is invalid", code="LEDGER_SCHEMA_ERROR")
+    return value
+
+
+def missing_problem_sources(ledger: Mapping[str, Any]) -> list[dict[str, Any]]:
+    inventory = ledger.get("problem_inventory", {})
+    raw_sources = inventory.get("sources", []) if isinstance(inventory, dict) else []
+    recorded = {
+        (str(item.get("source")), str(item.get("source_id")))
+        for item in raw_sources
+        if isinstance(item, dict) and item.get("source_id")
+    }
+    missing: list[dict[str, Any]] = []
+    for event in ledger.get("events", []):
+        if not isinstance(event, dict) or event.get("type") != "agent_event":
+            continue
+        facts = event.get("facts")
+        if not isinstance(facts, dict):
+            continue
+        role = str(facts.get("role") or "")
+        result = facts.get("result")
+        source_id = str(facts.get("turn_id") or "")
+        if (
+            facts.get("event") == "idle"
+            and result in PROBLEM_REPORT_RESULTS.get(role, set())
+            and (role, source_id) not in recorded
+        ):
+            missing.append(
+                {
+                    "source": role,
+                    "source_id": source_id,
+                    "agent_id": str(facts.get("agent_id") or ""),
+                    "result": result,
+                }
+            )
+    return missing
+
+
+def require_problem_sources_recorded(ledger: Mapping[str, Any]) -> None:
+    missing = missing_problem_sources(ledger)
+    if missing:
+        raise RuntimeProblem(
+            "有角色已经报出问题，但逐条问题尚未写入问题清单",
+            result="NEEDS_USER",
+            code="PROBLEM_REPORT_REQUIRED",
+            details={"missing_problem_sources": missing},
+            exit_code=EXIT_FAIL,
+        )
+
+
+def problem_snapshot_value(
+    ledger: Mapping[str, Any], problems: Sequence[Mapping[str, Any]]
+) -> dict[str, Any]:
+    payload = {
+        "schema_version": PROBLEM_REPORT_SCHEMA_VERSION,
+        "run_id": str(ledger.get("run_id")),
+        "problems": [dict(item) for item in problems],
+    }
+    return {
+        **payload,
+        "sha256": canonical_json_sha256(payload),
+        "problem_ids": [str(item["problem_id"]) for item in payload["problems"]],
+        "sealed_at": utc_now(),
+    }
+
+
+def seal_problem_snapshot(
+    ledger: dict[str, Any], *, backfilled: bool, manifest_sha256: str | None = None
+) -> dict[str, Any]:
+    inventory = problem_inventory(ledger)
+    existing = inventory.get("snapshot")
+    if isinstance(existing, dict):
+        return existing
+    snapshot = problem_snapshot_value(ledger, inventory.get("items", []))
+    snapshot["backfilled"] = backfilled
+    snapshot["manifest_sha256"] = manifest_sha256
+    inventory["snapshot"] = snapshot
+    append_event(
+        ledger,
+        "problem_snapshot_sealed",
+        {
+            "sha256": snapshot["sha256"],
+            "problem_ids": snapshot["problem_ids"],
+            "backfilled": backfilled,
+        },
+    )
+    return snapshot
+
+
+def problem_inventory_facts(ledger: Mapping[str, Any]) -> dict[str, Any]:
+    inventory = ledger.get("problem_inventory", {})
+    items = inventory.get("items", []) if isinstance(inventory, dict) else []
+    inherited = inventory.get("inherited_from") if isinstance(inventory, dict) else None
+    snapshot = inventory.get("snapshot") if isinstance(inventory, dict) else None
+    return {
+        "problem_count": len(items) if isinstance(items, list) else 0,
+        "inherited_problem_count": (
+            len(
+                [
+                    item
+                    for item in items
+                    if isinstance(item, dict)
+                    and item.get("origin_run_id") != ledger.get("run_id")
+                ]
+            )
+            if isinstance(items, list)
+            else 0
+        ),
+        "missing_problem_sources": missing_problem_sources(ledger),
+        "inherited_from": inherited,
+        "snapshot_sha256": snapshot.get("sha256") if isinstance(snapshot, dict) else None,
+        "snapshot_problem_ids": (
+            snapshot.get("problem_ids", []) if isinstance(snapshot, dict) else []
+        ),
+    }
+
+
+def problem_records_for_manifest(
+    ledger: Mapping[str, Any],
+    *,
+    source: str,
+    source_id: str,
+    manifest: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    for item in manifest.get("problems", []):
+        key = str(item["key"])
+        problem_id = sha256_text(
+            "\0".join(
+                [
+                    str(ledger.get("run_id")),
+                    source,
+                    source_id,
+                    key,
+                ]
+            )
+        )
+        records.append(
+            {
+                "problem_id": problem_id,
+                "key": key,
+                "summary": str(item["summary"]),
+                "details": str(item["details"]),
+                "owner": str(item["owner"]),
+                "origin_run_id": str(ledger.get("run_id")),
+                "source": source,
+                "source_id": source_id,
+            }
+        )
+    return records
+
+
+def cmd_record_problems(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
+    manifest = read_problem_manifest(str(args.manifest), allow_empty=False)
+    manifest_sha256 = canonical_json_sha256(manifest)
+    repo, run_id, _ = resolve_run_selector(args.repo, args.run)
+    source = str(args.source)
+    source_id = str(args.source_id).strip()
+    if not source_id or len(source_id) > 128:
+        raise RuntimeProblem(
+            "problem source id must be 1-128 characters",
+            result="NEEDS_USER",
+            code="PROBLEM_SOURCE_INVALID",
+            exit_code=EXIT_FAIL,
+        )
+    with locked_run(repo, run_id) as ledger:
+        reject_during_finalize_intent(ledger, "record-problems")
+        if ledger.get("phase") not in ACTIVE_PHASES:
+            raise RuntimeProblem(
+                "problem reports can only be recorded before a run becomes terminal",
+                result="NEEDS_USER",
+                code="PHASE_NOT_ACTIVE",
+                details={"phase": ledger.get("phase")},
+                exit_code=EXIT_FAIL,
+            )
+        source_result: str | None = None
+        if source in {"tester", "reviewer"}:
+            fact = completed_problem_source(ledger, source, source_id)
+            if fact is None:
+                raise RuntimeProblem(
+                    "问题报告没有绑定该角色已完成的问题结果",
+                    result="NEEDS_USER",
+                    code="PROBLEM_SOURCE_INVALID",
+                    details={"source": source, "source_id": source_id},
+                    exit_code=EXIT_FAIL,
+                )
+            source_result = str(fact.get("result"))
+        inventory = problem_inventory(ledger)
+        if isinstance(inventory.get("snapshot"), dict):
+            raise RuntimeProblem(
+                "sealed problem snapshot cannot accept new reports",
+                result="NEEDS_USER",
+                code="PROBLEM_SNAPSHOT_SEALED",
+                exit_code=EXIT_FAIL,
+            )
+        for recorded in inventory.get("sources", []):
+            if not isinstance(recorded, dict):
+                continue
+            same_source = (
+                recorded.get("source") == source
+                and recorded.get("source_id") == source_id
+            )
+            if same_source:
+                if recorded.get("manifest_sha256") == manifest_sha256:
+                    return {
+                        "status": "NOOP",
+                        "message": "同一来源的问题已经写入问题清单",
+                        "run_id": run_id,
+                        "source": source,
+                        "source_id": source_id,
+                        "manifest_sha256": manifest_sha256,
+                        "problem_ids": recorded.get("problem_ids", []),
+                    }, EXIT_PASS
+                raise RuntimeProblem(
+                    "同一来源不能改写成另一份问题报告",
+                    result="NEEDS_USER",
+                    code="PROBLEM_REPORT_CONFLICT",
+                    details={
+                        "source": source,
+                        "source_id": source_id,
+                        "recorded_manifest_sha256": recorded.get("manifest_sha256"),
+                        "incoming_manifest_sha256": manifest_sha256,
+                    },
+                    exit_code=EXIT_FAIL,
+                )
+        records = problem_records_for_manifest(
+            ledger,
+            source=source,
+            source_id=source_id,
+            manifest=manifest,
+        )
+        existing = {
+            str(item.get("problem_id")): item
+            for item in inventory.get("items", [])
+            if isinstance(item, dict)
+        }
+        for record in records:
+            current = existing.get(record["problem_id"])
+            if current is not None and current != record:
+                raise RuntimeProblem(
+                    "problem id collides with different recorded content",
+                    code="PROBLEM_REPORT_CONFLICT",
+                    details={"problem_id": record["problem_id"]},
+                )
+            if current is None:
+                inventory.setdefault("items", []).append(record)
+        source_record = {
+            "source": source,
+            "source_id": source_id,
+            "result": source_result,
+            "manifest_sha256": manifest_sha256,
+            "problem_ids": [item["problem_id"] for item in records],
+            "recorded_at": utc_now(),
+        }
+        inventory.setdefault("sources", []).append(source_record)
+        append_event(ledger, "problems_recorded", source_record)
+        save_ledger(repo, ledger)
+        return {
+            "status": "READY",
+            "message": "逐条问题已写入当前 run 的问题清单",
+            "run_id": run_id,
+            "source": source,
+            "source_id": source_id,
+            "manifest_sha256": manifest_sha256,
+            "problem_ids": source_record["problem_ids"],
+            "problem_count": len(records),
+        }, EXIT_PASS
+
+
+def cmd_backfill_problems(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
+    manifest = read_problem_manifest(str(args.manifest), allow_empty=True)
+    manifest_sha256 = canonical_json_sha256(manifest)
+    repo, run_id, _ = resolve_run_selector(args.repo, args.run)
+    with locked_run(repo, run_id) as ledger:
+        if ledger.get("phase") != "abandoned":
+            raise RuntimeProblem(
+                "旧问题补录只适用于已经作废的 run",
+                result="NEEDS_USER",
+                code="PROBLEM_BACKFILL_NOT_ALLOWED",
+                details={"phase": ledger.get("phase")},
+                exit_code=EXIT_FAIL,
+            )
+        inventory = problem_inventory(ledger)
+        existing_snapshot = inventory.get("snapshot")
+        if isinstance(existing_snapshot, dict):
+            if (
+                existing_snapshot.get("backfilled") is True
+                and existing_snapshot.get("manifest_sha256") == manifest_sha256
+            ):
+                return {
+                    "status": "NOOP",
+                    "message": "旧一轮的问题清单已经按同一内容补录",
+                    "run_id": run_id,
+                    "problem_snapshot_sha256": existing_snapshot.get("sha256"),
+                    "problem_ids": existing_snapshot.get("problem_ids", []),
+                    "problem_count": len(existing_snapshot.get("problem_ids", [])),
+                }, EXIT_PASS
+            raise RuntimeProblem(
+                "已经封存的问题清单不能被补录覆盖",
+                result="NEEDS_USER",
+                code="PROBLEM_BACKFILL_CONFLICT",
+                details={"snapshot_sha256": existing_snapshot.get("sha256")},
+                exit_code=EXIT_FAIL,
+            )
+        if inventory.get("items") or inventory.get("sources"):
+            raise RuntimeProblem(
+                "旧 ledger 已含未封存的问题事实，不能用补录覆盖",
+                result="NEEDS_USER",
+                code="PROBLEM_BACKFILL_CONFLICT",
+                exit_code=EXIT_FAIL,
+            )
+        records = problem_records_for_manifest(
+            ledger,
+            source="coordinator",
+            source_id="legacy-backfill",
+            manifest=manifest,
+        )
+        inventory["items"] = records
+        inventory["sources"] = [
+            {
+                "source": "coordinator",
+                "source_id": "legacy-backfill",
+                "result": None,
+                "manifest_sha256": manifest_sha256,
+                "problem_ids": [item["problem_id"] for item in records],
+                "recorded_at": utc_now(),
+            }
+        ]
+        snapshot = seal_problem_snapshot(
+            ledger, backfilled=True, manifest_sha256=manifest_sha256
+        )
+        append_event(
+            ledger,
+            "legacy_problems_backfilled",
+            {
+                "manifest_sha256": manifest_sha256,
+                "snapshot_sha256": snapshot["sha256"],
+                "problem_ids": snapshot["problem_ids"],
+            },
+        )
+        save_ledger(repo, ledger)
+        return {
+            "status": "READY",
+            "message": "旧一轮的问题清单已补录并封存",
+            "run_id": run_id,
+            "manifest_sha256": manifest_sha256,
+            "problem_snapshot_sha256": snapshot["sha256"],
+            "problem_ids": snapshot["problem_ids"],
+            "problem_count": len(records),
+        }, EXIT_PASS
 
 
 def json_schema_integer(value: Any) -> int | None:
@@ -9323,6 +10096,7 @@ def cmd_prepare_follow_up(args: argparse.Namespace) -> tuple[dict[str, Any], int
                 details={"phase": ledger.get("phase")},
                 exit_code=EXIT_FAIL,
             )
+        require_problem_sources_recorded(ledger)
         current = ledger.setdefault("agents", {}).get(role)
         if not isinstance(current, dict) or current.get("event") != "idle":
             raise RuntimeProblem(
@@ -11379,6 +12153,7 @@ def cmd_abandon(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
     repo, run_id, _ = resolve_run_selector(args.repo, args.run)
     with locked_run(repo, run_id) as ledger:
         if ledger["phase"] == "abandoned":
+            snapshot = problem_inventory(ledger).get("snapshot")
             return {
                 "status": "COMPLETE",
                 "message": "run was already abandoned",
@@ -11386,6 +12161,17 @@ def cmd_abandon(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                 "phase": "abandoned",
                 "worktrees": ledger["worktrees"],
                 "worktrees_preserved": True,
+                "problem_snapshot_sha256": (
+                    snapshot.get("sha256") if isinstance(snapshot, dict) else None
+                ),
+                "problem_ids": (
+                    snapshot.get("problem_ids", []) if isinstance(snapshot, dict) else []
+                ),
+                "problem_count": (
+                    len(snapshot.get("problem_ids", []))
+                    if isinstance(snapshot, dict)
+                    else 0
+                ),
             }, EXIT_PASS
         if ledger["phase"] in {"finalized", "finalized_cleanup"}:
             raise RuntimeProblem(
@@ -11408,6 +12194,8 @@ def cmd_abandon(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                     details={"target_head": live_target, "finalize_intent": intent},
                     exit_code=EXIT_FAIL,
                 )
+        require_problem_sources_recorded(ledger)
+        snapshot = seal_problem_snapshot(ledger, backfilled=False)
         previous = str(ledger["phase"])
         ledger["phase"] = "abandoned"
         append_event(
@@ -11429,6 +12217,9 @@ def cmd_abandon(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
             "phase": "abandoned",
             "worktrees": ledger["worktrees"],
             "worktrees_preserved": True,
+            "problem_snapshot_sha256": snapshot["sha256"],
+            "problem_ids": snapshot["problem_ids"],
+            "problem_count": len(snapshot["problem_ids"]),
         }, EXIT_PASS
 
 
@@ -11525,6 +12316,7 @@ def _doctor_ledgers(repo: Path) -> tuple[list[dict[str, Any]], list[dict[str, An
                             "path": raw_role_path,
                         }
                     )
+            problem_facts = problem_inventory_facts(ledger)
             reports.append(
                 {
                     "run_id": run_id,
@@ -11537,6 +12329,23 @@ def _doctor_ledgers(repo: Path) -> tuple[list[dict[str, Any]], list[dict[str, An
                     "evidence": ledger.get("evidence"),
                     "finalize_intent": ledger.get("finalize_intent"),
                     "verification_attempts": verification_attempt_count(ledger),
+                    "problem_inventory": problem_facts,
+                    "pending_problem_sources": [
+                        str(item.get("source_id"))
+                        for item in problem_facts["missing_problem_sources"]
+                    ],
+                    "problem_count": problem_facts["problem_count"],
+                    "inherited_problem_count": problem_facts[
+                        "inherited_problem_count"
+                    ],
+                    "problem_snapshot_sha256": problem_facts["snapshot_sha256"],
+                    "problem_ids": problem_facts["snapshot_problem_ids"],
+                    "legacy_problem_snapshot_required": bool(
+                        ledger.get("phase") == "abandoned"
+                        and not isinstance(
+                            ledger.get("problem_inventory", {}).get("snapshot"), dict
+                        )
+                    ),
                 }
             )
         except (KeyError, RuntimeProblem) as exc:
@@ -11746,6 +12555,36 @@ def build_parser() -> argparse.ArgumentParser:
     evidence.add_argument("--agent-id", required=True)
     evidence.add_argument("--details")
     evidence.set_defaults(handler=cmd_record_evidence)
+
+    record_problems = subparsers.add_parser("record-problems")
+    record_problems.add_argument("--repo", default=".")
+    record_problems.add_argument("--run", required=True)
+    record_problems.add_argument(
+        "--source", choices=["tester", "reviewer", "coordinator"], required=True
+    )
+    record_problems.add_argument("--source-id", required=True)
+    record_problems.add_argument(
+        "--manifest",
+        required=True,
+        help=(
+            "JSON matching schema/codex-problem-report.schema.json; "
+            "use - to read stdin"
+        ),
+    )
+    record_problems.set_defaults(handler=cmd_record_problems)
+
+    backfill_problems = subparsers.add_parser("backfill-problems")
+    backfill_problems.add_argument("--repo", default=".")
+    backfill_problems.add_argument("--run", required=True)
+    backfill_problems.add_argument(
+        "--manifest",
+        required=True,
+        help=(
+            "JSON matching schema/codex-problem-report.schema.json; "
+            "use - to read stdin"
+        ),
+    )
+    backfill_problems.set_defaults(handler=cmd_backfill_problems)
 
     prepare_follow_up = subparsers.add_parser("prepare-follow-up")
     prepare_follow_up.add_argument("--repo", default=".")

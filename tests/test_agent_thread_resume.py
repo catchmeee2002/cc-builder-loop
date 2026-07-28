@@ -14,6 +14,8 @@ from harness import (
     head,
     init_repo,
     plan_markdown,
+    problem_report,
+    record_problems,
     run_cli,
     run_process,
     start_run,
@@ -345,6 +347,23 @@ class AgentThreadResumeContractTest(unittest.TestCase):
         )
         assert_status(replay, "NOOP", rc=0)
         self.assertEqual(replay.data.get("code"), "STALE_AGENT_TURN")
+        assert_status(
+            record_problems(
+                run_path,
+                source="tester",
+                source_id="turn-2",
+                manifest=problem_report(
+                    {
+                        "key": "tester-turn-failed",
+                        "summary": "Tester turn failed",
+                        "details": "The completed Tester turn requires author follow-up.",
+                        "owner": "tester",
+                    }
+                ),
+            ),
+            "READY",
+            rc=0,
+        )
         prepared = run_cli(
             "prepare-follow-up",
             "--run",

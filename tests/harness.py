@@ -434,6 +434,130 @@ def load_ledger(run_path: Path) -> dict[str, Any]:
     return data
 
 
+def problem_report(*problems: Mapping[str, str]) -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "problems": [dict(problem) for problem in problems],
+    }
+
+
+def record_problems(
+    run_path: Path,
+    *,
+    source: str,
+    source_id: str,
+    manifest: Mapping[str, Any],
+) -> ProcessResult:
+    return run_cli(
+        "record-problems",
+        "--run",
+        run_path,
+        "--source",
+        source,
+        "--source-id",
+        source_id,
+        "--manifest",
+        "-",
+        input_text=json.dumps(manifest, ensure_ascii=False),
+    )
+
+
+def problem_snapshot(
+    run_path: Path,
+    command_summary: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    inventory = load_ledger(run_path).get("problem_inventory")
+    snapshot = inventory.get("snapshot") if isinstance(inventory, dict) else None
+    if not isinstance(snapshot, dict):
+        raise AssertionError(f"problem snapshot missing from ledger: {run_path}")
+    ids = snapshot.get("problem_ids")
+    if ids is None:
+        ids = [
+            item.get("problem_id")
+            for item in snapshot.get("problems", [])
+            if isinstance(item, dict)
+        ]
+    if not isinstance(ids, list) or not all(isinstance(item, str) for item in ids):
+        raise AssertionError(f"problem snapshot ids invalid: {snapshot!r}")
+    digest = snapshot.get("snapshot_sha256") or snapshot.get("sha256")
+    if not isinstance(digest, str):
+        raise AssertionError(f"problem snapshot digest invalid: {snapshot!r}")
+    normalized = {
+        **snapshot,
+        "snapshot_sha256": digest,
+        "problem_ids": ids,
+    }
+    if command_summary is not None:
+        if "problem_snapshot" in command_summary:
+            raise AssertionError(
+                f"command returned private snapshot body: {command_summary!r}"
+            )
+        expected = {
+            "problem_snapshot_sha256": digest,
+            "problem_ids": ids,
+            "problem_count": len(ids),
+        }
+        actual = {key: command_summary.get(key) for key in expected}
+        if actual != expected:
+            raise AssertionError(
+                f"problem snapshot summary mismatch: actual={actual!r} expected={expected!r}"
+            )
+    return normalized
+
+
+def revised_plan_with_prior_problems(
+    text: str,
+    *,
+    supersedes_run_id: str,
+    supersedes_plan_sha256: str,
+    snapshot_sha256: str,
+    items: list[Mapping[str, Any]],
+) -> str:
+    text = text.replace(
+        "plan_revision: 1",
+        "plan_revision: 2\n"
+        "supersedes:\n"
+        f'  run_id: {json.dumps(supersedes_run_id)}\n'
+        f'  plan_sha256: {json.dumps(supersedes_plan_sha256)}',
+        1,
+    )
+    marker = [
+        "<!-- prior-problems -->",
+        "schema_version: 1",
+        f"snapshot_sha256: {json.dumps(snapshot_sha256)}",
+    ]
+    if not items:
+        marker.append("items: []")
+    else:
+        marker.append("items:")
+        for item in items:
+            marker.extend(
+                [
+                    f"  - problem_id: {json.dumps(item['problem_id'])}",
+                    f"    handling: {item['handling']}",
+                ]
+            )
+            if "plan_refs" in item:
+                marker.append(
+                    "    plan_refs: "
+                    + json.dumps(item["plan_refs"], ensure_ascii=False)
+                )
+            if "reference" in item:
+                marker.append(
+                    "    reference: "
+                    + json.dumps(item["reference"], ensure_ascii=False)
+                )
+            if "reason" in item:
+                marker.append(
+                    "    reason: " + json.dumps(item["reason"], ensure_ascii=False)
+                )
+    marker.extend(["<!-- /prior-problems -->", ""])
+    anchor = "<!-- plan-checklist -->"
+    if anchor not in text:
+        raise AssertionError("plan checklist marker missing")
+    return text.replace(anchor, "\n".join(marker) + anchor, 1)
+
+
 def assert_ledger_schema(run_path: Path) -> None:
     from jsonschema import Draft202012Validator, FormatChecker
 

@@ -27,6 +27,11 @@ phase=author：
    TESTER_RESULT: target_change_required
    TESTER_RESULT: blocked
 
+返回 `fail`、`target_change_required` 或 `blocked` 时，在最终标记前另行输出唯一
+`PROBLEM_REPORT` JSON，严格符合 `schema/codex-problem-report.schema.json`，逐条写清 `key`、
+`summary`、`details` 和 owner。不要把多个独立问题压成一条，也不要在 `tests_ready` 或 `pass` 时
+伪造空报告。主线程会把该 JSON 原样交给 runtime；本 agent 不直接写 ledger。
+
 主线程以同一 thread 请求 author correction 时，仍遵守上述边界。只修冻结目标不变的
 Tester-owned 测试或测试支持实现；不得借 correction 放宽断言、改变目标或触碰 Builder-owned
 路径。重新提交并返回新的 `tests_ready`，由主线程再次集成。
@@ -47,4 +52,7 @@ phase=blackbox：
    TESTER_RESULT: fail
    TESTER_RESULT: target_change_required
    TESTER_RESULT: blocked
+
+本 phase 返回 `fail`、`target_change_required` 或 `blocked` 时，同样必须先输出上述唯一、非空的
+`PROBLEM_REPORT` JSON，再输出最终 `TESTER_RESULT`。
 """

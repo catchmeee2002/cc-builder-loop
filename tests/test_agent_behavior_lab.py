@@ -85,6 +85,12 @@ class AgentBehaviorLabTest(unittest.TestCase):
             suite = prepared[0]
             requests = suite["requests"]
             self.assertEqual(len(requests), len(scenario_ids))
+            current_roles = {
+                "builder-current": "skills/builder/SKILL.md",
+                "reviewer-current": "agents/reviewer.toml",
+                "tester-current": "agents/tester.toml",
+            }
+            observed_current_roles: dict[str, str] = {}
             for request in requests:
                 source = request["request"]["instruction_source"]
                 source_path = ROOT / source["path"]
@@ -94,6 +100,9 @@ class AgentBehaviorLabTest(unittest.TestCase):
                 )
                 self.assertRegex(request["input_digest"], r"^[0-9a-f]{64}$")
                 self.assertRegex(request["variant_id"], r"^[a-z0-9-]+$")
+                if request["variant_id"] in current_roles:
+                    observed_current_roles[request["variant_id"]] = source["path"]
+            self.assertEqual(observed_current_roles, current_roles)
 
             score_input = {
                 "schema_version": 1,

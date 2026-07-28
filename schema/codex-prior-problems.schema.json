@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openai.local/codex-builder-loop/prior-problems-v1.schema.json",
+  "title": "Codex Builder Loop Prior Problems v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "snapshot_sha256", "items"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "snapshot_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "items": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/item"}
+    }
+  },
+  "$defs": {
+    "problemId": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "planRef": {
+      "type": "string",
+      "pattern": "^(?:behavior:[a-z0-9]+(?:-[a-z0-9]+)*|checklist:[1-9][0-9]*)$"
+    },
+    "item": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["problem_id", "handling", "plan_refs"],
+          "properties": {
+            "problem_id": {"$ref": "#/$defs/problemId"},
+            "handling": {"const": "include"},
+            "plan_refs": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {"$ref": "#/$defs/planRef"}
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["problem_id", "handling", "reference"],
+          "properties": {
+            "problem_id": {"$ref": "#/$defs/problemId"},
+            "handling": {"const": "handled_elsewhere"},
+            "reference": {"type": "string", "minLength": 1, "pattern": "\\S"}
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["problem_id", "handling", "reason"],
+          "properties": {
+            "problem_id": {"$ref": "#/$defs/problemId"},
+            "handling": {"const": "discard"},
+            "reason": {"type": "string", "minLength": 1, "pattern": "\\S"}
+          }
+        }
+      ]
+    }
+  }
+}

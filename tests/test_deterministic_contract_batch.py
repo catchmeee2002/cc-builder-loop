@@ -27,6 +27,8 @@ from harness import (
     l1_plan_markdown,
     load_ledger,
     plan_markdown,
+    problem_report,
+    record_problems,
     run_cli,
     start_agent_turn,
     start_run,
@@ -1064,6 +1066,23 @@ cases:
             env={"BUILDER_LOOP_HOOK_EVENT": "1"},
         )
         assert_status(findings, "READY", rc=0)
+        assert_status(
+            record_problems(
+                run_path,
+                source="reviewer",
+                source_id=findings_turn,
+                manifest=problem_report(
+                    {
+                        "key": "reviewer-continuity-finding",
+                        "summary": "Reviewer requested follow-up",
+                        "details": "The deterministic Reviewer fixture has one outstanding finding.",
+                        "owner": "builder",
+                    }
+                ),
+            ),
+            "READY",
+            rc=0,
+        )
         prepared = run_cli(
             "prepare-follow-up",
             "--run",

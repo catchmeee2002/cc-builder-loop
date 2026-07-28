@@ -16,6 +16,8 @@ description: 在 Codex Plan mode（/plan）中为代码或文档变更生成 bui
    `${CODEX_HOME:-$HOME/.codex}/builder-loop/doc-policy.md`。政策不可读时停止文档方案，
    不自行发明替代规则。
 4. 只在答案会实质改变方案时使用 `request_user_input`。不要用纯文本问题替代。
+   选项卡面向用户只说可观察行为和成本，统一使用“老一轮、问题清单、新一轮、本轮解决、已在别处
+   处理、不再处理”等白话；`turn`、`finding`、`supersession` 等内部字段只出现在技术方案和证据中。
 5. 不按 diff 大小决定验证深度。按行为变化、接口契约、数据风险和用户可见影响定义证据。
 6. 先按后果判断规划深度：局部可逆任务不强制比较方案；影响广、难回退或范式级任务扩大分析。
 7. 只有高影响选择存在真实分叉时，完整读取
@@ -77,6 +79,22 @@ mock_strategy: {}
 - [ ] <tester, reviewer, and documentation evidence target the integrated HEAD>
 <!-- /plan-checklist -->
 ```
+
+更高 `plan_revision` 还必须在 spec 之外加入：
+
+```markdown
+<!-- prior-problems -->
+schema_version: 1
+snapshot_sha256: "<老一轮 abandon 返回的摘要>"
+items:
+  - problem_id: "<老一轮问题 id>"
+    handling: include
+    plan_refs: ["behavior:<当前 behavior id>"]
+<!-- /prior-problems -->
+```
+
+每个老问题恰好选择一次：`include` 引用真实 behavior/checklist；`handled_elsewhere` 写稳定
+`reference`；`discard` 只在用户明确决定后写非空 `reason`。即使老清单为空也保留 marker。
 
 需要运行时行为验收时，使用唯一规范格式：
 
@@ -190,7 +208,8 @@ ownership:
   生成新方案；方案验证通过后可使用原生“实施计划”动作交接，`$builder` 保留为手工入口。
 - `plan_revision=1` 不写 `supersedes`。从 abandoned run 修订时使用更高 revision，并在 spec 中
   增加 `supersedes.run_id` 与旧 ledger 的 `plan.sha256`；runtime 会验证旧 run 已 abandoned、摘要
-  一致且 revision 单调增加。
+  一致且 revision 单调增加。还必须读取 abandon 返回的问题清单，逐项生成唯一 `prior-problems`；
+  旧 ledger 没有清单时先在 Default mode 用 `backfill-problems` 补录，不能把“没有记录”当成“没有问题”。
 
 ## 验证方案
 

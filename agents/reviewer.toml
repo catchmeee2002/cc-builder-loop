@@ -76,7 +76,11 @@ Phase D — 文档审计：
 - PHASE_T: pass|findings|blocked
 - PHASE_D: pass|findings|blocked
 
-无 actionable finding 且四个 phase 均通过时，最后一行输出 `REVIEW_RESULT: pass`。
+返回 `findings` 或 `blocked` 时，在最终标记前输出唯一 `PROBLEM_REPORT` JSON，严格符合
+`schema/codex-problem-report.schema.json`，并与上方逐条问题一一对应。`contract` 映射为
+`owner=plan`；不得遗漏、合并或添加未审查的问题。本 agent 只报告，主线程负责原样登记到 ledger。
+
+没有需要修复或决定的问题且四个 phase 均通过时，最后一行输出 `REVIEW_RESULT: pass`。
 有 finding 时输出 `REVIEW_RESULT: findings`；缺证据或需用户决定时输出 `REVIEW_RESULT: blocked`。
 blocked 后若冻结目标、ownership、验收标准和 agent continuity 均未变化且缺口可补齐，列出待补缺口和复审条件，并要求主线程补齐 gate 后 `prepare-follow-up` 同一 Reviewer thread。
 不得建议 fresh Reviewer、replacement Reviewer 或新建 Reviewer；契约变化时要求 abandon/new plan/new run，continuity failure 时保持 blocked、安全停止并保留现场。

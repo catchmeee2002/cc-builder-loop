@@ -25,7 +25,7 @@ description: 执行已接受的 builder-loop 方案，在隔离 worktree 中协�
    替代规则。
 3. 在第一次使用每个子命令前分别运行其 `--help`：
    `plan-validate`、`start`、`role-check`、`publish-prerequisites`、`integrate-tests`、`verify`、
-   `prove-tests`、`status`、`record-evidence`、`doctor`、`recover`、`resume`、`cleanup`、
+   `prove-tests`、`status`、`record-evidence`、`record-problems`、`backfill-problems`、`doctor`、`recover`、`resume`、`cleanup`、
    `finalize`、`abandon`。当前帮助优先于本文件中的调用示例。
 4. 对每次 runtime 调用只解析 stdout 最后一行 JSON。要求存在 `status` 与 `message`；
    非 JSON、缺字段或命令异常一律视为 `FATAL`，不要根据前面的日志猜测结果。
@@ -109,6 +109,9 @@ description: 执行已接受的 builder-loop 方案，在隔离 worktree 中协�
    correction 也各自作为独立实现单元自检。它不写 ledger，也不替代最终验证。
 6. 等待 Tester 返回；只有最后一行 `TESTER_RESULT: tests_ready` 且包含 tester commit/head、
    changed paths 和最小执行证据时才继续。
+   Tester 返回 `fail`、`target_change_required` 或 `blocked` 时，先把它给出的唯一
+   `PROBLEM_REPORT` 原样通过 `record-problems --source tester --source-id <turn_id> --manifest -`
+   写入 ledger；只有 `READY/NOOP` 后才能 follow-up、请求用户决定或 abandon。
 7. Tester 报 `target_change_required` 时冻结当前 run，不修改 plan 或测试目标。主线程使用
    `request_user_input` 提供三类选择：保持冻结目标并先以 `purpose=author` prepare、再 follow-up
    同一 Tester 澄清；abandon；或
@@ -202,7 +205,9 @@ description: 执行已接受的 builder-loop 方案，在隔离 worktree 中协�
    文档政策审计。合法终态只有 `REVIEW_RESULT: pass`、`REVIEW_RESULT: findings` 和
    `REVIEW_RESULT: blocked`。等待 `agents/reviewer.toml` 声明的最后一行 `REVIEW_RESULT`；缺失或非法值按连续性
    失败安全停止，不做兼容映射。
-3. Reviewer 有 actionable findings 且冻结契约不变时，按 ownership 路由：Builder-owned
+3. Reviewer 返回 `findings` 或 `blocked` 时，先把唯一 `PROBLEM_REPORT` 原样通过
+   `record-problems --source reviewer --source-id <turn_id> --manifest -` 写入 ledger；遗漏登记时
+   runtime 会拒绝 follow-up 和 abandon。Reviewer 有需要修复的问题且冻结契约不变时，按 ownership 路由：Builder-owned
    实现/文档由 Builder 修；Tester-owned 测试实现或测试支持由同一 Tester author correction
    修正、重新 `tests_ready` 并集成。随后执行
    `prepare-follow-up --run <run> --role reviewer --agent-id <reviewer_id> --purpose review`，再
@@ -210,6 +215,8 @@ description: 执行已接受的 builder-loop 方案，在隔离 worktree 中协�
    非 L1 必须重新 `role-check`、`verify` 和 tester blackbox；仅 `contract_schema_version=3` 重新执行
    测试鉴别证明，既有 v2 ledger 不补写。L1 只重新执行 builder role-check，不为通过门禁临时添加虚假测试。
    finding 需要改变测试目标、ownership 或验收标准时，先 abandon，再进入新 plan/new run。
+   主线程自己发现计划外业务、builder-loop 或外部平台问题时，用稳定 source id 和
+   `--source coordinator` 立即登记；不要等作废前凭记忆汇总。
 4. reviewer 或 tester 要求用户决策时，先调用 `status --run <run>`，再使用
    `request_user_input`。在等待前独立一行输出 `BUILDER_INPUT_REQUIRED:<run_id>`。
    当前 surface 没有 `request_user_input` 时，保留该 marker，停止并明确要求切换到可使用
@@ -232,7 +239,9 @@ description: 执行已接受的 builder-loop 方案，在隔离 worktree 中协�
    放宽 digest，只能让用户恢复 planning-time 状态后重试同一 intent，或 abandon/new plan。
 8. 其他 `CONFLICT`、`CONTINUITY_FAILURE`、`NEEDS_USER`、`FATAL` 或
    `FATAL_AMBIGUOUS` 时保留现场，并根据 `message` 请求用户决定。只有用户明确放弃时才调用
-   `abandon --run <run>`。
+   `abandon --run <run>`。abandon 成功必须返回稳定的问题清单摘要；新方案用
+   `prior-problems` 逐条说明“本轮解决、已在别处处理、不再处理”。向用户提问时使用这些白话，
+   不要求用户理解内部 agent/thread/finding 字段。
    finalize/cleanup 中断时先用 `doctor` 查看 intent，再用 `recover` 重放已有安全事务；未知 orphan
    不 adopt、不删除。terminal run 只有用户明确要求丢弃且 `cleanup` 证明 head/residue 未漂移时才清理。
 9. finalize 成功后进入「交付后事故与知识复盘」，完成或安全跳过后再输出最终结果。已按用户决定

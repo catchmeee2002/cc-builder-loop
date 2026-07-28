@@ -9,12 +9,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SPEC_HEAD = "1b512b120a673470a4ee154b7c8dd8ac3c3f7e1f"
 DELIVERY_HEAD = "e238fe159ce16f225ab7e4dd35a19052f02b2122"
-PLANNER_BLOB = "b7c9146a02d0747bc8fc7b7eeb61690a2321b08b"
+PLANNER_BLOB = "75442f95a843a2197f3c20b204cbec45ad75fcf9"
 PLANNER_PATH = Path("skills/builder-loop-planner/SKILL.md")
-BUILDER_BLOB = "52fb254311a5dc303253f18992d6c5503b78044d"
+BUILDER_BLOB = "f838b8bb574dc1013a2bbab3f9f004f961060efe"
 BUILDER_PATH = Path("skills/builder/SKILL.md")
 REFERENCE_PATH = Path("skills/builder-loop-planner/references/design-decisions.md")
-REVIEWER_BLOB = "c5b1aa085f0e4435e8abba9f5c2d84598a8368be"
+REVIEWER_BLOB = "69558363c2039f97181a27006d4833d012fb0347"
 REVIEWER_PATH = Path("agents/reviewer.toml")
 TESTER_PATH = Path("agents/tester.toml")
 PHILOSOPHY_PATH = Path("docs/design-philosophy.md")
@@ -576,7 +576,7 @@ class PlanningDesignDisciplineTest(unittest.TestCase):
         self.assertEqual(worktree_blob(BUILDER_PATH), BUILDER_BLOB)
         self.assertEqual(git_blob("HEAD", REVIEWER_PATH), REVIEWER_BLOB)
         self.assertEqual(worktree_blob(REVIEWER_PATH), REVIEWER_BLOB)
-        self.assertLessEqual(len(read(REVIEWER_PATH).splitlines()), len(reviewer_baseline) + 24)
+        self.assertLessEqual(len(read(REVIEWER_PATH).splitlines()), len(reviewer_baseline) + 28)
         self.assertLessEqual(len(read(TESTER_PATH).splitlines()), len(tester_baseline) + 24)
 
     def test_reference_is_not_duplicated_into_always_loaded_roles_or_docs(self) -> None:

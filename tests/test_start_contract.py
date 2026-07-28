@@ -15,6 +15,8 @@ from harness import (
     l1_plan_markdown,
     load_ledger,
     plan_markdown,
+    problem_snapshot,
+    revised_plan_with_prior_problems,
     run_cli,
     write_plan,
 )
@@ -496,14 +498,17 @@ class StartContractTest(unittest.TestCase):
         assert_status(first, "READY", rc=0)
         run_path = Path(first.data["run_path"])
         old_sha = load_ledger(run_path)["plan"]["sha256"]
-        assert_status(run_cli("abandon", "--run", run_path), "COMPLETE", rc=0)
+        abandoned = run_cli("abandon", "--run", run_path)
+        assert_status(abandoned, "COMPLETE", rc=0)
+        snapshot = problem_snapshot(run_path, abandoned.data)
+        self.assertEqual(snapshot["problem_ids"], [])
 
-        revised_text = plan_markdown(head(self.repo)).replace(
-            "plan_revision: 1",
-            "plan_revision: 2\n"
-            "supersedes:\n"
-            '  run_id: "superseded-run"\n'
-            f'  plan_sha256: "{old_sha}"',
+        revised_text = revised_plan_with_prior_problems(
+            plan_markdown(head(self.repo)),
+            supersedes_run_id="superseded-run",
+            supersedes_plan_sha256=old_sha,
+            snapshot_sha256=snapshot["snapshot_sha256"],
+            items=[],
         )
         revised = write_plan(self.repo, revised_text, name="revised-plan.md")
         result = run_cli(
