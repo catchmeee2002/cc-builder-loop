@@ -258,9 +258,9 @@ description: 执行已接受的 builder-loop 方案，在隔离 worktree 中协�
 3. 工程事故处理后，若仍有不可工程固化的稳定隐含知识，主动加载 `$memory-review`，明确使用
    `builder-loop delegated` 聚焦模式并只传剩余候选。不得复制旧版五问、打分阈值或直接写
    `$CODEX_HOME/memories/`。`$memory-review` 不可用时只报告跳过，不自行发明替代筛选规则。
-4. 复盘不是 delivery evidence，不写 ledger，不改变已经完成的 `BUILDER_RESULT`。创建/更新 issue 或
-   问题文档前必须使用 `request_user_input` 取得授权；当前 surface 不提供该工具时不执行写入，只报告
-   `RETROSPECTIVE_PENDING`，但交付结果仍为 pass。
+4. 复盘不是 delivery evidence，不写 ledger，不改变已经完成的 `BUILDER_RESULT`。Issue/问题文档写入
+   沿用 retrospective reference 的授权规则；仅当该规则要求用户决策而当前 surface 不提供
+   `request_user_input` 时报告 `RETROSPECTIVE_PENDING`，但交付结果仍为 pass。
 5. 成功时最后一行输出 `BUILDER_RESULT: pass run_id=<run_id>`；已按用户决定放弃时输出
    `BUILDER_RESULT: abandoned run_id=<run_id>`；runtime 尚未完成且需要用户时输出
    `BUILDER_RESULT: needs_user run_id=<run_id>`。不要在 runtime 未完成时声称交付完成。

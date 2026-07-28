@@ -319,9 +319,9 @@ reference。复盘读取最终 ledger 的问题清单和老一轮逐项处理决
 
 每个工程事故最终只能归属 `current_project`、`builder_loop` 或 `external_platform`。同一因果链
 跨越业务仓库与 builder-loop 时强制拆成两个原子事故；两条可以相互引用，但复现、责任和关闭条件
-彼此独立。提交前先只读搜索重复项，再通过 `request_user_input` 请求创建 issue、追加已有 issue、
-写入项目声明的问题文档或跳过。问题记录只包含触发场景、现场过程、现象、已确认事实、根因状态和
-复现条件，不包含建议或设计方向，并必须注明实际运行的是 Claude Code 版还是 Codex 版。
+彼此独立。提交前先只读搜索重复项；计划外 Issue、问题文档写入或跳过通过 `request_user_input`
+决定，当前任务关联 Issue 的正常更新沿用已有授权。问题记录只包含触发场景、现场过程、现象、
+已确认事实、根因状态和复现条件，不包含建议或设计方向，并必须注明实际运行的是 Claude Code 版还是 Codex 版。
 
 工程问题完成分流后，Builder 才以 `builder-loop delegated` 模式主动加载 `$memory-review`，只交付
 不能通过代码、测试、正式契约、项目文档或 issue 固化的剩余知识。旧版五问打分和直接写 memory
