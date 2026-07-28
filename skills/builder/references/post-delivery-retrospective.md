@@ -37,8 +37,8 @@ thread continuity 或 workspace isolation 被绕过；无效 evidence 被记录�
   只向该仓库提交。
 - `external_platform`：报告上游目标或交给 memory-review；没有用户授权不发送外部消息。
 
-已有同类 issue 时优先追加新的客观现场；不要创建同义 issue。创建、编辑 issue 或修改问题文档都
-必须经 `request_user_input`。工具不可用时不降级成纯文本问卷，也不写入，只输出待处理候选。
+已有同类 issue 时优先追加新的客观现场；不要创建同义 issue。计划外 Issue 或问题文档写入才需
+`request_user_input`；当前任务关联 Issue 的正常更新沿用已有授权。
 
 finalized target 不得被复盘静默改脏。问题文档若是版本控制内文件，用户批准后也必须进入项目声明的
 独立 issue/doc 工作流或新的 L1 plan/run；当前已完成 run 只生成客观记录草案。只有项目政策明确声明
