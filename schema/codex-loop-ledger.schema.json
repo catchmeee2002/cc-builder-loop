@@ -94,6 +94,12 @@
         "plan_revision": {"type": "integer", "minimum": 1},
         "parallel_ready": {"type": "boolean"},
         "interfaces": {"type": "array"},
+        "interface_publication_contract_version": {"enum": [0, 1]},
+        "interface_input_paths": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        },
         "target_test_dirs": {
           "type": "array",
           "uniqueItems": true,

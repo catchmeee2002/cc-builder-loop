@@ -71,6 +71,11 @@ digest 写入 ledger。Tester 以 publication HEAD 为 author baseline，不接�
 candidate diff 或其他实现内容。中间 Builder 历史不会进入 Tester baseline；当前版本仍不宣称 Git
 object database 具有操作系统级读 ACL。
 
+validator 会从 `interfaces` 文本中提取与 Builder ownership 重叠的仓库路径。路径意味着 Tester
+author 依赖文件内容：并行计划必须改写为不含实现路径的真实黑盒入口，或转为串行计划并逐项发布
+全部 exact files；glob 和遗漏 publication 均 fail closed。新 run 在 ledger 冻结该规则版本和
+规范化路径，既有 active run 保留旧语义，避免升级时追溯改变已经启动的事务。
+
 publication 改变 initial Tester author baseline 后，runtime 先持久化 ledger 中的 publication 与
 `tester_integration.base_head`，再把同一干净 Tester HEAD 同步到 session locator 的 start
 attestation，确认成功后才返回 `READY`。若响应或 locator 写入中断，`publish-prerequisites` 的
@@ -199,6 +204,10 @@ event envelope 原子写入同一 session 的 delivery journal。journal entry �
 不是第二份角色事实；runtime 在任何消费角色状态的 gate 前，按 event id 幂等折叠到 ledger 的
 `agents`、`pending_agent_turns`、`completed_agent_turns` 与 `events`，成功后才删除 entry。这样 Hook
 热路径不扫描 Git、不等待 run ledger 锁，也不因固定 subprocess timeout 丢掉已经完成的 turn。
+多个 CLI 可以同时观察到尚未删除的同一 entry，进程也可能在 ledger 写入后、删除 entry 前退出；
+fold 因此先在同一 run lock 内识别已经接受的 role/turn/event，再校验真正的新 Tester start
+attestation。相同 start 或相同 terminal result 重放为 `NOOP`，不会被解释成未准备 follow-up；
+不同 result、未准备的新 turn 或不同 agent 仍按原连续性契约拒绝。
 locator、journal 和 ledger 的 session/repo/run binding 任一不一致时 fail closed；未知 entry 不
 adopt、不删除，矛盾的合法来源事件进入结构化 continuity failure。
 
@@ -212,7 +221,8 @@ adopt、不删除，矛盾的合法来源事件进入结构化 continuity failur
   pending turn。若未来原生 surface 为 follow-up 提供 start 事件，同一 pending turn也可先由 start
   认领，再按普通 terminal event 完成。
 - 每个 role 同时只允许一个 running 或 pending turn；terminal event 必须匹配当前 turn 或唯一
-  pending follow-up，已完成 turn 不能重放。Tester author correction 在 prepare 时立即使旧
+  pending follow-up。已接受 turn 的同一事件可幂等重放但不能生成第二份事实；冲突重放继续失败。
+  Tester author correction 在 prepare 时立即使旧
   integration attestation 失效；Reviewer follow-up 的 prerequisite start snapshot 也在 prepare
   时冻结，不能用完成时快照倒填。
 - Hook 只有在 terminal envelope 已可靠写入 journal 后才允许角色完成；短暂 ledger contention
@@ -230,6 +240,11 @@ adopt、不删除，矛盾的合法来源事件进入结构化 continuity failur
   attempt；达到 `max_iterations` 后，
   当前 frozen run 不再继续 verify；每个 attempt 使用独立日志目录，历史 evidence 不被后续重跑
   覆盖。abandon 保留现场，修订方案进入新 run。
+- Tester 初次 author 不计入 correction 窗口。之后每个已完成的 `purpose=author` follow-up 都从
+  ledger `agent_event` 派生计数；最近一次 machine PASS 或用户对 correction 架构停止执行的显式
+  resume 开启新窗口。前三次 correction 可继续，未恢复 machine PASS 时第四次 prepare 进入
+  `architecture_review_required` 且不创建 pending turn。status/doctor 从事件派生当前和累计事实，
+  resume 保留历史与 machine attempt 上限，不维护第二份可漂移计数器。
 - `record-problems` 以 run/source/source-id/key 生成稳定 id，同一报告幂等、冲突重放拒绝。
   abandon 在改变 phase 前检查全部必须报告的角色结果，并原子封存问题 snapshot；`status`/`doctor`
   公开缺报告来源、继承数量和 snapshot 摘要。`backfill-problems` 只允许对旧 abandoned ledger 追加

@@ -36,6 +36,9 @@ BLACKBOX_REPORT_SCHEMA_VERSION = 2
 LEGACY_BLACKBOX_REPORT_SCHEMA_VERSION = 1
 PROBLEM_REPORT_SCHEMA_VERSION = 1
 PRIOR_PROBLEMS_SCHEMA_VERSION = 1
+INTERFACE_PUBLICATION_CONTRACT_VERSION = 1
+LEGACY_INTERFACE_PUBLICATION_CONTRACT_VERSION = 0
+TESTER_CORRECTION_LIMIT = 3
 PRIOR_PROBLEM_PLAN_REF_RE = re.compile(
     r"^(?:behavior:[a-z0-9]+(?:-[a-z0-9]+)*|checklist:[1-9][0-9]*)$"
 )
@@ -143,6 +146,7 @@ class PlanContract:
     plan_revision: int | None
     parallel_ready: bool
     interfaces: tuple[Any, ...]
+    interface_input_paths: tuple[str, ...]
     target_test_dirs: tuple[str, ...]
     support_paths: tuple[str, ...]
     public_prerequisites: tuple[str, ...]
@@ -540,6 +544,11 @@ def read_json(path: Path) -> dict[str, Any]:
             "blackbox_report_schema_version",
             LEGACY_BLACKBOX_REPORT_SCHEMA_VERSION,
         )
+        plan.setdefault(
+            "interface_publication_contract_version",
+            LEGACY_INTERFACE_PUBLICATION_CONTRACT_VERSION,
+        )
+        plan.setdefault("interface_input_paths", [])
     evidence = value.get("evidence")
     if isinstance(evidence, dict):
         evidence.setdefault("test_effectiveness", None)
@@ -700,6 +709,92 @@ def verification_attempt_records(ledger: dict[str, Any]) -> list[dict[str, Any]]
 
 def verification_attempt_count(ledger: dict[str, Any]) -> int:
     return len(verification_attempt_records(ledger))
+
+
+def tester_correction_progress(ledger: Mapping[str, Any]) -> dict[str, Any]:
+    events = [item for item in ledger.get("events", []) if isinstance(item, dict)]
+    completed: list[dict[str, Any]] = []
+    reset_events: list[tuple[int, dict[str, Any], str]] = []
+    for item in events:
+        sequence = item.get("sequence")
+        facts = item.get("facts")
+        if type(sequence) is not int or not isinstance(facts, dict):
+            continue
+        event_type = item.get("type")
+        if event_type == "machine_verification_passed":
+            reset_events.append((sequence, item, "machine_pass"))
+        elif (
+            event_type == "verification_resumed"
+            and facts.get("progress_source") == "tester_correction"
+        ):
+            reset_events.append((sequence, item, "explicit_resume"))
+        if (
+            event_type == "agent_event"
+            and facts.get("role") == "tester"
+            and facts.get("event") == "idle"
+            and facts.get("follow_up_purpose") == "author"
+        ):
+            completed.append(
+                {
+                    "sequence": sequence,
+                    "turn_id": facts.get("turn_id"),
+                    "dispatch_id": facts.get("follow_up_dispatch_id"),
+                    "result": facts.get("result"),
+                    "candidate_head": facts.get("candidate_head"),
+                    "tester_head": facts.get("role_head"),
+                    "at": item.get("at") or facts.get("at"),
+                }
+            )
+    if reset_events:
+        reset_sequence, reset_event, reset_kind = max(reset_events, key=lambda item: item[0])
+        reset_facts = reset_event.get("facts", {})
+        window_start = {
+            "kind": reset_kind,
+            "sequence": reset_sequence,
+            "at": reset_event.get("at") or reset_facts.get("at"),
+            "candidate_head": (
+                reset_facts.get("verified_head")
+                if reset_kind == "machine_pass"
+                else reset_facts.get("candidate_head")
+            ),
+        }
+    else:
+        reset_sequence = 0
+        window_start = {
+            "kind": "run_start",
+            "sequence": 0,
+            "at": ledger.get("created_at"),
+            "candidate_head": ledger.get("spec_head"),
+        }
+    current = [item for item in completed if int(item["sequence"]) > reset_sequence]
+    return {
+        "limit": TESTER_CORRECTION_LIMIT,
+        "current_window_count": len(current),
+        "lifetime_count": len(completed),
+        "window_start": window_start,
+        "completed_turns": completed,
+        "next_author_followup_blocked": len(current) >= TESTER_CORRECTION_LIMIT,
+    }
+
+
+def latest_progress_stop_source(ledger: Mapping[str, Any]) -> str:
+    for item in reversed(ledger.get("events", [])):
+        if not isinstance(item, dict):
+            continue
+        event_type = item.get("type")
+        if event_type == "tester_correction_architecture_review_required":
+            return "tester_correction"
+        if event_type in {
+            "machine_verification_failed",
+            "machine_verification_tree_changed",
+        }:
+            facts = item.get("facts")
+            if isinstance(facts, dict) and facts.get("stop_code") in {
+                "NO_PROGRESS",
+                "ARCHITECTURE_REVIEW_REQUIRED",
+            }:
+                return "machine_verification"
+    return "unknown"
 
 
 @contextlib.contextmanager
@@ -1421,6 +1516,127 @@ def patterns_overlap(left: str, right: str) -> bool:
     return left_prefix.startswith(right_prefix) or right_prefix.startswith(left_prefix)
 
 
+INTERFACE_PATH_TOKEN_RE = re.compile(
+    r"(?<![\w./-])((?:[^\s/:\"']+/)+[^\s:\"']+|[^\s/:\"']+\.[^\s/:\"']+|"
+    r"Makefile|Dockerfile)(?![\w.-])"
+)
+
+
+def interface_text_values(interfaces: Sequence[Any]) -> list[str]:
+    values: list[str] = []
+    for interface in interfaces:
+        if isinstance(interface, str):
+            values.append(interface)
+            continue
+        if not isinstance(interface, dict):
+            continue
+        for key in ("module", "import", "signature", "output"):
+            value = interface.get(key)
+            if isinstance(value, str):
+                values.append(value)
+        errors = interface.get("errors")
+        if isinstance(errors, list):
+            values.extend(str(item) for item in errors if isinstance(item, str))
+    return values
+
+
+def extract_interface_input_paths(
+    interfaces: Sequence[Any], builder_write: Sequence[str]
+) -> tuple[str, ...]:
+    paths: set[str] = set()
+    for text in interface_text_values(interfaces):
+        stripped = text.strip()
+        whole_path = bool(
+            stripped
+            and any(char.isspace() for char in stripped)
+            and re.search(r"\.[^/\s]+$", stripped)
+        )
+        candidates = (
+            []
+            if whole_path
+            else [
+                (match.group(1), match.end())
+                for match in INTERFACE_PATH_TOKEN_RE.finditer(text)
+            ]
+        )
+        if whole_path:
+            candidates.append((stripped, len(text.rstrip())))
+        for pattern in builder_write:
+            if any(mark in pattern for mark in "*?["):
+                continue
+            exact = re.compile(
+                rf"(?<![\w./-])({re.escape(pattern)})(?![\w./-])"
+            )
+            candidates.extend(
+                (match.group(1), match.end()) for match in exact.finditer(text)
+            )
+        for raw, end in candidates:
+            if text[end : end + 1] == ":":
+                # Existing plans use path:symbol as a public interface locator;
+                # it does not declare that Tester author needs the file bytes.
+                continue
+            try:
+                candidate = normalize_allowed_path(raw, directory_hint=False)
+            except RuntimeProblem:
+                continue
+            if any(patterns_overlap(candidate, pattern) for pattern in builder_write):
+                paths.add(candidate)
+    return tuple(sorted(paths))
+
+
+def validate_interface_publication_contract(contract: PlanContract) -> None:
+    if contract.level == "L1":
+        return
+    paths = list(contract.interface_input_paths)
+    inexact = sorted(path for path in paths if any(mark in path for mark in "*?["))
+    if inexact:
+        raise RuntimeProblem(
+            "Tester interface file inputs must be exact repository paths",
+            result="NEEDS_USER",
+            code="PLAN_INTERFACE_INPUT_NOT_EXACT",
+            details={
+                "interface_publication_contract_version": (
+                    INTERFACE_PUBLICATION_CONTRACT_VERSION
+                ),
+                "interface_input_paths": paths,
+                "inexact_paths": inexact,
+            },
+            exit_code=EXIT_FAIL,
+        )
+    if contract.parallel_ready and paths:
+        raise RuntimeProblem(
+            "Tester cannot start in parallel from Builder-owned interface files that are not published",
+            result="NEEDS_USER",
+            code="PLAN_PARALLEL_INTERFACE_INPUT_UNPUBLISHED",
+            details={
+                "interface_publication_contract_version": (
+                    INTERFACE_PUBLICATION_CONTRACT_VERSION
+                ),
+                "interface_input_paths": paths,
+                "action": (
+                    "describe a public blackbox entry without implementation paths, or use "
+                    "serial publication with parallel_ready=false for every listed file"
+                ),
+            },
+            exit_code=EXIT_FAIL,
+        )
+    missing = sorted(set(paths) - set(contract.public_prerequisites))
+    if missing:
+        raise RuntimeProblem(
+            "Tester interface file inputs are missing from serial public prerequisites",
+            result="NEEDS_USER",
+            code="PLAN_INTERFACE_INPUT_UNPUBLISHED",
+            details={
+                "interface_publication_contract_version": (
+                    INTERFACE_PUBLICATION_CONTRACT_VERSION
+                ),
+                "interface_input_paths": paths,
+                "missing_paths": missing,
+            },
+            exit_code=EXIT_FAIL,
+        )
+
+
 def revision_fields(
     parsed: dict[str, Any], errors: list[str]
 ) -> tuple[int | None, str | None, str | None]:
@@ -2116,6 +2332,7 @@ def parse_plan(
             plan_revision=plan_revision,
             parallel_ready=False,
             interfaces=(),
+            interface_input_paths=(),
             target_test_dirs=(),
             support_paths=(),
             public_prerequisites=(),
@@ -2303,6 +2520,7 @@ def parse_plan(
     public_prerequisites = normalize_many(
         public_prerequisites_raw, "test_context.public_prerequisites"
     )
+    interface_input_paths = extract_interface_input_paths(interfaces, builder_write)
     for prerequisite in public_prerequisites:
         if any(mark in prerequisite for mark in "*?["):
             errors.append(
@@ -2436,6 +2654,7 @@ def parse_plan(
         plan_revision=int(plan_revision),
         parallel_ready=bool(parallel_ready),
         interfaces=tuple(interfaces),
+        interface_input_paths=interface_input_paths,
         target_test_dirs=tuple(target_dirs),
         support_paths=tuple(support_paths),
         public_prerequisites=tuple(public_prerequisites),
@@ -2523,6 +2742,24 @@ def verify_plan_unchanged(ledger: dict[str, Any]) -> PlanContract:
             },
             exit_code=EXIT_FAIL,
         )
+    interface_contract_version = plan.get(
+        "interface_publication_contract_version",
+        LEGACY_INTERFACE_PUBLICATION_CONTRACT_VERSION,
+    )
+    if interface_contract_version == INTERFACE_PUBLICATION_CONTRACT_VERSION:
+        validate_interface_publication_contract(contract)
+        recorded_paths = sorted(str(path) for path in plan.get("interface_input_paths", []))
+        if recorded_paths != list(contract.interface_input_paths):
+            raise RuntimeProblem(
+                "plan interface publication inputs changed after start",
+                result="NEEDS_USER",
+                code="PLAN_CHANGED",
+                details={
+                    "recorded_interface_input_paths": recorded_paths,
+                    "actual_interface_input_paths": list(contract.interface_input_paths),
+                },
+                exit_code=EXIT_FAIL,
+            )
     return contract
 
 
@@ -5147,6 +5384,15 @@ def status_facts(repo: Path, ledger: dict[str, Any]) -> dict[str, Any]:
     ]
     current_evidence = bool(builder_head) and not missing and not stale
     problem_facts = problem_inventory_facts(ledger)
+    correction_progress = tester_correction_progress(ledger)
+    plan = ledger.get("plan", {})
+    interface_contract_version = plan.get(
+        "interface_publication_contract_version",
+        LEGACY_INTERFACE_PUBLICATION_CONTRACT_VERSION,
+    )
+    interface_input_paths = sorted(
+        str(path) for path in plan.get("interface_input_paths", [])
+    )
     tester_source = ledger["tester_integration"].get("source_head")
     prerequisite_publication = ledger.get("prerequisite_publication", {})
     prerequisites_ready = (
@@ -5233,6 +5479,9 @@ def status_facts(repo: Path, ledger: dict[str, Any]) -> dict[str, Any]:
         "target_continuous": target_continuous,
         "verification_attempts": verification_attempt_count(ledger),
         "max_iterations": ledger.get("loop_config", {}).get("max_iterations"),
+        "interface_publication_contract_version": interface_contract_version,
+        "interface_input_paths": interface_input_paths,
+        "tester_correction_progress": correction_progress,
         "builder_dirty_paths": builder_dirty,
         "tester_dirty_paths": tester_dirty,
         "prerequisites_ready": prerequisites_ready,
@@ -5289,6 +5538,10 @@ def cmd_plan_validate(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         "spec_head": preflight.spec_head,
         "target_branch": preflight.target_branch,
         "parallel_ready": contract.parallel_ready,
+        "interface_publication_contract_version": (
+            INTERFACE_PUBLICATION_CONTRACT_VERSION
+        ),
+        "interface_input_paths": list(contract.interface_input_paths),
         "contract_schema_version": contract.schema_version,
         "plan_sha256": contract.sha256,
         "plan_source_sha256": contract.source_sha256,
@@ -5433,6 +5686,7 @@ def preflight_plan(
     target_branch: str | None = None,
     explicit_spec_head: str | None = None,
 ) -> PlanPreflight:
+    validate_interface_publication_contract(contract)
     previous = validate_supersession(repo, contract)
     contract_spec_head = contract.spec_head or full_head(repo, "HEAD")
     if explicit_spec_head:
@@ -5756,6 +6010,8 @@ def cmd_start_locked(args: argparse.Namespace, repo: Path) -> tuple[dict[str, An
             "plan_revision": contract.plan_revision,
             "parallel_ready": contract.parallel_ready,
             "interfaces": list(contract.interfaces),
+            "interface_publication_contract_version": INTERFACE_PUBLICATION_CONTRACT_VERSION,
+            "interface_input_paths": list(contract.interface_input_paths),
             "target_test_dirs": list(contract.target_test_dirs),
             "support_paths": list(contract.support_paths),
             "public_prerequisites": list(contract.public_prerequisites),
@@ -5915,6 +6171,10 @@ def cmd_start_locked(args: argparse.Namespace, repo: Path) -> tuple[dict[str, An
         "plan_digest_kind": contract.digest_kind,
         "blackbox_report_schema_version": BLACKBOX_REPORT_SCHEMA_VERSION,
         "runtime_identity": ledger["runtime_identity"],
+        "interface_publication_contract_version": (
+            INTERFACE_PUBLICATION_CONTRACT_VERSION
+        ),
+        "interface_input_paths": list(contract.interface_input_paths),
         "lifecycle_delivery": {
             "locator": "ready",
             "binding_sha256": route["binding_sha256"],
@@ -6693,6 +6953,7 @@ def verify_machine(repo: Path, ledger: dict[str, Any]) -> tuple[dict[str, Any], 
         "stages": stage_results,
         "attempt": attempt,
         "max_iterations": max_iterations,
+        "tester_correction_progress": tester_correction_progress(ledger),
     }, EXIT_PASS
 
 
@@ -10285,6 +10546,15 @@ def cmd_prepare_follow_up(args: argparse.Namespace) -> tuple[dict[str, Any], int
                         if report_contract is not None
                         else {}
                     ),
+                    **(
+                        {
+                            "tester_correction_progress": (
+                                tester_correction_progress(ledger)
+                            )
+                        }
+                        if role == "tester" and purpose == "author"
+                        else {}
+                    ),
                     **existing,
                 }, EXIT_PASS
             raise RuntimeProblem(
@@ -10294,6 +10564,27 @@ def cmd_prepare_follow_up(args: argparse.Namespace) -> tuple[dict[str, Any], int
                 details={"role": role, "pending": existing},
                 exit_code=EXIT_FAIL,
             )
+
+        if role == "tester" and purpose == "author":
+            correction_progress = tester_correction_progress(ledger)
+            if correction_progress["next_author_followup_blocked"]:
+                ledger["phase"] = "architecture_review_required"
+                append_event(
+                    ledger,
+                    "tester_correction_architecture_review_required",
+                    {"tester_correction_progress": correction_progress},
+                )
+                save_ledger(repo, ledger)
+                raise RuntimeProblem(
+                    "three Tester author corrections completed without a newer machine pass; review the frozen inputs or architecture before continuing",
+                    result="NEEDS_USER",
+                    code="ARCHITECTURE_REVIEW_REQUIRED",
+                    details={
+                        "phase": ledger["phase"],
+                        "tester_correction_progress": correction_progress,
+                    },
+                    exit_code=EXIT_FAIL,
+                )
 
         builder = Path(str(ledger["worktrees"]["builder"]["path"]))
         role_worktree = (
@@ -10424,6 +10715,11 @@ def cmd_prepare_follow_up(args: argparse.Namespace) -> tuple[dict[str, Any], int
                 if report_contract is not None
                 else {}
             ),
+            **(
+                {"tester_correction_progress": tester_correction_progress(ledger)}
+                if role == "tester" and purpose == "author"
+                else {}
+            ),
             **prepared,
         }, EXIT_PASS
 
@@ -10490,6 +10786,113 @@ def _cmd_agent_event_apply(args: argparse.Namespace) -> tuple[dict[str, Any], in
                 details={"role": args.role, "current": current},
                 exit_code=EXIT_FAIL,
             )
+        if current is not None and current.get("agent_id") != args.agent_id:
+            if current.get("event") == "closed":
+                ledger["phase"] = "continuity_failure"
+                append_event(
+                    ledger,
+                    "agent_continuity_failure",
+                    {
+                        "role": args.role,
+                        "closed_agent_id": current.get("agent_id"),
+                        "incoming_agent_id": args.agent_id,
+                    },
+                )
+                save_ledger(repo, ledger)
+                raise RuntimeProblem(
+                    "a closed role thread cannot be replaced in the same run",
+                    result="CONTINUITY_FAILURE",
+                    code="ROLE_AGENT_CONTINUITY_LOST",
+                    details={"role": args.role, "current": current, "incoming_agent_id": args.agent_id},
+                    exit_code=EXIT_FAIL,
+                )
+            raise RuntimeProblem(
+                "role is already owned by another live agent",
+                result="NEEDS_USER",
+                code="ROLE_AGENT_CONFLICT",
+                details={"role": args.role, "current": current, "incoming_agent_id": args.agent_id},
+                exit_code=EXIT_FAIL,
+            )
+        if current is not None and current.get("event") == "closed" and args.event != "closed":
+            ledger["phase"] = "continuity_failure"
+            append_event(
+                ledger,
+                "agent_continuity_failure",
+                {"role": args.role, "closed_agent_id": args.agent_id},
+            )
+            save_ledger(repo, ledger)
+            raise RuntimeProblem(
+                "a closed role thread cannot be resumed",
+                result="CONTINUITY_FAILURE",
+                code="ROLE_AGENT_CONTINUITY_LOST",
+                details={"role": args.role, "agent_id": args.agent_id},
+                exit_code=EXIT_FAIL,
+            )
+
+        # Journal delivery is at-least-once. Classify a replay of an already
+        # accepted role/turn fact before interpreting a Tester start as a new
+        # follow-up that needs fresh attestation.
+        if (
+            args.event == "start"
+            and current is not None
+            and current.get("agent_id") == args.agent_id
+        ):
+            if current.get("event") == "start" and current.get("turn_id") == turn_id:
+                return {
+                    "status": "NOOP",
+                    "message": "agent turn start was already recorded",
+                    "recorded": True,
+                    "run_id": run_id,
+                    "role": args.role,
+                    **current,
+                }, EXIT_PASS
+            if turn_id in completed_turns:
+                return {
+                    "status": "NOOP",
+                    "message": "completed agent turn cannot be replayed",
+                    "recorded": False,
+                    "code": "STALE_AGENT_TURN",
+                    "run_id": run_id,
+                    "role": args.role,
+                    "agent_id": args.agent_id,
+                    "turn_id": turn_id,
+                }, EXIT_PASS
+        if (
+            current is not None
+            and current.get("event") == "idle"
+            and args.event == "idle"
+            and current.get("turn_id") == turn_id
+        ):
+            if current.get("result") != result_value:
+                ledger["phase"] = "continuity_failure"
+                append_event(
+                    ledger,
+                    "agent_turn_result_conflict",
+                    {
+                        "role": args.role,
+                        "agent_id": args.agent_id,
+                        "turn_id": turn_id,
+                        "previous_result": current.get("result"),
+                        "incoming_result": result_value,
+                    },
+                )
+                save_ledger(repo, ledger)
+                raise RuntimeProblem(
+                    "one completed agent turn cannot report two different results",
+                    result="CONTINUITY_FAILURE",
+                    code="AGENT_TURN_RESULT_CONFLICT",
+                    details={"role": args.role, "turn_id": turn_id, "current": current},
+                    exit_code=EXIT_FAIL,
+                )
+            return {
+                "status": "NOOP",
+                "message": "agent turn result was already recorded",
+                "recorded": True,
+                "run_id": run_id,
+                "role": args.role,
+                **current,
+            }, EXIT_PASS
+
         if args.role == "tester" and args.event == "start":
             if ledger.get("plan", {}).get("level") == "L1":
                 raise RuntimeProblem(
@@ -10553,48 +10956,6 @@ def _cmd_agent_event_apply(args: argparse.Namespace) -> tuple[dict[str, Any], in
                         },
                         exit_code=EXIT_FAIL,
                     )
-        if current is not None and current.get("agent_id") != args.agent_id:
-            if current.get("event") == "closed":
-                ledger["phase"] = "continuity_failure"
-                append_event(
-                    ledger,
-                    "agent_continuity_failure",
-                    {
-                        "role": args.role,
-                        "closed_agent_id": current.get("agent_id"),
-                        "incoming_agent_id": args.agent_id,
-                    },
-                )
-                save_ledger(repo, ledger)
-                raise RuntimeProblem(
-                    "a closed role thread cannot be replaced in the same run",
-                    result="CONTINUITY_FAILURE",
-                    code="ROLE_AGENT_CONTINUITY_LOST",
-                    details={"role": args.role, "current": current, "incoming_agent_id": args.agent_id},
-                    exit_code=EXIT_FAIL,
-                )
-            raise RuntimeProblem(
-                "role is already owned by another live agent",
-                result="NEEDS_USER",
-                code="ROLE_AGENT_CONFLICT",
-                details={"role": args.role, "current": current, "incoming_agent_id": args.agent_id},
-                exit_code=EXIT_FAIL,
-            )
-        if current is not None and current.get("event") == "closed" and args.event != "closed":
-            ledger["phase"] = "continuity_failure"
-            append_event(
-                ledger,
-                "agent_continuity_failure",
-                {"role": args.role, "closed_agent_id": args.agent_id},
-            )
-            save_ledger(repo, ledger)
-            raise RuntimeProblem(
-                "a closed role thread cannot be resumed",
-                result="CONTINUITY_FAILURE",
-                code="ROLE_AGENT_CONTINUITY_LOST",
-                details={"role": args.role, "agent_id": args.agent_id},
-                exit_code=EXIT_FAIL,
-            )
         prepared_same_agent = bool(
             isinstance(pending, dict)
             and current is not None
@@ -10651,62 +11012,7 @@ def _cmd_agent_event_apply(args: argparse.Namespace) -> tuple[dict[str, Any], in
                     details={"pending": pending, "attestation": attestation},
                     exit_code=EXIT_FAIL,
                 )
-        if args.event == "start" and turn_id in completed_turns:
-            return {
-                "status": "NOOP",
-                "message": "completed agent turn cannot be replayed",
-                "recorded": False,
-                "code": "STALE_AGENT_TURN",
-                "run_id": run_id,
-                "role": args.role,
-                "agent_id": args.agent_id,
-                "turn_id": turn_id,
-            }, EXIT_PASS
-        if (
-            current is not None
-            and current.get("event") == "idle"
-            and args.event == "idle"
-            and current.get("turn_id") == turn_id
-        ):
-            if current.get("result") != result_value:
-                ledger["phase"] = "continuity_failure"
-                append_event(
-                    ledger,
-                    "agent_turn_result_conflict",
-                    {
-                        "role": args.role,
-                        "agent_id": args.agent_id,
-                        "turn_id": turn_id,
-                        "previous_result": current.get("result"),
-                        "incoming_result": result_value,
-                    },
-                )
-                save_ledger(repo, ledger)
-                raise RuntimeProblem(
-                    "one completed agent turn cannot report two different results",
-                    result="CONTINUITY_FAILURE",
-                    code="AGENT_TURN_RESULT_CONFLICT",
-                    details={"role": args.role, "turn_id": turn_id, "current": current},
-                    exit_code=EXIT_FAIL,
-                )
-            return {
-                "status": "NOOP",
-                "message": "agent turn result was already recorded",
-                "recorded": True,
-                "run_id": run_id,
-                "role": args.role,
-                **current,
-            }, EXIT_PASS
         if args.event == "start" and current is not None and current.get("event") == "start":
-            if current.get("turn_id") == turn_id:
-                return {
-                    "status": "NOOP",
-                    "message": "agent turn start was already recorded",
-                    "recorded": True,
-                    "run_id": run_id,
-                    "role": args.role,
-                    **current,
-                }, EXIT_PASS
             raise RuntimeProblem(
                 "a new agent turn cannot start before the current turn completes",
                 result="NEEDS_USER",
@@ -11635,7 +11941,7 @@ def cmd_status(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         if ledger["phase"] in {"no_progress", "architecture_review_required"}:
             return {
                 "status": "NEEDS_USER",
-                "message": "verification progress requires an explicit user decision",
+                "message": "run progress requires an explicit user decision",
                 "code": (
                     "NO_PROGRESS"
                     if ledger["phase"] == "no_progress"
@@ -11729,7 +12035,7 @@ def cmd_status(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
     if ledger["phase"] in {"no_progress", "architecture_review_required"}:
         return {
             "status": "NEEDS_USER",
-            "message": "verification progress requires an explicit user decision",
+            "message": "run progress requires an explicit user decision",
             "code": (
                 "NO_PROGRESS"
                 if ledger["phase"] == "no_progress"
@@ -12877,23 +13183,30 @@ def cmd_resume(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                 details={"verification_attempts": attempts, "max_iterations": maximum},
                 exit_code=EXIT_FAIL,
             )
+        progress_source = latest_progress_stop_source(ledger)
+        builder = Path(str(ledger["worktrees"]["builder"]["path"]))
         resume = {
             "from_phase": phase,
+            "progress_source": progress_source,
             "reason": reason,
             "attempts": attempts,
+            "candidate_head": full_head(builder),
             "at": utc_now(),
         }
         ledger.setdefault("verification", {}).setdefault("resumes", []).append(resume)
         ledger["phase"] = "active"
         append_event(ledger, "verification_resumed", resume)
         save_ledger(repo, ledger)
+        correction_progress = tester_correction_progress(ledger)
         return {
             "status": "READY",
             "message": "verification progress stop was explicitly resumed",
             "run_id": run_id,
             "reason": reason,
+            "progress_source": progress_source,
             "verification_attempts": attempts,
             "max_iterations": maximum,
+            "tester_correction_progress": correction_progress,
         }, EXIT_PASS
 
 
@@ -12977,6 +13290,19 @@ def _doctor_ledgers(repo: Path) -> tuple[list[dict[str, Any]], list[dict[str, An
                     "evidence": ledger.get("evidence"),
                     "finalize_intent": ledger.get("finalize_intent"),
                     "verification_attempts": verification_attempt_count(ledger),
+                    "interface_publication_contract_version": ledger.get(
+                        "plan", {}
+                    ).get(
+                        "interface_publication_contract_version",
+                        LEGACY_INTERFACE_PUBLICATION_CONTRACT_VERSION,
+                    ),
+                    "interface_input_paths": sorted(
+                        str(interface_path)
+                        for interface_path in ledger.get("plan", {}).get(
+                            "interface_input_paths", []
+                        )
+                    ),
+                    "tester_correction_progress": tester_correction_progress(ledger),
                     "problem_inventory": problem_facts,
                     "pending_problem_sources": [
                         str(item.get("source_id"))
@@ -13047,6 +13373,16 @@ def cmd_doctor(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         if selected_run_id is not None and len(reports) == 1
         else None
     )
+    selected_contract = (
+        {
+            "interface_publication_contract_version": reports[0].get(
+                "interface_publication_contract_version"
+            ),
+            "interface_input_paths": reports[0].get("interface_input_paths", []),
+        }
+        if selected_run_id is not None and len(reports) == 1
+        else {}
+    )
     return {
         "status": "READY" if not issues else "NEEDS_USER",
         "message": (
@@ -13059,6 +13395,7 @@ def cmd_doctor(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         "issues": issues,
         "lifecycle_delivery": selected_lifecycle,
         "read_only": True,
+        **selected_contract,
     }, EXIT_PASS if not issues else EXIT_FAIL
 
 
