@@ -24,6 +24,7 @@ from harness import (
     problem_report,
     problem_snapshot,
     record_problems,
+    repo_session_id,
     revised_plan_with_prior_problems,
     run_cli,
     start_agent_turn,
@@ -88,7 +89,7 @@ class ProblemListContractTest(unittest.TestCase):
             "--run",
             name,
             "--session-id",
-            f"{name}-session",
+            repo_session_id(repo, name),
         )
         assert_status(started, "READY", rc=0)
         return started, Path(started.data["run_path"])
@@ -538,7 +539,7 @@ class ProblemListContractTest(unittest.TestCase):
                     "--run",
                     f"invalid-{label}",
                     "--session-id",
-                    f"invalid-{label}-session",
+                    repo_session_id(repo, f"invalid-{label}"),
                 )
                 self.assertNotEqual(started.returncode, 0, started.data)
                 self.assertEqual(started.data.get("code"), validated.data.get("code"))
@@ -574,7 +575,7 @@ class ProblemListContractTest(unittest.TestCase):
                     "--run",
                     f"invalid-{label}",
                     "--session-id",
-                    f"invalid-{label}-session",
+                    repo_session_id(repo, f"invalid-{label}"),
                 )
                 self.assertNotEqual(validated.returncode, 0, validated.data)
                 self.assertNotEqual(started.returncode, 0, started.data)
@@ -837,7 +838,7 @@ class ProblemListContractTest(unittest.TestCase):
             "--run",
             "legacy-before-backfill",
             "--session-id",
-            "legacy-before-backfill-session",
+            repo_session_id(repo, "legacy-before-backfill"),
         )
         for result in (rejected, rejected_start):
             self.assertNotEqual(result.returncode, 0, result.data)

@@ -10,10 +10,12 @@ from harness import (
     ROOT,
     assert_status,
     cleanup_repo,
+    fixture_runtime_env,
     head,
     init_repo,
     load_ledger,
     plan_markdown,
+    repo_session_id,
     run_cli,
     run_process,
     start_run,
@@ -36,7 +38,10 @@ class HookRuntimeIntegrationTest(unittest.TestCase):
         completed = run_process(
             [sys.executable, HOOK],
             cwd=cwd,
-            env={"BUILDER_LOOP_CLI": str(CLI)},
+            env={
+                **fixture_runtime_env(self.repo),
+                "BUILDER_LOOP_CLI": str(CLI),
+            },
             input_text=json.dumps(event),
         )
         self.assertEqual(completed.returncode, 0, completed.stderr)
@@ -44,13 +49,17 @@ class HookRuntimeIntegrationTest(unittest.TestCase):
         self.assertTrue(lines, completed)
         return json.loads(lines[-1])
 
+    def fold(self, run_path: Path) -> None:
+        folded = run_cli("status", "--run", run_path)
+        self.assertIn(folded.data.get("status"), {"ACTIVE", "READY"}, folded.data)
+
     def test_real_hook_finds_run_from_tester_and_builder_worktrees(self) -> None:
         plan = write_plan(self.repo, plan_markdown(head(self.repo)))
         started, run_path = start_run(self.repo, plan)
         builder, tester = worktrees_from(started, run_path)
         base_event = {
             "cwd": str(tester),
-            "session_id": "fixture-session",
+            "session_id": repo_session_id(self.repo),
             "turn_id": "tester-hook-turn",
             "agent_id": "tester-hook-agent",
             "agent_type": "tester",
@@ -60,6 +69,7 @@ class HookRuntimeIntegrationTest(unittest.TestCase):
             {**base_event, "hook_event_name": "SubagentStart"}, cwd=tester
         )
         self.assertNotIn("systemMessage", start_output, start_output)
+        self.fold(run_path)
         started_ledger = load_ledger(run_path)
         self.assertEqual(started_ledger["agents"]["tester"]["event"], "start")
 
@@ -75,6 +85,7 @@ class HookRuntimeIntegrationTest(unittest.TestCase):
             cwd=tester,
         )
         self.assertNotIn("decision", stop_output, stop_output)
+        self.fold(run_path)
         idle_ledger = load_ledger(run_path)
         self.assertEqual(idle_ledger["agents"]["tester"]["result"], "tests_ready")
         self.assertTrue(idle_ledger["agents"]["tester"]["role_dirty"])
@@ -106,6 +117,7 @@ class HookRuntimeIntegrationTest(unittest.TestCase):
             cwd=tester,
         )
         self.assertNotIn("systemMessage", follow_up_output, follow_up_output)
+        self.fold(run_path)
         resumed_ledger = load_ledger(run_path)
         self.assertEqual(
             resumed_ledger["agents"]["tester"]["turn_id"],
@@ -122,7 +134,7 @@ class HookRuntimeIntegrationTest(unittest.TestCase):
             {
                 "hook_event_name": "Stop",
                 "cwd": str(builder),
-                "session_id": "fixture-session",
+                "session_id": repo_session_id(self.repo),
                 "stop_hook_active": False,
                 "last_assistant_message": "still working",
             },
@@ -140,7 +152,7 @@ class HookRuntimeIntegrationTest(unittest.TestCase):
             "--repo",
             self.repo,
             "--session-id",
-            "fixture-session",
+            repo_session_id(self.repo),
         )
         assert_status(status, "FATAL", rc=2)
         self.assertEqual(status.data.get("code"), "LEDGER_SCAN_INVALID")
@@ -149,7 +161,7 @@ class HookRuntimeIntegrationTest(unittest.TestCase):
             {
                 "hook_event_name": "Stop",
                 "cwd": str(self.repo),
-                "session_id": "fixture-session",
+                "session_id": repo_session_id(self.repo),
                 "stop_hook_active": False,
                 "last_assistant_message": "done",
             },

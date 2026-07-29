@@ -12,6 +12,7 @@ from harness import (
     init_repo,
     load_ledger,
     plan_markdown,
+    repo_session_id,
     run_cli,
     start_run,
     start_agent_turn,
@@ -88,7 +89,7 @@ class ParallelRoleIsolationTest(unittest.TestCase):
             "--task",
             "stale plan",
             "--session-id",
-            "fixture-session",
+            repo_session_id(self.repo),
         )
         assert_status(result, "NEEDS_USER")
         self.assertNotEqual(result.returncode, 0)

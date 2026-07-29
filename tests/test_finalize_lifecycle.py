@@ -21,6 +21,7 @@ from harness import (
     plan_markdown,
     record_evidence,
     register_agent,
+    repo_session_id,
     run_cli,
     run_process,
     start_run,
@@ -335,7 +336,7 @@ class FinalizeLifecycleTest(unittest.TestCase):
             "--task",
             "release target fixture",
             "--session-id",
-            "release-session",
+            repo_session_id(self.repo, "release"),
             "--target-branch",
             "release",
         )
@@ -586,7 +587,7 @@ class FinalizeLifecycleTest(unittest.TestCase):
             "review-after-finalize-intent",
             "--event",
             "start",
-            env={"BUILDER_LOOP_HOOK_EVENT": "1"},
+            env={"BUILDER_LOOP_HOOK_EVENT": "1", "BUILDER_LOOP_AGENT_EVENT_APPLY": "1"},
         )
         assert_status(blocked, "NEEDS_USER", rc=1)
         self.assertEqual(blocked.data.get("code"), "FINALIZE_INTENT_ACTIVE")

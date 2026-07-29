@@ -67,7 +67,7 @@ class SerialPrerequisiteContractTest(unittest.TestCase):
             "serial-turn-1",
             "--event",
             "start",
-            env={"BUILDER_LOOP_HOOK_EVENT": "1"},
+            env={"BUILDER_LOOP_HOOK_EVENT": "1", "BUILDER_LOOP_AGENT_EVENT_APPLY": "1"},
         )
         assert_status(result, "NEEDS_USER", rc=1)
         self.assertEqual(result.data.get("code"), "PREREQUISITES_NOT_PUBLISHED")

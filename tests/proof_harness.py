@@ -12,6 +12,7 @@ from harness import (
     head,
     init_repo,
     plan_markdown,
+    repo_session_id,
     run_cli,
     start_agent_turn,
     start_run,
@@ -97,7 +98,7 @@ def create_proof_fixture(
             "--run",
             explicit_run_id,
             "--session-id",
-            "proof-fixture-session",
+            repo_session_id(repo, "proof-fixture"),
         )
         if started.returncode != 0 or started.data.get("status") != "READY":
             raise AssertionError(

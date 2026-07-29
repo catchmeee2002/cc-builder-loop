@@ -122,11 +122,15 @@ class StopHookGateTest(unittest.TestCase):
         )
         self.assertEqual(rc, 0)
         self.assertNotIn("decision", invalid_after_continuation)
-        self.assertIn("continuity failure", invalid_after_continuation.get("systemMessage", ""))
+        self.assertIn(
+            "LIFECYCLE_ROUTE_MISSING",
+            invalid_after_continuation.get("systemMessage", ""),
+        )
 
         rc, valid = self.call_subagent_stop("details\nTESTER_RESULT: fail")
         self.assertEqual(rc, 0)
-        self.assertNotIn("decision", valid)
+        self.assertEqual(valid.get("decision"), "block", valid)
+        self.assertIn("LIFECYCLE_ROUTE_MISSING", valid.get("reason", ""))
 
 
 if __name__ == "__main__":

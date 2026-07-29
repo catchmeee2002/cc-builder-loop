@@ -50,7 +50,13 @@ def agent_event(
     ]
     if result is not None:
         argv.extend(["--result", result])
-    return run_cli(*argv, env={"BUILDER_LOOP_HOOK_EVENT": "1"})
+    return run_cli(
+        *argv,
+        env={
+            "BUILDER_LOOP_HOOK_EVENT": "1",
+            "BUILDER_LOOP_AGENT_EVENT_APPLY": "1",
+        },
+    )
 
 
 class ReviewerPrerequisiteOrderTest(unittest.TestCase):

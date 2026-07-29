@@ -16,6 +16,7 @@ from harness import (
     plan_markdown,
     record_evidence,
     register_agent,
+    repo_session_id,
     run_cli,
     start_run,
     worktrees_from,
@@ -183,7 +184,7 @@ class ConflictSafeStopTest(unittest.TestCase):
             "--run",
             "deleted-release-run",
             "--session-id",
-            "deleted-release-session",
+            repo_session_id(self.repo, "deleted-release"),
             "--target-branch",
             "release",
         )

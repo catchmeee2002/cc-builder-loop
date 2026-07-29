@@ -25,6 +25,7 @@ from harness import (
     plan_markdown,
     record_evidence,
     register_agent,
+    repo_session_id,
     run_cli,
     run_process,
     write_plan,
@@ -67,7 +68,7 @@ class PlanningV3E2EContractTest(unittest.TestCase):
             "--task",
             "v3 structured plan",
             "--session-id",
-            "v3-plan-session",
+            repo_session_id(repo, "v3-plan"),
         )
         assert_status(started, "READY", rc=0)
         ledger = load_ledger(Path(started.data["run_path"]))
@@ -270,7 +271,7 @@ class PlanningV3E2EContractTest(unittest.TestCase):
                 "--task",
                 "legacy active v2 continuation",
                 "--session-id",
-                "legacy-v2-session",
+                repo_session_id(repo, "legacy-v2"),
             ]
         )
         self.assertEqual(created.returncode, 0, created.stderr)

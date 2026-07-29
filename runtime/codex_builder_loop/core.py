@@ -25,6 +25,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, Iterator, Mapping, Sequence
 
 from . import evidence as evidence_contract
+from . import lifecycle as lifecycle_delivery
 from . import workspace as workspace_contract
 
 SCHEMA_VERSION = 2
@@ -5212,6 +5213,11 @@ def status_facts(repo: Path, ledger: dict[str, Any]) -> dict[str, Any]:
         live_target_head=target_head,
         workspace_intake=ledger.get("workspace_intake"),
     )
+    lifecycle_facts = lifecycle_delivery.delivery_facts(
+        session_id=str(ledger["owner_session_id"]),
+        repo_root=str(repo),
+        run_id=str(ledger["run_id"]),
+    )
     return {
         "run_id": ledger["run_id"],
         "runtime_identity": ledger.get("runtime_identity"),
@@ -5232,6 +5238,7 @@ def status_facts(repo: Path, ledger: dict[str, Any]) -> dict[str, Any]:
         "prerequisites_ready": prerequisites_ready,
         "prerequisite_publication": prerequisite_publication,
         "workspace_intake": ledger.get("workspace_intake"),
+        "lifecycle_delivery": lifecycle_facts,
         "problem_inventory": problem_facts,
         "pending_problem_sources": [
             str(item.get("source_id"))
@@ -5554,6 +5561,43 @@ def cmd_start_locked(args: argparse.Namespace, repo: Path) -> tuple[dict[str, An
             "start requires a non-empty --session-id",
             code="SESSION_ID_REQUIRED",
         )
+    try:
+        routed = lifecycle_delivery.load_route(session_id)
+    except lifecycle_delivery.LifecycleDeliveryError as exc:
+        raise RuntimeProblem(str(exc), code=exc.code) from exc
+    if routed is not None:
+        routed_ledger_path = Path(str(routed["ledger_path"]))
+        routed_active = False
+        if routed_ledger_path.is_file() and not routed_ledger_path.is_symlink():
+            try:
+                routed_ledger = read_json(routed_ledger_path)
+                routed_active = bool(
+                    routed_ledger.get("owner_session_id") == session_id
+                    and routed_ledger.get("run_id") == routed.get("run_id")
+                    and routed_ledger.get("phase") in ACTIVE_PHASES
+                )
+            except RuntimeProblem:
+                routed_active = False
+        if routed_active:
+            raise RuntimeProblem(
+                "session already owns an active run",
+                code="SESSION_ALREADY_ACTIVE",
+                details={
+                    "run_ids": [routed["run_id"]],
+                    "repo_root": routed["repo_root"],
+                },
+            )
+        if not lifecycle_delivery.remove_route(session_id, require_empty=True):
+            raise RuntimeProblem(
+                "session still owns undrained lifecycle delivery intent",
+                result="NEEDS_USER",
+                code="LIFECYCLE_DELIVERY_PENDING",
+                details={
+                    "run_ids": [routed["run_id"]],
+                    "repo_root": routed["repo_root"],
+                },
+                exit_code=EXIT_FAIL,
+            )
     existing_ledgers = [
         ledger_path(candidate_repo, run_id)
         for candidate_repo in repository_worktrees(repo)
@@ -5839,6 +5883,29 @@ def cmd_start_locked(args: argparse.Namespace, repo: Path) -> tuple[dict[str, An
         },
     )
     save_ledger(repo, ledger)
+    try:
+        route = lifecycle_delivery.register_route(
+            session_id=session_id,
+            repo_root=str(repo),
+            run_id=run_id,
+            ledger_path=str(ledger_path(repo, run_id)),
+            tester_start_attestation=(
+                {
+                    "kind": "initial-author",
+                    "expected_head": spec_head,
+                    "tester_head": full_head(tester_path),
+                    "dirty_paths": worktree_residue(tester_path),
+                }
+                if contract.level != "L1"
+                else None
+            ),
+        )
+    except lifecycle_delivery.LifecycleDeliveryError as exc:
+        for path, branch in reversed(created):
+            git(repo, "worktree", "remove", "--force", str(path), check=False)
+            git(repo, "branch", "-D", branch, check=False)
+        shutil.rmtree(current_run_dir, ignore_errors=True)
+        raise RuntimeProblem(str(exc), code=exc.code) from exc
     return {
         "status": "READY",
         "message": "run started from a frozen plan contract",
@@ -5853,6 +5920,10 @@ def cmd_start_locked(args: argparse.Namespace, repo: Path) -> tuple[dict[str, An
         "plan_digest_kind": contract.digest_kind,
         "blackbox_report_schema_version": BLACKBOX_REPORT_SCHEMA_VERSION,
         "runtime_identity": ledger["runtime_identity"],
+        "lifecycle_delivery": {
+            "locator": "ready",
+            "binding_sha256": route["binding_sha256"],
+        },
         "frozen_plan": str(plan_path),
         "parallel_ready": contract.parallel_ready,
         "prerequisite_publication_required": (
@@ -10128,6 +10199,26 @@ def cmd_prepare_follow_up(args: argparse.Namespace) -> tuple[dict[str, Any], int
                 and existing.get("purpose") == purpose
                 and existing.get("previous_turn_id") == current.get("turn_id")
             ):
+                if role == "tester":
+                    try:
+                        lifecycle_delivery.set_tester_start_attestation(
+                            str(ledger["owner_session_id"]),
+                            {
+                                "kind": "follow-up",
+                                "agent_id": str(existing["agent_id"]),
+                                "dispatch_id": str(existing["dispatch_id"]),
+                                "previous_turn_id": str(existing["previous_turn_id"]),
+                                "purpose": str(existing["purpose"]),
+                                "role_head": str(existing["role_head"]),
+                                "dirty_paths": (
+                                    ["prepared-worktree-dirty"]
+                                    if existing.get("role_dirty")
+                                    else []
+                                ),
+                            },
+                        )
+                    except lifecycle_delivery.LifecycleDeliveryError as exc:
+                        raise RuntimeProblem(str(exc), code=exc.code) from exc
                 return {
                     "status": "NOOP",
                     "message": "the same agent follow-up is already prepared",
@@ -10247,6 +10338,26 @@ def cmd_prepare_follow_up(args: argparse.Namespace) -> tuple[dict[str, Any], int
             {"role": role, **prepared},
         )
         save_ledger(repo, ledger)
+        if role == "tester":
+            try:
+                lifecycle_delivery.set_tester_start_attestation(
+                    str(ledger["owner_session_id"]),
+                    {
+                        "kind": "follow-up",
+                        "agent_id": str(prepared["agent_id"]),
+                        "dispatch_id": str(prepared["dispatch_id"]),
+                        "previous_turn_id": str(prepared["previous_turn_id"]),
+                        "purpose": str(prepared["purpose"]),
+                        "role_head": str(prepared["role_head"]),
+                        "dirty_paths": (
+                            ["prepared-worktree-dirty"]
+                            if prepared.get("role_dirty")
+                            else []
+                        ),
+                    },
+                )
+            except lifecycle_delivery.LifecycleDeliveryError as exc:
+                raise RuntimeProblem(str(exc), code=exc.code) from exc
         return {
             "status": "READY",
             "message": "agent follow-up prepared and previous role evidence invalidated",
@@ -10261,7 +10372,7 @@ def cmd_prepare_follow_up(args: argparse.Namespace) -> tuple[dict[str, Any], int
         }, EXIT_PASS
 
 
-def cmd_agent_event(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
+def _cmd_agent_event_apply(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
     if os.environ.get("BUILDER_LOOP_HOOK_EVENT") != "1":
         raise RuntimeProblem(
             "agent-event is an internal lifecycle-hook surface",
@@ -10342,10 +10453,39 @@ def cmd_agent_event(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                     exit_code=EXIT_FAIL,
                 )
             if current is None:
-                tester = Path(str(ledger["worktrees"]["tester"]["path"]))
                 expected_base = str(ledger["tester_integration"]["base_head"])
-                live_head = full_head(tester)
-                if live_head != expected_base or worktree_residue(tester):
+                if os.environ.get("BUILDER_LOOP_DELIVERY_FOLD") == "1":
+                    attestation = getattr(args, "tester_baseline", None)
+                    baseline_valid = bool(
+                        isinstance(attestation, dict)
+                        and attestation.get("kind") == "initial-author"
+                        and set(attestation)
+                        == {
+                            "kind",
+                            "expected_head",
+                            "tester_head",
+                            "dirty_paths",
+                        }
+                        and attestation.get("expected_head") == expected_base
+                        and attestation.get("tester_head") == expected_base
+                        and attestation.get("dirty_paths") == []
+                    )
+                    live_head = (
+                        str(attestation.get("tester_head"))
+                        if isinstance(attestation, dict)
+                        else None
+                    )
+                    residue = (
+                        attestation.get("dirty_paths")
+                        if isinstance(attestation, dict)
+                        else None
+                    )
+                else:
+                    tester = Path(str(ledger["worktrees"]["tester"]["path"]))
+                    live_head = full_head(tester)
+                    residue = worktree_residue(tester)
+                    baseline_valid = live_head == expected_base and not residue
+                if not baseline_valid:
                     raise RuntimeProblem(
                         "Tester author worktree does not match its frozen baseline",
                         result="NEEDS_USER",
@@ -10353,7 +10493,7 @@ def cmd_agent_event(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                         details={
                             "expected_head": expected_base,
                             "tester_head": live_head,
-                            "dirty_paths": worktree_residue(tester),
+                            "dirty_paths": residue,
                         },
                         exit_code=EXIT_FAIL,
                     )
@@ -10411,6 +10551,50 @@ def cmd_agent_event(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         )
         prepared_start = prepared_same_agent and args.event == "start"
         prepared_terminal = prepared_same_agent and args.event in {"idle", "closed"}
+        if args.role == "tester" and args.event == "start" and current is not None:
+            attestation = getattr(args, "tester_baseline", None)
+            delivery_fold = os.environ.get("BUILDER_LOOP_DELIVERY_FOLD") == "1"
+            if (
+                not delivery_fold
+                and isinstance(pending, dict)
+                and not isinstance(attestation, dict)
+            ):
+                try:
+                    route = lifecycle_delivery.load_route(session_id)
+                except lifecycle_delivery.LifecycleDeliveryError as exc:
+                    raise RuntimeProblem(str(exc), code=exc.code) from exc
+                if route is not None:
+                    attestation = route.get("tester_start_attestation")
+            follow_up_valid = bool(
+                prepared_start
+                and isinstance(attestation, dict)
+                and set(attestation)
+                == {
+                    "kind",
+                    "agent_id",
+                    "dispatch_id",
+                    "previous_turn_id",
+                    "purpose",
+                    "role_head",
+                    "dirty_paths",
+                }
+                and attestation.get("kind") == "follow-up"
+                and attestation.get("agent_id") == pending.get("agent_id")
+                and attestation.get("dispatch_id") == pending.get("dispatch_id")
+                and attestation.get("previous_turn_id")
+                == pending.get("previous_turn_id")
+                and attestation.get("purpose") == pending.get("purpose")
+                and attestation.get("role_head") == pending.get("role_head")
+                and attestation.get("dirty_paths") == []
+            )
+            if (delivery_fold or isinstance(pending, dict)) and not follow_up_valid:
+                raise RuntimeProblem(
+                    "Tester follow-up Start does not match its prepared attestation",
+                    result="NEEDS_USER",
+                    code="TESTER_FOLLOW_UP_ATTESTATION_MISMATCH",
+                    details={"pending": pending, "attestation": attestation},
+                    exit_code=EXIT_FAIL,
+                )
         if args.event == "start" and turn_id in completed_turns:
             return {
                 "status": "NOOP",
@@ -10648,6 +10832,358 @@ def cmd_agent_event(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
             "role": args.role,
             **fact,
         }, EXIT_PASS
+
+
+def _agent_event_argv(args: argparse.Namespace) -> list[str]:
+    values = [
+        "agent-event",
+        "--repo",
+        str(args.repo),
+        "--session-id",
+        str(args.session_id),
+        "--role",
+        str(args.role),
+        "--agent-id",
+        str(args.agent_id),
+        "--turn-id",
+        str(args.turn_id),
+        "--event",
+        str(args.event),
+    ]
+    if args.result is not None:
+        values.extend(["--result", str(args.result)])
+    return values
+
+
+def cmd_agent_event(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
+    if os.environ.get("BUILDER_LOOP_AGENT_EVENT_APPLY") == "1":
+        return _cmd_agent_event_apply(args)
+    if os.environ.get("BUILDER_LOOP_HOOK_EVENT") != "1":
+        raise RuntimeProblem(
+            "agent-event is an internal lifecycle-hook surface",
+            code="AGENT_EVENT_HOOK_REQUIRED",
+        )
+    try:
+        envelope, event_path = lifecycle_delivery.enqueue_event(
+            session_id=str(args.session_id).strip(),
+            role=str(args.role),
+            agent_id=str(args.agent_id),
+            turn_id=str(args.turn_id),
+            event=str(args.event),
+            result=str(args.result).strip() if args.result is not None else None,
+        )
+    except lifecycle_delivery.LifecycleDeliveryError as exc:
+        raise RuntimeProblem(str(exc), code=exc.code) from exc
+    if envelope is None or event_path is None:
+        return _cmd_agent_event_apply(args)
+
+    command = [sys.executable, str(Path(sys.argv[0]).resolve()), *_agent_event_argv(args)]
+    try:
+        completed = subprocess.run(
+            command,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=1.0,
+            env={
+                **os.environ,
+                "BUILDER_LOOP_HOOK_EVENT": "1",
+                "BUILDER_LOOP_AGENT_EVENT_APPLY": "1",
+            },
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return {
+            "status": "ACCEPTED",
+            "message": "agent event is durably queued for ledger folding",
+            "event_id": envelope["event_id"],
+            "run_id": envelope["run_id"],
+            "role": envelope["role"],
+            "agent_id": envelope["agent_id"],
+            "turn_id": envelope["turn_id"],
+            "queued": True,
+            "recorded": False,
+        }, EXIT_PASS
+    lines = [line.strip() for line in completed.stdout.splitlines() if line.strip()]
+    payload: dict[str, Any] | None = None
+    if lines:
+        try:
+            parsed = json.loads(lines[-1])
+            payload = parsed if isinstance(parsed, dict) else None
+        except json.JSONDecodeError:
+            payload = None
+    if payload is not None and (
+        payload.get("recorded") is True
+        or payload.get("status") in {"NOOP", "CONTINUITY_FAILURE"}
+    ):
+        event_path.unlink(missing_ok=True)
+        payload.setdefault("event_id", envelope["event_id"])
+        payload.setdefault("queued", False)
+        return payload, completed.returncode
+    return {
+        "status": "ACCEPTED",
+        "message": "agent event is durably queued for ledger folding",
+        "event_id": envelope["event_id"],
+        "run_id": envelope["run_id"],
+        "role": envelope["role"],
+        "agent_id": envelope["agent_id"],
+        "turn_id": envelope["turn_id"],
+        "queued": True,
+        "recorded": False,
+    }, EXIT_PASS
+
+
+def _reject_delivery_event(
+    repo: Path,
+    run_id: str,
+    *,
+    event_path: Path,
+    code: str,
+    message: str,
+    event: dict[str, Any] | None,
+) -> None:
+    with locked_run(repo, run_id) as ledger:
+        already_recorded = any(
+            item.get("type") == "agent_event_rejected"
+            and item.get("facts", {}).get("event_file") == event_path.name
+            for item in ledger.get("events", [])
+            if isinstance(item, dict) and isinstance(item.get("facts"), dict)
+        )
+        if already_recorded:
+            return
+        ledger["phase"] = "continuity_failure"
+        append_event(
+            ledger,
+            "agent_event_rejected",
+            {
+                "event_file": event_path.name,
+                "event_id": event.get("event_id") if isinstance(event, dict) else None,
+                "code": code,
+                "message": message,
+            },
+        )
+        save_ledger(repo, ledger)
+    if event is not None:
+        event_path.unlink(missing_ok=True)
+
+
+def _validate_delivery_envelope(
+    event: dict[str, Any], *, repo: Path, run_id: str, session_id: str
+) -> None:
+    required = {
+        "schema_version",
+        "event_id",
+        "binding_sha256",
+        "session_id",
+        "run_id",
+        "repo_root",
+        "role",
+        "agent_id",
+        "turn_id",
+        "event",
+        "result",
+        "tester_baseline",
+        "captured_at",
+    }
+    if set(event) != required or event.get("schema_version") != 1:
+        raise RuntimeProblem(
+            "queued agent event does not match schema version 1",
+            code="LIFECYCLE_EVENT_INVALID",
+        )
+    if (
+        event.get("session_id") != session_id
+        or event.get("run_id") != run_id
+        or Path(str(event.get("repo_root"))).resolve() != repo.resolve()
+    ):
+        raise RuntimeProblem(
+            "queued agent event route does not match the selected run",
+            code="LIFECYCLE_EVENT_ROUTE_MISMATCH",
+        )
+    expected_binding = lifecycle_delivery.route_binding(session_id, str(repo), run_id)
+    if event.get("binding_sha256") != expected_binding:
+        raise RuntimeProblem(
+            "queued agent event binding digest does not match the selected run",
+            code="LIFECYCLE_EVENT_BINDING_MISMATCH",
+        )
+    if event.get("event_id") != lifecycle_delivery.event_id(event):
+        raise RuntimeProblem(
+            "queued agent event id does not match its content",
+            code="LIFECYCLE_EVENT_ID_MISMATCH",
+        )
+    role = event.get("role")
+    lifecycle = event.get("event")
+    result = event.get("result")
+    if role not in AGENT_RESULTS or lifecycle not in {"start", "idle", "closed"}:
+        raise RuntimeProblem(
+            "queued agent event has an unsupported role or lifecycle",
+            code="LIFECYCLE_EVENT_INVALID",
+        )
+    if lifecycle == "idle":
+        if result not in AGENT_RESULTS[role]:
+            raise RuntimeProblem(
+                "queued idle event has an invalid role result",
+                code="LIFECYCLE_EVENT_RESULT_INVALID",
+            )
+    elif result is not None:
+        raise RuntimeProblem(
+            "queued non-idle event cannot carry a result",
+            code="LIFECYCLE_EVENT_RESULT_INVALID",
+        )
+    tester_baseline = event.get("tester_baseline")
+    if role == "tester" and lifecycle == "start":
+        initial_fields = {
+            "kind",
+            "expected_head",
+            "tester_head",
+            "dirty_paths",
+        }
+        follow_up_fields = {
+            "kind",
+            "agent_id",
+            "dispatch_id",
+            "previous_turn_id",
+            "purpose",
+            "role_head",
+            "dirty_paths",
+        }
+        if (
+            not isinstance(tester_baseline, dict)
+            or (
+                tester_baseline.get("kind") == "initial-author"
+                and set(tester_baseline) != initial_fields
+            )
+            or (
+                tester_baseline.get("kind") == "follow-up"
+                and set(tester_baseline) != follow_up_fields
+            )
+            or tester_baseline.get("kind") not in {"initial-author", "follow-up"}
+        ):
+            raise RuntimeProblem(
+                "queued Tester start lacks its frozen baseline attestation",
+                code="LIFECYCLE_EVENT_INVALID",
+            )
+    elif tester_baseline is not None:
+        raise RuntimeProblem(
+            "only an initial Tester start may carry a baseline attestation",
+            code="LIFECYCLE_EVENT_INVALID",
+        )
+
+
+def ensure_lifecycle_route(repo: Path, run_id: str, ledger: dict[str, Any]) -> None:
+    session_id = str(ledger["owner_session_id"])
+    try:
+        route = lifecycle_delivery.load_route(session_id)
+        if route is None:
+            tester = Path(str(ledger["worktrees"]["tester"]["path"]))
+            current = ledger.get("agents", {}).get("tester")
+            pending = ledger.get("pending_agent_turns", {}).get("tester")
+            tester_attestation: dict[str, Any] | None = None
+            if isinstance(pending, dict):
+                tester_attestation = {
+                    "kind": "follow-up",
+                    "agent_id": str(pending["agent_id"]),
+                    "dispatch_id": str(pending["dispatch_id"]),
+                    "previous_turn_id": str(pending["previous_turn_id"]),
+                    "purpose": str(pending["purpose"]),
+                    "role_head": str(pending["role_head"]),
+                    "dirty_paths": (
+                        ["prepared-worktree-dirty"]
+                        if pending.get("role_dirty")
+                        else []
+                    ),
+                }
+            elif current is None and ledger.get("plan", {}).get("level") != "L1":
+                tester_attestation = {
+                    "kind": "initial-author",
+                    "expected_head": str(ledger["tester_integration"]["base_head"]),
+                    "tester_head": full_head(tester),
+                    "dirty_paths": worktree_residue(tester),
+                }
+            lifecycle_delivery.register_route(
+                session_id=session_id,
+                repo_root=str(repo),
+                run_id=run_id,
+                ledger_path=str(ledger_path(repo, run_id)),
+                tester_start_attestation=tester_attestation,
+            )
+            return
+        if (
+            route.get("repo_root") != str(repo.resolve())
+            or route.get("run_id") != run_id
+            or route.get("ledger_path") != str(ledger_path(repo, run_id).resolve())
+        ):
+            raise RuntimeProblem(
+                "session lifecycle route points at another run",
+                code="LIFECYCLE_ROUTE_STALE",
+                details={"route": route, "run_id": run_id},
+            )
+    except lifecycle_delivery.LifecycleDeliveryError as exc:
+        raise RuntimeProblem(str(exc), code=exc.code) from exc
+
+
+def drain_lifecycle_events(repo: Path, run_id: str) -> None:
+    ledger = read_json(ledger_path(repo, run_id))
+    if ledger.get("phase") not in ACTIVE_PHASES:
+        return
+    ensure_lifecycle_route(repo, run_id, ledger)
+    session_id = str(ledger["owner_session_id"])
+    try:
+        paths = lifecycle_delivery.queued_event_paths(session_id)
+    except lifecycle_delivery.LifecycleDeliveryError as exc:
+        raise RuntimeProblem(str(exc), code=exc.code) from exc
+    for event_path in paths:
+        event: dict[str, Any] | None = None
+        try:
+            event = lifecycle_delivery.read_json_file(event_path)
+            _validate_delivery_envelope(
+                event, repo=repo, run_id=run_id, session_id=session_id
+            )
+            event_args = argparse.Namespace(
+                repo=str(repo),
+                session_id=session_id,
+                role=event["role"],
+                agent_id=event["agent_id"],
+                turn_id=event["turn_id"],
+                event=event["event"],
+                result=event["result"],
+                tester_baseline=event["tester_baseline"],
+            )
+            previous = os.environ.get("BUILDER_LOOP_HOOK_EVENT")
+            previous_fold = os.environ.get("BUILDER_LOOP_DELIVERY_FOLD")
+            os.environ["BUILDER_LOOP_HOOK_EVENT"] = "1"
+            os.environ["BUILDER_LOOP_DELIVERY_FOLD"] = "1"
+            try:
+                payload, _exit_code = _cmd_agent_event_apply(event_args)
+            finally:
+                if previous is None:
+                    os.environ.pop("BUILDER_LOOP_HOOK_EVENT", None)
+                else:
+                    os.environ["BUILDER_LOOP_HOOK_EVENT"] = previous
+                if previous_fold is None:
+                    os.environ.pop("BUILDER_LOOP_DELIVERY_FOLD", None)
+                else:
+                    os.environ["BUILDER_LOOP_DELIVERY_FOLD"] = previous_fold
+            if payload.get("recorded") is True or payload.get("status") in {
+                "NOOP",
+                "CONTINUITY_FAILURE",
+            }:
+                event_path.unlink(missing_ok=True)
+                continue
+            raise RuntimeProblem(
+                str(payload.get("message") or payload.get("status")),
+                code=str(payload.get("code") or "LIFECYCLE_EVENT_REJECTED"),
+            )
+        except (RuntimeProblem, lifecycle_delivery.LifecycleDeliveryError) as exc:
+            code = getattr(exc, "code", "LIFECYCLE_EVENT_REJECTED")
+            _reject_delivery_event(
+                repo,
+                run_id,
+                event_path=event_path,
+                code=str(code),
+                message=str(exc),
+                event=event,
+            )
+            return
 
 
 def finalize_integration(
@@ -11068,18 +11604,37 @@ def cmd_status(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                 "message": f"run is {ledger['phase']}",
                 **facts,
             }, EXIT_PASS
+        delivery = facts.get("lifecycle_delivery", {})
+        if (
+            delivery.get("locator") != "ready"
+            or delivery.get("blocked_event")
+        ):
+            return {
+                "status": "NEEDS_USER",
+                "message": "run lifecycle delivery requires inspection",
+                "code": "LIFECYCLE_DELIVERY_NOT_READY",
+                **facts,
+            }, EXIT_FAIL
         return {
             "status": "ACTIVE",
             "message": "run is active",
             **facts,
         }, EXIT_PASS
-    repo = resolve_repo(args.repo)
     session_id = str(args.session_id or "").strip()
     if not session_id:
         raise RuntimeProblem(
             "status requires --run or --session-id",
             code="STATUS_SELECTOR_REQUIRED",
         )
+    try:
+        route = lifecycle_delivery.load_route(session_id)
+    except lifecycle_delivery.LifecycleDeliveryError as exc:
+        raise RuntimeProblem(str(exc), code=exc.code) from exc
+    repo = (
+        resolve_repo(str(route["repo_root"]))
+        if route is not None
+        else resolve_repo(args.repo)
+    )
     ledgers = active_ledgers_for_session(repo, session_id)
     if not ledgers:
         return {
@@ -11129,6 +11684,14 @@ def cmd_status(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                 if ledger["phase"] == "no_progress"
                 else "ARCHITECTURE_REVIEW_REQUIRED"
             ),
+            **facts,
+        }, EXIT_FAIL
+    delivery = facts.get("lifecycle_delivery", {})
+    if delivery.get("locator") != "ready" or delivery.get("blocked_event"):
+        return {
+            "status": "NEEDS_USER",
+            "message": "run lifecycle delivery requires inspection",
+            "code": "LIFECYCLE_DELIVERY_NOT_READY",
             **facts,
         }, EXIT_FAIL
     return {"status": "ACTIVE", "message": "one active run matched the session", **facts}, EXIT_PASS
@@ -11764,6 +12327,10 @@ def finish_finalized_cleanup(
     ledger["phase"] = "finalized"
     append_event(ledger, "finalize_cleanup_completed", {})
     save_ledger(repo, ledger)
+    lifecycle_delivery.deactivate_route(str(ledger["owner_session_id"]))
+    lifecycle_delivery.remove_route(
+        str(ledger["owner_session_id"]), require_empty=True
+    )
     return {
         "status": "COMPLETE",
         "message": "candidate finalized as one squash commit",
@@ -12210,6 +12777,10 @@ def cmd_abandon(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
             },
         )
         save_ledger(repo, ledger)
+        lifecycle_delivery.deactivate_route(str(ledger["owner_session_id"]))
+        lifecycle_delivery.remove_route(
+            str(ledger["owner_session_id"]), require_empty=True
+        )
         return {
             "status": "COMPLETE",
             "message": "run abandoned with all worktrees preserved",
@@ -12317,6 +12888,31 @@ def _doctor_ledgers(repo: Path) -> tuple[list[dict[str, Any]], list[dict[str, An
                         }
                     )
             problem_facts = problem_inventory_facts(ledger)
+            lifecycle_facts = lifecycle_delivery.delivery_facts(
+                session_id=str(ledger["owner_session_id"]),
+                repo_root=str(repo),
+                run_id=run_id,
+            )
+            if ledger.get("phase") in ACTIVE_PHASES and (
+                lifecycle_facts.get("locator") != "ready"
+                or lifecycle_facts.get("queued_count")
+                or lifecycle_facts.get("blocked_event")
+            ):
+                issues.append(
+                    {
+                        "code": "LIFECYCLE_DELIVERY_NOT_READY",
+                        "run_id": run_id,
+                        "lifecycle_delivery": lifecycle_facts,
+                    }
+                )
+            if ledger.get("phase") == "continuity_failure":
+                issues.append(
+                    {
+                        "code": "RUN_CONTINUITY_FAILURE",
+                        "run_id": run_id,
+                        "action": "preserve the run and inspect its structured ledger events",
+                    }
+                )
             reports.append(
                 {
                     "run_id": run_id,
@@ -12326,6 +12922,7 @@ def _doctor_ledgers(repo: Path) -> tuple[list[dict[str, Any]], list[dict[str, An
                     "ledger": str(path),
                     "worktrees": role_facts,
                     "workspace_intake": ledger.get("workspace_intake"),
+                    "lifecycle_delivery": lifecycle_facts,
                     "evidence": ledger.get("evidence"),
                     "finalize_intent": ledger.get("finalize_intent"),
                     "verification_attempts": verification_attempt_count(ledger),
@@ -12394,6 +12991,11 @@ def cmd_doctor(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
             raise RuntimeProblem(
                 f"run not found: {selected_run_id}", code="RUN_NOT_FOUND"
             )
+    selected_lifecycle = (
+        reports[0].get("lifecycle_delivery")
+        if selected_run_id is not None and len(reports) == 1
+        else None
+    )
     return {
         "status": "READY" if not issues else "NEEDS_USER",
         "message": (
@@ -12404,6 +13006,7 @@ def cmd_doctor(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         "repo": str(repo),
         "runs": reports,
         "issues": issues,
+        "lifecycle_delivery": selected_lifecycle,
         "read_only": True,
     }, EXIT_PASS if not issues else EXIT_FAIL
 
@@ -12667,10 +13270,50 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _drain_before_command(args: argparse.Namespace) -> None:
+    command = str(getattr(args, "command", ""))
+    if command in {"plan-validate", "workspace-scan", "start", "agent-event"}:
+        return
+    selector = getattr(args, "run", None)
+    if selector:
+        repo, run_id, ledger = resolve_run_selector(
+            getattr(args, "repo", "."), selector
+        )
+        if ledger.get("phase") in ACTIVE_PHASES:
+            try:
+                drain_lifecycle_events(repo, run_id)
+            except RuntimeProblem as exc:
+                if command not in {"status", "doctor"} or not exc.code.startswith(
+                    "LIFECYCLE_"
+                ):
+                    raise
+        return
+    session_id = str(getattr(args, "session_id", "") or "").strip()
+    if command == "status" and session_id:
+        try:
+            route = lifecycle_delivery.load_route(session_id)
+        except lifecycle_delivery.LifecycleDeliveryError as exc:
+            raise RuntimeProblem(str(exc), code=exc.code) from exc
+        if route is not None:
+            repo = resolve_repo(str(route["repo_root"]))
+            run_id = ensure_run_id(str(route["run_id"]))
+            args.repo = str(repo)
+            try:
+                drain_lifecycle_events(repo, run_id)
+            except RuntimeProblem as exc:
+                if exc.code != "LEDGER_INVALID":
+                    raise
+                # Preserve the mature session-scan diagnostic contract. The
+                # status handler will scan the routed repository and report
+                # the invalid ledger as LEDGER_SCAN_INVALID with its path.
+                return
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     try:
         args = parser.parse_args(argv)
+        _drain_before_command(args)
         payload, exit_code = args.handler(args)
         return emit(payload, exit_code)
     except RuntimeProblem as exc:

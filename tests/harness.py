@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -15,6 +16,7 @@ from typing import Any, Iterable, Mapping
 
 ROOT = Path(__file__).resolve().parents[1]
 CLI = ROOT / "scripts" / "codex-builder-loop.py"
+_FIXTURE_RUNTIME_DIRS: dict[Path, Path] = {}
 
 
 @dataclass(frozen=True)
@@ -56,8 +58,21 @@ def run_cli(
 ) -> ProcessResult:
     if not CLI.is_file():
         raise AssertionError(f"runtime missing: {CLI}")
+    inferred_env: dict[str, str] = {}
+    candidates = [Path(str(value)).resolve() for value in args if os.sep in str(value)]
+    if cwd is not None:
+        candidates.append(Path(cwd).resolve())
+    for repo, runtime_dir in _FIXTURE_RUNTIME_DIRS.items():
+        if any(candidate == repo or repo in candidate.parents for candidate in candidates):
+            inferred_env["XDG_RUNTIME_DIR"] = str(runtime_dir)
+            break
+    if env:
+        inferred_env.update({str(key): str(value) for key, value in env.items()})
     cp = run_process(
-        [sys.executable, CLI, *args], cwd=cwd, env=env, input_text=input_text
+        [sys.executable, CLI, *args],
+        cwd=cwd,
+        env=inferred_env,
+        input_text=input_text,
     )
     lines = [line.strip() for line in cp.stdout.splitlines() if line.strip()]
     if not lines:
@@ -126,6 +141,7 @@ def git(repo: str | os.PathLike[str], *args: str, check: bool = True) -> str:
 
 def init_repo(files: Mapping[str, str] | None = None) -> Path:
     repo = Path(tempfile.mkdtemp(prefix="codex-builder-loop-test-"))
+    fixture_runtime_env(repo)
     git(repo, "init", "-q", "-b", "main")
     git(repo, "config", "user.email", "builder-loop@test.local")
     git(repo, "config", "user.name", "builder-loop fixture")
@@ -178,10 +194,31 @@ def init_repo(files: Mapping[str, str] | None = None) -> Path:
     return repo
 
 
+def repo_session_id(repo: str | os.PathLike[str], label: str = "fixture") -> str:
+    """Return a stable fake session identity scoped to one absolute repository."""
+    resolved = str(Path(repo).resolve())
+    digest = hashlib.sha256(resolved.encode()).hexdigest()[:16]
+    safe_label = re.sub(r"[^a-z0-9-]+", "-", label.lower()).strip("-") or "fixture"
+    return f"{safe_label}-{digest}"
+
+
+def fixture_runtime_env(repo: str | os.PathLike[str]) -> dict[str, str]:
+    resolved = Path(repo).resolve()
+    runtime_dir = _FIXTURE_RUNTIME_DIRS.get(resolved)
+    if runtime_dir is None:
+        runtime_dir = Path(tempfile.mkdtemp(prefix="builder-loop-xdg-"))
+        runtime_dir.chmod(0o700)
+        _FIXTURE_RUNTIME_DIRS[resolved] = runtime_dir
+    return {"XDG_RUNTIME_DIR": str(runtime_dir)}
+
+
 def cleanup_repo(repo: Path) -> None:
+    runtime_dir = _FIXTURE_RUNTIME_DIRS.pop(repo.resolve(), None)
     if repo.exists():
         git(repo, "worktree", "prune", check=False)
         shutil.rmtree(repo, ignore_errors=True)
+    if runtime_dir is not None:
+        shutil.rmtree(runtime_dir, ignore_errors=True)
 
 
 def commit_all(repo: str | os.PathLike[str], message: str) -> str:
@@ -393,7 +430,15 @@ def write_plan(repo: Path, text: str, name: str = "plan.md") -> Path:
     return path
 
 
-def start_run(repo: Path, plan: Path, *, task: str = "fixture task") -> tuple[ProcessResult, Path]:
+def start_run(
+    repo: Path,
+    plan: Path,
+    *,
+    task: str = "fixture task",
+    session_id: str | None = None,
+    env: Mapping[str, str] | None = None,
+) -> tuple[ProcessResult, Path]:
+    resolved_session_id = session_id or repo_session_id(repo)
     result = run_cli(
         "start",
         "--repo",
@@ -403,7 +448,8 @@ def start_run(repo: Path, plan: Path, *, task: str = "fixture task") -> tuple[Pr
         "--task",
         task,
         "--session-id",
-        "fixture-session",
+        resolved_session_id,
+        env=env,
     )
     assert_status(result, "READY", rc=0)
     run_id = result.data.get("run_id")
@@ -596,7 +642,10 @@ def start_agent_turn(
         turn_id,
         "--event",
         "start",
-        env={"BUILDER_LOOP_HOOK_EVENT": "1"},
+        env={
+            "BUILDER_LOOP_HOOK_EVENT": "1",
+            "BUILDER_LOOP_AGENT_EVENT_APPLY": "1",
+        },
     )
     if event_result.data.get("status") not in {"READY", "NOOP"} or event_result.returncode != 0:
         raise AssertionError(
@@ -640,7 +689,10 @@ def finish_agent_turn(
         "idle",
         "--result",
         result,
-        env={"BUILDER_LOOP_HOOK_EVENT": "1"},
+        env={
+            "BUILDER_LOOP_HOOK_EVENT": "1",
+            "BUILDER_LOOP_AGENT_EVENT_APPLY": "1",
+        },
     )
     if event_result.data.get("status") not in {"READY", "NOOP"} or event_result.returncode != 0:
         raise AssertionError(

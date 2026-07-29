@@ -16,6 +16,7 @@ from harness import (
     load_ledger,
     plan_markdown,
     problem_snapshot,
+    repo_session_id,
     revised_plan_with_prior_problems,
     run_cli,
     write_plan,
@@ -59,7 +60,7 @@ class StartContractTest(unittest.TestCase):
             "--task",
             "public contract fixture",
             "--session-id",
-            "task-session",
+            repo_session_id(self.repo, "task"),
         )
         assert_status(result, "READY", rc=0)
         run_id = result.data.get("run_id")
@@ -85,7 +86,7 @@ class StartContractTest(unittest.TestCase):
             "--run",
             "explicit-fixture-run",
             "--session-id",
-            "explicit-session",
+            repo_session_id(self.repo, "explicit"),
         )
         assert_status(result, "READY", rc=0)
         self.assertEqual(result.data.get("run_id"), "explicit-fixture-run")
@@ -139,7 +140,7 @@ class StartContractTest(unittest.TestCase):
             "--run",
             "dirty-target-start",
             "--session-id",
-            "dirty-target-session",
+            repo_session_id(self.repo, "dirty-target"),
         )
         assert_status(started, "READY", rc=0)
         self.assertEqual(
@@ -159,7 +160,7 @@ class StartContractTest(unittest.TestCase):
             "--plan",
             self.plan,
             "--session-id",
-            "missing-selector-session",
+            repo_session_id(self.repo, "missing-selector"),
         )
         assert_status(result, "FATAL", rc=2)
         self.assertEqual(result.data.get("code"), "RUN_OR_TASK_REQUIRED")
@@ -192,7 +193,7 @@ class StartContractTest(unittest.TestCase):
             "--task",
             "l1 docs fixture",
             "--session-id",
-            "l1-session",
+            repo_session_id(self.repo, "l1"),
         )
         assert_status(result, "READY", rc=0)
         self.assertIs(result.data.get("parallel_ready"), False)
@@ -242,7 +243,7 @@ class StartContractTest(unittest.TestCase):
             "--run",
             "unsupported-v1",
             "--session-id",
-            "unsupported-v1-session",
+            repo_session_id(self.repo, "unsupported-v1"),
         )
 
         assert_status(result, "NEEDS_USER", rc=1)
@@ -278,7 +279,7 @@ class StartContractTest(unittest.TestCase):
             "--run",
             "repository-runner",
             "--session-id",
-            "repository-runner-session",
+            repo_session_id(self.repo, "repository-runner"),
         )
 
         assert_status(result, "READY", rc=0)
@@ -312,7 +313,7 @@ class StartContractTest(unittest.TestCase):
             "--run",
             "inline-repository-runner",
             "--session-id",
-            "inline-repository-runner-session",
+            repo_session_id(self.repo, "inline-repository-runner"),
         )
 
         for result in (validated, started):
@@ -354,7 +355,7 @@ class StartContractTest(unittest.TestCase):
             "--task",
             "empty stage",
             "--session-id",
-            "empty-stage-session",
+            repo_session_id(self.repo, "empty-stage"),
         )
         assert_status(result, "FATAL", rc=2)
         self.assertEqual(result.data.get("code"), "LOOP_CONFIG_INVALID")
@@ -374,7 +375,7 @@ class StartContractTest(unittest.TestCase):
                 "--run",
                 run_id,
                 "--session-id",
-                "shared-concurrent-session",
+                repo_session_id(self.repo, "shared-concurrent"),
             )
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
@@ -406,7 +407,7 @@ class StartContractTest(unittest.TestCase):
             "--run",
             "stale-l1-run",
             "--session-id",
-            "stale-l1-session",
+            repo_session_id(self.repo, "stale-l1"),
         )
         assert_status(result, "NEEDS_USER", rc=1)
         self.assertEqual(result.data.get("code"), "TARGET_SPEC_MISMATCH")
@@ -431,7 +432,7 @@ class StartContractTest(unittest.TestCase):
             "--run",
             "l1-invalid-runner",
             "--session-id",
-            "l1-invalid-runner-session",
+            repo_session_id(self.repo, "l1-invalid-runner"),
         )
         assert_status(result, "READY", rc=0)
         ledger = load_ledger(Path(result.data["run_path"]))
@@ -453,7 +454,7 @@ class StartContractTest(unittest.TestCase):
             "--run",
             "missing-runner",
             "--session-id",
-            "missing-runner-session",
+            repo_session_id(self.repo, "missing-runner"),
         )
         assert_status(result, "NEEDS_USER", rc=1)
         self.assertEqual(result.data.get("code"), "RUNNER_NOT_FROZEN")
@@ -478,7 +479,7 @@ class StartContractTest(unittest.TestCase):
             "--run",
             "symlink-runner",
             "--session-id",
-            "symlink-runner-session",
+            repo_session_id(self.repo, "symlink-runner"),
         )
         assert_status(result, "NEEDS_USER", rc=1)
         self.assertEqual(result.data.get("code"), "RUNNER_ENTRY_NOT_REGULAR")
@@ -493,7 +494,7 @@ class StartContractTest(unittest.TestCase):
             "--run",
             "superseded-run",
             "--session-id",
-            "superseded-session",
+            repo_session_id(self.repo, "superseded"),
         )
         assert_status(first, "READY", rc=0)
         run_path = Path(first.data["run_path"])
@@ -520,7 +521,7 @@ class StartContractTest(unittest.TestCase):
             "--run",
             "replacement-run",
             "--session-id",
-            "replacement-session",
+            repo_session_id(self.repo, "replacement"),
         )
         assert_status(result, "READY", rc=0)
 

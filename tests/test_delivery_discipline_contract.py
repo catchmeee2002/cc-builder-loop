@@ -70,7 +70,11 @@ class DeliveryDisciplineContractTest(unittest.TestCase):
             git_lines("ls-tree", "-r", "--name-only", SPEC_HEAD, "--", "runtime/codex_builder_loop")
         )
         after_modules = set(git_lines("ls-tree", "-r", "--name-only", "HEAD", "--", "runtime/codex_builder_loop"))
-        self.assertEqual(after_modules, before_modules)
+        self.assertLessEqual(before_modules, after_modules)
+        self.assertLessEqual(
+            after_modules - before_modules,
+            {"runtime/codex_builder_loop/lifecycle.py"},
+        )
         before_requirements = subprocess.run(
             ["git", "show", f"{SPEC_HEAD}:requirements-dev.txt"],
             cwd=ROOT,

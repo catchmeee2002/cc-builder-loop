@@ -12,7 +12,14 @@ import os
 import shutil
 import subprocess
 import sys
+from pathlib import Path
 from typing import Any
+
+
+SOURCE_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(SOURCE_ROOT / "runtime"))
+
+from codex_builder_loop import lifecycle as lifecycle_delivery  # noqa: E402
 
 
 ROLE_MARKERS = {
@@ -106,35 +113,24 @@ def agent_event(
     agent_id = str(event.get("agent_id") or "")
     turn_id = str(event.get("turn_id") or "")
     session_id = str(event.get("session_id") or "")
-    cwd = str(event.get("cwd") or os.getcwd())
     if role not in ROLE_MARKERS:
         return role, None
     if not agent_id or not turn_id or not session_id:
         return role, "builder-loop agent hook 缺少 agent_id、turn_id 或 session_id"
 
-    args = [
-        "agent-event",
-        "--repo",
-        cwd,
-        "--session-id",
-        session_id,
-        "--role",
-        role,
-        "--agent-id",
-        agent_id,
-        "--turn-id",
-        turn_id,
-        "--event",
-        lifecycle,
-    ]
-    if result_value is not None:
-        args.extend(["--result", result_value])
-    payload, error = run_runtime(*args, cwd=cwd)
-    if error:
-        return role, error
-    status = payload.get("status")
-    if status in WARNING_STATUSES:
-        return role, str(payload.get("message") or status)
+    try:
+        envelope, event_path = lifecycle_delivery.enqueue_event(
+            session_id=session_id,
+            role=role,
+            agent_id=agent_id,
+            turn_id=turn_id,
+            event=lifecycle,
+            result=result_value,
+        )
+        if envelope is None or event_path is None:
+            return role, "LIFECYCLE_RECEIPT_MISSING: lifecycle event was not persisted"
+    except lifecycle_delivery.LifecycleDeliveryError as exc:
+        return role, f"{exc.code}: {exc}"
     return role, None
 
 
@@ -188,6 +184,17 @@ def subagent_stop(event: dict[str, Any]) -> None:
         return
 
     _role, warning = agent_event(event, "idle", result_value)
+    if warning and not already_continued:
+        emit(
+            {
+                "decision": "block",
+                "reason": (
+                    "builder-loop 尚未可靠接收本轮角色完成事件；"
+                    f"请保持同一 turn 并再次输出 {marker} {result_value}。原因：{warning}"
+                ),
+            }
+        )
+        return
     result: dict[str, Any] = {}
     if warning:
         result["systemMessage"] = warning

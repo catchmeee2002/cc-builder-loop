@@ -175,7 +175,7 @@ def _finish_blackbox_turn(fixture: ProofFixture) -> dict[str, Any]:
         "idle",
         "--result",
         "pass",
-        env={"BUILDER_LOOP_HOOK_EVENT": "1"},
+        env={"BUILDER_LOOP_HOOK_EVENT": "1", "BUILDER_LOOP_AGENT_EVENT_APPLY": "1"},
     )
     assert_status(completed, "READY", rc=0)
     return prepared.data
@@ -1023,7 +1023,7 @@ cases:
             "idle",
             "--result",
             "fail",
-            env={"BUILDER_LOOP_HOOK_EVENT": "1"},
+            env={"BUILDER_LOOP_HOOK_EVENT": "1", "BUILDER_LOOP_AGENT_EVENT_APPLY": "1"},
         )
         self.assertNotEqual(
             invalid.returncode,
@@ -1063,7 +1063,7 @@ cases:
             "idle",
             "--result",
             "findings",
-            env={"BUILDER_LOOP_HOOK_EVENT": "1"},
+            env={"BUILDER_LOOP_HOOK_EVENT": "1", "BUILDER_LOOP_AGENT_EVENT_APPLY": "1"},
         )
         assert_status(findings, "READY", rc=0)
         assert_status(

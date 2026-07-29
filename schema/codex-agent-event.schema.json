@@ -1,0 +1,148 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/catchmeee2002/cc-builder-loop/schema/codex-agent-event.schema.json",
+  "title": "Codex Builder Loop Agent Event Delivery Envelope",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "event_id",
+    "binding_sha256",
+    "session_id",
+    "run_id",
+    "repo_root",
+    "role",
+    "agent_id",
+    "turn_id",
+    "event",
+    "result",
+    "tester_baseline",
+    "captured_at"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "event_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "binding_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "session_id": {"type": "string", "minLength": 1},
+    "run_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+    },
+    "repo_root": {"type": "string", "minLength": 1},
+    "role": {"enum": ["tester", "reviewer"]},
+    "agent_id": {"type": "string", "minLength": 1},
+    "turn_id": {"type": "string", "minLength": 1},
+    "event": {"enum": ["start", "idle", "closed"]},
+    "result": {
+      "oneOf": [
+        {
+          "enum": [
+            "tests_ready",
+            "pass",
+            "fail",
+            "target_change_required",
+            "blocked",
+            "findings"
+          ]
+        },
+        {"type": "null"}
+      ]
+    },
+    "tester_baseline": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {"enum": ["initial-author", "follow-up"]},
+            "expected_head": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+            "tester_head": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+            "agent_id": {"type": "string", "minLength": 1},
+            "dispatch_id": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
+            "previous_turn_id": {"type": "string", "minLength": 1},
+            "purpose": {"enum": ["author", "blackbox"]},
+            "role_head": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+            "dirty_paths": {
+              "type": "array",
+              "items": {"type": "string", "minLength": 1},
+              "maxItems": 0
+            }
+          },
+          "oneOf": [
+            {
+              "required": ["kind", "expected_head", "tester_head", "dirty_paths"],
+              "properties": {
+                "kind": {"const": "initial-author"}
+              }
+            },
+            {
+              "required": [
+                "kind",
+                "agent_id",
+                "dispatch_id",
+                "previous_turn_id",
+                "purpose",
+                "role_head",
+                "dirty_paths"
+              ],
+              "properties": {
+                "kind": {"const": "follow-up"}
+              }
+            }
+          ]
+        },
+        {"type": "null"}
+      ]
+    },
+    "captured_at": {"type": "string", "format": "date-time"}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"event": {"const": "idle"}}},
+      "then": {"properties": {"result": {"not": {"type": "null"}}}},
+      "else": {"properties": {"result": {"type": "null"}}}
+    },
+    {
+      "if": {
+        "properties": {
+          "role": {"const": "tester"},
+          "event": {"const": "start"}
+        },
+        "required": ["role", "event"]
+      },
+      "then": {"properties": {"tester_baseline": {"type": "object"}}},
+      "else": {"properties": {"tester_baseline": {"type": "null"}}}
+    },
+    {
+      "if": {"properties": {"role": {"const": "reviewer"}}},
+      "then": {
+        "properties": {
+          "result": {
+            "oneOf": [
+              {"enum": ["pass", "findings", "blocked"]},
+              {"type": "null"}
+            ]
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "result": {
+            "oneOf": [
+              {
+                "enum": [
+                  "tests_ready",
+                  "pass",
+                  "fail",
+                  "target_change_required",
+                  "blocked"
+                ]
+              },
+              {"type": "null"}
+            ]
+          }
+        }
+      }
+    }
+  ]
+}

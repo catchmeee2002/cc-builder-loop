@@ -180,7 +180,22 @@ Git 结果和事件，不保存模型推理或复制测试目标。问题内容�
 调用因此不会向调用方 worktree 写入 runtime `__pycache__`。显式 `py_compile` 与绕过稳定入口的
 任意 import 保持 Python 原语义；runtime 不以清理 residue 冒充预防。
 
-Hook 使用 Codex 提供的 `session_id` 找到唯一 active run：
+Hook 使用 Codex 提供的 `session_id` 找到唯一 active run。`start` 会在当前用户的私有 runtime
+目录创建 locator，保存 repo/run 绑定、是否仍接收事件，以及首次 Tester Start 的冻结 baseline
+attestation；`prepare-follow-up` 在 spawn 前把同一 Tester thread 的 pending dispatch attestation
+原子更新到 locator。Hook 因此只读私有 locator 并写 journal，不依赖事件 `cwd`、Git 扫描或 run
+ledger I/O。locator 是可由 ledger 重建的派生索引，不记录执行结论，也不能覆盖 ledger 中的 owner
+identity；终态 run 未排空 journal 时会先关闭新事件接收并保留现场。
+
+Subagent 生命周期采用 write-ahead delivery：Hook 只校验原生身份与最终结果标记，并把 versioned
+event envelope 原子写入同一 session 的 delivery journal。journal entry 是尚未折叠的交付意图，
+不是第二份角色事实；runtime 在任何消费角色状态的 gate 前，按 event id 幂等折叠到 ledger 的
+`agents`、`pending_agent_turns`、`completed_agent_turns` 与 `events`，成功后才删除 entry。这样 Hook
+热路径不扫描 Git、不等待 run ledger 锁，也不因固定 subprocess timeout 丢掉已经完成的 turn。
+locator、journal 和 ledger 的 session/repo/run binding 任一不一致时 fail closed；未知 entry 不
+adopt、不删除，矛盾的合法来源事件进入结构化 continuity failure。
+
+具体生命周期规则：
 
 - SessionStart 只注入当前 session 身份和使用提示。
 - `SubagentStart` 属于 subagent/thread 创建事件，不保证在同一 thread 的 follow-up turn 再次触发；
@@ -193,6 +208,9 @@ Hook 使用 Codex 提供的 `session_id` 找到唯一 active run：
   pending follow-up，已完成 turn 不能重放。Tester author correction 在 prepare 时立即使旧
   integration attestation 失效；Reviewer follow-up 的 prerequisite start snapshot 也在 prepare
   时冻结，不能用完成时快照倒填。
+- Hook 只有在 terminal envelope 已可靠写入 journal 后才允许角色完成；短暂 ledger contention
+  只会延后 fold，不会降级成 warning 后放行。`status` 与 `doctor` 公开 locator、queued event 与
+  blocked delivery 状态，使“角色仍在运行”和“完成事件未交付”可机械区分。
 - Stop 仅在 run 仍为 ACTIVE 时返回 Codex 的 continuation block。Builder 通过
   `BUILDER_INPUT_REQUIRED:<run_id>` 明确进入用户等待；冲突、continuity failure、fatal、
   完成或歧义状态均允许停止并展示原因。

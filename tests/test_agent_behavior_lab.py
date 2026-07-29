@@ -12,6 +12,9 @@ from harness import ROOT, git, run_process
 
 
 RUNNER = ROOT / "experiments" / "agent-behavior" / "runner.py"
+BUILDER_SKILL = ROOT / "skills" / "builder" / "SKILL.md"
+FROZEN_BUILDER_BLOB = "b46ee4e34d4622b0f028b537bfb02875e99c2d16"
+FROZEN_BUILDER_SHA256 = "811aef1766a7180103c6ea14c1f930594e3b059211e26d2f8ca023ff8403f0b5"
 
 
 def json_values(text: str) -> list[Any]:
@@ -38,6 +41,26 @@ def recursive_values(value: Any, key: str) -> list[Any]:
 
 
 class AgentBehaviorLabTest(unittest.TestCase):
+    def test_builder_current_binds_the_frozen_builder_skill(self) -> None:
+        variants = json.loads(
+            (ROOT / "experiments" / "agent-behavior" / "variants.json").read_text()
+        )
+        current = next(
+            item for item in variants["variants"] if item["id"] == "builder-current"
+        )
+        source = current["instruction_source"]
+
+        self.assertEqual(source["path"], "skills/builder/SKILL.md")
+        self.assertEqual(source["sha256"], FROZEN_BUILDER_SHA256)
+        self.assertEqual(
+            hashlib.sha256(BUILDER_SKILL.read_bytes()).hexdigest(),
+            FROZEN_BUILDER_SHA256,
+        )
+        self.assertEqual(
+            git(ROOT, "rev-parse", "HEAD:skills/builder/SKILL.md"),
+            FROZEN_BUILDER_BLOB,
+        )
+
     def test_prepare_and_score_are_deterministic_offline_and_ephemeral(self) -> None:
         self.assertTrue(RUNNER.is_file(), RUNNER)
         before_status = git(ROOT, "status", "--porcelain", "--untracked-files=all")

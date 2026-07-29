@@ -1,15 +1,17 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import unittest
 
-from harness import ROOT
+from harness import ROOT, git
 
 
 SKILL_DIR = ROOT / "skills" / "file-github-issue"
 SKILL_PATH = SKILL_DIR / "SKILL.md"
 METADATA_PATH = SKILL_DIR / "agents" / "openai.yaml"
+SPEC_HEAD = "492db76a1f3fb4a59532c2dfffce61850c9d66ac"
 
 
 def compact(text: str) -> str:
@@ -42,10 +44,23 @@ class FileGithubIssueSkillTest(unittest.TestCase):
     def test_explicit_issue_action_is_authorization_without_second_confirmation(self) -> None:
         skill = compact(SKILL_PATH.read_text())
 
-        self.assertIn(compact("这条指令已经授权相应 GitHub 写操作"), skill)
-        self.assertIn(compact("不要再次询问是否执行"), skill)
+        self.assertIn(compact("用户已经要求相应动作时不得再次请求确认"), skill)
+        self.assertIn(compact("用户已要求创建、补充或关闭 Issue"), skill)
+        self.assertIn(compact("直接执行范围内的评论和标签更新"), skill)
+        self.assertIn(compact("关闭仍需用户明确要求或任务明确要求"), skill)
         self.assertIn(compact("没有 GitHub 写入授权时，只向用户报告"), skill)
+        self.assertIn(compact("仓库归属不明确"), skill)
+        self.assertIn(compact("证据可能含凭据或个人数据"), skill)
+        self.assertIn(compact("改变产品目标或设计原则"), skill)
         self.assertIn("request_user_input", skill)
+        self.assertEqual(
+            git(ROOT, "rev-parse", "HEAD:skills/file-github-issue/SKILL.md"),
+            git(ROOT, "rev-parse", f"{SPEC_HEAD}:skills/file-github-issue/SKILL.md"),
+        )
+        self.assertEqual(
+            hashlib.sha256(SKILL_PATH.read_bytes()).hexdigest(),
+            "48cd3142d8d14cb003863198b8f35e7b01af4bcb08c8ecd49dc1ab8a47dc179c",
+        )
 
     def test_issue_preserves_facts_without_anchoring_a_fix(self) -> None:
         skill = compact(SKILL_PATH.read_text())

@@ -16,6 +16,7 @@ from harness import (
     plan_markdown,
     record_evidence,
     register_agent,
+    repo_session_id,
     run_cli,
     start_run,
     worktrees_from,
@@ -324,7 +325,7 @@ class EvidenceHeadContractTest(unittest.TestCase):
             "--repo",
             self.repo,
             "--session-id",
-            "fixture-session",
+            repo_session_id(self.repo),
             "--role",
             "tester",
             "--agent-id",
@@ -335,7 +336,7 @@ class EvidenceHeadContractTest(unittest.TestCase):
             "idle",
             "--result",
             "pass",
-            env={"BUILDER_LOOP_HOOK_EVENT": "1"},
+            env={"BUILDER_LOOP_HOOK_EVENT": "1", "BUILDER_LOOP_AGENT_EVENT_APPLY": "1"},
         )
         assert_status(completed, "READY", rc=0)
         ledger = load_ledger(run_path)

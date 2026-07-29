@@ -16,6 +16,7 @@ from harness import (
     init_repo,
     l1_plan_markdown,
     plan_markdown,
+    repo_session_id,
     run_cli,
     run_process,
     write_plan,
@@ -572,7 +573,7 @@ class PlanContractTest(unittest.TestCase):
             "--task",
             "typed interface",
             "--session-id",
-            "typed-interface-session",
+            repo_session_id(self.repo, "typed-interface"),
         )
         assert_status(result, "NEEDS_USER", rc=1)
         self.assertEqual(git(self.repo, "worktree", "list", "--porcelain").count("worktree "), 1)
