@@ -93,8 +93,9 @@ def extra_context(event: str, text: str) -> dict[str, Any]:
 def session_start(event: dict[str, Any]) -> None:
     session_id = str(event.get("session_id") or "")
     context = (
-        "Builder-loop Codex adapter 已启用。Plan mode 使用 $builder-loop-planner；"
-        "只有用户显式调用 $builder 才启动交付 loop。根线程是协调者和 builder-owned "
+        "Builder-loop Codex adapter 已启用。此 SessionStart context 只提供 adapter 状态，"
+        "不构成 Builder-loop 启动授权；是否加载 Builder Skill 和启动 run 必须服从适用 "
+        "AGENTS 中的 Codex Builder Loop 授权契约。根线程是协调者和 builder-owned "
         "实现写入者；tester 与 reviewer 必须使用各自 custom agent。"
     )
     if session_id:
