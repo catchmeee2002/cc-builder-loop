@@ -71,6 +71,13 @@ digest 写入 ledger。Tester 以 publication HEAD 为 author baseline，不接�
 candidate diff 或其他实现内容。中间 Builder 历史不会进入 Tester baseline；当前版本仍不宣称 Git
 object database 具有操作系统级读 ACL。
 
+publication 改变 initial Tester author baseline 后，runtime 先持久化 ledger 中的 publication 与
+`tester_integration.base_head`，再把同一干净 Tester HEAD 同步到 session locator 的 start
+attestation，确认成功后才返回 `READY`。若响应或 locator 写入中断，`publish-prerequisites` 的
+幂等重试只在 Tester 仍停在该干净 publication baseline、且尚未绑定 Tester identity 时修复派生
+locator；Tester 已前进而 start identity 尚不可证明时保持 fail closed。Hook 与 journal fold 不读取
+后续 live Git 状态来倒填捕获时事实。
+
 v3 的 `e2e-cases` 只有一个 `schema_version=1 + cases` 格式。完整 case 继续只存在冻结计划；ledger
 只保存 case ids 和规范摘要。`prepare-follow-up --purpose blackbox` 每次从 frozen cases 派生 report
 版本、schema 路径及 mechanical/verify/quality 的 `required|not_applicable`，不持久化第二份 case

@@ -5890,12 +5890,7 @@ def cmd_start_locked(args: argparse.Namespace, repo: Path) -> tuple[dict[str, An
             run_id=run_id,
             ledger_path=str(ledger_path(repo, run_id)),
             tester_start_attestation=(
-                {
-                    "kind": "initial-author",
-                    "expected_head": spec_head,
-                    "tester_head": full_head(tester_path),
-                    "dirty_paths": worktree_residue(tester_path),
-                }
+                initial_tester_start_attestation(ledger)
                 if contract.level != "L1"
                 else None
             ),
@@ -5959,6 +5954,65 @@ def cmd_role_check(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
     }, EXIT_PASS
 
 
+def initial_tester_start_attestation(ledger: dict[str, Any]) -> dict[str, Any]:
+    tester = Path(str(ledger["worktrees"]["tester"]["path"]))
+    expected_head = str(ledger["tester_integration"]["base_head"])
+    tester_head = full_head(tester)
+    dirty_paths = worktree_residue(tester)
+    if tester_head != expected_head or dirty_paths:
+        raise RuntimeProblem(
+            "Tester author worktree does not match its frozen baseline",
+            result="NEEDS_USER",
+            code="TESTER_AUTHOR_BASELINE_MISMATCH",
+            details={
+                "expected_head": expected_head,
+                "tester_head": tester_head,
+                "dirty_paths": dirty_paths,
+            },
+            exit_code=EXIT_FAIL,
+        )
+    return {
+        "kind": "initial-author",
+        "expected_head": expected_head,
+        "tester_head": tester_head,
+        "dirty_paths": [],
+    }
+
+
+def sync_initial_tester_start_attestation(ledger: dict[str, Any]) -> dict[str, Any] | None:
+    if ledger.get("plan", {}).get("level") == "L1":
+        return None
+    current = ledger.get("agents", {}).get("tester")
+    if current is not None:
+        return None
+    pending = ledger.get("pending_agent_turns", {}).get("tester")
+    if isinstance(pending, dict):
+        raise RuntimeProblem(
+            "initial Tester attestation cannot replace a prepared follow-up",
+            result="NEEDS_USER",
+            code="TESTER_FOLLOW_UP_ATTESTATION_MISMATCH",
+            details={"pending": pending},
+            exit_code=EXIT_FAIL,
+        )
+    attestation = initial_tester_start_attestation(ledger)
+    try:
+        route = lifecycle_delivery.set_tester_start_attestation(
+            str(ledger["owner_session_id"]), attestation
+        )
+    except lifecycle_delivery.LifecycleDeliveryError as exc:
+        raise RuntimeProblem(str(exc), code=exc.code) from exc
+    if route.get("tester_start_attestation") != attestation:
+        raise RuntimeProblem(
+            "lifecycle route did not retain the frozen Tester baseline",
+            code="LIFECYCLE_ROUTE_ATTESTATION_MISMATCH",
+            details={
+                "expected": attestation,
+                "observed": route.get("tester_start_attestation"),
+            },
+        )
+    return attestation
+
+
 def cmd_publish_prerequisites(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
     repo, run_id, _ = resolve_run_selector(args.repo, args.run)
     with locked_run(repo, run_id) as ledger:
@@ -5972,6 +6026,7 @@ def cmd_publish_prerequisites(args: argparse.Namespace) -> tuple[dict[str, Any],
                 "run_id": run_id,
             }, EXIT_PASS
         if publication.get("head") is not None:
+            sync_initial_tester_start_attestation(ledger)
             return {
                 "status": "NOOP",
                 "message": "serial prerequisites were already published",
@@ -6178,6 +6233,7 @@ def cmd_publish_prerequisites(args: argparse.Namespace) -> tuple[dict[str, Any],
             },
         )
         save_ledger(repo, ledger)
+        sync_initial_tester_start_attestation(ledger)
         return {
             "status": "READY",
             "message": "serial prerequisites were published to the Tester baseline",
@@ -11093,12 +11149,7 @@ def ensure_lifecycle_route(repo: Path, run_id: str, ledger: dict[str, Any]) -> N
                     ),
                 }
             elif current is None and ledger.get("plan", {}).get("level") != "L1":
-                tester_attestation = {
-                    "kind": "initial-author",
-                    "expected_head": str(ledger["tester_integration"]["base_head"]),
-                    "tester_head": full_head(tester),
-                    "dirty_paths": worktree_residue(tester),
-                }
+                tester_attestation = initial_tester_start_attestation(ledger)
             lifecycle_delivery.register_route(
                 session_id=session_id,
                 repo_root=str(repo),
