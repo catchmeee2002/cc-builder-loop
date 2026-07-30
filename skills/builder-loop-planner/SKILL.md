@@ -9,21 +9,28 @@ description: 在 Codex Plan mode（/plan）中为代码或文档变更生成 bui
 
 ## 建立上下文
 
-1. 读取适用的 `AGENTS.md`、项目约束和设计哲学。
-2. 检查 Git 根目录、当前 `HEAD`、该 HEAD 是否存在 `.claude/loop.yml`、测试布局、可复制执行的
+1. 若同一 session 紧邻上一轮是 `BUILDER_CONTINUATION_READY:<preparation-run-id>`，本轮直接进入
+   Builder-loop Planner，不重复规划路线卡。首次调用前运行 `status --help`，再用 marker 的 run id
+   查询 runtime；仅当 `status=COMPLETE`、`continuation.ready=true`、owner session、repo、target
+   branch/HEAD 与当前上下文一致且链接未被消费时继续。依据 preparation ledger 的唯一链接读取原
+   abandoned business plan 与问题 snapshot，以 preparation final HEAD 为新 `spec_head`，生成更高
+   business revision，并以老一轮冻结计划（old frozen plan）保持原业务目标；任何 stale、replay、跨 session、跨 repo、未 finalized 或 target drift 都 fail
+   closed，回到普通路线卡或要求显式 run id。不得解析 transcript 重建业务事实。
+2. 读取适用的 `AGENTS.md`、项目约束和设计哲学。
+3. 检查 Git 根目录、当前 `HEAD`、该 HEAD 是否存在 `.claude/loop.yml`、测试布局、可复制执行的
    验证命令、对外接口和 target checkout residue。
-3. 修改或新建 Markdown 前，读取项目声明的适用文档政策；项目未声明时读取
+4. 修改或新建 Markdown 前，读取项目声明的适用文档政策；项目未声明时读取
    `${CODEX_HOME:-$HOME/.codex}/builder-loop/doc-policy.md`。政策不可读时停止文档方案，
    不自行发明替代规则。
-4. 只在答案会实质改变方案时使用 `request_user_input`。不要用纯文本问题替代。
+5. 只在答案会实质改变方案时使用 `request_user_input`。不要用纯文本问题替代。
    选项卡面向用户只说可观察行为和成本，统一使用“老一轮、问题清单、新一轮、本轮解决、已在别处
    处理、不再处理”等白话；`turn`、`finding`、`supersession` 等内部字段只出现在技术方案和证据中。
-5. 不按 diff 大小决定验证深度。按行为变化、接口契约、数据风险和用户可见影响定义证据。
-6. 先按后果判断规划深度：局部可逆任务不强制比较方案；影响广、难回退或范式级任务扩大分析。
-7. 只有高影响选择存在真实分叉时，完整读取
+6. 不按 diff 大小决定验证深度。按行为变化、接口契约、数据风险和用户可见影响定义证据。
+7. 先按后果判断规划深度：局部可逆任务不强制比较方案；影响广、难回退或范式级任务扩大分析。
+8. 只有高影响选择存在真实分叉时，完整读取
    [方案取舍与演进](references/design-decisions.md)。范式级选择必须展示取舍并交还用户决定。
-8. 只有一条可信路径时说明其他方向被什么约束排除，不虚构备选方案，也不恢复固定问卷。
-9. target dirty 默认不带入任务。只有任务明确依赖某个 dirty 文件时，使用选项卡取得 exact-path
+9. 只有一条可信路径时说明其他方向被什么约束排除，不虚构备选方案，也不恢复固定问卷。
+10. target dirty 默认不带入任务。只有任务明确依赖某个 dirty 文件时，使用选项卡取得 exact-path
    授权，再运行 `workspace-scan --repo <repo> --path <path>`；把返回的 path/state digest 原样写入
    `workspace-intake` marker。不得自行选择、复制、stash 或概括成目录/glob。
 
@@ -95,6 +102,26 @@ items:
 
 每个老问题恰好选择一次：`include` 引用真实 behavior/checklist；`handled_elsewhere` 写稳定
 `reference`；`discard` 只在用户明确决定后写非空 `reason`。即使老清单为空也保留 marker。
+
+受保护验证支持需要先准备时，先调用只读
+`plan-preflight --repo <repo> [--run <abandoned-run>] --path <exact-path>...`。当前 runner/control
+重叠只接受 `VERIFICATION_BOOTSTRAP_REQUIRED`；只有旧 run support-only 重叠可创建独立 revision 1
+准备计划，并增加 `verification-preparation` marker，逐字使用 preflight 返回的旧 run id、plan
+digest、problem snapshot、非空 problem ids 和 exact eligible paths。准备计划不得 supersede 业务
+run，且当前 machine runner/control/support 仍不得进入 Builder ownership。
+
+准备 run finalized 后的业务 revision 增加最小 marker：
+
+```markdown
+<!-- continuation-from -->
+schema_version: 1
+preparation_run_id: "<finalized preparation run id>"
+<!-- /continuation-from -->
+```
+
+该 revision 正常 supersede 原 business run，不 supersede preparation run；preflight 链接的 problem
+ids 必须在 `prior-problems` 中 `handled_elsewhere`，reference 包含 preparation final commit，其余
+问题仍逐条处理。续接不绕过本 Skill 的 plan validation 或普通实施授权。
 
 需要运行时行为验收时，使用唯一规范格式：
 
@@ -213,7 +240,8 @@ ownership:
 
 ## 验证方案
 
-1. 首次调用前运行 `codex-builder-loop plan-validate --help`，需要 intake 时再运行
+1. 首次调用前运行 `codex-builder-loop plan-validate --help`；涉及验证支持写入时先运行
+   `codex-builder-loop plan-preflight --help`，需要 intake 时再运行
    `codex-builder-loop workspace-scan --help`，以当前 CLI 为准。
 2. 将完整方案通过 stdin 传给 `codex-builder-loop plan-validate --repo <git-root>`。
 3. 只解析 stdout 最后一行 JSON，并要求至少包含 `status` 与 `message`。
