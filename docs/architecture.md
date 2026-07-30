@@ -52,6 +52,11 @@ spec 必须包含规划时 HEAD、计划版本、接口、测试上下文、角�
 `public_prerequisites`。其中每项必须是 Builder-owned 的精确普通文件路径，不能是 glob、目录或
 symlink。具体字段以 validator 实现和 fixtures 为准。
 
+当新 structured CLI/API 在 planning HEAD 尚无可供独立 Tester 读取的 wire contract 时，计划把
+最终 machine-readable contract 同时列为 `interfaces` 文件输入和 `public_prerequisites`。runtime
+通过 `interface_input_paths` 将其 blob 绑定到隔离 publication；Tester 只从该契约取得 exit、
+status/code、字段层级与场景前提，发布后 Builder 不再修改它，也不以兼容投影迎合错误断言。
+
 非 L1 的 effective verification source 只能有一个。`spec_head` 存在 `.claude/loop.yml` 时，
 该文件是唯一来源且计划必须省略 `test_context.runner`；不存在时，计划必须声明 runner。
 `plan-validate --repo <repo>` 与 `start` 调用同一只读 preflight，统一核对目标分支、supersession、
