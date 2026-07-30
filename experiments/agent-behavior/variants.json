@@ -33,7 +33,7 @@
       "roles": ["reviewer"],
       "instruction_source": {
         "path": "agents/reviewer.toml",
-        "sha256": "cdd4fa28e5a01070a3fe74745d04bc9484385b63d3e38386169c69ba4b364f1f",
+        "sha256": "0cffa93ea0181df91f1edb3c822cf3789f4a98a35de49b749d643feb6a93072a",
         "revision": "WORKTREE"
       }
     },

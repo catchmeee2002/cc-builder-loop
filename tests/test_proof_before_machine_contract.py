@@ -156,17 +156,58 @@ class ProofBeforeMachineContractTest(unittest.TestCase):
         for requirements in cases:
             with self.subTest(requirements=requirements):
                 fixture = self.fixture(requirement_minima=requirements)
-                group = baseline_group()
-                group["behavior_ids"] = list(requirements)
-                before = prove(fixture, group)
+                groups = []
+                for behavior_id, minimum in requirements.items():
+                    group = baseline_group(behavior_id=behavior_id)
+                    if minimum == "reviewed-boundaries":
+                        group.pop("claimed_failure_kind")
+                        group.update(
+                            {
+                                "method": "reviewed-boundaries",
+                                "reason": "Direct positive, negative, boundary, and invariant coverage.",
+                                "reviewed_boundaries": {
+                                    "positive_test_ids": [UNITTEST_ID],
+                                    "negative_test_ids": [UNITTEST_ID],
+                                    "boundary_test_ids": [UNITTEST_ID],
+                                    "invariant_test_ids": [UNITTEST_ID],
+                                },
+                            }
+                        )
+                    groups.append(group)
+                before = run_cli(
+                    "prove-tests",
+                    "--repo",
+                    fixture.repo,
+                    "--run",
+                    fixture.run_path,
+                    "--spec",
+                    "-",
+                    input_text=json.dumps({"schema_version": 1, "groups": groups}),
+                )
                 assert_status(before, "NEEDS_USER", rc=1)
                 self.assertEqual(before.data.get("code"), "TEST_PROOF_MACHINE_MISSING")
                 self.assert_machine_budget_untouched(fixture)
 
                 verified = run_cli("verify", "--run", fixture.run_path)
                 assert_status(verified, "PASS", rc=0)
-                after = prove(fixture, group)
+                after = run_cli(
+                    "prove-tests",
+                    "--repo",
+                    fixture.repo,
+                    "--run",
+                    fixture.run_path,
+                    "--spec",
+                    "-",
+                    input_text=json.dumps({"schema_version": 1, "groups": groups}),
+                )
                 assert_status(after, "READY", rc=0)
+                self.assertCountEqual(
+                    [group["behavior_ids"][0] for group in after.data["groups"]],
+                    requirements,
+                )
+                self.assertTrue(
+                    all(len(group["behavior_ids"]) == 1 for group in after.data["groups"])
+                )
                 self.assertEqual(after.data["test_effectiveness_head"], head(fixture.builder))
 
 if __name__ == "__main__":

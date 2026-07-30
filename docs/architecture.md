@@ -272,12 +272,16 @@ details。只有全部必需 evidence 接受当前候选 HEAD，Tester commits �
 `schema/codex-test-proof.schema.json` 是 `prove-tests` 输入和成功 evidence 的唯一结构来源，使用
 JSON Schema Draft 2020-12，并在标准 examples 中提供 unittest 基线先红与 pytest 受控变异正例；
 runtime parser 实现该契约，不维护第二份字段定义。`prove-tests --spec -` 接受
-`schema_version=1` JSON。每个 group 都含 `behavior_ids`、
+`schema_version=1` JSON。每个 group 都含仅一个元素的 `behavior_ids`、
 `method`、直接执行的 `argv`、`test_ids` 和 1..600 秒 `timeout_seconds`，所有 group 必须
-恰好覆盖冻结 behavior。JSON Schema 视为整数的有限 number（例如 `1.0`、`30.0`）由 parser
+让每个冻结 behavior 恰好出现一次；多 behavior group、重复、缺失或未知 coverage 在任何 proof
+执行前拒绝。JSON Schema 视为整数的有限 number（例如 `1.0`、`30.0`）由 parser
 规范化为整数；布尔值、非整数、NaN 和 Infinity 拒绝。成功 evidence 的 `run_id` 与 runtime/ledger
 共用同一事务身份规则，不生成别名。基线先红还含 `claimed_failure_kind`；`mutation` 另含 unified Git
-`patch`；`reviewed-boundaries` 含 `reason`，且 `reviewed_boundaries` 必须分别提供
+`patch`；成功 mutation evidence 还内联保存 runtime 从隔离 worktree 生成的 canonical full-index
+binary-capable `applied_diff`，并让其文本与 `applied_diff_sha256`、changed paths 和执行结果共同描述
+唯一 mutation。该 diff 进入现有 ledger evidence，不依赖原始 Tester payload、临时 worktree 或
+sidecar artifact。`reviewed-boundaries` 含 `reason`，且 `reviewed_boundaries` 必须分别提供
 `positive_test_ids`、`negative_test_ids`、`boundary_test_ids`、`invariant_test_ids`
 四个非空列表。`argv` 只接受明确支持的非内联测试运行器形态，或 `spec_head` 已存在、由
 `test_context.support_paths` 声明且双方都不可改的仓库脚本；其他命令默认拒绝。allowlisted runner
@@ -306,6 +310,11 @@ env/PATH/PYTHONPATH 字段、命令分发器、内联 shell/解释器控制流�
 skip、xfail、xpass、未执行或额外测试不能借其他通过测试形成 strong proof。失败类型取框架提供的真实
 异常类型；同一 id 的 setup/call/teardown 和 subTest 事件保留累计计数，skip 或非断言错误支配普通
 通过与断言失败。captured stdout、结束摘要或 atexit 追加文本都不参与分类。
+
+runtime 消费 active v3 evidence 时重新核对上述原子 coverage；mutation 还必须含有摘要匹配的
+canonical `applied_diff`。升级前留下的歧义或不可回放 evidence 不再满足当前 gate，只能在冻结目标
+不变时由同一 Tester thread 重新证明；runtime 不 backfill 缺失 diff，也不改写 finalized/abandoned
+历史 ledger。v2 ledger 继续不要求或补写 test-effectiveness evidence。
 
 上述监督进程用于把最终证据写入权、进程退出码和原始输出从普通测试结果判定中分离，防止误用、
 环境污染和空壳证明；它不是对可信 Tester 源码的恶意代码沙箱。同权限 Python 测试可反射或

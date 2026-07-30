@@ -17,7 +17,7 @@ BUILDER_PATH = Path("skills/builder/SKILL.md")
 BUILDER_VARIANTS_PATH = Path("experiments/agent-behavior/variants.json")
 BUILDER_LINE_LIMIT = 278
 REFERENCE_PATH = Path("skills/builder-loop-planner/references/design-decisions.md")
-REVIEWER_BLOB = "69558363c2039f97181a27006d4833d012fb0347"
+REVIEWER_BLOB = "38ad44777231585b235fb9de8fb8b7514a1498c8"
 REVIEWER_PATH = Path("agents/reviewer.toml")
 TESTER_PATH = Path("agents/tester.toml")
 PHILOSOPHY_PATH = Path("docs/design-philosophy.md")
@@ -576,6 +576,9 @@ class PlanningDesignDisciplineTest(unittest.TestCase):
         builder_current = [
             item for item in variants["variants"] if item["id"] == "builder-current"
         ]
+        reviewer_current = [
+            item for item in variants["variants"] if item["id"] == "reviewer-current"
+        ]
 
         self.assertEqual(git_blob("HEAD", PLANNER_PATH), PLANNER_BLOB)
         self.assertEqual(worktree_blob(PLANNER_PATH), PLANNER_BLOB)
@@ -588,6 +591,14 @@ class PlanningDesignDisciplineTest(unittest.TestCase):
             hashlib.sha256((ROOT / BUILDER_PATH).read_bytes()).hexdigest(),
         )
         self.assertEqual(git_blob("HEAD", BUILDER_PATH), worktree_blob(BUILDER_PATH))
+        self.assertEqual(len(reviewer_current), 1, reviewer_current)
+        self.assertEqual(
+            reviewer_current[0]["instruction_source"]["path"], str(REVIEWER_PATH)
+        )
+        self.assertEqual(
+            reviewer_current[0]["instruction_source"]["sha256"],
+            hashlib.sha256((ROOT / REVIEWER_PATH).read_bytes()).hexdigest(),
+        )
         self.assertEqual(git_blob("HEAD", REVIEWER_PATH), REVIEWER_BLOB)
         self.assertEqual(worktree_blob(REVIEWER_PATH), REVIEWER_BLOB)
         self.assertLessEqual(len(read(BUILDER_PATH).splitlines()), BUILDER_LINE_LIMIT)

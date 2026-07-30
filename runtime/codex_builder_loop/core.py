@@ -633,6 +633,50 @@ def evidence_record(ledger: dict[str, Any], key: str) -> dict[str, Any] | None:
     return value if isinstance(value, dict) else None
 
 
+def active_test_effectiveness_record_is_current(
+    ledger: Mapping[str, Any], record: Mapping[str, Any]
+) -> bool:
+    if ledger.get("phase") != "active" or not requires_test_effectiveness(dict(ledger)):
+        return True
+    requirements = ledger.get("plan", {}).get("test_effectiveness_requirements")
+    if not isinstance(requirements, list):
+        return False
+    required_behaviors = [
+        str(item.get("behavior_id"))
+        for item in requirements
+        if isinstance(item, dict) and isinstance(item.get("behavior_id"), str)
+    ]
+    provenance = record.get("provenance")
+    groups = provenance.get("groups") if isinstance(provenance, Mapping) else None
+    if not isinstance(groups, list):
+        return False
+    seen: list[str] = []
+    for group in groups:
+        if not isinstance(group, Mapping):
+            return False
+        behavior_ids = group.get("behavior_ids")
+        if not isinstance(behavior_ids, list) or len(behavior_ids) != 1:
+            return False
+        behavior_id = behavior_ids[0]
+        if not isinstance(behavior_id, str) or not behavior_id:
+            return False
+        seen.append(behavior_id)
+        if group.get("method") == "mutation":
+            mutation = group.get("mutation")
+            if not isinstance(mutation, Mapping):
+                return False
+            applied_diff = mutation.get("applied_diff")
+            applied_diff_sha256 = mutation.get("applied_diff_sha256")
+            if (
+                not isinstance(applied_diff, str)
+                or not applied_diff
+                or not isinstance(applied_diff_sha256, str)
+                or sha256_text(applied_diff) != applied_diff_sha256
+            ):
+                return False
+    return len(seen) == len(set(seen)) and sorted(seen) == sorted(required_behaviors)
+
+
 def recorded_evidence_details(record: dict[str, Any] | None) -> dict[str, Any]:
     if not isinstance(record, dict):
         return {}
@@ -692,7 +736,14 @@ def accepted_blackbox_commands(
 
 
 def evidence_head(ledger: dict[str, Any], key: str) -> str | None:
-    return evidence_contract.record_head(evidence_record(ledger, key))
+    record = evidence_record(ledger, key)
+    if (
+        key == "test_effectiveness"
+        and record is not None
+        and not active_test_effectiveness_record_is_current(ledger, record)
+    ):
+        return None
+    return evidence_contract.record_head(record)
 
 
 def clear_evidence(ledger: dict[str, Any], key: str) -> dict[str, Any] | None:
@@ -8048,6 +8099,8 @@ def normalize_test_proof_spec(
         behavior_ids = _non_empty_strings(
             item.get("behavior_ids"), f"{field}.behavior_ids", errors
         )
+        if len(behavior_ids) != 1:
+            errors.append(f"{field}.behavior_ids must contain exactly one behavior id")
         for behavior_id in behavior_ids:
             if behavior_id not in required_by_behavior:
                 errors.append(f"{field} references unknown behavior id: {behavior_id}")
@@ -8150,6 +8203,15 @@ def normalize_test_proof_spec(
     missing = sorted(set(required_by_behavior) - set(seen_behaviors))
     if missing:
         errors.append("proof groups do not cover behavior ids: " + ", ".join(missing))
+    duplicate_behaviors = sorted(
+        behavior_id
+        for behavior_id in set(seen_behaviors)
+        if seen_behaviors.count(behavior_id) > 1
+    )
+    if duplicate_behaviors:
+        errors.append(
+            "proof groups duplicate behavior ids: " + ", ".join(duplicate_behaviors)
+        )
     if errors:
         raise RuntimeProblem(
             "test proof spec does not match the frozen requirements",
@@ -9657,17 +9719,18 @@ def cmd_prove_tests(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                     changed_paths = validate_mutation_paths(
                         mutation_path, candidate, ledger
                     )
-                    mutation_diff_sha = sha256_text(
-                        git(
-                            mutation_path,
-                            "diff",
-                            "--binary",
-                            "--full-index",
-                            candidate,
-                            "--",
-                            check=True,
-                        ).stdout
-                    )
+                    mutation_diff = git(
+                        mutation_path,
+                        "diff",
+                        "--no-ext-diff",
+                        "--no-textconv",
+                        "--binary",
+                        "--full-index",
+                        candidate,
+                        "--",
+                        check=True,
+                    ).stdout
+                    mutation_diff_sha = sha256_text(mutation_diff)
                     mutation_run = run_proof_argv(
                         group["execution_argv"],
                         framework=str(group["framework"]),
@@ -9686,17 +9749,18 @@ def cmd_prove_tests(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                     mutation_after_paths = git_changed_paths(
                         mutation_path, candidate
                     )
-                    mutation_after_sha = sha256_text(
-                        git(
-                            mutation_path,
-                            "diff",
-                            "--binary",
-                            "--full-index",
-                            candidate,
-                            "--",
-                            check=True,
-                        ).stdout
-                    )
+                    mutation_after_diff = git(
+                        mutation_path,
+                        "diff",
+                        "--no-ext-diff",
+                        "--no-textconv",
+                        "--binary",
+                        "--full-index",
+                        candidate,
+                        "--",
+                        check=True,
+                    ).stdout
+                    mutation_after_sha = sha256_text(mutation_after_diff)
                     if (
                         mutation_run["timed_out"]
                         or mutation_run["returncode"] == 0
@@ -9704,6 +9768,7 @@ def cmd_prove_tests(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                         != "assertion-failure"
                         or mutation_run["worktree_residue"]
                         or mutation_after_paths != changed_paths
+                        or mutation_after_diff != mutation_diff
                         or mutation_after_sha != mutation_diff_sha
                     ):
                         raise RuntimeProblem(
@@ -9724,6 +9789,7 @@ def cmd_prove_tests(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                     result["mutation"] = {
                         **mutation_run,
                         "patch_sha256": sha256_text(str(group["patch"])),
+                        "applied_diff": mutation_diff,
                         "applied_diff_sha256": mutation_diff_sha,
                         "changed_paths": changed_paths,
                         "head_before": candidate,

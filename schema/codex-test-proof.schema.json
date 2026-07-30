@@ -87,6 +87,16 @@
         "pattern": "\\S"
       }
     },
+    "singleBehaviorIds": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "\\S"
+      }
+    },
     "argv": {
       "type": "array",
       "minItems": 1,
@@ -138,7 +148,7 @@
       ],
       "properties": {
         "behavior_ids": {
-          "$ref": "#/$defs/nonEmptyUniqueStrings"
+          "$ref": "#/$defs/singleBehaviorIds"
         },
         "method": {
           "const": "baseline-red"
@@ -170,7 +180,7 @@
       ],
       "properties": {
         "behavior_ids": {
-          "$ref": "#/$defs/nonEmptyUniqueStrings"
+          "$ref": "#/$defs/singleBehaviorIds"
         },
         "method": {
           "const": "mutation"
@@ -205,7 +215,7 @@
       ],
       "properties": {
         "behavior_ids": {
-          "$ref": "#/$defs/nonEmptyUniqueStrings"
+          "$ref": "#/$defs/singleBehaviorIds"
         },
         "method": {
           "const": "reviewed-boundaries"
@@ -572,6 +582,7 @@
             "timed_out",
             "test_result",
             "patch_sha256",
+            "applied_diff",
             "applied_diff_sha256",
             "changed_paths",
             "head_before",
@@ -593,6 +604,11 @@
             "patch_sha256": {
               "type": "string",
               "pattern": "^[0-9a-f]{64}$"
+            },
+            "applied_diff": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^diff --git "
             },
             "applied_diff_sha256": {
               "type": "string",
@@ -628,7 +644,7 @@
       ],
       "properties": {
         "behavior_ids": {
-          "$ref": "#/$defs/nonEmptyUniqueStrings"
+          "$ref": "#/$defs/singleBehaviorIds"
         },
         "method": {
           "enum": [

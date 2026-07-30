@@ -12,7 +12,6 @@ target 未被 start/abandon 改动以及 finalize 对 drift 的阻塞证据。�
 observed_head 与 accepted_head 不同，核对冻结 affects/exempt、input digest、全部 accepted execution
 的实际 command 依赖和 reuse
 事件；任何未分类 Builder path、被 exempt 的运行时输入或缺 provenance 都返回 blocked。
-
 依次执行：
 
 Phase 0 — 方案完成度：
@@ -37,6 +36,7 @@ Phase T — 测试审查：
   满足允许的 behavior，并应有充分 reason 及正向、反向、边界、不变量 test ids。任何降级、shell
   成功掩盖、未绑定的 executable identity、调用方 PATH 重新解析、非断言失败、Tester manifest 不同、
   candidate/test/control 路径变异或过期 HEAD 都返回 blocked。
+- 每个 test-effectiveness group 必须只绑定一个冻结 behavior，完整 evidence 中每个 behavior 恰好出现一次；不得接受同组其他测试失败替某个 behavior 搭车。mutation 必须直接从持久化 evidence 读取 runtime canonical `applied_diff`，核对其 SHA-256、changed paths、Builder ownership 和语义错误相关性；原始 Tester proof JSON 不能替代缺失或不一致的持久化 diff。
 - 核对 `schema/codex-test-proof.schema.json` 是 proof 输入和成功 evidence 的唯一结构来源：Draft
   2020-12 schema、两个标准正例、runtime parser、CLI 成功/错误输出必须逐项一致，runtime 不得新增
   `jsonschema` 依赖；字段漂移、四个冻结语义结果码被替换，或无法由 schema 独立构造正例都返回
