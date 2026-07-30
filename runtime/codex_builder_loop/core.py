@@ -5346,6 +5346,16 @@ def requires_test_effectiveness(ledger: dict[str, Any]) -> bool:
     )
 
 
+def strong_test_proof_precedes_machine(ledger: dict[str, Any]) -> bool:
+    if not requires_test_effectiveness(ledger):
+        return False
+    requirements = ledger.get("plan", {}).get("test_effectiveness_requirements")
+    return bool(requirements) and all(
+        isinstance(item, dict) and item.get("minimum") == "strong"
+        for item in requirements
+    )
+
+
 def required_evidence_keys(ledger: dict[str, Any]) -> list[str]:
     if ledger["plan"].get("level") == "L1":
         return ["review", "doc_review"]
@@ -9431,7 +9441,10 @@ def cmd_prove_tests(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                 details={"tester_integration": integration},
                 exit_code=EXIT_FAIL,
             )
-        if evidence_head(ledger, "machine") != candidate:
+        if (
+            not strong_test_proof_precedes_machine(ledger)
+            and evidence_head(ledger, "machine") != candidate
+        ):
             raise RuntimeProblem(
                 "test proof requires current machine verification",
                 result="NEEDS_USER",

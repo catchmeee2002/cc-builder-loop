@@ -18,7 +18,8 @@ Tester 与 Reviewer。runtime CLI 只处理可确定验证的内容，不替模�
                                                    └→ Tester author baseline
         │ Tester author tests_ready → integrate tester commit
         ▼
-clean candidate verify → test-effectiveness proof → same-thread black-box pass → Reviewer(code/test/docs)
+全 strong v3: test-effectiveness proof → clean candidate verify ─┐
+其他 v3/v2: clean candidate verify → proof（仅适用 v3）──────────┴→ same-thread black-box → Reviewer
         │ all evidence points to candidate HEAD
         ▼
 temporary final ref/worktree → hooks → tree check → target CAS → cleanup
@@ -150,9 +151,10 @@ Builder 与 Tester 使用冻结基线协作：
   和 Reviewer 测试完整性审查后进入可信输入边界。Tester 不得主动篡改测试采集器或伪造框架事件；
   runtime 不以同解释器权限隔离任意恶意 Tester 代码，也不把 Git 可见性或 agent sandbox 描述成
   操作系统级安全边界。
-- v3 Tester author 同时返回一次性测试鉴别 JSON。机器验证通过后，runtime 在隔离 worktree 中执行
-  基线先红或受控变异；允许弱证明的行为可以映射正向、反向、边界和不变量测试，但必须由 Reviewer
-  审核理由。证明不会写回测试目标，也不经 shell 执行命令。
+- v3 Tester author 同时返回一次性测试鉴别 JSON。冻结计划的测试鉴别要求全部为 `strong` 时，runtime
+  在 Tester integration 后、机器验证前执行基线先红或受控变异，以便在昂贵判据前淘汰无鉴别力测试；
+  只要含 `reviewed-boundaries`，仍先完成机器验证，再执行边界和不变量映射并由 Reviewer 审核理由。
+  证明不会写回测试目标，也不经 shell 执行命令；无论顺序如何，机器验证仍是独立必需门禁。
 - Tester commit 集成后，Builder 可以读取测试并修复实现，但 ownership gate 阻止其修改测试。
 - 所有非 L1 run 都必须由原 Tester thread 在 candidate worktree 对集成 HEAD 完成 blackbox
   `pass`。candidate worktree 必须没有 tracked、untracked 或 ignored residue；v2 evidence 同时记录
@@ -257,8 +259,10 @@ adopt、不删除，矛盾的合法来源事件进入结构化 continuity failur
 ## Evidence 与失效
 
 ledger v2 为每类 evidence 记录 `observed_head`、`accepted_head`、输入 digest、scope 和 provenance。
-所有非 L1 v3 run 的顺序固定为 Tester integration、机器验证、测试鉴别证明、同 thread blackbox、
-Reviewer。测试鉴别证明绑定 candidate、Tester source HEAD、Tester-owned manifest、命令/变异和
+所有非 L1 v3 run 都先完成 Tester integration：测试鉴别要求全部为 `strong` 时依次执行测试鉴别证明、
+机器验证、同 thread blackbox、Reviewer；只要含 `reviewed-boundaries`，保持机器验证、测试鉴别证明、
+同 thread blackbox、Reviewer 的兼容顺序。v2 ledger 保持机器验证后直接进入既有后续门禁，不生成或
+回填测试鉴别证据。测试鉴别证明绑定 candidate、Tester source HEAD、Tester-owned manifest、命令/变异和
 日志摘要；candidate 或 Tester integration 变化时立即失效，不能跨 HEAD 复用。E2E/review/doc-review 只能通过
 `record-evidence` 写入，且必须携带 ledger 中已完成 agent turn 的 id；E2E 还必须携带可重放
 details。只有全部必需 evidence 接受当前候选 HEAD，Tester commits 与 dirty tree 已

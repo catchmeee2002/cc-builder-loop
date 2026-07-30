@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 import subprocess
 import unittest
@@ -11,8 +13,9 @@ SPEC_HEAD = "1b512b120a673470a4ee154b7c8dd8ac3c3f7e1f"
 DELIVERY_HEAD = "e238fe159ce16f225ab7e4dd35a19052f02b2122"
 PLANNER_BLOB = "75442f95a843a2197f3c20b204cbec45ad75fcf9"
 PLANNER_PATH = Path("skills/builder-loop-planner/SKILL.md")
-BUILDER_BLOB = "b46ee4e34d4622b0f028b537bfb02875e99c2d16"
 BUILDER_PATH = Path("skills/builder/SKILL.md")
+BUILDER_VARIANTS_PATH = Path("experiments/agent-behavior/variants.json")
+BUILDER_LINE_LIMIT = 278
 REFERENCE_PATH = Path("skills/builder-loop-planner/references/design-decisions.md")
 REVIEWER_BLOB = "69558363c2039f97181a27006d4833d012fb0347"
 REVIEWER_PATH = Path("agents/reviewer.toml")
@@ -569,13 +572,25 @@ class PlanningDesignDisciplineTest(unittest.TestCase):
     def test_role_prompts_stay_within_frozen_line_budgets(self) -> None:
         reviewer_baseline = git_text(SPEC_HEAD, REVIEWER_PATH).splitlines()
         tester_baseline = git_text(SPEC_HEAD, TESTER_PATH).splitlines()
+        variants = json.loads(read(BUILDER_VARIANTS_PATH))
+        builder_current = [
+            item for item in variants["variants"] if item["id"] == "builder-current"
+        ]
 
         self.assertEqual(git_blob("HEAD", PLANNER_PATH), PLANNER_BLOB)
         self.assertEqual(worktree_blob(PLANNER_PATH), PLANNER_BLOB)
-        self.assertEqual(git_blob("HEAD", BUILDER_PATH), BUILDER_BLOB)
-        self.assertEqual(worktree_blob(BUILDER_PATH), BUILDER_BLOB)
+        self.assertEqual(len(builder_current), 1, builder_current)
+        self.assertEqual(
+            builder_current[0]["instruction_source"]["path"], str(BUILDER_PATH)
+        )
+        self.assertEqual(
+            builder_current[0]["instruction_source"]["sha256"],
+            hashlib.sha256((ROOT / BUILDER_PATH).read_bytes()).hexdigest(),
+        )
+        self.assertEqual(git_blob("HEAD", BUILDER_PATH), worktree_blob(BUILDER_PATH))
         self.assertEqual(git_blob("HEAD", REVIEWER_PATH), REVIEWER_BLOB)
         self.assertEqual(worktree_blob(REVIEWER_PATH), REVIEWER_BLOB)
+        self.assertLessEqual(len(read(BUILDER_PATH).splitlines()), BUILDER_LINE_LIMIT)
         self.assertLessEqual(len(read(REVIEWER_PATH).splitlines()), len(reviewer_baseline) + 28)
         self.assertLessEqual(len(read(TESTER_PATH).splitlines()), len(tester_baseline) + 24)
 

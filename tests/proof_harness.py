@@ -68,22 +68,56 @@ def create_proof_fixture(
     runner: str = "bash verify.sh",
     include_e2e: bool = False,
     explicit_run_id: str | None = None,
+    verify_machine: bool = True,
+    requirement_minima: Mapping[str, str] | None = None,
 ) -> ProofFixture:
     seed = {"src/calc.py": baseline_source}
     if initial_files:
         seed.update(initial_files)
     repo = init_repo(seed)
-    plan = write_plan(
-        repo,
-        plan_markdown(
-            head(repo),
-            builder_write=["src/**"],
-            tester_write=["tests/**"],
-            target_test_dirs=["tests"],
-            runner=runner,
-            include_e2e=include_e2e,
-        ),
+    plan_text = plan_markdown(
+        head(repo),
+        builder_write=["src/**"],
+        tester_write=["tests/**"],
+        target_test_dirs=["tests"],
+        runner=runner,
+        include_e2e=include_e2e,
     )
+    requirements = dict(requirement_minima or {"add-positive": "strong"})
+    if requirements != {"add-positive": "strong"}:
+        behaviors = []
+        requirement_lines = []
+        for behavior_id, minimum in requirements.items():
+            behaviors.extend(
+                [
+                    f"  - id: {behavior_id}",
+                    f'    what: "{behavior_id} observable behavior"',
+                    '    boundaries: ["zero", "negative"]',
+                    '    invariants: ["inputs are not mutated"]',
+                ]
+            )
+            requirement_lines.extend(
+                [
+                    f"    - behavior_id: {behavior_id}",
+                    f"      minimum: {minimum}",
+                ]
+            )
+        old = (
+            "behaviors:\n"
+            "  - id: add-positive\n"
+            '    what: "add returns the arithmetic sum"\n'
+            '    boundaries: ["zero", "negative"]\n'
+            '    invariants: ["inputs are not mutated"]\n'
+            "test_effectiveness:\n"
+            "  requirements:\n"
+            "    - behavior_id: add-positive\n"
+            "      minimum: strong\n"
+        )
+        new = "\n".join(["behaviors:", *behaviors, "test_effectiveness:", "  requirements:", *requirement_lines]) + "\n"
+        if old not in plan_text:
+            raise AssertionError("fixture plan test-effectiveness block drifted")
+        plan_text = plan_text.replace(old, new, 1)
+    plan = write_plan(repo, plan_text)
     if explicit_run_id is None:
         started, run_path = start_run(repo, plan, task="test-effectiveness proof")
     else:
@@ -134,12 +168,13 @@ def create_proof_fixture(
             f"test integration failed: rc={integrated.returncode} data={integrated.data!r} "
             f"stderr={integrated.stderr}"
         )
-    verified = run_cli("verify", "--run", run_path)
-    if verified.returncode != 0 or verified.data.get("status") != "PASS":
-        raise AssertionError(
-            f"fixture machine verification failed: rc={verified.returncode} "
-            f"data={verified.data!r} stderr={verified.stderr}"
-        )
+    if verify_machine:
+        verified = run_cli("verify", "--run", run_path)
+        if verified.returncode != 0 or verified.data.get("status") != "PASS":
+            raise AssertionError(
+                f"fixture machine verification failed: rc={verified.returncode} "
+                f"data={verified.data!r} stderr={verified.stderr}"
+            )
     run_id = str(started.data["run_id"])
     return ProofFixture(
         repo=repo,

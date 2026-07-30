@@ -225,15 +225,24 @@ class ProveTestsContractTest(unittest.TestCase):
         assert_status(integrated, "READY", rc=0)
         new_integrated_head = head(fixture.builder)
         self.assertNotEqual(new_integrated_head, fixture.integrated_head)
-        assert_rejected(self, prove(fixture, baseline_group()))
+        after_integration = load_ledger(fixture.run_path)
+        self.assertIsNone(
+            after_integration.get("evidence", {}).get("test_effectiveness")
+        )
 
-        verified = run_cli("verify", "--run", fixture.run_path)
-        assert_status(verified, "PASS", rc=0)
         renewed = prove(fixture, baseline_group())
         assert_status(renewed, "READY", rc=0)
         self.assertEqual(renewed.data["head"], new_integrated_head)
         self.assertEqual(renewed.data["tester_source_head"], correction_head)
         self.assertNotEqual(renewed.data["tester_manifest_sha256"], old_manifest)
+
+        verified = run_cli("verify", "--run", fixture.run_path)
+        assert_status(verified, "PASS", rc=0)
+        final_status = run_cli("status", "--run", fixture.run_path)
+        self.assertEqual(final_status.data.get("verified_head"), new_integrated_head)
+        self.assertEqual(
+            final_status.data.get("test_effectiveness_head"), new_integrated_head
+        )
 
     def test_only_tester_manifest_tests_and_frozen_wrappers_are_accepted(self) -> None:
         fixture = self.fixture(

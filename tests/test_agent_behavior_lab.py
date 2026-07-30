@@ -13,8 +13,7 @@ from harness import ROOT, git, run_process
 
 RUNNER = ROOT / "experiments" / "agent-behavior" / "runner.py"
 BUILDER_SKILL = ROOT / "skills" / "builder" / "SKILL.md"
-FROZEN_BUILDER_BLOB = "b46ee4e34d4622b0f028b537bfb02875e99c2d16"
-FROZEN_BUILDER_SHA256 = "811aef1766a7180103c6ea14c1f930594e3b059211e26d2f8ca023ff8403f0b5"
+VARIANTS = ROOT / "experiments" / "agent-behavior" / "variants.json"
 
 
 def json_values(text: str) -> list[Any]:
@@ -42,23 +41,21 @@ def recursive_values(value: Any, key: str) -> list[Any]:
 
 class AgentBehaviorLabTest(unittest.TestCase):
     def test_builder_current_binds_the_frozen_builder_skill(self) -> None:
-        variants = json.loads(
-            (ROOT / "experiments" / "agent-behavior" / "variants.json").read_text()
-        )
-        current = next(
+        variants = json.loads(VARIANTS.read_text())
+        matches = [
             item for item in variants["variants"] if item["id"] == "builder-current"
-        )
+        ]
+        self.assertEqual(len(matches), 1, matches)
+        current = matches[0]
         source = current["instruction_source"]
+        actual_sha256 = hashlib.sha256(BUILDER_SKILL.read_bytes()).hexdigest()
 
         self.assertEqual(source["path"], "skills/builder/SKILL.md")
-        self.assertEqual(source["sha256"], FROZEN_BUILDER_SHA256)
-        self.assertEqual(
-            hashlib.sha256(BUILDER_SKILL.read_bytes()).hexdigest(),
-            FROZEN_BUILDER_SHA256,
-        )
+        self.assertEqual(source["revision"], "WORKTREE")
+        self.assertEqual(source["sha256"], actual_sha256)
         self.assertEqual(
             git(ROOT, "rev-parse", "HEAD:skills/builder/SKILL.md"),
-            FROZEN_BUILDER_BLOB,
+            git(ROOT, "hash-object", "skills/builder/SKILL.md"),
         )
 
     def test_prepare_and_score_are_deterministic_offline_and_ephemeral(self) -> None:
@@ -68,6 +65,7 @@ class AgentBehaviorLabTest(unittest.TestCase):
             ROOT, "ls-files", "--others", "--ignored", "--exclude-standard"
         )
         before_tracked = git(ROOT, "ls-files", "experiments/agent-behavior")
+        variants_before = VARIANTS.read_bytes()
 
         with tempfile.TemporaryDirectory(prefix="behavior-lab-offline-") as tmp:
             guard = Path(tmp)
@@ -160,6 +158,37 @@ class AgentBehaviorLabTest(unittest.TestCase):
             self.assertTrue(all(value is True for value in semantic), semantic)
             self.assertFalse(network_marker.exists())
 
+            builder_request = next(
+                request
+                for request in requests
+                if request["variant_id"] == "builder-current"
+            )
+            targeted = run_process(
+                [
+                    sys.executable,
+                    RUNNER,
+                    "prepare",
+                    "--scenario-id",
+                    builder_request["scenario_id"],
+                    "--variant-id",
+                    "builder-current",
+                ],
+                cwd=ROOT,
+                env=env,
+            )
+            self.assertEqual(targeted.returncode, 0, targeted.stderr)
+            targeted_requests = json_values(targeted.stdout)
+            self.assertEqual(
+                {request["variant_id"] for request in targeted_requests},
+                {"builder-current"},
+            )
+            for request in targeted_requests:
+                source = request["request"]["instruction_source"]
+                self.assertEqual(source["path"], "skills/builder/SKILL.md")
+                self.assertEqual(
+                    source["sha256"], hashlib.sha256(BUILDER_SKILL.read_bytes()).hexdigest()
+                )
+
         self.assertEqual(
             git(ROOT, "status", "--porcelain", "--untracked-files=all"),
             before_status,
@@ -171,6 +200,7 @@ class AgentBehaviorLabTest(unittest.TestCase):
         self.assertEqual(
             git(ROOT, "ls-files", "experiments/agent-behavior"), before_tracked
         )
+        self.assertEqual(VARIANTS.read_bytes(), variants_before)
 
 
 if __name__ == "__main__":

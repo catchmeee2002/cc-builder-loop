@@ -128,9 +128,24 @@ description: 执行已接受的 builder-loop 方案，在隔离 worktree 中协�
 
 `plan.level=L1` 时跳过本节。其他计划执行：
 
-1. 执行 `verify --run <run>`。runtime 必须在当前 candidate commit 派生的临时干净 worktree
+1. 从 ledger 的冻结计划读取 `contract_schema_version` 与 `test_effectiveness_requirements`，只派生
+   一次执行顺序：v3 且全部 requirement 的 `minimum=strong` 时，先执行下述测试鉴别证明，再执行
+   `verify`；v3 只要含一个 `reviewed-boundaries`，先执行 `verify`，PASS 后再执行证明；v2 保持
+   machine-first 且不补证明。不得根据 Tester 返回的 proof payload、候选结果或旁路开关改变顺序。
+2. 到达所选证明位置时，仅 `contract_schema_version=3` 必须把 Tester author 返回的
+   `schema_version=1` 测试鉴别 JSON 原样通过 stdin 交给
+   `prove-tests --repo <repo> --run <run> --spec -`。它必须精确覆盖冻结 behavior，并按要求完成
+   基线先红、受控变异，或允许的边界/不变量映射；只接受 `READY` 或同一输入的幂等 `NOOP`。
+   `READY` 必须返回当前 `test_effectiveness_head`；`TEST_PROOF_SPEC_INVALID` 表示输入不符合冻结
+   proof schema，不能降级成运行失败继续 machine 或黑盒。
+   runtime 必须把允许的裸 Python/pytest 命令固定为受信任绝对解释器，记录实际 executable identity，
+   并把候选和反例输出分类为真实测试通过或命中声明 test id 的 `assertion-failure`；未分类和基础设施
+   失败一律拒绝。证明失败按 ownership 路由；需要改变冻结强度、目标或行为映射时 abandon/new plan。
+   全 strong 的证明失败发生在 machine 前，不得补跑 `verify`、消耗 verification attempt 或制造 machine
+   evidence；既有 v2 ledger 只按原冻结门禁续接，不回填该证据。
+3. 执行 `verify --run <run>`。runtime 必须在当前 candidate commit 派生的临时干净 worktree
    中运行机器判据；Builder 不在验证 worktree 中修代码或保留运行产物。
-2. `status=FAIL` 时读取返回的 `stage`、`log_path`、failure fingerprint 与 progress stop，按 ownership 路由：Builder-owned
+4. `status=FAIL` 时读取返回的 `stage`、`log_path`、failure fingerprint 与 progress stop，按 ownership 路由：Builder-owned
    实现/文档错误由 Builder 修；冻结目标不变的 Tester-owned 测试或测试支持实现错误，先以
    `purpose=author` prepare，再 follow-up 同一 Tester 进入 author correction，返回新的
    `tests_ready` 后重新 role-check 和
@@ -142,19 +157,10 @@ description: 执行已接受的 builder-loop 方案，在隔离 worktree 中协�
    返回 `NO_PROGRESS` 或 `ARCHITECTURE_REVIEW_REQUIRED` 时先调用 `doctor --run <run>`，展示重复
    candidate/fingerprint 和现场；只有用户明确确认目标不变且继续尝试时才调用
    `resume --run <run> --reason <decision>`。resume 不重置 max_iterations。
-3. `status=FATAL` 时停止；不要把“判据未执行”当作测试失败，更不要返回 PASS。
-4. `status=PASS` 后，仅 `contract_schema_version=3` 必须把 Tester author 返回的
-   `schema_version=1` 测试鉴别 JSON 原样通过 stdin 交给
-   `prove-tests --repo <repo> --run <run> --spec -`。它必须精确覆盖冻结 behavior，并按要求完成
-   基线先红、受控变异，或允许的边界/不变量映射；只接受 `READY` 或同一输入的幂等 `NOOP`。
-   `READY` 必须返回当前 `test_effectiveness_head`；`TEST_PROOF_SPEC_INVALID` 表示输入不符合冻结
-   proof schema，不能降级成运行失败继续黑盒。
-   runtime 必须把允许的裸 Python/pytest 命令固定为受信任绝对解释器，记录实际 executable identity，
-   并把候选和反例输出分类为真实测试通过或命中声明 test id 的 `assertion-failure`；未分类和基础设施
-   失败一律拒绝。
-   既有 v2 ledger 只按原冻结门禁续接，不回填该证据。证明失败按 ownership 路由；需要改变冻结
-   强度、目标或行为映射时 abandon/new plan。
-5. v3 测试鉴别证明通过后，或既有 v2 ledger 的机器验证通过后，先调用 `status --run <run>`。若 scoped evidence 已让
+5. `status=FATAL` 时停止；不要把“判据未执行”当作测试失败，更不要返回 PASS。v3 含
+   `reviewed-boundaries` 时，只有 machine PASS 后才执行第 2 步证明；全 strong v3 的 machine PASS
+   必须保留同一 candidate 已接受的证明，否则停止，不得进入黑盒。
+6. v3 测试鉴别证明与机器验证均通过后，或既有 v2 ledger 的机器验证通过后，先调用 `status --run <run>`。若 scoped evidence 已让
    `e2e_verified_head` 等于当前 candidate，说明 blackbox 的真实输入未变，可跳过重复执行但必须把
    observed/accepted HEAD provenance 交给 Reviewer；否则执行
    `prepare-follow-up --run <run> --role tester --agent-id <tester_id> --purpose blackbox`，只在
@@ -164,7 +170,7 @@ description: 执行已接受的 builder-loop 方案，在隔离 worktree 中协�
    禁止 spawn 新 Tester，也不得清空上下文或角色历史。冻结 cases 仍是目标唯一来源；report
    contract 只派生版本、schema 路径和各维度适用性，不另存一份目标。schema v2 逐例维度返回
    `{status, observation}`，legacy v1 按返回 contract 保持状态字符串。
-6. 要求 Tester 先在 `candidate_worktree` 执行 `git rev-parse HEAD` 并核对 integrated HEAD，
+7. 要求 Tester 先在 `candidate_worktree` 执行 `git rev-parse HEAD` 并核对 integrated HEAD，
    再只从公开接口、CLI/API/UI、运行时输出和测试结果做黑盒验收；不读取实现 diff、不改业务
    源码、不改既定测试目标。日志、截图、缓存优先写到 candidate 外的临时目录；结束前清理本 turn
    产生的 tracked/untracked/ignored residue，并同时核对普通 status 与 ignored files 均为空。
@@ -173,14 +179,15 @@ description: 执行已接受的 builder-loop 方案，在隔离 worktree 中协�
    错误并原样保留，但不计入结论。不得把多条命令拼成一条
    未真实执行的 aggregate command。legacy v1 才返回单个实际 command/returncode。两种版本都返回
    执行前后 HEAD、worktree 路径、`candidate_dirty=false` 和零 ordinary/ignored residue。
-7. Tester 报 FAIL 且可重放公开行为确为产品实现错误时由 Builder 修实现，重新 `role-check`、
-   `verify`，并仅对 v3 重新执行测试鉴别证明，再以 `purpose=blackbox` prepare 并 follow-up 同一 Tester；既有 v2
+8. Tester 报 FAIL 且可重放公开行为确为产品实现错误时由 Builder 修实现，重新 `role-check`，并按
+   第 1 步的冻结顺序重新执行 machine 与仅 v3 适用的测试鉴别证明，再以 `purpose=blackbox` prepare
+   并 follow-up 同一 Tester；既有 v2
    ledger 不补写该证明。若失败来自 Tester 的
    执行方法或测试支持实现，则仍以 `purpose=blackbox` prepare 后续接同一 Tester，不让 Builder
    修改 tester-owned 内容。
-8. Tester 提议改变测试目标、ownership 或验收标准时，执行上一节的 frozen-run 协议；即使
+9. Tester 提议改变测试目标、ownership 或验收标准时，执行上一节的 frozen-run 协议；即使
    用户选择修订，也不得在当前 run 更新测试。新方案必须进入新 run。
-9. 只有同一 Tester thread 返回 `TESTER_RESULT: pass` 后，才对当前 integrated HEAD 执行
+10. 只有同一 Tester thread 返回 `TESTER_RESULT: pass` 后，才对当前 integrated HEAD 执行
    `record-evidence --run <run> --kind e2e_verified --head <head> --agent-id <tester_id>
    --details '<json>'`。details 必须原样使用 `blackbox_report_contract` 对应版本：schema v2 包含
    candidate/worktree/HEAD、全部真实 executions 和逐例 cases；Tester 同时返回零 residue，legacy v1 包含单个实际
