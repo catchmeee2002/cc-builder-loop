@@ -5624,6 +5624,7 @@ def preparation_continuation_facts(
         "problem_ids": list(marker.get("problem_ids", [])),
         "support_paths": list(marker.get("support_paths", [])),
         "final_head": final_head,
+        "preparation_final_head": final_head,
         "target_branch": ledger.get("target_branch"),
         "target_head": target_head,
         "ready": bool(
@@ -5741,6 +5742,12 @@ def status_facts(repo: Path, ledger: dict[str, Any]) -> dict[str, Any]:
         repo_root=str(repo),
         run_id=str(ledger["run_id"]),
     )
+    continuation = preparation_continuation_facts(repo, ledger)
+    continuation_marker = (
+        f"BUILDER_CONTINUATION_READY:{ledger['run_id']}"
+        if isinstance(continuation, dict) and continuation.get("ready") is True
+        else None
+    )
     return {
         "run_id": ledger["run_id"],
         "runtime_identity": ledger.get("runtime_identity"),
@@ -5797,7 +5804,8 @@ def status_facts(repo: Path, ledger: dict[str, Any]) -> dict[str, Any]:
             "tester": ledger["worktrees"]["tester"]["path"],
         },
         "final_head": ledger.get("final_head"),
-        "continuation": preparation_continuation_facts(repo, ledger),
+        "continuation": continuation,
+        "marker": continuation_marker,
     }
 
 
@@ -5831,6 +5839,12 @@ def cmd_plan_validate(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         "workspace_intake": list(preflight.workspace_intake),
         "verification_preparation": contract.verification_preparation,
         "continuation_from": contract.continuation_from,
+        "continuation_from_run_id": (
+            preflight.continuation_from.get("preparation_run_id")
+            if isinstance(preflight.continuation_from, dict)
+            else None
+        ),
+        "supersedes_run_id": contract.supersedes_run_id,
         **preflight.target_checkout,
         "contract": contract.as_dict(),
     }, EXIT_PASS
