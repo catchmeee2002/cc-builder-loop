@@ -6932,6 +6932,12 @@ def cmd_start_locked(args: argparse.Namespace, repo: Path) -> tuple[dict[str, An
         },
         "frozen_plan": str(plan_path),
         "parallel_ready": contract.parallel_ready,
+        "continuation_from_run_id": (
+            preflight.continuation_from.get("preparation_run_id")
+            if isinstance(preflight.continuation_from, dict)
+            else None
+        ),
+        "supersedes_run_id": contract.supersedes_run_id,
         "prerequisite_publication_required": (
             contract.level != "L1" and not contract.parallel_ready
         ),
