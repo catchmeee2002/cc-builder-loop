@@ -5637,6 +5637,14 @@ def preparation_continuation_facts(
     return facts
 
 
+def continuation_ready_marker(
+    ledger: Mapping[str, Any], continuation: Mapping[str, Any] | None
+) -> str | None:
+    if isinstance(continuation, Mapping) and continuation.get("ready") is True:
+        return f"BUILDER_CONTINUATION_READY:{ledger['run_id']}"
+    return None
+
+
 def status_facts(repo: Path, ledger: dict[str, Any]) -> dict[str, Any]:
     builder = Path(str(ledger["worktrees"]["builder"]["path"]))
     tester = Path(str(ledger["worktrees"]["tester"]["path"]))
@@ -5743,11 +5751,7 @@ def status_facts(repo: Path, ledger: dict[str, Any]) -> dict[str, Any]:
         run_id=str(ledger["run_id"]),
     )
     continuation = preparation_continuation_facts(repo, ledger)
-    continuation_marker = (
-        f"BUILDER_CONTINUATION_READY:{ledger['run_id']}"
-        if isinstance(continuation, dict) and continuation.get("ready") is True
-        else None
-    )
+    continuation_marker = continuation_ready_marker(ledger, continuation)
     return {
         "run_id": ledger["run_id"],
         "runtime_identity": ledger.get("runtime_identity"),
@@ -13453,6 +13457,7 @@ def finish_finalized_cleanup(
     lifecycle_delivery.remove_route(
         str(ledger["owner_session_id"]), require_empty=True
     )
+    continuation = preparation_continuation_facts(repo, ledger)
     return {
         "status": "COMPLETE",
         "message": "candidate finalized as one squash commit",
@@ -13465,7 +13470,8 @@ def finish_finalized_cleanup(
         "target_branch": ledger["target_branch"],
         "commit_count": 1,
         "cleanup_failures": [],
-        "continuation": preparation_continuation_facts(repo, ledger),
+        "continuation": continuation,
+        "marker": continuation_ready_marker(ledger, continuation),
     }, EXIT_PASS
 
 
@@ -13473,12 +13479,14 @@ def cmd_finalize(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
     repo, run_id, _ = resolve_run_selector(args.repo, args.run)
     with locked_run(repo, run_id) as ledger:
         if ledger["phase"] == "finalized":
+            continuation = preparation_continuation_facts(repo, ledger)
             return {
                 "status": "NOOP",
                 "message": "run was already finalized",
                 "run_id": ledger["run_id"],
                 "final_head": ledger.get("final_head"),
-                "continuation": preparation_continuation_facts(repo, ledger),
+                "continuation": continuation,
+                "marker": continuation_ready_marker(ledger, continuation),
             }, EXIT_PASS
         recovered = recover_finalize_intent(repo, ledger)
         if recovered is not None:
