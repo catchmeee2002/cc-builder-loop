@@ -4,6 +4,7 @@
 - 每次进入 Plan mode 为代码或文档变更制定方案时，必须先使用 `request_user_input` 询问用户选择「Codex 原生 Plan」或「Builder-loop Planner」；不得用纯文本问卷替代。
 - 选择「Codex 原生 Plan」时不加载 `$builder-loop-planner`，按 Codex 原生 Plan mode 产出方案。
 - 选择「Builder-loop Planner」时必须调用 `$builder-loop-planner`；只产出并验证计划，`READY` 后在方案外输出独立行 `BUILDER_HANDOFF_READY`，不得实现或启动 run。
+- 若同一 session 紧邻上一轮是 `BUILDER_CONTINUATION_READY:<preparation-run-id>`，直接加载 `$builder-loop-planner` 续接关联业务 revision，不重复路线选择；必须从 runtime status/ledger 与 Git 核对 finalized、repo、target、session 和未重放，失败则回到普通路线选择。续接仍须重新 `plan-validate=READY` 和输出普通 `BUILDER_HANDOFF_READY`，不得自动启动 Builder。
 - 若同一 session 的紧邻下一轮已处于 Default mode，且用户通过 Codex 原生“实施计划”动作提交 `Implement the plan.`，该动作等价于对上述方案显式调用 `$builder`，直接加载 Builder Skill，不重复授权。
 - 显式 `$builder` 继续作为手工入口。缺少就绪标记、不是紧邻下一轮、仍在 Plan mode、方案未验证或来自 Codex 原生 Plan 时，不得把普通实施请求隐式转成 builder-loop。
 <!-- END cc-builder-loop-codex -->

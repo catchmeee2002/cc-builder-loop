@@ -24,7 +24,7 @@ description: 执行已接受的 builder-loop 方案，在隔离 worktree 中协�
    `${CODEX_HOME:-$HOME/.codex}/builder-loop/doc-policy.md`。政策不可读时停止，不自行发明
    替代规则。
 3. 在第一次使用每个子命令前分别运行其 `--help`：
-   `plan-validate`、`start`、`role-check`、`publish-prerequisites`、`integrate-tests`、`verify`、
+   `plan-validate`、`plan-preflight`、`start`、`role-check`、`publish-prerequisites`、`integrate-tests`、`verify`、
    `prove-tests`、`status`、`record-evidence`、`record-problems`、`backfill-problems`、`doctor`、`recover`、`resume`、`cleanup`、
    `finalize`、`abandon`。当前帮助优先于本文件中的调用示例。
 4. 对每次 runtime 调用只解析 stdout 最后一行 JSON。要求存在 `status` 与 `message`；
@@ -271,3 +271,6 @@ description: 执行已接受的 builder-loop 方案，在隔离 worktree 中协�
 5. 成功时最后一行输出 `BUILDER_RESULT: pass run_id=<run_id>`；已按用户决定放弃时输出
    `BUILDER_RESULT: abandoned run_id=<run_id>`；runtime 尚未完成且需要用户时输出
    `BUILDER_RESULT: needs_user run_id=<run_id>`。不要在 runtime 未完成时声称交付完成。
+   若成功 run 的 `status/finalize` 返回 `continuation.ready=true`，先在结果前输出独立行
+   `BUILDER_CONTINUATION_READY:<run_id>`；该 marker 只允许同 session 紧邻的下一次 Plan mode
+   自动续接 Planner，不代表授权或自动启动第二个 Builder run。

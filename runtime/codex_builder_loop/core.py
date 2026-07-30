@@ -36,6 +36,8 @@ BLACKBOX_REPORT_SCHEMA_VERSION = 2
 LEGACY_BLACKBOX_REPORT_SCHEMA_VERSION = 1
 PROBLEM_REPORT_SCHEMA_VERSION = 1
 PRIOR_PROBLEMS_SCHEMA_VERSION = 1
+VERIFICATION_PREPARATION_SCHEMA_VERSION = 1
+CONTINUATION_FROM_SCHEMA_VERSION = 1
 INTERFACE_PUBLICATION_CONTRACT_VERSION = 1
 LEGACY_INTERFACE_PUBLICATION_CONTRACT_VERSION = 0
 TESTER_CORRECTION_LIMIT = 3
@@ -158,6 +160,8 @@ class PlanContract:
     supersedes_plan_sha256: str | None
     prior_problem_snapshot_sha256: str | None
     prior_problem_items: tuple[dict[str, Any], ...]
+    verification_preparation: dict[str, Any] | None
+    continuation_from: dict[str, Any] | None
     has_e2e_cases: bool
     e2e_case_ids: tuple[str, ...]
     e2e_cases_sha256: str | None
@@ -189,6 +193,8 @@ class PlanPreflight:
     runner_paths: tuple[str, ...]
     workspace_intake: tuple[dict[str, Any], ...]
     prior_problem_snapshot: dict[str, Any] | None
+    verification_preparation: dict[str, Any] | None
+    continuation_from: dict[str, Any] | None
 
 
 def utc_now() -> str:
@@ -549,6 +555,9 @@ def read_json(path: Path) -> dict[str, Any]:
             LEGACY_INTERFACE_PUBLICATION_CONTRACT_VERSION,
         )
         plan.setdefault("interface_input_paths", [])
+        plan.setdefault("verification_preparation", None)
+        plan.setdefault("continuation_from", None)
+        plan.setdefault("revision", plan.get("plan_revision"))
     evidence = value.get("evidence")
     if isinstance(evidence, dict):
         evidence.setdefault("test_effectiveness", None)
@@ -1860,6 +1869,127 @@ def parse_prior_problems_marker(
     return snapshot_sha, tuple(normalized)
 
 
+def parse_verification_preparation_marker(
+    raw_marker: str | None,
+    *,
+    plan_revision: int | None,
+    errors: list[str],
+) -> dict[str, Any] | None:
+    if raw_marker is None:
+        return None
+    try:
+        parsed = yaml_load(raw_marker)
+    except RuntimeProblem as exc:
+        errors.append(f"verification-preparation is invalid: {exc}")
+        return None
+    if not isinstance(parsed, dict):
+        errors.append("verification-preparation must be a YAML mapping")
+        return None
+    expected = {
+        "schema_version",
+        "business_run_id",
+        "business_plan_sha256",
+        "problem_snapshot_sha256",
+        "problem_ids",
+        "support_paths",
+    }
+    extra = sorted(set(parsed) - expected)
+    missing = sorted(expected - set(parsed))
+    if extra:
+        errors.append("verification-preparation has unknown fields: " + ", ".join(extra))
+    if missing:
+        errors.append("verification-preparation is missing fields: " + ", ".join(missing))
+    if plan_revision != 1:
+        errors.append("verification-preparation requires plan_revision 1")
+    if parsed.get("schema_version") != VERIFICATION_PREPARATION_SCHEMA_VERSION:
+        errors.append(
+            "verification-preparation.schema_version must be "
+            f"{VERIFICATION_PREPARATION_SCHEMA_VERSION}"
+        )
+    run_id = parsed.get("business_run_id")
+    if not isinstance(run_id, str) or not RUN_ID_RE.fullmatch(run_id):
+        errors.append("verification-preparation.business_run_id is invalid")
+    plan_sha = parsed.get("business_plan_sha256")
+    if not isinstance(plan_sha, str) or not re.fullmatch(r"[0-9a-f]{64}", plan_sha):
+        errors.append(
+            "verification-preparation.business_plan_sha256 must be a 64-character SHA-256"
+        )
+    snapshot_sha = parsed.get("problem_snapshot_sha256")
+    if not isinstance(snapshot_sha, str) or not re.fullmatch(r"[0-9a-f]{64}", snapshot_sha):
+        errors.append(
+            "verification-preparation.problem_snapshot_sha256 must be a 64-character SHA-256"
+        )
+    try:
+        problem_ids = string_list(
+            parsed.get("problem_ids"), "verification-preparation.problem_ids"
+        )
+        support_paths_raw = string_list(
+            parsed.get("support_paths"), "verification-preparation.support_paths"
+        )
+    except RuntimeProblem as exc:
+        errors.append(str(exc))
+        return None
+    if len(problem_ids) != len(set(problem_ids)) or any(
+        not re.fullmatch(r"[0-9a-f]{64}", item) for item in problem_ids
+    ):
+        errors.append(
+            "verification-preparation.problem_ids must be unique 64-character SHA-256 values"
+        )
+    support_paths: list[str] = []
+    for raw in support_paths_raw:
+        try:
+            path = normalize_allowed_path(raw, directory_hint=False)
+        except RuntimeProblem as exc:
+            errors.append(f"verification-preparation.support_paths: {exc}")
+            continue
+        if any(mark in path for mark in "*?["):
+            errors.append("verification-preparation.support_paths must be exact paths")
+            continue
+        support_paths.append(path)
+    if len(support_paths) != len(set(support_paths)):
+        errors.append("verification-preparation.support_paths must be unique")
+    return {
+        "business_run_id": run_id,
+        "business_plan_sha256": plan_sha,
+        "problem_snapshot_sha256": snapshot_sha,
+        "problem_ids": sorted(set(problem_ids)),
+        "support_paths": sorted(set(support_paths)),
+    }
+
+
+def parse_continuation_from_marker(
+    raw_marker: str | None,
+    *,
+    plan_revision: int | None,
+    errors: list[str],
+) -> dict[str, Any] | None:
+    if raw_marker is None:
+        return None
+    try:
+        parsed = yaml_load(raw_marker)
+    except RuntimeProblem as exc:
+        errors.append(f"continuation-from is invalid: {exc}")
+        return None
+    if not isinstance(parsed, dict):
+        errors.append("continuation-from must be a YAML mapping")
+        return None
+    expected = {"schema_version", "preparation_run_id"}
+    if set(parsed) != expected:
+        errors.append("continuation-from must contain only schema_version and preparation_run_id")
+    if plan_revision is None or plan_revision <= 1:
+        errors.append("continuation-from requires plan_revision greater than 1")
+    if parsed.get("schema_version") != CONTINUATION_FROM_SCHEMA_VERSION:
+        errors.append(
+            f"continuation-from.schema_version must be {CONTINUATION_FROM_SCHEMA_VERSION}"
+        )
+    run_id = parsed.get("preparation_run_id")
+    if not isinstance(run_id, str) or not RUN_ID_RE.fullmatch(run_id):
+        errors.append("continuation-from.preparation_run_id is invalid")
+    return {
+        "preparation_run_id": run_id,
+    }
+
+
 def is_template_placeholder(value: Any) -> bool:
     return isinstance(value, str) and bool(re.fullmatch(r"\s*<[^>]+>\s*", value))
 
@@ -2280,6 +2410,17 @@ def parse_plan(
     documentation_spec = extract_tag(text, "documentation-spec", required=False)
     e2e = extract_tag(text, "e2e-cases", required=False)
     prior_problems = extract_tag(text, "prior-problems", required=False)
+    verification_preparation_marker = extract_tag(
+        text, "verification-preparation", required=False
+    )
+    continuation_from_marker = extract_tag(text, "continuation-from", required=False)
+    if verification_preparation_marker is not None and continuation_from_marker is not None:
+        raise RuntimeProblem(
+            "a plan cannot be both verification preparation and business continuation",
+            result="NEEDS_USER",
+            code="PLAN_CONTINUATION_MARKER_CONFLICT",
+            details={"errors": ["verification-preparation", "continuation-from"]},
+        )
     if unit_spec is None:
         if documentation_spec is None:
             raise RuntimeProblem(
@@ -2365,6 +2506,16 @@ def parse_plan(
             allow_missing_for_legacy=allow_missing_prior_problems,
             errors=errors,
         )
+        verification_preparation = parse_verification_preparation_marker(
+            verification_preparation_marker,
+            plan_revision=plan_revision,
+            errors=errors,
+        )
+        continuation_from = parse_continuation_from_marker(
+            continuation_from_marker,
+            plan_revision=plan_revision,
+            errors=errors,
+        )
         if errors:
             raise RuntimeProblem(
                 "documentation plan contract needs correction",
@@ -2395,6 +2546,8 @@ def parse_plan(
             supersedes_plan_sha256=supersedes_plan_sha256,
             prior_problem_snapshot_sha256=prior_problem_snapshot_sha256,
             prior_problem_items=prior_problem_items,
+            verification_preparation=verification_preparation,
+            continuation_from=continuation_from,
             has_e2e_cases=e2e is not None,
             e2e_case_ids=(),
             e2e_cases_sha256=None,
@@ -2409,6 +2562,12 @@ def parse_plan(
                 ["documentation-spec", "plan-checklist"]
                 + (["workspace-intake"] if workspace_intake else [])
                 + (["prior-problems"] if prior_problems is not None else [])
+                + (
+                    ["verification-preparation"]
+                    if verification_preparation_marker is not None
+                    else []
+                )
+                + (["continuation-from"] if continuation_from_marker is not None else [])
             ),
         )
 
@@ -2686,6 +2845,16 @@ def parse_plan(
         allow_missing_for_legacy=allow_missing_prior_problems,
         errors=errors,
     )
+    verification_preparation = parse_verification_preparation_marker(
+        verification_preparation_marker,
+        plan_revision=plan_revision,
+        errors=errors,
+    )
+    continuation_from = parse_continuation_from_marker(
+        continuation_from_marker,
+        plan_revision=plan_revision,
+        errors=errors,
+    )
     if errors:
         raise RuntimeProblem(
             "plan contract needs correction",
@@ -2717,6 +2886,8 @@ def parse_plan(
         supersedes_plan_sha256=supersedes_plan_sha256,
         prior_problem_snapshot_sha256=prior_problem_snapshot_sha256,
         prior_problem_items=prior_problem_items,
+        verification_preparation=verification_preparation,
+        continuation_from=continuation_from,
         has_e2e_cases=e2e is not None,
         e2e_case_ids=tuple(str(item["id"]) for item in e2e_cases),
         e2e_cases_sha256=e2e_cases_sha256,
@@ -2729,6 +2900,12 @@ def parse_plan(
             + (["e2e-cases"] if e2e is not None else [])
             + (["workspace-intake"] if workspace_intake else [])
             + (["prior-problems"] if prior_problems is not None else [])
+            + (
+                ["verification-preparation"]
+                if verification_preparation_marker is not None
+                else []
+            )
+            + (["continuation-from"] if continuation_from_marker is not None else [])
         ),
     )
 
@@ -5420,6 +5597,45 @@ def required_evidence_fields(ledger: dict[str, Any]) -> list[str]:
     return [EVIDENCE_STATUS_FIELDS[key] for key in required_evidence_keys(ledger)]
 
 
+def preparation_continuation_facts(
+    repo: Path, ledger: Mapping[str, Any]
+) -> dict[str, Any] | None:
+    marker = ledger.get("plan", {}).get("verification_preparation")
+    if not isinstance(marker, dict):
+        return None
+    final_head = ledger.get("final_head")
+    try:
+        target_head = branch_head(repo, str(ledger.get("target_branch")))
+    except RuntimeProblem:
+        target_head = None
+    final_commit_exists = bool(
+        isinstance(final_head, str)
+        and re.fullmatch(r"[0-9a-f]{40}", final_head)
+        and git(repo, "cat-file", "-e", f"{final_head}^{{commit}}", check=False).returncode
+        == 0
+    )
+    facts = {
+        "schema_version": 1,
+        "preparation_run_id": ledger.get("run_id"),
+        "owner_session_id": ledger.get("owner_session_id"),
+        "business_run_id": marker.get("business_run_id"),
+        "business_plan_sha256": marker.get("business_plan_sha256"),
+        "problem_snapshot_sha256": marker.get("problem_snapshot_sha256"),
+        "problem_ids": list(marker.get("problem_ids", [])),
+        "support_paths": list(marker.get("support_paths", [])),
+        "final_head": final_head,
+        "target_branch": ledger.get("target_branch"),
+        "target_head": target_head,
+        "ready": bool(
+            ledger.get("phase") == "finalized"
+            and final_commit_exists
+            and final_head == target_head
+        ),
+    }
+    facts["binding_sha256"] = canonical_json_sha256(facts)
+    return facts
+
+
 def status_facts(repo: Path, ledger: dict[str, Any]) -> dict[str, Any]:
     builder = Path(str(ledger["worktrees"]["builder"]["path"]))
     tester = Path(str(ledger["worktrees"]["tester"]["path"]))
@@ -5581,6 +5797,7 @@ def status_facts(repo: Path, ledger: dict[str, Any]) -> dict[str, Any]:
             "tester": ledger["worktrees"]["tester"]["path"],
         },
         "final_head": ledger.get("final_head"),
+        "continuation": preparation_continuation_facts(repo, ledger),
     }
 
 
@@ -5612,9 +5829,193 @@ def cmd_plan_validate(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         "e2e_cases_sha256": contract.e2e_cases_sha256,
         "effective_verification_source": preflight.effective_verification_source,
         "workspace_intake": list(preflight.workspace_intake),
+        "verification_preparation": contract.verification_preparation,
+        "continuation_from": contract.continuation_from,
         **preflight.target_checkout,
         "contract": contract.as_dict(),
     }, EXIT_PASS
+
+
+def cmd_plan_preflight(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
+    repo = resolve_repo(args.repo)
+    target_branch = current_branch(repo)
+    target_head = branch_head(repo, target_branch)
+    requested_paths: list[str] = []
+    path_blobs: dict[str, str] = {}
+    for raw in args.path:
+        path = normalize_allowed_path(str(raw), directory_hint=False)
+        if any(mark in path for mark in "*?["):
+            raise RuntimeProblem(
+                "plan-preflight paths must be exact",
+                result="NEEDS_USER",
+                code="PREFLIGHT_PATH_INVALID",
+                details={"path": raw},
+                exit_code=EXIT_FAIL,
+            )
+        if path in requested_paths:
+            raise RuntimeProblem(
+                "plan-preflight paths must be unique",
+                result="NEEDS_USER",
+                code="VERIFICATION_PATH_DUPLICATE",
+                details={"path": path},
+                exit_code=EXIT_FAIL,
+            )
+        requested_paths.append(path)
+        try:
+            path_blobs[path] = exact_regular_blob(repo, target_head, path)
+        except RuntimeProblem as exc:
+            raise RuntimeProblem(
+                "plan-preflight path must be an exact tracked regular file",
+                result="NEEDS_USER",
+                code="PREFLIGHT_PATH_INVALID",
+                details={"path": path, "reason": exc.code},
+                exit_code=EXIT_FAIL,
+            ) from exc
+
+    commands: list[dict[str, Any]] = []
+    verification_source = "none"
+    loop_exists = git(
+        repo, "cat-file", "-e", f"{target_head}:.claude/loop.yml", check=False
+    ).returncode == 0
+    if loop_exists:
+        commands, _config_sha, _max_iterations = load_loop_config(repo, target_head)
+        verification_source = ".claude/loop.yml"
+    machine_paths = sorted(
+        set(PROTECTED_RUNTIME_PATHS) | set(verification_protected_paths(commands))
+    )
+    abandoned: dict[str, Any] | None = None
+    old_support_paths: list[str] = []
+    problem_snapshot: dict[str, Any] | None = None
+    if args.run:
+        linked_repo, _linked_run_id, abandoned = resolve_run_selector(repo, args.run)
+        if linked_repo != repo:
+            raise RuntimeProblem(
+                "preflight run belongs to another repository",
+                result="NEEDS_USER",
+                code="PREFLIGHT_RUN_REPOSITORY_MISMATCH",
+                details={"run_id": abandoned.get("run_id"), "repo_root": str(linked_repo)},
+                exit_code=EXIT_FAIL,
+            )
+        problem_snapshot = abandoned.get("problem_inventory", {}).get("snapshot")
+        live_target = branch_head(repo, str(abandoned.get("target_branch")))
+        if abandoned.get("phase") != "abandoned":
+            raise RuntimeProblem(
+                "plan-preflight requires an abandoned business run",
+                result="NEEDS_USER",
+                code="PREFLIGHT_RUN_NOT_ABANDONED",
+                details={"run_id": abandoned.get("run_id"), "phase": abandoned.get("phase")},
+                exit_code=EXIT_FAIL,
+            )
+        if (
+            abandoned.get("target_branch") != target_branch
+            or live_target != target_head
+            or target_head != abandoned.get("target_start_head")
+        ):
+            raise RuntimeProblem(
+                "target branch drifted after the abandoned business snapshot",
+                result="NEEDS_USER",
+                code="PREFLIGHT_TARGET_DRIFT",
+                details={
+                    "run_id": args.run,
+                    "phase": abandoned.get("phase"),
+                    "recorded_target_branch": abandoned.get("target_branch"),
+                    "recorded_target_head": abandoned.get("target_start_head"),
+                    "target_branch": target_branch,
+                    "target_head": target_head,
+                    "problem_snapshot_sha256": (
+                        problem_snapshot.get("sha256")
+                        if isinstance(problem_snapshot, dict)
+                        else None
+                    ),
+                },
+                exit_code=EXIT_FAIL,
+            )
+        if not isinstance(problem_snapshot, dict) or not problem_snapshot.get("problem_ids"):
+            raise RuntimeProblem(
+                "abandoned business run lacks a sealed non-empty problem snapshot",
+                result="NEEDS_USER",
+                code="PREFLIGHT_PROBLEM_SNAPSHOT_REQUIRED",
+                details={"run_id": abandoned.get("run_id")},
+                exit_code=EXIT_FAIL,
+            )
+        old_support_paths = list(abandoned.get("plan", {}).get("support_paths", []))
+        machine_paths = sorted(
+            set(machine_paths)
+            | set(abandoned.get("loop_config", {}).get("runner_paths", []))
+        )
+
+    machine_overlap = sorted(
+        path
+        for path in requested_paths
+        if path in PROTECTED_RUNTIME_PATHS or path_allowed(path, machine_paths)
+    )
+
+    eligible = sorted(
+        path
+        for path in requested_paths
+        if not path_allowed(path, machine_paths)
+        and path not in PROTECTED_RUNTIME_PATHS
+        and path_allowed(path, old_support_paths)
+    )
+    base = {
+        "message": "verification write paths were classified without changing repository state",
+        "repo_root": str(repo),
+        "target_branch": target_branch,
+        "target_head": target_head,
+        "effective_verification_source": verification_source,
+        "requested_paths": requested_paths,
+        "paths": requested_paths,
+        "path_blobs": path_blobs,
+        "machine_runner_control_paths": machine_paths,
+        "business_run_id": abandoned.get("run_id") if abandoned else None,
+        "business_plan_sha256": (
+            abandoned.get("plan", {}).get("sha256") if abandoned else None
+        ),
+        "problem_snapshot_sha256": (
+            problem_snapshot.get("sha256") if isinstance(problem_snapshot, dict) else None
+        ),
+        "problem_ids": (
+            list(problem_snapshot.get("problem_ids", []))
+            if isinstance(problem_snapshot, dict)
+            else []
+        ),
+        "old_support_paths": old_support_paths,
+        "eligible_support_paths": eligible,
+    }
+    base["binding_sha256"] = canonical_json_sha256(base)
+    if machine_overlap:
+        return {
+            "status": "NEEDS_USER",
+            "code": "VERIFICATION_BOOTSTRAP_REQUIRED",
+            "message": "requested writes overlap the current machine runner or control source",
+            "bootstrap_paths": machine_overlap,
+            **{key: value for key, value in base.items() if key != "message"},
+        }, EXIT_FAIL
+    if eligible:
+        verification_preparation = {
+            "business_run_id": abandoned.get("run_id") if abandoned else None,
+            "business_plan_sha256": (
+                abandoned.get("plan", {}).get("sha256") if abandoned else None
+            ),
+            "problem_snapshot_sha256": (
+                problem_snapshot.get("sha256") if isinstance(problem_snapshot, dict) else None
+            ),
+            "problem_ids": (
+                list(problem_snapshot.get("problem_ids", []))
+                if isinstance(problem_snapshot, dict)
+                else []
+            ),
+            "support_paths": eligible,
+            "repo_root": str(repo),
+            "target_branch": target_branch,
+        }
+        return {
+            "status": "NEEDS_USER",
+            "code": "VERIFICATION_PREPARATION_REQUIRED",
+            "verification_preparation": verification_preparation,
+            **base,
+        }, EXIT_FAIL
+    return {"status": "READY", **base}, EXIT_PASS
 
 
 def cmd_workspace_scan(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
@@ -5740,6 +6141,233 @@ def validate_supersession(repo: Path, contract: PlanContract) -> dict[str, Any] 
     return previous
 
 
+def load_unique_run_ledger(repo: Path, run_id: str, *, purpose: str) -> dict[str, Any]:
+    matches = [
+        (candidate_repo, ledger_path(candidate_repo, run_id))
+        for candidate_repo in repository_worktrees(repo)
+        if ledger_path(candidate_repo, run_id).is_file()
+    ]
+    if len(matches) != 1:
+        raise RuntimeProblem(
+            f"{purpose} run must resolve uniquely in this repository",
+            result="NEEDS_USER",
+            code="PLAN_LINKED_RUN_INVALID",
+            details={"run_id": run_id, "ledgers": [str(path) for _repo, path in matches]},
+            exit_code=EXIT_FAIL,
+        )
+    owner_repo, path = matches[0]
+    ledger = read_json(path)
+    if resolve_repo(str(ledger.get("repo_root", ""))) != owner_repo:
+        raise RuntimeProblem(
+            f"{purpose} run repository identity is invalid",
+            result="NEEDS_USER",
+            code="PLAN_LINKED_RUN_INVALID",
+            details={"run_id": run_id, "ledger": str(path)},
+            exit_code=EXIT_FAIL,
+        )
+    return ledger
+
+
+def exact_regular_blob(repo: Path, head: str, path: str) -> str:
+    if any(mark in path for mark in "*?["):
+        raise RuntimeProblem(
+            "linked verification paths must be exact repository paths",
+            result="NEEDS_USER",
+            code="VERIFICATION_PATH_NOT_EXACT",
+            details={"path": path},
+            exit_code=EXIT_FAIL,
+        )
+    entry = git(repo, "ls-tree", head, "--", path, check=False)
+    fields = entry.stdout.strip().split()
+    if entry.returncode != 0 or len(fields) < 3 or fields[0] not in {"100644", "100755"}:
+        raise RuntimeProblem(
+            "linked verification path must be a regular file at spec_head",
+            result="NEEDS_USER",
+            code="VERIFICATION_PATH_NOT_REGULAR",
+            details={"path": path, "spec_head": head},
+            exit_code=EXIT_FAIL,
+        )
+    return fields[2]
+
+
+def validate_verification_preparation(
+    repo: Path,
+    contract: PlanContract,
+    *,
+    target_branch: str,
+    spec_head: str,
+    runner_paths: Sequence[str],
+) -> dict[str, Any] | None:
+    marker = contract.verification_preparation
+    if marker is None:
+        return None
+    business = load_unique_run_ledger(
+        repo, str(marker["business_run_id"]), purpose="abandoned business"
+    )
+    snapshot = business.get("problem_inventory", {}).get("snapshot")
+    recorded_problem_ids = (
+        set(str(item) for item in snapshot.get("problem_ids", []))
+        if isinstance(snapshot, dict)
+        else set()
+    )
+    requested_problem_ids = set(str(item) for item in marker["problem_ids"])
+    valid = (
+        business.get("phase") == "abandoned"
+        and business.get("plan", {}).get("sha256") == marker["business_plan_sha256"]
+        and isinstance(snapshot, dict)
+        and snapshot.get("sha256") == marker["problem_snapshot_sha256"]
+        and bool(requested_problem_ids)
+        and requested_problem_ids <= recorded_problem_ids
+        and business.get("target_branch") == target_branch
+    )
+    if not valid:
+        raise RuntimeProblem(
+            "verification preparation marker does not match the abandoned business run",
+            result="NEEDS_USER",
+            code="VERIFICATION_PREPARATION_LINK_INVALID",
+            details={
+                "business_run_id": marker["business_run_id"],
+                "phase": business.get("phase"),
+                "recorded_plan_sha256": business.get("plan", {}).get("sha256"),
+                "recorded_problem_snapshot_sha256": (
+                    snapshot.get("sha256") if isinstance(snapshot, dict) else None
+                ),
+                "recorded_problem_ids": sorted(recorded_problem_ids),
+                "target_branch": business.get("target_branch"),
+            },
+            exit_code=EXIT_FAIL,
+        )
+    old_support = list(business.get("plan", {}).get("support_paths", []))
+    current_protected = set(PROTECTED_RUNTIME_PATHS) | set(runner_paths)
+    current_support = list(contract.support_paths)
+    path_blobs: dict[str, str] = {}
+    for path in marker["support_paths"]:
+        if not path_allowed(path, old_support):
+            raise RuntimeProblem(
+                "verification preparation path was not protected by the abandoned run",
+                result="NEEDS_USER",
+                code="VERIFICATION_PREPARATION_PATH_INELIGIBLE",
+                details={"path": path, "old_support_paths": old_support},
+                exit_code=EXIT_FAIL,
+            )
+        if not path_allowed(path, contract.builder_write):
+            raise RuntimeProblem(
+                "verification preparation path is outside Builder ownership",
+                result="NEEDS_USER",
+                code="VERIFICATION_PREPARATION_PATH_INELIGIBLE",
+                details={"path": path},
+                exit_code=EXIT_FAIL,
+            )
+        if path in current_protected or path_allowed(path, current_support):
+            raise RuntimeProblem(
+                "current machine runner or support paths require an external bootstrap",
+                result="NEEDS_USER",
+                code="VERIFICATION_BOOTSTRAP_REQUIRED",
+                details={"path": path, "protected_paths": sorted(current_protected)},
+                exit_code=EXIT_FAIL,
+            )
+        path_blobs[path] = exact_regular_blob(repo, spec_head, path)
+    return {
+        **marker,
+        "path_blobs": path_blobs,
+        "business_owner_session_id": business.get("owner_session_id"),
+    }
+
+
+def validate_business_continuation(
+    repo: Path,
+    contract: PlanContract,
+    *,
+    target_branch: str,
+    spec_head: str,
+    previous: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    marker = contract.continuation_from
+    if marker is None:
+        return None
+    preparation = load_unique_run_ledger(
+        repo, str(marker["preparation_run_id"]), purpose="verification preparation"
+    )
+    preparation_link = preparation.get("plan", {}).get("verification_preparation")
+    final_head = preparation.get("final_head")
+    valid = (
+        preparation.get("phase") == "finalized"
+        and isinstance(preparation_link, dict)
+        and final_head == spec_head
+        and preparation.get("target_branch") == target_branch
+        and isinstance(previous, dict)
+        and contract.supersedes_run_id == preparation_link.get("business_run_id")
+        and contract.supersedes_plan_sha256
+        == preparation_link.get("business_plan_sha256")
+        and contract.prior_problem_snapshot_sha256
+        == preparation_link.get("problem_snapshot_sha256")
+    )
+    if not valid:
+        raise RuntimeProblem(
+            "business continuation does not match a finalized preparation run",
+            result="NEEDS_USER",
+            code="BUSINESS_CONTINUATION_INVALID",
+            details={
+                "preparation_run_id": marker["preparation_run_id"],
+                "phase": preparation.get("phase"),
+                "preparation_final_head": final_head,
+                "requested_spec_head": spec_head,
+                "target_branch": preparation.get("target_branch"),
+            },
+            exit_code=EXIT_FAIL,
+        )
+    decisions = {
+        str(item.get("problem_id")): item
+        for item in contract.prior_problem_items
+        if isinstance(item, dict)
+    }
+    invalid_problem_ids = [
+        problem_id
+        for problem_id in preparation_link.get("problem_ids", [])
+        if decisions.get(str(problem_id), {}).get("handling") != "handled_elsewhere"
+        or str(final_head) not in str(decisions.get(str(problem_id), {}).get("reference", ""))
+    ]
+    if invalid_problem_ids:
+        raise RuntimeProblem(
+            "prepared problems must be handled_elsewhere at the preparation final commit",
+            result="NEEDS_USER",
+            code="BUSINESS_CONTINUATION_PROBLEM_MAPPING_INVALID",
+            details={
+                "problem_ids": invalid_problem_ids,
+                "preparation_final_head": final_head,
+            },
+            exit_code=EXIT_FAIL,
+        )
+    replayed_by: list[str] = []
+    for candidate_repo in repository_worktrees(repo):
+        runs_root = state_root(candidate_repo) / "runs"
+        if not runs_root.is_dir():
+            continue
+        for path in runs_root.glob("*/ledger.json"):
+            with contextlib.suppress(RuntimeProblem):
+                candidate = read_json(path)
+                linked = candidate.get("plan", {}).get("continuation_from")
+                if (
+                    isinstance(linked, dict)
+                    and linked.get("preparation_run_id") == marker["preparation_run_id"]
+                ):
+                    replayed_by.append(str(candidate.get("run_id")))
+    if replayed_by:
+        raise RuntimeProblem(
+            "continuation marker was already consumed by another run",
+            result="NEEDS_USER",
+            code="BUSINESS_CONTINUATION_REPLAYED",
+            details={"preparation_run_id": marker["preparation_run_id"], "runs": sorted(set(replayed_by))},
+            exit_code=EXIT_FAIL,
+        )
+    return {
+        "preparation_run_id": marker["preparation_run_id"],
+        "preparation_owner_session_id": preparation.get("owner_session_id"),
+        "preparation_final_head": final_head,
+        "business_run_id": preparation_link["business_run_id"],
+    }
+
+
 def preflight_plan(
     repo: Path,
     contract: PlanContract,
@@ -5828,6 +6456,21 @@ def preflight_plan(
                 details={"drift": drift},
                 exit_code=EXIT_FAIL,
             )
+    runner_paths = tuple(verification_protected_paths(commands))
+    verification_preparation = validate_verification_preparation(
+        repo,
+        contract,
+        target_branch=resolved_target_branch,
+        spec_head=spec_head,
+        runner_paths=runner_paths,
+    )
+    continuation_from = validate_business_continuation(
+        repo,
+        contract,
+        target_branch=resolved_target_branch,
+        spec_head=spec_head,
+        previous=previous,
+    )
     return PlanPreflight(
         spec_head=spec_head,
         target_branch=resolved_target_branch,
@@ -5841,13 +6484,15 @@ def preflight_plan(
         loop_config_sha256=config_sha256,
         effective_verification_source=verification_source,
         max_iterations=max_iterations,
-        runner_paths=tuple(verification_protected_paths(commands)),
+        runner_paths=runner_paths,
         workspace_intake=tuple(workspace_entries),
         prior_problem_snapshot=(
             previous.get("problem_inventory", {}).get("snapshot")
             if isinstance(previous, dict)
             else None
         ),
+        verification_preparation=verification_preparation,
+        continuation_from=continuation_from,
     )
 
 
@@ -5945,6 +6590,22 @@ def cmd_start_locked(args: argparse.Namespace, repo: Path) -> tuple[dict[str, An
     loop_config_source = preflight.effective_verification_source
     max_iterations = preflight.max_iterations
     runner_paths = list(preflight.runner_paths)
+    linked_owner_session_id = None
+    if preflight.continuation_from is not None:
+        linked_owner_session_id = preflight.continuation_from.get(
+            "preparation_owner_session_id"
+        )
+    if linked_owner_session_id is not None and linked_owner_session_id != session_id:
+        raise RuntimeProblem(
+            "linked verification continuation must stay in the owning session",
+            result="NEEDS_USER",
+            code="CONTINUATION_SESSION_MISMATCH",
+            details={
+                "owner_session_id": linked_owner_session_id,
+                "requested_session_id": session_id,
+            },
+            exit_code=EXIT_FAIL,
+        )
     add_info_exclude(repo)
 
     snapshot_head = spec_head
@@ -6069,6 +6730,7 @@ def cmd_start_locked(args: argparse.Namespace, repo: Path) -> tuple[dict[str, An
             "level": contract.level,
             "spec_head": contract.spec_head,
             "plan_revision": contract.plan_revision,
+            "revision": contract.plan_revision,
             "parallel_ready": contract.parallel_ready,
             "interfaces": list(contract.interfaces),
             "interface_publication_contract_version": INTERFACE_PUBLICATION_CONTRACT_VERSION,
@@ -6084,6 +6746,16 @@ def cmd_start_locked(args: argparse.Namespace, repo: Path) -> tuple[dict[str, An
             "supersedes_plan_sha256": contract.supersedes_plan_sha256,
             "prior_problem_snapshot_sha256": contract.prior_problem_snapshot_sha256,
             "prior_problem_items": prior_decisions,
+            "verification_preparation": (
+                dict(contract.verification_preparation)
+                if contract.verification_preparation is not None
+                else None
+            ),
+            "continuation_from": (
+                dict(contract.continuation_from)
+                if contract.continuation_from is not None
+                else None
+            ),
             "has_e2e_cases": contract.has_e2e_cases,
             "e2e_case_ids": list(contract.e2e_case_ids),
             "e2e_cases_sha256": contract.e2e_cases_sha256,
@@ -12779,6 +13451,7 @@ def finish_finalized_cleanup(
         "target_branch": ledger["target_branch"],
         "commit_count": 1,
         "cleanup_failures": [],
+        "continuation": preparation_continuation_facts(repo, ledger),
     }, EXIT_PASS
 
 
@@ -12791,6 +13464,7 @@ def cmd_finalize(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                 "message": "run was already finalized",
                 "run_id": ledger["run_id"],
                 "final_head": ledger.get("final_head"),
+                "continuation": preparation_continuation_facts(repo, ledger),
             }, EXIT_PASS
         recovered = recover_finalize_intent(repo, ledger)
         if recovered is not None:
@@ -13584,6 +14258,14 @@ def build_parser() -> argparse.ArgumentParser:
     plan.add_argument("--plan", help="Markdown plan path; omit or use - to read stdin")
     plan.set_defaults(handler=cmd_plan_validate)
 
+    plan_preflight = subparsers.add_parser("plan-preflight")
+    plan_preflight.add_argument("--repo", default=".", help="target Git repository")
+    plan_preflight.add_argument(
+        "--run", help="abandoned business run whose protected support paths may need preparation"
+    )
+    plan_preflight.add_argument("--path", action="append", required=True)
+    plan_preflight.set_defaults(handler=cmd_plan_preflight)
+
     workspace_scan = subparsers.add_parser("workspace-scan")
     workspace_scan.add_argument("--repo", default=".")
     workspace_scan.add_argument("--path", action="append", required=True)
@@ -13739,7 +14421,13 @@ def build_parser() -> argparse.ArgumentParser:
 
 def _drain_before_command(args: argparse.Namespace) -> None:
     command = str(getattr(args, "command", ""))
-    if command in {"plan-validate", "workspace-scan", "start", "agent-event"}:
+    if command in {
+        "plan-validate",
+        "plan-preflight",
+        "workspace-scan",
+        "start",
+        "agent-event",
+    }:
         return
     selector = getattr(args, "run", None)
     if selector:

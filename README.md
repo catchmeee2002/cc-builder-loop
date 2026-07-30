@@ -23,6 +23,10 @@ Default mode 直接进入 Builder；也可显式调用 `$builder` 作为手工�
 - `READY` 后的 `BUILDER_HANDOFF_READY` 位于冻结方案之外，只对同 session 紧邻的原生“实施计划”
   动作有效；标记缺失、过期、方案变化或 Codex 原生 Plan 不会隐式启动 builder-loop。标记不进入
   plan digest 或 ledger，`$builder` 继续作为兼容入口。
+- 详细规划前可用只读 `plan-preflight --path <exact-path>` 检查预期写入。当前 machine runner/control
+  重叠继续要求仓库外 bootstrap；若只命中 abandoned business run 的旧 support path，则先做独立
+  preparation run。它完成后输出 `BUILDER_CONTINUATION_READY:<run-id>`，同 session 紧邻的下一次
+  Plan mode 从 ledger 与 Git 恢复原 business revision；仍须重新验证计划和取得普通实施授权。
 - 主仓 dirty 默认留在原处且不进入 run。任务确实依赖现有改动时，Planner 取得 exact-path 授权并用
   `workspace-scan` 冻结 state digest；`start` 合成不可变 snapshot 给 Builder，主仓和全局 stash
   全程不动。finalize 只在授权路径未漂移时消费 snapshot。

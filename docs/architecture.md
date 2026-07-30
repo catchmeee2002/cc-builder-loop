@@ -58,6 +58,19 @@ symlink。具体字段以 validator 实现和 fixtures 为准。
 effective runner、安全规则、ownership 和冻结依赖。前者不创建 ledger、run 目录或 worktree；
 只有完成这些上下文检查才返回 `READY`，并公开 `effective_verification_source`。
 
+受保护验证支持采用关联双 Run，而不是让一个 run 修改自己的判据。详细规划前，独立只读
+`plan-preflight` 将 exact intended paths 分成无冲突、旧 abandoned run 的 support-only 冲突和当前
+machine runner/control 冲突；全过程不创建 ledger、worktree、ref 或文件。support-only 场景的
+revision 1 preparation run 在自身 plan/ledger 冻结旧 business run、plan digest、problem snapshot、
+problem ids 与 exact paths，并由普通独立验证完成；旧 ledger 保持只读。
+
+preparation finalized 后，`status/finalize` 从 preparation ledger、原 business ledger 与 Git final
+HEAD 派生单一 continuation object。后续 business revision 的 `continuation-from` 只引用 preparation
+run，仍由正常 supersession 指向原 business run，且关联问题必须引用 preparation commit 为
+`handled_elsewhere`。同 session 紧邻 marker 只负责把下一次 Plan mode 路由给 Planner；runtime 继续
+核对 repo、target、session、finalized、spec HEAD 与 replay，并要求新的 plan validation 和实现授权。
+这条链不持久化 mission、第二份计划、transcript 索引或 evidence 副本。
+
 新计划 identity 为 `canonical-v2`：CRLF/CR 统一为 LF，唯一严格受管的首行生命周期 header 被移除，
 末尾换行规范为一个；其余 Markdown 字节全部参与摘要。`plan-validate` 同时返回 canonical identity 与
 raw source digest，start 在 ledger 另存 raw source/frozen-file digest。冻结文件随后同时核对 canonical
