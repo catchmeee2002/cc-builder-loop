@@ -15,7 +15,8 @@ Agent spawn、same-thread follow-up、结构化结果解析和持续循环由本
 2. 读取项目 `AGENTS.md`、文档政策和设计哲学，生成四事实面 contract，再运行
    `codex-builder-loop assurance --experimental-v4 validate/start`。
    初始 `execution.agents` 保持为空；只有原生 spawn 返回真实 identity 后，才通过
-   `prepare-tester` / `prepare-reviewer` 写入，不能预填或猜测 agent/thread id。
+   `prepare-tester` / `prepare-reviewer` 写入，不能预填或猜测 agent/thread id。Full Driver contract
+   必须设置 `execution.driver_enforced=true`，使缺失 `action_id` 也无法绕过当前 Driver action。
 3. `mission.delivery_kind=documentation` 是 L1：只保留 Reviewer/doc-review，不创建 Tester、machine
    或 blackbox 假证据。
    其他代码交付默认冻结 `tester`、`proof`、`machine`、`blackbox`、`reviewer` 五个独立 gate；只有

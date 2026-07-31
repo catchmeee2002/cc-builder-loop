@@ -32,6 +32,7 @@ def next_action(repo_value: str | Path, run_value: str) -> dict[str, Any]:
             "action": action,
             "reason": reason,
             "action_id": identity,
+            "driver_enforced": bool(ledger["facets"]["execution"].get("driver_enforced")),
             **payload,
         }
     if ledger["phase"] == "finalizing":

@@ -29,6 +29,10 @@ target 与 finalize intent，不保存“下一步让谁做”、correction budg
 同一失败签名三次只触发架构复核，不自动创建新 Mission。无冲突 target drift 通过 candidate
 rematerialization 后局部重验，Git 冲突、授权扩大和覆盖风险才停止。
 
+Full Driver contract 固定 `execution.driver_enforced=true`。该模式下 mutation 即使省略 `action_id` 也
+必须即时匹配当前派生 action；携带 ID 时还要匹配同一 ledger 版本，拒绝错序调用和 stale replay。
+Assurance Core 的独立契约测试与手工底层诊断默认不启用 Driver enforcement，二者不共享隐式开关。
+
 dirty intake 的自动 snapshot commit 只证明输入已隔离，不证明实现完成；ledger 单独记录
 `builder_checkpointed` 执行事实，Driver 在首次 Builder checkpoint 前不会推进 Tester。串行 Tester 的
 publication 在 target rematerialization 时基于新 target 重新生成，exact prerequisite blob/manifest

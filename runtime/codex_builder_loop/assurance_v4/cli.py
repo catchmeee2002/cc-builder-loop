@@ -162,10 +162,12 @@ def _json(path: str) -> Any:
 
 def _guard_dispatch(args: argparse.Namespace, accepted: set[str]) -> None:
     action_id = getattr(args, "action_id", None)
-    if not action_id:
-        return
     current = driver.next_action(args.repo, args.run)
-    if current.get("action_id") != action_id or current.get("action") not in accepted:
+    if action_id is None and not current.get("driver_enforced"):
+        return
+    if current.get("action") not in accepted or (
+        action_id is not None and current.get("action_id") != action_id
+    ):
         raise core.AssuranceError(
             "driver action is stale or does not authorize this mutation",
             code="DRIVER_ACTION_STALE",
@@ -192,7 +194,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         elif args.command == "status":
             payload = core.status(args.repo, args.run)
         elif args.command == "checkpoint-builder":
-            _guard_dispatch(args, {"checkpoint_builder"})
+            _guard_dispatch(args, {"builder_implement", "builder_fix", "checkpoint_builder"})
             payload = core.checkpoint_builder(args.repo, args.run)
         elif args.command == "publish-prerequisites":
             _guard_dispatch(args, {"publish_prerequisites"})

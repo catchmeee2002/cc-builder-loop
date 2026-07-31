@@ -76,6 +76,7 @@ def validate_contract(value: Any) -> dict[str, Any]:
     contract["authority"].setdefault("public_prerequisites", [])
     contract["authority"].setdefault("protected_support_paths", [])
     contract["execution"].setdefault("continuation", None)
+    contract["execution"].setdefault("driver_enforced", False)
     for facet, fields in (
         ("mission", ("behaviors", "interfaces", "acceptance_cases", "trust_boundaries")),
     ):

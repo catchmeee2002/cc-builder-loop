@@ -1365,6 +1365,22 @@ def prove_tests(
         unbound_tests: list[dict[str, str]] = []
         for group in spec["groups"]:
             framework = _proof_framework(list(group["argv"]))
+            if group["method"] == "reviewed-boundaries":
+                boundary_ids = {
+                    test_id
+                    for values in group["reviewed_boundaries"].values()
+                    for test_id in values
+                }
+                if boundary_ids != set(group["test_ids"]):
+                    raise AssuranceError(
+                        "reviewed-boundaries ids must exactly equal the executed Tester test ids",
+                        code="TEST_PROOF_BOUNDARY_TEST_IDS_INVALID",
+                        status="FAIL",
+                        details={
+                            "declared_test_ids": sorted(group["test_ids"]),
+                            "reviewed_boundary_ids": sorted(boundary_ids),
+                        },
+                    )
             for test_id in group["test_ids"]:
                 if proof_test_source_path(
                     repo,

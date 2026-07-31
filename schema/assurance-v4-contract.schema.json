@@ -157,6 +157,7 @@
             {"$ref": "#/$defs/testerSource"}
           ]
         },
+        "driver_enforced": {"type": "boolean"},
         "continuation": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/continuation"}]},
         "dirty_snapshot": {
           "type": "array",

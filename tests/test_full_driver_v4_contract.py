@@ -59,6 +59,7 @@ def contract_for(repo: Path) -> dict[str, Any]:
         },
         "execution": {
             "version": 1,
+            "driver_enforced": True,
             "candidate_head": None,
             "builder_files": [],
             "tester_files": [],
@@ -406,7 +407,22 @@ class FullDriverV4ContractTest(unittest.TestCase):
 
     def test_reviewer_identity_requires_same_thread_or_explicit_replacement(self) -> None:
         run_id = "full-driver-reviewer-continuity"
-        _data, run_path = self.start(run_id)
+        contract = contract_for(self.repo)
+        contract["mission"]["objective"] = "Review an L1 fixture."
+        contract["authority"]["builder_write"] = ["README.md"]
+        contract["authority"]["tester_write"] = []
+        contract["assurance"] = {"required": ["reviewer"], "machine_commands": []}
+        contract["execution"]["commands"] = []
+        _data, run_path = self.start(run_id, contract=contract)
+        rc, checkpointed = self.invoke(
+            "checkpoint-builder", "--repo", self.repo, "--run", run_id
+        )
+        self.assertEqual(rc, 0, checkpointed)
+        rc, action = self.invoke(
+            "driver-next", "--repo", self.repo, "--run", run_id
+        )
+        self.assertEqual(rc, 0, action)
+        self.assertEqual(action.get("action"), "reviewer_final", action)
         rc, prepared = self.invoke(
             "prepare-reviewer",
             "--repo",
@@ -417,6 +433,8 @@ class FullDriverV4ContractTest(unittest.TestCase):
             "full-driver-reviewer",
             "--thread-id",
             "full-driver-reviewer-thread",
+            "--action-id",
+            action["action_id"],
         )
         self.assertEqual(rc, 0, prepared)
         rc, rejected = self.invoke(
@@ -458,7 +476,9 @@ class FullDriverV4ContractTest(unittest.TestCase):
 
     def test_structured_problem_report_is_persisted_with_role_identity(self) -> None:
         run_id = "full-driver-problems"
-        _data, run_path = self.start(run_id)
+        core_contract = contract_for(self.repo)
+        core_contract["execution"]["driver_enforced"] = False
+        _data, run_path = self.start(run_id, contract=core_contract)
         report = {
             "schema_version": 1,
             "problems": [
@@ -597,6 +617,76 @@ class FullDriverV4ContractTest(unittest.TestCase):
         self.assertEqual(rc, 0, advanced)
         self.assertEqual(advanced.get("action"), "verify_machine", advanced)
 
+    def test_prove_tests_rejects_unbound_reviewed_boundary_ids(self) -> None:
+        run_id = "full-driver-reviewed-boundaries"
+        contract = contract_for(self.repo)
+        contract["assurance"]["required"].insert(2, "proof")
+        _data, run_path = self.start(run_id, contract=contract)
+        rc, checkpointed = self.invoke(
+            "checkpoint-builder", "--repo", self.repo, "--run", run_id
+        )
+        self.assertEqual(rc, 0, checkpointed)
+        ledger = self.prepare_and_record_tester(run_id, run_path)
+        tester = ledger["facets"]["execution"]["agents"]["tester"]
+        rc, action = self.invoke(
+            "driver-next", "--repo", self.repo, "--run", run_id
+        )
+        self.assertEqual(rc, 0, action)
+        self.assertEqual(action.get("action"), "tester_proof", action)
+
+        test_id = (
+            "tests.test_full_driver_fixture.FullDriverFixtureTest.test_add"
+        )
+        spec_path = self.write_json(
+            "full-driver-unbound-reviewed-boundary.json",
+            {
+                "schema_version": 1,
+                "groups": [
+                    {
+                        "behavior_ids": ["driver-flow"],
+                        "method": "reviewed-boundaries",
+                        "argv": [
+                            sys.executable,
+                            "-m",
+                            "unittest",
+                            test_id,
+                        ],
+                        "test_ids": [test_id],
+                        "timeout_seconds": 30,
+                        "reason": "Exercise all frozen observable boundaries.",
+                        "reviewed_boundaries": {
+                            "positive_test_ids": [test_id],
+                            "negative_test_ids": [test_id],
+                            "boundary_test_ids": [test_id],
+                            "invariant_test_ids": [test_id, "fictional.test_id"],
+                        },
+                    }
+                ],
+            },
+        )
+        before = (run_path / "ledger.json").read_bytes()
+        rc, rejected = self.invoke(
+            "prove-tests",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--spec",
+            spec_path,
+            "--agent-id",
+            tester["agent_id"],
+            "--thread-id",
+            tester["thread_id"],
+            "--action-id",
+            action["action_id"],
+        )
+        self.assertNotEqual(rc, 0, rejected)
+        self.assertEqual(
+            rejected.get("code"), "TEST_PROOF_BOUNDARY_TEST_IDS_INVALID", rejected
+        )
+        self.assertEqual((run_path / "ledger.json").read_bytes(), before)
+        self.assertNotIn("proof", self.load_ledger(run_path)["evidence"])
+
     def test_prove_tests_rejects_false_out_of_scope_and_stale_proofs_without_evidence(self) -> None:
         run_id = "full-driver-false-proof"
         contract = contract_for(self.repo)
@@ -710,19 +800,13 @@ class FullDriverV4ContractTest(unittest.TestCase):
             "TEST_PROOF_MUTATION_AUTHORITY_VIOLATION",
         )
 
-        rc, replaced = self.invoke(
-            "prepare-reviewer",
-            "--repo",
-            self.repo,
-            "--run",
+        current_execution = self.load_ledger(run_path)["facets"]["execution"]
+        self.update_execution(
             run_id,
-            "--agent-id",
-            "replacement-reviewer",
-            "--thread-id",
-            "replacement-reviewer-thread",
-            "--replace",
+            run_path,
+            current_execution["candidate_head"],
+            builder_files=current_execution["builder_files"],
         )
-        self.assertEqual(rc, 0, replaced)
         stale_spec = self.write_json(
             "stale-proof.json",
             {
@@ -1051,6 +1135,63 @@ class FullDriverV4ContractTest(unittest.TestCase):
             git(self.repo, "worktree", "list", "--porcelain"),
             worktrees_before_replay,
         )
+
+    def test_driver_enforcement_rejects_wrong_order_without_action_id(self) -> None:
+        run_id = "full-driver-implicit-action-guard"
+        _data, run_path = self.start(run_id)
+        ledger = self.load_ledger(run_path)
+        execution = ledger["facets"]["execution"]
+        reviewer = execution["agents"]["reviewer"]
+        report_path = self.write_json(
+            "wrong-order-reviewer-report.json",
+            {
+                "schema_version": 1,
+                "kind": "reviewer",
+                "status": "pass",
+                "candidate_head": execution["candidate_head"],
+                "producer": {"role": "reviewer", **reviewer},
+                "details": {
+                    "result": "pass",
+                    "reviewed_head": execution["candidate_head"],
+                },
+            },
+        )
+
+        before_evidence = (run_path / "ledger.json").read_bytes()
+        rc, rejected_evidence = self.invoke(
+            "record-evidence",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--kind",
+            "reviewer",
+            "--report",
+            report_path,
+        )
+        self.assertNotEqual(rc, 0, rejected_evidence)
+        self.assertEqual(
+            rejected_evidence.get("code"), "DRIVER_ACTION_STALE", rejected_evidence
+        )
+        self.assertEqual((run_path / "ledger.json").read_bytes(), before_evidence)
+
+        before_mutation = (run_path / "ledger.json").read_bytes()
+        rc, rejected_mutation = self.invoke(
+            "prepare-reviewer",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--agent-id",
+            reviewer["agent_id"],
+            "--thread-id",
+            reviewer["thread_id"],
+        )
+        self.assertNotEqual(rc, 0, rejected_mutation)
+        self.assertEqual(
+            rejected_mutation.get("code"), "DRIVER_ACTION_STALE", rejected_mutation
+        )
+        self.assertEqual((run_path / "ledger.json").read_bytes(), before_mutation)
 
     def test_l1_delivery_skips_tester_machine_and_blackbox(self) -> None:
         run_id = "full-driver-l1"
