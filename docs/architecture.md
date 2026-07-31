@@ -6,12 +6,14 @@ legacy v2/v3 新 run 与无实验标志的 v4 CLI 保持关闭；面向用户的
 新实现位于独立 `assurance_v4` package，不导入或原地改写 legacy `core.py`：
 
 ```text
-Full Driver v4 experiment       future Native Driver
-          │                            │
-          └──────── driver advice ─────┘
+          Full Driver v4 behavior contract
                          │
-                         ▼
-                Assurance Core v4
+              Native Driver (default)
+                  │              │
+         Codex App Server    Full Driver Skill fallback
+                  └──── driver advice ────┐
+                                         ▼
+                                Assurance Core v4
  Mission ─ Authority ─ Assurance Policy ─ Execution Manifest
                          │
  candidate/evidence binding ─ machine ─ role source ─ target CAS
@@ -23,9 +25,11 @@ Execution Manifest 记录实际 candidate、文件、命令和 Agent identity。
 它的 evidence stale；只有 Mission 变化才提升 semantic revision，Authority 扩大和 Assurance 降级
 分别要求用户授权。
 
-Core ledger 只保存 `active/finalizing/finalized/abandoned`、facet/evidence digest、candidate、
-target 与 finalize intent，不保存“下一步让谁做”、correction budget 或普通 Agent 循环。
-`driver.py` 和维护期实验 Skill 读取 readiness 后决定 Builder、Tester、机器、黑盒或 Reviewer 动作；
+Core ledger 保存 `active/finalizing/finalized/abandoned`、facet/evidence digest、candidate、target 与
+可恢复事务，不保存“下一步让谁做”、correction budget 或普通 Agent 循环。Native Driver 在启动外部
+role turn 前只额外持久化一个 dispatch intent，绑定 action/thread/prompt/output digest 和 turn/result；
+它是跨进程副作用的恢复事实，不是调度状态，消费后立即清空。`driver.py` 每轮从 readiness 重新决定
+Builder、Tester、机器、黑盒或 Reviewer 动作；
 同一失败签名三次只触发架构复核，不自动创建新 Mission。无冲突 target drift 通过 candidate
 rematerialization 后局部重验，Git 冲突、授权扩大和覆盖风险才停止。
 
@@ -46,17 +50,25 @@ Core 在隔离 worktree 先证明 candidate tests 通过，再执行 baseline-re
 才记录 proof；ledger 同时保存规范化 spec、逐组执行结果、executable identity、log digest 与 artifact
 位置，任意 report digest 不能替代真实执行。
 
-维护期实验 Skill 直接使用原生 custom-agent spawn 与 same-thread follow-up。Tester v4 phase 返回公共
-schema JSON；Reviewer 沿用冻结的 `REVIEW_RESULT/REVIEW_HEAD/PROBLEM_REPORT` 终态，由协调器做无语义
-变化的 v4 report 规范化后交给 Core。Core 机械核对 Execution 中冻结的 identity、Tester source HEAD/blob
-manifest、blackbox worktree/HEAD/逐命令结果和 Reviewer candidate。当前 Codex
-没有供本地 runtime 独立查询 child-thread provenance 的结构化 API，因此这层仍是显式协调器
-attestation，不宣称具备平台级防伪。公共 Full Driver 重新开放前必须补齐真实生命周期观测或证明原生
-能力等价；仅有本仓实验测试不能把该限制改写成已解决。
+Native Driver 使用 App Server 稳定 stdio thread/turn 接口并在启动前检查当前协议 schema；不启用
+`experimentalApi` 字段，也不新增 API Key。Builder、Tester、Reviewer 的唯一 role policy 仍来自
+`agents/*.toml`，App Server `outputSchema` 把终态收敛为公共 v4 JSON。Core 机械核对 thread identity、
+Tester source HEAD/blob manifest、blackbox worktree/HEAD/逐命令结果和 Reviewer candidate。Native
+Driver 能直接观察并恢复真实 thread/turn 生命周期，但不把协调器观察宣称为密码学或平台级防伪。
+可恢复的 App Server transport failure 在同一 role thread 和 dispatch 上最多尝试三次，attempt 与 turn id
+持久化进 ledger；第三次失败后 Core 返回 `NEEDS_USER`，Driver 不重置上限或另建 thread 绕过连续性。
+App Server turn 使用 host-level `danger-full-access`，因为部分本地环境无法创建 bwrap namespace；这不
+扩大产品信任声明，角色只读/写范围仍由独立 worktree、Git manifest、ownership 和 Core mutation gate
+机械执行，与既有“不提供 filesystem ACL”的边界一致。
 
-内部 CLI 入口为 `codex-builder-loop assurance --experimental-v4 ...`。Plan 选项中的实验 Planner
-冻结并验证 v4 contract，`$builder` 只消费已验证 handoff 并设置实验入口；内部 Full Driver Skill
-仍禁止被普通请求隐式调用。首版覆盖本地单仓 Git 代码与 L1 文档交付；外部设备、远程部署和多仓事务保持 unsupported。本地 protected preparation
+现有 Full Driver Skill 保留为协议不兼容时的 run 前回退和 parity oracle。ledger 一旦冻结
+`driver_runtime.kind=native`，Skill 不得接管；旧 ledger 缺少该字段时继续由原承载恢复，Native Driver
+不自动 adopt。
+
+内部确定性入口为 `codex-builder-loop assurance --experimental-v4 ...`，Native 编排入口为
+`codex-builder-loop native-driver start|resume|status`，但用户不直接调用。Plan 选项中的实验 Planner
+冻结并验证 v4 contract，`$builder` 只消费已验证 handoff 并启动 Native Driver；内部 Full Driver
+Skill 仍禁止被普通请求隐式调用。首版覆盖本地单仓 Git 代码与 L1 文档交付；外部设备、远程部署和多仓事务保持 unsupported。本地 protected preparation
 通过 finalized HEAD、exact support manifest 和单次 continuation 消费衔接 business run。消费前先在
 preparation ledger 持久化 intent，business ledger 落盘后再提交 consumed marker；进程中断时重试
 同一 start 只收敛该 intent，不创建第二份状态。当前用户入口明确标为实验；只有完成历史回放和跨项目

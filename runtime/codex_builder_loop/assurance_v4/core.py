@@ -21,6 +21,7 @@ from .models import (
     evidence_dependency,
     facet_digests,
     validate_contract,
+    validate_agent_result,
     validate_evidence_report,
     validate_problem_report,
     validate_repo_path,
@@ -29,6 +30,7 @@ from .models import (
 from .store import (
     StoreError,
     append_event,
+    atomic_write_json,
     branch_head,
     changed_files,
     commit_exists,
@@ -174,6 +176,8 @@ def start(
     run_value: str,
     session_id: str,
     contract_value: Any,
+    *,
+    driver_runtime: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     source_contract_digest = digest(contract_value)
     contract = validate_contract(contract_value)
@@ -339,6 +343,8 @@ def start(
                 "evidence": {},
                 "retired_tester_sources": [],
                 "retired_reviewer_agents": [],
+                "driver_runtime": copy.deepcopy(driver_runtime),
+                "dispatch_intent": None,
                 "problems": [],
                 "publication": {
                     "required": bool(contract["authority"].get("public_prerequisites")),
@@ -396,6 +402,204 @@ def start(
     return status(repo, run_id)
 
 
+def prepare_builder(
+    repo_value: str | Path,
+    run_value: str,
+    agent_id: str,
+    thread_id: str,
+) -> dict[str, Any]:
+    repo = resolve_repo(repo_value)
+    run_id = ensure_run_id(run_value)
+    agent = {"agent_id": agent_id.strip(), "thread_id": thread_id.strip()}
+    if not all(agent.values()):
+        raise AssuranceError("Builder identity is required", code="BUILDER_IDENTITY_REQUIRED")
+    with locked(repo):
+        ledger = read_ledger(repo, run_id)
+        existing = ledger["facets"]["execution"]["agents"].get("builder")
+        if existing == agent:
+            return status(repo, run_id)
+        if existing is not None:
+            raise AssuranceError(
+                "Builder continuity replacement is not supported",
+                code="BUILDER_CONTINUITY_REPLACEMENT_REQUIRED",
+                status="NEEDS_USER",
+            )
+        ledger["facets"]["execution"]["agents"]["builder"] = agent
+        ledger["facets"]["execution"]["version"] += 1
+        ledger["digests"] = facet_digests(ledger["facets"])
+        append_event(ledger, "builder_prepared", {"agent": agent})
+        save_ledger(repo, ledger)
+    return status(repo, run_id)
+
+
+def begin_dispatch(
+    repo_value: str | Path,
+    run_value: str,
+    *,
+    action_id: str,
+    action: str,
+    role: str,
+    thread_id: str,
+    prompt_digest: str,
+    output_schema_digest: str,
+) -> dict[str, Any]:
+    repo = resolve_repo(repo_value)
+    run_id = ensure_run_id(run_value)
+    if role not in {"builder", "tester", "reviewer"}:
+        raise AssuranceError("dispatch role is invalid", code="DISPATCH_ROLE_INVALID")
+    with locked(repo):
+        ledger = read_ledger(repo, run_id)
+        runtime = ledger.get("driver_runtime")
+        if not isinstance(runtime, dict) or runtime.get("kind") != "native":
+            raise AssuranceError("run is not owned by Native Driver", code="NATIVE_DRIVER_NOT_OWNER")
+        existing = ledger.get("dispatch_intent")
+        if existing is not None:
+            if existing.get("action_id") == action_id:
+                return status(repo, run_id)
+            raise AssuranceError(
+                "another dispatch is already pending",
+                code="DISPATCH_ALREADY_PENDING",
+                status="NEEDS_USER",
+            )
+        from .driver import next_action
+
+        current = next_action(repo, run_id)
+        if current.get("action_id") != action_id or current.get("action") != action:
+            raise AssuranceError("driver action is stale", code="DRIVER_ACTION_STALE", status="FAIL")
+        agent = ledger["facets"]["execution"]["agents"].get(role)
+        if not isinstance(agent, dict) or agent.get("thread_id") != thread_id:
+            raise AssuranceError("dispatch thread identity mismatch", code="DISPATCH_IDENTITY_MISMATCH")
+        ledger["dispatch_intent"] = {
+            "action_id": action_id,
+            "action": action,
+            "role": role,
+            "thread_id": thread_id,
+            "prompt_digest": prompt_digest,
+            "output_schema_digest": output_schema_digest,
+            "state": "prepared",
+            "attempt": 1,
+            "created_at": now(),
+        }
+        append_event(ledger, "dispatch_prepared", copy.deepcopy(ledger["dispatch_intent"]))
+        save_ledger(repo, ledger)
+    return status(repo, run_id)
+
+
+def bind_dispatch_turn(
+    repo_value: str | Path, run_value: str, *, action_id: str, turn_id: str
+) -> dict[str, Any]:
+    repo = resolve_repo(repo_value)
+    run_id = ensure_run_id(run_value)
+    if not turn_id.strip():
+        raise AssuranceError("turn id is required", code="DISPATCH_TURN_ID_REQUIRED")
+    with locked(repo):
+        ledger = read_ledger(repo, run_id)
+        intent = ledger.get("dispatch_intent")
+        if not isinstance(intent, dict) or intent.get("action_id") != action_id:
+            raise AssuranceError("dispatch action is stale", code="DRIVER_ACTION_STALE", status="FAIL")
+        if intent.get("turn_id") not in {None, turn_id.strip()}:
+            raise AssuranceError("dispatch turn identity changed", code="DISPATCH_TURN_MISMATCH")
+        intent["turn_id"] = turn_id.strip()
+        intent["state"] = "in_flight"
+        append_event(ledger, "dispatch_turn_bound", {"action_id": action_id, "turn_id": turn_id.strip()})
+        save_ledger(repo, ledger)
+    return status(repo, run_id)
+
+
+def complete_dispatch(
+    repo_value: str | Path, run_value: str, *, action_id: str, result_value: Any
+) -> dict[str, Any]:
+    result = validate_agent_result(result_value)
+    repo = resolve_repo(repo_value)
+    run_id = ensure_run_id(run_value)
+    with locked(repo):
+        ledger = read_ledger(repo, run_id)
+        intent = ledger.get("dispatch_intent")
+        if not isinstance(intent, dict) or intent.get("action_id") != action_id:
+            raise AssuranceError("dispatch action is stale", code="DRIVER_ACTION_STALE", status="FAIL")
+        if intent.get("state") == "completed":
+            if intent.get("result_digest") != digest(result):
+                raise AssuranceError(
+                    "completed dispatch result cannot be replaced",
+                    code="DISPATCH_RESULT_MISMATCH",
+                )
+            return status(repo, run_id)
+        artifact = run_dir(repo, run_id) / "artifacts" / f"dispatch-{action_id}.json"
+        atomic_write_json(artifact, result)
+        intent["state"] = "completed"
+        intent["result_path"] = str(artifact)
+        intent["result_digest"] = digest(result)
+        intent["completed_at"] = now()
+        append_event(
+            ledger,
+            "dispatch_completed",
+            {"action_id": action_id, "result": result["result"], "result_digest": intent["result_digest"]},
+        )
+        save_ledger(repo, ledger)
+    return status(repo, run_id)
+
+
+def retry_dispatch(
+    repo_value: str | Path,
+    run_value: str,
+    *,
+    action_id: str,
+    failure_code: str,
+) -> dict[str, Any]:
+    repo = resolve_repo(repo_value)
+    run_id = ensure_run_id(run_value)
+    with locked(repo):
+        ledger = read_ledger(repo, run_id)
+        intent = ledger.get("dispatch_intent")
+        if not isinstance(intent, dict) or intent.get("action_id") != action_id:
+            raise AssuranceError("dispatch action is stale", code="DRIVER_ACTION_STALE", status="FAIL")
+        if intent.get("state") == "completed":
+            raise AssuranceError("completed dispatch cannot be retried", code="DISPATCH_ALREADY_COMPLETE")
+        attempt = int(intent.get("attempt", 1))
+        if attempt >= 3:
+            raise AssuranceError(
+                "Native role transport failed three times",
+                code="NATIVE_DISPATCH_RETRY_EXHAUSTED",
+                status="NEEDS_USER",
+                details={"failure_code": failure_code, "attempt": attempt},
+            )
+        append_event(
+            ledger,
+            "dispatch_retry_scheduled",
+            {
+                "action_id": action_id,
+                "attempt": attempt,
+                "turn_id": intent.get("turn_id"),
+                "failure_code": failure_code,
+            },
+        )
+        intent["attempt"] = attempt + 1
+        intent["state"] = "prepared"
+        intent.pop("turn_id", None)
+        save_ledger(repo, ledger)
+    return status(repo, run_id)
+
+
+def consume_dispatch(repo_value: str | Path, run_value: str, *, action_id: str) -> dict[str, Any]:
+    repo = resolve_repo(repo_value)
+    run_id = ensure_run_id(run_value)
+    with locked(repo):
+        ledger = read_ledger(repo, run_id)
+        intent = ledger.get("dispatch_intent")
+        if not isinstance(intent, dict) or intent.get("action_id") != action_id:
+            raise AssuranceError("dispatch action is stale", code="DRIVER_ACTION_STALE", status="FAIL")
+        if intent.get("state") != "completed":
+            raise AssuranceError("dispatch is not complete", code="DISPATCH_NOT_COMPLETE")
+        append_event(
+            ledger,
+            "dispatch_consumed",
+            {"action_id": action_id, "result_digest": intent.get("result_digest")},
+        )
+        ledger["dispatch_intent"] = None
+        save_ledger(repo, ledger)
+    return status(repo, run_id)
+
+
 def evidence_state(ledger: Mapping[str, Any], kind: str) -> str:
     record = ledger.get("evidence", {}).get(kind)
     if not isinstance(record, dict):
@@ -448,9 +652,31 @@ def status(repo_value: str | Path, run_value: str) -> dict[str, Any]:
         "digests": ledger["digests"],
         "mission_revision": ledger["facets"]["mission"]["revision"],
         "builder_checkpointed": ledger.get("builder_checkpointed", False),
+        "driver_runtime": copy.deepcopy(ledger.get("driver_runtime")),
+        "dispatch_intent": copy.deepcopy(ledger.get("dispatch_intent")),
         "readiness": readiness(ledger),
         "publication": copy.deepcopy(ledger.get("publication")),
         "problems": copy.deepcopy(ledger.get("problems", [])),
+    }
+
+
+def driver_context(repo_value: str | Path, run_value: str) -> dict[str, Any]:
+    repo = resolve_repo(repo_value)
+    run_id = ensure_run_id(run_value)
+    ledger = read_ledger(repo, run_id)
+    return {
+        "status": "READY",
+        "run_id": run_id,
+        "phase": ledger["phase"],
+        "repo_root": ledger["repo_root"],
+        "target_start_head": ledger["target_start_head"],
+        "candidate_worktree": ledger["candidate_worktree"],
+        "facets": copy.deepcopy(ledger["facets"]),
+        "evidence": copy.deepcopy(ledger.get("evidence", {})),
+        "publication": copy.deepcopy(ledger.get("publication")),
+        "problems": copy.deepcopy(ledger.get("problems", [])),
+        "driver_runtime": copy.deepcopy(ledger.get("driver_runtime")),
+        "dispatch_intent": copy.deepcopy(ledger.get("dispatch_intent")),
     }
 
 
@@ -840,8 +1066,9 @@ def record_problems(
     with locked(repo):
         ledger = read_ledger(repo, run_id)
         expected = None
-        if role in {"tester", "reviewer"}:
+        if role in {"builder", "tester", "reviewer"}:
             expected = ledger["facets"]["execution"]["agents"].get(role)
+        if expected is not None:
             if expected != {"agent_id": agent_id, "thread_id": thread_id}:
                 raise AssuranceError("problem producer identity mismatch", code="PROBLEM_PRODUCER_MISMATCH")
         candidate = ledger["facets"]["execution"].get("candidate_head")

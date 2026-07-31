@@ -22,6 +22,7 @@ LINK_SOURCES=(
   "$REPO_DIR/policies/doc-policy.md"
   "$REPO_DIR/skills/file-github-issue"
   "$REPO_DIR/skills/full-driver-v4-experiment"
+  "$REPO_DIR/agents/builder.toml"
 )
 LINK_TARGETS=(
   "$SKILLS_HOME/builder-loop-planner"
@@ -33,6 +34,7 @@ LINK_TARGETS=(
   "$DOC_POLICY"
   "$SKILLS_HOME/file-github-issue"
   "$SKILLS_HOME/full-driver-v4-experiment"
+  "$CODEX_HOME/agents/builder.toml"
 )
 LINK_PREEXISTED=()
 

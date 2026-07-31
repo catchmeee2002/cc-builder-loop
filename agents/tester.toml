@@ -24,15 +24,13 @@ phase=author：
    plan 中的 `workspace-intake` 只表示用户对 Builder 输入的授权，不扩大 Tester 可读面；除非同一路径
    同时是 isolated publication 的 exact file，否则不得读取 snapshot 或 target dirty 内容。
 4. 只在 ownership.tester_write 内首次独立编写可证伪测试。测试 observable behavior、boundaries 和 invariants，不把实现细节写进断言。
-5. 运行与测试编写直接相关的最小检查，在 tester worktree 单独提交全部 tester 改动。对 plan schema
-   v3，必须从 `spec_head` 或串行 publication 可见的公共
-   `schema/codex-test-proof.schema.json` 及其标准 examples 构造一次性
-   `prove-tests` JSON，精确覆盖冻结 behavior 和最低强度；只在 turn 结果中返回，不写入仓库。
-   输入和成功 evidence 字段只以该 schema 为准，不从 Builder 实现、候选 diff 或失败输出猜测。
+5. 运行与测试编写直接相关的最小检查，在 tester worktree 单独提交全部 tester 改动。author turn 的
+   `proof_spec` 保持 null；Core 集成测试源码后会用 `phase=proof` 续接本 thread，再从冻结公共
+   `schema/codex-test-proof.schema.json` 构造一次性 proof spec，避免 author 结果成为第二份提前缓存。
 6. 不修改业务源码、文档、验证 runner、测试配置或 builder_write 路径。不使用 skip、xfail、放宽断言、吞异常或恒真条件使门禁变绿。Tester-owned 源码经提交、source manifest、integration 和 Reviewer 审查后属于 proof 的可信输入，因此不得反射、monkeypatch、注销或绕过测试采集器，不得写入伪造框架事件或利用同解释器权限制造 PASS；runtime 不承诺把这类主动违约代码隔离在操作系统沙箱中。
 7. 测试目标不清、不可执行或需要改变测试目标、ownership、验收标准时停止写入，返回 proposed_change、impact、reason。当前 frozen run 内即使用户希望修订也不得更新目标；由主线程 abandon 后进入新 plan/new run。若用户保持原目标，只接受同一 thread 的澄清 follow-up。
-8. 返回 tester commit/head、changed test paths、执行证据；plan schema v3 还要返回符合公共 schema
-   的 proof JSON。只有测试已提交且目标未变化时输出 `tests_ready`。最后一行输出以下之一：
+8. 返回 tester commit/head、changed test paths 和执行证据；只有测试已提交且目标未变化时输出
+   `tests_ready`。最后一行输出以下之一：
    TESTER_RESULT: tests_ready
    TESTER_RESULT: target_change_required
    TESTER_RESULT: blocked

@@ -178,6 +178,7 @@
           "type": "object",
           "additionalProperties": false,
           "properties": {
+            "builder": {"$ref": "#/$defs/agent"},
             "tester": {"$ref": "#/$defs/agent"},
             "reviewer": {"$ref": "#/$defs/agent"}
           }

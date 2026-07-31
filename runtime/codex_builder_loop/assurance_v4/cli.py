@@ -41,6 +41,11 @@ def parser() -> argparse.ArgumentParser:
             "--action-id",
             help="optional driver-next action identity; stale identities are rejected",
         )
+        command.add_argument(
+            "--driver-runtime-kind",
+            choices=["native", "full_driver_skill"],
+            help="required to match the frozen owner for runs that bind a driver runtime",
+        )
 
     validate = commands.add_parser("validate")
     validate.add_argument("--contract", required=True)
@@ -50,10 +55,18 @@ def parser() -> argparse.ArgumentParser:
     start.add_argument("--run", required=True)
     start.add_argument("--session-id", required=True)
     start.add_argument("--contract", required=True)
+    start.add_argument("--driver-kind", choices=["native", "full_driver_skill"])
+    start.add_argument("--driver-transport", choices=["codex_app_server", "native_tools"])
+    start.add_argument("--driver-runtime-version")
+    start.add_argument("--driver-protocol-schema-digest")
 
     status = commands.add_parser("status")
     status.add_argument("--repo", default=".")
     status.add_argument("--run", required=True)
+
+    context = commands.add_parser("driver-context")
+    context.add_argument("--repo", default=".")
+    context.add_argument("--run", required=True)
 
     checkpoint = commands.add_parser("checkpoint-builder")
     checkpoint.add_argument("--repo", default=".")
@@ -88,6 +101,13 @@ def parser() -> argparse.ArgumentParser:
     prepare_tester.add_argument("--thread-id", required=True)
     prepare_tester.add_argument("--replace", action="store_true")
     dispatch_guard(prepare_tester)
+
+    prepare_builder = commands.add_parser("prepare-builder")
+    prepare_builder.add_argument("--repo", default=".")
+    prepare_builder.add_argument("--run", required=True)
+    prepare_builder.add_argument("--agent-id", required=True)
+    prepare_builder.add_argument("--thread-id", required=True)
+    dispatch_guard(prepare_builder)
 
     prepare_reviewer = commands.add_parser("prepare-reviewer")
     prepare_reviewer.add_argument("--repo", default=".")
@@ -144,6 +164,39 @@ def parser() -> argparse.ArgumentParser:
     next_action.add_argument("--repo", default=".")
     next_action.add_argument("--run", required=True)
 
+    begin_dispatch = commands.add_parser("begin-dispatch")
+    begin_dispatch.add_argument("--repo", default=".")
+    begin_dispatch.add_argument("--run", required=True)
+    begin_dispatch.add_argument("--action-id", required=True)
+    begin_dispatch.add_argument("--action", required=True)
+    begin_dispatch.add_argument("--role", choices=["builder", "tester", "reviewer"], required=True)
+    begin_dispatch.add_argument("--thread-id", required=True)
+    begin_dispatch.add_argument("--prompt-digest", required=True)
+    begin_dispatch.add_argument("--output-schema-digest", required=True)
+
+    bind_turn = commands.add_parser("bind-dispatch-turn")
+    bind_turn.add_argument("--repo", default=".")
+    bind_turn.add_argument("--run", required=True)
+    bind_turn.add_argument("--action-id", required=True)
+    bind_turn.add_argument("--turn-id", required=True)
+
+    complete_dispatch = commands.add_parser("complete-dispatch")
+    complete_dispatch.add_argument("--repo", default=".")
+    complete_dispatch.add_argument("--run", required=True)
+    complete_dispatch.add_argument("--action-id", required=True)
+    complete_dispatch.add_argument("--result", required=True)
+
+    consume_dispatch = commands.add_parser("consume-dispatch")
+    consume_dispatch.add_argument("--repo", default=".")
+    consume_dispatch.add_argument("--run", required=True)
+    consume_dispatch.add_argument("--action-id", required=True)
+
+    retry_dispatch = commands.add_parser("retry-dispatch")
+    retry_dispatch.add_argument("--repo", default=".")
+    retry_dispatch.add_argument("--run", required=True)
+    retry_dispatch.add_argument("--action-id", required=True)
+    retry_dispatch.add_argument("--failure-code", required=True)
+
     abandon = commands.add_parser("abandon")
     abandon.add_argument("--repo", default=".")
     abandon.add_argument("--run", required=True)
@@ -163,6 +216,15 @@ def _json(path: str) -> Any:
 def _guard_dispatch(args: argparse.Namespace, accepted: set[str]) -> None:
     action_id = getattr(args, "action_id", None)
     current = driver.next_action(args.repo, args.run)
+    expected_kind = current.get("driver_runtime_kind")
+    provided_kind = getattr(args, "driver_runtime_kind", None)
+    if expected_kind is not None and provided_kind != expected_kind:
+        raise core.AssuranceError(
+            "driver runtime owner does not match this mutation",
+            code="DRIVER_RUNTIME_OWNER_MISMATCH",
+            status="FAIL",
+            details={"expected_driver_runtime_kind": expected_kind},
+        )
     if action_id is None and not current.get("driver_enforced"):
         return
     if current.get("action") not in accepted or (
@@ -190,9 +252,37 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "validate":
             payload = core.validate(_json(args.contract))
         elif args.command == "start":
-            payload = core.start(args.repo, args.run, args.session_id, _json(args.contract))
+            runtime = None
+            driver_values = (
+                args.driver_kind,
+                args.driver_transport,
+                args.driver_runtime_version,
+                args.driver_protocol_schema_digest,
+            )
+            if any(driver_values):
+                if not all(driver_values):
+                    raise core.AssuranceError(
+                        "all driver runtime fields are required together",
+                        code="DRIVER_RUNTIME_INCOMPLETE",
+                    )
+                runtime = {
+                    "kind": args.driver_kind,
+                    "protocol_version": 1,
+                    "transport": args.driver_transport,
+                    "runtime_version": args.driver_runtime_version,
+                    "protocol_schema_digest": args.driver_protocol_schema_digest,
+                }
+            payload = core.start(
+                args.repo,
+                args.run,
+                args.session_id,
+                _json(args.contract),
+                driver_runtime=runtime,
+            )
         elif args.command == "status":
             payload = core.status(args.repo, args.run)
+        elif args.command == "driver-context":
+            payload = core.driver_context(args.repo, args.run)
         elif args.command == "checkpoint-builder":
             _guard_dispatch(args, {"builder_implement", "builder_fix", "checkpoint_builder"})
             payload = core.checkpoint_builder(args.repo, args.run)
@@ -228,6 +318,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.thread_id,
                 replace=args.replace,
             )
+        elif args.command == "prepare-builder":
+            _guard_dispatch(args, {"builder_implement", "builder_fix"})
+            payload = core.prepare_builder(args.repo, args.run, args.agent_id, args.thread_id)
         elif args.command == "prepare-reviewer":
             _guard_dispatch(args, {"reviewer_final"})
             payload = core.prepare_reviewer(
@@ -278,6 +371,37 @@ def main(argv: Sequence[str] | None = None) -> int:
             payload = core.recover_finalize(args.repo, args.run)
         elif args.command == "driver-next":
             payload = driver.next_action(args.repo, args.run)
+        elif args.command == "begin-dispatch":
+            payload = core.begin_dispatch(
+                args.repo,
+                args.run,
+                action_id=args.action_id,
+                action=args.action,
+                role=args.role,
+                thread_id=args.thread_id,
+                prompt_digest=args.prompt_digest,
+                output_schema_digest=args.output_schema_digest,
+            )
+        elif args.command == "bind-dispatch-turn":
+            payload = core.bind_dispatch_turn(
+                args.repo, args.run, action_id=args.action_id, turn_id=args.turn_id
+            )
+        elif args.command == "complete-dispatch":
+            payload = core.complete_dispatch(
+                args.repo,
+                args.run,
+                action_id=args.action_id,
+                result_value=_json(args.result),
+            )
+        elif args.command == "consume-dispatch":
+            payload = core.consume_dispatch(args.repo, args.run, action_id=args.action_id)
+        elif args.command == "retry-dispatch":
+            payload = core.retry_dispatch(
+                args.repo,
+                args.run,
+                action_id=args.action_id,
+                failure_code=args.failure_code,
+            )
         elif args.command == "abandon":
             payload = core.abandon(args.repo, args.run, args.reason)
         elif args.command == "cleanup":

@@ -42,6 +42,18 @@
       "items": {"$ref": "assurance-v4-contract.schema.json#/$defs/testerSource"}
     },
     "retired_reviewer_agents": {"type": "array", "items": {"$ref": "assurance-v4-contract.schema.json#/$defs/agent"}},
+    "driver_runtime": {
+      "oneOf": [
+        {"type": "null"},
+        {"$ref": "#/$defs/driverRuntime"}
+      ]
+    },
+    "dispatch_intent": {
+      "oneOf": [
+        {"type": "null"},
+        {"$ref": "#/$defs/dispatchIntent"}
+      ]
+    },
     "problems": {"type": "array", "items": {"$ref": "#/$defs/problem"}},
     "publication": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/publication"}]},
     "builder_checkpointed": {"type": "boolean"},
@@ -69,6 +81,41 @@
   },
   "$defs": {
     "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "driverRuntime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "protocol_version", "transport", "runtime_version", "protocol_schema_digest"],
+      "properties": {
+        "kind": {"enum": ["native", "full_driver_skill"]},
+        "protocol_version": {"const": 1},
+        "transport": {"enum": ["codex_app_server", "native_tools"]},
+        "runtime_version": {"type": "string", "minLength": 1},
+        "protocol_schema_digest": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "dispatchIntent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "action_id", "action", "role", "thread_id", "prompt_digest",
+        "output_schema_digest", "state", "created_at"
+      ],
+      "properties": {
+        "action_id": {"$ref": "#/$defs/sha256"},
+        "action": {"type": "string", "minLength": 1},
+        "role": {"enum": ["builder", "tester", "reviewer"]},
+        "thread_id": {"type": "string", "minLength": 1},
+        "prompt_digest": {"$ref": "#/$defs/sha256"},
+        "output_schema_digest": {"$ref": "#/$defs/sha256"},
+        "state": {"enum": ["prepared", "in_flight", "completed"]},
+        "attempt": {"type": "integer", "minimum": 1, "maximum": 3},
+        "turn_id": {"type": "string", "minLength": 1},
+        "result_path": {"type": "string", "minLength": 1},
+        "result_digest": {"$ref": "#/$defs/sha256"},
+        "created_at": {"type": "string", "minLength": 1},
+        "completed_at": {"type": "string", "minLength": 1}
+      }
+    },
     "publicationFile": {
       "type": "object",
       "additionalProperties": false,

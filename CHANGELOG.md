@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- 新增 Native Driver v1，使用本地 Codex App Server 的版本化 stdio thread/turn 接口承载 Full Driver
+  v4。Builder、Tester、Reviewer identity 和单一 crash-safe dispatch intent 由 Assurance Core ledger
+  绑定，Agent 结果经统一 schema、turn id 和 artifact digest 后才能进入现有 evidence/problem 事务；
+  可恢复的 transport failure 在同一 thread/dispatch 上最多自动尝试三次，耗尽后 fail closed；每轮仍由
+  `driver-next` 重新派生动作。`$builder` 保持原入口并默认启动 Native Driver，只有 run 创建
+  前 capability preflight 不兼容时才回退现有 Full Driver Skill；旧 run 不自动迁移，native-owned run
+  禁止中途换控制器。安装器新增 Builder role 配置，不增加用户命令或 API Key。
+
 - 将 Plan 环节的 Builder-loop 路线以实验功能重新开放：托管 AGENTS 使用一次原生选项卡选择路线，
   Planner 直接生成并验证 Assurance v4 contract，紧邻的原生 `Implement the plan.` 自动加载 `$builder`；
   Builder 只校验授权并桥接 Full Driver v4，不恢复 legacy v2/v3 `start` 或第二套角色循环。内部 Full

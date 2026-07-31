@@ -264,7 +264,7 @@ class SessionStartAuthorizationNeutralityTest(unittest.TestCase):
             self.assertIn("assurance-v4-contract", planner)
             self.assertIn("--experimental-v4 validate", planner)
             self.assertIn("full-driver-v4-experiment", builder)
-            self.assertIn("--experimental-v4 start", builder)
+            self.assertIn("native-driver start", builder)
             self.assertIn(
                 "allow_implicit_invocation:false", compact(full_driver_manifest)
             )
@@ -289,6 +289,7 @@ class SessionStartAuthorizationNeutralityTest(unittest.TestCase):
                     ".agents/skills/file-github-issue",
                     ".agents/skills/full-driver-v4-experiment",
                     ".codex/AGENTS.md",
+                    ".codex/agents/builder.toml",
                     ".codex/agents/reviewer.toml",
                     ".codex/agents/tester.toml",
                     ".codex/builder-loop/doc-policy.md",

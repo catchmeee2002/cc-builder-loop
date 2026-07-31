@@ -84,7 +84,7 @@ class ExperimentalEntryContractTest(unittest.TestCase):
         builder = read("skills/builder/SKILL.md")
         self.assertIn("full-driver-v4-experiment", builder)
         self.assertIn("不得调用公共 legacy `start`", builder)
-        self.assertIn("--experimental-v4 start", builder)
+        self.assertIn("native-driver start", builder)
         planner = read("skills/builder-loop-planner/SKILL.md")
         self.assertIn("assurance-v4-contract", planner)
         self.assertIn("--experimental-v4 validate", planner)

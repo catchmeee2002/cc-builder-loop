@@ -2,9 +2,10 @@
 
 - `skills/`：Planner、Builder 与 GitHub Issue 记录的 Codex Skills；保持精简，详细契约引用 schema
   或脚本帮助。
-- `agents/`：Tester 与 Reviewer custom-agent 配置。
+- `agents/`：Native Driver 共用的 Builder、Tester 与 Reviewer role 配置。
 - `runtime/`：legacy v2/v3 的确定性计划、workspace snapshot、Git 收尾、验证、ownership、evidence
-  和诊断实现；`runtime/codex_builder_loop/assurance_v4/` 是新旧隔离的 v4 Core 与 Driver 派生层。
+  和诊断实现；`runtime/codex_builder_loop/assurance_v4/` 是 v4 Core 与 Driver 派生层，
+  `runtime/codex_builder_loop/native_driver/` 是 App Server transport 和 Full Driver 原生协调器。
 - `scripts/codex-builder-loop.py`：runtime 的稳定 CLI 入口；`codex-builder-loop-config.py` 负责
   安装/卸载时跨 hooks 与 AGENTS 的事务更新。
 - `hooks/`：只记录 agent 身份并做完成门禁，不承担循环编排。
@@ -22,6 +23,7 @@
 ```bash
 python3 -m pip install -r requirements-dev.txt
 python3 scripts/codex-builder-loop.py --help
+python3 scripts/codex-builder-loop.py native-driver --help
 bash scripts/verify-all.sh
 python3 "${CODEX_HOME:-$HOME/.codex}/skills/.system/skill-creator/scripts/quick_validate.py" skills/builder-loop-planner
 python3 "${CODEX_HOME:-$HOME/.codex}/skills/.system/skill-creator/scripts/quick_validate.py" skills/builder
@@ -34,8 +36,11 @@ python3 experiments/assurance-v4-replay/runner.py
 # Workflows
 
 - 先定义或修改 CLI/schema 契约，再改 runtime、Skills 和 fixtures。
-- v4 的 Mission、Authority、Assurance、Execution 分别计算 digest；Core 只记录交付事实，
-  `driver.py`/实验 Skill 才能决定下一步角色动作，不得把调度状态写回 ledger。
+- v4 的 Mission、Authority、Assurance、Execution 分别计算 digest；Core 只记录交付与外部 turn 恢复
+  事实，`driver.py` 才能决定下一步角色动作。dispatch intent 只绑定正在发生的单一副作用，不能缓存
+  后续动作、correction loop 或第二份 evidence。
+- Native Driver 默认承载 Full Driver；App Server capability 失败只能在创建 run 前回退现有 Full
+  Driver Skill。run 创建后按 `driver_runtime.kind` 单写，禁止接管或双控制器 mutation。
 - runtime ledger 是执行事实唯一来源；Skills、hooks 和 agents 不直接改 JSON。
 - 候选变化后按冻结 scope digest 处理 machine/blackbox evidence；未声明 scope 时全 tree 失效。
   Reviewer 与 doc-review 对任何 candidate 变化都失效。

@@ -256,7 +256,8 @@ class FullDriverV4ContractTest(unittest.TestCase):
         builder = (ROOT / "skills" / "builder" / "SKILL.md").read_text()
         planner = (ROOT / "skills" / "builder-loop-planner" / "SKILL.md").read_text()
         self.assertIn("full-driver-v4-experiment", builder)
-        self.assertIn("--experimental-v4 start", builder)
+        self.assertIn("native-driver start", builder)
+        self.assertIn("创建 run 前", builder)
         self.assertIn("assurance-v4-contract", planner)
         self.assertIn("BUILDER_HANDOFF_READY", planner)
 

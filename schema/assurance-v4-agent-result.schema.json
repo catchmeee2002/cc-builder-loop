@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openai.local/codex-builder-loop/assurance-v4-agent-result.schema.json",
+  "title": "Assurance v4 Agent Result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["result", "evidence_report", "proof_spec", "problem_report"],
+  "properties": {
+    "result": {
+      "enum": [
+        "implemented", "tests_ready", "pass", "fail", "findings", "blocked",
+        "target_change_required"
+      ]
+    },
+    "evidence_report": {"type": ["object", "null"]},
+    "proof_spec": {"type": ["object", "null"]},
+    "problem_report": {"type": ["object", "null"]}
+  }
+}

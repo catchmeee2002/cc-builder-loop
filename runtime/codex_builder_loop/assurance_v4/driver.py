@@ -14,6 +14,21 @@ def next_action(repo_value: str | Path, run_value: str) -> dict[str, Any]:
     repo = resolve_repo(repo_value)
     run_id = ensure_run_id(run_value)
     ledger = read_ledger(repo, run_id)
+    pending_dispatch = ledger.get("dispatch_intent")
+    if isinstance(pending_dispatch, dict):
+        return {
+            "driver_protocol_version": 1,
+            "status": "CONTINUE",
+            "run_id": run_id,
+            "action": pending_dispatch["action"],
+            "reason": f"dispatch_{pending_dispatch['state']}",
+            "action_id": pending_dispatch["action_id"],
+            "driver_enforced": True,
+            "driver_runtime_kind": ledger.get("driver_runtime", {}).get("kind")
+            if isinstance(ledger.get("driver_runtime"), dict)
+            else None,
+            "dispatch": pending_dispatch,
+        }
     def decision(status: str, action: str, reason: str, **payload: Any) -> dict[str, Any]:
         identity = digest(
             {
@@ -27,12 +42,16 @@ def next_action(repo_value: str | Path, run_value: str) -> dict[str, Any]:
             }
         )
         return {
+            "driver_protocol_version": 1,
             "status": status,
             "run_id": run_id,
             "action": action,
             "reason": reason,
             "action_id": identity,
             "driver_enforced": bool(ledger["facets"]["execution"].get("driver_enforced")),
+            "driver_runtime_kind": ledger.get("driver_runtime", {}).get("kind")
+            if isinstance(ledger.get("driver_runtime"), dict)
+            else None,
             **payload,
         }
     if ledger["phase"] == "finalizing":
@@ -54,7 +73,12 @@ def next_action(repo_value: str | Path, run_value: str) -> dict[str, Any]:
                 problem=latest,
             )
         action = "tester_fix" if owner == "tester" else "builder_fix"
-        return decision("CONTINUE", action, f"open_{owner}_problem", problem=latest)
+        payload = {"problem": latest}
+        if action == "builder_fix":
+            payload["agent"] = ledger["facets"]["execution"]["agents"].get("builder")
+        elif action == "tester_fix":
+            payload["agent"] = ledger["facets"]["execution"]["agents"].get("tester")
+        return decision("CONTINUE", action, f"open_{owner}_problem", **payload)
     execution = ledger["facets"]["execution"]
     candidate_worktree = Path(ledger["candidate_worktree"])
     candidate_ref = f"refs/heads/{ledger['candidate_branch']}"
@@ -77,6 +101,7 @@ def next_action(repo_value: str | Path, run_value: str) -> dict[str, Any]:
             "candidate_has_uncommitted_work",
             candidate_worktree=ledger["candidate_worktree"],
             dirty_paths=candidate_dirty,
+            agent=ledger["facets"]["execution"]["agents"].get("builder"),
         )
     if live_candidate != worktree_head:
         return decision(
@@ -101,6 +126,7 @@ def next_action(repo_value: str | Path, run_value: str) -> dict[str, Any]:
             "builder_implement",
             "candidate_missing",
             candidate_worktree=ledger["candidate_worktree"],
+            agent=execution["agents"].get("builder"),
         )
     publication = ledger.get("publication")
     if isinstance(publication, dict) and publication.get("required") and not publication.get("head"):
@@ -142,6 +168,8 @@ def next_action(repo_value: str | Path, run_value: str) -> dict[str, Any]:
         else:
             continue
         payload: dict[str, Any] = {"candidate_worktree": ledger["candidate_worktree"]}
+        if action == "builder_fix":
+            payload["agent"] = execution["agents"].get("builder")
         if action.startswith("tester_"):
             payload["agent"] = execution["agents"].get("tester")
             payload["tester_source"] = execution.get("tester_source")

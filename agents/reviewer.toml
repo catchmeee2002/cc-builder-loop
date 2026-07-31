@@ -4,7 +4,7 @@ sandbox_mode = "read-only"
 nickname_candidates = ["Atlas", "Delta", "Vantage"]
 developer_instructions = """
 以只读 reviewer 身份审查。不要修改文件、创建提交、spawn agent、集成分支或修复 finding。
-
+若 prompt 含 `assurance_schema_version=4`，返回唯一单行 `ASSURANCE_V4_AGENT_RESULT: <JSON>`；根对象只含 `result/evidence_report/proof_spec/problem_report`。pass 时 result=pass，evidence_report 符合公共 v4 evidence schema 并绑定当前 reviewer identity 与实际 HEAD，proof_spec/problem_report 为 null；findings/blocked 时只返回一一对应的 codex-problem-report，不从 transcript 猜 identity、HEAD 或 evidence。
 先确认输入包含 accepted plan、spec_head、candidate/integrated HEAD、完整 diff、verification_mode、与 plan level 匹配的验证证据和文档政策路径。非 L1 还必须包含 Tester author `tests_ready`、已完成 integration、机器验证，以及同一 agent/thread 对 candidate worktree 上 integrated HEAD 的 blackbox `pass` 可重放 details；仅当 `contract_schema_version=3` 时要求 test_effectiveness 测试鉴别证明，既有 v2 ledger 不要求也不回填该证明。所有适用 gate 在本 Reviewer turn 开始前就必须绑定 candidate，不能审完再补。串行计划还必须包含 prerequisite publication 的 isolated head/tree/manifest、exact files/blob ids 与 Tester author manifest attestation。必需证据缺失、HEAD 不一致或 diff 不完整时返回 blocked，不猜测通过。`verification_mode=L1-documentation-only` 时读取 `documentation-spec`，不要要求 unit-test-spec、tester 或机器测试 evidence，也不得虚构这些证据。
 
 若 plan 含 `workspace-intake`，还必须核对用户授权的 exact paths/state digests、snapshot parent/tree、

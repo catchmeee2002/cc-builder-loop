@@ -12,26 +12,27 @@ v2/v3 ledger 保留原位，只继续支持诊断、恢复、finalize 与安全 
 该入口明确标为实验功能。Full Driver v4 仍需完成历史高频 Revision 回放、至少两个非本仓项目五次
 真实交付且零非语义 Revision，才可去掉实验标识；用户不需要直接学习 v4 CLI 或 Core 命令。
 
-维护分支已新增新旧隔离的 Assurance Core v4 实验实现：四个 contract facet 分别绑定 digest，
+维护分支已新增新旧隔离的 Assurance Core v4 和 Native Driver：四个 contract facet 分别绑定 digest，
 candidate/evidence、独立角色来源、机器验证、target rematerialization 和 finalize CAS 由 Core 负责；
-Full Driver 只消费 Core 的 missing/stale gate 来调度原生 Agent。该实现仅通过带
-`--experimental-v4` 的内部 `assurance` namespace 和显式 `$full-driver-v4-experiment` Skill 使用；
-安装器会部署该内部 Skill且禁止其被普通请求隐式发现；面向用户的唯一入口仍是 Plan 选项和 `$builder`。
+Native Driver 通过本地 Codex App Server 持续消费 Core 的 missing/stale gate，创建并续接
+Builder、Tester、Reviewer thread。现有 Full Driver Skill 只作为 run 创建前的兼容回退和行为参照；
+面向用户的唯一入口仍是 Plan 选项和 `$builder`，不新增 Native Driver 使用命令。
 
 面向 Codex CLI 的独立判据交付闭环。进入 Plan mode 后先选择规划方式：
 
 ```text
 /plan <需求>
 ├─ Codex 原生 Plan
-└─ Builder-loop 实验 Planner → 原生“实施计划” → Full Driver v4
+└─ Builder-loop 实验 Planner → 原生“实施计划” → Native Driver 承载 Full Driver v4
                               └─ $builder 手工回退
 ```
 
 全局托管规则会在每次进入 Plan mode 时通过选项卡询问。选择 Codex 原生 Plan 时不加载本项目
 Skill；选择 Builder-loop 实验时，Planner Skill 冻结并验证 v4 四事实面 contract，验证通过后输出
 一次性就绪标记。用户选择 Codex 原生“实施计划”后，下一轮 Default mode 自动进入 Builder；也可
-显式调用 `$builder`。Builder 只做授权桥接，Tester、proof、机器验证、blackbox、Reviewer 和 Git
-收尾统一由 Full Driver v4 实验闭环处理。
+显式调用 `$builder`。Builder Skill 只做授权桥接；Native Driver 负责 Builder、Tester、proof、机器
+验证、blackbox、Reviewer 和 Git 收尾。Codex App Server 在创建 run 前不兼容时，才透明回退到现有
+Full Driver Skill；run 创建后禁止更换控制器。
 
 ## 核心行为
 
@@ -56,8 +57,9 @@ Skill；选择 Builder-loop 实验时，Planner Skill 冻结并验证 v4 四事�
   不提供实现 diff。Tester、Reviewer 首次创建都显式使用 `fork_turns="none"`，只接收完成冻结角色
   所需的最小 brief，从而切断父线程 conversation fork；本项目不提供 filesystem ACL，也不提供
   platform attestation 或 context manifest。Git/artifact 基线与写隔离继续由 runtime 机械执行。
-- Tester、Reviewer 在后续 iteration 续接原 agent thread，不重新 spawn、清空角色历史或以同名
-  新 agent 冒充原上下文。
+- Native Driver 从 App Server 生命周期事件绑定 Builder、Tester、Reviewer 的真实 thread/turn；后续
+  iteration 续接原 thread，不重新创建、清空角色历史或以同名新 agent 冒充原上下文。发起外部 turn
+  前先把单一 dispatch intent 写入 Core ledger，进程恢复时重连同一 turn，不保存“下一步做什么”。
 - 所有非 L1 run 都必须持久化 Tester author `tests_ready` 及其 integration，再由同一 thread 在
   candidate worktree 对集成 HEAD 完成 blackbox `pass`。新 run 使用 schema v2 report 保存每条真实
   execution、存在冻结 case 时的逐例结果、逐维度 observation 与执行前后 HEAD；Tester 另行证明零 residue。即使没有
@@ -132,8 +134,8 @@ cd /path/to/cc-builder-loop-codex
 安装器只配置 Codex。以下路径中的 Skills、custom agents、CLI、hook 脚本和默认文档政策均为
 指向当前 checkout 的符号链接；`hooks.json` 与 `AGENTS.md` 只合并托管注册：
 
-- Skills（Planner、Builder、GitHub Issue 记录、显式 Full Driver v4 实验）→ `~/.agents/skills/`
-- custom agents → `${CODEX_HOME:-$HOME/.codex}/agents/`
+- Skills（Planner、Builder、GitHub Issue 记录、Full Driver 兼容回退）→ `~/.agents/skills/`
+- Builder、Tester、Reviewer role 配置 → `${CODEX_HOME:-$HOME/.codex}/agents/`
 - CLI → `~/.local/bin/codex-builder-loop`
 - lifecycle hook 注册 → `${CODEX_HOME:-$HOME/.codex}/hooks.json`
 - Planner 自动加载规则 → `${CODEX_HOME:-$HOME/.codex}/AGENTS.md` 的托管区块

@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openai.local/codex-builder-loop/assurance-v4-native-agent-wire-result.schema.json",
+  "title": "Assurance v4 Native Agent Wire Result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["result", "evidence_report", "proof_spec", "problem_report"],
+  "properties": {
+    "result": {
+      "type": "string",
+      "enum": [
+        "implemented", "tests_ready", "pass", "fail", "findings", "blocked",
+        "target_change_required"
+      ]
+    },
+    "evidence_report": {"type": ["string", "null"]},
+    "proof_spec": {"type": ["string", "null"]},
+    "problem_report": {"type": ["string", "null"]}
+  }
+}

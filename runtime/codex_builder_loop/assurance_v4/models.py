@@ -249,6 +249,29 @@ def validate_problem_report(value: Any) -> dict[str, Any]:
     return copy.deepcopy(value)
 
 
+def validate_agent_result(value: Any) -> dict[str, Any]:
+    try:
+        jsonschema.Draft202012Validator(
+            _schema("assurance-v4-agent-result.schema.json")
+        ).validate(value)
+    except jsonschema.ValidationError as exc:
+        path = "/".join(str(part) for part in exc.absolute_path)
+        raise ContractError(
+            exc.message,
+            code="AGENT_RESULT_INVALID",
+            details={"path": path},
+        ) from exc
+    assert isinstance(value, dict)
+    result = copy.deepcopy(value)
+    if result.get("evidence_report") is not None:
+        result["evidence_report"] = validate_evidence_report(result["evidence_report"])
+    if result.get("proof_spec") is not None:
+        result["proof_spec"] = validate_test_proof_spec(result["proof_spec"])
+    if result.get("problem_report") is not None:
+        result["problem_report"] = validate_problem_report(result["problem_report"])
+    return result
+
+
 def validate_test_proof_spec(value: Any) -> dict[str, Any]:
     try:
         jsonschema.Draft202012Validator(_schema("codex-test-proof.schema.json")).validate(value)

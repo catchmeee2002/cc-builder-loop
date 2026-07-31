@@ -21,6 +21,7 @@ class InstallContractTest(unittest.TestCase):
             home / ".agents" / "skills" / "full-driver-v4-experiment": ROOT
             / "skills"
             / "full-driver-v4-experiment",
+            home / ".codex" / "agents" / "builder.toml": ROOT / "agents" / "builder.toml",
             home / ".agents" / "skills" / "file-github-issue": ROOT
             / "skills"
             / "file-github-issue",
