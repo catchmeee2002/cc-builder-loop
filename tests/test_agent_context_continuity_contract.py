@@ -10,7 +10,7 @@ from pathlib import Path
 from harness import ROOT, run_process
 
 
-BUILDER_SKILL = ROOT / "skills" / "builder" / "SKILL.md"
+BUILDER_SKILL = ROOT / "skills" / "full-driver-v4-experiment" / "SKILL.md"
 REVIEWER_AGENT = ROOT / "agents" / "reviewer.toml"
 SCENARIOS = ROOT / "experiments" / "agent-behavior" / "scenarios.json"
 VARIANTS = ROOT / "experiments" / "agent-behavior" / "variants.json"
@@ -162,8 +162,8 @@ def initial_spawn_violations(
 def follow_up_violations(text: str, *, role: str) -> list[str]:
     normalized = compact(text)
     violations: list[str] = []
-    if "prepare-follow-up" not in normalized:
-        violations.append("prepare-follow-up")
+    if "followup_task" not in normalized:
+        violations.append("followup-task")
     same_thread = (
         "follow-up 同一个 tester thread"
         if role == "tester"
@@ -185,32 +185,22 @@ class BuilderConversationIsolationContractTest(unittest.TestCase):
         cls.skill = read_text(BUILDER_SKILL)
         author = bounded(
             cls.skill,
-            "## 独立写测与实现",
-            "## 验证与同线程黑盒复验",
+            "## 角色隔离与连续性",
+            "## 原生持续循环",
         )
-        review = bounded(
-            cls.skill,
-            "## 审查与收尾",
-            "## 交付后事故与知识复盘",
-        )
-        cls.tester_initial = bounded(author, "4. spawn Tester", "5. Builder")
-        cls.reviewer_initial = bounded(review, "1. 非 L1", "2. 要求 reviewer")
-        cls.tester_follow_up = window(cls.skill, "phase=blackbox", radius=700)
-        cls.reviewer_follow_up = last_window(
-            cls.skill,
-            "--purpose review",
-            radius=700,
-        )
+        cls.tester_initial = bounded(author, "### Tester 初次 spawn", "### Reviewer 初次 spawn")
+        cls.reviewer_initial = bounded(author, "### Reviewer 初次 spawn", "### 后续 turn")
+        cls.tester_follow_up = bounded(author, "Tester 后续阶段", "Reviewer finding")
+        cls.reviewer_follow_up = bounded(author, "Reviewer finding", "只有 Core")
 
     def test_initial_tester_spawn_is_isolated_with_a_minimal_role_brief(self) -> None:
         normalized = compact(self.tester_initial)
         frozen_inputs = (
             "run_id",
-            "plan_path",
+            "contract",
             "tester worktree",
-            "unit-test-spec",
-            "e2e-cases",
-            "parallel_ready",
+            "spec head",
+            "publication manifest",
         )
         self.assertRegex(
             normalized,
@@ -250,7 +240,7 @@ class BuilderConversationIsolationContractTest(unittest.TestCase):
     def test_initial_reviewer_spawn_is_isolated_with_a_minimal_role_brief(self) -> None:
         normalized = compact(self.reviewer_initial)
         frozen_inputs = (
-            "plan",
+            "contract",
             "candidate",
             "完整 diff",
             "验证证据",
@@ -299,7 +289,7 @@ class BuilderConversationIsolationContractTest(unittest.TestCase):
 
     def test_later_role_turns_follow_up_the_bound_original_threads(self) -> None:
         tester_follow_up = compact(self.tester_follow_up)
-        self.assertIn("prepare-follow-up", tester_follow_up)
+        self.assertIn("followup_task", tester_follow_up)
         self.assertIn("follow-up 同一个 tester thread", tester_follow_up)
         self.assertIn("禁止 spawn 新 tester", tester_follow_up)
         self.assertTrue(
@@ -313,7 +303,7 @@ class BuilderConversationIsolationContractTest(unittest.TestCase):
         )
 
         reviewer_follow_up = compact(self.reviewer_follow_up)
-        self.assertIn("prepare-follow-up", reviewer_follow_up)
+        self.assertIn("followup_task", reviewer_follow_up)
         self.assertIn("follow-up 同一 reviewer thread", reviewer_follow_up)
         self.assertIn("不新建 reviewer", reviewer_follow_up)
         self.assertTrue(
@@ -333,11 +323,10 @@ class BuilderConversationIsolationContractTest(unittest.TestCase):
                 self.tester_initial,
                 (
                     "run_id",
-                    "plan_path",
+                    "contract",
                     "tester worktree",
-                    "unit-test-spec",
-                    "e2e-cases",
-                    "parallel_ready",
+                    "spec head",
+                    "publication manifest",
                 ),
                 r"一个 run 只 spawn 一次 tester",
                 TESTER_PARENT_CONTEXT_MARKERS,
@@ -345,7 +334,7 @@ class BuilderConversationIsolationContractTest(unittest.TestCase):
             (
                 "reviewer",
                 self.reviewer_initial,
-                ("plan", "candidate", "完整 diff", "验证证据", "文档政策路径"),
+                ("contract", "candidate", "完整 diff", "验证证据", "文档政策路径"),
                 r"spawn 一次 reviewer",
                 REVIEWER_PARENT_CONTEXT_MARKERS,
             ),
@@ -456,9 +445,9 @@ class BuilderConversationIsolationContractTest(unittest.TestCase):
             )
             mutations = (
                 (
-                    f"{role}:prepare-follow-up",
-                    "prepare-follow-up",
-                    replace_all(contract, r"prepare-follow-up", "省略准备"),
+                    f"{role}:followup-task",
+                    "followup-task",
+                    replace_all(contract, r"followup_task", "省略续接工具"),
                 ),
                 (
                     f"{role}:same-thread",

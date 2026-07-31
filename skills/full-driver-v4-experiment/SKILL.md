@@ -28,6 +28,27 @@ Agent spawn、same-thread follow-up、结构化结果解析和持续循环由本
    形成 protected preparation。后续 business contract 使用 `execution.continuation` 单次消费；同一
    continuation token 的重复或二次 replay 必须由 Core 拒绝，不能复制旧 evidence 或 transcript。
 
+## 角色隔离与连续性
+
+### Tester 初次 spawn
+
+每个身份只允许一次初始 `spawn_agent(agent_type="tester", fork_turns="none")`，一个 run 只 spawn 一次 Tester。
+最小 brief 只包含 `run_id`、冻结 `contract`、Tester worktree、spec head 或隔离 publication manifest，
+以及 author/blackbox 阶段目标；不得夹带父线程讨论、用户倾向、Builder 辩护或候选信息。
+
+### Reviewer 初次 spawn
+
+到达 `reviewer_final` 后只允许一次初始 `spawn_agent(agent_type="reviewer", fork_turns="none")`，一个 run 只 spawn 一次 Reviewer。
+最小 brief 包含冻结 contract、candidate、完整 diff、验证证据和文档政策路径；
+不得夹带父线程讨论、用户倾向或 Builder 辩护。Reviewer 必须看到候选信息；候选与完整 diff 是必需审查输入。
+
+### 后续 turn
+
+Tester 后续阶段必须用 `followup_task` follow-up 同一个 Tester thread；禁止 spawn 新 Tester，也不得
+清空或重置上下文或角色历史。Reviewer finding 后必须用 `followup_task` follow-up 同一 Reviewer thread；
+不新建 Reviewer，也不得清空或重置上下文或角色历史。只有 Core 明确允许 identity replacement
+时才建立新身份，并保留旧 identity 与失效证据。
+
 ## 原生持续循环
 
 持续调用 `assurance --experimental-v4 driver-next`，校验返回的 `action_id` 后执行恰好一个动作，再
