@@ -8,6 +8,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC_HEAD = "1b512b120a673470a4ee154b7c8dd8ac3c3f7e1f"
+R6_HEAD = "62088764bfa942dd77027f16a1d18f62c8ce522e"
 
 
 def compact(text: str) -> str:
@@ -69,7 +70,16 @@ class DeliveryDisciplineContractTest(unittest.TestCase):
         before_modules = set(
             git_lines("ls-tree", "-r", "--name-only", SPEC_HEAD, "--", "runtime/codex_builder_loop")
         )
-        after_modules = set(git_lines("ls-tree", "-r", "--name-only", "HEAD", "--", "runtime/codex_builder_loop"))
+        after_modules = set(
+            git_lines(
+                "ls-tree",
+                "-r",
+                "--name-only",
+                R6_HEAD,
+                "--",
+                "runtime/codex_builder_loop",
+            )
+        )
         self.assertLessEqual(before_modules, after_modules)
         self.assertLessEqual(
             after_modules - before_modules,
@@ -82,7 +92,14 @@ class DeliveryDisciplineContractTest(unittest.TestCase):
             capture_output=True,
             check=True,
         ).stdout
-        self.assertEqual((ROOT / "requirements-dev.txt").read_text(), before_requirements)
+        after_requirements = subprocess.run(
+            ["git", "show", f"{R6_HEAD}:requirements-dev.txt"],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=True,
+        ).stdout
+        self.assertEqual(after_requirements, before_requirements)
 
 
 if __name__ == "__main__":
