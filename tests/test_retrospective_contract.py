@@ -5,7 +5,9 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-BUILDER_SKILL = (ROOT / "skills" / "builder" / "SKILL.md").read_text()
+BUILDER_SKILL = (
+    ROOT / "skills" / "full-driver-v4-experiment" / "SKILL.md"
+).read_text()
 RETROSPECTIVE = (
     ROOT / "skills" / "builder" / "references" / "post-delivery-retrospective.md"
 ).read_text()

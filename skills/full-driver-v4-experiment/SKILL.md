@@ -110,6 +110,14 @@ Tester continuity 或 Reviewer continuity 丢失时，优先 same-thread 续接�
 branch/worktree 未漂移时才允许 `prepare-tester --replace`；dirty 或漂移则保留现场并停止。不可恢复的
 Agent 连续性不自动改变 Mission。
 
+## 交付后事故与记忆
+
+finalize 后若出现多轮失败、冲突/recovery、Tester correction、Reviewer finding、角色或 evidence
+独立性异常、用户纠正的重要前提或计划外工程缺陷，读取
+[交付后事故归属](../builder/references/post-delivery-retrospective.md)。完成工程问题分流后，才以
+`builder-loop delegated` 模式调用 `$memory-review`；不得复制旧版五问或把 memory 当成 Issue、代码、
+测试、契约和项目文档的替代品。
+
 ## 唯一用户中断边界
 
 从 `checkpoint_builder`、L1、dirty snapshot、parallel Tester、普通修复和全部 evidence gate，直到
