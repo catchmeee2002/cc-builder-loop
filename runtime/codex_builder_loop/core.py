@@ -49,6 +49,7 @@ LEGACY_PLAN_DIGEST_KIND = "raw-v1"
 EXIT_PASS = 0
 EXIT_FAIL = 1
 EXIT_FATAL = 2
+LEGACY_START_ENABLE_ENV = "CODEX_BUILDER_LOOP_ENABLE_LEGACY_START"
 
 ACTIVE_PHASES = {
     "active",
@@ -6515,6 +6516,15 @@ def preflight_plan(
 
 
 def cmd_start(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
+    if os.environ.get(LEGACY_START_ENABLE_ENV) != "1":
+        raise RuntimeProblem(
+            "new Builder-loop runs are disabled while the v4 delivery core is rebuilt",
+            code="BUILDER_MAINTENANCE_DISABLED",
+            details={
+                "legacy_start_enabled": False,
+                "recovery_commands": ["status", "doctor", "recover", "finalize", "cleanup"],
+            },
+        )
     repo = resolve_repo(args.repo)
     with locked_repository_state(repo):
         return cmd_start_locked(args, repo)

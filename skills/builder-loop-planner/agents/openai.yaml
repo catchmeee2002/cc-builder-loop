@@ -1,7 +1,7 @@
 interface:
   display_name: "Builder Loop Planner"
-  short_description: "在 Plan mode 固化验收、测试目标与交付门禁"
-  default_prompt: "Use $builder-loop-planner to create a validated plan with independent test ownership and delivery gates."
+  short_description: "维护中：业务规划统一使用 Codex 原生 Plan"
+  default_prompt: "Use native Codex Plan because Builder Loop planning is disabled during the v4 rebuild."
 
 policy:
-  allow_implicit_invocation: true
+  allow_implicit_invocation: false

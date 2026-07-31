@@ -11,11 +11,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SPEC_HEAD = "1b512b120a673470a4ee154b7c8dd8ac3c3f7e1f"
 DELIVERY_HEAD = "e238fe159ce16f225ab7e4dd35a19052f02b2122"
-PLANNER_BLOB = "d7f75000f2b7abce75c9df1a0ec84f7e73c02351"
+PLANNER_BLOB = "bc4dd7064ffe8556ceca0dc5f6cb2dff8e263511"
 PLANNER_PATH = Path("skills/builder-loop-planner/SKILL.md")
 BUILDER_PATH = Path("skills/builder/SKILL.md")
 BUILDER_VARIANTS_PATH = Path("experiments/agent-behavior/variants.json")
 BUILDER_LINE_LIMIT = 278
+BUILDER_MAINTENANCE_LINE_ALLOWANCE = 9
 REFERENCE_PATH = Path("skills/builder-loop-planner/references/design-decisions.md")
 REVIEWER_BLOB = "2eaf864eb5b3c814eb452c545180d69d578f1765"
 REVIEWER_PATH = Path("agents/reviewer.toml")
@@ -601,7 +602,10 @@ class PlanningDesignDisciplineTest(unittest.TestCase):
         )
         self.assertEqual(git_blob("HEAD", REVIEWER_PATH), REVIEWER_BLOB)
         self.assertEqual(worktree_blob(REVIEWER_PATH), REVIEWER_BLOB)
-        self.assertLessEqual(len(read(BUILDER_PATH).splitlines()), BUILDER_LINE_LIMIT)
+        self.assertLessEqual(
+            len(read(BUILDER_PATH).splitlines()),
+            BUILDER_LINE_LIMIT + BUILDER_MAINTENANCE_LINE_ALLOWANCE,
+        )
         self.assertLessEqual(len(read(REVIEWER_PATH).splitlines()), len(reviewer_baseline) + 28)
         self.assertLessEqual(len(read(TESTER_PATH).splitlines()), len(tester_baseline) + 24)
 

@@ -1,7 +1,7 @@
 interface:
   display_name: "Builder Loop"
-  short_description: "按独立测试、机器验证、黑盒复验与审查门禁交付代码变更"
-  default_prompt: "Deliver the accepted builder-loop plan after explicit $builder or a validated native Plan handoff, using independent tests, verification, and review."
+  short_description: "维护中：保留旧交付诊断，暂停创建业务 run"
+  default_prompt: "Report that Builder Loop is in maintenance mode and do not start a new run."
 
 policy:
-  allow_implicit_invocation: true
+  allow_implicit_invocation: false

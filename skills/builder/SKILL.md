@@ -5,6 +5,15 @@ description: 执行已接受的 builder-loop 方案，在隔离 worktree 中协�
 
 # Builder
 
+## 维护门禁
+
+Full Driver v4 重建期间禁止创建业务 Builder-loop run。无论本 Skill 因显式 `$builder`、原生实施动作、
+历史 marker、隐式发现或误加载进入，都不得调用 `start`、物化计划、修改 ledger 或写入仓库；直接说明
+维护期统一使用 Codex 原生执行，并以独立行输出 `BUILDER_RESULT: maintenance_disabled` 后停止。
+
+legacy v2/v3 的既有 ledger 只允许用户明确要求的只读诊断或安全收尾；维护门禁不得借恢复旧 run 创建
+新 revision。仓库内部 fixture 通过显式测试环境开关验证 legacy `start`，不构成业务授权。
+
 把主线程作为唯一协调者和业务实现写入者。不要复制 runtime 状态；以 run ledger 为唯一来源。
 
 ## 准备运行

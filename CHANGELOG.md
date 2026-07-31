@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- 进入 Full Driver v4 重建维护期：安装配置移除了 Builder lifecycle hooks 和 Plan 路线选择，
+  Planner/Builder Skill 关闭隐式加载并在显式进入时 fail closed；legacy `start` 默认在仓库锁、计划
+  读取和任何交付副作用前返回 `BUILDER_MAINTENANCE_DISABLED`。v2/v3 ledger 及其诊断、安全恢复、
+  finalize/cleanup 能力被保留，既有确定性 fixture 通过仓库内部显式环境开关继续回归。
 - 新增受保护 verification support 的关联双 Run 续接契约：只读 `plan-preflight` 在详细规划前
   区分当前 machine runner/control 冲突与 abandoned business run 的旧 support-only 冲突；后者由
   独立 preparation run 交付，再通过 ledger 与 Git 派生的 `BUILDER_CONTINUATION_READY` 交回同

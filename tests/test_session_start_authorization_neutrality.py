@@ -256,47 +256,15 @@ class SessionStartAuthorizationNeutralityTest(unittest.TestCase):
             planner = (home / ".agents/skills/builder-loop-planner/SKILL.md").read_text()
             builder = (home / ".agents/skills/builder/SKILL.md").read_text()
             managed_agents = managed_block(installed_agents)
-            combined = compact(builder + "\n" + managed_agents)
-
             self.assertIn(compact(MARKER), compact(planner))
-            self.assertTrue(
-                all(
-                    has_any(planner, terms)
-                    for terms in (
-                        ("plan-validate",),
-                        ("READY",),
-                        ("方案正文之外", "计划正文之外"),
-                        ("独立行", "单独一行"),
-                    )
-                ),
-                "Planner 必须只在验证 READY 后于冻结方案外发布 marker",
-            )
-            for required in (
-                MARKER,
-                "同一session",
-                "紧邻",
-                "Defaultmode",
-                "Implementtheplan",
-                "$builder",
-                "Codex原生Plan",
-            ):
-                self.assertIn(compact(required), combined, f"安装态缺少双入口条件：{required}")
-            for rejected in (
-                ("标记缺失", "缺少就绪标记"),
-                ("非紧邻", "不是紧邻下一轮"),
-                ("session变化", "不同session", "跨session"),
-                ("仍在Planmode", "非Defaultmode"),
-                ("普通实施请求", "普通改码请求"),
-                ("不得解析transcript", "不解析transcript"),
-            ):
-                self.assertTrue(
-                    any(compact(term) in combined for term in rejected),
-                    f"安装态缺少 fail-closed 边界：{rejected}",
-                )
+            self.assertIn("不输出", planner)
+            self.assertIn("维护门禁", planner)
+            self.assertIn("BUILDER_RESULT: maintenance_disabled", builder)
+            self.assertIn("不得创建新的 Builder-loop run", managed_agents)
+            self.assertNotIn("request_user_input", managed_agents)
 
             hooks = json.loads((codex_home / "hooks.json").read_text())["hooks"]
-            self.assertEqual(set(hooks), {"SessionStart", "SubagentStart", "SubagentStop", "Stop"})
-            self.assertNotIn("UserPromptSubmit", hooks)
+            self.assertEqual(hooks, {})
             self.assertNotIn(MARKER, installed_hook.read_text())
 
             installed_paths = {

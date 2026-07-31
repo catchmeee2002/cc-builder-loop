@@ -109,7 +109,10 @@ def substitute(value: Any, replacement: str) -> Any:
 
 
 def managed_commands(template: dict[str, Any]) -> set[str]:
-    commands: set[str] = set()
+    legacy = template.get("legacyManagedCommands", [])
+    if not isinstance(legacy, list) or not all(isinstance(command, str) for command in legacy):
+        raise ConfigError("builder-loop legacyManagedCommands must be a string list")
+    commands: set[str] = set(legacy)
     for entries in template.get("hooks", {}).values():
         for entry in entries:
             if not isinstance(entry, dict):
@@ -122,8 +125,6 @@ def managed_commands(template: dict[str, Any]) -> set[str]:
                     command = handler.get("command")
                     if isinstance(command, str):
                         commands.add(command)
-    if not commands:
-        raise ConfigError("builder-loop hooks template contains no command handlers")
     return commands
 
 

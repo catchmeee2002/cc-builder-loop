@@ -73,19 +73,13 @@ class InstallContractTest(unittest.TestCase):
 
             hooks = json.loads(hooks_path.read_text())["hooks"]
             self.assertIn("python3 /foreign/hook.py", json.dumps(hooks))
-            for event in ("SessionStart", "SubagentStart", "SubagentStop", "Stop"):
-                managed = [
-                    entry
-                    for entry in hooks.get(event, [])
-                    if "builder-loop.py" in json.dumps(entry)
-                ]
-                self.assertEqual(len(managed), 1, (event, hooks))
+            self.assertNotIn("builder-loop.py", json.dumps(hooks))
             agents = agents_path.read_text()
             self.assertIn("# User guidance", agents)
             self.assertEqual(agents.count("BEGIN cc-builder-loop-codex"), 1)
-            self.assertIn("request_user_input", agents)
+            self.assertNotIn("request_user_input", agents)
             self.assertIn("Codex 原生 Plan", agents)
-            self.assertIn("Builder-loop Planner", agents)
+            self.assertIn("不得创建新的 Builder-loop run", agents)
             self.assertNotIn("使用 `/plan` 为后续交付制定方案时，必须调用", agents)
             self.assertNotIn("用户明确说", agents)
             policy = codex_home / "builder-loop" / "doc-policy.md"
@@ -136,7 +130,7 @@ class InstallContractTest(unittest.TestCase):
             self.assertTrue(hook_link.is_symlink())
             self.assertEqual(hook_link.resolve(), foreign_hook.resolve())
             hooks = json.loads((home / ".codex" / "hooks.json").read_text())
-            self.assertIn("builder-loop.py", json.dumps(hooks))
+            self.assertNotIn("builder-loop.py", json.dumps(hooks))
 
     def test_install_invalid_hooks_json_creates_no_partial_links(self) -> None:
         with tempfile.TemporaryDirectory(prefix="builder-loop-invalid-install-") as raw_home:
@@ -303,7 +297,7 @@ class InstallContractTest(unittest.TestCase):
             self.assertTrue(agents_path.is_symlink())
             self.assertEqual(os.readlink(hooks_path), hooks_link_text)
             self.assertEqual(os.readlink(agents_path), agents_link_text)
-            self.assertIn("builder-loop.py", hooks_real.read_text())
+            self.assertNotIn("builder-loop.py", hooks_real.read_text())
             self.assertIn("BEGIN cc-builder-loop-codex", agents_real.read_text())
 
             uninstalled = run_process(
@@ -341,21 +335,37 @@ class InstallContractTest(unittest.TestCase):
     def test_companion_handler_in_managed_entry_survives_reinstall_and_uninstall(self) -> None:
         with tempfile.TemporaryDirectory(prefix="builder-loop-companion-hook-") as raw_home:
             home = Path(raw_home)
+            hooks_path = home / ".codex" / "hooks.json"
+            hooks_path.parent.mkdir(parents=True)
+            hooks_path.write_text(
+                json.dumps(
+                    {
+                        "hooks": {
+                            "Stop": [
+                                {
+                                    "hooks": [
+                                        {
+                                            "type": "command",
+                                            "command": f"python3 {home / '.codex' / 'hooks' / 'builder-loop.py'}",
+                                        },
+                                        {
+                                            "type": "command",
+                                            "command": "python3 /foreign/keep-me.py",
+                                        },
+                                    ]
+                                }
+                            ]
+                        }
+                    }
+                )
+            )
             env = self.environment(home)
             installed = run_process(["bash", ROOT / "install.sh"], cwd=ROOT, env=env)
             self.assertEqual(installed.returncode, 0, installed.stderr)
 
-            hooks_path = home / ".codex" / "hooks.json"
-            config = json.loads(hooks_path.read_text())
-            managed_entry = next(
-                entry
-                for entry in config["hooks"]["Stop"]
-                if "builder-loop.py" in json.dumps(entry)
-            )
-            managed_entry["hooks"].append(
-                {"type": "command", "command": "python3 /foreign/keep-me.py"}
-            )
-            hooks_path.write_text(json.dumps(config))
+            after_install = json.loads(hooks_path.read_text())
+            self.assertIn("python3 /foreign/keep-me.py", json.dumps(after_install))
+            self.assertNotIn("builder-loop.py", json.dumps(after_install))
 
             reinstalled = run_process(["bash", ROOT / "install.sh"], cwd=ROOT, env=env)
             self.assertEqual(reinstalled.returncode, 0, reinstalled.stderr)

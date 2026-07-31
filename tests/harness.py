@@ -58,7 +58,9 @@ def run_cli(
 ) -> ProcessResult:
     if not CLI.is_file():
         raise AssertionError(f"runtime missing: {CLI}")
-    inferred_env: dict[str, str] = {}
+    inferred_env: dict[str, str] = {
+        "CODEX_BUILDER_LOOP_ENABLE_LEGACY_START": "1"
+    }
     candidates = [Path(str(value)).resolve() for value in args if os.sep in str(value)]
     if cwd is not None:
         candidates.append(Path(cwd).resolve())

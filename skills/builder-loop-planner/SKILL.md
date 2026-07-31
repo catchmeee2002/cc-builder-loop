@@ -7,6 +7,12 @@ description: 在 Codex Plan mode（/plan）中为代码或文档变更生成 bui
 
 只产出方案，不实现代码。
 
+## 维护门禁
+
+Full Driver v4 重建期间，本 Skill 不接受业务规划。若被显式调用、自动发现或由历史 continuation marker
+加载，不运行 `plan-preflight`、`plan-validate`，不生成 Builder-loop spec，也不输出
+`BUILDER_HANDOFF_READY`；直接说明维护期统一使用 Codex 原生 Plan 后停止。
+
 ## 建立上下文
 
 1. 若同一 session 紧邻上一轮是 `BUILDER_CONTINUATION_READY:<preparation-run-id>`，本轮直接进入

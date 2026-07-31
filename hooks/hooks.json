@@ -1,54 +1,6 @@
 {
-  "hooks": {
-    "SessionStart": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 __BUILDER_LOOP_HOOK__",
-            "timeout": 20,
-            "statusMessage": "Loading builder-loop identity"
-          }
-        ]
-      }
-    ],
-    "SubagentStart": [
-      {
-        "matcher": "^(tester|reviewer)$",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 __BUILDER_LOOP_HOOK__",
-            "timeout": 20,
-            "statusMessage": "Registering builder-loop agent"
-          }
-        ]
-      }
-    ],
-    "SubagentStop": [
-      {
-        "matcher": "^(tester|reviewer)$",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 __BUILDER_LOOP_HOOK__",
-            "timeout": 20,
-            "statusMessage": "Checking builder-loop agent completion"
-          }
-        ]
-      }
-    ],
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 __BUILDER_LOOP_HOOK__",
-            "timeout": 20,
-            "statusMessage": "Checking builder-loop completion"
-          }
-        ]
-      }
-    ]
-  }
+  "hooks": {},
+  "legacyManagedCommands": [
+    "python3 __BUILDER_LOOP_HOOK__"
+  ]
 }

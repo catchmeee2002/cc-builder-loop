@@ -1,5 +1,18 @@
 # codex-builder-loop
 
+## v4 重建维护期
+
+[保质期: Full Driver v4 通过重新开放门槛, owner: cc-builder-loop, 正向归宿: CHANGELOG.md]
+
+Builder-loop 当前暂停创建业务 run。代码和文档任务统一使用 Codex 原生 Plan 与持续执行；已安装的
+Planner/Builder Skill 不自动加载，legacy `start` 默认返回 `BUILDER_MAINTENANCE_DISABLED`，安装器
+也不注册 Builder lifecycle hooks。v2/v3 ledger 保留原位，继续支持诊断、恢复、finalize 与安全
+cleanup；仓库内部契约测试通过显式环境开关回放 legacy fixtures，不构成业务入口。
+
+下文描述的是 legacy v3 兼容行为，用于维护既有现场和重建期间的回归验证，不代表当前可新建业务
+交付。Full Driver v4 只有在历史高频 Revision 回放、至少两个非本仓项目五次真实交付且零非语义
+Revision 后才重新开放；用户入口仍收敛在 Plan 环节的一次选择，不增加新业务命令。
+
 面向 Codex CLI 的独立判据交付闭环。进入 Plan mode 后先选择规划方式：
 
 ```text
