@@ -11,7 +11,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SPEC_HEAD = "1b512b120a673470a4ee154b7c8dd8ac3c3f7e1f"
 DELIVERY_HEAD = "e238fe159ce16f225ab7e4dd35a19052f02b2122"
-PLANNER_BLOB = "a93c05b9b835c6bdbfde4a1c0e6b3a08c5ce5707"
+PLANNER_BLOB = "b0f6cebb677300d6a4fe891a546660dcb5f6d944"
 PLANNER_PATH = Path("skills/builder-loop-planner/SKILL.md")
 BUILDER_PATH = Path("skills/builder/SKILL.md")
 BUILDER_VARIANTS_PATH = Path("experiments/agent-behavior/variants.json")

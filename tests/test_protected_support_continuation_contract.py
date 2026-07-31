@@ -599,15 +599,14 @@ class ProtectedSupportContinuationContractTest(unittest.TestCase):
         self.assertEqual(result.data["spec_head"], finalized["final_head"])
         self.assertEqual(result.data["target_head"], head(repo))
 
-    def test_managed_planner_contract_is_adjacent_and_transcript_free(self) -> None:
+    def test_experimental_planner_uses_v4_continuation_without_transcript_state(self) -> None:
         text = PLANNER_PATH.read_text()
-        self.assertIn("同一 session 紧邻上一轮", text)
-        self.assertIn("BUILDER_CONTINUATION_READY:<preparation-run-id>", text)
-        self.assertIn("首次调用前运行 `status --help`", text)
-        self.assertIn("链接未被消费时继续", text)
-        self.assertIn("不得解析 transcript 重建业务事实", text)
-        self.assertIn("不得 supersede 业务", text)
-        self.assertIn("不要创建\n或启动 builder-loop run", text)
+        self.assertIn("execution.continuation", text)
+        self.assertIn("Core 已验证的 finalized run 事实", text)
+        self.assertIn("不得解析", text)
+        self.assertIn("transcript", text)
+        self.assertIn("不得让 preparation supersede 业务 run", text)
+        self.assertIn("不得创建\n或启动 run", text)
 
 
 if __name__ == "__main__":

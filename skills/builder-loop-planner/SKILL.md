@@ -30,6 +30,9 @@ description: 在 Codex Plan mode 中为显式选择的 Builder-loop 实验路线
 - `execution` 初始固定为 `version: 1`、`driver_enforced: true`、`candidate_head: null`、空的
   `builder_files/tester_files/dirty_snapshot/agents`、`tester_source: null`。Agent identity 只能在真实 spawn
   后由专用事务写入，Planner 不预填。
+- protected preparation 使用 `mission.delivery_kind=preparation` 与 exact `protected_support_paths`；后续
+  business contract 只通过 `execution.continuation` 消费 Core 已验证的 finalized run 事实。不得解析
+  transcript 重建 continuation，也不得让 preparation supersede 业务 run；事实不足时停止规划交接。
 - `assurance.machine_commands` 冻结机器命令；`execution.commands` 冻结独立 blackbox 命令。argv 必须是
   字符串数组，命令必须真实失败时返回非零，不使用 shell 恒真包装。
 - 单仓本地代码或 L1 文档属于当前实验范围；外部设备、远程部署和多仓原子事务选择 Codex 原生 Plan。
@@ -56,4 +59,5 @@ description: 在 Codex Plan mode 中为显式选择的 Builder-loop 实验路线
 
 `BUILDER_HANDOFF_READY`
 
-验证失败、用户选择原生 Plan、任务超出实验范围、方案仍有未决产品取舍时不得输出该标记。
+验证失败、用户选择原生 Plan、任务超出实验范围、方案仍有未决产品取舍时不得输出该标记，也不得创建
+或启动 run。
