@@ -31,6 +31,8 @@ rematerialization 后局部重验，Git 冲突、授权扩大和覆盖风险才�
 
 Full Driver contract 固定 `execution.driver_enforced=true`。该模式下 mutation 即使省略 `action_id` 也
 必须即时匹配当前派生 action；携带 ID 时还要匹配同一 ledger 版本，拒绝错序调用和 stale replay。
+启用 Driver enforcement 后，通用 Execution facet 更新只允许 no-op；candidate、Builder checkpoint、
+Tester source 和角色 identity 必须分别通过专用事务写入，不能用通用更新入口伪造执行进度。
 Assurance Core 的独立契约测试与手工底层诊断默认不启用 Driver enforcement，二者不共享隐式开关。
 
 dirty intake 的自动 snapshot commit 只证明输入已隔离，不证明实现完成；ledger 单独记录

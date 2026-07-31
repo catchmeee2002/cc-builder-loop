@@ -7,7 +7,8 @@
   target rematerialization、protected preparation/单次 continuation、持久化 finalize intent 和目标 CAS；
   Full Driver Skill 使用原生 custom-agent spawn/same-thread follow-up，按 Core readiness 持续派生下一动作，
   mutation 以派生 `action_id` 拒绝过时 dispatch，dirty snapshot 与 Builder checkpoint 分开记账，且不把
-  角色循环写入 ledger。安装器部署禁止隐式调用的显式实验 Skill，公共 `$builder` 与 Plan 高保证入口
+  角色循环写入 ledger。Driver enforcement 启用后，通用 Execution facet 更新被锁定，candidate、
+  checkpoint 与角色来源只允许通过对应专用事务写入。安装器部署禁止隐式调用的显式实验 Skill，公共 `$builder` 与 Plan 高保证入口
   仍保持关闭。离线回放 corpus 冻结 Issue #160 的 26-run 样本、#158 R1–R8 和产品变化/
   Git 冲突控制场景；公共 Builder-loop 继续处于维护关闭状态。
 - 进入 Full Driver v4 重建维护期：安装配置移除了 Builder lifecycle hooks 和 Plan 路线选择，
