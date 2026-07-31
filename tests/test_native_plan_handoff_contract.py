@@ -23,7 +23,7 @@ def managed_block(text: str) -> str:
     return text[start:end]
 
 
-class MaintenanceModeContractTest(unittest.TestCase):
+class ExperimentalEntryContractTest(unittest.TestCase):
     def test_default_start_is_rejected_before_repo_or_plan_access(self) -> None:
         with tempfile.TemporaryDirectory(prefix="builder-maintenance-") as raw:
             root = Path(raw)
@@ -72,29 +72,32 @@ class MaintenanceModeContractTest(unittest.TestCase):
         self.assertEqual(result.data["code"], "PLAN_READ_ERROR")
         self.assertNotEqual(result.data["code"], "BUILDER_MAINTENANCE_DISABLED")
 
-    def test_public_skills_fail_closed_and_cannot_autoload(self) -> None:
+    def test_public_skills_open_only_as_v4_experiment(self) -> None:
         for skill in ("builder", "builder-loop-planner"):
             body = read(f"skills/{skill}/SKILL.md")
             metadata = read(f"skills/{skill}/agents/openai.yaml")
-            self.assertIn("维护门禁", body)
+            self.assertNotIn("维护门禁", body)
             self.assertRegex(
                 metadata,
-                r"(?m)^\s*allow_implicit_invocation:\s*false\s*$",
+                r"(?m)^\s*allow_implicit_invocation:\s*true\s*$",
             )
         builder = read("skills/builder/SKILL.md")
-        self.assertIn("BUILDER_RESULT: maintenance_disabled", builder)
-        self.assertIn("不得调用 `start`", builder)
+        self.assertIn("full-driver-v4-experiment", builder)
+        self.assertIn("不得调用公共 legacy `start`", builder)
+        self.assertIn("--experimental-v4 start", builder)
         planner = read("skills/builder-loop-planner/SKILL.md")
-        self.assertIn("不输出", planner)
+        self.assertIn("assurance-v4-contract", planner)
+        self.assertIn("--experimental-v4 validate", planner)
         self.assertIn("BUILDER_HANDOFF_READY", planner)
 
-    def test_managed_agents_remove_route_choice_and_handoff(self) -> None:
+    def test_managed_agents_restore_experimental_route_choice_and_handoff(self) -> None:
         agents = read("agents/AGENTS.md.block")
         self.assertIn("Codex 原生 Plan", agents)
-        self.assertNotIn("request_user_input", agents)
-        self.assertNotIn("Implement the plan.", agents)
-        self.assertNotIn("BUILDER_HANDOFF_READY", agents)
-        self.assertIn("不得创建新的 Builder-loop run", agents)
+        self.assertIn("Builder-loop 实验", agents)
+        self.assertIn("request_user_input", agents)
+        self.assertIn("Implement the plan.", agents)
+        self.assertIn("BUILDER_HANDOFF_READY", agents)
+        self.assertIn("legacy v2/v3 新 run", agents)
 
     def test_install_is_idempotent_without_builder_hooks(self) -> None:
         with tempfile.TemporaryDirectory(prefix="maintenance-install-") as raw_home:

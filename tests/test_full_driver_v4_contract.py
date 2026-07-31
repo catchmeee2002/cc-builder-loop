@@ -225,7 +225,7 @@ class FullDriverV4ContractTest(unittest.TestCase):
             self.assertTrue(link.is_symlink(), link)
             self.assertEqual(link.resolve(), SKILL.parent.resolve())
 
-    def test_public_builder_plan_and_default_v4_entry_remain_closed(self) -> None:
+    def test_experimental_builder_plan_open_without_public_cli_or_legacy_start(self) -> None:
         top_help = run_process([sys.executable, CLI, "--help"])
         self.assertEqual(top_help.returncode, 0, top_help.stderr)
         self.assertNotIn("assurance", top_help.stdout)
@@ -253,8 +253,12 @@ class FullDriverV4ContractTest(unittest.TestCase):
         rc, data = self.invoke("status", "--repo", self.repo, "--run", "missing", experimental=False)
         self.assertEqual(rc, 2, data)
         self.assertEqual(data.get("code"), "ASSURANCE_V4_EXPERIMENTAL_REQUIRED")
-        self.assertIn("maintenance_disabled", (ROOT / "skills" / "builder" / "SKILL.md").read_text())
-        self.assertIn("维护期", (ROOT / "skills" / "builder-loop-planner" / "SKILL.md").read_text())
+        builder = (ROOT / "skills" / "builder" / "SKILL.md").read_text()
+        planner = (ROOT / "skills" / "builder-loop-planner" / "SKILL.md").read_text()
+        self.assertIn("full-driver-v4-experiment", builder)
+        self.assertIn("--experimental-v4 start", builder)
+        self.assertIn("assurance-v4-contract", planner)
+        self.assertIn("BUILDER_HANDOFF_READY", planner)
 
     def test_skill_automatically_loops_over_the_complete_action_surface(self) -> None:
         text = compact(self.skill_text())

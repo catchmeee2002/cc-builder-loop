@@ -80,9 +80,11 @@ class InstallContractTest(unittest.TestCase):
             agents = agents_path.read_text()
             self.assertIn("# User guidance", agents)
             self.assertEqual(agents.count("BEGIN cc-builder-loop-codex"), 1)
-            self.assertNotIn("request_user_input", agents)
+            self.assertIn("request_user_input", agents)
             self.assertIn("Codex 原生 Plan", agents)
-            self.assertIn("不得创建新的 Builder-loop run", agents)
+            self.assertIn("Builder-loop 实验", agents)
+            self.assertIn("Implement the plan.", agents)
+            self.assertIn("legacy v2/v3 新 run", agents)
             self.assertNotIn("使用 `/plan` 为后续交付制定方案时，必须调用", agents)
             self.assertNotIn("用户明确说", agents)
             policy = codex_home / "builder-loop" / "doc-policy.md"

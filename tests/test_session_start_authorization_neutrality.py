@@ -261,14 +261,16 @@ class SessionStartAuthorizationNeutralityTest(unittest.TestCase):
             ).read_text()
             managed_agents = managed_block(installed_agents)
             self.assertIn(compact(MARKER), compact(planner))
-            self.assertIn("不输出", planner)
-            self.assertIn("维护门禁", planner)
-            self.assertIn("BUILDER_RESULT: maintenance_disabled", builder)
+            self.assertIn("assurance-v4-contract", planner)
+            self.assertIn("--experimental-v4 validate", planner)
+            self.assertIn("full-driver-v4-experiment", builder)
+            self.assertIn("--experimental-v4 start", builder)
             self.assertIn(
                 "allow_implicit_invocation:false", compact(full_driver_manifest)
             )
-            self.assertIn("不得创建新的 Builder-loop run", managed_agents)
-            self.assertNotIn("request_user_input", managed_agents)
+            self.assertIn("Builder-loop 实验", managed_agents)
+            self.assertIn("request_user_input", managed_agents)
+            self.assertIn("Implement the plan.", managed_agents)
 
             hooks = json.loads((codex_home / "hooks.json").read_text())["hooks"]
             self.assertEqual(hooks, {})

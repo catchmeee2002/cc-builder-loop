@@ -2,8 +2,8 @@
 
 ## v4 分层边界
 
-维护期内公共 Builder-loop 保持关闭。新实现位于独立 `assurance_v4` package，不导入或原地改写
-legacy `core.py`：
+legacy v2/v3 新 run 与无实验标志的 v4 CLI 保持关闭；面向用户的 Plan/Builder 实验入口已经开放。
+新实现位于独立 `assurance_v4` package，不导入或原地改写 legacy `core.py`：
 
 ```text
 Full Driver v4 experiment       future Native Driver
@@ -54,13 +54,13 @@ manifest、blackbox worktree/HEAD/逐命令结果和 Reviewer candidate。当前
 attestation，不宣称具备平台级防伪。公共 Full Driver 重新开放前必须补齐真实生命周期观测或证明原生
 能力等价；仅有本仓实验测试不能把该限制改写成已解决。
 
-内部 CLI 入口为 `codex-builder-loop assurance --experimental-v4 ...`。实验标志是维护期门禁，公共
-Planner/Builder Skill 不会设置它；安装器只部署禁止隐式调用的实验 Skill。首版覆盖本地单仓 Git
-代码与 L1 文档交付；外部设备、远程部署和多仓事务保持 unsupported。本地 protected preparation
+内部 CLI 入口为 `codex-builder-loop assurance --experimental-v4 ...`。Plan 选项中的实验 Planner
+冻结并验证 v4 contract，`$builder` 只消费已验证 handoff 并设置实验入口；内部 Full Driver Skill
+仍禁止被普通请求隐式调用。首版覆盖本地单仓 Git 代码与 L1 文档交付；外部设备、远程部署和多仓事务保持 unsupported。本地 protected preparation
 通过 finalized HEAD、exact support manifest 和单次 continuation 消费衔接 business run。消费前先在
 preparation ledger 持久化 intent，business ledger 落盘后再提交 consumed marker；进程中断时重试
-同一 start 只收敛该 intent，不创建第二份状态。公共 Full Driver 只有完成历史回放和跨项目真实验收
-后才切换到 v4。
+同一 start 只收敛该 intent，不创建第二份状态。当前用户入口明确标为实验；只有完成历史回放和跨项目
+真实验收后才移除实验标识并视为受支持的公共 Full Driver。
 
 ## Legacy v3 系统边界
 

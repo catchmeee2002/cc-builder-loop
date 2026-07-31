@@ -1,7 +1,7 @@
 interface:
   display_name: "Builder Loop Planner"
-  short_description: "维护中：业务规划统一使用 Codex 原生 Plan"
-  default_prompt: "Use native Codex Plan because Builder Loop planning is disabled during the v4 rebuild."
+  short_description: "生成并验证 Full Driver v4 实验交付方案"
+  default_prompt: "Use $builder-loop-planner to prepare a validated Full Driver v4 experiment plan."
 
 policy:
-  allow_implicit_invocation: false
+  allow_implicit_invocation: true

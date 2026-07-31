@@ -1,7 +1,7 @@
 interface:
   display_name: "Builder Loop"
-  short_description: "维护中：保留旧交付诊断，暂停创建业务 run"
-  default_prompt: "Report that Builder Loop is in maintenance mode and do not start a new run."
+  short_description: "执行已验证的 Full Driver v4 实验方案"
+  default_prompt: "Use $builder to execute the accepted Full Driver v4 experiment plan."
 
 policy:
-  allow_implicit_invocation: false
+  allow_implicit_invocation: true

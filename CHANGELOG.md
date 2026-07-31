@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- 将 Plan 环节的 Builder-loop 路线以实验功能重新开放：托管 AGENTS 使用一次原生选项卡选择路线，
+  Planner 直接生成并验证 Assurance v4 contract，紧邻的原生 `Implement the plan.` 自动加载 `$builder`；
+  Builder 只校验授权并桥接 Full Driver v4，不恢复 legacy v2/v3 `start` 或第二套角色循环。内部 Full
+  Driver Skill 继续禁止普通请求隐式调用，公共支持状态仍等待跨项目真实观察。
 - 新增隔离的 Assurance Core v4 实验 namespace、四事实面 schema/ledger、局部 evidence invalidation、
   dirty intake、并行/串行 Tester publication、proof、结构化问题路由、独立来源绑定、隔离机器验证、
   target rematerialization、protected preparation/单次 continuation、持久化 finalize intent 和目标 CAS；

@@ -1,18 +1,19 @@
 ---
 name: full-driver-v4-experiment
-description: 显式运行 Builder-loop Full Driver v4 实验。由 Codex 原生 Agent 编排 Assurance Core v4，覆盖本地 Git 代码或 L1 文档交付、dirty intake、Tester、proof、机器验证、黑盒、Reviewer、恢复与 finalize。不得作为公共 `$builder` 或普通实施请求的隐式入口。
+description: 运行 Builder-loop Full Driver v4 实验执行引擎。由 Codex 原生 Agent 编排 Assurance Core v4，覆盖本地 Git 代码或 L1 文档交付、dirty intake、Tester、proof、机器验证、黑盒、Reviewer、恢复与 finalize。仅由用户显式调用 $full-driver-v4-experiment，或由已授权的 $builder 实验 handoff 加载；普通实施请求不得直接或隐式调用。
 ---
 
 # Full Driver v4 Experiment
 
-这是显式实验入口。Core 只保存 Mission、Authority、Assurance、Execution、证据与 Git 事务事实；
+这是实验执行引擎。Core 只保存 Mission、Authority、Assurance、Execution、证据与 Git 事务事实；
 Agent spawn、same-thread follow-up、结构化结果解析和持续循环由本 Skill 使用 Codex 原生能力执行。
 不要持久化“下一步做什么”，每轮都重新调用 `driver-next` 派生动作。
 
 ## 启动与输入
 
 1. 仅处理单一、本地 Git 交付；远程部署、外部设备和多仓原子事务不在本实验范围。
-2. 读取项目 `AGENTS.md`、文档政策和设计哲学，生成四事实面 contract，再运行
+2. 读取项目 `AGENTS.md`、文档政策和设计哲学。直接显式调用时生成四事实面 contract；由 `$builder`
+   handoff 加载时只接受 Planner 已验证并由 Builder 重验的唯一 contract，不重新解释或扩写。随后运行
    `codex-builder-loop assurance --experimental-v4 validate/start`。
    初始 `execution.agents` 保持为空；只有原生 spawn 返回真实 identity 后，才通过
    `prepare-tester` / `prepare-reviewer` 写入，不能预填或猜测 agent/thread id。Full Driver contract

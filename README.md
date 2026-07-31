@@ -1,39 +1,37 @@
 # codex-builder-loop
 
-## v4 重建维护期
+## v4 实验开放期
 
-[保质期: Full Driver v4 通过重新开放门槛, owner: cc-builder-loop, 正向归宿: CHANGELOG.md]
+[保质期: Full Driver v4 完成跨项目真实验收, owner: cc-builder-loop, 正向归宿: CHANGELOG.md]
 
-Builder-loop 当前暂停创建业务 run。代码和文档任务统一使用 Codex 原生 Plan 与持续执行；已安装的
-Planner/Builder Skill 不自动加载，legacy `start` 默认返回 `BUILDER_MAINTENANCE_DISABLED`，安装器
-也不注册 Builder lifecycle hooks。v2/v3 ledger 保留原位，继续支持诊断、恢复、finalize 与安全
-cleanup；仓库内部契约测试通过显式环境开关回放 legacy fixtures，不构成业务入口。
+Plan 环节现在提供「Codex 原生 Plan」与「Builder-loop 实验」一次选择。实验路线由 Planner 生成并
+验证 Assurance v4 contract，紧邻的原生“实施计划”动作自动进入 `$builder`，再桥接 Full Driver v4。
+legacy `start` 仍默认返回 `BUILDER_MAINTENANCE_DISABLED`，安装器也不注册 Builder lifecycle hooks；
+v2/v3 ledger 保留原位，只继续支持诊断、恢复、finalize 与安全 cleanup。
 
-下文描述的是 legacy v3 兼容行为，用于维护既有现场和重建期间的回归验证，不代表当前可新建业务
-交付。Full Driver v4 只有在历史高频 Revision 回放、至少两个非本仓项目五次真实交付且零非语义
-Revision 后才重新开放；用户入口仍收敛在 Plan 环节的一次选择，不增加新业务命令。
+该入口明确标为实验功能。Full Driver v4 仍需完成历史高频 Revision 回放、至少两个非本仓项目五次
+真实交付且零非语义 Revision，才可去掉实验标识；用户不需要直接学习 v4 CLI 或 Core 命令。
 
 维护分支已新增新旧隔离的 Assurance Core v4 实验实现：四个 contract facet 分别绑定 digest，
 candidate/evidence、独立角色来源、机器验证、target rematerialization 和 finalize CAS 由 Core 负责；
 Full Driver 只消费 Core 的 missing/stale gate 来调度原生 Agent。该实现仅通过带
 `--experimental-v4` 的内部 `assurance` namespace 和显式 `$full-driver-v4-experiment` Skill 使用；
-安装器会部署该 Skill，但 manifest 禁止隐式发现。它不是公共业务入口，
-不会提前恢复 `$builder` 或 Plan 的高保证选项。
+安装器会部署该内部 Skill且禁止其被普通请求隐式发现；面向用户的唯一入口仍是 Plan 选项和 `$builder`。
 
 面向 Codex CLI 的独立判据交付闭环。进入 Plan mode 后先选择规划方式：
 
 ```text
 /plan <需求>
 ├─ Codex 原生 Plan
-└─ Builder-loop Planner → 原生“实施计划”
-                          └─ $builder 手工回退
+└─ Builder-loop 实验 Planner → 原生“实施计划” → Full Driver v4
+                              └─ $builder 手工回退
 ```
 
 全局托管规则会在每次进入 Plan mode 时通过选项卡询问。选择 Codex 原生 Plan 时不加载本项目
-Skill；选择 Builder-loop Planner 时，Planner Skill 把行为、接口、测试目标、写入边界和验收方式
-冻结成可校验计划，并在验证通过后输出一次性就绪标记。用户选择 Codex 原生“实施计划”后，下一轮
-Default mode 直接进入 Builder；也可显式调用 `$builder` 作为手工回退。Builder 协调独立 Tester、
-机器验证和 Reviewer；全部门禁通过后，将候选结果收敛为一个语义提交。
+Skill；选择 Builder-loop 实验时，Planner Skill 冻结并验证 v4 四事实面 contract，验证通过后输出
+一次性就绪标记。用户选择 Codex 原生“实施计划”后，下一轮 Default mode 自动进入 Builder；也可
+显式调用 `$builder`。Builder 只做授权桥接，Tester、proof、机器验证、blackbox、Reviewer 和 Git
+收尾统一由 Full Driver v4 实验闭环处理。
 
 ## 核心行为
 

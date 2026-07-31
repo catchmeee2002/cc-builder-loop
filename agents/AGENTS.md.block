@@ -1,12 +1,16 @@
 <!-- BEGIN cc-builder-loop-codex -->
-## Codex Builder Loop Maintenance
+## Codex Builder Loop Experiment
 
-- Builder-loop 正在重建 v4 交付核心。维护期内所有代码和文档规划都使用 Codex 原生 Plan，不显示
-  Builder-loop 路线选择，不加载 `$builder-loop-planner`，也不输出任何 Builder handoff marker。
-- `$builder`、原生“实施计划”动作和历史 marker 都不得创建新的 Builder-loop run；若 Skill 被显式或
-  隐式加载，必须在 runtime、计划物化和仓库写入前返回维护状态并停止。
-- legacy v2/v3 CLI 仅保留既有 ledger 的 `status`、`doctor`、`recover`、`finalize` 与安全 cleanup。
-  新 run 只允许仓库内部确定性测试通过显式环境开关创建，不能用于业务交付。
-- 普通任务继续使用 Codex 原生执行能力。Full Driver v4 通过历史回放和跨项目真实验收后，才恢复
-  Plan 环节的一次性高保证交付选项；用户不需要学习 v4、Core 或新的业务命令。
+- 每次进入 Plan mode 为代码或文档变更制定方案时，先使用 `request_user_input` 让用户选择
+  「Codex 原生 Plan」或「Builder-loop 实验」；不得用纯文本问卷替代。
+- 选择「Codex 原生 Plan」时不加载 `$builder-loop-planner`，按 Codex 原生 Plan mode 产出方案。
+- 选择「Builder-loop 实验」时调用 `$builder-loop-planner`；只产出并验证 Assurance v4 contract，
+  `READY` 后在方案外输出独立行 `BUILDER_HANDOFF_READY`，不得实现或启动 run。
+- 若同一 session 的紧邻下一轮已处于 Default mode，且用户通过 Codex 原生“实施计划”动作提交
+  `Implement the plan.`，该动作等价于对上述实验方案显式调用 `$builder`，直接加载 Builder Skill，
+  不重复授权。
+- 显式 `$builder` 继续作为手工入口。缺少就绪标记、不是紧邻下一轮、仍在 Plan mode、contract 未验证
+  或来自 Codex 原生 Plan 时，不得把普通实施请求隐式转成 Builder-loop。
+- `$builder` 只桥接 Full Driver v4 实验；legacy v2/v3 新 run 和未带 `--experimental-v4` 的 Assurance
+  入口继续关闭。Full Driver 内部 Skill 不作为用户额外学习入口，也不得被普通请求隐式调用。
 <!-- END cc-builder-loop-codex -->
