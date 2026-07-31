@@ -7,6 +7,15 @@ from typing import Any
 
 
 ROOT = Path(__file__).resolve().parent
+ACTION_BY_TRIGGER = {
+    "execution_contract": "continue_execution",
+    "resource_parameter": "continue_execution",
+    "target_drift": "rematerialize_target",
+    "role_continuity": "replace_role_and_reprove",
+    "tester_correction": "tester_fix",
+    "mission_change": "semantic_revision",
+    "git_conflict": "preserve_and_stop",
+}
 
 
 def load() -> list[dict[str, Any]]:
@@ -34,15 +43,37 @@ def report() -> dict[str, Any]:
         for item in scenarios
         if item["trigger"] in {"mission_change", "git_conflict"} and not item["needs_user"]
     ]
+    action_mismatches = [
+        {
+            "source_run": item["source_run"],
+            "expected": item["expected_action"],
+            "actual": ACTION_BY_TRIGGER.get(item["trigger"]),
+        }
+        for item in scenarios
+        if ACTION_BY_TRIGGER.get(item["trigger"]) != item["expected_action"]
+    ]
     return {
-        "status": "PASS" if len(audit) == 26 and len(chain) == 8 and not false_revisions and not unsafe_continuations else "FAIL",
+        "status": "PASS"
+        if len(audit) == 26
+        and len(chain) == 8
+        and not false_revisions
+        and not unsafe_continuations
+        and not action_mismatches
+        else "FAIL",
         "audit_sample_count": len(audit),
         "issue_158_chain_count": len(chain),
         "trigger_counts": dict(sorted(Counter(item["trigger"] for item in audit).items())),
         "false_semantic_revisions": false_revisions,
         "unsafe_continuations": unsafe_continuations,
+        "action_mismatches": action_mismatches,
     }
 
 
+def main() -> int:
+    value = report()
+    print(json.dumps(value, ensure_ascii=False, sort_keys=True))
+    return 0 if value["status"] == "PASS" else 1
+
+
 if __name__ == "__main__":
-    print(json.dumps(report(), ensure_ascii=False, sort_keys=True))
+    raise SystemExit(main())
