@@ -318,6 +318,7 @@ class FullDriverV4ContractTest(unittest.TestCase):
 
     def test_skill_orders_proof_blackbox_and_reviewer_prerequisites(self) -> None:
         text = compact(self.skill_text())
+        text = text[text.index("##原生持续循环") :]
         tester_index = text.index("tester_author")
         proof_match = re.search(
             r"(?:prove-tests|tester_proof|proof|测试证明|证明门禁)",
