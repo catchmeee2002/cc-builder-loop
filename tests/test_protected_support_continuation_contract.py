@@ -219,7 +219,7 @@ class ProtectedSupportContinuationContractTest(unittest.TestCase):
         self.assertEqual(preflight.data.get("code"), "VERIFICATION_PREPARATION_REQUIRED")
         validate_contract_ref(preflight.data, "#/$defs/preflightPreparationRequired")
         marker = self._marker(preflight.data)
-        validate_contract_ref(marker, "#/$defs/verificationPreparationMarker")
+        validate_contract_ref(marker, "#/$defs/verificationPreparationSourceMarker")
         plan = self._preparation_plan(repo, marker)
         started = run_cli(
             "start",
@@ -278,6 +278,7 @@ class ProtectedSupportContinuationContractTest(unittest.TestCase):
                 }
             ],
         }
+        assert_status(run_cli("verify", "--run", preparation), "PASS", rc=0)
         proved = run_cli(
             "prove-tests",
             "--repo",
@@ -290,7 +291,6 @@ class ProtectedSupportContinuationContractTest(unittest.TestCase):
         )
         self.assertIn(proved.data.get("status"), {"READY", "NOOP"}, proved.data)
         self.assertEqual(proved.returncode, 0, proved.stderr)
-        assert_status(run_cli("verify", "--run", preparation), "PASS", rc=0)
         candidate = head(builder)
         register_agent(preparation, "tester", agent_id=tester_id, result="pass")
         record_evidence(preparation, "e2e_verified", candidate, agent_id=tester_id)
@@ -372,18 +372,29 @@ class ProtectedSupportContinuationContractTest(unittest.TestCase):
             "continuation-ready-projection",
         }
         self.assertEqual(set(scenarios), expected)
-        marker = schema["$defs"]["verificationPreparationMarker"]
-        with self.subTest(contract="marker-response-separation"):
+        source_marker = schema["$defs"]["verificationPreparationSourceMarker"]
+        stored_marker = schema["$defs"]["verificationPreparationStoredMarker"]
+        with self.subTest(contract="source-marker-response-separation"):
             self.assertEqual(
-                set(marker["required"]),
+                set(source_marker["required"]),
                 {"schema_version", "business_run_id", "business_plan_sha256", "problem_snapshot_sha256", "problem_ids", "support_paths"},
             )
-            self.assertNotIn("repo_root", marker["properties"])
-            self.assertNotIn("target_branch", marker["properties"])
+            self.assertNotIn("repo_root", source_marker["properties"])
+            self.assertNotIn("target_branch", source_marker["properties"])
+        with self.subTest(contract="stored-marker-normalization"):
+            self.assertEqual(
+                set(stored_marker["required"]),
+                {"business_run_id", "business_plan_sha256", "problem_snapshot_sha256", "problem_ids", "support_paths"},
+            )
+            self.assertNotIn("schema_version", stored_marker["properties"])
         with self.subTest(contract="ledger-plan-projection-path"):
             projection = schema["$defs"]["preparationPlanProjection"]
             self.assertIn("verification_preparation", projection["properties"])
             self.assertNotIn("ownership", projection["properties"])
+            self.assertEqual(
+                projection["properties"]["verification_preparation"]["$ref"],
+                "#/$defs/verificationPreparationStoredMarker",
+            )
         with self.subTest(contract="invalid-run-and-path-exits"):
             self.assertEqual(scenarios["preflight-invalid-absolute-run-selector"]["exit_code"], 2)
             self.assertEqual(scenarios["preflight-invalid-path"]["exit_code"], 1)
@@ -484,7 +495,7 @@ class ProtectedSupportContinuationContractTest(unittest.TestCase):
         assert_status(status, "COMPLETE", rc=0)
         for response in (finalized, status.data):
             validate_contract_ref(response["continuation"], "#/$defs/continuationProjection")
-            validate_contract_ref(response["continuation_marker"], "#/$defs/readyMarker")
+            validate_contract_ref(response["marker"], "#/$defs/readyMarker")
             self.assertEqual(response["continuation"]["preparation_run_id"], "preparation-r1")
 
     def test_preparation_preserves_abandoned_run_bytes_and_has_no_sidecar(self) -> None:

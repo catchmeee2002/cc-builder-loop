@@ -78,10 +78,9 @@ description: 执行已接受的 builder-loop 方案，在隔离 worktree 中协�
    返回 head/tree/manifest/files。随后才按上一步的 `fork_turns="none"` 形式 spawn Tester，只传 publication 元数据、tester worktree、
    冻结接口和黑盒入口，不传 Builder HEAD、candidate diff 或其他实现。已发布文件在本 run
    不可再改；后续实现必须落到其他 Builder-owned 文件。
-   若 ledger 的 `interface_input_paths` 非空，initial brief 必须逐项传入对应 publication blob，
-   要求 Tester 在构造 fixture 或断言前先验证并读取这些 machine-readable contracts。它们是 wire
-   shape、exit/status/code、字段层级和公开生命周期场景的唯一来源；不得从错误文本、候选 diff 或
-   实现细节猜测，也不得为错误断言要求 Builder 增加兼容字段。
+   若 ledger 的 `interface_input_paths` 非空，initial brief 必须逐项传入对应 publication blob，并要求
+   Tester 在构造 fixture 或断言前先验证；它们是 wire shape、exit/status/code、字段层级和生命周期场景
+   的唯一来源，不得从错误文本、候选 diff 或实现细节猜测，也不得要求 Builder 增加兼容字段。
 4. spawn Tester 时使用 `spawn_agent(agent_type="tester", fork_turns="none")`，并只传入最小 brief：
    `phase=author`、`run_id`、`plan_path`、tester worktree、完整
    `unit-test-spec`、`e2e-cases`、`parallel_ready` 及允许查看的公开前置产物。保存返回的
@@ -275,6 +274,5 @@ description: 执行已接受的 builder-loop 方案，在隔离 worktree 中协�
 5. 成功时最后一行输出 `BUILDER_RESULT: pass run_id=<run_id>`；已按用户决定放弃时输出
    `BUILDER_RESULT: abandoned run_id=<run_id>`；runtime 尚未完成且需要用户时输出
    `BUILDER_RESULT: needs_user run_id=<run_id>`。不要在 runtime 未完成时声称交付完成。
-   若成功 run 的 `status/finalize` 返回 `continuation.ready=true`，先在结果前输出独立行
-   `BUILDER_CONTINUATION_READY:<run_id>`；该 marker 只允许同 session 紧邻的下一次 Plan mode
-   自动续接 Planner，不代表授权或自动启动第二个 Builder run。
+   若成功 run 的 `status/finalize` 返回 `continuation.ready=true`，先输出独立行
+   `BUILDER_CONTINUATION_READY:<run_id>`；仅允许同 session 紧邻 Plan mode 续接，不代表授权或自动启动新 run。

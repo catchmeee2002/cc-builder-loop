@@ -126,7 +126,7 @@
       "id": "preparation-marker-subset",
       "operation": "plan-marker",
       "exit_code": 0,
-      "schema_ref": "#/$defs/verificationPreparationMarker",
+      "schema_ref": "#/$defs/verificationPreparationSourceMarker",
       "fixture": "derive the plan marker from the rich preflight response using only schema_version, business run/digest, problem snapshot/ids and exact support_paths; omit repo_root and target_branch"
     },
     {
@@ -134,7 +134,7 @@
       "operation": "start-ledger",
       "exit_code": 0,
       "schema_ref": "#/$defs/preparationPlanProjection",
-      "fixture": "extract ledger.plan.verification_preparation, plan_revision, supersedes_run_id and builder_write; revision is 1, supersedes_run_id is null and builder_write is ['old-verify.sh']"
+      "fixture": "extract normalized ledger.plan.verification_preparation without schema_version plus plan_revision, supersedes_run_id and builder_write; revision is 1, supersedes_run_id is null and builder_write is ['old-verify.sh']"
     },
     {
       "id": "continuation-stale-runner-support",
@@ -204,7 +204,7 @@
       "operation": "status-or-finalize",
       "exit_code": 0,
       "schema_ref": "#/$defs/continuationProjection",
-      "fixture": "finalized preparation final_head equals target HEAD; ready marker matches #/$defs/readyMarker"
+      "fixture": "finalized preparation final_head equals target HEAD; top-level marker field matches #/$defs/readyMarker"
     }
   ],
   "$defs": {
@@ -378,7 +378,7 @@
         "message": {"type": "string", "minLength": 1}
       }
     },
-    "verificationPreparationMarker": {
+    "verificationPreparationSourceMarker": {
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -398,6 +398,24 @@
         "support_paths": {"$ref": "#/$defs/stringArray"}
       }
     },
+    "verificationPreparationStoredMarker": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "business_run_id",
+        "business_plan_sha256",
+        "problem_snapshot_sha256",
+        "problem_ids",
+        "support_paths"
+      ],
+      "properties": {
+        "business_run_id": {"type": "string", "minLength": 1},
+        "business_plan_sha256": {"$ref": "#/$defs/sha256"},
+        "problem_snapshot_sha256": {"$ref": "#/$defs/sha256"},
+        "problem_ids": {"$ref": "#/$defs/sha256Array"},
+        "support_paths": {"$ref": "#/$defs/stringArray"}
+      }
+    },
     "preparationPlanProjection": {
       "type": "object",
       "additionalProperties": false,
@@ -408,7 +426,7 @@
         "builder_write"
       ],
       "properties": {
-        "verification_preparation": {"$ref": "#/$defs/verificationPreparationMarker"},
+        "verification_preparation": {"$ref": "#/$defs/verificationPreparationStoredMarker"},
         "plan_revision": {"const": 1},
         "supersedes_run_id": {"type": "null"},
         "builder_write": {"$ref": "#/$defs/stringArray"}
