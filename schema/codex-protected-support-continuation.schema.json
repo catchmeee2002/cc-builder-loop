@@ -109,11 +109,39 @@
       "fixture": "target branch HEAD differs from the abandoned business target_start_head"
     },
     {
+      "id": "preflight-invalid-absolute-run-selector",
+      "operation": "plan-preflight",
+      "exit_code": 2,
+      "schema_ref": "#/$defs/runNotFound",
+      "fixture": "--run names an absolute builder-loop run path that does not exist; parser resolution fails before path classification"
+    },
+    {
+      "id": "preflight-invalid-path",
+      "operation": "plan-preflight",
+      "exit_code": 1,
+      "schema_ref": "#/$defs/planTestPathInvalid",
+      "fixture": "--path is ../outside.py and is rejected as an escaping test path"
+    },
+    {
+      "id": "preparation-marker-subset",
+      "operation": "plan-marker",
+      "exit_code": 0,
+      "schema_ref": "#/$defs/verificationPreparationMarker",
+      "fixture": "derive the plan marker from the rich preflight response using only schema_version, business run/digest, problem snapshot/ids and exact support_paths; omit repo_root and target_branch"
+    },
+    {
+      "id": "preparation-plan-ledger-projection",
+      "operation": "start-ledger",
+      "exit_code": 0,
+      "schema_ref": "#/$defs/preparationPlanProjection",
+      "fixture": "extract ledger.plan.verification_preparation, plan_revision, supersedes_run_id and builder_write; revision is 1, supersedes_run_id is null and builder_write is ['old-verify.sh']"
+    },
+    {
       "id": "continuation-stale-runner-support",
       "operation": "plan-validate",
       "exit_code": 1,
       "schema_ref": "#/$defs/runnerSupportPathMissing",
-      "fixture": "continued revision uses the preparation final HEAD but omits the repository runner referenced by .claude/loop.yml from support_paths"
+      "fixture": "continued revision uses .claude/loop.yml with configured runner command 'bash verify.sh' but omits verify.sh from support_paths; response runner is 'bash verify.sh' and path is 'verify.sh'"
     },
     {
       "id": "continuation-missing-preparation",
@@ -328,6 +356,62 @@
         "target_branch": {"type": "string", "minLength": 1},
         "target_head": {"$ref": "#/$defs/commit"},
         "problem_snapshot_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "runNotFound": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "code", "message"],
+      "properties": {
+        "status": {"const": "FATAL"},
+        "code": {"const": "RUN_NOT_FOUND"},
+        "message": {"type": "string", "minLength": 1}
+      }
+    },
+    "planTestPathInvalid": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "code", "message"],
+      "properties": {
+        "status": {"const": "NEEDS_USER"},
+        "code": {"const": "PLAN_TEST_PATH_INVALID"},
+        "message": {"type": "string", "minLength": 1}
+      }
+    },
+    "verificationPreparationMarker": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "business_run_id",
+        "business_plan_sha256",
+        "problem_snapshot_sha256",
+        "problem_ids",
+        "support_paths"
+      ],
+      "properties": {
+        "schema_version": {"const": 1},
+        "business_run_id": {"type": "string", "minLength": 1},
+        "business_plan_sha256": {"$ref": "#/$defs/sha256"},
+        "problem_snapshot_sha256": {"$ref": "#/$defs/sha256"},
+        "problem_ids": {"$ref": "#/$defs/sha256Array"},
+        "support_paths": {"$ref": "#/$defs/stringArray"}
+      }
+    },
+    "preparationPlanProjection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "verification_preparation",
+        "plan_revision",
+        "supersedes_run_id",
+        "builder_write"
+      ],
+      "properties": {
+        "verification_preparation": {"$ref": "#/$defs/verificationPreparationMarker"},
+        "plan_revision": {"const": 1},
+        "supersedes_run_id": {"type": "null"},
+        "builder_write": {"$ref": "#/$defs/stringArray"}
       }
     },
     "runnerSupportPathMissing": {
