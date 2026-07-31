@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- 新增受保护 verification support 的关联双 Run 续接契约：只读 `plan-preflight` 在详细规划前
+  区分当前 machine runner/control 冲突与 abandoned business run 的旧 support-only 冲突；后者由
+  独立 preparation run 交付，再通过 ledger 与 Git 派生的 `BUILDER_CONTINUATION_READY` 交回同
+  session Planner。后续 business revision 使用 `continuation-from` 续接原 supersession/problem
+  链，并对 repository、target、session、finalized HEAD、问题映射与单次消费 fail closed（#158）。
 - 新增 schema v2 blackbox report，逐条保存 command/method-error execution、逐例结果和维度
   observations；新 run 冻结 v2，legacy active run 保留单 command v1。`prepare-follow-up` 现在从
   frozen cases 派生适用性，evidence digest/scope 覆盖完整 report 和全部 accepted commands。v2 现在
