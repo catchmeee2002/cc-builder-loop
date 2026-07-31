@@ -3,7 +3,8 @@
 - `skills/`：Planner、Builder 与 GitHub Issue 记录的 Codex Skills；保持精简，详细契约引用 schema
   或脚本帮助。
 - `agents/`：Tester 与 Reviewer custom-agent 配置。
-- `runtime/`：确定性计划、workspace snapshot、Git 收尾、验证、ownership、evidence 和诊断实现。
+- `runtime/`：legacy v2/v3 的确定性计划、workspace snapshot、Git 收尾、验证、ownership、evidence
+  和诊断实现；`runtime/codex_builder_loop/assurance_v4/` 是新旧隔离的 v4 Core 与 Driver 派生层。
 - `scripts/codex-builder-loop.py`：runtime 的稳定 CLI 入口；`codex-builder-loop-config.py` 负责
   安装/卸载时跨 hooks 与 AGENTS 的事务更新。
 - `hooks/`：只记录 agent 身份并做完成门禁，不承担循环编排。
@@ -11,6 +12,7 @@
 - `experiments/agent-behavior/`：离线角色行为场景、指令变体与机械评分；不进入交付 ledger。
 - `experiments/issue-triage/`：按需或由本地 cron 运行的只读 GitHub Issue 分流实验；不进入 runtime、
   ledger 或交付门禁。
+- `experiments/assurance-v4-replay/`：历史高频恢复场景的离线分类回放；不读取或迁移旧 ledger。
 - `schema/`：runtime ledger 的唯一结构定义。
 - `tests/`：不依赖真实模型的契约 fixtures。
 - `docs/`：设计哲学、架构和已知环境问题。
@@ -24,12 +26,16 @@ bash scripts/verify-all.sh
 python3 "${CODEX_HOME:-$HOME/.codex}/skills/.system/skill-creator/scripts/quick_validate.py" skills/builder-loop-planner
 python3 "${CODEX_HOME:-$HOME/.codex}/skills/.system/skill-creator/scripts/quick_validate.py" skills/builder
 python3 "${CODEX_HOME:-$HOME/.codex}/skills/.system/skill-creator/scripts/quick_validate.py" skills/file-github-issue
+python3 "${CODEX_HOME:-$HOME/.codex}/skills/.system/skill-creator/scripts/quick_validate.py" skills/full-driver-v4-experiment
 python3 -m unittest discover -s experiments/issue-triage/tests -p 'test_*.py'
+python3 experiments/assurance-v4-replay/runner.py
 ```
 
 # Workflows
 
 - 先定义或修改 CLI/schema 契约，再改 runtime、Skills 和 fixtures。
+- v4 的 Mission、Authority、Assurance、Execution 分别计算 digest；Core 只记录交付事实，
+  `driver.py`/实验 Skill 才能决定下一步角色动作，不得把调度状态写回 ledger。
 - runtime ledger 是执行事实唯一来源；Skills、hooks 和 agents 不直接改 JSON。
 - 候选变化后按冻结 scope digest 处理 machine/blackbox evidence；未声明 scope 时全 tree 失效。
   Reviewer 与 doc-review 对任何 candidate 变化都失效。

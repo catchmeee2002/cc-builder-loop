@@ -1,0 +1,114 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openai.local/codex-builder-loop/assurance-v4-evidence.schema.json",
+  "title": "Builder Assurance Evidence Report v4",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "kind", "status", "candidate_head", "producer", "details"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "kind": {"enum": ["tester", "blackbox", "reviewer", "doc_review"]},
+    "status": {"enum": ["pass", "fail"]},
+    "candidate_head": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "producer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["role", "agent_id", "thread_id"],
+      "properties": {
+        "role": {"enum": ["tester", "reviewer"]},
+        "agent_id": {"type": "string", "minLength": 1},
+        "thread_id": {"type": "string", "minLength": 1}
+      }
+    },
+    "details": {"type": "object"}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"kind": {"enum": ["tester", "blackbox"]}}},
+      "then": {"properties": {"producer": {"properties": {"role": {"const": "tester"}}}}}
+    },
+    {
+      "if": {"properties": {"kind": {"enum": ["reviewer", "doc_review"]}}},
+      "then": {"properties": {"producer": {"properties": {"role": {"const": "reviewer"}}}}}
+    },
+    {
+      "if": {"properties": {"kind": {"const": "tester"}}},
+      "then": {
+        "properties": {
+          "details": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["result", "source_head", "files"],
+            "properties": {
+              "result": {"enum": ["tests_ready", "fail"]},
+              "source_head": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+              "files": {
+                "type": "array",
+                "minItems": 1,
+                "uniqueItems": true,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["path", "blob"],
+                  "properties": {
+                    "path": {"type": "string", "minLength": 1},
+                    "blob": {"type": "string", "pattern": "^[0-9a-f]{40}$"}
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {"properties": {"kind": {"const": "blackbox"}}},
+      "then": {
+        "properties": {
+          "details": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["result", "worktree", "before_head", "after_head", "executions"],
+            "properties": {
+              "result": {"enum": ["pass", "fail"]},
+              "worktree": {"type": "string", "minLength": 1},
+              "before_head": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+              "after_head": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+              "executions": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["id", "argv", "returncode", "timed_out"],
+                  "properties": {
+                    "id": {"type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"},
+                    "argv": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+                    "returncode": {"type": "integer"},
+                    "timed_out": {"type": "boolean"}
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {"properties": {"kind": {"enum": ["reviewer", "doc_review"]}}},
+      "then": {
+        "properties": {
+          "details": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["result", "reviewed_head"],
+            "properties": {
+              "result": {"enum": ["pass", "findings", "blocked"]},
+              "reviewed_head": {"type": "string", "pattern": "^[0-9a-f]{40}$"}
+            }
+          }
+        }
+      }
+    }
+  ]
+}

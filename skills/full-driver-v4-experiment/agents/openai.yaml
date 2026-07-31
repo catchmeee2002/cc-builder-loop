@@ -1,0 +1,7 @@
+interface:
+  display_name: "Full Driver v4 Experiment"
+  short_description: "维护期内使用 Core v4 实验完整高保证交付流程"
+  default_prompt: "Use $full-driver-v4-experiment to run an internal Full Driver v4 delivery experiment."
+
+policy:
+  allow_implicit_invocation: false

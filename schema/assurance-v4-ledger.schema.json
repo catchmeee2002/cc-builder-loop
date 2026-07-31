@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openai.local/codex-builder-loop/assurance-v4-ledger.schema.json",
+  "title": "Builder Assurance Ledger v4",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "run_id", "owner_session_id", "phase", "repo_root",
+    "target_branch", "target_start_head", "candidate_branch", "candidate_worktree",
+    "facets", "digests", "evidence", "retired_tester_sources", "finalize_intent", "final_head",
+    "created_at", "updated_at", "events"
+  ],
+  "properties": {
+    "schema_version": {"const": 4},
+    "run_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"},
+    "owner_session_id": {"type": "string", "minLength": 1},
+    "phase": {"enum": ["active", "finalizing", "finalized", "abandoned"]},
+    "repo_root": {"type": "string", "minLength": 1},
+    "target_branch": {"type": "string", "minLength": 1},
+    "target_start_head": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "candidate_branch": {"type": "string", "minLength": 1},
+    "candidate_worktree": {"type": "string", "minLength": 1},
+    "facets": {"$ref": "assurance-v4-contract.schema.json"},
+    "digests": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mission", "authority", "assurance", "execution"],
+      "properties": {
+        "mission": {"$ref": "#/$defs/sha256"},
+        "authority": {"$ref": "#/$defs/sha256"},
+        "assurance": {"$ref": "#/$defs/sha256"},
+        "execution": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "propertyNames": {"enum": ["machine", "tester", "blackbox", "reviewer", "doc_review"]},
+      "additionalProperties": {"$ref": "#/$defs/evidence"}
+    },
+    "retired_tester_sources": {
+      "type": "array",
+      "items": {"$ref": "assurance-v4-contract.schema.json#/$defs/testerSource"}
+    },
+    "finalize_intent": {"oneOf": [{"$ref": "#/$defs/finalizeIntent"}, {"type": "null"}]},
+    "final_head": {"oneOf": [{"type": "string", "pattern": "^[0-9a-f]{40}$"}, {"type": "null"}]},
+    "created_at": {"type": "string", "minLength": 1},
+    "updated_at": {"type": "string", "minLength": 1},
+    "events": {"type": "array", "items": {"type": "object"}}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "finalizeIntent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["expected_target_head", "candidate_head", "final_head", "changed_files"],
+      "properties": {
+        "expected_target_head": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "candidate_head": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "final_head": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "changed_files": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "status", "dependency_digest", "candidate_head", "producer", "details", "recorded_at"],
+      "properties": {
+        "kind": {"enum": ["machine", "tester", "blackbox", "reviewer", "doc_review"]},
+        "status": {"enum": ["pass", "fail"]},
+        "dependency_digest": {"$ref": "#/$defs/sha256"},
+        "candidate_head": {"oneOf": [{"type": "string", "pattern": "^[0-9a-f]{40}$"}, {"type": "null"}]},
+        "producer": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["role", "agent_id", "thread_id"],
+          "properties": {
+            "role": {"enum": ["runtime", "tester", "reviewer"]},
+            "agent_id": {"type": "string", "minLength": 1},
+            "thread_id": {"type": "string", "minLength": 1}
+          }
+        },
+        "details": {"type": "object"},
+        "recorded_at": {"type": "string", "minLength": 1}
+      }
+    }
+  }
+}

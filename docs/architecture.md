@@ -1,6 +1,46 @@
 # Codex Builder Loop 架构
 
-## 系统边界
+## v4 分层边界
+
+维护期内公共 Builder-loop 保持关闭。新实现位于独立 `assurance_v4` package，不导入或原地改写
+legacy `core.py`：
+
+```text
+Full Driver v4 experiment       future Native Driver
+          │                            │
+          └──────── driver advice ─────┘
+                         │
+                         ▼
+                Assurance Core v4
+ Mission ─ Authority ─ Assurance Policy ─ Execution Manifest
+                         │
+ candidate/evidence binding ─ machine ─ role source ─ target CAS
+```
+
+四个事实面独立计算 canonical digest。Mission 只包含目标、行为、接口、验收场景和信任边界；
+Authority 只定义 target、角色写范围和 dirty intake；Assurance Policy 定义所需判据及机器命令；
+Execution Manifest 记录实际 candidate、文件、命令和 Agent identity。Execution 在授权内变化只使依赖
+它的 evidence stale；只有 Mission 变化才提升 semantic revision，Authority 扩大和 Assurance 降级
+分别要求用户授权。
+
+Core ledger 只保存 `active/finalizing/finalized/abandoned`、facet/evidence digest、candidate、
+target 与 finalize intent，不保存“下一步让谁做”、correction budget 或普通 Agent 循环。
+`driver.py` 和维护期实验 Skill 读取 readiness 后决定 Builder、Tester、机器、黑盒或 Reviewer 动作；
+同一失败签名三次只触发架构复核，不自动创建新 Mission。无冲突 target drift 通过 candidate
+rematerialization 后局部重验，Git 冲突、授权扩大和覆盖风险才停止。
+
+维护期实验由可信协调器把原生 subagent 返回的 identity 写入 Execution；Core 机械核对该 identity、
+Tester source HEAD/blob manifest、blackbox worktree/HEAD/逐命令结果和 Reviewer candidate。当前 Codex
+没有供本地 runtime 独立查询 child-thread provenance 的结构化 API，因此这层仍是显式协调器
+attestation，不宣称具备平台级防伪。公共 Full Driver 重新开放前必须补齐真实生命周期观测或证明原生
+能力等价；仅有本仓实验测试不能把该限制改写成已解决。
+
+内部 CLI 入口为 `codex-builder-loop assurance --experimental-v4 ...`。实验标志是维护期门禁，公共
+Planner/Builder Skill 和安装配置不会设置它。首版只覆盖本地单仓 Git 代码交付；外部设备、远程部署、
+protected preparation 和多仓事务保持 unsupported。公共 Full Driver 只有完成历史回放和跨项目真实
+验收后才切换到 v4。
+
+## Legacy v3 系统边界
 
 Codex 原生 Plan mode 负责探索和追问；全局托管规则先让用户选择继续使用原生 Plan，或加载
 Planner Skill 固定 builder-loop 方案契约。根线程作为 Builder，Codex subagent threads 承担

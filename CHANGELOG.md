@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- 新增隔离的 Assurance Core v4 实验 namespace、四事实面 schema/ledger、局部 evidence invalidation、
+  独立来源绑定、隔离机器验证、target rematerialization、持久化 finalize intent 和目标 CAS；Full
+  Driver 的纯派生层按 Core readiness 返回下一动作，不把角色循环写入 ledger。内部实验 Skill 未加入
+  安装清单且禁止隐式加载。离线回放 corpus 冻结 Issue #160 的 26-run 样本、#158 R1–R8 和产品变化/
+  Git 冲突控制场景；公共 Builder-loop 继续处于维护关闭状态。
 - 进入 Full Driver v4 重建维护期：安装配置移除了 Builder lifecycle hooks 和 Plan 路线选择，
   Planner/Builder Skill 关闭隐式加载并在显式进入时 fail closed；legacy `start` 默认在仓库锁、计划
   读取和任何交付副作用前返回 `BUILDER_MAINTENANCE_DISABLED`。v2/v3 ledger 及其诊断、安全恢复、

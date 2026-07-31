@@ -13,6 +13,12 @@ cleanup；仓库内部契约测试通过显式环境开关回放 legacy fixtures
 交付。Full Driver v4 只有在历史高频 Revision 回放、至少两个非本仓项目五次真实交付且零非语义
 Revision 后才重新开放；用户入口仍收敛在 Plan 环节的一次选择，不增加新业务命令。
 
+维护分支已新增新旧隔离的 Assurance Core v4 实验实现：四个 contract facet 分别绑定 digest，
+candidate/evidence、独立角色来源、机器验证、target rematerialization 和 finalize CAS 由 Core 负责；
+Full Driver 只消费 Core 的 missing/stale gate 来调度原生 Agent。该实现仅通过带
+`--experimental-v4` 的内部 `assurance` namespace 和未安装的实验 Skill 使用，不是业务入口，
+不会提前恢复 `$builder` 或 Plan 的高保证选项。
+
 面向 Codex CLI 的独立判据交付闭环。进入 Plan mode 后先选择规划方式：
 
 ```text

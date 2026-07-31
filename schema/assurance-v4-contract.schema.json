@@ -1,0 +1,172 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openai.local/codex-builder-loop/assurance-v4-contract.schema.json",
+  "title": "Builder Assurance Contract v4",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "mission", "authority", "assurance", "execution"],
+  "properties": {
+    "schema_version": {"const": 4},
+    "mission": {"$ref": "#/$defs/mission"},
+    "authority": {"$ref": "#/$defs/authority"},
+    "assurance": {"$ref": "#/$defs/assurance"},
+    "execution": {"$ref": "#/$defs/execution"}
+  },
+  "$defs": {
+    "id": {"type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"},
+    "commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "path": {"type": "string", "minLength": 1, "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"},
+    "statement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "description"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"},
+        "description": {"type": "string", "minLength": 1}
+      }
+    },
+    "mission": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["revision", "objective", "behaviors", "interfaces", "acceptance_cases", "trust_boundaries"],
+      "properties": {
+        "revision": {"type": "integer", "minimum": 1},
+        "objective": {"type": "string", "minLength": 1},
+        "behaviors": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/statement"}},
+        "interfaces": {"type": "array", "items": {"$ref": "#/$defs/statement"}},
+        "acceptance_cases": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/statement"}},
+        "trust_boundaries": {"type": "array", "items": {"$ref": "#/$defs/statement"}}
+      }
+    },
+    "dirtyIntake": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": {"$ref": "#/$defs/path"},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["target_branch", "builder_write", "tester_write", "dirty_intake"],
+      "properties": {
+        "target_branch": {"type": "string", "minLength": 1},
+        "builder_write": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/path"}},
+        "tester_write": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/path"}},
+        "dirty_intake": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/dirtyIntake"}}
+      }
+    },
+    "command": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "argv", "timeout_seconds"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"},
+        "argv": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+        "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 7200}
+      }
+    },
+    "assurance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["required", "machine_commands"],
+      "properties": {
+        "required": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"enum": ["machine", "tester", "blackbox", "reviewer", "doc_review"]}
+        },
+        "machine_commands": {"type": "array", "items": {"$ref": "#/$defs/command"}}
+      }
+    },
+    "agent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["agent_id", "thread_id"],
+      "properties": {
+        "agent_id": {"type": "string", "minLength": 1},
+        "thread_id": {"type": "string", "minLength": 1}
+      }
+    },
+    "testerSource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["head", "branch", "worktree", "files", "replaces_files", "agent"],
+      "properties": {
+        "head": {"$ref": "#/$defs/commit"},
+        "branch": {"type": "string", "minLength": 1},
+        "worktree": {"type": "string", "minLength": 1},
+        "files": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["path", "blob"],
+            "properties": {
+              "path": {"$ref": "#/$defs/path"},
+              "blob": {"type": "string", "pattern": "^[0-9a-f]{40}$"}
+            }
+          }
+        },
+        "replaces_files": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["path", "blob"],
+            "properties": {
+              "path": {"$ref": "#/$defs/path"},
+              "blob": {"type": "string", "pattern": "^[0-9a-f]{40}$"}
+            }
+          }
+        },
+        "agent": {"$ref": "#/$defs/agent"}
+      }
+    },
+    "execution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "candidate_head", "builder_files", "tester_files", "tester_source", "dirty_snapshot", "commands", "agents"],
+      "properties": {
+        "version": {"type": "integer", "minimum": 1},
+        "candidate_head": {"oneOf": [{"$ref": "#/$defs/commit"}, {"type": "null"}]},
+        "builder_files": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/path"}},
+        "tester_files": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/path"}},
+        "tester_source": {
+          "oneOf": [
+            {"type": "null"},
+            {"$ref": "#/$defs/testerSource"}
+          ]
+        },
+        "dirty_snapshot": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["path", "sha256", "blob"],
+            "properties": {
+              "path": {"$ref": "#/$defs/path"},
+              "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+              "blob": {"type": "string", "pattern": "^[0-9a-f]{40}$"}
+            }
+          }
+        },
+        "commands": {"type": "array", "items": {"$ref": "#/$defs/command"}},
+        "agents": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "tester": {"$ref": "#/$defs/agent"},
+            "reviewer": {"$ref": "#/$defs/agent"}
+          }
+        }
+      }
+    }
+  }
+}
