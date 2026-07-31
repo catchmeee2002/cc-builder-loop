@@ -1,0 +1,496 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openai.local/codex-builder-loop/protected-support-continuation-v1.schema.json",
+  "title": "Codex Builder Loop Protected Support Continuation Contract v1",
+  "description": "Published wire shapes and lifecycle scenarios for plan-preflight, verification preparation, and business continuation.",
+  "oneOf": [
+    {"$ref": "#/$defs/preflightReady"},
+    {"$ref": "#/$defs/preflightPreparationRequired"},
+    {"$ref": "#/$defs/preflightBootstrapRequired"}
+  ],
+  "examples": [
+    {
+      "status": "READY",
+      "message": "verification write paths were classified without changing repository state",
+      "repo_root": "/repo",
+      "target_branch": "main",
+      "target_head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "effective_verification_source": ".claude/loop.yml",
+      "requested_paths": ["src/calc.py"],
+      "paths": ["src/calc.py"],
+      "path_blobs": {"src/calc.py": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+      "machine_runner_control_paths": [".claude/loop.yml", "verify.sh"],
+      "business_run_id": null,
+      "business_plan_sha256": null,
+      "problem_snapshot_sha256": null,
+      "problem_ids": [],
+      "old_support_paths": [],
+      "eligible_support_paths": [],
+      "binding_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    },
+    {
+      "status": "NEEDS_USER",
+      "code": "VERIFICATION_PREPARATION_REQUIRED",
+      "message": "verification write paths were classified without changing repository state",
+      "repo_root": "/repo",
+      "target_branch": "main",
+      "target_head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "effective_verification_source": ".claude/loop.yml",
+      "requested_paths": ["old-verify.sh"],
+      "paths": ["old-verify.sh"],
+      "path_blobs": {"old-verify.sh": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+      "machine_runner_control_paths": [".claude/loop.yml", "verify.sh"],
+      "business_run_id": "business-r1",
+      "business_plan_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "problem_snapshot_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "problem_ids": ["ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"],
+      "old_support_paths": ["old-verify.sh", "verify.sh"],
+      "eligible_support_paths": ["old-verify.sh"],
+      "binding_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "verification_preparation": {
+        "business_run_id": "business-r1",
+        "business_plan_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "problem_snapshot_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "problem_ids": ["ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"],
+        "support_paths": ["old-verify.sh"],
+        "repo_root": "/repo",
+        "target_branch": "main"
+      }
+    },
+    {
+      "status": "NEEDS_USER",
+      "code": "VERIFICATION_BOOTSTRAP_REQUIRED",
+      "message": "requested writes overlap the current machine runner or control source",
+      "repo_root": "/repo",
+      "target_branch": "main",
+      "target_head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "effective_verification_source": ".claude/loop.yml",
+      "requested_paths": ["verify.sh"],
+      "paths": ["verify.sh"],
+      "path_blobs": {"verify.sh": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+      "machine_runner_control_paths": [".claude/loop.yml", "verify.sh"],
+      "business_run_id": null,
+      "business_plan_sha256": null,
+      "problem_snapshot_sha256": null,
+      "problem_ids": [],
+      "old_support_paths": [],
+      "eligible_support_paths": [],
+      "binding_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "bootstrap_paths": ["verify.sh"]
+    }
+  ],
+  "x-scenarios": [
+    {
+      "id": "preflight-ready",
+      "operation": "plan-preflight",
+      "exit_code": 0,
+      "schema_ref": "#/$defs/preflightReady",
+      "fixture": "requested tracked path overlaps neither current runner/control paths nor abandoned support paths"
+    },
+    {
+      "id": "preflight-old-support-same-head",
+      "operation": "plan-preflight",
+      "exit_code": 1,
+      "schema_ref": "#/$defs/preflightPreparationRequired",
+      "fixture": "target HEAD remains unchanged; abandoned plan support_paths contain both the current runner and an additional old support path; request only the old support path"
+    },
+    {
+      "id": "preflight-current-runner-bootstrap",
+      "operation": "plan-preflight",
+      "exit_code": 1,
+      "schema_ref": "#/$defs/preflightBootstrapRequired",
+      "fixture": "request the exact runner referenced by .claude/loop.yml; bootstrap_paths is top-level and machine_runner_control_paths contains both control file and runner"
+    },
+    {
+      "id": "preflight-target-drift",
+      "operation": "plan-preflight",
+      "exit_code": 1,
+      "schema_ref": "#/$defs/preflightTargetDrift",
+      "fixture": "target branch HEAD differs from the abandoned business target_start_head"
+    },
+    {
+      "id": "continuation-stale-runner-support",
+      "operation": "plan-validate",
+      "exit_code": 1,
+      "schema_ref": "#/$defs/runnerSupportPathMissing",
+      "fixture": "continued revision uses the preparation final HEAD but omits the repository runner referenced by .claude/loop.yml from support_paths"
+    },
+    {
+      "id": "continuation-missing-preparation",
+      "operation": "plan-validate",
+      "exit_code": 1,
+      "schema_ref": "#/$defs/linkedRunInvalid",
+      "fixture": "continuation-from is present and names an explicitly nonexistent preparation run"
+    },
+    {
+      "id": "continuation-cross-repository",
+      "operation": "plan-validate",
+      "exit_code": 1,
+      "schema_ref": "#/$defs/supersessionInvalid",
+      "fixture": "the original business run cannot resolve in the other repository; supersession fails before continuation validation"
+    },
+    {
+      "id": "continuation-active-preparation",
+      "operation": "plan-validate",
+      "exit_code": 1,
+      "schema_ref": "#/$defs/businessContinuationInvalid",
+      "fixture": "preparation ledger phase is active and preparation_final_head is null"
+    },
+    {
+      "id": "continuation-cross-session",
+      "operation": "start",
+      "exit_code": 1,
+      "schema_ref": "#/$defs/continuationSessionMismatch",
+      "fixture": "the finalized preparation belongs to one session and start explicitly requests a different session"
+    },
+    {
+      "id": "continuation-replay-after-terminal-consumer",
+      "operation": "start",
+      "exit_code": 1,
+      "schema_ref": "#/$defs/businessContinuationReplayed",
+      "fixture": "start the first continued run, explicitly abandon it to release the session-active route, then start a second run with the same preparation marker"
+    },
+    {
+      "id": "continuation-target-drift",
+      "operation": "plan-validate",
+      "exit_code": 1,
+      "schema_ref": "#/$defs/targetSpecMismatch",
+      "fixture": "after preparation finalizes, advance the target branch while the continued plan retains the preparation final HEAD as spec_head"
+    },
+    {
+      "id": "continuation-valid-start",
+      "operation": "start",
+      "exit_code": 0,
+      "schema_ref": "#/$defs/startMetadata",
+      "fixture": "same-session finalized preparation; projection extracts the two top-level run ids"
+    },
+    {
+      "id": "continuation-valid-ledger-problem-decisions",
+      "operation": "start-ledger",
+      "exit_code": 0,
+      "schema_ref": "#/$defs/priorProblemItems",
+      "fixture": "after valid start, extract ledger.plan.prior_problem_items; every prepared problem is handled_elsewhere and references the preparation final HEAD"
+    },
+    {
+      "id": "continuation-ready-projection",
+      "operation": "status-or-finalize",
+      "exit_code": 0,
+      "schema_ref": "#/$defs/continuationProjection",
+      "fixture": "finalized preparation final_head equals target HEAD; ready marker matches #/$defs/readyMarker"
+    }
+  ],
+  "$defs": {
+    "commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "nullableSha256": {"oneOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]},
+    "stringArray": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "sha256Array": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/sha256"}
+    },
+    "pathBlobs": {
+      "type": "object",
+      "propertyNames": {"type": "string", "minLength": 1},
+      "additionalProperties": {"$ref": "#/$defs/commit"}
+    },
+    "preflightBase": {
+      "type": "object",
+      "required": [
+        "status",
+        "message",
+        "repo_root",
+        "target_branch",
+        "target_head",
+        "effective_verification_source",
+        "requested_paths",
+        "paths",
+        "path_blobs",
+        "machine_runner_control_paths",
+        "business_run_id",
+        "business_plan_sha256",
+        "problem_snapshot_sha256",
+        "problem_ids",
+        "old_support_paths",
+        "eligible_support_paths",
+        "binding_sha256"
+      ],
+      "properties": {
+        "status": {"enum": ["READY", "NEEDS_USER"]},
+        "message": {"type": "string", "minLength": 1},
+        "repo_root": {"type": "string", "minLength": 1},
+        "target_branch": {"type": "string", "minLength": 1},
+        "target_head": {"$ref": "#/$defs/commit"},
+        "effective_verification_source": {"type": "string", "minLength": 1},
+        "requested_paths": {"$ref": "#/$defs/stringArray"},
+        "paths": {"$ref": "#/$defs/stringArray"},
+        "path_blobs": {"$ref": "#/$defs/pathBlobs"},
+        "machine_runner_control_paths": {"$ref": "#/$defs/stringArray"},
+        "business_run_id": {"oneOf": [{"type": "string", "minLength": 1}, {"type": "null"}]},
+        "business_plan_sha256": {"$ref": "#/$defs/nullableSha256"},
+        "problem_snapshot_sha256": {"$ref": "#/$defs/nullableSha256"},
+        "problem_ids": {"$ref": "#/$defs/sha256Array"},
+        "old_support_paths": {"$ref": "#/$defs/stringArray"},
+        "eligible_support_paths": {"$ref": "#/$defs/stringArray"},
+        "binding_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "verificationPreparation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "business_run_id",
+        "business_plan_sha256",
+        "problem_snapshot_sha256",
+        "problem_ids",
+        "support_paths",
+        "repo_root",
+        "target_branch"
+      ],
+      "properties": {
+        "business_run_id": {"type": "string", "minLength": 1},
+        "business_plan_sha256": {"$ref": "#/$defs/sha256"},
+        "problem_snapshot_sha256": {"$ref": "#/$defs/sha256"},
+        "problem_ids": {"$ref": "#/$defs/sha256Array"},
+        "support_paths": {"$ref": "#/$defs/stringArray"},
+        "repo_root": {"type": "string", "minLength": 1},
+        "target_branch": {"type": "string", "minLength": 1}
+      }
+    },
+    "preflightReady": {
+      "allOf": [
+        {"$ref": "#/$defs/preflightBase"},
+        {
+          "type": "object",
+          "required": ["status"],
+          "properties": {"status": {"const": "READY"}}
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "preflightPreparationRequired": {
+      "allOf": [
+        {"$ref": "#/$defs/preflightBase"},
+        {
+          "type": "object",
+          "required": ["status", "code", "verification_preparation"],
+          "properties": {
+            "status": {"const": "NEEDS_USER"},
+            "code": {"const": "VERIFICATION_PREPARATION_REQUIRED"},
+            "verification_preparation": {"$ref": "#/$defs/verificationPreparation"}
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "preflightBootstrapRequired": {
+      "allOf": [
+        {"$ref": "#/$defs/preflightBase"},
+        {
+          "type": "object",
+          "required": ["status", "code", "bootstrap_paths"],
+          "properties": {
+            "status": {"const": "NEEDS_USER"},
+            "code": {"const": "VERIFICATION_BOOTSTRAP_REQUIRED"},
+            "bootstrap_paths": {"$ref": "#/$defs/stringArray"}
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "preflightTargetDrift": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "code",
+        "message",
+        "run_id",
+        "phase",
+        "recorded_target_branch",
+        "recorded_target_head",
+        "target_branch",
+        "target_head",
+        "problem_snapshot_sha256"
+      ],
+      "properties": {
+        "status": {"const": "NEEDS_USER"},
+        "code": {"const": "PREFLIGHT_TARGET_DRIFT"},
+        "message": {"type": "string", "minLength": 1},
+        "run_id": {"type": "string", "minLength": 1},
+        "phase": {"const": "abandoned"},
+        "recorded_target_branch": {"type": "string", "minLength": 1},
+        "recorded_target_head": {"$ref": "#/$defs/commit"},
+        "target_branch": {"type": "string", "minLength": 1},
+        "target_head": {"$ref": "#/$defs/commit"},
+        "problem_snapshot_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "runnerSupportPathMissing": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "code", "message", "runner", "path", "effective_verification_source"],
+      "properties": {
+        "status": {"const": "NEEDS_USER"},
+        "code": {"const": "RUNNER_SUPPORT_PATH_MISSING"},
+        "message": {"type": "string", "minLength": 1},
+        "runner": {"type": "string", "minLength": 1},
+        "path": {"type": "string", "minLength": 1},
+        "effective_verification_source": {"type": "string", "minLength": 1}
+      }
+    },
+    "linkedRunInvalid": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "code", "message", "run_id", "ledgers"],
+      "properties": {
+        "status": {"const": "NEEDS_USER"},
+        "code": {"const": "PLAN_LINKED_RUN_INVALID"},
+        "message": {"type": "string", "minLength": 1},
+        "run_id": {"type": "string", "minLength": 1},
+        "ledgers": {"$ref": "#/$defs/stringArray"}
+      }
+    },
+    "supersessionInvalid": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "code", "message", "run_id", "ledgers"],
+      "properties": {
+        "status": {"const": "NEEDS_USER"},
+        "code": {"const": "PLAN_SUPERSESSION_INVALID"},
+        "message": {"type": "string", "minLength": 1},
+        "run_id": {"type": "string", "minLength": 1},
+        "ledgers": {"$ref": "#/$defs/stringArray"}
+      }
+    },
+    "businessContinuationInvalid": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "code",
+        "message",
+        "preparation_run_id",
+        "phase",
+        "preparation_final_head",
+        "requested_spec_head",
+        "target_branch"
+      ],
+      "properties": {
+        "status": {"const": "NEEDS_USER"},
+        "code": {"const": "BUSINESS_CONTINUATION_INVALID"},
+        "message": {"type": "string", "minLength": 1},
+        "preparation_run_id": {"type": "string", "minLength": 1},
+        "phase": {"type": "string", "minLength": 1},
+        "preparation_final_head": {"oneOf": [{"$ref": "#/$defs/commit"}, {"type": "null"}]},
+        "requested_spec_head": {"$ref": "#/$defs/commit"},
+        "target_branch": {"type": "string", "minLength": 1}
+      }
+    },
+    "continuationSessionMismatch": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "code", "message", "owner_session_id", "requested_session_id"],
+      "properties": {
+        "status": {"const": "NEEDS_USER"},
+        "code": {"const": "CONTINUATION_SESSION_MISMATCH"},
+        "message": {"type": "string", "minLength": 1},
+        "owner_session_id": {"type": "string", "minLength": 1},
+        "requested_session_id": {"type": "string", "minLength": 1}
+      }
+    },
+    "businessContinuationReplayed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "code", "message", "preparation_run_id", "runs"],
+      "properties": {
+        "status": {"const": "NEEDS_USER"},
+        "code": {"const": "BUSINESS_CONTINUATION_REPLAYED"},
+        "message": {"type": "string", "minLength": 1},
+        "preparation_run_id": {"type": "string", "minLength": 1},
+        "runs": {"$ref": "#/$defs/stringArray"}
+      }
+    },
+    "targetSpecMismatch": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "code", "message", "target_head", "spec_head"],
+      "properties": {
+        "status": {"const": "NEEDS_USER"},
+        "code": {"const": "TARGET_SPEC_MISMATCH"},
+        "message": {"type": "string", "minLength": 1},
+        "target_head": {"$ref": "#/$defs/commit"},
+        "spec_head": {"$ref": "#/$defs/commit"}
+      }
+    },
+    "startMetadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["continuation_from_run_id", "supersedes_run_id"],
+      "properties": {
+        "continuation_from_run_id": {"type": "string", "minLength": 1},
+        "supersedes_run_id": {"type": "string", "minLength": 1}
+      }
+    },
+    "priorProblemDecision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["problem_id", "handling", "reference"],
+      "properties": {
+        "problem_id": {"$ref": "#/$defs/sha256"},
+        "handling": {"const": "handled_elsewhere"},
+        "reference": {"type": "string", "minLength": 1}
+      }
+    },
+    "priorProblemItems": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/priorProblemDecision"}
+    },
+    "continuationProjection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "preparation_run_id",
+        "owner_session_id",
+        "business_run_id",
+        "business_plan_sha256",
+        "problem_snapshot_sha256",
+        "problem_ids",
+        "support_paths",
+        "final_head",
+        "preparation_final_head",
+        "target_branch",
+        "target_head",
+        "ready",
+        "binding_sha256"
+      ],
+      "properties": {
+        "schema_version": {"const": 1},
+        "preparation_run_id": {"type": "string", "minLength": 1},
+        "owner_session_id": {"type": "string", "minLength": 1},
+        "business_run_id": {"type": "string", "minLength": 1},
+        "business_plan_sha256": {"$ref": "#/$defs/sha256"},
+        "problem_snapshot_sha256": {"$ref": "#/$defs/sha256"},
+        "problem_ids": {"$ref": "#/$defs/sha256Array"},
+        "support_paths": {"$ref": "#/$defs/stringArray"},
+        "final_head": {"$ref": "#/$defs/commit"},
+        "preparation_final_head": {"$ref": "#/$defs/commit"},
+        "target_branch": {"type": "string", "minLength": 1},
+        "target_head": {"$ref": "#/$defs/commit"},
+        "ready": {"const": true},
+        "binding_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "readyMarker": {
+      "type": "string",
+      "pattern": "^BUILDER_CONTINUATION_READY:[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+    }
+  }
+}

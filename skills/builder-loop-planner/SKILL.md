@@ -197,6 +197,12 @@ ownership:
   写入其他 Builder-owned 文件。为 `true` 时该字段必须为空。Tester 只接收 runtime 合成的隔离
   publication HEAD/manifest、冻结契约和黑盒入口，不接收 Builder HEAD、candidate diff 或其他
   实现文件。
+- 新 structured CLI/API 的 wire shape 若在 `spec_head` 不存在且 Tester 写测依赖精确的 exit code、
+  status/code、字段层级或生命周期场景，必须把一份最终 machine-readable contract 作为串行公开
+  前置产物。该 exact Builder-owned 文件同时列入 `interfaces` 和 `public_prerequisites`，以便
+  `interface_input_paths` 机械绑定 publication；契约应冻结可验证 examples 与场景前提，Tester 不得
+  从错误文本、候选 diff 或实现细节猜测输出。发布后实现和测试只引用该契约，不增加迎合错误断言的
+  兼容字段。
 - 让 tester 独占 `target_test_dirs`；不要把这些路径放进 `builder_write`。
 - 把测试目标写成输入、输出、边界和不变量，不写实现方式。
 - 每个 behavior 使用唯一 kebab-case id，并提供非空 `boundaries` 与 `invariants`；始终提供映射类型
