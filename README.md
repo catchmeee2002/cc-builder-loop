@@ -16,7 +16,8 @@ Revision 后才重新开放；用户入口仍收敛在 Plan 环节的一次选�
 维护分支已新增新旧隔离的 Assurance Core v4 实验实现：四个 contract facet 分别绑定 digest，
 candidate/evidence、独立角色来源、机器验证、target rematerialization 和 finalize CAS 由 Core 负责；
 Full Driver 只消费 Core 的 missing/stale gate 来调度原生 Agent。该实现仅通过带
-`--experimental-v4` 的内部 `assurance` namespace 和未安装的实验 Skill 使用，不是业务入口，
+`--experimental-v4` 的内部 `assurance` namespace 和显式 `$full-driver-v4-experiment` Skill 使用；
+安装器会部署该 Skill，但 manifest 禁止隐式发现。它不是公共业务入口，
 不会提前恢复 `$builder` 或 Plan 的高保证选项。
 
 面向 Codex CLI 的独立判据交付闭环。进入 Plan mode 后先选择规划方式：
@@ -133,7 +134,7 @@ cd /path/to/cc-builder-loop-codex
 安装器只配置 Codex。以下路径中的 Skills、custom agents、CLI、hook 脚本和默认文档政策均为
 指向当前 checkout 的符号链接；`hooks.json` 与 `AGENTS.md` 只合并托管注册：
 
-- Skills（Planner、Builder、GitHub Issue 记录）→ `~/.agents/skills/`
+- Skills（Planner、Builder、GitHub Issue 记录、显式 Full Driver v4 实验）→ `~/.agents/skills/`
 - custom agents → `${CODEX_HOME:-$HOME/.codex}/agents/`
 - CLI → `~/.local/bin/codex-builder-loop`
 - lifecycle hook 注册 → `${CODEX_HOME:-$HOME/.codex}/hooks.json`

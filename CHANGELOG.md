@@ -3,9 +3,12 @@
 ## Unreleased
 
 - 新增隔离的 Assurance Core v4 实验 namespace、四事实面 schema/ledger、局部 evidence invalidation、
-  独立来源绑定、隔离机器验证、target rematerialization、持久化 finalize intent 和目标 CAS；Full
-  Driver 的纯派生层按 Core readiness 返回下一动作，不把角色循环写入 ledger。内部实验 Skill 未加入
-  安装清单且禁止隐式加载。离线回放 corpus 冻结 Issue #160 的 26-run 样本、#158 R1–R8 和产品变化/
+  dirty intake、并行/串行 Tester publication、proof、结构化问题路由、独立来源绑定、隔离机器验证、
+  target rematerialization、protected preparation/单次 continuation、持久化 finalize intent 和目标 CAS；
+  Full Driver Skill 使用原生 custom-agent spawn/same-thread follow-up，按 Core readiness 持续派生下一动作，
+  mutation 以派生 `action_id` 拒绝过时 dispatch，dirty snapshot 与 Builder checkpoint 分开记账，且不把
+  角色循环写入 ledger。安装器部署禁止隐式调用的显式实验 Skill，公共 `$builder` 与 Plan 高保证入口
+  仍保持关闭。离线回放 corpus 冻结 Issue #160 的 26-run 样本、#158 R1–R8 和产品变化/
   Git 冲突控制场景；公共 Builder-loop 继续处于维护关闭状态。
 - 进入 Full Driver v4 重建维护期：安装配置移除了 Builder lifecycle hooks 和 Plan 路线选择，
   Planner/Builder Skill 关闭隐式加载并在显式进入时 fail closed；legacy `start` 默认在仓库锁、计划

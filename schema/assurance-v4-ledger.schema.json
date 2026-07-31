@@ -34,12 +34,32 @@
     },
     "evidence": {
       "type": "object",
-      "propertyNames": {"enum": ["machine", "tester", "blackbox", "reviewer", "doc_review"]},
+      "propertyNames": {"enum": ["machine", "tester", "proof", "blackbox", "reviewer", "doc_review"]},
       "additionalProperties": {"$ref": "#/$defs/evidence"}
     },
     "retired_tester_sources": {
       "type": "array",
       "items": {"$ref": "assurance-v4-contract.schema.json#/$defs/testerSource"}
+    },
+    "retired_reviewer_agents": {"type": "array", "items": {"$ref": "assurance-v4-contract.schema.json#/$defs/agent"}},
+    "problems": {"type": "array", "items": {"$ref": "#/$defs/problem"}},
+    "publication": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/publication"}]},
+    "builder_checkpointed": {"type": "boolean"},
+    "continuation_consumed_by": {"oneOf": [{"type": "string"}, {"type": "null"}]},
+    "continuation_consume_intent": {
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["business_run_id", "target_head", "contract_digest"],
+          "properties": {
+            "business_run_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"},
+            "target_head": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+            "contract_digest": {"$ref": "#/$defs/sha256"}
+          }
+        }
+      ]
     },
     "finalize_intent": {"oneOf": [{"$ref": "#/$defs/finalizeIntent"}, {"type": "null"}]},
     "final_head": {"oneOf": [{"type": "string", "pattern": "^[0-9a-f]{40}$"}, {"type": "null"}]},
@@ -49,6 +69,55 @@
   },
   "$defs": {
     "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "publicationFile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "blob"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "blob": {"type": "string", "pattern": "^[0-9a-f]{40}$"}
+      }
+    },
+    "publication": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["required", "paths", "head", "tree", "files", "manifest_digest"],
+      "properties": {
+        "required": {"type": "boolean"},
+        "paths": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "head": {"oneOf": [{"type": "null"}, {"type": "string", "pattern": "^[0-9a-f]{40}$"}]},
+        "tree": {"oneOf": [{"type": "null"}, {"type": "string", "pattern": "^[0-9a-f]{40}$"}]},
+        "files": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/publicationFile"}},
+        "manifest_digest": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/sha256"}]},
+        "candidate_head": {"type": "string", "pattern": "^[0-9a-f]{40}$"}
+      }
+    },
+    "problem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key", "summary", "details", "owner", "status", "producer", "candidate_head", "recorded_at"],
+      "properties": {
+        "key": {"type": "string", "minLength": 1},
+        "summary": {"type": "string", "minLength": 1},
+        "details": {"type": "string", "minLength": 1},
+        "owner": {"enum": ["builder", "tester", "plan", "current_project", "builder_loop", "external_platform"]},
+        "status": {"enum": ["open", "resolved"]},
+        "producer": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["role", "agent_id", "thread_id"],
+          "properties": {
+            "role": {"enum": ["builder", "tester", "reviewer"]},
+            "agent_id": {"type": "string", "minLength": 1},
+            "thread_id": {"type": "string", "minLength": 1}
+          }
+        },
+        "candidate_head": {"oneOf": [{"type": "null"}, {"type": "string", "pattern": "^[0-9a-f]{40}$"}]},
+        "recorded_at": {"type": "string", "minLength": 1},
+        "resolution": {"type": "string", "minLength": 1},
+        "resolved_at": {"type": "string", "minLength": 1}
+      }
+    },
     "finalizeIntent": {
       "type": "object",
       "additionalProperties": false,
@@ -69,7 +138,7 @@
       "additionalProperties": false,
       "required": ["kind", "status", "dependency_digest", "candidate_head", "producer", "details", "recorded_at"],
       "properties": {
-        "kind": {"enum": ["machine", "tester", "blackbox", "reviewer", "doc_review"]},
+        "kind": {"enum": ["machine", "tester", "proof", "blackbox", "reviewer", "doc_review"]},
         "status": {"enum": ["pass", "fail"]},
         "dependency_digest": {"$ref": "#/$defs/sha256"},
         "candidate_head": {"oneOf": [{"type": "string", "pattern": "^[0-9a-f]{40}$"}, {"type": "null"}]},

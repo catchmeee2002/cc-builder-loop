@@ -22,7 +22,9 @@ from .models import (
     facet_digests,
     validate_contract,
     validate_evidence_report,
+    validate_problem_report,
     validate_repo_path,
+    validate_test_proof_spec,
 )
 from .store import (
     StoreError,
@@ -173,6 +175,7 @@ def start(
     session_id: str,
     contract_value: Any,
 ) -> dict[str, Any]:
+    source_contract_digest = digest(contract_value)
     contract = validate_contract(contract_value)
     run_id = ensure_run_id(run_value)
     if not session_id.strip():
@@ -181,8 +184,82 @@ def start(
     target_branch = contract["authority"]["target_branch"]
     with locked(repo):
         if ledger_path(repo, run_id).exists():
+            existing = read_ledger(repo, run_id)
+            continuation = contract["execution"].get("continuation")
+            if isinstance(continuation, dict):
+                preparation = read_ledger(repo, continuation["preparation_run_id"])
+                intent = preparation.get("continuation_consume_intent")
+                expected_intent = {
+                    "business_run_id": run_id,
+                    "target_head": existing["target_start_head"],
+                    "contract_digest": source_contract_digest,
+                }
+                if (
+                    intent == expected_intent
+                    and preparation.get("continuation_consumed_by") in {None, run_id}
+                    and existing["owner_session_id"] == session_id.strip()
+                    and existing["facets"]["execution"].get("continuation") == continuation
+                ):
+                    preparation["continuation_consumed_by"] = run_id
+                    preparation["continuation_consume_intent"] = None
+                    append_event(
+                        preparation,
+                        "continuation_consumed",
+                        {"business_run_id": run_id, "target_head": existing["target_start_head"]},
+                    )
+                    save_ledger(repo, preparation)
+                    return status(repo, run_id)
             raise AssuranceError("assurance run already exists", code="ASSURANCE_RUN_EXISTS")
         target_head = branch_head(repo, target_branch)
+        continuation = contract["execution"].get("continuation")
+        preparation_ledger: dict[str, Any] | None = None
+        if isinstance(continuation, dict):
+            preparation_ledger = read_ledger(repo, continuation["preparation_run_id"])
+            if preparation_ledger["phase"] != "finalized":
+                raise AssuranceError(
+                    "continuation preparation run is not finalized",
+                    code="CONTINUATION_PREPARATION_NOT_FINALIZED",
+                    status="NEEDS_USER",
+                )
+            if preparation_ledger.get("final_head") != continuation["preparation_final_head"]:
+                raise AssuranceError(
+                    "continuation preparation final HEAD does not match",
+                    code="CONTINUATION_HEAD_MISMATCH",
+                )
+            if target_head != continuation["preparation_final_head"]:
+                raise AssuranceError(
+                    "target does not contain the finalized preparation",
+                    code="CONTINUATION_TARGET_MISMATCH",
+                    status="NEEDS_USER",
+                )
+            consumed_by = preparation_ledger.get("continuation_consumed_by")
+            if consumed_by not in {None, run_id}:
+                raise AssuranceError(
+                    "preparation continuation was already consumed",
+                    code="CONTINUATION_ALREADY_CONSUMED",
+                    details={"consumed_by": consumed_by},
+                )
+            intent = preparation_ledger.get("continuation_consume_intent")
+            expected_intent = {
+                "business_run_id": run_id,
+                "target_head": target_head,
+                "contract_digest": source_contract_digest,
+            }
+            if intent is not None and intent != expected_intent:
+                raise AssuranceError(
+                    "preparation has a different pending continuation intent",
+                    code="CONTINUATION_INTENT_CONFLICT",
+                    status="NEEDS_USER",
+                    details={"intent": intent},
+                )
+            actual_support = set(
+                preparation_ledger["facets"]["authority"].get("protected_support_paths", [])
+            )
+            if set(continuation["support_paths"]) != actual_support:
+                raise AssuranceError(
+                    "continuation support paths do not match the preparation authority",
+                    code="CONTINUATION_SUPPORT_MISMATCH",
+                )
         intake_sources = _validate_dirty_intake(repo, contract)
         branch = f"assurance-v4/{run_id}/candidate"
         if git(repo, "show-ref", "--verify", f"refs/heads/{branch}", check=False).returncode == 0:
@@ -191,12 +268,25 @@ def start(
         if worktree.exists():
             raise AssuranceError("candidate worktree already exists", code="CANDIDATE_WORKTREE_EXISTS")
         worktree.parent.mkdir(parents=True, exist_ok=True)
+        if preparation_ledger is not None:
+            preparation_ledger["continuation_consume_intent"] = expected_intent
+            append_event(preparation_ledger, "continuation_consume_intent_written", expected_intent)
+            save_ledger(repo, preparation_ledger)
         created = git(repo, "worktree", "add", "-b", branch, str(worktree), target_head, check=False)
         if created.returncode != 0:
+            if preparation_ledger is not None:
+                preparation_ledger["continuation_consume_intent"] = None
+                append_event(
+                    preparation_ledger,
+                    "continuation_consume_intent_rolled_back",
+                    {"business_run_id": run_id},
+                )
+                save_ledger(repo, preparation_ledger)
             raise AssuranceError(
                 created.stderr.strip() or "candidate worktree creation failed",
                 code="CANDIDATE_WORKTREE_CREATE_FAILED",
             )
+        business_persisted = False
         try:
             snapshots = _copy_dirty_intake(worktree, intake_sources)
             captured = [item["path"] for item in snapshots]
@@ -248,6 +338,19 @@ def start(
                 "digests": facet_digests(contract),
                 "evidence": {},
                 "retired_tester_sources": [],
+                "retired_reviewer_agents": [],
+                "problems": [],
+                "publication": {
+                    "required": bool(contract["authority"].get("public_prerequisites")),
+                    "paths": list(contract["authority"].get("public_prerequisites", [])),
+                    "head": None,
+                    "tree": None,
+                    "files": [],
+                    "manifest_digest": None,
+                },
+                "builder_checkpointed": False,
+                "continuation_consumed_by": None,
+                "continuation_consume_intent": None,
                 "finalize_intent": None,
                 "final_head": None,
                 "created_at": created_at,
@@ -260,13 +363,35 @@ def start(
                 {"target_head": target_head, "candidate_head": candidate_head, "dirty_intake": captured},
             )
             save_ledger(repo, ledger)
+            business_persisted = True
+            if preparation_ledger is not None:
+                preparation_ledger["continuation_consumed_by"] = run_id
+                preparation_ledger["continuation_consume_intent"] = None
+                append_event(
+                    preparation_ledger,
+                    "continuation_consumed",
+                    {"business_run_id": run_id, "target_head": target_head},
+                )
+                save_ledger(repo, preparation_ledger)
         except Exception:
+            if business_persisted:
+                raise
             git(repo, "worktree", "remove", "--force", str(worktree), check=False)
             git(repo, "branch", "-D", branch, check=False)
             try:
                 worktree.parent.rmdir()
             except OSError:
                 pass
+            if preparation_ledger is not None:
+                current_preparation = read_ledger(repo, continuation["preparation_run_id"])
+                if current_preparation.get("continuation_consume_intent") == expected_intent:
+                    current_preparation["continuation_consume_intent"] = None
+                    append_event(
+                        current_preparation,
+                        "continuation_consume_intent_rolled_back",
+                        {"business_run_id": run_id},
+                    )
+                    save_ledger(repo, current_preparation)
             raise
     return status(repo, run_id)
 
@@ -322,7 +447,10 @@ def status(repo_value: str | Path, run_value: str) -> dict[str, Any]:
         "candidate_worktree": ledger["candidate_worktree"],
         "digests": ledger["digests"],
         "mission_revision": ledger["facets"]["mission"]["revision"],
+        "builder_checkpointed": ledger.get("builder_checkpointed", False),
         "readiness": readiness(ledger),
+        "publication": copy.deepcopy(ledger.get("publication")),
+        "problems": copy.deepcopy(ledger.get("problems", [])),
     }
 
 
@@ -451,6 +579,8 @@ def update_facet(
                     code="EXECUTION_VERSION_INVALID",
                 )
         ledger["facets"] = validated
+        if facet == "execution" and validated["execution"].get("candidate_head") is not None:
+            ledger["builder_checkpointed"] = True
         ledger["digests"] = facet_digests(validated)
         append_event(
             ledger,
@@ -461,6 +591,268 @@ def update_facet(
                 "new_digest": ledger["digests"][facet],
                 "semantic_revision": semantic_revision,
             },
+        )
+        save_ledger(repo, ledger)
+    return status(repo, run_id)
+
+
+def _close_problems(ledger: dict[str, Any], owner: str, resolution: str) -> None:
+    for item in ledger.get("problems", []):
+        if item.get("owner") == owner and item.get("status") == "open":
+            item["status"] = "resolved"
+            item["resolution"] = resolution
+            item["resolved_at"] = now()
+
+
+def checkpoint_builder(repo_value: str | Path, run_value: str) -> dict[str, Any]:
+    repo = resolve_repo(repo_value)
+    run_id = ensure_run_id(run_value)
+    with locked(repo):
+        ledger = read_ledger(repo, run_id)
+        if ledger["phase"] != "active":
+            raise AssuranceError("run is not active", code="ASSURANCE_RUN_NOT_ACTIVE")
+        worktree = Path(ledger["candidate_worktree"])
+        if dirty_paths(worktree):
+            raise AssuranceError(
+                "Builder checkpoint requires a clean committed candidate",
+                code="CANDIDATE_WORKTREE_DIRTY",
+                status="NEEDS_USER",
+            )
+        candidate = git(worktree, "rev-parse", "HEAD").stdout.strip()
+        if branch_head(repo, ledger["candidate_branch"]) != candidate:
+            raise AssuranceError("candidate branch and worktree diverged", code="CANDIDATE_IDENTITY_MISMATCH")
+        execution = ledger["facets"]["execution"]
+        files = changed_files(repo, ledger["target_start_head"], candidate)
+        tester_manifest = {
+            item["path"]: item["blob"]
+            for item in (execution.get("tester_source") or {}).get("files", [])
+        }
+        tester_files = set(execution.get("tester_files", []))
+        tester_violations = sorted(
+            path
+            for path in files
+            if _matches(path, ledger["facets"]["authority"]["tester_write"])
+            and (path not in tester_files or _blob_at(repo, candidate, path) != tester_manifest.get(path))
+        )
+        if tester_violations:
+            raise AssuranceError(
+                "Builder checkpoint changed Tester-owned files",
+                code="BUILDER_TESTER_OWNERSHIP_VIOLATION",
+                details={"paths": tester_violations},
+            )
+        builder_files = sorted(set(files) - tester_files)
+        invalid = [
+            path
+            for path in builder_files
+            if not _matches(path, ledger["facets"]["authority"]["builder_write"])
+        ]
+        if invalid:
+            raise AssuranceError(
+                "Builder checkpoint changed files outside authority",
+                code="BUILDER_AUTHORITY_VIOLATION",
+                details={"paths": invalid},
+            )
+        publication = ledger.get("publication")
+        if isinstance(publication, dict) and publication.get("head"):
+            frozen = {item["path"]: item["blob"] for item in publication.get("files", [])}
+            changed_public = sorted(
+                path for path, blob in frozen.items() if _blob_at(repo, candidate, path) != blob
+            )
+            if changed_public:
+                raise AssuranceError(
+                    "published prerequisites are immutable after Tester publication",
+                    code="PUBLISHED_PREREQUISITE_DRIFT",
+                    details={"paths": changed_public},
+                )
+        previous = execution.get("candidate_head")
+        if (
+            previous == candidate
+            and execution.get("builder_files") == builder_files
+            and ledger.get("builder_checkpointed") is True
+        ):
+            return status(repo, run_id)
+        execution["version"] += 1
+        execution["candidate_head"] = candidate
+        execution["builder_files"] = builder_files
+        ledger["builder_checkpointed"] = True
+        ledger["digests"] = facet_digests(ledger["facets"])
+        _close_problems(ledger, "builder", f"checkpoint:{candidate}")
+        append_event(
+            ledger,
+            "builder_checkpointed",
+            {"old_head": previous, "candidate_head": candidate, "files": builder_files},
+        )
+        save_ledger(repo, ledger)
+    return status(repo, run_id)
+
+
+def _materialize_publication(
+    repo: Path,
+    run_id: str,
+    *,
+    base_head: str,
+    source_head: str,
+    paths: list[str],
+) -> tuple[str, str, list[dict[str, str]]]:
+    files: list[dict[str, str]] = []
+    for path in paths:
+        blob = _blob_at(repo, source_head, path)
+        if blob is None:
+            raise AssuranceError(
+                "public prerequisite must be a committed regular file",
+                code="PUBLIC_PREREQUISITE_INVALID",
+                details={"path": path},
+            )
+        files.append({"path": path, "blob": blob})
+    raw = tempfile.mkdtemp(prefix=f"assurance-v4-{run_id}-publication-")
+    isolated = Path(raw)
+    try:
+        added = git(repo, "worktree", "add", "--detach", str(isolated), base_head, check=False)
+        if added.returncode != 0:
+            raise AssuranceError("publication worktree creation failed", code="PUBLICATION_WORKTREE_FAILED")
+        for path in paths:
+            checked = git(isolated, "checkout", source_head, "--", path, check=False)
+            if checked.returncode != 0:
+                raise AssuranceError(
+                    "public prerequisite could not be isolated",
+                    code="PUBLICATION_CHECKOUT_FAILED",
+                    details={"path": path},
+                )
+        if dirty_paths(isolated):
+            committed = git(
+                isolated,
+                "-c",
+                "commit.gpgSign=false",
+                "commit",
+                "-m",
+                "test(assurance): [cr_id_skip] Publish Full Driver Prerequisites",
+                check=False,
+            )
+            if committed.returncode != 0:
+                raise AssuranceError("publication commit failed", code="PUBLICATION_COMMIT_FAILED")
+        head = git(isolated, "rev-parse", "HEAD").stdout.strip()
+        tree = git(isolated, "rev-parse", "HEAD^{tree}").stdout.strip()
+        return head, tree, files
+    finally:
+        git(repo, "worktree", "remove", "--force", str(isolated), check=False)
+        shutil.rmtree(isolated, ignore_errors=True)
+
+
+def publish_prerequisites(repo_value: str | Path, run_value: str) -> dict[str, Any]:
+    repo = resolve_repo(repo_value)
+    run_id = ensure_run_id(run_value)
+    with locked(repo):
+        ledger = read_ledger(repo, run_id)
+        if ledger["phase"] != "active":
+            raise AssuranceError("run is not active", code="ASSURANCE_RUN_NOT_ACTIVE")
+        publication = ledger.get("publication")
+        if not isinstance(publication, dict) or not publication.get("required"):
+            raise AssuranceError("run has no serial prerequisites", code="PUBLICATION_NOT_REQUIRED")
+        if publication.get("head"):
+            return status(repo, run_id)
+        candidate_worktree = Path(ledger["candidate_worktree"])
+        if dirty_paths(candidate_worktree):
+            raise AssuranceError("candidate must be clean before publication", code="CANDIDATE_WORKTREE_DIRTY")
+        candidate = git(candidate_worktree, "rev-parse", "HEAD").stdout.strip()
+        if candidate != ledger["facets"]["execution"].get("candidate_head"):
+            raise AssuranceError(
+                "Builder checkpoint must bind the candidate before publication",
+                code="BUILDER_CHECKPOINT_REQUIRED",
+            )
+        paths = list(publication["paths"])
+        head, tree, files = _materialize_publication(
+            repo,
+            run_id,
+            base_head=ledger["target_start_head"],
+            source_head=candidate,
+            paths=paths,
+        )
+        publication.update(
+            head=head,
+            tree=tree,
+            files=files,
+            manifest_digest=digest(files),
+            candidate_head=candidate,
+        )
+        append_event(ledger, "prerequisites_published", copy.deepcopy(publication))
+        save_ledger(repo, ledger)
+    return status(repo, run_id)
+
+
+def prepare_reviewer(
+    repo_value: str | Path,
+    run_value: str,
+    agent_id: str,
+    thread_id: str,
+    *,
+    replace: bool = False,
+) -> dict[str, Any]:
+    repo = resolve_repo(repo_value)
+    run_id = ensure_run_id(run_value)
+    agent = {"agent_id": agent_id.strip(), "thread_id": thread_id.strip()}
+    if not all(agent.values()):
+        raise AssuranceError("Reviewer identity is required", code="REVIEWER_IDENTITY_REQUIRED")
+    with locked(repo):
+        ledger = read_ledger(repo, run_id)
+        execution = ledger["facets"]["execution"]
+        existing = execution["agents"].get("reviewer")
+        if existing == agent:
+            return status(repo, run_id)
+        if isinstance(existing, dict) and not replace:
+            raise AssuranceError(
+                "Reviewer continuity replacement must be explicit",
+                code="REVIEWER_CONTINUITY_REPLACEMENT_REQUIRED",
+                status="NEEDS_USER",
+            )
+        if isinstance(existing, dict):
+            ledger.setdefault("retired_reviewer_agents", []).append(copy.deepcopy(existing))
+        execution["agents"]["reviewer"] = agent
+        execution["version"] += 1
+        ledger["digests"] = facet_digests(ledger["facets"])
+        append_event(
+            ledger,
+            "reviewer_replaced" if isinstance(existing, dict) else "reviewer_prepared",
+            {"old_agent": existing, "new_agent": agent},
+        )
+        save_ledger(repo, ledger)
+    return status(repo, run_id)
+
+
+def record_problems(
+    repo_value: str | Path,
+    run_value: str,
+    report_value: Any,
+    *,
+    role: str,
+    agent_id: str,
+    thread_id: str,
+) -> dict[str, Any]:
+    report = validate_problem_report(report_value)
+    if role not in {"builder", "tester", "reviewer"}:
+        raise AssuranceError("problem producer role is invalid", code="PROBLEM_ROLE_INVALID")
+    repo = resolve_repo(repo_value)
+    run_id = ensure_run_id(run_value)
+    with locked(repo):
+        ledger = read_ledger(repo, run_id)
+        expected = None
+        if role in {"tester", "reviewer"}:
+            expected = ledger["facets"]["execution"]["agents"].get(role)
+            if expected != {"agent_id": agent_id, "thread_id": thread_id}:
+                raise AssuranceError("problem producer identity mismatch", code="PROBLEM_PRODUCER_MISMATCH")
+        candidate = ledger["facets"]["execution"].get("candidate_head")
+        for problem in report["problems"]:
+            stored = {
+                **copy.deepcopy(problem),
+                "status": "open",
+                "producer": {"role": role, "agent_id": agent_id, "thread_id": thread_id},
+                "candidate_head": candidate,
+                "recorded_at": now(),
+            }
+            ledger.setdefault("problems", []).append(stored)
+        append_event(
+            ledger,
+            "problems_recorded",
+            {"role": role, "keys": [item["key"] for item in report["problems"]]},
         )
         save_ledger(repo, ledger)
     return status(repo, run_id)
@@ -507,6 +899,17 @@ def prepare_tester(
                     code="TESTER_REPLACEMENT_BRANCH_DRIFT",
                     status="NEEDS_USER",
                 )
+        publication = ledger.get("publication")
+        if isinstance(publication, dict) and publication.get("required") and not publication.get("head"):
+            raise AssuranceError(
+                "serial prerequisites must be published before Tester preparation",
+                code="PUBLICATION_REQUIRED",
+            )
+        tester_base = (
+            publication["head"]
+            if isinstance(publication, dict) and publication.get("head")
+            else ledger["target_start_head"]
+        )
         suffix = f"r{execution['version'] + 1}" if isinstance(existing, dict) else "initial"
         branch = f"assurance-v4/{run_id}/tester-{suffix}"
         worktree = run_dir(repo, run_id) / f"tester-{suffix}"
@@ -519,7 +922,7 @@ def prepare_tester(
             "-b",
             branch,
             str(worktree),
-            ledger["target_start_head"],
+            tester_base,
             check=False,
         )
         if created.returncode != 0:
@@ -529,7 +932,8 @@ def prepare_tester(
             )
         agent = {"agent_id": agent_id.strip(), "thread_id": thread_id.strip()}
         replacement = {
-            "head": ledger["target_start_head"],
+            "head": tester_base,
+            "base_head": tester_base,
             "branch": branch,
             "worktree": str(worktree),
             "files": [],
@@ -605,9 +1009,10 @@ def integrate_tester(repo_value: str | Path, run_value: str) -> dict[str, Any]:
         worktree_head = git(tester_worktree, "rev-parse", "HEAD").stdout.strip()
         if source_head != worktree_head:
             raise AssuranceError("Tester branch and worktree diverged", code="TESTER_SOURCE_IDENTITY_MISMATCH")
-        if git(repo, "merge-base", "--is-ancestor", ledger["target_start_head"], source_head, check=False).returncode != 0:
-            raise AssuranceError("Tester source does not inherit target_start", code="TESTER_SOURCE_ANCESTRY_INVALID")
-        tester_files = changed_files(repo, ledger["target_start_head"], source_head)
+        source_base = source.get("base_head", ledger["target_start_head"])
+        if git(repo, "merge-base", "--is-ancestor", source_base, source_head, check=False).returncode != 0:
+            raise AssuranceError("Tester source does not inherit its frozen base", code="TESTER_SOURCE_ANCESTRY_INVALID")
+        tester_files = changed_files(repo, source_base, source_head)
         if not tester_files:
             raise AssuranceError("Tester source contains no tests", code="TESTER_SOURCE_EMPTY")
         invalid = [
@@ -682,6 +1087,7 @@ def integrate_tester(repo_value: str | Path, run_value: str) -> dict[str, Any]:
                 "replaces_files": [],
             }
             ledger["digests"] = facet_digests(ledger["facets"])
+            _close_problems(ledger, "tester", f"tester-source:{source_head}")
             append_event(
                 ledger,
                 "tester_source_integrated",
@@ -702,6 +1108,11 @@ def record_evidence(
 ) -> dict[str, Any]:
     if kind not in EVIDENCE_KINDS or kind == "machine":
         raise AssuranceError("unknown evidence kind", code="EVIDENCE_KIND_INVALID")
+    if kind == "proof":
+        raise AssuranceError(
+            "proof evidence must be produced by the deterministic prove-tests gate",
+            code="TEST_PROOF_RUNTIME_REQUIRED",
+        )
     report = validate_evidence_report(report)
     if report["kind"] != kind:
         raise AssuranceError("evidence kind does not match the command", code="EVIDENCE_KIND_MISMATCH")
@@ -717,7 +1128,7 @@ def record_evidence(
                 "evidence candidate does not match the execution manifest",
                 code="EVIDENCE_CANDIDATE_MISMATCH",
             )
-        role = "tester" if kind in {"tester", "blackbox"} else "reviewer"
+        role = "tester" if kind in {"tester", "proof", "blackbox"} else "reviewer"
         expected_producer = ledger["facets"]["execution"]["agents"].get(role)
         producer = report["producer"]
         if not isinstance(expected_producer, dict) or {
@@ -754,6 +1165,18 @@ def record_evidence(
                     code="TESTER_SOURCE_BLOB_MISMATCH",
                     details={"paths": mismatched},
                 )
+        elif kind == "proof":
+            if details["result"] != report["status"]:
+                raise AssuranceError("proof result does not match evidence status", code="EVIDENCE_RESULT_MISMATCH")
+            tester_source = ledger["facets"]["execution"].get("tester_source")
+            if not isinstance(tester_source, dict) or details["source_head"] != tester_source["head"]:
+                raise AssuranceError("proof source does not match Tester source", code="PROOF_SOURCE_MISMATCH")
+            expected_behaviors = {item["id"] for item in ledger["facets"]["mission"]["behaviors"]}
+            if set(details["behaviors"]) != expected_behaviors:
+                raise AssuranceError(
+                    "proof must cover every frozen behavior exactly",
+                    code="PROOF_BEHAVIOR_COVERAGE_MISMATCH",
+                )
         elif kind == "blackbox":
             if details["result"] != report["status"]:
                 raise AssuranceError("blackbox result does not match evidence status", code="EVIDENCE_RESULT_MISMATCH")
@@ -781,7 +1204,7 @@ def record_evidence(
             if (report["status"] == "pass") != (details["result"] == "pass"):
                 raise AssuranceError("review result does not match evidence status", code="EVIDENCE_RESULT_MISMATCH")
         if kind == "reviewer":
-            prereqs = [name for name in ("machine", "tester", "blackbox") if name in ledger["facets"]["assurance"]["required"]]
+            prereqs = [name for name in ("machine", "tester", "proof", "blackbox") if name in ledger["facets"]["assurance"]["required"]]
             blockers = [name for name in prereqs if evidence_state(ledger, name) != "pass"]
             if blockers:
                 raise AssuranceError(
@@ -793,7 +1216,7 @@ def record_evidence(
         if kind == "blackbox":
             prereqs = [
                 name
-                for name in ("tester", "machine")
+                for name in ("tester", "proof", "machine")
                 if name in ledger["facets"]["assurance"]["required"]
             ]
             blockers = [name for name in prereqs if evidence_state(ledger, name) != "pass"]
@@ -823,6 +1246,273 @@ def record_evidence(
                 "status": record["status"],
                 "failure_signature": digest(record["details"]) if record["status"] == "fail" else None,
             },
+        )
+        if report["status"] == "pass" and role in {"tester", "reviewer"}:
+            _close_problems(ledger, role, f"evidence:{kind}")
+        save_ledger(repo, ledger)
+    return status(repo, run_id)
+
+
+def _proof_framework(argv: list[str]) -> str:
+    executable = Path(argv[0]).name.lower()
+    if executable in {"pytest", "py.test"}:
+        return "pytest"
+    if executable.startswith(("python", "pypy")) and len(argv) >= 3 and argv[1] == "-m":
+        if argv[2] == "pytest":
+            return "pytest"
+        if argv[2] == "unittest":
+            return "unittest"
+    raise AssuranceError(
+        "test proof requires a direct pytest or unittest command",
+        code="TEST_PROOF_COMMAND_UNSUPPORTED",
+        status="FAIL",
+        details={"argv": argv},
+    )
+
+
+def _proof_run(
+    repo: Path,
+    worktree: Path,
+    head: str,
+    group: Mapping[str, Any],
+    artifact_root: Path,
+    label: str,
+) -> dict[str, Any]:
+    from ..core import run_proof_argv
+
+    requested = list(group["argv"])
+    framework = _proof_framework(requested)
+    resolved, identity = _resolve_machine_executable(repo, worktree, head, requested[0])
+    if resolved is None:
+        raise AssuranceError(
+            "test proof executable could not be resolved",
+            code="TEST_PROOF_EXECUTABLE_INVALID",
+            status="FAIL",
+            details={"identity": identity},
+        )
+    execution_argv = [resolved, *requested[1:]]
+    result = run_proof_argv(
+        execution_argv,
+        framework=framework,
+        test_ids=list(group["test_ids"]),
+        worktree=worktree,
+        timeout=int(group["timeout_seconds"]),
+        log_path=artifact_root / f"{label}.log",
+        cache_path=artifact_root / f"{label}-cache",
+    )
+    return {**result, "requested_argv": requested, "executable_identity": identity}
+
+
+def prove_tests(
+    repo_value: str | Path,
+    run_value: str,
+    spec_value: Any,
+    *,
+    agent_id: str,
+    thread_id: str,
+) -> dict[str, Any]:
+    spec = validate_test_proof_spec(spec_value)
+    repo = resolve_repo(repo_value)
+    run_id = ensure_run_id(run_value)
+    with locked(repo):
+        ledger = read_ledger(repo, run_id)
+        if ledger["phase"] != "active":
+            raise AssuranceError("run is not active", code="ASSURANCE_RUN_NOT_ACTIVE")
+        if "proof" not in ledger["facets"]["assurance"]["required"]:
+            raise AssuranceError("test proof is not required", code="TEST_PROOF_NOT_REQUIRED")
+        expected_agent = ledger["facets"]["execution"]["agents"].get("tester")
+        if expected_agent != {"agent_id": agent_id, "thread_id": thread_id}:
+            raise AssuranceError("proof producer identity mismatch", code="EVIDENCE_PRODUCER_MISMATCH")
+        if evidence_state(ledger, "tester") != "pass":
+            raise AssuranceError(
+                "test proof requires current Tester author evidence",
+                code="TEST_PROOF_TESTER_MISSING",
+                status="FAIL",
+            )
+        execution = ledger["facets"]["execution"]
+        candidate = execution.get("candidate_head")
+        tester_source = execution.get("tester_source")
+        if not isinstance(candidate, str) or not isinstance(tester_source, dict):
+            raise AssuranceError("test proof source is unavailable", code="TEST_PROOF_SOURCE_MISSING")
+        behavior_ids = [item["id"] for item in ledger["facets"]["mission"]["behaviors"]]
+        observed_behaviors = [
+            behavior
+            for group in spec["groups"]
+            for behavior in group["behavior_ids"]
+        ]
+        if sorted(observed_behaviors) != sorted(behavior_ids) or len(observed_behaviors) != len(set(observed_behaviors)):
+            raise AssuranceError(
+                "test proof groups must cover every frozen behavior exactly once",
+                code="PROOF_BEHAVIOR_COVERAGE_MISMATCH",
+            )
+        source_manifest = {item["path"]: item["blob"] for item in tester_source["files"]}
+        mismatched = [
+            path
+            for path, blob in source_manifest.items()
+            if _blob_at(repo, tester_source["head"], path) != blob
+            or _blob_at(repo, candidate, path) != blob
+        ]
+        if mismatched:
+            raise AssuranceError(
+                "Tester source differs from the integrated candidate",
+                code="TEST_PROOF_MANIFEST_MISMATCH",
+                status="FAIL",
+                details={"paths": mismatched},
+            )
+        from ..core import proof_test_source_path
+
+        tester_patterns = ledger["facets"]["authority"]["tester_write"]
+        unbound_tests: list[dict[str, str]] = []
+        for group in spec["groups"]:
+            framework = _proof_framework(list(group["argv"]))
+            for test_id in group["test_ids"]:
+                if proof_test_source_path(
+                    repo,
+                    tester_source["head"],
+                    framework,
+                    test_id,
+                    tester_patterns,
+                ) is None:
+                    unbound_tests.append({"test_id": test_id, "framework": framework})
+        if unbound_tests:
+            raise AssuranceError(
+                "test proof ids are not bound to Tester-owned source",
+                code="TEST_PROOF_TEST_SOURCE_UNBOUND",
+                status="FAIL",
+                details={"tests": unbound_tests},
+            )
+        artifact_root = run_dir(repo, run_id) / "proof-artifacts" / digest(spec)
+        artifact_root.mkdir(parents=True, exist_ok=True)
+        proof_root = Path(tempfile.mkdtemp(prefix=f"assurance-v4-{run_id}-proof-"))
+        created_worktrees: list[Path] = []
+        results: list[dict[str, Any]] = []
+        try:
+            for index, group in enumerate(spec["groups"]):
+                candidate_worktree = proof_root / f"candidate-{index}"
+                added = git(repo, "worktree", "add", "--detach", str(candidate_worktree), candidate, check=False)
+                if added.returncode != 0:
+                    raise AssuranceError("proof candidate worktree creation failed", code="TEST_PROOF_WORKTREE_CREATE_FAILED")
+                created_worktrees.append(candidate_worktree)
+                candidate_result = _proof_run(
+                    repo,
+                    candidate_worktree,
+                    candidate,
+                    group,
+                    artifact_root,
+                    f"group-{index}-candidate",
+                )
+                if candidate_result["test_result"].get("classification") != "pass":
+                    raise AssuranceError(
+                        "candidate tests did not pass before effectiveness proof",
+                        code="TEST_PROOF_CANDIDATE_FAILED",
+                        status="FAIL",
+                        details={"group": index, "result": candidate_result},
+                    )
+                method = group["method"]
+                counterexample: dict[str, Any] | None = None
+                if method == "baseline-red":
+                    baseline_worktree = proof_root / f"baseline-{index}"
+                    added = git(repo, "worktree", "add", "--detach", str(baseline_worktree), tester_source["head"], check=False)
+                    if added.returncode != 0:
+                        raise AssuranceError("proof baseline worktree creation failed", code="TEST_PROOF_WORKTREE_CREATE_FAILED")
+                    created_worktrees.append(baseline_worktree)
+                    counterexample = _proof_run(
+                        repo,
+                        baseline_worktree,
+                        tester_source["head"],
+                        group,
+                        artifact_root,
+                        f"group-{index}-baseline",
+                    )
+                elif method == "mutation":
+                    mutation_worktree = proof_root / f"mutation-{index}"
+                    added = git(repo, "worktree", "add", "--detach", str(mutation_worktree), candidate, check=False)
+                    if added.returncode != 0:
+                        raise AssuranceError("proof mutation worktree creation failed", code="TEST_PROOF_WORKTREE_CREATE_FAILED")
+                    created_worktrees.append(mutation_worktree)
+                    applied = subprocess.run(
+                        ["git", "-C", str(mutation_worktree), "apply", "--whitespace=nowarn", "-"],
+                        input=group["patch"],
+                        text=True,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        check=False,
+                    )
+                    if applied.returncode != 0:
+                        raise AssuranceError(
+                            "test proof mutation patch could not be applied",
+                            code="TEST_PROOF_MUTATION_INVALID",
+                            status="FAIL",
+                            details={"stderr": applied.stderr[-8000:]},
+                        )
+                    mutation_paths = dirty_paths(mutation_worktree)
+                    invalid_paths = [
+                        path
+                        for path in mutation_paths
+                        if not _matches(path, ledger["facets"]["authority"]["builder_write"])
+                        or _matches(path, ledger["facets"]["authority"]["tester_write"])
+                        or _blob_at(repo, candidate, path) is None
+                        or not (mutation_worktree / path).is_file()
+                        or (mutation_worktree / path).is_symlink()
+                    ]
+                    if not mutation_paths or invalid_paths:
+                        raise AssuranceError(
+                            "test proof mutation escaped Builder-owned implementation files",
+                            code="TEST_PROOF_MUTATION_AUTHORITY_VIOLATION",
+                            status="FAIL",
+                            details={"paths": invalid_paths or mutation_paths},
+                        )
+                    counterexample = _proof_run(
+                        repo,
+                        mutation_worktree,
+                        candidate,
+                        group,
+                        artifact_root,
+                        f"group-{index}-mutation",
+                    )
+                if counterexample is not None and counterexample["test_result"].get("classification") != "assertion-failure":
+                    raise AssuranceError(
+                        "test proof counterexample was not an assertion failure",
+                        code="TEST_PROOF_COUNTEREXAMPLE_INVALID",
+                        status="FAIL",
+                        details={"group": index, "result": counterexample},
+                    )
+                results.append(
+                    {
+                        "behavior_ids": list(group["behavior_ids"]),
+                        "method": method,
+                        "candidate": candidate_result,
+                        "counterexample": counterexample,
+                    }
+                )
+        finally:
+            for worktree in reversed(created_worktrees):
+                git(repo, "worktree", "remove", "--force", str(worktree), check=False)
+            shutil.rmtree(proof_root, ignore_errors=True)
+        details = {
+            "result": "pass",
+            "source_head": tester_source["head"],
+            "report_digest": digest({"spec": spec, "results": results}),
+            "behaviors": behavior_ids,
+            "spec": spec,
+            "results": results,
+            "artifact_root": str(artifact_root),
+        }
+        record = {
+            "kind": "proof",
+            "status": "pass",
+            "dependency_digest": "",
+            "candidate_head": candidate,
+            "producer": {"role": "tester", "agent_id": agent_id, "thread_id": thread_id},
+            "details": details,
+            "recorded_at": now(),
+        }
+        ledger["evidence"]["proof"] = record
+        record["dependency_digest"] = evidence_dependency(ledger, "proof")
+        append_event(
+            ledger,
+            "evidence_recorded",
+            {"kind": "proof", "status": "pass", "failure_signature": None},
         )
         save_ledger(repo, ledger)
     return status(repo, run_id)
@@ -1117,14 +1807,40 @@ def rematerialize_target(repo_value: str | Path, run_value: str) -> dict[str, An
             if isinstance(old_candidate, str):
                 git(worktree, "reset", "--hard", old_candidate, check=False)
             raise
+        tester_old_base = old_base
+        tester_new_base = new_base
+        publication = ledger.get("publication")
+        if isinstance(publication, dict) and publication.get("head"):
+            old_publication_head = publication["head"]
+            try:
+                new_publication_head, new_publication_tree, publication_files = _materialize_publication(
+                    repo,
+                    run_id,
+                    base_head=new_base,
+                    source_head=candidate,
+                    paths=list(publication["paths"]),
+                )
+            except Exception:
+                if isinstance(old_candidate, str):
+                    git(worktree, "reset", "--hard", old_candidate, check=False)
+                raise
+            publication.update(
+                head=new_publication_head,
+                tree=new_publication_tree,
+                files=publication_files,
+                manifest_digest=digest(publication_files),
+                candidate_head=candidate,
+            )
+            tester_old_base = old_publication_head
+            tester_new_base = new_publication_head
         old_tester_head = tester_source.get("head") if isinstance(tester_source, dict) else None
         if isinstance(tester_source, dict):
             tester_rebase = git(
                 Path(tester_source["worktree"]),
                 "rebase",
                 "--onto",
-                new_base,
-                old_base,
+                tester_new_base,
+                tester_old_base,
                 tester_source["branch"],
                 check=False,
             )
@@ -1140,6 +1856,7 @@ def rematerialize_target(repo_value: str | Path, run_value: str) -> dict[str, An
                 )
             tester_head = git(Path(tester_source["worktree"]), "rev-parse", "HEAD").stdout.strip()
             tester_source["head"] = tester_head
+            tester_source["base_head"] = tester_new_base
             refreshed: list[dict[str, str]] = []
             for item in tester_source["files"]:
                 blob = _blob_at(repo, tester_head, item["path"])
@@ -1160,10 +1877,17 @@ def rematerialize_target(repo_value: str | Path, run_value: str) -> dict[str, An
         execution["candidate_head"] = candidate
         ledger["target_start_head"] = new_base
         ledger["digests"] = facet_digests(ledger["facets"])
+        if isinstance(tester_source, dict):
+            _close_problems(ledger, "tester", f"tester-source:{tester_source['head']}")
         append_event(
             ledger,
             "target_rematerialized",
-            {"old_target_head": old_base, "new_target_head": new_base, "candidate_head": candidate},
+            {
+                "old_target_head": old_base,
+                "new_target_head": new_base,
+                "candidate_head": candidate,
+                "publication_head": publication.get("head") if isinstance(publication, dict) else None,
+            },
         )
         save_ledger(repo, ledger)
     return status(repo, run_id)

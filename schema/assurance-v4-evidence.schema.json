@@ -7,7 +7,7 @@
   "required": ["schema_version", "kind", "status", "candidate_head", "producer", "details"],
   "properties": {
     "schema_version": {"const": 1},
-    "kind": {"enum": ["tester", "blackbox", "reviewer", "doc_review"]},
+    "kind": {"enum": ["tester", "proof", "blackbox", "reviewer", "doc_review"]},
     "status": {"enum": ["pass", "fail"]},
     "candidate_head": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
     "producer": {
@@ -24,8 +24,29 @@
   },
   "allOf": [
     {
-      "if": {"properties": {"kind": {"enum": ["tester", "blackbox"]}}},
+      "if": {"properties": {"kind": {"enum": ["tester", "proof", "blackbox"]}}},
       "then": {"properties": {"producer": {"properties": {"role": {"const": "tester"}}}}}
+    },
+    {
+      "if": {"properties": {"kind": {"const": "proof"}}},
+      "then": {
+        "properties": {
+          "details": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["result", "source_head", "report_digest", "behaviors"],
+            "properties": {
+              "result": {"enum": ["pass", "fail"]},
+              "source_head": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+              "report_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+              "behaviors": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+              "spec": {"type": "object"},
+              "results": {"type": "array", "items": {"type": "object"}},
+              "artifact_root": {"type": "string", "minLength": 1}
+            }
+          }
+        }
+      }
     },
     {
       "if": {"properties": {"kind": {"enum": ["reviewer", "doc_review"]}}},

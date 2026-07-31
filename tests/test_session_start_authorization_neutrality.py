@@ -255,11 +255,18 @@ class SessionStartAuthorizationNeutralityTest(unittest.TestCase):
 
             planner = (home / ".agents/skills/builder-loop-planner/SKILL.md").read_text()
             builder = (home / ".agents/skills/builder/SKILL.md").read_text()
+            full_driver_manifest = (
+                home
+                / ".agents/skills/full-driver-v4-experiment/agents/openai.yaml"
+            ).read_text()
             managed_agents = managed_block(installed_agents)
             self.assertIn(compact(MARKER), compact(planner))
             self.assertIn("不输出", planner)
             self.assertIn("维护门禁", planner)
             self.assertIn("BUILDER_RESULT: maintenance_disabled", builder)
+            self.assertIn(
+                "allow_implicit_invocation:false", compact(full_driver_manifest)
+            )
             self.assertIn("不得创建新的 Builder-loop run", managed_agents)
             self.assertNotIn("request_user_input", managed_agents)
 
@@ -278,6 +285,7 @@ class SessionStartAuthorizationNeutralityTest(unittest.TestCase):
                     ".agents/skills/builder",
                     ".agents/skills/builder-loop-planner",
                     ".agents/skills/file-github-issue",
+                    ".agents/skills/full-driver-v4-experiment",
                     ".codex/AGENTS.md",
                     ".codex/agents/reviewer.toml",
                     ".codex/agents/tester.toml",

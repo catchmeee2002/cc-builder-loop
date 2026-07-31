@@ -5,6 +5,16 @@ nickname_candidates = ["Probe", "Gauge", "Sentinel"]
 developer_instructions = """
 以独立 tester 身份工作。不要 spawn 其他 agent，不要承担 builder 或 reviewer 职责。
 
+若 prompt 含 `assurance_schema_version=4`，返回唯一单行 `ASSURANCE_V4_AGENT_RESULT: <JSON>`；根对象只含
+`result/evidence_report/proof_spec/problem_report`。evidence 与 problem 分别严格符合公共 v4 evidence
+schema 和 `codex-problem-report`；成功 problem 为 null，禁止把 Markdown/日志塞进 JSON 或从 transcript
+猜 HEAD、identity、returncode、manifest。
+v4 `phase=proof` 只在 author 集成后续接同一 thread，按 `codex-test-proof` schema 构造精确覆盖全部
+behavior 的 proof_spec；evidence_report 为 null，由 Core `prove-tests` 隔离执行，Tester 不自称 PASS。
+构造失败返回结构化问题，不改测试目标或放宽断言。
+v4 `phase=blackbox` 的 evidence details 必须保存 result、真实 candidate worktree、before/after HEAD 及
+每条 execution 的 id/argv/数值 returncode/timed_out；HEAD 变化、残留、超时或非零退出只能 fail。
+
 根据 prompt 中的 phase 执行且只执行一种模式：
 
 phase=author：

@@ -18,6 +18,9 @@ class InstallContractTest(unittest.TestCase):
             / "skills"
             / "builder-loop-planner",
             home / ".agents" / "skills" / "builder": ROOT / "skills" / "builder",
+            home / ".agents" / "skills" / "full-driver-v4-experiment": ROOT
+            / "skills"
+            / "full-driver-v4-experiment",
             home / ".agents" / "skills" / "file-github-issue": ROOT
             / "skills"
             / "file-github-issue",
@@ -92,6 +95,9 @@ class InstallContractTest(unittest.TestCase):
             self.assertIn("python3 /foreign/hook.py", json.dumps(remaining_hooks))
             self.assertEqual(agents_path.read_text(), "# User guidance\n")
             self.assertFalse((home / ".agents" / "skills" / "builder").exists())
+            self.assertFalse(
+                (home / ".agents" / "skills" / "full-driver-v4-experiment").exists()
+            )
             self.assertFalse(policy.exists())
 
     def test_install_refuses_foreign_builder_symlink(self) -> None:
@@ -131,6 +137,24 @@ class InstallContractTest(unittest.TestCase):
             self.assertEqual(hook_link.resolve(), foreign_hook.resolve())
             hooks = json.loads((home / ".codex" / "hooks.json").read_text())
             self.assertNotIn("builder-loop.py", json.dumps(hooks))
+
+    def test_uninstall_preserves_foreign_full_driver_skill_takeover(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="full-driver-takeover-") as raw_home:
+            home = Path(raw_home)
+            env = self.environment(home)
+            installed = run_process(["bash", ROOT / "install.sh"], cwd=ROOT, env=env)
+            self.assertEqual(installed.returncode, 0, installed.stderr)
+
+            skill_link = home / ".agents" / "skills" / "full-driver-v4-experiment"
+            foreign_skill = home / "foreign-full-driver"
+            foreign_skill.mkdir()
+            skill_link.unlink()
+            skill_link.symlink_to(foreign_skill)
+
+            uninstalled = run_process(["bash", ROOT / "uninstall.sh"], cwd=ROOT, env=env)
+            self.assertEqual(uninstalled.returncode, 0, uninstalled.stderr)
+            self.assertTrue(skill_link.is_symlink())
+            self.assertEqual(skill_link.resolve(), foreign_skill.resolve())
 
     def test_install_invalid_hooks_json_creates_no_partial_links(self) -> None:
         with tempfile.TemporaryDirectory(prefix="builder-loop-invalid-install-") as raw_home:

@@ -21,6 +21,7 @@ LINK_SOURCES=(
   "$REPO_DIR/scripts/codex-builder-loop.py"
   "$REPO_DIR/policies/doc-policy.md"
   "$REPO_DIR/skills/file-github-issue"
+  "$REPO_DIR/skills/full-driver-v4-experiment"
 )
 LINK_TARGETS=(
   "$SKILLS_HOME/builder-loop-planner"
@@ -31,6 +32,7 @@ LINK_TARGETS=(
   "$LOCAL_BIN/codex-builder-loop"
   "$DOC_POLICY"
   "$SKILLS_HOME/file-github-issue"
+  "$SKILLS_HOME/full-driver-v4-experiment"
 )
 LINK_PREEXISTED=()
 

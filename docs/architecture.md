@@ -29,16 +29,32 @@ target 与 finalize intent，不保存“下一步让谁做”、correction budg
 同一失败签名三次只触发架构复核，不自动创建新 Mission。无冲突 target drift 通过 candidate
 rematerialization 后局部重验，Git 冲突、授权扩大和覆盖风险才停止。
 
-维护期实验由可信协调器把原生 subagent 返回的 identity 写入 Execution；Core 机械核对该 identity、
-Tester source HEAD/blob manifest、blackbox worktree/HEAD/逐命令结果和 Reviewer candidate。当前 Codex
+dirty intake 的自动 snapshot commit 只证明输入已隔离，不证明实现完成；ledger 单独记录
+`builder_checkpointed` 执行事实，Driver 在首次 Builder checkpoint 前不会推进 Tester。串行 Tester 的
+publication 在 target rematerialization 时基于新 target 重新生成，exact prerequisite blob/manifest
+保持不变，Tester source 改以新 publication HEAD 为 base，避免恢复后退回旧 target 基线。
+
+proof evidence 不能由 Agent 直接提交摘要。Tester 只提供符合公共 `codex-test-proof` schema 的 spec；
+Core 在隔离 worktree 先证明 candidate tests 通过，再执行 baseline-red 或仅触及 Builder-owned 普通
+实现文件的 mutation，并要求冻结测试产生 assertion failure。只有每个 Mission behavior 恰好覆盖一次
+才记录 proof；ledger 同时保存规范化 spec、逐组执行结果、executable identity、log digest 与 artifact
+位置，任意 report digest 不能替代真实执行。
+
+维护期实验 Skill 直接使用原生 custom-agent spawn 与 same-thread follow-up。Tester v4 phase 返回公共
+schema JSON；Reviewer 沿用冻结的 `REVIEW_RESULT/REVIEW_HEAD/PROBLEM_REPORT` 终态，由协调器做无语义
+变化的 v4 report 规范化后交给 Core。Core 机械核对 Execution 中冻结的 identity、Tester source HEAD/blob
+manifest、blackbox worktree/HEAD/逐命令结果和 Reviewer candidate。当前 Codex
 没有供本地 runtime 独立查询 child-thread provenance 的结构化 API，因此这层仍是显式协调器
 attestation，不宣称具备平台级防伪。公共 Full Driver 重新开放前必须补齐真实生命周期观测或证明原生
 能力等价；仅有本仓实验测试不能把该限制改写成已解决。
 
 内部 CLI 入口为 `codex-builder-loop assurance --experimental-v4 ...`。实验标志是维护期门禁，公共
-Planner/Builder Skill 和安装配置不会设置它。首版只覆盖本地单仓 Git 代码交付；外部设备、远程部署、
-protected preparation 和多仓事务保持 unsupported。公共 Full Driver 只有完成历史回放和跨项目真实
-验收后才切换到 v4。
+Planner/Builder Skill 不会设置它；安装器只部署禁止隐式调用的实验 Skill。首版覆盖本地单仓 Git
+代码与 L1 文档交付；外部设备、远程部署和多仓事务保持 unsupported。本地 protected preparation
+通过 finalized HEAD、exact support manifest 和单次 continuation 消费衔接 business run。消费前先在
+preparation ledger 持久化 intent，business ledger 落盘后再提交 consumed marker；进程中断时重试
+同一 start 只收敛该 intent，不创建第二份状态。公共 Full Driver 只有完成历史回放和跨项目真实验收
+后才切换到 v4。
 
 ## Legacy v3 系统边界
 

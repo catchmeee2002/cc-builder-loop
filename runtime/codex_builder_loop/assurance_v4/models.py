@@ -12,7 +12,7 @@ from referencing import Registry, Resource
 
 
 FACETS = ("mission", "authority", "assurance", "execution")
-EVIDENCE_KINDS = ("machine", "tester", "blackbox", "reviewer", "doc_review")
+EVIDENCE_KINDS = ("machine", "tester", "proof", "blackbox", "reviewer", "doc_review")
 
 
 class ContractError(ValueError):
@@ -72,6 +72,10 @@ def validate_contract(value: Any) -> dict[str, Any]:
         ) from exc
     assert isinstance(value, dict)
     contract = copy.deepcopy(value)
+    contract["mission"].setdefault("delivery_kind", "code")
+    contract["authority"].setdefault("public_prerequisites", [])
+    contract["authority"].setdefault("protected_support_paths", [])
+    contract["execution"].setdefault("continuation", None)
     for facet, fields in (
         ("mission", ("behaviors", "interfaces", "acceptance_cases", "trust_boundaries")),
     ):
@@ -118,6 +122,26 @@ def validate_contract(value: Any) -> dict[str, Any]:
                         code="EXECUTION_PATH_NOT_EXACT",
                         details={"path": item},
                     )
+    for field in ("public_prerequisites", "protected_support_paths"):
+        for item in contract["authority"][field]:
+            validate_repo_path(item)
+            if any(token in item for token in "*?["):
+                raise ContractError(
+                    f"authority.{field} requires exact paths",
+                    code="AUTHORITY_PATH_NOT_EXACT",
+                    details={"field": field, "path": item},
+                )
+    public = set(contract["authority"]["public_prerequisites"])
+    if not public.issubset(set(contract["execution"]["builder_files"])) and contract["execution"]["builder_files"]:
+        raise ContractError(
+            "public prerequisites must be classified as Builder files",
+            code="PUBLIC_PREREQUISITE_CLASSIFICATION_INVALID",
+            details={"paths": sorted(public - set(contract["execution"]["builder_files"]))},
+        )
+    continuation = contract["execution"].get("continuation")
+    if isinstance(continuation, dict):
+        for item in continuation["support_paths"]:
+            validate_repo_path(item)
     execution = contract["execution"]
     builder_files = set(execution["builder_files"])
     tester_files = set(execution["tester_files"])
@@ -167,6 +191,32 @@ def validate_contract(value: Any) -> dict[str, Any]:
             "required machine assurance needs at least one command",
             code="MACHINE_COMMAND_REQUIRED",
         )
+    delivery_kind = contract["mission"]["delivery_kind"]
+    required = set(contract["assurance"]["required"])
+    if delivery_kind == "documentation":
+        invalid = required & {"tester", "proof", "machine", "blackbox"}
+        if invalid or "reviewer" not in required or "doc_review" not in required:
+            raise ContractError(
+                "documentation delivery requires only Reviewer and doc-review assurance",
+                code="DOCUMENTATION_ASSURANCE_INVALID",
+                details={"invalid": sorted(invalid)},
+            )
+    if contract["authority"]["public_prerequisites"] and "tester" not in required:
+        raise ContractError(
+            "public prerequisites require Tester assurance",
+            code="PUBLICATION_TESTER_REQUIRED",
+        )
+    invalid_support = sorted(
+        path
+        for path in contract["authority"]["protected_support_paths"]
+        if not any(fnmatch.fnmatchcase(path, pattern) for pattern in builder)
+    )
+    if invalid_support:
+        raise ContractError(
+            "protected support paths must be Builder-owned",
+            code="PROTECTED_SUPPORT_AUTHORITY_INVALID",
+            details={"paths": invalid_support},
+        )
     return contract
 
 
@@ -178,6 +228,34 @@ def validate_evidence_report(value: Any) -> dict[str, Any]:
         raise ContractError(
             exc.message,
             code="EVIDENCE_REPORT_INVALID",
+            details={"path": path},
+        ) from exc
+    assert isinstance(value, dict)
+    return copy.deepcopy(value)
+
+
+def validate_problem_report(value: Any) -> dict[str, Any]:
+    try:
+        jsonschema.Draft202012Validator(_schema("codex-problem-report.schema.json")).validate(value)
+    except jsonschema.ValidationError as exc:
+        path = "/".join(str(part) for part in exc.absolute_path)
+        raise ContractError(
+            exc.message,
+            code="PROBLEM_REPORT_INVALID",
+            details={"path": path},
+        ) from exc
+    assert isinstance(value, dict)
+    return copy.deepcopy(value)
+
+
+def validate_test_proof_spec(value: Any) -> dict[str, Any]:
+    try:
+        jsonschema.Draft202012Validator(_schema("codex-test-proof.schema.json")).validate(value)
+    except jsonschema.ValidationError as exc:
+        path = "/".join(str(part) for part in exc.absolute_path)
+        raise ContractError(
+            exc.message,
+            code="TEST_PROOF_SPEC_INVALID",
             details={"path": path},
         ) from exc
     assert isinstance(value, dict)
@@ -253,6 +331,12 @@ def evidence_dependency(
             tester_files=execution["tester_files"],
             tester_source=execution.get("tester_source"),
         )
+    elif kind == "proof":
+        base.update(
+            candidate_head=candidate,
+            tester_source=execution.get("tester_source"),
+            behaviors=[item["id"] for item in contract["mission"]["behaviors"]],
+        )
     elif kind == "blackbox":
         base.update(
             candidate_head=candidate,
@@ -267,7 +351,7 @@ def evidence_dependency(
         )
         if kind == "reviewer":
             prereq = {}
-            for name in ("machine", "tester", "blackbox"):
+            for name in ("machine", "tester", "proof", "blackbox"):
                 record = ledger.get("evidence", {}).get(name)
                 prereq[name] = (
                     {
