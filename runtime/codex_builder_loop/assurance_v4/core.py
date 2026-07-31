@@ -475,6 +475,11 @@ def update_facet(
         old = ledger["facets"][facet]
         if value == old:
             return status(repo, run_id)
+        if facet == "execution" and old.get("driver_enforced") is True:
+            raise AssuranceError(
+                "Full Driver execution facts require dedicated transactions",
+                code="DRIVER_EXECUTION_FACET_LOCKED",
+            )
         if facet == "mission":
             if not semantic_revision:
                 raise AssuranceError(

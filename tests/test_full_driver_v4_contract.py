@@ -139,33 +139,6 @@ class FullDriverV4ContractTest(unittest.TestCase):
     def load_ledger(self, run_path: Path) -> dict[str, Any]:
         return json.loads((run_path / "ledger.json").read_text(encoding="utf-8"))
 
-    def update_execution(
-        self,
-        run_id: str,
-        run_path: Path,
-        candidate_head: str,
-        *,
-        builder_files: list[str],
-    ) -> dict[str, Any]:
-        execution = deepcopy(self.load_ledger(run_path)["facets"]["execution"])
-        execution["version"] += 1
-        execution["candidate_head"] = candidate_head
-        execution["builder_files"] = builder_files
-        value = self.write_json(f"{run_id}-execution.json", execution)
-        rc, data = self.invoke(
-            "update-facet",
-            "--repo",
-            self.repo,
-            "--run",
-            run_id,
-            "--facet",
-            "execution",
-            "--value",
-            value,
-        )
-        self.assertEqual(rc, 0, data)
-        return data
-
     def prepare_and_record_tester(self, run_id: str, run_path: Path) -> dict[str, Any]:
         ledger = self.load_ledger(run_path)
         tester = ledger["facets"]["execution"]["agents"]["tester"]
@@ -800,13 +773,38 @@ class FullDriverV4ContractTest(unittest.TestCase):
             "TEST_PROOF_MUTATION_AUTHORITY_VIOLATION",
         )
 
-        current_execution = self.load_ledger(run_path)["facets"]["execution"]
-        self.update_execution(
-            run_id,
-            run_path,
-            current_execution["candidate_head"],
-            builder_files=current_execution["builder_files"],
+        problem_path = self.write_json(
+            "stale-proof-problem.json",
+            {
+                "schema_version": 1,
+                "problems": [
+                    {
+                        "key": "stale-proof-action",
+                        "summary": "Invalidate the previously derived proof action.",
+                        "details": "A same-thread Tester correction changes the next action.",
+                        "owner": "tester",
+                    }
+                ],
+            },
         )
+        rc, recorded = self.invoke(
+            "record-problems",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--report",
+            problem_path,
+            "--role",
+            "tester",
+            "--agent-id",
+            tester["agent_id"],
+            "--thread-id",
+            tester["thread_id"],
+            "--action-id",
+            action["action_id"],
+        )
+        self.assertEqual(rc, 0, recorded)
         stale_spec = self.write_json(
             "stale-proof.json",
             {
@@ -1193,6 +1191,35 @@ class FullDriverV4ContractTest(unittest.TestCase):
         )
         self.assertEqual((run_path / "ledger.json").read_bytes(), before_mutation)
 
+    def test_driver_enforcement_locks_generic_execution_facet_updates(self) -> None:
+        run_id = "full-driver-execution-facet-lock"
+        _data, run_path = self.start(run_id)
+        before = (run_path / "ledger.json").read_bytes()
+        execution = deepcopy(self.load_ledger(run_path)["facets"]["execution"])
+        execution["version"] += 1
+        execution["driver_enforced"] = False
+        execution["candidate_head"] = head(self.repo)
+        value = self.write_json("driver-execution-bypass.json", execution)
+
+        rc, rejected = self.invoke(
+            "update-facet",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--facet",
+            "execution",
+            "--value",
+            value,
+        )
+
+        self.assertNotEqual(rc, 0, rejected)
+        self.assertEqual(rejected.get("code"), "DRIVER_EXECUTION_FACET_LOCKED", rejected)
+        self.assertEqual((run_path / "ledger.json").read_bytes(), before)
+        ledger = self.load_ledger(run_path)
+        self.assertIs(ledger["facets"]["execution"]["driver_enforced"], True)
+        self.assertIs(ledger["builder_checkpointed"], False)
+
     def test_l1_delivery_skips_tester_machine_and_blackbox(self) -> None:
         run_id = "full-driver-l1"
         contract = contract_for(self.repo)
@@ -1203,10 +1230,11 @@ class FullDriverV4ContractTest(unittest.TestCase):
         data, run_path = self.start(run_id, contract=contract)
         candidate = Path(data["candidate_worktree"])
         (candidate / "README.md").write_text("L1 documentation fixture\n", encoding="utf-8")
-        candidate_head = commit_all(candidate, "update L1 documentation")
-        self.update_execution(
-            run_id, run_path, candidate_head, builder_files=["README.md"]
+        commit_all(candidate, "update L1 documentation")
+        rc, checkpointed = self.invoke(
+            "checkpoint-builder", "--repo", self.repo, "--run", run_id
         )
+        self.assertEqual(rc, 0, checkpointed)
 
         rc, decision = self.invoke(
             "driver-next", "--repo", self.repo, "--run", run_id
@@ -1224,10 +1252,11 @@ class FullDriverV4ContractTest(unittest.TestCase):
         (candidate / "src" / "calc.py").write_text(
             "def add(a, b):\n    return a + b\n\nVALUE = 4\n", encoding="utf-8"
         )
-        candidate_head = commit_all(candidate, "checkpoint candidate")
-        self.update_execution(
-            run_id, run_path, candidate_head, builder_files=["src/calc.py"]
+        commit_all(candidate, "checkpoint candidate")
+        rc, checkpointed = self.invoke(
+            "checkpoint-builder", "--repo", self.repo, "--run", run_id
         )
+        self.assertEqual(rc, 0, checkpointed)
         (self.repo / "README.md").write_text("fixture\ntarget drift\n", encoding="utf-8")
         commit_all(self.repo, "advance target independently")
 
