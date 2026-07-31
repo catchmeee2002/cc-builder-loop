@@ -87,7 +87,8 @@ dispatch。直到 `finalize` 或明确的决策边界。动作面如下，不能
   前后 HEAD、candidate dirty 与 case 覆盖后记录 evidence。
 - `reviewer_final`：只有 Tester、proof、machine、blackbox 等全部 reviewer prerequisites 齐全且
   current 后，才用只允许 identity bootstrap 的最小 prompt spawn Reviewer，调用 `prepare-reviewer`
-  绑定真实 identity，再 follow-up 同一 thread 开始审查。Reviewer 继续使用成熟的 `REVIEW_RESULT`、
+  绑定真实 identity，再 follow-up 同一 thread 开始审查。Reviewer 只使用成熟终态
+  `REVIEW_RESULT: pass`、`REVIEW_RESULT: findings` 或 `REVIEW_RESULT: blocked`，并继续返回
   `REVIEW_HEAD` 和 `PROBLEM_REPORT` 唯一终态；主线程只把这些结构字段规范成 v4 evidence report，
   不修改 Reviewer 公共协议。finding 修复后必须 same-thread 续接；不得用
   fresh Reviewer 把旧 finding 洗掉。需要 replacement 时先调用 `prepare-reviewer --replace`，保留旧

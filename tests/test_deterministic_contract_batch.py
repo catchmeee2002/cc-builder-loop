@@ -46,7 +46,7 @@ from proof_harness import (
 
 
 BLACKBOX_SCHEMA = ROOT / "schema" / "codex-blackbox-report.schema.json"
-BUILDER_SKILL = ROOT / "skills" / "builder" / "SKILL.md"
+BUILDER_SKILL = ROOT / "skills" / "full-driver-v4-experiment" / "SKILL.md"
 REVIEWER_AGENT = ROOT / "agents" / "reviewer.toml"
 STABLE_CLI = Path("scripts/codex-builder-loop.py")
 
