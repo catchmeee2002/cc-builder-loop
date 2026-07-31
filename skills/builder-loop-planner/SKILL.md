@@ -27,6 +27,8 @@ description: 在 Codex Plan mode 中为显式选择的 Builder-loop 实验路线
   support path。权限扩大必须重新交给用户决定。
 - 代码任务的 `assurance.required` 默认精确包含 `tester`、`proof`、`machine`、`blackbox`、`reviewer`；
   纯 Markdown L1 只要求 `reviewer`，不得伪造 Tester、machine 或 blackbox。
+- Tester 可信来源由独立 thread、提交的普通测试文件、source manifest 与 Reviewer 审查共同绑定；这不
+  宣称操作系统级恶意代码 sandbox。
 - `execution` 初始固定为 `version: 1`、`driver_enforced: true`、`candidate_head: null`、空的
   `builder_files/tester_files/dirty_snapshot/agents`、`tester_source: null`。Agent identity 只能在真实 spawn
   后由专用事务写入，Planner 不预填。
