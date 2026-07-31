@@ -40,6 +40,7 @@ from harness import (
 
 HOOK = ROOT / "hooks" / "builder-loop.py"
 SPEC_HEAD = "492db76a1f3fb4a59532c2dfffce61850c9d66ac"
+LIFECYCLE_DELIVERY_HEAD = "62088764bfa942dd77027f16a1d18f62c8ce522e"
 
 
 class LifecycleDeliveryContractTest(unittest.TestCase):
@@ -1286,7 +1287,7 @@ class LifecycleDeliveryContractTest(unittest.TestCase):
                 "--diff-filter=A",
                 "--name-only",
                 SPEC_HEAD,
-                "HEAD",
+                LIFECYCLE_DELIVERY_HEAD,
                 "--",
                 "runtime/codex_builder_loop",
             ],
