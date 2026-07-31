@@ -49,6 +49,13 @@ Tester 后续阶段必须用 `followup_task` follow-up 同一个 Tester thread�
 不新建 Reviewer，也不得清空或重置上下文或角色历史。只有 Core 明确允许 identity replacement
 时才建立新身份，并保留旧 identity 与失效证据。
 
+## 实现纪律
+
+- 故障修复首次 edit 前，用现有证据确认观察到的失败、支持的机制、最小充分的根因修复，以及能区分
+  修复前后的回归判据。证据不足时继续诊断或停止，不靠猜测堆兜底，也不建立第二份诊断状态。
+- 每个独立实现单元完成后做廉价局部自检；跨模块变化在阶段边界再自检。自检不写 ledger，也不替代
+  machine、Tester、proof、blackbox 或 Reviewer 正式门禁。
+
 ## 原生持续循环
 
 持续调用 `assurance --experimental-v4 driver-next`，校验返回的 `action_id` 后执行恰好一个动作，再

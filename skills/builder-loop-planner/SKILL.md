@@ -12,8 +12,9 @@ description: 在 Codex Plan mode 中为显式选择的 Builder-loop 实验路线
 
 1. 读取项目 `AGENTS.md`、设计哲学、文档政策、Git HEAD/branch、测试布局和可复制执行的验证命令。
 2. 只在答案会改变目标、权限或验收强度时使用 `request_user_input`。不要恢复固定问卷。
-   只有存在真实、重大、难逆或范式级设计分叉时，才读取
-   [方案取舍与演进](references/design-decisions.md)；局部可逆任务不虚构备选方案。
+   只有存在重大、难逆或范式级且真实的设计分叉时，才读取
+   [方案取舍与演进](references/design-decisions.md)，并把取舍交给用户决定；局部可逆任务不虚构备选
+   方案。只有一条可信路径时说明其他方向被什么约束排除；不存在真实分叉时不做方案比较。
 3. target dirty 默认不进入任务。任务确实依赖 dirty 时，先用选项卡取得 exact-path 授权，再计算每个
    普通文件当前内容的 SHA-256；不得 stash、复制、清理或授权目录/glob。
 4. 按可观察行为写人类可读方案，同时生成一份 schema v4 contract。完整读取本 Skill 相对路径

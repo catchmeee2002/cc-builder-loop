@@ -32,8 +32,9 @@ class DeliveryDisciplineContractTest(unittest.TestCase):
     def test_root_cause_minimum_sufficient_and_real_tradeoff_rules_are_explicit(self) -> None:
         planner = compact(read("skills/builder-loop-planner/SKILL.md"))
         builder = compact(read("skills/builder/SKILL.md"))
+        full_driver = compact(read("skills/full-driver-v4-experiment/SKILL.md"))
         philosophy = compact(read("docs/design-philosophy.md"))
-        combined = planner + builder + philosophy
+        combined = planner + builder + full_driver + philosophy
 
         self.assertRegex(combined, r"根因.{0,100}(?:修复|解决)")
         self.assertIn("证据", combined)
@@ -52,8 +53,9 @@ class DeliveryDisciplineContractTest(unittest.TestCase):
 
     def test_segmented_self_checks_are_lightweight_and_never_replace_gates(self) -> None:
         builder = compact(read("skills/builder/SKILL.md"))
+        full_driver = compact(read("skills/full-driver-v4-experiment/SKILL.md"))
         architecture = compact(read("docs/architecture.md"))
-        combined = builder + architecture
+        combined = builder + full_driver + architecture
         self.assertIn("自检", combined)
         self.assertTrue("局部" in combined and ("跨模块" in combined or "阶段" in combined))
         self.assertRegex(combined, r"自检.{0,160}(?:不写|不得写|不会写).{0,30}ledger")
