@@ -32,6 +32,22 @@
       "properties": {
         "delivery_kind": {"enum": ["code", "documentation", "preparation"]},
         "revision": {"type": "integer", "minimum": 1},
+        "supersedes": {
+          "oneOf": [
+            {"type": "null"},
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["run_id", "revision", "mission_digest", "candidate_head"],
+              "properties": {
+                "run_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"},
+                "revision": {"type": "integer", "minimum": 1},
+                "mission_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+                "candidate_head": {"$ref": "#/$defs/commit"}
+              }
+            }
+          ]
+        },
         "objective": {"type": "string", "minLength": 1},
         "behaviors": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/statement"}},
         "interfaces": {"type": "array", "items": {"$ref": "#/$defs/statement"}},
@@ -97,6 +113,7 @@
         "deploy_command": {"$ref": "#/$defs/command"},
         "probe_command": {"$ref": "#/$defs/command"},
         "restore_command": {"$ref": "#/$defs/command"}
+        ,"revision_retention": {"enum": ["restore", "lease"]}
       }
     },
     "assurance": {
@@ -187,6 +204,33 @@
         },
         "driver_enforced": {"type": "boolean"},
         "continuation": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/continuation"}]},
+        "carryover": {
+          "oneOf": [
+            {"type": "null"},
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["source_run_id", "source_candidate_head", "files"],
+              "properties": {
+                "source_run_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"},
+                "source_candidate_head": {"$ref": "#/$defs/commit"},
+                "files": {
+                  "type": "array",
+                  "uniqueItems": true,
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["path", "blob"],
+                    "properties": {
+                      "path": {"$ref": "#/$defs/path"},
+                      "blob": {"type": "string", "pattern": "^[0-9a-f]{40}$"}
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        },
         "deployment": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/deployment"}]},
         "dirty_snapshot": {
           "type": "array",

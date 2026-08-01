@@ -49,6 +49,7 @@ from .store import (
     resolve_repo,
     run_dir,
     save_ledger,
+    state_root,
     target_worktree,
 )
 
@@ -171,6 +172,15 @@ def _blob_at(repo: Path, head: str, path: str) -> str | None:
     return parts[2]
 
 
+def _candidate_manifest(repo: Path, base: str, candidate: str) -> list[dict[str, str]]:
+    manifest: list[dict[str, str]] = []
+    for path in changed_files(repo, base, candidate):
+        blob = _blob_at(repo, candidate, path)
+        if blob is not None:
+            manifest.append({"path": path, "blob": blob})
+    return manifest
+
+
 def validate(contract: Any) -> dict[str, Any]:
     value = validate_contract(contract)
     return {"status": "READY", "schema_version": SCHEMA_VERSION, "digests": facet_digests(value)}
@@ -194,6 +204,16 @@ def start(
     with locked(repo):
         if ledger_path(repo, run_id).exists():
             existing = read_ledger(repo, run_id)
+            requested_supersedes = contract["mission"].get("supersedes")
+            existing_carryover = existing["facets"]["execution"].get("carryover")
+            if (
+                isinstance(requested_supersedes, dict)
+                and isinstance(existing_carryover, dict)
+                and existing["owner_session_id"] == session_id.strip()
+                and existing["facets"]["mission"] == contract["mission"]
+                and existing_carryover.get("source_run_id") == requested_supersedes["run_id"]
+            ):
+                return status(repo, run_id)
             continuation = contract["execution"].get("continuation")
             if isinstance(continuation, dict):
                 preparation = read_ledger(repo, continuation["preparation_run_id"])
@@ -220,6 +240,83 @@ def start(
                     return status(repo, run_id)
             raise AssuranceError("assurance run already exists", code="ASSURANCE_RUN_EXISTS")
         target_head = branch_head(repo, target_branch)
+        supersedes = contract["mission"].get("supersedes")
+        if contract["mission"]["revision"] > 1 and not isinstance(supersedes, dict):
+            raise AssuranceError(
+                "a new higher-revision run requires mission supersedes",
+                code="MISSION_SUPERSEDES_REQUIRED",
+                status="NEEDS_USER",
+            )
+        source_ledger: dict[str, Any] | None = None
+        candidate_base = target_head
+        if isinstance(supersedes, dict):
+            source_ledger = read_ledger(repo, supersedes["run_id"])
+            source_mission = source_ledger["facets"]["mission"]
+            source_candidate = source_ledger["facets"]["execution"].get("candidate_head")
+            if source_ledger["phase"] != "active":
+                raise AssuranceError(
+                    "superseded run must remain active until continuity transfers",
+                    code="SUPERSEDED_RUN_NOT_ACTIVE",
+                    status="NEEDS_USER",
+                )
+            if (
+                supersedes["revision"] != source_mission["revision"]
+                or supersedes["mission_digest"] != source_ledger["digests"]["mission"]
+                or supersedes["candidate_head"] != source_candidate
+            ):
+                raise AssuranceError(
+                    "mission supersedes binding does not match the source run",
+                    code="MISSION_SUPERSEDES_MISMATCH",
+                )
+            if contract["mission"]["revision"] != source_mission["revision"] + 1:
+                raise AssuranceError(
+                    "superseding mission must increment revision by one",
+                    code="MISSION_REVISION_INVALID",
+                )
+            if source_ledger["target_branch"] != target_branch:
+                raise AssuranceError(
+                    "superseding run cannot change target branch",
+                    code="SUPERSEDE_TARGET_MISMATCH",
+                    status="NEEDS_USER",
+                )
+            if target_head != source_ledger["target_start_head"]:
+                raise AssuranceError(
+                    "target moved before supersede continuity could be captured",
+                    code="SUPERSEDE_TARGET_DRIFT",
+                    status="NEEDS_USER",
+                )
+            if not isinstance(source_candidate, str) or not commit_exists(repo, source_candidate):
+                raise AssuranceError(
+                    "superseded candidate is unavailable",
+                    code="SUPERSEDE_CANDIDATE_MISSING",
+                    status="NEEDS_USER",
+                )
+            source_worktree = Path(source_ledger["candidate_worktree"])
+            if dirty_paths(source_worktree) or branch_head(repo, source_ledger["candidate_branch"]) != source_candidate:
+                raise AssuranceError(
+                    "superseded candidate is not a clean immutable snapshot",
+                    code="SUPERSEDE_CANDIDATE_DRIFT",
+                    status="NEEDS_USER",
+                )
+            source_deployment = source_ledger["facets"]["execution"].get("deployment")
+            if digest(source_deployment) != digest(contract["execution"].get("deployment")):
+                raise AssuranceError(
+                    "superseding run changed the deployment contract",
+                    code="SUPERSEDE_DEPLOYMENT_MISMATCH",
+                    status="NEEDS_USER",
+                )
+            expected_supersede_intent = {
+                "source_run_id": supersedes["run_id"],
+                "target_run_id": run_id,
+                "state": "prepared",
+            }
+            if source_ledger.get("supersede_intent") not in (None, expected_supersede_intent):
+                raise AssuranceError(
+                    "source run already has another supersede intent",
+                    code="SUPERSEDE_INTENT_CONFLICT",
+                    status="NEEDS_USER",
+                )
+            candidate_base = source_candidate
         continuation = contract["execution"].get("continuation")
         preparation_ledger: dict[str, Any] | None = None
         if isinstance(continuation, dict):
@@ -269,7 +366,7 @@ def start(
                     "continuation support paths do not match the preparation authority",
                     code="CONTINUATION_SUPPORT_MISMATCH",
                 )
-        intake_sources = _validate_dirty_intake(repo, contract)
+        intake_sources = [] if source_ledger is not None else _validate_dirty_intake(repo, contract)
         branch = f"assurance-v4/{run_id}/candidate"
         if git(repo, "show-ref", "--verify", f"refs/heads/{branch}", check=False).returncode == 0:
             raise AssuranceError("candidate branch already exists", code="CANDIDATE_BRANCH_EXISTS")
@@ -281,8 +378,20 @@ def start(
             preparation_ledger["continuation_consume_intent"] = expected_intent
             append_event(preparation_ledger, "continuation_consume_intent_written", expected_intent)
             save_ledger(repo, preparation_ledger)
-        created = git(repo, "worktree", "add", "-b", branch, str(worktree), target_head, check=False)
+        if source_ledger is not None:
+            source_ledger["supersede_intent"] = {
+                "source_run_id": source_ledger["run_id"],
+                "target_run_id": run_id,
+                "state": "prepared",
+            }
+            append_event(source_ledger, "supersede_intent_written", {"target_run_id": run_id})
+            save_ledger(repo, source_ledger)
+        created = git(repo, "worktree", "add", "-b", branch, str(worktree), candidate_base, check=False)
         if created.returncode != 0:
+            if source_ledger is not None:
+                source_ledger["supersede_intent"] = None
+                append_event(source_ledger, "supersede_intent_rolled_back", {"target_run_id": run_id})
+                save_ledger(repo, source_ledger)
             if preparation_ledger is not None:
                 preparation_ledger["continuation_consume_intent"] = None
                 append_event(
@@ -297,9 +406,13 @@ def start(
             )
         business_persisted = False
         try:
-            snapshots = _copy_dirty_intake(worktree, intake_sources)
+            snapshots = (
+                copy.deepcopy(source_ledger["facets"]["execution"]["dirty_snapshot"])
+                if source_ledger is not None
+                else _copy_dirty_intake(worktree, intake_sources)
+            )
             captured = [item["path"] for item in snapshots]
-            if snapshots:
+            if snapshots and source_ledger is None:
                 git(worktree, "add", "--", *captured)
                 committed = git(
                     worktree,
@@ -328,6 +441,19 @@ def start(
             execution = copy.deepcopy(contract["execution"])
             execution["candidate_head"] = candidate_head
             execution["dirty_snapshot"] = snapshots
+            retired_tester_sources: list[dict[str, Any]] = []
+            if source_ledger is not None:
+                source_execution = source_ledger["facets"]["execution"]
+                execution["builder_files"] = copy.deepcopy(source_execution["builder_files"])
+                execution["tester_files"] = []
+                execution["tester_source"] = None
+                execution["carryover"] = {
+                    "source_run_id": source_ledger["run_id"],
+                    "source_candidate_head": candidate_head,
+                    "files": _candidate_manifest(repo, target_head, candidate_head),
+                }
+                if isinstance(source_execution.get("tester_source"), dict):
+                    retired_tester_sources.append(copy.deepcopy(source_execution["tester_source"]))
             if snapshots:
                 execution["version"] += 1
                 execution["builder_files"] = sorted(set(execution["builder_files"]) | set(captured))
@@ -346,12 +472,15 @@ def start(
                 "facets": contract,
                 "digests": facet_digests(contract),
                 "evidence": {},
-                "retired_tester_sources": [],
+                "retired_tester_sources": retired_tester_sources,
                 "retired_reviewer_agents": [],
                 "driver_runtime": copy.deepcopy(driver_runtime),
                 "dispatch_intent": None,
                 "deployment_transaction": None,
                 "pending_blackbox": None,
+                "environment_lease": None,
+                "supersede_intent": None,
+                "abandon_intent": None,
                 "problems": [],
                 "publication": {
                     "required": bool(contract["authority"].get("public_prerequisites")),
@@ -377,6 +506,18 @@ def start(
             )
             save_ledger(repo, ledger)
             business_persisted = True
+            if source_ledger is not None:
+                current_source = read_ledger(repo, source_ledger["run_id"])
+                source_lease = current_source.get("environment_lease")
+                if not isinstance(source_lease, dict) or source_lease.get("state") != "held":
+                    current_source["phase"] = "superseded"
+                    current_source["supersede_intent"] = {
+                        "source_run_id": current_source["run_id"],
+                        "target_run_id": run_id,
+                        "state": "received",
+                    }
+                    append_event(current_source, "run_superseded", {"target_run_id": run_id})
+                    save_ledger(repo, current_source)
             if preparation_ledger is not None:
                 preparation_ledger["continuation_consumed_by"] = run_id
                 preparation_ledger["continuation_consume_intent"] = None
@@ -405,6 +546,13 @@ def start(
                         {"business_run_id": run_id},
                     )
                     save_ledger(repo, current_preparation)
+            if source_ledger is not None:
+                current_source = read_ledger(repo, source_ledger["run_id"])
+                intent = current_source.get("supersede_intent")
+                if isinstance(intent, dict) and intent.get("target_run_id") == run_id:
+                    current_source["supersede_intent"] = None
+                    append_event(current_source, "supersede_intent_rolled_back", {"target_run_id": run_id})
+                    save_ledger(repo, current_source)
             raise
     return status(repo, run_id)
 
@@ -664,7 +812,7 @@ def _timestamp_ms(value: str) -> int:
 
 def telemetry(ledger: Mapping[str, Any]) -> dict[str, Any]:
     events = [item for item in ledger.get("events", []) if isinstance(item, dict)]
-    terminal = ledger.get("phase") in {"finalized", "abandoned"}
+    terminal = ledger.get("phase") in {"finalized", "abandoned", "superseded"}
     end_at = ledger["updated_at"] if terminal else now()
     elapsed_ms = max(0, _timestamp_ms(end_at) - _timestamp_ms(ledger["created_at"]))
     stage_stats: dict[str, dict[str, Any]] = {}
@@ -784,6 +932,9 @@ def status(repo_value: str | Path, run_value: str) -> dict[str, Any]:
         "dispatch_intent": copy.deepcopy(ledger.get("dispatch_intent")),
         "deployment_transaction": copy.deepcopy(ledger.get("deployment_transaction")),
         "pending_blackbox": copy.deepcopy(ledger.get("pending_blackbox")),
+        "environment_lease": copy.deepcopy(ledger.get("environment_lease")),
+        "supersede_intent": copy.deepcopy(ledger.get("supersede_intent")),
+        "abandon_intent": copy.deepcopy(ledger.get("abandon_intent")),
         "telemetry": telemetry(ledger),
         "readiness": readiness(ledger),
         "publication": copy.deepcopy(ledger.get("publication")),
@@ -810,6 +961,9 @@ def driver_context(repo_value: str | Path, run_value: str) -> dict[str, Any]:
         "dispatch_intent": copy.deepcopy(ledger.get("dispatch_intent")),
         "deployment_transaction": copy.deepcopy(ledger.get("deployment_transaction")),
         "pending_blackbox": copy.deepcopy(ledger.get("pending_blackbox")),
+        "environment_lease": copy.deepcopy(ledger.get("environment_lease")),
+        "supersede_intent": copy.deepcopy(ledger.get("supersede_intent")),
+        "abandon_intent": copy.deepcopy(ledger.get("abandon_intent")),
     }
 
 
@@ -840,6 +994,13 @@ def update_facet(
                 code="DRIVER_EXECUTION_FACET_LOCKED",
             )
         if facet == "mission":
+            lease = ledger.get("environment_lease")
+            if isinstance(lease, dict) and lease.get("state") == "held":
+                raise AssuranceError(
+                    "held environment lease requires the revise-mission transaction",
+                    code="MISSION_REVISION_TRANSACTION_REQUIRED",
+                    status="NEEDS_USER",
+                )
             if not semantic_revision:
                 raise AssuranceError(
                     "mission changes require an explicit semantic revision",
@@ -930,6 +1091,9 @@ def update_facet(
             declared = set(validated["execution"]["builder_files"]) | set(
                 validated["execution"]["tester_files"]
             )
+            carryover = validated["execution"].get("carryover")
+            if isinstance(carryover, dict):
+                declared |= {item["path"] for item in carryover["files"]}
             undeclared = sorted(set(files) - declared)
             if undeclared:
                 raise AssuranceError(
@@ -955,6 +1119,70 @@ def update_facet(
                 "new_digest": ledger["digests"][facet],
                 "semantic_revision": semantic_revision,
             },
+        )
+        save_ledger(repo, ledger)
+    return status(repo, run_id)
+
+
+def revise_mission(repo_value: str | Path, run_value: str, mission_value: Any) -> dict[str, Any]:
+    repo = resolve_repo(repo_value)
+    run_id = ensure_run_id(run_value)
+    with locked(repo):
+        ledger = read_ledger(repo, run_id)
+        if ledger["phase"] != "active":
+            raise AssuranceError("run is not active", code="ASSURANCE_RUN_NOT_ACTIVE")
+        old = ledger["facets"]["mission"]
+        if not isinstance(mission_value, dict):
+            raise AssuranceError("mission revision must be an object", code="MISSION_REVISION_INVALID")
+        expected_supersedes = {
+            "run_id": run_id,
+            "revision": old["revision"],
+            "mission_digest": ledger["digests"]["mission"],
+            "candidate_head": ledger["facets"]["execution"].get("candidate_head"),
+        }
+        if mission_value.get("revision") != old["revision"] + 1 or mission_value.get("supersedes") != expected_supersedes:
+            raise AssuranceError(
+                "mission revision must bind the immediately preceding run state",
+                code="MISSION_REVISION_BINDING_INVALID",
+                status="NEEDS_USER",
+                details={"expected_supersedes": expected_supersedes},
+            )
+        candidate = copy.deepcopy(ledger["facets"])
+        candidate["mission"] = copy.deepcopy(mission_value)
+        validated = validate_contract(candidate)
+        lease = ledger.get("environment_lease")
+        if isinstance(lease, dict) and lease.get("state") == "held":
+            transaction = ledger.get("deployment_transaction")
+            deployment = ledger["facets"]["execution"].get("deployment")
+            if not isinstance(transaction, dict) or not isinstance(deployment, dict):
+                raise AssuranceError("held environment lease lost its transaction", code="ENVIRONMENT_LEASE_INVALID")
+            observed, result = _probe_environment(
+                repo,
+                Path(transaction["worktree"]),
+                transaction["candidate_head"],
+                deployment,
+                artifact_sha256=lease["artifact_sha256"],
+            )
+            if observed != lease["active_probe"]:
+                lease["state"] = "restore_failed"
+                append_event(
+                    ledger,
+                    "environment_lease_revision_drift",
+                    {"expected": lease["active_probe"], "observed": observed, "probe_result": result},
+                )
+                save_ledger(repo, ledger)
+                raise AssuranceError(
+                    "environment changed before mission revision",
+                    code="ENVIRONMENT_LEASE_STATE_DRIFT",
+                    status="NEEDS_USER",
+                )
+            lease["mission_revision"] = mission_value["revision"]
+        ledger["facets"] = validated
+        ledger["digests"] = facet_digests(validated)
+        append_event(
+            ledger,
+            "mission_revised",
+            {"old_revision": old["revision"], "new_revision": mission_value["revision"]},
         )
         save_ledger(repo, ledger)
     return status(repo, run_id)
@@ -992,11 +1220,21 @@ def checkpoint_builder(repo_value: str | Path, run_value: str) -> dict[str, Any]
             for item in (execution.get("tester_source") or {}).get("files", [])
         }
         tester_files = set(execution.get("tester_files", []))
+        carryover_manifest = {
+            item["path"]: item["blob"]
+            for item in (execution.get("carryover") or {}).get("files", [])
+        }
         tester_violations = sorted(
             path
             for path in files
             if _matches(path, ledger["facets"]["authority"]["tester_write"])
-            and (path not in tester_files or _blob_at(repo, candidate, path) != tester_manifest.get(path))
+            and (
+                (
+                    path not in tester_files
+                    or _blob_at(repo, candidate, path) != tester_manifest.get(path)
+                )
+                and _blob_at(repo, candidate, path) != carryover_manifest.get(path)
+            )
         )
         if tester_violations:
             raise AssuranceError(
@@ -1004,7 +1242,15 @@ def checkpoint_builder(repo_value: str | Path, run_value: str) -> dict[str, Any]
                 code="BUILDER_TESTER_OWNERSHIP_VIOLATION",
                 details={"paths": tester_violations},
             )
-        builder_files = sorted(set(files) - tester_files)
+        builder_files = sorted(
+            path
+            for path in files
+            if path not in tester_files
+            and not (
+                _matches(path, ledger["facets"]["authority"]["tester_write"])
+                and _blob_at(repo, candidate, path) == carryover_manifest.get(path)
+            )
+        )
         invalid = [
             path
             for path in builder_files
@@ -1435,11 +1681,17 @@ def integrate_tester(repo_value: str | Path, run_value: str) -> dict[str, Any]:
                         code="TESTER_INTEGRATION_CHECKOUT_FAILED",
                         details={"path": path, "stderr": checked_out.stderr[-8000:]},
                     )
+            carryover = execution.get("carryover")
+            identical_carryover = isinstance(carryover, dict) and all(
+                _blob_at(repo, candidate_before, item["path"]) == item["blob"]
+                for item in manifest
+            )
             committed = git(
                 candidate_worktree,
                 "-c",
                 "commit.gpgSign=false",
                 "commit",
+                *(["--allow-empty"] if identical_carryover else []),
                 "-m",
                 f"test(assurance): [cr_id_skip] Integrate Tester Source {source_head[:12]}",
                 check=False,
@@ -1459,6 +1711,10 @@ def integrate_tester(repo_value: str | Path, run_value: str) -> dict[str, Any]:
                 "files": manifest,
                 "replaces_files": [],
             }
+            if isinstance(carryover, dict):
+                carryover["files"] = [
+                    item for item in carryover["files"] if item["path"] not in set(tester_files)
+                ]
             ledger["digests"] = facet_digests(ledger["facets"])
             _close_problems(ledger, "tester", f"tester-source:{source_head}")
             append_event(
@@ -1582,19 +1838,35 @@ def record_evidence(
             deployment = ledger["facets"]["execution"].get("deployment")
             if isinstance(deployment, dict):
                 transaction = ledger.get("deployment_transaction")
+                lease = ledger.get("environment_lease")
                 observed = details.get("deployment")
-                if not isinstance(transaction, dict) or transaction.get("state") != "restored":
+                disposition = observed.get("environment_disposition") if isinstance(observed, dict) else None
+                restored = isinstance(transaction, dict) and transaction.get("state") == "restored"
+                leased = (
+                    isinstance(transaction, dict)
+                    and transaction.get("state") == "deployed"
+                    and isinstance(lease, dict)
+                    and lease.get("state") == "held"
+                    and disposition == "leased"
+                )
+                if not restored and not leased:
                     raise AssuranceError(
-                        "deployment-backed blackbox evidence requires a restored environment",
-                        code="DEPLOYMENT_NOT_RESTORED",
+                        "deployment-backed blackbox evidence requires a restored or leased environment",
+                        code="DEPLOYMENT_DISPOSITION_INVALID",
                     )
                 expected_deployment = {
                     "target_id": transaction["target_id"],
                     "artifact_sha256": transaction["artifact_sha256"],
                     "baseline_state_digest": transaction["baseline_probe"]["state_digest"],
                     "deployed_state_digest": transaction["deployed_probe"]["state_digest"],
-                    "restored_state_digest": transaction["restored_probe"]["state_digest"],
+                    "restored_state_digest": (
+                        transaction["restored_probe"]["state_digest"]
+                        if restored
+                        else lease["active_probe"]["state_digest"]
+                    ),
                     "deploy_action": transaction.get("deploy_action", "executed"),
+                    "environment_disposition": "restored" if restored else "leased",
+                    "lease_id": None if restored else lease["lease_id"],
                 }
                 if observed != expected_deployment:
                     raise AssuranceError(
@@ -2164,6 +2436,59 @@ def _probe_environment(
     return probe, result
 
 
+def _hold_environment_lease(
+    ledger: dict[str, Any], deployment: Mapping[str, Any], transaction: Mapping[str, Any]
+) -> None:
+    if deployment.get("revision_retention", "restore") != "lease":
+        return
+    baseline = transaction.get("baseline_probe")
+    active = transaction.get("deployed_probe")
+    artifact = transaction.get("artifact_sha256")
+    if not isinstance(baseline, dict) or not isinstance(active, dict) or not isinstance(artifact, str):
+        raise AssuranceError("deployment cannot establish an environment lease", code="ENVIRONMENT_LEASE_INVALID")
+    ledger["environment_lease"] = {
+        "lease_id": digest(
+            {
+                "run_id": ledger["run_id"],
+                "target_id": deployment["target_id"],
+                "artifact_sha256": artifact,
+                "baseline_probe": baseline,
+            }
+        ),
+        "state": "held",
+        "owner_run_id": ledger["run_id"],
+        "target_id": deployment["target_id"],
+        "artifact_sha256": artifact,
+        "deployment_digest": digest(deployment),
+        "baseline_probe": copy.deepcopy(baseline),
+        "active_probe": copy.deepcopy(active),
+        "mission_revision": ledger["facets"]["mission"]["revision"],
+        "transferred_to_run_id": None,
+    }
+
+
+def _held_lease_owners(repo: Path, target_id: str, *, exclude: set[str]) -> list[str]:
+    owners: list[str] = []
+    runs = state_root(repo) / "runs"
+    if not runs.exists():
+        return owners
+    for path in runs.iterdir():
+        if not path.is_dir() or path.name in exclude or not (path / "ledger.json").exists():
+            continue
+        try:
+            ledger = read_ledger(repo, path.name)
+        except StoreError:
+            continue
+        lease = ledger.get("environment_lease")
+        if (
+            isinstance(lease, dict)
+            and lease.get("target_id") == target_id
+            and lease.get("state") in {"held", "transfer_prepared", "restore_required", "restoring", "restore_failed"}
+        ):
+            owners.append(path.name)
+    return sorted(owners)
+
+
 def prepare_deployment(repo_value: str | Path, run_value: str) -> dict[str, Any]:
     repo = resolve_repo(repo_value)
     run_id = ensure_run_id(run_value)
@@ -2241,6 +2566,7 @@ def prepare_deployment(repo_value: str | Path, run_value: str) -> dict[str, Any]
                 "deployed_probe": None,
                 "restored_probe": None,
                 "deploy_action": None,
+                "restore_required_after_reuse": False,
                 "failure_code": None,
             }
             ledger["deployment_transaction"] = transaction
@@ -2273,10 +2599,115 @@ def prepare_deployment(repo_value: str | Path, run_value: str) -> dict[str, Any]
             save_ledger(repo, ledger)
             return status(repo, run_id)
         transaction["artifact_sha256"] = _sha256_file(artifact)
+        supersedes = ledger["facets"]["mission"].get("supersedes")
+        allowed_source = supersedes["run_id"] if isinstance(supersedes, dict) else None
+        competing = _held_lease_owners(
+            repo,
+            deployment["target_id"],
+            exclude={run_id, *({allowed_source} if allowed_source else set())},
+        )
+        if competing:
+            raise AssuranceError(
+                "external target already has another environment lease owner",
+                code="ENVIRONMENT_LEASE_CONFLICT",
+                status="NEEDS_USER",
+                details={"owners": competing},
+            )
+        if allowed_source is None:
+            direct_owners = _held_lease_owners(repo, deployment["target_id"], exclude={run_id})
+            if direct_owners:
+                raise AssuranceError(
+                    "external target lease requires an explicit supersedes binding",
+                    code="ENVIRONMENT_LEASE_SUPERSEDES_REQUIRED",
+                    status="NEEDS_USER",
+                    details={"owners": direct_owners},
+                )
+        if isinstance(supersedes, dict):
+            source = read_ledger(repo, supersedes["run_id"])
+            source_lease = source.get("environment_lease")
+            if isinstance(source_lease, dict) and source_lease.get("state") in {"held", "transfer_prepared"}:
+                if (
+                    source_lease["target_id"] != deployment["target_id"]
+                    or source_lease["deployment_digest"] != digest(deployment)
+                ):
+                    raise AssuranceError(
+                        "superseded environment lease does not match the target contract",
+                        code="ENVIRONMENT_LEASE_TRANSFER_MISMATCH",
+                        status="NEEDS_USER",
+                    )
+                observed, observed_result = _probe_environment(
+                    repo,
+                    worktree,
+                    candidate,
+                    deployment,
+                    artifact_sha256=transaction["artifact_sha256"],
+                )
+                if observed != source_lease["active_probe"]:
+                    raise AssuranceError(
+                        "superseded environment changed before transfer",
+                        code="ENVIRONMENT_LEASE_STATE_DRIFT",
+                        status="NEEDS_USER",
+                    )
+                if source_lease["artifact_sha256"] == transaction["artifact_sha256"]:
+                    source_lease["state"] = "transfer_prepared"
+                    source_lease["transferred_to_run_id"] = run_id
+                    append_event(source, "environment_lease_transfer_prepared", {"target_run_id": run_id})
+                    save_ledger(repo, source)
+                    transaction["baseline_probe"] = copy.deepcopy(source_lease["baseline_probe"])
+                    transaction["deployed_probe"] = copy.deepcopy(observed)
+                    transaction["deploy_action"] = "skipped_existing"
+                    transaction["restore_required_after_reuse"] = True
+                    transaction["state"] = "deployed"
+                    ledger["environment_lease"] = {
+                        **copy.deepcopy(source_lease),
+                        "state": "held",
+                        "owner_run_id": run_id,
+                        "mission_revision": ledger["facets"]["mission"]["revision"],
+                        "transferred_to_run_id": None,
+                    }
+                    ledger["supersede_intent"] = {
+                        "source_run_id": source["run_id"],
+                        "target_run_id": run_id,
+                        "state": "received",
+                    }
+                    append_event(
+                        ledger,
+                        "environment_lease_received",
+                        {"source_run_id": source["run_id"], "probe_result": observed_result},
+                    )
+                    save_ledger(repo, ledger)
+                    source_lease["state"] = "transferred"
+                    source["phase"] = "superseded"
+                    source["supersede_intent"] = {
+                        "source_run_id": source["run_id"],
+                        "target_run_id": run_id,
+                        "state": "received",
+                    }
+                    append_event(source, "environment_lease_transferred", {"target_run_id": run_id})
+                    save_ledger(repo, source)
+                    ledger["supersede_intent"] = None
+                    save_ledger(repo, ledger)
+                    return status(repo, run_id)
+                ledger["supersede_intent"] = {
+                    "source_run_id": source["run_id"],
+                    "target_run_id": run_id,
+                    "state": "artifact_mismatch",
+                }
+                append_event(
+                    ledger,
+                    "superseded_artifact_mismatch",
+                    {
+                        "source_artifact_sha256": source_lease["artifact_sha256"],
+                        "candidate_artifact_sha256": transaction["artifact_sha256"],
+                    },
+                )
+                save_ledger(repo, ledger)
+                return status(repo, run_id)
         if baseline["deployed_artifact_sha256"] == transaction["artifact_sha256"]:
             transaction["deploy_action"] = "skipped_existing"
             transaction["deployed_probe"] = baseline
             transaction["state"] = "deployed"
+            _hold_environment_lease(ledger, deployment, transaction)
             append_event(
                 ledger,
                 "deployment_skipped_existing",
@@ -2336,6 +2767,7 @@ def prepare_deployment(repo_value: str | Path, run_value: str) -> dict[str, Any]
             return status(repo, run_id)
         transaction["deployed_probe"] = deployed
         transaction["state"] = "deployed"
+        _hold_environment_lease(ledger, deployment, transaction)
         append_event(
             ledger,
             "deployment_completed",
@@ -2399,7 +2831,13 @@ def restore_deployment(repo_value: str | Path, run_value: str) -> dict[str, Any]
         append_event(ledger, "deployment_restore_intent_written", {})
         save_ledger(repo, ledger)
         worktree = Path(transaction["worktree"])
-        if transaction.get("deploy_action") == "skipped_existing":
+        lease = ledger.get("environment_lease")
+        if isinstance(lease, dict):
+            lease["state"] = "restoring"
+        if (
+            transaction.get("deploy_action") == "skipped_existing"
+            and not transaction.get("restore_required_after_reuse", False)
+        ):
             try:
                 restored, probe_result = _probe_environment(
                     repo,
@@ -2411,6 +2849,8 @@ def restore_deployment(repo_value: str | Path, run_value: str) -> dict[str, Any]
             except AssuranceError as exc:
                 transaction["state"] = "restore_failed"
                 transaction["failure_code"] = exc.code
+                if isinstance(lease, dict):
+                    lease["state"] = "restore_failed"
                 append_event(ledger, "deployment_reuse_probe_failed", {"code": exc.code})
                 save_ledger(repo, ledger)
                 raise AssuranceError(
@@ -2422,6 +2862,8 @@ def restore_deployment(repo_value: str | Path, run_value: str) -> dict[str, Any]
             if restored != baseline:
                 transaction["state"] = "restore_failed"
                 transaction["failure_code"] = "DEPLOYMENT_REUSE_STATE_DRIFT"
+                if isinstance(lease, dict):
+                    lease["state"] = "restore_failed"
                 append_event(
                     ledger,
                     "deployment_reuse_state_drift",
@@ -2435,11 +2877,16 @@ def restore_deployment(repo_value: str | Path, run_value: str) -> dict[str, Any]
                 )
             transaction["restored_probe"] = restored
             transaction["state"] = "restored"
+            if isinstance(lease, dict):
+                lease["state"] = "released"
             append_event(
                 ledger,
                 "deployment_reuse_released",
                 {"probe": restored, "probe_result": probe_result},
             )
+            if isinstance(ledger.get("abandon_intent"), dict):
+                ledger["phase"] = "abandoned"
+                append_event(ledger, "run_abandoned", copy.deepcopy(ledger["abandon_intent"]))
             save_ledger(repo, ledger)
             return status(repo, run_id)
         result = _run_frozen_command(
@@ -2453,6 +2900,8 @@ def restore_deployment(repo_value: str | Path, run_value: str) -> dict[str, Any]
         if not _command_passed(deployment["restore_command"], result):
             transaction["state"] = "restore_failed"
             transaction["failure_code"] = "DEPLOYMENT_RESTORE_FAILED"
+            if isinstance(lease, dict):
+                lease["state"] = "restore_failed"
             append_event(ledger, "deployment_restore_failed", {"result": result})
             save_ledger(repo, ledger)
             raise AssuranceError(
@@ -2472,6 +2921,8 @@ def restore_deployment(repo_value: str | Path, run_value: str) -> dict[str, Any]
         except AssuranceError as exc:
             transaction["state"] = "restore_failed"
             transaction["failure_code"] = exc.code
+            if isinstance(lease, dict):
+                lease["state"] = "restore_failed"
             append_event(ledger, "deployment_restore_probe_failed", {"code": exc.code})
             save_ledger(repo, ledger)
             raise AssuranceError(
@@ -2483,6 +2934,8 @@ def restore_deployment(repo_value: str | Path, run_value: str) -> dict[str, Any]
         if restored["state_digest"] != baseline["state_digest"]:
             transaction["state"] = "restore_failed"
             transaction["failure_code"] = "DEPLOYMENT_RESTORE_STATE_MISMATCH"
+            if isinstance(lease, dict):
+                lease["state"] = "restore_failed"
             save_ledger(repo, ledger)
             raise AssuranceError(
                 "deployment restore did not recover the baseline state",
@@ -2491,8 +2944,69 @@ def restore_deployment(repo_value: str | Path, run_value: str) -> dict[str, Any]
             )
         transaction["restored_probe"] = restored
         transaction["state"] = "restored"
+        if isinstance(lease, dict):
+            lease["state"] = "released"
         append_event(ledger, "deployment_restored", {"probe": restored, "probe_result": probe_result})
+        if isinstance(ledger.get("abandon_intent"), dict):
+            ledger["phase"] = "abandoned"
+            append_event(ledger, "run_abandoned", copy.deepcopy(ledger["abandon_intent"]))
         save_ledger(repo, ledger)
+    return status(repo, run_id)
+
+
+def restore_superseded_environment(repo_value: str | Path, run_value: str) -> dict[str, Any]:
+    repo = resolve_repo(repo_value)
+    run_id = ensure_run_id(run_value)
+    target = read_ledger(repo, run_id)
+    intent = target.get("supersede_intent")
+    if not isinstance(intent, dict) or intent.get("state") != "artifact_mismatch":
+        raise AssuranceError("superseded environment restore is not required", code="SUPERSEDE_RESTORE_NOT_REQUIRED")
+    source_run = intent["source_run_id"]
+    restore_deployment(repo, source_run)
+    with locked(repo):
+        source = read_ledger(repo, source_run)
+        target = read_ledger(repo, run_id)
+        source["phase"] = "superseded"
+        source["supersede_intent"] = {
+            "source_run_id": source_run,
+            "target_run_id": run_id,
+            "state": "received",
+        }
+        append_event(source, "run_superseded", {"target_run_id": run_id})
+        target["supersede_intent"] = None
+        append_event(target, "superseded_environment_restored", {"source_run_id": source_run})
+        save_ledger(repo, source)
+        save_ledger(repo, target)
+    return status(repo, run_id)
+
+
+def complete_supersede_transfer(repo_value: str | Path, run_value: str) -> dict[str, Any]:
+    repo = resolve_repo(repo_value)
+    run_id = ensure_run_id(run_value)
+    with locked(repo):
+        target = read_ledger(repo, run_id)
+        intent = target.get("supersede_intent")
+        if not isinstance(intent, dict) or intent.get("state") != "received":
+            raise AssuranceError("supersede transfer receipt is missing", code="SUPERSEDE_RECEIPT_MISSING")
+        source = read_ledger(repo, intent["source_run_id"])
+        source_lease = source.get("environment_lease")
+        target_lease = target.get("environment_lease")
+        if not isinstance(target_lease, dict) or target_lease.get("owner_run_id") != run_id:
+            raise AssuranceError("target environment lease receipt is invalid", code="SUPERSEDE_RECEIPT_INVALID")
+        if isinstance(source_lease, dict) and source_lease.get("state") != "transferred":
+            source_lease["state"] = "transferred"
+            source_lease["transferred_to_run_id"] = run_id
+        source["phase"] = "superseded"
+        source["supersede_intent"] = {
+            "source_run_id": source["run_id"],
+            "target_run_id": run_id,
+            "state": "received",
+        }
+        target["supersede_intent"] = None
+        append_event(source, "environment_lease_transferred", {"target_run_id": run_id})
+        append_event(target, "supersede_transfer_completed", {"source_run_id": source["run_id"]})
+        save_ledger(repo, source)
+        save_ledger(repo, target)
     return status(repo, run_id)
 
 
@@ -2523,16 +3037,47 @@ def complete_staged_blackbox(repo_value: str | Path, run_value: str) -> dict[str
         transaction = copy.deepcopy(ledger.get("deployment_transaction"))
         if not isinstance(pending, dict) or not isinstance(transaction, dict):
             raise AssuranceError("staged blackbox result is missing", code="PENDING_BLACKBOX_MISSING")
-        if transaction["state"] != "restored":
-            raise AssuranceError("deployment is not restored", code="DEPLOYMENT_NOT_RESTORED")
+        lease = copy.deepcopy(ledger.get("environment_lease"))
+        restored = transaction["state"] == "restored"
+        leased = (
+            transaction["state"] == "deployed"
+            and isinstance(lease, dict)
+            and lease.get("state") == "held"
+        )
+        if not restored and not leased:
+            raise AssuranceError("deployment is neither restored nor leased", code="DEPLOYMENT_DISPOSITION_INVALID")
+        if leased:
+            deployment = ledger["facets"]["execution"].get("deployment")
+            assert isinstance(deployment, dict)
+            observed, probe_result = _probe_environment(
+                repo,
+                Path(transaction["worktree"]),
+                transaction["candidate_head"],
+                deployment,
+                artifact_sha256=transaction.get("artifact_sha256"),
+            )
+            if observed != lease["active_probe"]:
+                raise AssuranceError(
+                    "leased environment changed during blackbox",
+                    code="ENVIRONMENT_LEASE_STATE_DRIFT",
+                    status="NEEDS_USER",
+                )
+            append_event(ledger, "environment_lease_blackbox_confirmed", {"probe_result": probe_result})
+            save_ledger(repo, ledger)
     report = pending["report"]
     report["details"]["deployment"] = {
         "target_id": transaction["target_id"],
         "artifact_sha256": transaction["artifact_sha256"],
         "baseline_state_digest": transaction["baseline_probe"]["state_digest"],
         "deployed_state_digest": transaction["deployed_probe"]["state_digest"],
-        "restored_state_digest": transaction["restored_probe"]["state_digest"],
+        "restored_state_digest": (
+            transaction["restored_probe"]["state_digest"]
+            if restored
+            else lease["active_probe"]["state_digest"]
+        ),
         "deploy_action": transaction.get("deploy_action", "executed"),
+        "environment_disposition": "restored" if restored else "leased",
+        "lease_id": None if restored else lease["lease_id"],
     }
     result = record_evidence(repo, run_id, "blackbox", report)
     with locked(repo):
@@ -2734,6 +3279,9 @@ def rematerialize_target(repo_value: str | Path, run_value: str) -> dict[str, An
             declared = set(ledger["facets"]["execution"]["builder_files"]) | set(
                 ledger["facets"]["execution"]["tester_files"]
             )
+            carryover = ledger["facets"]["execution"].get("carryover")
+            if isinstance(carryover, dict):
+                declared |= {item["path"] for item in carryover["files"]}
             undeclared = sorted(set(files) - declared)
             if undeclared:
                 raise AssuranceError(
@@ -2887,10 +3435,12 @@ def finalize(repo_value: str | Path, run_value: str, message: str) -> dict[str, 
         deployment = ledger["facets"]["execution"].get("deployment")
         if isinstance(deployment, dict):
             transaction = ledger.get("deployment_transaction")
+            lease = ledger.get("environment_lease")
             if (
                 not isinstance(transaction, dict)
                 or transaction.get("state") != "restored"
                 or ledger.get("pending_blackbox") is not None
+                or (isinstance(lease, dict) and lease.get("state") != "released")
             ):
                 raise AssuranceError(
                     "deployment must be restored and blackbox evidence completed before finalize",
@@ -3189,10 +3739,22 @@ def abandon(repo_value: str | Path, run_value: str, reason: str) -> dict[str, An
         ledger = read_ledger(repo, run_id)
         if ledger["phase"] == "finalized":
             raise AssuranceError("finalized run cannot be abandoned", code="ASSURANCE_RUN_FINALIZED")
-        if ledger["phase"] != "abandoned":
-            ledger["phase"] = "abandoned"
-            append_event(ledger, "run_abandoned", {"reason": reason})
+        if ledger["phase"] in {"abandoned", "superseded"}:
+            return status(repo, run_id)
+        transaction = ledger.get("deployment_transaction")
+        lease = ledger.get("environment_lease")
+        if isinstance(transaction, dict) and transaction.get("state") not in {"restored", "restore_failed"}:
+            ledger["abandon_intent"] = {"reason": reason}
+            transaction["state"] = "restore_required"
+            if isinstance(lease, dict):
+                lease["state"] = "restore_required"
+            append_event(ledger, "abandon_restore_required", {"reason": reason})
             save_ledger(repo, ledger)
+            return status(repo, run_id)
+        ledger["phase"] = "abandoned"
+        ledger["abandon_intent"] = {"reason": reason}
+        append_event(ledger, "run_abandoned", {"reason": reason})
+        save_ledger(repo, ledger)
     return status(repo, run_id)
 
 
@@ -3201,7 +3763,7 @@ def cleanup(repo_value: str | Path, run_value: str) -> dict[str, Any]:
     run_id = ensure_run_id(run_value)
     with locked(repo):
         ledger = read_ledger(repo, run_id)
-        if ledger["phase"] not in {"finalized", "abandoned"}:
+        if ledger["phase"] not in {"finalized", "abandoned", "superseded"}:
             raise AssuranceError(
                 "only terminal assurance runs can be cleaned",
                 code="ASSURANCE_CLEANUP_NOT_TERMINAL",

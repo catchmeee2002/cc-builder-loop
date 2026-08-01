@@ -19,7 +19,9 @@ Builder、Tester、Reviewer thread。现有 Full Driver Skill 只作为 run 创�
 面向用户的唯一入口仍是 Plan 选项和 `$builder`，不新增 Native Driver 使用命令。
 
 部署型 Revision 若现场 probe 确认授权目标已经运行同一候选制品，会跳过重复 deploy；当前 Revision 的
-blackbox 仍重新执行，结束时再次确认环境未漂移。旧 evidence 不会因制品相同而自动继承。
+blackbox 仍重新执行，结束时再次确认环境未漂移。计划授权保留环境时，同 run Revision 可续接唯一
+environment lease；显式 supersedes 的新 run 可携带精确 candidate snapshot 并原子接管 lease。旧角色
+identity 和 evidence 不会因制品相同而自动继承，终态前仍必须恢复环境。
 
 面向 Codex CLI 的独立判据交付闭环。进入 Plan mode 后先选择规划方式：
 

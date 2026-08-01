@@ -87,6 +87,11 @@ def parser() -> argparse.ArgumentParser:
     update.add_argument("--authorize-expansion", action="store_true")
     update.add_argument("--authorize-downgrade", action="store_true")
 
+    revise = commands.add_parser("revise-mission")
+    revise.add_argument("--repo", default=".")
+    revise.add_argument("--run", required=True)
+    revise.add_argument("--mission", required=True)
+
     evidence = commands.add_parser("record-evidence")
     evidence.add_argument("--repo", default=".")
     evidence.add_argument("--run", required=True)
@@ -159,6 +164,16 @@ def parser() -> argparse.ArgumentParser:
     restore_deployment.add_argument("--repo", default=".")
     restore_deployment.add_argument("--run", required=True)
     dispatch_guard(restore_deployment)
+
+    restore_superseded = commands.add_parser("restore-superseded-environment")
+    restore_superseded.add_argument("--repo", default=".")
+    restore_superseded.add_argument("--run", required=True)
+    dispatch_guard(restore_superseded)
+
+    complete_supersede = commands.add_parser("complete-supersede-transfer")
+    complete_supersede.add_argument("--repo", default=".")
+    complete_supersede.add_argument("--run", required=True)
+    dispatch_guard(complete_supersede)
 
     require_restore = commands.add_parser("require-deployment-restore")
     require_restore.add_argument("--repo", default=".")
@@ -326,6 +341,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 authorize_expansion=args.authorize_expansion,
                 authorize_downgrade=args.authorize_downgrade,
             )
+        elif args.command == "revise-mission":
+            payload = core.revise_mission(args.repo, args.run, _json(args.mission))
         elif args.command == "record-evidence":
             accepted = {
                 "tester": {"tester_author", "tester_fix"},
@@ -396,6 +413,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         elif args.command == "restore-deployment":
             _guard_dispatch(args, {"restore_deployment"})
             payload = core.restore_deployment(args.repo, args.run)
+        elif args.command == "restore-superseded-environment":
+            _guard_dispatch(args, {"restore_superseded_environment"})
+            payload = core.restore_superseded_environment(args.repo, args.run)
+        elif args.command == "complete-supersede-transfer":
+            _guard_dispatch(args, {"complete_supersede_transfer"})
+            payload = core.complete_supersede_transfer(args.repo, args.run)
         elif args.command == "require-deployment-restore":
             _guard_dispatch(args, {"tester_blackbox"})
             payload = core.require_deployment_restore(

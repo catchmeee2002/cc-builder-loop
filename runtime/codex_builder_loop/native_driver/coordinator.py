@@ -100,6 +100,10 @@ class NativeCoordinator:
                 self._simple("prepare-deployment", action)
             elif name == "restore_deployment":
                 self._simple("restore-deployment", action)
+            elif name == "restore_superseded_environment":
+                self._simple("restore-superseded-environment", action)
+            elif name == "complete_supersede_transfer":
+                self._simple("complete-supersede-transfer", action)
             elif name == "complete_blackbox":
                 self._simple("complete-blackbox", action)
             elif name == "rematerialize_target":

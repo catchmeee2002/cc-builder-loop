@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Assurance v4 新增完整 Revision continuity：计划可显式保留唯一 owner 的 environment lease，同 run
+  Mission Revision 绑定上一 mission digest 并继续使用未漂移环境；跨 run `supersedes` 携带精确 candidate
+  snapshot，按 source intent、target receipt、source seal 转移 lease。制品变化时先恢复旧环境再部署，
+  Tester/Reviewer identity 与全部 evidence 始终重建；finalize、abandon 前强制恢复（#154）。
+
 - Assurance v4 命令现在把实际 returncode 与计划冻结的 `expected_returncodes` 分开；本地关键测试可在
   同一 machine gate 内先于昂贵全量命令执行并失败即停。新增单 run 候选部署事务：从 candidate HEAD
   创建隔离 deployment worktree，绑定项目制品 SHA256、授权环境和部署前后 probe，Tester 结果先暂存，

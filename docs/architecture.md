@@ -70,7 +70,15 @@ deployment worktree，在其中运行项目提供的 probe/build/deploy/restore 
 结果或 transport failure 都优先恢复，只有 probe 证明回到 baseline 后才登记 evidence。恢复失败保留
 worktree、ledger 和外部状态事实并返回用户决定。如果部署前 probe 已确认同一目标承载同一制品，
 Core 跳过重复 deploy；当前 Revision 仍重新执行 blackbox，结束时再次 probe，只有环境与 baseline
-完全一致才释放事务。复用状态漂移时 fail closed。多仓部署仍不支持。
+完全一致才释放事务。计划显式授权 Revision retention 时，blackbox 后可把环境保留为 ledger 内唯一
+owner 的 lease，Reviewer 和同 run Mission Revision 继续使用当前状态；finalize、abandon 前必须恢复。
+复用状态漂移时 fail closed。多仓部署仍不支持。
+
+跨 run Revision 通过 `mission.supersedes` 绑定上一 mission digest 和 candidate HEAD。新 run 从精确
+candidate Git snapshot 建 worktree，但不继承 Tester/Reviewer identity 或旧 evidence。环境转移按 source
+intent、target receipt、source seal 三步持久化；只有当前制品、目标、deployment contract 和 probe 全部
+一致才转移 lease，否则先恢复 source 环境再部署新制品。同一目标的唯一 owner 由 Core 在仓库锁内从
+ledger 派生，不新增旁路 registry。
 可恢复的 App Server transport failure 在同一 role thread 和 dispatch 上最多尝试三次，attempt 与 turn id
 持久化进 ledger；第三次失败后 Core 返回 `NEEDS_USER`，Driver 不重置上限或另建 thread 绕过连续性。
 App Server turn 使用 host-level `danger-full-access`，因为部分本地环境无法创建 bwrap namespace；这不
@@ -86,7 +94,8 @@ App Server turn 使用 host-level `danger-full-access`，因为部分本地环�
 冻结并验证 v4 contract，`$builder` 只消费已验证 handoff 并启动 Native Driver；内部 Full Driver
 Skill 仍禁止被普通请求隐式调用。首版覆盖本地单仓 Git 代码、L1 文档交付，以及由项目 wrapper
 定义的单 run 候选部署事务；相邻 Revision 可在当前 probe 证明目标、制品和状态一致时跳过重复 deploy，
-但不复用旧 blackbox 结论；通用远程部署编排和多仓事务保持 unsupported。本地 protected preparation
+显式 supersedes 可携带 candidate snapshot 并转移授权 lease，但不复用旧 blackbox 结论或角色身份；
+通用远程部署编排和多仓事务保持 unsupported。本地 protected preparation
 通过 finalized HEAD、exact support manifest 和单次 continuation 消费衔接 business run。消费前先在
 preparation ledger 持久化 intent，business ledger 落盘后再提交 consumed marker；进程中断时重试
 同一 start 只收敛该 intent，不创建第二份状态。当前用户入口明确标为实验；只有完成历史回放和跨项目

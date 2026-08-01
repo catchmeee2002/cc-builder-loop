@@ -93,7 +93,11 @@ dispatch。直到 `finalize` 或明确的决策边界。动作面如下，不能
 - `restore_deployment` / `complete_blackbox`：部署型 run 无论 Tester 通过、失败或控制面中断，都先执行
   项目恢复命令并由 probe 证明回到部署前状态；恢复成功后才把暂存结果绑定制品、环境和恢复事实，登记
   blackbox evidence。跳过 deploy 的事务只重新 probe 并确认环境未漂移，不执行会改变既有环境的恢复
-  命令。恢复失败或复用状态漂移只返回用户决定，不继续 Reviewer 或 finalize。
+  命令。计划授权 lease 时，`complete_blackbox` 可在当前 probe 与 lease 一致后登记 evidence 并继续
+  Reviewer；finalize、abandon 前仍由 Driver 恢复。恢复失败或复用状态漂移只返回用户决定。
+- Mission Revision 使用 Core `revise-mission` 原子绑定上一 revision。新 run 的 `mission.supersedes` 只携带
+  candidate snapshot 和 environment lease；Tester/Reviewer 必须创建新 thread 并重建全部 evidence。
+  lease 转移或制品不一致恢复由 `complete-supersede-transfer`、`restore-superseded-environment` 自动收敛。
 - `reviewer_final`：只有 Tester、proof、machine、blackbox 等全部 reviewer prerequisites 齐全且
   current 后，才用只允许 identity bootstrap 的最小 prompt spawn Reviewer，调用 `prepare-reviewer`
   绑定真实 identity，再 follow-up 同一 thread 开始审查。Reviewer 只使用成熟终态

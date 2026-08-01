@@ -58,13 +58,36 @@ def next_action(repo_value: str | Path, run_value: str) -> dict[str, Any]:
         return decision("CONTINUE", "recover_finalize", "persisted_finalize_intent")
     if ledger["phase"] != "active":
         return decision("STOP", "none", ledger["phase"])
+    source_supersede = ledger.get("supersede_intent")
+    if (
+        isinstance(source_supersede, dict)
+        and source_supersede.get("source_run_id") == run_id
+        and source_supersede.get("state") == "prepared"
+    ):
+        return decision("STOP", "none", "supersede_pending")
     deployment_transaction = ledger.get("deployment_transaction")
     pending_blackbox = ledger.get("pending_blackbox")
+    supersede_intent = ledger.get("supersede_intent")
+    if isinstance(supersede_intent, dict) and supersede_intent.get("state") == "received":
+        return decision("CONTINUE", "complete_supersede_transfer", "supersede_receipt_pending")
+    if isinstance(supersede_intent, dict) and supersede_intent.get("state") == "artifact_mismatch":
+        return decision(
+            "CONTINUE",
+            "restore_superseded_environment",
+            "superseded_artifact_changed",
+            source_run_id=supersede_intent["source_run_id"],
+        )
     if isinstance(deployment_transaction, dict):
         deployment_state = deployment_transaction.get("state")
+        current_candidate = ledger["facets"]["execution"].get("candidate_head")
+        if deployment_state == "deployed" and deployment_transaction.get("candidate_head") != current_candidate:
+            return decision("CONTINUE", "restore_deployment", "leased_candidate_changed")
         if deployment_state in {"deploying", "restore_required", "restoring"}:
             return decision("CONTINUE", "restore_deployment", f"deployment_{deployment_state}")
         if deployment_state == "deployed" and isinstance(pending_blackbox, dict):
+            lease = ledger.get("environment_lease")
+            if isinstance(lease, dict) and lease.get("state") == "held":
+                return decision("CONTINUE", "complete_blackbox", "blackbox_result_leased")
             return decision("CONTINUE", "restore_deployment", "blackbox_result_staged")
         if deployment_state == "restore_failed":
             return decision(
@@ -210,4 +233,13 @@ def next_action(repo_value: str | Path, run_value: str) -> dict[str, Any]:
         if action == "reviewer_final":
             payload["agent"] = execution["agents"].get("reviewer")
         return decision("CONTINUE", action, f"{kind}_{state}", **payload)
+    transaction = ledger.get("deployment_transaction")
+    lease = ledger.get("environment_lease")
+    if (
+        isinstance(transaction, dict)
+        and transaction.get("state") == "deployed"
+        and isinstance(lease, dict)
+        and lease.get("state") == "held"
+    ):
+        return decision("CONTINUE", "restore_deployment", "release_environment_before_finalize")
     return decision("READY", "finalize", "all_gates_pass")

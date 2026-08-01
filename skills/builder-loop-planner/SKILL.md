@@ -23,6 +23,8 @@ description: 在 Codex Plan mode 中为显式选择的 Builder-loop 实验路线
 ## Contract 约束
 
 - `mission` 只放目标、行为、接口、验收场景和信任边界；只有这些语义变化才提升 revision。
+  同 run Revision 绑定上一 mission digest；必须新建 run 时用 `mission.supersedes` 绑定上一 run、revision、
+  mission digest 和 candidate HEAD，不从 transcript 猜 continuity。
 - `authority` 冻结 target branch、Builder/Tester 精确写边界、dirty intake、串行公开前置产物和受保护
   support path。权限扩大必须重新交给用户决定。
 - 代码任务的 `assurance.required` 默认精确包含 `tester`、`proof`、`machine`、`blackbox`、`reviewer`；
@@ -41,8 +43,9 @@ description: 在 Codex Plan mode 中为显式选择的 Builder-loop 实验路线
   `run_before_full_suite:true` 标记在 machine commands 中；不得靠分析 argv 猜顺序。
 - 需要真实环境时，只允许计划冻结一个 `authority.external_targets` 目标和项目提供的
   `execution.deployment` probe/build/deploy/restore wrapper。若当前 probe 证明同一目标已经承载同一候选
-  制品，Core 可跳过重复 deploy，但本 Revision 的 blackbox 仍重新执行；通用远程部署编排和多仓原子
-  事务选择 Codex 原生 Plan。
+  制品，Core 可跳过重复 deploy，但本 Revision 的 blackbox 仍重新执行。只有用户明确允许 Revision
+  期间保留目标状态时才冻结 `revision_retention: lease`，否则使用默认恢复；通用远程部署编排和多仓
+  原子事务选择 Codex 原生 Plan。
 
 ## 验证与交接
 

@@ -222,6 +222,33 @@ def validate_contract(value: Any) -> dict[str, Any]:
                 "deployment requires blackbox assurance",
                 code="DEPLOYMENT_BLACKBOX_REQUIRED",
             )
+    supersedes = contract["mission"].get("supersedes")
+    if contract["mission"]["revision"] == 1 and supersedes is not None:
+        raise ContractError(
+            "mission revision 1 cannot supersede another run",
+            code="MISSION_SUPERSEDES_UNEXPECTED",
+        )
+    carryover = contract["execution"].get("carryover")
+    if carryover is not None and supersedes is None:
+        raise ContractError(
+            "execution carryover requires mission supersedes",
+            code="CARRYOVER_SUPERSEDES_REQUIRED",
+        )
+    if isinstance(carryover, dict):
+        invalid_carryover = sorted(
+            item["path"]
+            for item in carryover["files"]
+            if not any(
+                fnmatch.fnmatchcase(item["path"], pattern)
+                for pattern in [*contract["authority"]["builder_write"], *contract["authority"]["tester_write"]]
+            )
+        )
+        if invalid_carryover:
+            raise ContractError(
+                "carryover files must remain inside frozen ownership authority",
+                code="CARRYOVER_AUTHORITY_INVALID",
+                details={"paths": invalid_carryover},
+            )
     execution = contract["execution"]
     builder_files = set(execution["builder_files"])
     tester_files = set(execution["tester_files"])
@@ -441,12 +468,22 @@ def evidence_dependency(
             behaviors=[item["id"] for item in contract["mission"]["behaviors"]],
         )
     elif kind == "blackbox":
+        transaction = ledger.get("deployment_transaction")
+        deployment_observation = None
+        if isinstance(transaction, Mapping):
+            deployment_observation = {
+                "target_id": transaction.get("target_id"),
+                "artifact_sha256": transaction.get("artifact_sha256"),
+                "baseline_probe": transaction.get("baseline_probe"),
+                "deployed_probe": transaction.get("deployed_probe"),
+                "deploy_action": transaction.get("deploy_action", "executed"),
+            }
         base.update(
             candidate_head=candidate,
             commands=execution["commands"],
             tester_source=execution.get("tester_source"),
             deployment=execution.get("deployment"),
-            deployment_transaction=ledger.get("deployment_transaction"),
+            deployment_observation=deployment_observation,
         )
     elif kind in {"reviewer", "doc_review"}:
         base.update(

@@ -53,6 +53,8 @@ python3 experiments/assurance-v4-replay/runner.py
   Tester baseline，发布路径随后不可变；不得把 Builder HEAD 或 candidate diff 直接交给 Tester。
 - Reviewer turn 必须在所需 Tester integration、机器验证和 blackbox evidence 已绑定 candidate 后
   启动；过早 review 不能靠事后补证据变成有效审查。
+- 外部环境只允许 ledger 中一个 run 持有 lease；同 run Revision 或显式 supersedes 转移必须重新 probe，
+  不继承旧角色/evidence。finalize、abandon 和 cleanup 前必须释放 lease 并确认恢复。
 - finalize intent 写入后冻结 run mutation；恢复时重新核对全部 gate，再同步 target 和 cleanup。
 - no-progress/architecture-review 只能在用户确认后用 `resume --reason` 解除；不得重置 attempt 上限。
 - 诊断先用只读 `doctor`；`recover` 只重放 persisted intent，`cleanup` 只处理未漂移的 terminal

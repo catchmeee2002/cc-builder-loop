@@ -459,6 +459,290 @@ class AssuranceV4ContractTest(unittest.TestCase):
         self.assertEqual(rc, 2, rejected)
         self.assertEqual(rejected.get("code"), "BLACKBOX_EXECUTION_FAILED")
 
+    def deployment_fixture(
+        self, *, retention: str = "lease"
+    ) -> tuple[dict[str, Any], Path, Path]:
+        state = self.artifacts / "revision-shared-environment.json"
+        operations = self.artifacts / "revision-deployment-operations.log"
+        state.write_text(json.dumps({"artifact": None, "value": "stable"}), encoding="utf-8")
+        operations.write_text("", encoding="utf-8")
+        artifact_version = self.repo / "src" / "artifact-version.txt"
+        artifact_version.write_text("revision-candidate-artifact", encoding="utf-8")
+        script = self.repo / "revision_deploy_fixture.py"
+        script.write_text(
+            "#!/usr/bin/env python3\n"
+            "import hashlib, json, os, pathlib, sys\n"
+            f"state = pathlib.Path({str(state)!r})\n"
+            f"operations = pathlib.Path({str(operations)!r})\n"
+            "mode = sys.argv[1]\n"
+            "if mode == 'build':\n"
+            "    path = pathlib.Path(os.environ['BUILDER_LOOP_ARTIFACT_PATH'])\n"
+            "    path.parent.mkdir(parents=True, exist_ok=True)\n"
+            "    path.write_bytes(pathlib.Path('src/artifact-version.txt').read_bytes())\n"
+            "elif mode == 'deploy':\n"
+            "    operations.write_text(operations.read_text() + 'deploy\\n')\n"
+            "    state.write_text(json.dumps({'artifact': os.environ['BUILDER_LOOP_ARTIFACT_SHA256'], 'value': 'candidate'}))\n"
+            "elif mode == 'restore':\n"
+            "    operations.write_text(operations.read_text() + 'restore\\n')\n"
+            "    state.write_text(json.dumps({'artifact': None, 'value': 'stable'}))\n"
+            "elif mode == 'probe':\n"
+            "    value = json.loads(state.read_text())\n"
+            "    digest = hashlib.sha256(json.dumps(value, sort_keys=True, separators=(',', ':')).encode()).hexdigest()\n"
+            "    print(json.dumps({'schema_version': 1, 'target_id': 'revision-fixture', 'state_digest': digest, 'deployed_artifact_sha256': value['artifact']}))\n",
+            encoding="utf-8",
+        )
+        script.chmod(0o755)
+        commit_all(self.repo, "add revision deployment fixture")
+        contract = contract_for(self.repo)
+        contract["authority"]["external_targets"] = [
+            {"id": "revision-fixture", "description": "Revision continuity fixture."}
+        ]
+        command = lambda command_id, mode: {
+            "id": command_id,
+            "argv": ["./revision_deploy_fixture.py", mode],
+            "timeout_seconds": 30,
+        }
+        contract["execution"]["deployment"] = {
+            "target_id": "revision-fixture",
+            "artifact_path": "dist/revision-app.bin",
+            "build_command": command("build-revision", "build"),
+            "deploy_command": command("deploy-revision", "deploy"),
+            "probe_command": command("probe-revision", "probe"),
+            "restore_command": command("restore-revision", "restore"),
+            "revision_retention": retention,
+        }
+        return contract, state, operations
+
+    def stage_deployment_blackbox(self, run_id: str, run_path: Path) -> None:
+        ledger = self.load_ledger(run_path)
+        command = ledger["facets"]["execution"]["commands"][0]
+        candidate = ledger["facets"]["execution"]["candidate_head"]
+        agent = ledger["facets"]["execution"]["agents"]["tester"]
+        report = {
+            "schema_version": 1,
+            "kind": "blackbox",
+            "status": "pass",
+            "candidate_head": candidate,
+            "producer": {"role": "tester", **agent},
+            "details": {
+                "result": "pass",
+                "worktree": ledger["candidate_worktree"],
+                "before_head": candidate,
+                "after_head": candidate,
+                "executions": [
+                    {
+                        "id": command["id"],
+                        "argv": command["argv"],
+                        "returncode": 0,
+                        "timed_out": False,
+                    }
+                ],
+            },
+        }
+        path = self.write_json(f"{run_id}-staged-blackbox.json", report)
+        rc, staged, _stdout, _stderr = self.invoke(
+            "stage-blackbox", "--repo", self.repo, "--run", run_id, "--report", path
+        )
+        self.assertEqual(rc, 0, staged)
+
+    def test_environment_lease_survives_same_run_revision_and_releases_once(self) -> None:
+        contract, _state, operations = self.deployment_fixture()
+        run_id = "same-run-environment-lease"
+        _started, run_path = self.start(run_id, contract=contract)
+        self.invoke("checkpoint-builder", "--repo", self.repo, "--run", run_id)
+        self.record_role_evidence(run_id, run_path, "tester")
+        self.invoke("verify-machine", "--repo", self.repo, "--run", run_id)
+        rc, deployed, _stdout, _stderr = self.invoke(
+            "prepare-deployment", "--repo", self.repo, "--run", run_id
+        )
+        self.assertEqual(rc, 0, deployed)
+        self.stage_deployment_blackbox(run_id, run_path)
+        rc, completed, _stdout, _stderr = self.invoke(
+            "complete-blackbox", "--repo", self.repo, "--run", run_id
+        )
+        self.assertEqual(rc, 0, completed)
+        self.assertEqual(completed["environment_lease"]["state"], "held")
+        self.assertEqual(operations.read_text(), "deploy\n")
+
+        ledger = self.load_ledger(run_path)
+        revised = deepcopy(ledger["facets"]["mission"])
+        revised["revision"] += 1
+        revised["objective"] = "Deliver the revised assured calculator mission."
+        revised["supersedes"] = {
+            "run_id": run_id,
+            "revision": ledger["facets"]["mission"]["revision"],
+            "mission_digest": ledger["digests"]["mission"],
+            "candidate_head": ledger["facets"]["execution"]["candidate_head"],
+        }
+        revision_path = self.write_json("same-run-revised-mission.json", revised)
+        rc, revision, _stdout, _stderr = self.invoke(
+            "revise-mission", "--repo", self.repo, "--run", run_id, "--mission", revision_path
+        )
+        self.assertEqual(rc, 0, revision)
+        self.assertEqual(revision["mission_revision"], 2)
+        self.record_role_evidence(run_id, run_path, "tester")
+        self.invoke("verify-machine", "--repo", self.repo, "--run", run_id)
+        self.stage_deployment_blackbox(run_id, run_path)
+        self.invoke("complete-blackbox", "--repo", self.repo, "--run", run_id)
+        self.assertEqual(operations.read_text(), "deploy\n")
+        self.record_role_evidence(run_id, run_path, "reviewer")
+        rc, decision, _stdout, _stderr = self.invoke(
+            "driver-next", "--repo", self.repo, "--run", run_id
+        )
+        self.assertEqual(rc, 0, decision)
+        self.assertEqual(decision["action"], "restore_deployment")
+        rc, restored, _stdout, _stderr = self.invoke(
+            "restore-deployment", "--repo", self.repo, "--run", run_id
+        )
+        self.assertEqual(rc, 0, restored)
+        self.assertEqual(restored["environment_lease"]["state"], "released")
+        self.assertEqual(operations.read_text(), "deploy\nrestore\n")
+        self.assertEqual(restored["readiness"]["states"]["blackbox"], "pass")
+
+    def test_superseding_artifact_change_restores_old_lease_before_deploy(self) -> None:
+        contract, _state, operations = self.deployment_fixture()
+        source_run = "changed-artifact-source"
+        _started, source_path = self.start(source_run, contract=contract)
+        self.invoke("checkpoint-builder", "--repo", self.repo, "--run", source_run)
+        self.record_role_evidence(source_run, source_path, "tester")
+        self.invoke("verify-machine", "--repo", self.repo, "--run", source_run)
+        self.invoke("prepare-deployment", "--repo", self.repo, "--run", source_run)
+        self.stage_deployment_blackbox(source_run, source_path)
+        self.invoke("complete-blackbox", "--repo", self.repo, "--run", source_run)
+        source = self.load_ledger(source_path)
+        target_contract = deepcopy(contract)
+        target_contract["mission"]["revision"] = 2
+        target_contract["mission"]["objective"] = "Deliver a changed artifact revision."
+        target_contract["mission"]["supersedes"] = {
+            "run_id": source_run,
+            "revision": 1,
+            "mission_digest": source["digests"]["mission"],
+            "candidate_head": source["facets"]["execution"]["candidate_head"],
+        }
+        target_run = "changed-artifact-target"
+        _target, target_path = self.start(target_run, contract=target_contract)
+        candidate = Path(self.load_ledger(target_path)["candidate_worktree"])
+        (candidate / "src" / "artifact-version.txt").write_text(
+            "revision-candidate-artifact-v2", encoding="utf-8"
+        )
+        commit_all(candidate, "change revision artifact")
+        self.invoke("checkpoint-builder", "--repo", self.repo, "--run", target_run)
+        self.record_role_evidence(target_run, target_path, "tester")
+        self.invoke("verify-machine", "--repo", self.repo, "--run", target_run)
+        rc, mismatch, _stdout, _stderr = self.invoke(
+            "prepare-deployment", "--repo", self.repo, "--run", target_run
+        )
+        self.assertEqual(rc, 0, mismatch)
+        self.assertEqual(mismatch["supersede_intent"]["state"], "artifact_mismatch")
+        rc, decision, _stdout, _stderr = self.invoke(
+            "driver-next", "--repo", self.repo, "--run", target_run
+        )
+        self.assertEqual(rc, 0, decision)
+        self.assertEqual(decision["action"], "restore_superseded_environment")
+        rc, restored, _stdout, _stderr = self.invoke(
+            "restore-superseded-environment", "--repo", self.repo, "--run", target_run
+        )
+        self.assertEqual(rc, 0, restored)
+        rc, deployed, _stdout, _stderr = self.invoke(
+            "prepare-deployment", "--repo", self.repo, "--run", target_run
+        )
+        self.assertEqual(rc, 0, deployed)
+        self.assertEqual(deployed["deployment_transaction"]["deploy_action"], "executed")
+        self.assertEqual(operations.read_text(), "deploy\nrestore\ndeploy\n")
+
+    def test_abandon_with_held_environment_restores_before_terminal(self) -> None:
+        contract, _state, operations = self.deployment_fixture()
+        run_id = "abandon-held-environment"
+        _started, run_path = self.start(run_id, contract=contract)
+        self.invoke("checkpoint-builder", "--repo", self.repo, "--run", run_id)
+        self.record_role_evidence(run_id, run_path, "tester")
+        self.invoke("verify-machine", "--repo", self.repo, "--run", run_id)
+        self.invoke("prepare-deployment", "--repo", self.repo, "--run", run_id)
+        rc, abandoning, _stdout, _stderr = self.invoke(
+            "abandon", "--repo", self.repo, "--run", run_id, "--reason", "revision cancelled"
+        )
+        self.assertEqual(rc, 0, abandoning)
+        self.assertEqual(abandoning["phase"], "active")
+        self.assertEqual(abandoning["deployment_transaction"]["state"], "restore_required")
+        rc, restored, _stdout, _stderr = self.invoke(
+            "restore-deployment", "--repo", self.repo, "--run", run_id
+        )
+        self.assertEqual(rc, 0, restored)
+        self.assertEqual(restored["phase"], "abandoned")
+        self.assertEqual(operations.read_text(), "deploy\nrestore\n")
+
+    def test_superseding_run_carries_candidate_and_transfers_environment_lease(self) -> None:
+        contract, _state, operations = self.deployment_fixture()
+        source_run = "lease-source-revision"
+        _started, source_path = self.start(source_run, contract=contract)
+        self.invoke("checkpoint-builder", "--repo", self.repo, "--run", source_run)
+        self.record_role_evidence(source_run, source_path, "tester")
+        self.invoke("verify-machine", "--repo", self.repo, "--run", source_run)
+        self.invoke("prepare-deployment", "--repo", self.repo, "--run", source_run)
+        self.stage_deployment_blackbox(source_run, source_path)
+        self.invoke("complete-blackbox", "--repo", self.repo, "--run", source_run)
+        source = self.load_ledger(source_path)
+
+        target_contract = deepcopy(contract)
+        target_contract["mission"]["revision"] = 2
+        target_contract["mission"]["objective"] = "Deliver a superseding calculator mission."
+        target_contract["mission"]["supersedes"] = {
+            "run_id": source_run,
+            "revision": source["facets"]["mission"]["revision"],
+            "mission_digest": source["digests"]["mission"],
+            "candidate_head": source["facets"]["execution"]["candidate_head"],
+        }
+        target_run = "lease-target-revision"
+        _target, target_path = self.start(target_run, contract=target_contract)
+        target = self.load_ledger(target_path)
+        self.assertEqual(
+            target["facets"]["execution"]["carryover"]["source_candidate_head"],
+            source["facets"]["execution"]["candidate_head"],
+        )
+        self.assertEqual(target["evidence"], {})
+        self.invoke("checkpoint-builder", "--repo", self.repo, "--run", target_run)
+        self.record_role_evidence(target_run, target_path, "tester")
+        self.invoke("verify-machine", "--repo", self.repo, "--run", target_run)
+        rc, transferred, _stdout, _stderr = self.invoke(
+            "prepare-deployment", "--repo", self.repo, "--run", target_run
+        )
+        self.assertEqual(rc, 0, transferred)
+        self.assertEqual(transferred["environment_lease"]["owner_run_id"], target_run)
+        self.assertEqual(transferred["deployment_transaction"]["deploy_action"], "skipped_existing")
+        self.assertEqual(operations.read_text(), "deploy\n")
+        source_after = self.load_ledger(source_path)
+        target_after = self.load_ledger(target_path)
+        source_after["phase"] = "active"
+        source_after["environment_lease"]["state"] = "transfer_prepared"
+        source_after["supersede_intent"] = {
+            "source_run_id": source_run,
+            "target_run_id": target_run,
+            "state": "prepared",
+        }
+        target_after["supersede_intent"] = {
+            "source_run_id": source_run,
+            "target_run_id": target_run,
+            "state": "received",
+        }
+        (source_path / "ledger.json").write_text(json.dumps(source_after), encoding="utf-8")
+        (target_path / "ledger.json").write_text(json.dumps(target_after), encoding="utf-8")
+        rc, decision, _stdout, _stderr = self.invoke(
+            "driver-next", "--repo", self.repo, "--run", target_run
+        )
+        self.assertEqual(rc, 0, decision)
+        self.assertEqual(decision["action"], "complete_supersede_transfer")
+        rc, recovered, _stdout, _stderr = self.invoke(
+            "complete-supersede-transfer", "--repo", self.repo, "--run", target_run
+        )
+        self.assertEqual(rc, 0, recovered)
+        self.assertEqual(self.load_ledger(source_path)["phase"], "superseded")
+        self.assertIsNone(self.load_ledger(target_path)["supersede_intent"])
+        rc, restored, _stdout, _stderr = self.invoke(
+            "restore-deployment", "--repo", self.repo, "--run", target_run
+        )
+        self.assertEqual(rc, 0, restored)
+        self.assertEqual(operations.read_text(), "deploy\nrestore\n")
+
     def test_deployment_transaction_restores_before_blackbox_evidence(self) -> None:
         state = self.artifacts / "shared-environment.json"
         fail_restore = self.artifacts / "fail-restore"

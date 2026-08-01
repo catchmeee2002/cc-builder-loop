@@ -707,6 +707,51 @@ class NativeCoordinatorContractTest(unittest.TestCase):
                 ["prepare-deployment", "restore-deployment", "complete-blackbox"],
             )
 
+    def test_coordinator_executes_supersede_recovery_actions(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="native-supersede-actions-") as raw:
+            root = Path(raw)
+
+            class FakeCore:
+                def __init__(self) -> None:
+                    self.actions = iter(
+                        ["complete_supersede_transfer", "restore_superseded_environment"]
+                    )
+                    self.calls: list[str] = []
+
+                def call(self, command: str, *args: str, input_value=None):
+                    self.calls.append(command)
+                    if command == "driver-next":
+                        try:
+                            action = next(self.actions)
+                        except StopIteration:
+                            return {
+                                "driver_protocol_version": 1,
+                                "status": "STOP",
+                                "action": "none",
+                                "reason": "finalized",
+                                "action_id": "f" * 64,
+                            }
+                        return {
+                            "driver_protocol_version": 1,
+                            "status": "CONTINUE",
+                            "action": action,
+                            "reason": action,
+                            "action_id": (action[0] * 64)[:64],
+                        }
+                    return {"status": "ACTIVE"}
+
+            core = FakeCore()
+            result = NativeCoordinator(
+                repo=root,
+                run_id="native-supersede-actions",
+                core=core,
+                transport=object(),
+                project_root=ROOT,
+            ).run()
+            self.assertEqual(result["status"], "FINALIZED")
+            self.assertIn("complete-supersede-transfer", core.calls)
+            self.assertIn("restore-superseded-environment", core.calls)
+
 
 if __name__ == "__main__":
     unittest.main()

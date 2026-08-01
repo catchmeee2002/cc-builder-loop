@@ -123,7 +123,14 @@
                   "baseline_state_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
                   "deployed_state_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
                   "restored_state_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-                  "deploy_action": {"enum": ["executed", "skipped_existing"]}
+                  "deploy_action": {"enum": ["executed", "skipped_existing"]},
+                  "environment_disposition": {"enum": ["restored", "leased"]},
+                  "lease_id": {
+                    "oneOf": [
+                      {"type": "null"},
+                      {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+                    ]
+                  }
                 }
               }
             }
