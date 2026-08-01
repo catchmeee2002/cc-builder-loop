@@ -8,6 +8,8 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -25,6 +27,7 @@ from .models import (
     validate_evidence_report,
     validate_problem_report,
     validate_repo_path,
+    validate_telemetry,
     validate_test_proof_spec,
 )
 from .store import (
@@ -636,6 +639,115 @@ def readiness(ledger: Mapping[str, Any]) -> dict[str, Any]:
     return {"ready": ready, "states": states, "missing": missing, "stale": stale, "failed": failed}
 
 
+def _timestamp_ms(value: str) -> int:
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return int(parsed.timestamp() * 1000)
+
+
+def telemetry(ledger: Mapping[str, Any]) -> dict[str, Any]:
+    events = [item for item in ledger.get("events", []) if isinstance(item, dict)]
+    terminal = ledger.get("phase") in {"finalized", "abandoned"}
+    end_at = ledger["updated_at"] if terminal else now()
+    elapsed_ms = max(0, _timestamp_ms(end_at) - _timestamp_ms(ledger["created_at"]))
+    stage_stats: dict[str, dict[str, Any]] = {}
+    dispatches: dict[str, tuple[str, int]] = {}
+    evidence_attempts = {kind: 0 for kind in EVIDENCE_KINDS}
+    retry_codes: dict[str, int] = {}
+    candidate_changes = 0
+
+    def stage(name: str) -> dict[str, Any]:
+        return stage_stats.setdefault(
+            name,
+            {
+                "name": name,
+                "attempts": 0,
+                "completed_attempts": 0,
+                "failed_attempts": 0,
+                "retry_count": 0,
+                "total_duration_ms": 0,
+                "last_failure_code": None,
+            },
+        )
+
+    for event in events:
+        kind = event.get("kind")
+        details = event.get("details") if isinstance(event.get("details"), dict) else {}
+        at = event.get("at")
+        if kind == "dispatch_prepared" and isinstance(details.get("action_id"), str):
+            action = str(details.get("action", "unknown"))
+            dispatches[details["action_id"]] = (action, _timestamp_ms(str(at)))
+            stage(action)["attempts"] += 1
+        elif kind == "dispatch_completed" and isinstance(details.get("action_id"), str):
+            dispatch = dispatches.get(details["action_id"])
+            if dispatch is not None:
+                action, started_at = dispatch
+                current = stage(action)
+                current["completed_attempts"] += 1
+                current["total_duration_ms"] += max(0, _timestamp_ms(str(at)) - started_at)
+                if details.get("result") in {
+                    "fail",
+                    "findings",
+                    "blocked",
+                    "target_change_required",
+                }:
+                    current["failed_attempts"] += 1
+                    current["last_failure_code"] = str(details["result"])
+        elif kind == "dispatch_retry_scheduled":
+            action_id = details.get("action_id")
+            action = dispatches.get(action_id, ("unknown", 0))[0]
+            current = stage(action)
+            current["retry_count"] += 1
+            failure_code = str(details.get("failure_code", "unknown"))
+            current["last_failure_code"] = failure_code
+            retry_codes[failure_code] = retry_codes.get(failure_code, 0) + 1
+        elif kind == "machine_verified":
+            current = stage("verify_machine")
+            current["attempts"] += 1
+            current["completed_attempts"] += 1
+            current["total_duration_ms"] += int(details.get("duration_ms", 0))
+            evidence_attempts["machine"] += 1
+            if details.get("status") != "pass":
+                current["failed_attempts"] += 1
+                current["last_failure_code"] = "machine_failed"
+        elif kind == "evidence_recorded":
+            evidence_kind = details.get("kind")
+            if evidence_kind in evidence_attempts:
+                evidence_attempts[evidence_kind] += 1
+            if evidence_kind == "proof":
+                current = stage("tester_proof")
+                if current["attempts"] == 0:
+                    current["attempts"] = 1
+                    current["completed_attempts"] = 1
+                current["total_duration_ms"] += int(details.get("duration_ms", 0))
+            if details.get("status") == "fail" and isinstance(evidence_kind, str):
+                current = stage(f"evidence_{evidence_kind}")
+                current["failed_attempts"] += 1
+                current["last_failure_code"] = f"{evidence_kind}_failed"
+        if kind in {"builder_checkpointed", "tester_source_integrated", "target_rematerialized"}:
+            candidate_changes += 1
+
+    pending = ledger.get("dispatch_intent")
+    active_stage = pending.get("action") if isinstance(pending, dict) else None
+    evidence_replays = sum(max(0, count - 1) for count in evidence_attempts.values())
+    return validate_telemetry(
+        {
+            "schema_version": 1,
+            "elapsed_ms": elapsed_ms,
+            "active_stage": active_stage,
+            "stages": [stage_stats[name] for name in sorted(stage_stats)],
+            "candidate_changes": candidate_changes,
+            "evidence_attempts": evidence_attempts,
+            "evidence_replays": evidence_replays,
+            "retries": {
+                "total": sum(retry_codes.values()),
+                "by_failure_code": dict(sorted(retry_codes.items())),
+            },
+        }
+    )
+
+
 def status(repo_value: str | Path, run_value: str) -> dict[str, Any]:
     repo = resolve_repo(repo_value)
     run_id = ensure_run_id(run_value)
@@ -654,6 +766,7 @@ def status(repo_value: str | Path, run_value: str) -> dict[str, Any]:
         "builder_checkpointed": ledger.get("builder_checkpointed", False),
         "driver_runtime": copy.deepcopy(ledger.get("driver_runtime")),
         "dispatch_intent": copy.deepcopy(ledger.get("dispatch_intent")),
+        "telemetry": telemetry(ledger),
         "readiness": readiness(ledger),
         "publication": copy.deepcopy(ledger.get("publication")),
         "problems": copy.deepcopy(ledger.get("problems", [])),
@@ -1554,6 +1667,7 @@ def prove_tests(
     spec = validate_test_proof_spec(spec_value)
     repo = resolve_repo(repo_value)
     run_id = ensure_run_id(run_value)
+    started_at = time.monotonic()
     with locked(repo):
         ledger = read_ledger(repo, run_id)
         if ledger["phase"] != "active":
@@ -1768,7 +1882,12 @@ def prove_tests(
         append_event(
             ledger,
             "evidence_recorded",
-            {"kind": "proof", "status": "pass", "failure_signature": None},
+            {
+                "kind": "proof",
+                "status": "pass",
+                "failure_signature": None,
+                "duration_ms": int((time.monotonic() - started_at) * 1000),
+            },
         )
         save_ledger(repo, ledger)
     return status(repo, run_id)
@@ -1879,6 +1998,7 @@ def _resolve_machine_executable(
 def verify_machine(repo_value: str | Path, run_value: str) -> dict[str, Any]:
     repo = resolve_repo(repo_value)
     run_id = ensure_run_id(run_value)
+    started_at = time.monotonic()
     with locked(repo):
         ledger = read_ledger(repo, run_id)
         if ledger["phase"] != "active":
@@ -1996,6 +2116,7 @@ def verify_machine(repo_value: str | Path, run_value: str) -> dict[str, Any]:
                 "status": record["status"],
                 "commands": len(results),
                 "failure_signature": digest(record["details"]) if record["status"] == "fail" else None,
+                "duration_ms": int((time.monotonic() - started_at) * 1000),
             },
         )
         save_ledger(repo, ledger)

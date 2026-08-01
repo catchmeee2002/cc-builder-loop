@@ -4,6 +4,7 @@ import copy
 import hashlib
 import fnmatch
 import json
+from functools import lru_cache
 from pathlib import Path, PurePosixPath
 from typing import Any, Mapping
 
@@ -56,8 +57,25 @@ def load_json_source(path: str | Path | None, *, stdin_text: str | None = None) 
         raise ContractError(str(exc), code="JSON_INVALID") from exc
 
 
+@lru_cache(maxsize=None)
 def _schema(name: str) -> dict[str, Any]:
     return json.loads((schema_root() / name).read_text())
+
+
+def validate_telemetry(value: Any) -> dict[str, Any]:
+    try:
+        jsonschema.Draft202012Validator(
+            _schema("assurance-v4-telemetry.schema.json")
+        ).validate(value)
+    except jsonschema.ValidationError as exc:
+        path = "/".join(str(part) for part in exc.absolute_path)
+        raise ContractError(
+            exc.message,
+            code="ASSURANCE_TELEMETRY_INVALID",
+            details={"path": path},
+        ) from exc
+    assert isinstance(value, dict)
+    return copy.deepcopy(value)
 
 
 def validate_contract(value: Any) -> dict[str, Any]:

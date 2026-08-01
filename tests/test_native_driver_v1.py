@@ -207,6 +207,19 @@ class NativeDriverCoreContractTest(unittest.TestCase):
         self.assertEqual(retried["attempt"], 2)
         self.assertEqual(retried["state"], "prepared")
         self.assertNotIn("turn_id", retried)
+        telemetry = self.invoke("status", "--repo", self.repo, "--run", run_id)[
+            "telemetry"
+        ]
+        self.assertEqual(telemetry["active_stage"], "builder_implement")
+        self.assertEqual(telemetry["retries"]["total"], 1)
+        self.assertEqual(
+            telemetry["retries"]["by_failure_code"], {"serverOverloaded": 1}
+        )
+        builder_stage = next(
+            item for item in telemetry["stages"] if item["name"] == "builder_implement"
+        )
+        self.assertEqual(builder_stage["attempts"], 1)
+        self.assertEqual(builder_stage["retry_count"], 1)
         self.invoke(
             "bind-dispatch-turn",
             "--repo",

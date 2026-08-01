@@ -255,6 +255,111 @@ class AssuranceV4ContractTest(unittest.TestCase):
         integrated = self.load_ledger(run_path)["facets"]["execution"]
         self.assertEqual(integrated["tester_files"], [path])
 
+    def test_tester_source_deletion_is_rejected_before_candidate_integration(self) -> None:
+        run_id = "tester-deletion-rejected"
+        _started, run_path = self.start(run_id)
+        ledger = self.load_ledger(run_path)
+        execution = ledger["facets"]["execution"]
+        rc, prepared, _stdout, _stderr = self.invoke(
+            "prepare-tester",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--agent-id",
+            execution["agents"]["tester"]["agent_id"],
+            "--thread-id",
+            execution["agents"]["tester"]["thread_id"],
+        )
+        self.assertEqual(rc, 0, prepared)
+        tester_worktree = Path(
+            self.load_ledger(run_path)["facets"]["execution"]["tester_source"]["worktree"]
+        )
+        existing_test = tester_worktree / "tests" / "test_calc.py"
+        self.assertTrue(existing_test.is_file())
+        existing_test.unlink()
+        commit_all(tester_worktree, "delete existing test")
+        candidate_before = head(Path(ledger["candidate_worktree"]))
+
+        rc, rejected, _stdout, _stderr = self.invoke(
+            "integrate-tester", "--repo", self.repo, "--run", run_id
+        )
+
+        self.assertEqual(rc, 2, rejected)
+        self.assertEqual(rejected.get("code"), "TESTER_SOURCE_ENTRY_UNSUPPORTED")
+        self.assertEqual(head(Path(ledger["candidate_worktree"])), candidate_before)
+
+    def test_status_derives_stage_retry_and_replay_telemetry_from_events(self) -> None:
+        run_id = "telemetry-derived"
+        _started, run_path = self.start(run_id)
+        ledger = self.load_ledger(run_path)
+        ledger["events"].extend(
+            [
+                {
+                    "at": "2026-08-01T00:00:01+00:00",
+                    "kind": "dispatch_prepared",
+                    "details": {
+                        "action_id": "a" * 64,
+                        "action": "tester_author",
+                    },
+                },
+                {
+                    "at": "2026-08-01T00:00:03+00:00",
+                    "kind": "dispatch_retry_scheduled",
+                    "details": {
+                        "action_id": "a" * 64,
+                        "failure_code": "responseStreamDisconnected",
+                    },
+                },
+                {
+                    "at": "2026-08-01T00:00:05+00:00",
+                    "kind": "dispatch_completed",
+                    "details": {"action_id": "a" * 64},
+                },
+                {
+                    "at": "2026-08-01T00:00:06+00:00",
+                    "kind": "machine_verified",
+                    "details": {"status": "fail", "duration_ms": 1250},
+                },
+                {
+                    "at": "2026-08-01T00:00:07+00:00",
+                    "kind": "machine_verified",
+                    "details": {"status": "pass", "duration_ms": 750},
+                },
+                {
+                    "at": "2026-08-01T00:00:08+00:00",
+                    "kind": "builder_checkpointed",
+                    "details": {},
+                },
+            ]
+        )
+        (run_path / "ledger.json").write_text(
+            json.dumps(ledger, ensure_ascii=False), encoding="utf-8"
+        )
+
+        rc, data, _stdout, _stderr = self.invoke(
+            "status", "--repo", self.repo, "--run", run_id
+        )
+
+        self.assertEqual(rc, 0, data)
+        telemetry = data["telemetry"]
+        self.assertEqual(telemetry["candidate_changes"], 1)
+        self.assertEqual(telemetry["evidence_attempts"]["machine"], 2)
+        self.assertEqual(telemetry["evidence_replays"], 1)
+        self.assertEqual(
+            telemetry["retries"],
+            {
+                "total": 1,
+                "by_failure_code": {"responseStreamDisconnected": 1},
+            },
+        )
+        stages = {item["name"]: item for item in telemetry["stages"]}
+        self.assertEqual(stages["tester_author"]["total_duration_ms"], 4000)
+        self.assertEqual(stages["tester_author"]["retry_count"], 1)
+        self.assertEqual(stages["verify_machine"]["attempts"], 2)
+        self.assertEqual(stages["verify_machine"]["failed_attempts"], 1)
+        self.assertEqual(stages["verify_machine"]["total_duration_ms"], 2000)
+
     def prepare_required_gates(self, run_id: str, run_path: Path) -> None:
         self.record_role_evidence(run_id, run_path, "tester")
         rc, machine, _stdout, _stderr = self.invoke(
@@ -1313,6 +1418,19 @@ class AssuranceV4ContractTest(unittest.TestCase):
         self.assertEqual(verified["readiness"]["states"]["machine"], "pass")
         self.assertEqual(ledger["evidence"]["machine"]["status"], "pass")
         self.assertEqual(ledger["evidence"]["machine"]["candidate_head"], head(candidate))
+        machine_events = [
+            item for item in ledger["events"] if item.get("kind") == "machine_verified"
+        ]
+        self.assertEqual(len(machine_events), 1)
+        self.assertGreaterEqual(machine_events[0]["details"]["duration_ms"], 0)
+        machine_stage = next(
+            item for item in verified["telemetry"]["stages"] if item["name"] == "verify_machine"
+        )
+        self.assertEqual(machine_stage["attempts"], 1)
+        self.assertEqual(
+            machine_stage["total_duration_ms"],
+            machine_events[0]["details"]["duration_ms"],
+        )
 
         failed_run = "machine-failure"
         failed_contract = contract_for(

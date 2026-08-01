@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openai.local/codex-builder-loop/assurance-v4-telemetry.schema.json",
+  "title": "Builder Assurance Telemetry v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "elapsed_ms", "active_stage", "stages",
+    "candidate_changes", "evidence_attempts", "evidence_replays", "retries"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "elapsed_ms": {"type": "integer", "minimum": 0},
+    "active_stage": {
+      "oneOf": [
+        {"type": "null"},
+        {"type": "string", "minLength": 1}
+      ]
+    },
+    "stages": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name", "attempts", "completed_attempts", "failed_attempts",
+          "retry_count", "total_duration_ms", "last_failure_code"
+        ],
+        "properties": {
+          "name": {"type": "string", "minLength": 1},
+          "attempts": {"type": "integer", "minimum": 0},
+          "completed_attempts": {"type": "integer", "minimum": 0},
+          "failed_attempts": {"type": "integer", "minimum": 0},
+          "retry_count": {"type": "integer", "minimum": 0},
+          "total_duration_ms": {"type": "integer", "minimum": 0},
+          "last_failure_code": {
+            "oneOf": [
+              {"type": "null"},
+              {"type": "string", "minLength": 1}
+            ]
+          }
+        }
+      }
+    },
+    "candidate_changes": {"type": "integer", "minimum": 0},
+    "evidence_attempts": {
+      "type": "object",
+      "propertyNames": {
+        "enum": ["machine", "tester", "proof", "blackbox", "reviewer", "doc_review"]
+      },
+      "additionalProperties": {"type": "integer", "minimum": 0}
+    },
+    "evidence_replays": {"type": "integer", "minimum": 0},
+    "retries": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["total", "by_failure_code"],
+      "properties": {
+        "total": {"type": "integer", "minimum": 0},
+        "by_failure_code": {
+          "type": "object",
+          "additionalProperties": {"type": "integer", "minimum": 1}
+        }
+      }
+    }
+  }
+}
