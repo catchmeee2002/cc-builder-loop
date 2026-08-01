@@ -64,6 +64,7 @@ class NativeCoordinator:
         self.problem_schema = self._load_schema("codex-problem-report.schema.json")
         self.evidence_schema = self._load_schema("assurance-v4-evidence.schema.json")
         self.proof_schema = self._load_schema("codex-test-proof.schema.json")
+        self._active_threads: set[str] = set()
 
     def run(self) -> dict[str, Any]:
         while True:
@@ -149,6 +150,7 @@ class NativeCoordinator:
             self._apply_agent_result(action, role, result, context)
             return
         prompt = self._prompt(action, role, context)
+        self._activate_role_thread(action, role, context, str(agent["thread_id"]))
         self.core.call(
             "begin-dispatch",
             "--repo",
@@ -214,6 +216,7 @@ class NativeCoordinator:
             developer_instructions=instructions,
             sandbox="danger-full-access",
         )
+        self._active_threads.add(thread_id)
         command = f"prepare-{role}"
         self.core.call(
             command,
@@ -452,11 +455,23 @@ class NativeCoordinator:
             evidence = result.get("evidence_report")
             if not isinstance(evidence, dict):
                 raise NativeDriverError("Tester returned no evidence", code="NATIVE_TESTER_EVIDENCE_MISSING")
-            self._record_evidence("tester", evidence, action_id)
+            integrated = self._context()
+            integrated_head = integrated["facets"]["execution"].get("candidate_head")
+            if not isinstance(integrated_head, str):
+                raise NativeDriverError(
+                    "Tester integration produced no candidate HEAD",
+                    code="NATIVE_TESTER_INTEGRATION_HEAD_MISSING",
+                )
+            self._record_evidence(
+                "tester",
+                self._bind_evidence_candidate(evidence, integrated_head),
+                action_id,
+            )
         elif action["action"] == "tester_proof":
             spec = result.get("proof_spec")
             if not isinstance(spec, dict):
                 raise NativeDriverError("Tester returned no proof spec", code="NATIVE_PROOF_SPEC_MISSING")
+            spec = self._bind_proof_test_ids(spec, context)
             self.core.call(
                 "prove-tests",
                 "--repo",
@@ -523,10 +538,104 @@ class NativeCoordinator:
         value["kind"] = kind
         return value
 
+    @staticmethod
+    def _bind_evidence_candidate(evidence: dict[str, Any], candidate_head: str) -> dict[str, Any]:
+        value = copy.deepcopy(evidence)
+        value["candidate_head"] = candidate_head
+        return value
+
+    @staticmethod
+    def _proof_test_id_hints(context: dict[str, Any]) -> list[dict[str, str]]:
+        source = context["facets"]["execution"].get("tester_source")
+        if not isinstance(source, dict):
+            return []
+        hints: list[dict[str, str]] = []
+        for item in source.get("files", []):
+            path = item.get("path")
+            if not isinstance(path, str):
+                continue
+            hint = {"path": path}
+            if path.endswith(".py"):
+                hint["unittest_module"] = path[:-3].replace("/", ".")
+                hint["pytest_prefix"] = path + "::"
+            hints.append(hint)
+        return hints
+
+    def _bind_proof_test_ids(
+        self, spec: dict[str, Any], context: dict[str, Any]
+    ) -> dict[str, Any]:
+        from ..core import proof_test_source_path
+
+        value = copy.deepcopy(spec)
+        facets = context["facets"]
+        source = facets["execution"].get("tester_source")
+        if not isinstance(source, dict):
+            return value
+        tester_head = str(source["head"])
+        tester_patterns = facets["authority"]["tester_write"]
+        modules = [
+            item["path"][:-3].replace("/", ".")
+            for item in source.get("files", [])
+            if isinstance(item.get("path"), str) and item["path"].endswith(".py")
+        ]
+        for group in value.get("groups", []):
+            argv = group.get("argv", [])
+            framework = "unittest" if "unittest" in argv else "pytest" if "pytest" in argv else ""
+            if not framework:
+                continue
+            normalized_ids = []
+            for test_id in group.get("test_ids", []):
+                if proof_test_source_path(
+                    self.repo, tester_head, framework, test_id, tester_patterns
+                ) is not None:
+                    normalized_ids.append(test_id)
+                    continue
+                candidates: set[str] = set()
+                for module in modules:
+                    basename = module.rsplit(".", 1)[-1]
+                    if framework == "unittest":
+                        if test_id == basename or test_id.startswith(basename + "."):
+                            candidates.add(module + test_id[len(basename) :])
+                        else:
+                            candidates.add(module + "." + test_id)
+                    elif "::" in test_id:
+                        file_part, suffix = test_id.split("::", 1)
+                        path = module.replace(".", "/") + ".py"
+                        if file_part == Path(path).name:
+                            candidates.add(path + "::" + suffix)
+                bound = sorted(
+                    candidate
+                    for candidate in candidates
+                    if proof_test_source_path(
+                        self.repo, tester_head, framework, candidate, tester_patterns
+                    ) is not None
+                )
+                normalized_ids.append(bound[0] if len(bound) == 1 else test_id)
+            group["test_ids"] = normalized_ids
+        return value
+
     def _context(self) -> dict[str, Any]:
         return self.core.call(
             "driver-context", "--repo", str(self.repo), "--run", self.run_id
         )
+
+    def _activate_role_thread(
+        self,
+        action: dict[str, Any],
+        role: str,
+        context: dict[str, Any],
+        thread_id: str,
+    ) -> None:
+        if thread_id in self._active_threads:
+            return
+        instructions, _sandbox = self._role_config(role)
+        self.transport.resume_thread(
+            thread_id=thread_id,
+            cwd=self._turn_cwd(action, role, context),
+            developer_instructions=instructions,
+            sandbox="danger-full-access",
+        )
+        self._active_threads.add(thread_id)
 
     def _role_config(self, role: str) -> tuple[str, str]:
         value = tomllib.loads((self.project_root / "agents" / f"{role}.toml").read_text())
@@ -564,10 +673,29 @@ class NativeCoordinator:
         }
         if role in {"tester", "reviewer"}:
             payload["evidence_report_schema"] = self.evidence_schema
+        if role == "tester":
+            payload["test_identity_contract"] = {
+                "unittest": (
+                    "Canonical test ids are repository-root dotted source paths plus class and "
+                    "method, for example tests.test_calc.Case.test_value. Author package "
+                    "__init__.py files when needed so those ids are importable. For proof, use "
+                    "the canonical ids as unittest argv instead of a discovery command that "
+                    "reports shorter start-directory-relative ids."
+                ),
+                "pytest": (
+                    "Canonical test ids start with the repository-relative Tester-owned file, "
+                    "for example tests/test_calc.py::test_value."
+                ),
+            }
         if role == "reviewer":
             payload["review_input_contract"] = self._review_input_contract(context)
         if action.get("action") == "tester_proof":
             payload["proof_spec_schema"] = self.proof_schema
+            payload["proof_test_id_hints"] = self._proof_test_id_hints(context)
+            payload["proof_execution_rule"] = (
+                "Choose argv that executes exactly the declared canonical test_ids. Do not reuse "
+                "unittest discover -s with ids that include the omitted start-directory prefix."
+            )
         return "CBL_ACTION_ID:" + str(action["action_id"]) + "\n" + json.dumps(
             payload, ensure_ascii=False, sort_keys=True, indent=2
         )

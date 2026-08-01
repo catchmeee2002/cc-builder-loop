@@ -8,7 +8,9 @@
   可恢复的 transport failure 在同一 thread/dispatch 上最多自动尝试三次，耗尽后 fail closed；每轮仍由
   `driver-next` 重新派生动作。`$builder` 保持原入口并默认启动 Native Driver，只有 run 创建
   前 capability preflight 不兼容时才回退现有 Full Driver Skill；旧 run 不自动迁移，native-owned run
-  禁止中途换控制器。安装器新增 Builder role 配置，不增加用户命令或 API Key。
+  禁止中途换控制器。Tester integration replay 现在幂等，author evidence 绑定集成后的 candidate，proof
+  使用可回溯 Tester-owned source 的 canonical test id。安装器新增 Builder role 配置，不增加用户命令
+  或 API Key。
 
 - 将 Plan 环节的 Builder-loop 路线以实验功能重新开放：托管 AGENTS 使用一次原生选项卡选择路线，
   Planner 直接生成并验证 Assurance v4 contract，紧邻的原生 `Implement the plan.` 自动加载 `$builder`；

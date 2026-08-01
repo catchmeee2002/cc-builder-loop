@@ -1274,6 +1274,14 @@ def integrate_tester(repo_value: str | Path, run_value: str) -> dict[str, Any]:
                 status="NEEDS_USER",
             )
         candidate_before = git(candidate_worktree, "rev-parse", "HEAD").stdout.strip()
+        if (
+            execution.get("candidate_head") == candidate_before
+            and execution.get("tester_files") == tester_files
+            and source.get("head") == source_head
+            and source.get("files") == manifest
+            and all(_blob_at(repo, candidate_before, item["path"]) == item["blob"] for item in manifest)
+        ):
+            return status(repo, run_id)
         try:
             new_paths = set(tester_files)
             for item in source.get("replaces_files", []):

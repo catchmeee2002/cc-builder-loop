@@ -201,6 +201,22 @@ class FullDriverV4ContractTest(unittest.TestCase):
         self.assertEqual(rc, 0, recorded)
         return self.load_ledger(run_path)
 
+    def test_tester_integration_replay_is_idempotent(self) -> None:
+        run_id = "tester-integration-replay"
+        contract = contract_for(self.repo)
+        contract["execution"]["driver_enforced"] = False
+        _data, run_path = self.start(run_id, contract=contract)
+        integrated = self.prepare_and_record_tester(run_id, run_path)
+        expected_head = integrated["facets"]["execution"]["candidate_head"]
+        rc, replayed = self.invoke(
+            "integrate-tester", "--repo", self.repo, "--run", run_id
+        )
+        self.assertEqual(rc, 0, replayed)
+        self.assertEqual(
+            self.load_ledger(run_path)["facets"]["execution"]["candidate_head"],
+            expected_head,
+        )
+
     def skill_text(self) -> str:
         return SKILL.read_text(encoding="utf-8")
 

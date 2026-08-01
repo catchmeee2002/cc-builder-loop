@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from harness import CLI, ROOT, cleanup_repo, init_repo, run_process
+from harness import CLI, ROOT, cleanup_repo, commit_all, init_repo, run_process
 
 sys.path.insert(0, str(ROOT / "runtime"))
 
@@ -401,6 +401,38 @@ class NativeCoordinatorContractTest(unittest.TestCase):
         self.assertEqual(review["complete_diff"]["argv"][-1], f"{'1' * 40}..{'2' * 40}")
         self.assertTrue(Path(review["documentation_policy_path"]).is_file())
 
+    def test_tester_prompt_freezes_canonical_test_identity_rules(self) -> None:
+        coordinator = NativeCoordinator(
+            repo=ROOT,
+            run_id="native-test-identities",
+            core=object(),
+            transport=object(),
+            project_root=ROOT,
+        )
+        context = {
+            "target_start_head": "1" * 40,
+            "candidate_worktree": str(ROOT),
+            "facets": native_contract(ROOT),
+            "evidence": {},
+            "publication": None,
+            "problems": [],
+        }
+        context["facets"]["execution"]["tester_source"] = {
+            "head": "2" * 40,
+            "files": [{"path": "tests/test_calc.py", "blob": "3" * 40}],
+        }
+        prompt = coordinator._prompt(
+            {"action": "tester_proof", "action_id": "a" * 64},
+            "tester",
+            context,
+        )
+        payload = json.loads(prompt.split("\n", 1)[1])
+        self.assertIn("tests.test_calc", payload["test_identity_contract"]["unittest"])
+        self.assertEqual(
+            payload["proof_test_id_hints"][0]["unittest_module"], "tests.test_calc"
+        )
+        self.assertIn("exactly", payload["proof_execution_rule"])
+
     def test_builder_wire_drops_unowned_evidence_fields(self) -> None:
         result = NativeCoordinator._normalize_action_result(
             "builder_implement",
@@ -414,6 +446,102 @@ class NativeCoordinatorContractTest(unittest.TestCase):
         self.assertIsNone(result["evidence_report"])
         self.assertIsNone(result["proof_spec"])
         self.assertIsNone(result["problem_report"])
+
+    def test_tester_evidence_is_bound_to_post_integration_candidate(self) -> None:
+        source = {
+            "schema_version": 1,
+            "kind": "tester",
+            "status": "pass",
+            "candidate_head": "1" * 40,
+            "producer": {
+                "role": "tester",
+                "agent_id": "tester-agent",
+                "thread_id": "tester-thread",
+            },
+            "details": {"source_head": "1" * 40, "result": "tests_ready"},
+        }
+        bound = NativeCoordinator._bind_evidence_candidate(source, "2" * 40)
+        self.assertEqual(bound["candidate_head"], "2" * 40)
+        self.assertEqual(bound["details"]["source_head"], "1" * 40)
+        self.assertEqual(source["candidate_head"], "1" * 40)
+
+    def test_existing_role_thread_is_resumed_before_a_new_action(self) -> None:
+        class FakeTransport:
+            def __init__(self) -> None:
+                self.resumed = []
+
+            def resume_thread(self, **kwargs):
+                self.resumed.append(kwargs)
+
+        transport = FakeTransport()
+        coordinator = NativeCoordinator(
+            repo=ROOT,
+            run_id="native-thread-activation",
+            core=object(),
+            transport=transport,
+            project_root=ROOT,
+        )
+        context = {
+            "repo_root": str(ROOT),
+            "candidate_worktree": str(ROOT),
+            "facets": native_contract(ROOT),
+        }
+        coordinator._activate_role_thread(
+            {"action": "tester_proof"}, "tester", context, "tester-thread"
+        )
+        coordinator._activate_role_thread(
+            {"action": "tester_blackbox"}, "tester", context, "tester-thread"
+        )
+        self.assertEqual(len(transport.resumed), 1)
+        self.assertEqual(transport.resumed[0]["thread_id"], "tester-thread")
+
+    def test_proof_ids_are_bound_to_the_unique_tester_module(self) -> None:
+        repo = init_repo()
+        try:
+            test_path = repo / "tests" / "test_calculator.py"
+            test_path.write_text(
+                "import unittest\n\n"
+                "class AddTests(unittest.TestCase):\n"
+                "    def test_add(self):\n"
+                "        self.assertEqual(2 + 3, 5)\n",
+                encoding="utf-8",
+            )
+            commit_all(repo, "add tester source")
+            source_head = run_process(
+                ["git", "rev-parse", "HEAD"], cwd=repo
+            ).stdout.strip()
+            context = {"facets": native_contract(repo)}
+            context["facets"]["authority"]["tester_write"] = ["tests/**"]
+            context["facets"]["execution"]["tester_source"] = {
+                "head": source_head,
+                "files": [{"path": "tests/test_calculator.py", "blob": "0" * 40}],
+            }
+            coordinator = NativeCoordinator(
+                repo=repo,
+                run_id="native-proof-ids",
+                core=object(),
+                transport=object(),
+                project_root=ROOT,
+            )
+            bound = coordinator._bind_proof_test_ids(
+                {
+                    "schema_version": 1,
+                    "groups": [
+                        {
+                            "method": "baseline-red",
+                            "argv": ["python3", "-m", "unittest", "discover"],
+                            "test_ids": ["test_calculator.AddTests.test_add"],
+                        }
+                    ],
+                },
+                context,
+            )
+            self.assertEqual(
+                bound["groups"][0]["test_ids"],
+                ["tests.test_calculator.AddTests.test_add"],
+            )
+        finally:
+            cleanup_repo(repo)
 
     def test_coordinator_binds_builder_dispatches_once_and_stops(self) -> None:
         with tempfile.TemporaryDirectory(prefix="native-coordinator-") as raw:
