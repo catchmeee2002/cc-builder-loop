@@ -1126,6 +1126,22 @@ class AssuranceV4ContractTest(unittest.TestCase):
         self.assertEqual(len(set(ledger["digests"].values())), 4)
         self.assertEqual(ledger["facets"]["execution"]["dirty_snapshot"], [])
 
+    def test_pre_revision_continuity_ledger_remains_readable(self) -> None:
+        run_id = "pre-revision-continuity-ledger"
+        _data, run_path = self.start(run_id)
+        ledger = self.load_ledger(run_path)
+        ledger.pop("environment_lease", None)
+        ledger.pop("supersede_intent", None)
+        ledger.pop("abandon_intent", None)
+        ledger["facets"]["mission"].pop("supersedes", None)
+        ledger["facets"]["execution"].pop("carryover", None)
+        (run_path / "ledger.json").write_text(json.dumps(ledger), encoding="utf-8")
+        rc, status, _stdout, _stderr = self.invoke(
+            "status", "--repo", self.repo, "--run", run_id
+        )
+        self.assertEqual(rc, 0, status)
+        self.assertEqual(status["phase"], "active")
+
     def test_mission_change_requires_semantic_revision_and_exact_increment(self) -> None:
         run_id = "mission-revision"
         _data, run_path = self.start(run_id)
