@@ -122,7 +122,8 @@
                   "artifact_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
                   "baseline_state_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
                   "deployed_state_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-                  "restored_state_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+                  "restored_state_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+                  "deploy_action": {"enum": ["executed", "skipped_existing"]}
                 }
               }
             }

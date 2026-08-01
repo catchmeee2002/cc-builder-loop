@@ -6,7 +6,8 @@
   同一 machine gate 内先于昂贵全量命令执行并失败即停。新增单 run 候选部署事务：从 candidate HEAD
   创建隔离 deployment worktree，绑定项目制品 SHA256、授权环境和部署前后 probe，Tester 结果先暂存，
   环境恢复成功后才登记 blackbox evidence；Native transport 中断或重试耗尽同样先进入恢复。目标
-  checkout 不为部署切换，跨 revision 环境复用仍不支持（#146、#151、#152）。
+  checkout 不为部署切换。当前 probe 若确认目标已承载同一制品，则跳过重复 deploy，重新执行当前
+  Revision 的 blackbox，并在环境无漂移后释放事务（#146、#151、#152、#154）。
 
 - 新增 Native Driver v1，使用本地 Codex App Server 的版本化 stdio thread/turn 接口承载 Full Driver
   v4。Builder、Tester、Reviewer identity 和单一 crash-safe dispatch intent 由 Assurance Core ledger

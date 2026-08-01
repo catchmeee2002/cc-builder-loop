@@ -18,6 +18,9 @@ Native Driver 通过本地 Codex App Server 持续消费 Core 的 missing/stale 
 Builder、Tester、Reviewer thread。现有 Full Driver Skill 只作为 run 创建前的兼容回退和行为参照；
 面向用户的唯一入口仍是 Plan 选项和 `$builder`，不新增 Native Driver 使用命令。
 
+部署型 Revision 若现场 probe 确认授权目标已经运行同一候选制品，会跳过重复 deploy；当前 Revision 的
+blackbox 仍重新执行，结束时再次确认环境未漂移。旧 evidence 不会因制品相同而自动继承。
+
 面向 Codex CLI 的独立判据交付闭环。进入 Plan mode 后先选择规划方式：
 
 ```text

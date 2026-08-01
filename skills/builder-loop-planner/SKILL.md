@@ -40,8 +40,9 @@ description: 在 Codex Plan mode 中为显式选择的 Builder-loop 实验路线
   字符串数组，`expected_returncodes` 冻结什么实际返回码算通过。交付必跑且本地无副作用的关键测试用
   `run_before_full_suite:true` 标记在 machine commands 中；不得靠分析 argv 猜顺序。
 - 需要真实环境时，只允许计划冻结一个 `authority.external_targets` 目标和项目提供的
-  `execution.deployment` probe/build/deploy/restore wrapper；跨 revision 环境复用、通用远程部署编排和
-  多仓原子事务选择 Codex 原生 Plan。
+  `execution.deployment` probe/build/deploy/restore wrapper。若当前 probe 证明同一目标已经承载同一候选
+  制品，Core 可跳过重复 deploy，但本 Revision 的 blackbox 仍重新执行；通用远程部署编排和多仓原子
+  事务选择 Codex 原生 Plan。
 
 ## 验证与交接
 

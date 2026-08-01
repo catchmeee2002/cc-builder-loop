@@ -84,13 +84,16 @@ dispatch。直到 `finalize` 或明确的决策边界。动作面如下，不能
   observed HEAD；`run_before_full_suite:true` 的本地关键测试先执行，实际 returncode 必须命中计划冻结的
   `expected_returncodes`，失败不能被 shell 包装成 PASS。
 - `prepare_deployment`：仅当计划冻结了已授权真实环境时调用 Core。Core 从 candidate HEAD 创建隔离部署
-  worktree，运行项目提供的查询、构建和部署命令，绑定制品 SHA256 与环境状态；不得切换 target checkout。
+  worktree，运行项目提供的查询、构建和部署命令，绑定制品 SHA256 与环境状态；不得切换 target
+  checkout。若当前 probe 已证明授权目标承载相同制品，Core 会跳过重复 deploy；这不复用旧 blackbox
+  结果。
 - `tester_blackbox`：在 tester author 与 prove-tests、machine 都 current 后，续接同一 Tester
   thread，在 candidate worktree 的 integrated HEAD 执行结构化 blackbox；逐命令实际 returncode 必须
   命中冻结的 `expected_returncodes`。部署型 run 先调用 `stage-blackbox` 暂存结果，不直接登记 PASS。
 - `restore_deployment` / `complete_blackbox`：部署型 run 无论 Tester 通过、失败或控制面中断，都先执行
   项目恢复命令并由 probe 证明回到部署前状态；恢复成功后才把暂存结果绑定制品、环境和恢复事实，登记
-  blackbox evidence。恢复失败只返回用户决定，不继续 Reviewer 或 finalize。
+  blackbox evidence。跳过 deploy 的事务只重新 probe 并确认环境未漂移，不执行会改变既有环境的恢复
+  命令。恢复失败或复用状态漂移只返回用户决定，不继续 Reviewer 或 finalize。
 - `reviewer_final`：只有 Tester、proof、machine、blackbox 等全部 reviewer prerequisites 齐全且
   current 后，才用只允许 identity bootstrap 的最小 prompt spawn Reviewer，调用 `prepare-reviewer`
   绑定真实 identity，再 follow-up 同一 thread 开始审查。Reviewer 只使用成熟终态

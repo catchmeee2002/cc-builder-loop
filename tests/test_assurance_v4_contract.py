@@ -462,6 +462,7 @@ class AssuranceV4ContractTest(unittest.TestCase):
     def test_deployment_transaction_restores_before_blackbox_evidence(self) -> None:
         state = self.artifacts / "shared-environment.json"
         fail_restore = self.artifacts / "fail-restore"
+        operations = self.artifacts / "deployment-operations.log"
         state.write_text(json.dumps({"artifact": None, "value": "stable"}), encoding="utf-8")
         script = self.repo / "deploy_fixture.py"
         script.write_text(
@@ -469,14 +470,17 @@ class AssuranceV4ContractTest(unittest.TestCase):
             "import hashlib, json, os, pathlib, sys\n"
             f"state = pathlib.Path({str(state)!r})\n"
             f"fail_restore = pathlib.Path({str(fail_restore)!r})\n"
+            f"operations = pathlib.Path({str(operations)!r})\n"
             "mode = sys.argv[1]\n"
             "if mode == 'build':\n"
             "    path = pathlib.Path(os.environ['BUILDER_LOOP_ARTIFACT_PATH'])\n"
             "    path.parent.mkdir(parents=True, exist_ok=True)\n"
             "    path.write_bytes(b'candidate-artifact')\n"
             "elif mode == 'deploy':\n"
+            "    operations.write_text(operations.read_text() + 'deploy\\n' if operations.exists() else 'deploy\\n')\n"
             "    state.write_text(json.dumps({'artifact': os.environ['BUILDER_LOOP_ARTIFACT_SHA256'], 'value': 'candidate'}))\n"
             "elif mode == 'restore':\n"
+            "    operations.write_text(operations.read_text() + 'restore\\n' if operations.exists() else 'restore\\n')\n"
             "    if fail_restore.exists(): raise SystemExit(9)\n"
             "    state.write_text(json.dumps({'artifact': None, 'value': 'stable'}))\n"
             "elif mode == 'probe':\n"
@@ -579,7 +583,95 @@ class AssuranceV4ContractTest(unittest.TestCase):
         self.assertEqual(rc, 0, completed)
         evidence = self.load_ledger(run_path)["evidence"]["blackbox"]
         self.assertEqual(evidence["details"]["deployment"]["target_id"], "shared-fixture")
+        self.assertEqual(evidence["details"]["deployment"]["deploy_action"], "executed")
         self.assertEqual(head(self.repo), target_before)
+
+        reused_run = "deployment-reused-across-revision"
+        operations.write_text("", encoding="utf-8")
+        state.write_text(
+            json.dumps({"artifact": transaction["artifact_sha256"], "value": "candidate"}),
+            encoding="utf-8",
+        )
+        _data, reused_path = self.start(reused_run, contract=contract)
+        rc, checkpointed, _stdout, _stderr = self.invoke(
+            "checkpoint-builder", "--repo", self.repo, "--run", reused_run
+        )
+        self.assertEqual(rc, 0, checkpointed)
+        self.record_role_evidence(reused_run, reused_path, "tester")
+        rc, machine, _stdout, _stderr = self.invoke(
+            "verify-machine", "--repo", self.repo, "--run", reused_run
+        )
+        self.assertEqual(rc, 0, machine)
+        rc, reused, _stdout, _stderr = self.invoke(
+            "prepare-deployment", "--repo", self.repo, "--run", reused_run
+        )
+        self.assertEqual(rc, 0, reused)
+        reused_transaction = reused["deployment_transaction"]
+        self.assertEqual(reused_transaction["state"], "deployed")
+        self.assertEqual(reused_transaction["deploy_action"], "skipped_existing")
+        self.assertEqual(operations.read_text(), "")
+        reused_ledger = self.load_ledger(reused_path)
+        reused_candidate = reused_ledger["facets"]["execution"]["candidate_head"]
+        reused_agent = reused_ledger["facets"]["execution"]["agents"]["tester"]
+        reused_command = reused_ledger["facets"]["execution"]["commands"][0]
+        reused_report = deepcopy(report)
+        reused_report["candidate_head"] = reused_candidate
+        reused_report["producer"] = {"role": "tester", **reused_agent}
+        reused_report["details"]["worktree"] = reused_ledger["candidate_worktree"]
+        reused_report["details"]["before_head"] = reused_candidate
+        reused_report["details"]["after_head"] = reused_candidate
+        reused_report["details"]["executions"][0]["id"] = reused_command["id"]
+        reused_report["details"]["executions"][0]["argv"] = reused_command["argv"]
+        reused_report_path = self.write_json("reused-deployment-blackbox.json", reused_report)
+        rc, staged, _stdout, _stderr = self.invoke(
+            "stage-blackbox", "--repo", self.repo, "--run", reused_run, "--report", reused_report_path
+        )
+        self.assertEqual(rc, 0, staged)
+        rc, released, _stdout, _stderr = self.invoke(
+            "restore-deployment", "--repo", self.repo, "--run", reused_run
+        )
+        self.assertEqual(rc, 0, released)
+        self.assertEqual(released["deployment_transaction"]["state"], "restored")
+        self.assertEqual(operations.read_text(), "")
+        rc, completed, _stdout, _stderr = self.invoke(
+            "complete-blackbox", "--repo", self.repo, "--run", reused_run
+        )
+        self.assertEqual(rc, 0, completed)
+        reused_evidence = self.load_ledger(reused_path)["evidence"]["blackbox"]
+        self.assertEqual(
+            reused_evidence["details"]["deployment"]["deploy_action"],
+            "skipped_existing",
+        )
+
+        drift_run = "deployment-reuse-state-drift"
+        _data, drift_path = self.start(drift_run, contract=contract)
+        rc, checkpointed, _stdout, _stderr = self.invoke(
+            "checkpoint-builder", "--repo", self.repo, "--run", drift_run
+        )
+        self.assertEqual(rc, 0, checkpointed)
+        self.record_role_evidence(drift_run, drift_path, "tester")
+        rc, machine, _stdout, _stderr = self.invoke(
+            "verify-machine", "--repo", self.repo, "--run", drift_run
+        )
+        self.assertEqual(rc, 0, machine)
+        rc, reused, _stdout, _stderr = self.invoke(
+            "prepare-deployment", "--repo", self.repo, "--run", drift_run
+        )
+        self.assertEqual(rc, 0, reused)
+        self.assertEqual(reused["deployment_transaction"]["deploy_action"], "skipped_existing")
+        state.write_text(
+            json.dumps({"artifact": transaction["artifact_sha256"], "value": "drifted"}),
+            encoding="utf-8",
+        )
+        rc, drifted, _stdout, _stderr = self.invoke(
+            "restore-deployment", "--repo", self.repo, "--run", drift_run
+        )
+        self.assertEqual(rc, 1, drifted)
+        self.assertEqual(drifted.get("code"), "DEPLOYMENT_REUSE_STATE_DRIFT")
+        self.assertEqual(operations.read_text(), "")
+
+        state.write_text(json.dumps({"artifact": None, "value": "stable"}), encoding="utf-8")
+        operations.write_text("", encoding="utf-8")
 
         failed_run = "deployment-restore-failure"
         _data, failed_path = self.start(failed_run, contract=contract)

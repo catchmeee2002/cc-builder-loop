@@ -160,6 +160,12 @@
         "baseline_probe": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/probe"}]},
         "deployed_probe": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/probe"}]},
         "restored_probe": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/probe"}]},
+        "deploy_action": {
+          "oneOf": [
+            {"type": "null"},
+            {"enum": ["executed", "skipped_existing"]}
+          ]
+        },
         "failure_code": {"oneOf": [{"type": "null"}, {"type": "string", "minLength": 1}]}
       }
     },

@@ -1594,6 +1594,7 @@ def record_evidence(
                     "baseline_state_digest": transaction["baseline_probe"]["state_digest"],
                     "deployed_state_digest": transaction["deployed_probe"]["state_digest"],
                     "restored_state_digest": transaction["restored_probe"]["state_digest"],
+                    "deploy_action": transaction.get("deploy_action", "executed"),
                 }
                 if observed != expected_deployment:
                     raise AssuranceError(
@@ -2239,6 +2240,7 @@ def prepare_deployment(repo_value: str | Path, run_value: str) -> dict[str, Any]
                 "baseline_probe": None,
                 "deployed_probe": None,
                 "restored_probe": None,
+                "deploy_action": None,
                 "failure_code": None,
             }
             ledger["deployment_transaction"] = transaction
@@ -2271,6 +2273,22 @@ def prepare_deployment(repo_value: str | Path, run_value: str) -> dict[str, Any]
             save_ledger(repo, ledger)
             return status(repo, run_id)
         transaction["artifact_sha256"] = _sha256_file(artifact)
+        if baseline["deployed_artifact_sha256"] == transaction["artifact_sha256"]:
+            transaction["deploy_action"] = "skipped_existing"
+            transaction["deployed_probe"] = baseline
+            transaction["state"] = "deployed"
+            append_event(
+                ledger,
+                "deployment_skipped_existing",
+                {
+                    "artifact_sha256": transaction["artifact_sha256"],
+                    "probe": baseline,
+                    "baseline_probe_result": probe_result,
+                },
+            )
+            save_ledger(repo, ledger)
+            return status(repo, run_id)
+        transaction["deploy_action"] = "executed"
         transaction["state"] = "deploying"
         append_event(
             ledger,
@@ -2381,6 +2399,49 @@ def restore_deployment(repo_value: str | Path, run_value: str) -> dict[str, Any]
         append_event(ledger, "deployment_restore_intent_written", {})
         save_ledger(repo, ledger)
         worktree = Path(transaction["worktree"])
+        if transaction.get("deploy_action") == "skipped_existing":
+            try:
+                restored, probe_result = _probe_environment(
+                    repo,
+                    worktree,
+                    transaction["candidate_head"],
+                    deployment,
+                    artifact_sha256=transaction.get("artifact_sha256"),
+                )
+            except AssuranceError as exc:
+                transaction["state"] = "restore_failed"
+                transaction["failure_code"] = exc.code
+                append_event(ledger, "deployment_reuse_probe_failed", {"code": exc.code})
+                save_ledger(repo, ledger)
+                raise AssuranceError(
+                    "reused deployment could not be verified",
+                    code=exc.code,
+                    status="NEEDS_USER",
+                    details=exc.details,
+                ) from exc
+            if restored != baseline:
+                transaction["state"] = "restore_failed"
+                transaction["failure_code"] = "DEPLOYMENT_REUSE_STATE_DRIFT"
+                append_event(
+                    ledger,
+                    "deployment_reuse_state_drift",
+                    {"baseline_probe": baseline, "observed_probe": restored},
+                )
+                save_ledger(repo, ledger)
+                raise AssuranceError(
+                    "reused deployment environment changed during blackbox",
+                    code="DEPLOYMENT_REUSE_STATE_DRIFT",
+                    status="NEEDS_USER",
+                )
+            transaction["restored_probe"] = restored
+            transaction["state"] = "restored"
+            append_event(
+                ledger,
+                "deployment_reuse_released",
+                {"probe": restored, "probe_result": probe_result},
+            )
+            save_ledger(repo, ledger)
+            return status(repo, run_id)
         result = _run_frozen_command(
             repo,
             worktree,
@@ -2471,6 +2532,7 @@ def complete_staged_blackbox(repo_value: str | Path, run_value: str) -> dict[str
         "baseline_state_digest": transaction["baseline_probe"]["state_digest"],
         "deployed_state_digest": transaction["deployed_probe"]["state_digest"],
         "restored_state_digest": transaction["restored_probe"]["state_digest"],
+        "deploy_action": transaction.get("deploy_action", "executed"),
     }
     result = record_evidence(repo, run_id, "blackbox", report)
     with locked(repo):
