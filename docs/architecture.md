@@ -29,7 +29,7 @@ Core ledger 保存 `active/finalizing/finalized/abandoned`、facet/evidence dige
 可恢复事务，不保存“下一步让谁做”、correction budget 或普通 Agent 循环。Native Driver 在启动外部
 role turn 前只额外持久化一个 dispatch intent，绑定 action/thread/prompt/output digest 和 turn/result；
 它是跨进程副作用的恢复事实，不是调度状态，消费后立即清空。`driver.py` 每轮从 readiness 重新决定
-Builder、Tester、机器、黑盒或 Reviewer 动作；
+Builder、Tester、机器、候选部署、黑盒或 Reviewer 动作；
 同一失败签名三次只触发架构复核，不自动创建新 Mission。无冲突 target drift 通过 candidate
 rematerialization 后局部重验，Git 冲突、授权扩大和覆盖风险才停止。
 
@@ -59,6 +59,16 @@ Tester author evidence 在 source 集成后由 Driver 绑定 Core 产生的 inte
 source HEAD/manifest provenance；同一 source/candidate 的 `integrate-tester` replay 是幂等 no-op。
 proof 使用与 Tester-owned 路径一致的 canonical test id，Native wire 只在唯一可证明映射时补全模块或
 文件前缀，最终 source binding 和真实执行分类仍由 Core 判定。
+
+机器命令的 `run_before_full_suite` 只改变同一 machine gate 内的执行顺序：本地交付关键测试先跑，
+失败后不启动后续昂贵命令。所有命令默认只接受 returncode 0；计划可用 `expected_returncodes` 冻结
+其他合法结果，runtime 始终把实际 returncode 当作观察值，而不是让 Tester 在 evidence 中重定义成功。
+
+可选 deployment contract 只支持当前 run 的单个已授权外部目标。Core 从 candidate HEAD 创建独立
+deployment worktree，在其中运行项目提供的 probe/build/deploy/restore wrapper，绑定制品 SHA256、
+部署前状态、部署后状态和恢复状态；target checkout 不切换。Tester blackbox 结果先暂存，Driver 无论
+结果或 transport failure 都优先恢复，只有 probe 证明回到 baseline 后才登记 evidence。恢复失败保留
+worktree、ledger 和外部状态事实并返回用户决定。跨 revision 环境复用和多仓部署仍不支持。
 可恢复的 App Server transport failure 在同一 role thread 和 dispatch 上最多尝试三次，attempt 与 turn id
 持久化进 ledger；第三次失败后 Core 返回 `NEEDS_USER`，Driver 不重置上限或另建 thread 绕过连续性。
 App Server turn 使用 host-level `danger-full-access`，因为部分本地环境无法创建 bwrap namespace；这不
@@ -72,7 +82,8 @@ App Server turn 使用 host-level `danger-full-access`，因为部分本地环�
 内部确定性入口为 `codex-builder-loop assurance --experimental-v4 ...`，Native 编排入口为
 `codex-builder-loop native-driver start|resume|status`，但用户不直接调用。Plan 选项中的实验 Planner
 冻结并验证 v4 contract，`$builder` 只消费已验证 handoff 并启动 Native Driver；内部 Full Driver
-Skill 仍禁止被普通请求隐式调用。首版覆盖本地单仓 Git 代码与 L1 文档交付；外部设备、远程部署和多仓事务保持 unsupported。本地 protected preparation
+Skill 仍禁止被普通请求隐式调用。首版覆盖本地单仓 Git 代码、L1 文档交付，以及由项目 wrapper
+定义的单 run 候选部署事务；跨 revision 环境复用、通用远程部署编排和多仓事务保持 unsupported。本地 protected preparation
 通过 finalized HEAD、exact support manifest 和单次 continuation 消费衔接 business run。消费前先在
 preparation ledger 持久化 intent，business ledger 落盘后再提交 consumed marker；进程中断时重试
 同一 start 只收敛该 intent，不创建第二份状态。当前用户入口明确标为实验；只有完成历史回放和跨项目

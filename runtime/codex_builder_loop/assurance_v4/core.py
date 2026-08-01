@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import fnmatch
 import hashlib
+import json
 import os
 import re
 import shutil
@@ -24,6 +25,7 @@ from .models import (
     facet_digests,
     validate_contract,
     validate_agent_result,
+    validate_environment_probe,
     validate_evidence_report,
     validate_problem_report,
     validate_repo_path,
@@ -348,6 +350,8 @@ def start(
                 "retired_reviewer_agents": [],
                 "driver_runtime": copy.deepcopy(driver_runtime),
                 "dispatch_intent": None,
+                "deployment_transaction": None,
+                "pending_blackbox": None,
                 "problems": [],
                 "publication": {
                     "required": bool(contract["authority"].get("public_prerequisites")),
@@ -560,6 +564,18 @@ def retry_dispatch(
             raise AssuranceError("completed dispatch cannot be retried", code="DISPATCH_ALREADY_COMPLETE")
         attempt = int(intent.get("attempt", 1))
         if attempt >= 3:
+            deployment = ledger.get("deployment_transaction")
+            if isinstance(deployment, dict) and deployment.get("state") == "deployed":
+                deployment["state"] = "restore_required"
+                deployment["failure_code"] = "NATIVE_DISPATCH_RETRY_EXHAUSTED"
+                append_event(
+                    ledger,
+                    "dispatch_retry_exhausted_restore_required",
+                    {"failure_code": failure_code, "attempt": attempt},
+                )
+                ledger["dispatch_intent"] = None
+                save_ledger(repo, ledger)
+                return status(repo, run_id)
             raise AssuranceError(
                 "Native role transport failed three times",
                 code="NATIVE_DISPATCH_RETRY_EXHAUSTED",
@@ -766,6 +782,8 @@ def status(repo_value: str | Path, run_value: str) -> dict[str, Any]:
         "builder_checkpointed": ledger.get("builder_checkpointed", False),
         "driver_runtime": copy.deepcopy(ledger.get("driver_runtime")),
         "dispatch_intent": copy.deepcopy(ledger.get("dispatch_intent")),
+        "deployment_transaction": copy.deepcopy(ledger.get("deployment_transaction")),
+        "pending_blackbox": copy.deepcopy(ledger.get("pending_blackbox")),
         "telemetry": telemetry(ledger),
         "readiness": readiness(ledger),
         "publication": copy.deepcopy(ledger.get("publication")),
@@ -790,6 +808,8 @@ def driver_context(repo_value: str | Path, run_value: str) -> dict[str, Any]:
         "problems": copy.deepcopy(ledger.get("problems", [])),
         "driver_runtime": copy.deepcopy(ledger.get("driver_runtime")),
         "dispatch_intent": copy.deepcopy(ledger.get("dispatch_intent")),
+        "deployment_transaction": copy.deepcopy(ledger.get("deployment_transaction")),
+        "pending_blackbox": copy.deepcopy(ledger.get("pending_blackbox")),
     }
 
 
@@ -1547,10 +1567,44 @@ def record_evidence(
             ]
             if not declared_commands or observed_commands != declared_commands:
                 raise AssuranceError("blackbox executions are not frozen in Execution", code="BLACKBOX_COMMAND_MISMATCH")
+            expected = {
+                item["id"]: item["expected_returncodes"]
+                for item in ledger["facets"]["execution"]["commands"]
+            }
             if report["status"] == "pass" and any(
-                item["returncode"] != 0 or item["timed_out"] for item in details["executions"]
+                item["timed_out"] or item["returncode"] not in expected[item["id"]]
+                for item in details["executions"]
             ):
-                raise AssuranceError("failed blackbox execution cannot produce pass", code="BLACKBOX_EXECUTION_FAILED")
+                raise AssuranceError(
+                    "blackbox execution did not match its frozen expected return codes",
+                    code="BLACKBOX_EXECUTION_FAILED",
+                )
+            deployment = ledger["facets"]["execution"].get("deployment")
+            if isinstance(deployment, dict):
+                transaction = ledger.get("deployment_transaction")
+                observed = details.get("deployment")
+                if not isinstance(transaction, dict) or transaction.get("state") != "restored":
+                    raise AssuranceError(
+                        "deployment-backed blackbox evidence requires a restored environment",
+                        code="DEPLOYMENT_NOT_RESTORED",
+                    )
+                expected_deployment = {
+                    "target_id": transaction["target_id"],
+                    "artifact_sha256": transaction["artifact_sha256"],
+                    "baseline_state_digest": transaction["baseline_probe"]["state_digest"],
+                    "deployed_state_digest": transaction["deployed_probe"]["state_digest"],
+                    "restored_state_digest": transaction["restored_probe"]["state_digest"],
+                }
+                if observed != expected_deployment:
+                    raise AssuranceError(
+                        "blackbox deployment facts do not match the runtime transaction",
+                        code="BLACKBOX_DEPLOYMENT_MISMATCH",
+                    )
+            elif "deployment" in details:
+                raise AssuranceError(
+                    "blackbox report declared an unexpected deployment",
+                    code="BLACKBOX_DEPLOYMENT_UNEXPECTED",
+                )
         else:
             if details["reviewed_head"] != candidate:
                 raise AssuranceError("review evidence is not bound to the candidate", code="REVIEW_HEAD_MISMATCH")
@@ -1995,6 +2049,439 @@ def _resolve_machine_executable(
     }
 
 
+def _run_frozen_command(
+    repo: Path,
+    worktree: Path,
+    candidate: str,
+    command: Mapping[str, Any],
+    *,
+    artifact_path: str | None = None,
+    artifact_sha256: str | None = None,
+) -> dict[str, Any]:
+    executable, identity = _resolve_machine_executable(
+        repo, worktree, candidate, command["argv"][0]
+    )
+    if executable is None:
+        return {
+            "id": command["id"],
+            "argv": command["argv"],
+            "returncode": None,
+            "stdout": "",
+            "stderr": "executable not found",
+            "timed_out": False,
+            "executable_identity": identity,
+        }
+    env = {
+        "HOME": os.environ.get("HOME", ""),
+        "LANG": os.environ.get("LANG", "C.UTF-8"),
+        "LC_ALL": os.environ.get("LC_ALL", "C.UTF-8"),
+        "PATH": TRUSTED_SYSTEM_PATH,
+        "PYTHONDONTWRITEBYTECODE": "1",
+    }
+    if artifact_path is not None:
+        env["BUILDER_LOOP_ARTIFACT_PATH"] = artifact_path
+    if artifact_sha256 is not None:
+        env["BUILDER_LOOP_ARTIFACT_SHA256"] = artifact_sha256
+    try:
+        completed = subprocess.run(
+            [executable, *command["argv"][1:]],
+            cwd=worktree,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=command["timeout_seconds"],
+            check=False,
+            env=env,
+        )
+        return {
+            "id": command["id"],
+            "argv": command["argv"],
+            "returncode": completed.returncode,
+            "stdout": completed.stdout[-8000:],
+            "stderr": completed.stderr[-8000:],
+            "timed_out": False,
+            "executable_identity": identity,
+        }
+    except subprocess.TimeoutExpired as exc:
+        return {
+            "id": command["id"],
+            "argv": command["argv"],
+            "returncode": None,
+            "stdout": (exc.stdout or "")[-8000:] if isinstance(exc.stdout, str) else "",
+            "stderr": (exc.stderr or "")[-8000:] if isinstance(exc.stderr, str) else "",
+            "timed_out": True,
+            "executable_identity": identity,
+        }
+
+
+def _command_passed(command: Mapping[str, Any], result: Mapping[str, Any]) -> bool:
+    return not result["timed_out"] and result["returncode"] in command["expected_returncodes"]
+
+
+def _probe_environment(
+    repo: Path,
+    worktree: Path,
+    candidate: str,
+    deployment: Mapping[str, Any],
+    *,
+    artifact_sha256: str | None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    result = _run_frozen_command(
+        repo,
+        worktree,
+        candidate,
+        deployment["probe_command"],
+        artifact_path=deployment["artifact_path"],
+        artifact_sha256=artifact_sha256,
+    )
+    if not _command_passed(deployment["probe_command"], result):
+        raise AssuranceError(
+            "environment probe command failed",
+            code="DEPLOYMENT_PROBE_FAILED",
+            status="NEEDS_USER",
+            details={"result": result},
+        )
+    lines = [line.strip() for line in result["stdout"].splitlines() if line.strip()]
+    if not lines:
+        raise AssuranceError(
+            "environment probe produced no JSON",
+            code="DEPLOYMENT_PROBE_OUTPUT_MISSING",
+        )
+    try:
+        probe = validate_environment_probe(json.loads(lines[-1]))
+    except (json.JSONDecodeError, ContractError) as exc:
+        raise AssuranceError(
+            "environment probe output is invalid",
+            code=getattr(exc, "code", "DEPLOYMENT_PROBE_OUTPUT_INVALID"),
+            details=getattr(exc, "details", {}),
+        ) from exc
+    if probe["target_id"] != deployment["target_id"]:
+        raise AssuranceError(
+            "environment probe target does not match the authorized target",
+            code="DEPLOYMENT_TARGET_MISMATCH",
+        )
+    return probe, result
+
+
+def prepare_deployment(repo_value: str | Path, run_value: str) -> dict[str, Any]:
+    repo = resolve_repo(repo_value)
+    run_id = ensure_run_id(run_value)
+    with locked(repo):
+        ledger = read_ledger(repo, run_id)
+        if ledger["phase"] != "active":
+            raise AssuranceError("run is not active", code="ASSURANCE_RUN_NOT_ACTIVE")
+        deployment = ledger["facets"]["execution"].get("deployment")
+        if not isinstance(deployment, dict):
+            raise AssuranceError("run has no deployment contract", code="DEPLOYMENT_NOT_REQUIRED")
+        candidate = ledger["facets"]["execution"].get("candidate_head")
+        if not isinstance(candidate, str):
+            raise AssuranceError("deployment candidate is unavailable", code="CANDIDATE_HEAD_INVALID")
+        prereqs = [
+            kind
+            for kind in ("tester", "proof", "machine")
+            if kind in ledger["facets"]["assurance"]["required"]
+        ]
+        blockers = [kind for kind in prereqs if evidence_state(ledger, kind) != "pass"]
+        if blockers:
+            raise AssuranceError(
+                "deployment requires current local assurance evidence",
+                code="DEPLOYMENT_PREREQUISITES_MISSING",
+                status="NEEDS_USER",
+                details={"blockers": blockers},
+            )
+        transaction = ledger.get("deployment_transaction")
+        if isinstance(transaction, dict):
+            if transaction["state"] == "restored" and transaction["candidate_head"] != candidate:
+                git(repo, "worktree", "remove", "--force", transaction["worktree"], check=False)
+                shutil.rmtree(transaction["worktree"], ignore_errors=True)
+                ledger["deployment_transaction"] = None
+                transaction = None
+                save_ledger(repo, ledger)
+            elif transaction["candidate_head"] != candidate:
+                raise AssuranceError(
+                    "deployment transaction is stale for the candidate",
+                    code="DEPLOYMENT_CANDIDATE_STALE",
+                )
+            if isinstance(transaction, dict) and transaction["state"] == "restored":
+                git(repo, "worktree", "remove", "--force", transaction["worktree"], check=False)
+                shutil.rmtree(transaction["worktree"], ignore_errors=True)
+                ledger["deployment_transaction"] = None
+                transaction = None
+                save_ledger(repo, ledger)
+            if isinstance(transaction, dict) and transaction["state"] in {"deployed", "restore_required", "restoring", "restore_failed"}:
+                return status(repo, run_id)
+            if isinstance(transaction, dict):
+                worktree = Path(transaction["worktree"])
+        if not isinstance(transaction, dict):
+            worktree = run_dir(repo, run_id) / "deployment"
+            if worktree.exists():
+                raise AssuranceError(
+                    "unregistered deployment worktree exists",
+                    code="DEPLOYMENT_WORKTREE_EXISTS",
+                    status="NEEDS_USER",
+                )
+            created = git(repo, "worktree", "add", "--detach", str(worktree), candidate, check=False)
+            if created.returncode != 0:
+                raise AssuranceError(
+                    created.stderr.strip() or "deployment worktree creation failed",
+                    code="DEPLOYMENT_WORKTREE_CREATE_FAILED",
+                )
+            transaction = {
+                "transaction_id": digest(
+                    {"run_id": run_id, "candidate_head": candidate, "target_id": deployment["target_id"]}
+                ),
+                "state": "preparing",
+                "candidate_head": candidate,
+                "target_id": deployment["target_id"],
+                "worktree": str(worktree),
+                "artifact_path": deployment["artifact_path"],
+                "artifact_sha256": None,
+                "baseline_probe": None,
+                "deployed_probe": None,
+                "restored_probe": None,
+                "failure_code": None,
+            }
+            ledger["deployment_transaction"] = transaction
+            append_event(ledger, "deployment_prepared", {"transaction_id": transaction["transaction_id"]})
+            save_ledger(repo, ledger)
+        baseline, probe_result = _probe_environment(
+            repo, worktree, candidate, deployment, artifact_sha256=None
+        )
+        transaction["baseline_probe"] = baseline
+        build_result = _run_frozen_command(
+            repo, worktree, candidate, deployment["build_command"], artifact_path=deployment["artifact_path"]
+        )
+        if not _command_passed(deployment["build_command"], build_result):
+            transaction["failure_code"] = "DEPLOYMENT_BUILD_FAILED"
+            transaction["state"] = "restored"
+            transaction["restored_probe"] = baseline
+            append_event(ledger, "deployment_build_failed", {"result": build_result})
+            save_ledger(repo, ledger)
+            return status(repo, run_id)
+        artifact_entry = worktree / deployment["artifact_path"]
+        artifact = artifact_entry.resolve()
+        if (
+            artifact_entry.is_symlink()
+            or not artifact.is_relative_to(worktree.resolve())
+            or not artifact.is_file()
+        ):
+            transaction["failure_code"] = "DEPLOYMENT_ARTIFACT_INVALID"
+            transaction["state"] = "restored"
+            transaction["restored_probe"] = baseline
+            save_ledger(repo, ledger)
+            return status(repo, run_id)
+        transaction["artifact_sha256"] = _sha256_file(artifact)
+        transaction["state"] = "deploying"
+        append_event(
+            ledger,
+            "deployment_intent_written",
+            {"artifact_sha256": transaction["artifact_sha256"], "baseline_probe": baseline},
+        )
+        save_ledger(repo, ledger)
+        deploy_result = _run_frozen_command(
+            repo,
+            worktree,
+            candidate,
+            deployment["deploy_command"],
+            artifact_path=deployment["artifact_path"],
+            artifact_sha256=transaction["artifact_sha256"],
+        )
+        if not _command_passed(deployment["deploy_command"], deploy_result):
+            transaction["state"] = "restore_required"
+            transaction["failure_code"] = "DEPLOYMENT_COMMAND_FAILED"
+            append_event(ledger, "deployment_command_failed", {"result": deploy_result})
+            save_ledger(repo, ledger)
+            return status(repo, run_id)
+        try:
+            deployed, deployed_probe_result = _probe_environment(
+                repo,
+                worktree,
+                candidate,
+                deployment,
+                artifact_sha256=transaction["artifact_sha256"],
+            )
+        except AssuranceError as exc:
+            transaction["state"] = "restore_required"
+            transaction["failure_code"] = exc.code
+            append_event(ledger, "deployment_probe_failed", {"code": exc.code})
+            save_ledger(repo, ledger)
+            return status(repo, run_id)
+        if deployed["deployed_artifact_sha256"] != transaction["artifact_sha256"]:
+            transaction["state"] = "restore_required"
+            transaction["failure_code"] = "DEPLOYMENT_ARTIFACT_MISMATCH"
+            save_ledger(repo, ledger)
+            return status(repo, run_id)
+        if _sha256_file(artifact) != transaction["artifact_sha256"]:
+            transaction["state"] = "restore_required"
+            transaction["failure_code"] = "DEPLOYMENT_ARTIFACT_DRIFT"
+            save_ledger(repo, ledger)
+            return status(repo, run_id)
+        transaction["deployed_probe"] = deployed
+        transaction["state"] = "deployed"
+        append_event(
+            ledger,
+            "deployment_completed",
+            {"probe": deployed, "probe_result": deployed_probe_result, "baseline_probe_result": probe_result},
+        )
+        save_ledger(repo, ledger)
+    return status(repo, run_id)
+
+
+def stage_blackbox(repo_value: str | Path, run_value: str, report_value: Any) -> dict[str, Any]:
+    report = validate_evidence_report(report_value)
+    if report["kind"] != "blackbox":
+        raise AssuranceError("staged evidence must be blackbox", code="EVIDENCE_KIND_MISMATCH")
+    repo = resolve_repo(repo_value)
+    run_id = ensure_run_id(run_value)
+    with locked(repo):
+        ledger = read_ledger(repo, run_id)
+        transaction = ledger.get("deployment_transaction")
+        if not isinstance(transaction, dict) or transaction["state"] != "deployed":
+            raise AssuranceError("deployment is not active", code="DEPLOYMENT_NOT_ACTIVE")
+        candidate = ledger["facets"]["execution"].get("candidate_head")
+        if report["candidate_head"] != candidate:
+            raise AssuranceError("blackbox candidate is stale", code="EVIDENCE_CANDIDATE_MISMATCH")
+        pending = ledger.get("pending_blackbox")
+        report_digest = digest(report)
+        if isinstance(pending, dict):
+            if pending["report_digest"] != report_digest:
+                raise AssuranceError("staged blackbox result changed", code="PENDING_BLACKBOX_MISMATCH")
+            return status(repo, run_id)
+        ledger["pending_blackbox"] = {
+            "report": report,
+            "report_digest": report_digest,
+            "candidate_head": candidate,
+        }
+        append_event(ledger, "blackbox_result_staged", {"report_digest": report_digest})
+        save_ledger(repo, ledger)
+    return status(repo, run_id)
+
+
+def restore_deployment(repo_value: str | Path, run_value: str) -> dict[str, Any]:
+    repo = resolve_repo(repo_value)
+    run_id = ensure_run_id(run_value)
+    with locked(repo):
+        ledger = read_ledger(repo, run_id)
+        deployment = ledger["facets"]["execution"].get("deployment")
+        transaction = ledger.get("deployment_transaction")
+        if not isinstance(deployment, dict) or not isinstance(transaction, dict):
+            raise AssuranceError("deployment transaction is missing", code="DEPLOYMENT_TRANSACTION_MISSING")
+        if transaction["state"] == "restored":
+            return status(repo, run_id)
+        if transaction["state"] == "restore_failed":
+            raise AssuranceError(
+                "deployment restore previously failed",
+                code="DEPLOYMENT_RESTORE_FAILED",
+                status="NEEDS_USER",
+            )
+        baseline = transaction.get("baseline_probe")
+        if not isinstance(baseline, dict):
+            raise AssuranceError("deployment baseline is missing", code="DEPLOYMENT_BASELINE_MISSING")
+        transaction["state"] = "restoring"
+        append_event(ledger, "deployment_restore_intent_written", {})
+        save_ledger(repo, ledger)
+        worktree = Path(transaction["worktree"])
+        result = _run_frozen_command(
+            repo,
+            worktree,
+            transaction["candidate_head"],
+            deployment["restore_command"],
+            artifact_path=transaction["artifact_path"],
+            artifact_sha256=transaction.get("artifact_sha256"),
+        )
+        if not _command_passed(deployment["restore_command"], result):
+            transaction["state"] = "restore_failed"
+            transaction["failure_code"] = "DEPLOYMENT_RESTORE_FAILED"
+            append_event(ledger, "deployment_restore_failed", {"result": result})
+            save_ledger(repo, ledger)
+            raise AssuranceError(
+                "deployment restore command failed",
+                code="DEPLOYMENT_RESTORE_FAILED",
+                status="NEEDS_USER",
+                details={"result": result},
+            )
+        try:
+            restored, probe_result = _probe_environment(
+                repo,
+                worktree,
+                transaction["candidate_head"],
+                deployment,
+                artifact_sha256=transaction.get("artifact_sha256"),
+            )
+        except AssuranceError as exc:
+            transaction["state"] = "restore_failed"
+            transaction["failure_code"] = exc.code
+            append_event(ledger, "deployment_restore_probe_failed", {"code": exc.code})
+            save_ledger(repo, ledger)
+            raise AssuranceError(
+                "deployment restore could not be verified",
+                code=exc.code,
+                status="NEEDS_USER",
+                details=exc.details,
+            ) from exc
+        if restored["state_digest"] != baseline["state_digest"]:
+            transaction["state"] = "restore_failed"
+            transaction["failure_code"] = "DEPLOYMENT_RESTORE_STATE_MISMATCH"
+            save_ledger(repo, ledger)
+            raise AssuranceError(
+                "deployment restore did not recover the baseline state",
+                code="DEPLOYMENT_RESTORE_STATE_MISMATCH",
+                status="NEEDS_USER",
+            )
+        transaction["restored_probe"] = restored
+        transaction["state"] = "restored"
+        append_event(ledger, "deployment_restored", {"probe": restored, "probe_result": probe_result})
+        save_ledger(repo, ledger)
+    return status(repo, run_id)
+
+
+def require_deployment_restore(
+    repo_value: str | Path, run_value: str, *, failure_code: str
+) -> dict[str, Any]:
+    repo = resolve_repo(repo_value)
+    run_id = ensure_run_id(run_value)
+    with locked(repo):
+        ledger = read_ledger(repo, run_id)
+        transaction = ledger.get("deployment_transaction")
+        if not isinstance(transaction, dict) or transaction.get("state") != "deployed":
+            raise AssuranceError("deployment is not active", code="DEPLOYMENT_NOT_ACTIVE")
+        transaction["state"] = "restore_required"
+        transaction["failure_code"] = failure_code
+        ledger["dispatch_intent"] = None
+        append_event(ledger, "deployment_restore_required", {"failure_code": failure_code})
+        save_ledger(repo, ledger)
+    return status(repo, run_id)
+
+
+def complete_staged_blackbox(repo_value: str | Path, run_value: str) -> dict[str, Any]:
+    repo = resolve_repo(repo_value)
+    run_id = ensure_run_id(run_value)
+    with locked(repo):
+        ledger = read_ledger(repo, run_id)
+        pending = copy.deepcopy(ledger.get("pending_blackbox"))
+        transaction = copy.deepcopy(ledger.get("deployment_transaction"))
+        if not isinstance(pending, dict) or not isinstance(transaction, dict):
+            raise AssuranceError("staged blackbox result is missing", code="PENDING_BLACKBOX_MISSING")
+        if transaction["state"] != "restored":
+            raise AssuranceError("deployment is not restored", code="DEPLOYMENT_NOT_RESTORED")
+    report = pending["report"]
+    report["details"]["deployment"] = {
+        "target_id": transaction["target_id"],
+        "artifact_sha256": transaction["artifact_sha256"],
+        "baseline_state_digest": transaction["baseline_probe"]["state_digest"],
+        "deployed_state_digest": transaction["deployed_probe"]["state_digest"],
+        "restored_state_digest": transaction["restored_probe"]["state_digest"],
+    }
+    result = record_evidence(repo, run_id, "blackbox", report)
+    with locked(repo):
+        ledger = read_ledger(repo, run_id)
+        if ledger.get("pending_blackbox", {}).get("report_digest") == pending["report_digest"]:
+            ledger["pending_blackbox"] = None
+            append_event(ledger, "blackbox_result_completed", {"report_digest": pending["report_digest"]})
+            save_ledger(repo, ledger)
+    return result
+
+
 def verify_machine(repo_value: str | Path, run_value: str) -> dict[str, Any]:
     repo = resolve_repo(repo_value)
     run_id = ensure_run_id(run_value)
@@ -2007,6 +2494,11 @@ def verify_machine(repo_value: str | Path, run_value: str) -> dict[str, Any]:
         if not candidate or not commit_exists(repo, candidate):
             raise AssuranceError("candidate head is unavailable", code="CANDIDATE_HEAD_INVALID")
         commands = ledger["facets"]["assurance"]["machine_commands"]
+        commands = sorted(
+            enumerate(commands),
+            key=lambda item: (not item[1].get("run_before_full_suite", False), item[0]),
+        )
+        commands = [item[1] for item in commands]
         if "machine" in ledger["facets"]["assurance"]["required"] and not commands:
             raise AssuranceError("machine evidence requires at least one command", code="MACHINE_COMMAND_REQUIRED")
         raw_temp = tempfile.mkdtemp(prefix=f"assurance-v4-{run_id}-verify-")
@@ -2071,6 +2563,8 @@ def verify_machine(repo_value: str | Path, run_value: str) -> dict[str, Any]:
                             "timed_out": False,
                         }
                     )
+                    if completed.returncode not in command["expected_returncodes"]:
+                        break
                 except subprocess.TimeoutExpired as exc:
                     results.append(
                         {
@@ -2088,7 +2582,12 @@ def verify_machine(repo_value: str | Path, run_value: str) -> dict[str, Any]:
         finally:
             git(repo, "worktree", "remove", "--force", str(verify_worktree), check=False)
             shutil.rmtree(verify_worktree, ignore_errors=True)
-        passed = all(item["returncode"] == 0 and not item["timed_out"] for item in results)
+        declared = {item["id"]: item for item in commands}
+        passed = len(results) == len(commands) and all(
+            not item["timed_out"]
+            and item["returncode"] in declared[item["id"]]["expected_returncodes"]
+            for item in results
+        )
         report = {
             "status": "pass" if passed else "fail",
             "candidate_head": candidate,
@@ -2323,6 +2822,19 @@ def finalize(repo_value: str | Path, run_value: str, message: str) -> dict[str, 
             return status(repo, run_id)
         if ledger["phase"] != "active":
             raise AssuranceError("run is not active", code="ASSURANCE_RUN_NOT_ACTIVE")
+        deployment = ledger["facets"]["execution"].get("deployment")
+        if isinstance(deployment, dict):
+            transaction = ledger.get("deployment_transaction")
+            if (
+                not isinstance(transaction, dict)
+                or transaction.get("state") != "restored"
+                or ledger.get("pending_blackbox") is not None
+            ):
+                raise AssuranceError(
+                    "deployment must be restored and blackbox evidence completed before finalize",
+                    code="DEPLOYMENT_FINALIZE_BLOCKED",
+                    status="NEEDS_USER",
+                )
         ready = readiness(ledger)
         if not ready["ready"]:
             raise AssuranceError(
@@ -2478,6 +2990,10 @@ def finalize(repo_value: str | Path, run_value: str, message: str) -> dict[str, 
         if isinstance(tester_source, dict):
             git(repo, "worktree", "remove", tester_source["worktree"], check=False)
             git(repo, "branch", "-D", tester_source["branch"], check=False)
+        deployment_transaction = ledger.get("deployment_transaction")
+        if isinstance(deployment_transaction, dict):
+            git(repo, "worktree", "remove", "--force", deployment_transaction["worktree"], check=False)
+            shutil.rmtree(deployment_transaction["worktree"], ignore_errors=True)
     return status(repo, run_id)
 
 

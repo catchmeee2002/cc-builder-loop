@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Assurance v4 命令现在把实际 returncode 与计划冻结的 `expected_returncodes` 分开；本地关键测试可在
+  同一 machine gate 内先于昂贵全量命令执行并失败即停。新增单 run 候选部署事务：从 candidate HEAD
+  创建隔离 deployment worktree，绑定项目制品 SHA256、授权环境和部署前后 probe，Tester 结果先暂存，
+  环境恢复成功后才登记 blackbox evidence；Native transport 中断或重试耗尽同样先进入恢复。目标
+  checkout 不为部署切换，跨 revision 环境复用仍不支持（#146、#151、#152）。
+
 - 新增 Native Driver v1，使用本地 Codex App Server 的版本化 stdio thread/turn 接口承载 Full Driver
   v4。Builder、Tester、Reviewer identity 和单一 crash-safe dispatch intent 由 Assurance Core ledger
   绑定，Agent 结果经统一 schema、turn id 和 artifact digest 后才能进入现有 evidence/problem 事务；

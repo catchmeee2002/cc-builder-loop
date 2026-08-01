@@ -144,6 +144,33 @@ def parser() -> argparse.ArgumentParser:
     verify.add_argument("--run", required=True)
     dispatch_guard(verify)
 
+    prepare_deployment = commands.add_parser("prepare-deployment")
+    prepare_deployment.add_argument("--repo", default=".")
+    prepare_deployment.add_argument("--run", required=True)
+    dispatch_guard(prepare_deployment)
+
+    stage_blackbox = commands.add_parser("stage-blackbox")
+    stage_blackbox.add_argument("--repo", default=".")
+    stage_blackbox.add_argument("--run", required=True)
+    stage_blackbox.add_argument("--report", required=True)
+    dispatch_guard(stage_blackbox)
+
+    restore_deployment = commands.add_parser("restore-deployment")
+    restore_deployment.add_argument("--repo", default=".")
+    restore_deployment.add_argument("--run", required=True)
+    dispatch_guard(restore_deployment)
+
+    require_restore = commands.add_parser("require-deployment-restore")
+    require_restore.add_argument("--repo", default=".")
+    require_restore.add_argument("--run", required=True)
+    require_restore.add_argument("--failure-code", required=True)
+    dispatch_guard(require_restore)
+
+    complete_blackbox = commands.add_parser("complete-blackbox")
+    complete_blackbox.add_argument("--repo", default=".")
+    complete_blackbox.add_argument("--run", required=True)
+    dispatch_guard(complete_blackbox)
+
     finalize = commands.add_parser("finalize")
     finalize.add_argument("--repo", default=".")
     finalize.add_argument("--run", required=True)
@@ -360,6 +387,23 @@ def main(argv: Sequence[str] | None = None) -> int:
         elif args.command == "verify-machine":
             _guard_dispatch(args, {"verify_machine"})
             payload = core.verify_machine(args.repo, args.run)
+        elif args.command == "prepare-deployment":
+            _guard_dispatch(args, {"prepare_deployment"})
+            payload = core.prepare_deployment(args.repo, args.run)
+        elif args.command == "stage-blackbox":
+            _guard_dispatch(args, {"tester_blackbox"})
+            payload = core.stage_blackbox(args.repo, args.run, _json(args.report))
+        elif args.command == "restore-deployment":
+            _guard_dispatch(args, {"restore_deployment"})
+            payload = core.restore_deployment(args.repo, args.run)
+        elif args.command == "require-deployment-restore":
+            _guard_dispatch(args, {"tester_blackbox"})
+            payload = core.require_deployment_restore(
+                args.repo, args.run, failure_code=args.failure_code
+            )
+        elif args.command == "complete-blackbox":
+            _guard_dispatch(args, {"complete_blackbox"})
+            payload = core.complete_staged_blackbox(args.repo, args.run)
         elif args.command == "finalize":
             _guard_dispatch(args, {"finalize"})
             payload = core.finalize(args.repo, args.run, args.message)

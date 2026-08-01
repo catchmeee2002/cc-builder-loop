@@ -78,6 +78,22 @@ def validate_telemetry(value: Any) -> dict[str, Any]:
     return copy.deepcopy(value)
 
 
+def validate_environment_probe(value: Any) -> dict[str, Any]:
+    try:
+        jsonschema.Draft202012Validator(
+            _schema("assurance-v4-environment-probe.schema.json")
+        ).validate(value)
+    except jsonschema.ValidationError as exc:
+        path = "/".join(str(part) for part in exc.absolute_path)
+        raise ContractError(
+            exc.message,
+            code="ENVIRONMENT_PROBE_INVALID",
+            details={"path": path},
+        ) from exc
+    assert isinstance(value, dict)
+    return copy.deepcopy(value)
+
+
 def validate_contract(value: Any) -> dict[str, Any]:
     try:
         jsonschema.Draft202012Validator(_schema("assurance-v4-contract.schema.json")).validate(value)
@@ -93,8 +109,22 @@ def validate_contract(value: Any) -> dict[str, Any]:
     contract["mission"].setdefault("delivery_kind", "code")
     contract["authority"].setdefault("public_prerequisites", [])
     contract["authority"].setdefault("protected_support_paths", [])
+    contract["authority"].setdefault("external_targets", [])
     contract["execution"].setdefault("continuation", None)
+    contract["execution"].setdefault("deployment", None)
     contract["execution"].setdefault("driver_enforced", False)
+    all_commands = list(contract["assurance"]["machine_commands"]) + list(
+        contract["execution"]["commands"]
+    )
+    deployment = contract["execution"].get("deployment")
+    if isinstance(deployment, dict):
+        all_commands.extend(
+            deployment[name]
+            for name in ("build_command", "deploy_command", "probe_command", "restore_command")
+        )
+    for command in all_commands:
+        command.setdefault("expected_returncodes", [0])
+        command.setdefault("run_before_full_suite", False)
     for facet, fields in (
         ("mission", ("behaviors", "interfaces", "acceptance_cases", "trust_boundaries")),
     ):
@@ -131,6 +161,17 @@ def validate_contract(value: Any) -> dict[str, Any]:
             code="ASSURANCE_CONTRACT_DUPLICATE_ID",
             details={"facet": "execution", "field": "commands"},
         )
+    invalid_early = [
+        item["id"]
+        for item in contract["execution"]["commands"]
+        if item.get("run_before_full_suite")
+    ]
+    if invalid_early:
+        raise ContractError(
+            "only machine commands may run before the full suite",
+            code="EXECUTION_COMMAND_ORDER_INVALID",
+            details={"command_ids": invalid_early},
+        )
     for facet in ("authority", "execution"):
         for field in ("builder_write", "tester_write") if facet == "authority" else ("builder_files", "tester_files"):
             for item in contract[facet][field]:
@@ -161,6 +202,26 @@ def validate_contract(value: Any) -> dict[str, Any]:
     if isinstance(continuation, dict):
         for item in continuation["support_paths"]:
             validate_repo_path(item)
+    deployment = contract["execution"].get("deployment")
+    if isinstance(deployment, dict):
+        validate_repo_path(deployment["artifact_path"])
+        if any(token in deployment["artifact_path"] for token in "*?["):
+            raise ContractError(
+                "deployment artifact path must be exact",
+                code="DEPLOYMENT_ARTIFACT_PATH_INVALID",
+            )
+        target_ids = {item["id"] for item in contract["authority"]["external_targets"]}
+        if deployment["target_id"] not in target_ids:
+            raise ContractError(
+                "deployment target is not authorized",
+                code="DEPLOYMENT_TARGET_UNAUTHORIZED",
+                details={"target_id": deployment["target_id"]},
+            )
+        if "blackbox" not in set(contract["assurance"]["required"]):
+            raise ContractError(
+                "deployment requires blackbox assurance",
+                code="DEPLOYMENT_BLACKBOX_REQUIRED",
+            )
     execution = contract["execution"]
     builder_files = set(execution["builder_files"])
     tester_files = set(execution["tester_files"])
@@ -384,6 +445,8 @@ def evidence_dependency(
             candidate_head=candidate,
             commands=execution["commands"],
             tester_source=execution.get("tester_source"),
+            deployment=execution.get("deployment"),
+            deployment_transaction=ledger.get("deployment_transaction"),
         )
     elif kind in {"reviewer", "doc_review"}:
         base.update(
@@ -439,7 +502,11 @@ def authority_expands(old: Mapping[str, Any], new: Mapping[str, Any]) -> bool:
             return True
     old_intake = {(item["path"], item["sha256"]) for item in old["dirty_intake"]}
     new_intake = {(item["path"], item["sha256"]) for item in new["dirty_intake"]}
-    return not new_intake.issubset(old_intake)
+    if not new_intake.issubset(old_intake):
+        return True
+    old_targets = {item["id"] for item in old.get("external_targets", [])}
+    new_targets = {item["id"] for item in new.get("external_targets", [])}
+    return not new_targets.issubset(old_targets)
 
 
 def assurance_downgrades(old: Mapping[str, Any], new: Mapping[str, Any]) -> bool:

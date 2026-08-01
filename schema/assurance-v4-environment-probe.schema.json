@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openai.local/codex-builder-loop/assurance-v4-environment-probe.schema.json",
+  "title": "Assurance v4 Environment Probe",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "target_id", "state_digest", "deployed_artifact_sha256"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "target_id": {"type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"},
+    "state_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "deployed_artifact_sha256": {
+      "oneOf": [
+        {"type": "null"},
+        {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      ]
+    }
+  }
+}

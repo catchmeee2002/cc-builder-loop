@@ -16,7 +16,16 @@ Codex 负责理解、实现和协调；builder-loop 只固定完成条件、角�
 - Tester 依据 Planner 冻结的目标在独立 thread 中写测和黑盒验收。
 - Reviewer 检查代码、测试、计划和文档语义，但不能覆盖机器或 Tester 失败。
 
+命令退出码、输出、制品和环境状态都是观察事实，不自动等于验收结论。计划必须冻结什么观察结果算
+通过，runtime 只比较真实观察与冻结预期，不能把 `returncode == 0`、Agent 自述或事后改写报告冒充
+通用成功语义。
+
 Evidence 绑定的是产生结论的真实输入 digest，不是碰巧承载这些输入的全局 HEAD。只有冻结 scope 内的输入完全不变时，机器或黑盒证据才能跨 HEAD 复用；Reviewer 和文档审查始终面对完整 integrated HEAD。
+
+验收若会改变共享服务、设备或其他外部状态，真实输入还包括候选制品、授权目标和部署前状态。任何
+可能已经产生副作用的动作都必须先持久化可恢复 intent，并在恢复结果得到机械确认后才能形成最终通过
+证据。项目负责具体构建、部署和恢复方法；builder-loop 只绑定身份、授权、观察与事务边界，不成为
+第二套部署平台。
 
 独立 Tester thread 产出并通过 ownership、Git/source manifest、integration 和 Reviewer 审查绑定的
 Tester-owned 测试源码，是测试判据的可信输入。这里的独立性来自角色、来源和证据链，不等同于

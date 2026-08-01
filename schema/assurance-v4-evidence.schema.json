@@ -109,6 +109,21 @@
                     "timed_out": {"type": "boolean"}
                   }
                 }
+              },
+              "deployment": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "target_id", "artifact_sha256", "baseline_state_digest",
+                  "deployed_state_digest", "restored_state_digest"
+                ],
+                "properties": {
+                  "target_id": {"type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"},
+                  "artifact_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+                  "baseline_state_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+                  "deployed_state_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+                  "restored_state_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+                }
               }
             }
           }

@@ -96,6 +96,12 @@ class NativeCoordinator:
                 self._simple("publish-prerequisites", action)
             elif name == "verify_machine":
                 self._simple("verify-machine", action)
+            elif name == "prepare_deployment":
+                self._simple("prepare-deployment", action)
+            elif name == "restore_deployment":
+                self._simple("restore-deployment", action)
+            elif name == "complete_blackbox":
+                self._simple("complete-blackbox", action)
             elif name == "rematerialize_target":
                 self._simple("rematerialize-target", action)
             elif name == "recover_finalize":
@@ -494,7 +500,39 @@ class NativeCoordinator:
             evidence = result.get("evidence_report")
             if not isinstance(evidence, dict):
                 raise NativeDriverError("Tester returned no blackbox evidence", code="NATIVE_BLACKBOX_MISSING")
-            self._record_evidence("blackbox", evidence, action_id)
+            if isinstance(context["facets"]["execution"].get("deployment"), dict):
+                try:
+                    self.core.call(
+                        "stage-blackbox",
+                        "--repo",
+                        str(self.repo),
+                        "--run",
+                        self.run_id,
+                        "--report",
+                        "-",
+                        "--action-id",
+                        action_id,
+                        "--driver-runtime-kind",
+                        "native",
+                        input_value=evidence,
+                    )
+                except CorePortError as exc:
+                    self.core.call(
+                        "require-deployment-restore",
+                        "--repo",
+                        str(self.repo),
+                        "--run",
+                        self.run_id,
+                        "--failure-code",
+                        exc.code,
+                        "--action-id",
+                        action_id,
+                        "--driver-runtime-kind",
+                        "native",
+                    )
+                    return
+            else:
+                self._record_evidence("blackbox", evidence, action_id)
         elif action["action"] == "reviewer_final":
             evidence = result.get("evidence_report")
             if not isinstance(evidence, dict):
@@ -841,6 +879,23 @@ class NativeCoordinator:
             return False
         failure_code = self._turn_result_failure_code(turn)
         if failure_code not in RETRYABLE_TURN_FAILURES:
+            context = self._context()
+            deployment = context.get("deployment_transaction")
+            if isinstance(deployment, dict) and deployment.get("state") == "deployed":
+                self.core.call(
+                    "require-deployment-restore",
+                    "--repo",
+                    str(self.repo),
+                    "--run",
+                    self.run_id,
+                    "--failure-code",
+                    failure_code,
+                    "--action-id",
+                    action_id,
+                    "--driver-runtime-kind",
+                    "native",
+                )
+                return True
             return False
         self.core.call(
             "retry-dispatch",

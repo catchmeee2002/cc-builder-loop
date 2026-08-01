@@ -360,6 +360,275 @@ class AssuranceV4ContractTest(unittest.TestCase):
         self.assertEqual(stages["verify_machine"]["failed_attempts"], 1)
         self.assertEqual(stages["verify_machine"]["total_duration_ms"], 2000)
 
+    def test_early_machine_command_stops_before_expensive_full_suite(self) -> None:
+        marker = self.artifacts / "expensive-command-ran"
+        contract = contract_for(self.repo)
+        contract["assurance"]["machine_commands"] = [
+            {
+                "id": "expensive-suite",
+                "argv": [
+                    sys.executable,
+                    "-c",
+                    f"from pathlib import Path; Path({str(marker)!r}).write_text('ran')",
+                ],
+                "timeout_seconds": 30,
+            },
+            {
+                "id": "delivery-test",
+                "argv": [sys.executable, "-c", "raise SystemExit(7)"],
+                "timeout_seconds": 30,
+                "run_before_full_suite": True,
+            },
+        ]
+        _data, run_path = self.start("early-machine-stop", contract=contract)
+
+        rc, result, _stdout, _stderr = self.invoke(
+            "verify-machine", "--repo", self.repo, "--run", "early-machine-stop"
+        )
+
+        self.assertEqual(rc, 0, result)
+        self.assertFalse(marker.exists())
+        commands = self.load_ledger(run_path)["evidence"]["machine"]["details"]["commands"]
+        self.assertEqual([item["id"] for item in commands], ["delivery-test"])
+        self.assertEqual(commands[0]["returncode"], 7)
+
+    def test_blackbox_pass_uses_frozen_expected_returncodes(self) -> None:
+        run_id = "expected-nonzero-blackbox"
+        contract = contract_for(self.repo)
+        contract["execution"]["commands"][0]["expected_returncodes"] = [1]
+        _data, run_path = self.start(run_id, contract=contract)
+        self.record_role_evidence(run_id, run_path, "tester")
+        rc, machine, _stdout, _stderr = self.invoke(
+            "verify-machine", "--repo", self.repo, "--run", run_id
+        )
+        self.assertEqual(rc, 0, machine)
+        ledger = self.load_ledger(run_path)
+        command = ledger["facets"]["execution"]["commands"][0]
+        candidate = ledger["facets"]["execution"]["candidate_head"]
+        agent = ledger["facets"]["execution"]["agents"]["tester"]
+        report = {
+            "schema_version": 1,
+            "kind": "blackbox",
+            "status": "pass",
+            "candidate_head": candidate,
+            "producer": {"role": "tester", **agent},
+            "details": {
+                "result": "pass",
+                "worktree": ledger["candidate_worktree"],
+                "before_head": candidate,
+                "after_head": candidate,
+                "executions": [
+                    {
+                        "id": command["id"],
+                        "argv": command["argv"],
+                        "returncode": 1,
+                        "timed_out": False,
+                    }
+                ],
+            },
+        }
+        report_path = self.write_json("expected-nonzero-report.json", report)
+
+        rc, accepted, _stdout, _stderr = self.invoke(
+            "record-evidence",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--kind",
+            "blackbox",
+            "--report",
+            report_path,
+        )
+        self.assertEqual(rc, 0, accepted)
+        self.assertEqual(accepted["readiness"]["states"]["blackbox"], "pass")
+
+        report["details"]["executions"][0]["returncode"] = 0
+        report_path.write_text(json.dumps(report), encoding="utf-8")
+        rc, rejected, _stdout, _stderr = self.invoke(
+            "record-evidence",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--kind",
+            "blackbox",
+            "--report",
+            report_path,
+        )
+        self.assertEqual(rc, 2, rejected)
+        self.assertEqual(rejected.get("code"), "BLACKBOX_EXECUTION_FAILED")
+
+    def test_deployment_transaction_restores_before_blackbox_evidence(self) -> None:
+        state = self.artifacts / "shared-environment.json"
+        fail_restore = self.artifacts / "fail-restore"
+        state.write_text(json.dumps({"artifact": None, "value": "stable"}), encoding="utf-8")
+        script = self.repo / "deploy_fixture.py"
+        script.write_text(
+            "#!/usr/bin/env python3\n"
+            "import hashlib, json, os, pathlib, sys\n"
+            f"state = pathlib.Path({str(state)!r})\n"
+            f"fail_restore = pathlib.Path({str(fail_restore)!r})\n"
+            "mode = sys.argv[1]\n"
+            "if mode == 'build':\n"
+            "    path = pathlib.Path(os.environ['BUILDER_LOOP_ARTIFACT_PATH'])\n"
+            "    path.parent.mkdir(parents=True, exist_ok=True)\n"
+            "    path.write_bytes(b'candidate-artifact')\n"
+            "elif mode == 'deploy':\n"
+            "    state.write_text(json.dumps({'artifact': os.environ['BUILDER_LOOP_ARTIFACT_SHA256'], 'value': 'candidate'}))\n"
+            "elif mode == 'restore':\n"
+            "    if fail_restore.exists(): raise SystemExit(9)\n"
+            "    state.write_text(json.dumps({'artifact': None, 'value': 'stable'}))\n"
+            "elif mode == 'probe':\n"
+            "    value = json.loads(state.read_text())\n"
+            "    digest = hashlib.sha256(json.dumps(value, sort_keys=True, separators=(',', ':')).encode()).hexdigest()\n"
+            "    print(json.dumps({'schema_version': 1, 'target_id': 'shared-fixture', 'state_digest': digest, 'deployed_artifact_sha256': value['artifact']}))\n",
+            encoding="utf-8",
+        )
+        script.chmod(0o755)
+        commit_all(self.repo, "add deployment fixture")
+        contract = contract_for(self.repo)
+        contract["authority"]["external_targets"] = [
+            {"id": "shared-fixture", "description": "Disposable shared fixture."}
+        ]
+        command = lambda command_id, mode: {
+            "id": command_id,
+            "argv": ["./deploy_fixture.py", mode],
+            "timeout_seconds": 30,
+        }
+        contract["execution"]["deployment"] = {
+            "target_id": "shared-fixture",
+            "artifact_path": "dist/app.bin",
+            "build_command": command("build-candidate", "build"),
+            "deploy_command": command("deploy-candidate", "deploy"),
+            "probe_command": command("probe-environment", "probe"),
+            "restore_command": command("restore-environment", "restore"),
+        }
+        run_id = "deployment-transaction"
+        target_before = head(self.repo)
+        _data, run_path = self.start(run_id, contract=contract)
+        rc, checkpointed, _stdout, _stderr = self.invoke(
+            "checkpoint-builder", "--repo", self.repo, "--run", run_id
+        )
+        self.assertEqual(rc, 0, checkpointed)
+        self.record_role_evidence(run_id, run_path, "tester")
+        rc, machine, _stdout, _stderr = self.invoke(
+            "verify-machine", "--repo", self.repo, "--run", run_id
+        )
+        self.assertEqual(rc, 0, machine)
+        rc, decision, _stdout, _stderr = self.invoke(
+            "driver-next", "--repo", self.repo, "--run", run_id
+        )
+        self.assertEqual(rc, 0, decision)
+        self.assertEqual(decision["action"], "prepare_deployment")
+
+        rc, deployed, _stdout, _stderr = self.invoke(
+            "prepare-deployment", "--repo", self.repo, "--run", run_id
+        )
+        self.assertEqual(rc, 0, deployed)
+        transaction = deployed["deployment_transaction"]
+        self.assertEqual(transaction["state"], "deployed")
+        self.assertEqual(json.loads(state.read_text())["artifact"], transaction["artifact_sha256"])
+        rc, decision, _stdout, _stderr = self.invoke(
+            "driver-next", "--repo", self.repo, "--run", run_id
+        )
+        self.assertEqual(rc, 0, decision)
+        self.assertEqual(decision["action"], "tester_blackbox")
+        ledger = self.load_ledger(run_path)
+        command_spec = ledger["facets"]["execution"]["commands"][0]
+        candidate = ledger["facets"]["execution"]["candidate_head"]
+        agent = ledger["facets"]["execution"]["agents"]["tester"]
+        report = {
+            "schema_version": 1,
+            "kind": "blackbox",
+            "status": "pass",
+            "candidate_head": candidate,
+            "producer": {"role": "tester", **agent},
+            "details": {
+                "result": "pass",
+                "worktree": ledger["candidate_worktree"],
+                "before_head": candidate,
+                "after_head": candidate,
+                "executions": [{"id": command_spec["id"], "argv": command_spec["argv"], "returncode": 0, "timed_out": False}],
+            },
+        }
+        report_path = self.write_json("deployment-blackbox.json", report)
+        rc, staged, _stdout, _stderr = self.invoke(
+            "stage-blackbox", "--repo", self.repo, "--run", run_id, "--report", report_path
+        )
+        self.assertEqual(rc, 0, staged)
+        self.assertNotIn("blackbox", self.load_ledger(run_path)["evidence"])
+        rc, decision, _stdout, _stderr = self.invoke(
+            "driver-next", "--repo", self.repo, "--run", run_id
+        )
+        self.assertEqual(rc, 0, decision)
+        self.assertEqual(decision["action"], "restore_deployment")
+        rc, restored, _stdout, _stderr = self.invoke(
+            "restore-deployment", "--repo", self.repo, "--run", run_id
+        )
+        self.assertEqual(rc, 0, restored)
+        self.assertEqual(json.loads(state.read_text()), {"artifact": None, "value": "stable"})
+        rc, decision, _stdout, _stderr = self.invoke(
+            "driver-next", "--repo", self.repo, "--run", run_id
+        )
+        self.assertEqual(rc, 0, decision)
+        self.assertEqual(decision["action"], "complete_blackbox")
+        rc, completed, _stdout, _stderr = self.invoke(
+            "complete-blackbox", "--repo", self.repo, "--run", run_id
+        )
+        self.assertEqual(rc, 0, completed)
+        evidence = self.load_ledger(run_path)["evidence"]["blackbox"]
+        self.assertEqual(evidence["details"]["deployment"]["target_id"], "shared-fixture")
+        self.assertEqual(head(self.repo), target_before)
+
+        failed_run = "deployment-restore-failure"
+        _data, failed_path = self.start(failed_run, contract=contract)
+        rc, checkpointed, _stdout, _stderr = self.invoke(
+            "checkpoint-builder", "--repo", self.repo, "--run", failed_run
+        )
+        self.assertEqual(rc, 0, checkpointed)
+        self.record_role_evidence(failed_run, failed_path, "tester")
+        rc, machine, _stdout, _stderr = self.invoke(
+            "verify-machine", "--repo", self.repo, "--run", failed_run
+        )
+        self.assertEqual(rc, 0, machine)
+        rc, deployed, _stdout, _stderr = self.invoke(
+            "prepare-deployment", "--repo", self.repo, "--run", failed_run
+        )
+        self.assertEqual(rc, 0, deployed)
+        failed_ledger = self.load_ledger(failed_path)
+        failed_candidate = failed_ledger["facets"]["execution"]["candidate_head"]
+        failed_agent = failed_ledger["facets"]["execution"]["agents"]["tester"]
+        failed_command = failed_ledger["facets"]["execution"]["commands"][0]
+        failed_report = deepcopy(report)
+        failed_report["candidate_head"] = failed_candidate
+        failed_report["producer"] = {"role": "tester", **failed_agent}
+        failed_report["details"]["worktree"] = failed_ledger["candidate_worktree"]
+        failed_report["details"]["before_head"] = failed_candidate
+        failed_report["details"]["after_head"] = failed_candidate
+        failed_report["details"]["executions"][0]["id"] = failed_command["id"]
+        failed_report["details"]["executions"][0]["argv"] = failed_command["argv"]
+        failed_report_path = self.write_json("failed-restore-blackbox.json", failed_report)
+        rc, staged, _stdout, _stderr = self.invoke(
+            "stage-blackbox",
+            "--repo",
+            self.repo,
+            "--run",
+            failed_run,
+            "--report",
+            failed_report_path,
+        )
+        self.assertEqual(rc, 0, staged)
+        fail_restore.write_text("fail", encoding="utf-8")
+        rc, restore_failed, _stdout, _stderr = self.invoke(
+            "restore-deployment", "--repo", self.repo, "--run", failed_run
+        )
+        self.assertEqual(rc, 1, restore_failed)
+        self.assertEqual(restore_failed.get("code"), "DEPLOYMENT_RESTORE_FAILED")
+        failed_ledger = self.load_ledger(failed_path)
+        self.assertEqual(failed_ledger["deployment_transaction"]["state"], "restore_failed")
+        self.assertNotIn("blackbox", failed_ledger["evidence"])
+
     def prepare_required_gates(self, run_id: str, run_path: Path) -> None:
         self.record_role_evidence(run_id, run_path, "tester")
         rc, machine, _stdout, _stderr = self.invoke(

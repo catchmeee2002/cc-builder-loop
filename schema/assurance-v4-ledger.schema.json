@@ -54,6 +54,18 @@
         {"$ref": "#/$defs/dispatchIntent"}
       ]
     },
+    "deployment_transaction": {
+      "oneOf": [
+        {"type": "null"},
+        {"$ref": "#/$defs/deploymentTransaction"}
+      ]
+    },
+    "pending_blackbox": {
+      "oneOf": [
+        {"type": "null"},
+        {"$ref": "#/$defs/pendingBlackbox"}
+      ]
+    },
     "problems": {"type": "array", "items": {"$ref": "#/$defs/problem"}},
     "publication": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/publication"}]},
     "builder_checkpointed": {"type": "boolean"},
@@ -114,6 +126,51 @@
         "result_digest": {"$ref": "#/$defs/sha256"},
         "created_at": {"type": "string", "minLength": 1},
         "completed_at": {"type": "string", "minLength": 1}
+      }
+    },
+    "probe": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "target_id", "state_digest", "deployed_artifact_sha256"],
+      "properties": {
+        "schema_version": {"const": 1},
+        "target_id": {"type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"},
+        "state_digest": {"$ref": "#/$defs/sha256"},
+        "deployed_artifact_sha256": {
+          "oneOf": [{"type": "null"}, {"$ref": "#/$defs/sha256"}]
+        }
+      }
+    },
+    "deploymentTransaction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "transaction_id", "state", "candidate_head", "target_id", "worktree",
+        "artifact_path", "artifact_sha256", "baseline_probe", "deployed_probe",
+        "restored_probe", "failure_code"
+      ],
+      "properties": {
+        "transaction_id": {"$ref": "#/$defs/sha256"},
+        "state": {"enum": ["preparing", "deploying", "deployed", "restore_required", "restoring", "restored", "restore_failed"]},
+        "candidate_head": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "target_id": {"type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"},
+        "worktree": {"type": "string", "minLength": 1},
+        "artifact_path": {"type": "string", "minLength": 1},
+        "artifact_sha256": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/sha256"}]},
+        "baseline_probe": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/probe"}]},
+        "deployed_probe": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/probe"}]},
+        "restored_probe": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/probe"}]},
+        "failure_code": {"oneOf": [{"type": "null"}, {"type": "string", "minLength": 1}]}
+      }
+    },
+    "pendingBlackbox": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["report", "report_digest", "candidate_head"],
+      "properties": {
+        "report": {"type": "object"},
+        "report_digest": {"$ref": "#/$defs/sha256"},
+        "candidate_head": {"type": "string", "pattern": "^[0-9a-f]{40}$"}
       }
     },
     "publicationFile": {

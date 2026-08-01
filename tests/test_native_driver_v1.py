@@ -651,6 +651,62 @@ class NativeCoordinatorContractTest(unittest.TestCase):
             self.assertEqual(core.calls.count("begin-dispatch"), 1)
             self.assertEqual(core.calls.count("consume-dispatch"), 1)
 
+    def test_coordinator_executes_deployment_restore_before_blackbox_completion(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="native-deployment-actions-") as raw:
+            root = Path(raw)
+
+            class FakeCore:
+                def __init__(self) -> None:
+                    self.actions = iter(
+                        [
+                            "prepare_deployment",
+                            "restore_deployment",
+                            "complete_blackbox",
+                        ]
+                    )
+                    self.calls: list[str] = []
+
+                def call(self, command: str, *args: str, input_value=None):
+                    self.calls.append(command)
+                    if command == "driver-next":
+                        try:
+                            action = next(self.actions)
+                        except StopIteration:
+                            return {
+                                "driver_protocol_version": 1,
+                                "status": "STOP",
+                                "action": "none",
+                                "reason": "finalized",
+                                "action_id": "f" * 64,
+                            }
+                        return {
+                            "driver_protocol_version": 1,
+                            "status": "CONTINUE",
+                            "action": action,
+                            "reason": action,
+                            "action_id": (action[0] * 64)[:64],
+                        }
+                    return {"status": "ACTIVE"}
+
+            core = FakeCore()
+            result = NativeCoordinator(
+                repo=root,
+                run_id="native-deployment-actions",
+                core=core,
+                transport=object(),
+                project_root=ROOT,
+            ).run()
+            self.assertEqual(result["status"], "FINALIZED")
+            self.assertEqual(
+                [
+                    item
+                    for item in core.calls
+                    if item
+                    in {"prepare-deployment", "restore-deployment", "complete-blackbox"}
+                ],
+                ["prepare-deployment", "restore-deployment", "complete-blackbox"],
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -58,6 +58,34 @@ def next_action(repo_value: str | Path, run_value: str) -> dict[str, Any]:
         return decision("CONTINUE", "recover_finalize", "persisted_finalize_intent")
     if ledger["phase"] != "active":
         return decision("STOP", "none", ledger["phase"])
+    deployment_transaction = ledger.get("deployment_transaction")
+    pending_blackbox = ledger.get("pending_blackbox")
+    if isinstance(deployment_transaction, dict):
+        deployment_state = deployment_transaction.get("state")
+        if deployment_state in {"deploying", "restore_required", "restoring"}:
+            return decision("CONTINUE", "restore_deployment", f"deployment_{deployment_state}")
+        if deployment_state == "deployed" and isinstance(pending_blackbox, dict):
+            return decision("CONTINUE", "restore_deployment", "blackbox_result_staged")
+        if deployment_state == "restore_failed":
+            return decision(
+                "NEEDS_USER",
+                "deployment_decision",
+                "deployment_restore_failed",
+                deployment=deployment_transaction,
+            )
+        if deployment_state == "restored" and isinstance(pending_blackbox, dict):
+            return decision("CONTINUE", "complete_blackbox", "deployment_restored")
+        if (
+            deployment_state == "restored"
+            and deployment_transaction.get("failure_code")
+            and not isinstance(pending_blackbox, dict)
+        ):
+            return decision(
+                "NEEDS_USER",
+                "deployment_decision",
+                "deployment_failed_after_restore",
+                deployment=deployment_transaction,
+            )
     live_target = branch_head(repo, ledger["target_branch"])
     if live_target != ledger["target_start_head"]:
         return decision("CONTINUE", "rematerialize_target", "target_drift")
@@ -160,6 +188,12 @@ def next_action(repo_value: str | Path, run_value: str) -> dict[str, Any]:
         elif kind == "machine" and state in {"missing", "stale"}:
             action = "verify_machine"
         elif kind == "blackbox" and state in {"missing", "stale"}:
+            deployment = execution.get("deployment")
+            transaction = ledger.get("deployment_transaction")
+            if isinstance(deployment, dict) and (
+                not isinstance(transaction, dict) or transaction.get("state") != "deployed"
+            ):
+                return decision("CONTINUE", "prepare_deployment", "deployment_required")
             action = "tester_blackbox"
         elif kind in {"reviewer", "doc_review"} and state in {"missing", "stale"}:
             action = "reviewer_final"
