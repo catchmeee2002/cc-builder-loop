@@ -170,9 +170,8 @@ class AssuranceV4LineageContractTest(unittest.TestCase):
                 "pressure_digest": decision_digest,
             }
         contract["execution"]["revision_transition"] = transition
-        contract["execution"]["prior_problems"] = {
-            "schema_version": 1,
-            "snapshot_sha256": lineage["open_problem_snapshot_digest"],
+        contract["execution"]["prior_problem_dispositions"] = {
+            "source_snapshot_digest": lineage["open_problem_snapshot_digest"],
             "items": prior_items or [],
         }
         return contract
@@ -450,8 +449,8 @@ class AssuranceV4LineageContractTest(unittest.TestCase):
     def test_snapshot_drift_and_duplicate_dispositions_fail_before_mutation(self) -> None:
         first = self.start("invalid-r1", base_contract())
         malformed = self.next_contract(first, category="execution_contract")
-        malformed["execution"]["prior_problems"]["snapshot_sha256"] = "f" * 64
-        malformed["execution"]["prior_problems"]["items"] = [
+        malformed["execution"]["prior_problem_dispositions"]["source_snapshot_digest"] = "f" * 64
+        malformed["execution"]["prior_problem_dispositions"]["items"] = [
             {
                 "problem_id": "a" * 64,
                 "handling": "discard",
@@ -489,7 +488,7 @@ class AssuranceV4LineageContractTest(unittest.TestCase):
         ledger_path = Path(second["candidate_worktree"]).parent / "ledger.json"
         ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
         ledger["facets"]["execution"].pop("revision_transition")
-        ledger["facets"]["execution"].pop("prior_problems")
+        ledger["facets"]["execution"].pop("prior_problem_dispositions")
         ledger["digests"]["execution"] = canonical_digest(ledger["facets"]["execution"])
         ledger_path.write_text(json.dumps(ledger, ensure_ascii=False), encoding="utf-8")
 
