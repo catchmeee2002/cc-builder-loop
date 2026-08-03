@@ -212,6 +212,7 @@ class AssuranceV4LineageContractTest(unittest.TestCase):
         self.assertEqual(lineage["revision_count"], 2)
         self.assertEqual([item["category"] for item in lineage["transitions"]], ["resource_parameter"])
         self.assertEqual(lineage["non_semantic_transition_count"], 1)
+        self.assertEqual(lineage["transition_category_counts"], {"resource_parameter": 1})
         for field in (
             "elapsed_ms",
             "stage_attempts",
@@ -222,8 +223,8 @@ class AssuranceV4LineageContractTest(unittest.TestCase):
             "retries",
             "transition_counts",
         ):
-            self.assertIn(field, lineage["telemetry"])
-        self.assertGreaterEqual(lineage["telemetry"]["elapsed_ms"], 0)
+            self.assertIn(field, lineage["cumulative_telemetry"])
+        self.assertGreaterEqual(lineage["cumulative_telemetry"]["elapsed_ms"], 0)
 
     def test_third_nonsemantic_transition_stops_before_any_mutation(self) -> None:
         first = self.start("pressure-r1", base_contract())
@@ -324,7 +325,7 @@ class AssuranceV4LineageContractTest(unittest.TestCase):
         lineage = second["lineage"]
         self.assertEqual(lineage["revision_count"], 2)
         self.assertEqual(lineage["transitions"][0]["category"], SEMANTIC)
-        self.assertEqual(lineage["telemetry"]["transition_counts"][SEMANTIC], 1)
+        self.assertEqual(lineage["transition_category_counts"][SEMANTIC], 1)
         self.assertEqual(lineage["non_semantic_transition_count"], 0)
 
     def test_prior_problem_dispositions_are_complete_and_survive_by_intent(self) -> None:
@@ -406,14 +407,14 @@ class AssuranceV4LineageContractTest(unittest.TestCase):
             "problems-r2",
             self.next_contract(recorded, category="execution_contract", prior_items=items),
         )
-        self.assertEqual(second["lineage"]["problem_dispositions"], {
+        self.assertEqual(second["lineage"]["problem_disposition_counts"], {
             "included": 1,
             "handled_elsewhere": 1,
             "discarded": 1,
         })
-        self.assertEqual([item["key"] for item in second["lineage"]["open_problems"]], ["builder-fix-needed"])
+        self.assertEqual(second["lineage"]["open_problem_keys"], ["builder-fix-needed"])
 
-        included = second["lineage"]["open_problems"][0]
+        included = open_by_key["builder-fix-needed"]
         third = self.start(
             "problems-r3",
             self.next_contract(
@@ -428,7 +429,7 @@ class AssuranceV4LineageContractTest(unittest.TestCase):
                 ],
             ),
         )
-        self.assertEqual([item["problem_id"] for item in third["lineage"]["open_problems"]], [included["problem_id"]])
+        self.assertEqual(third["lineage"]["open_problem_keys"], ["builder-fix-needed"])
 
     def test_supersession_never_inherits_role_or_evidence_state(self) -> None:
         first = self.start("isolation-r1", base_contract())
