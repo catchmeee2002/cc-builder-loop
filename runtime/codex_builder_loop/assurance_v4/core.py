@@ -343,7 +343,7 @@ def start(
             semantic_changed = source_semantics != target_semantics
             if not legacy_transition:
                 assert isinstance(transition, dict) and isinstance(prior_problems, dict)
-                source_lineage = lineage(repo, source_ledger["run_id"])
+                source_lineage = _derive_lineage(repo, source_ledger)
                 _validate_revision_transition(source_lineage, transition)
                 if (transition["category"] == "mission_change") != semantic_changed:
                     raise AssuranceError(
@@ -1066,10 +1066,8 @@ def _lineage_ledgers(repo: Path, current: Mapping[str, Any]) -> tuple[list[dict[
     return values, complete
 
 
-def lineage(repo_value: str | Path, run_value: str) -> dict[str, Any]:
-    repo = resolve_repo(repo_value)
-    run_id = ensure_run_id(run_value)
-    current = read_ledger(repo, run_id)
+def _derive_lineage(repo: Path, current: Mapping[str, Any]) -> dict[str, Any]:
+    run_id = str(current["run_id"])
     ledgers, complete = _lineage_ledgers(repo, current)
     transitions: list[dict[str, Any]] = []
     stage_values: dict[str, dict[str, Any]] = {}
@@ -1078,6 +1076,7 @@ def lineage(repo_value: str | Path, run_value: str) -> dict[str, Any]:
     elapsed_ms = 0
     candidate_changes = 0
     disposition_counts = {"included": 0, "handled_elsewhere": 0, "discarded": 0}
+    telemetry_by_run: dict[str, dict[str, Any]] = {}
     for ledger in ledgers:
         revision = int(ledger["facets"]["mission"]["revision"])
         recorded = ledger.get("revision_transitions")
@@ -1087,6 +1086,7 @@ def lineage(repo_value: str | Path, run_value: str) -> dict[str, Any]:
             recorded = []
         transitions.extend(copy.deepcopy(recorded))
         run_telemetry = telemetry(ledger)
+        telemetry_by_run[str(ledger["run_id"])] = run_telemetry
         elapsed_ms += run_telemetry["elapsed_ms"]
         candidate_changes += run_telemetry["candidate_changes"]
         for kind, count in run_telemetry["evidence_attempts"].items():
@@ -1135,7 +1135,7 @@ def lineage(repo_value: str | Path, run_value: str) -> dict[str, Any]:
                 "open_problem_snapshot": digest(_problem_snapshot_value(item)),
                 "telemetry": {
                     key: value
-                    for key, value in telemetry(item).items()
+                    for key, value in telemetry_by_run[str(item["run_id"])].items()
                     if key not in {"elapsed_ms", "active_stage"}
                 },
             }
@@ -1172,6 +1172,12 @@ def lineage(repo_value: str | Path, run_value: str) -> dict[str, Any]:
         "pressure_digest": pressure_digest,
     }
     return validate_lineage(value)
+
+
+def lineage(repo_value: str | Path, run_value: str) -> dict[str, Any]:
+    repo = resolve_repo(repo_value)
+    run_id = ensure_run_id(run_value)
+    return _derive_lineage(repo, read_ledger(repo, run_id))
 
 
 def _validate_revision_transition(
@@ -1253,7 +1259,7 @@ def status(repo_value: str | Path, run_value: str) -> dict[str, Any]:
         "supersede_intent": copy.deepcopy(ledger.get("supersede_intent")),
         "abandon_intent": copy.deepcopy(ledger.get("abandon_intent")),
         "telemetry": telemetry(ledger),
-        "lineage": lineage(repo, run_id),
+        "lineage": _derive_lineage(repo, ledger),
         "readiness": readiness(ledger),
         "publication": copy.deepcopy(ledger.get("publication")),
         "problems": copy.deepcopy(ledger.get("problems", [])),
@@ -1283,7 +1289,7 @@ def driver_context(repo_value: str | Path, run_value: str) -> dict[str, Any]:
         "environment_lease": copy.deepcopy(ledger.get("environment_lease")),
         "supersede_intent": copy.deepcopy(ledger.get("supersede_intent")),
         "abandon_intent": copy.deepcopy(ledger.get("abandon_intent")),
-        "lineage": lineage(repo, run_id),
+        "lineage": _derive_lineage(repo, ledger),
     }
 
 
@@ -1564,7 +1570,7 @@ def revise_mission(
                 status="NEEDS_USER",
                 details={"expected_supersedes": expected_supersedes},
             )
-        source_lineage = lineage(repo, run_id)
+        source_lineage = _derive_lineage(repo, ledger)
         if transition_value is None:
             transition_value = {
                 "category": "mission_change",
