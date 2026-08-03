@@ -26,10 +26,14 @@ description: 在 Codex Plan mode 中为显式选择的 Builder-loop 实验路线
   同 run Revision 绑定上一 mission digest；必须新建 run 时用 `mission.supersedes` 绑定上一 run、revision、
   mission digest 和 candidate HEAD，不从 transcript 猜 continuity。
 - 更高 revision 先读取 `status.lineage`，只向用户呈现发生变化的语义 facet、逐条 open problem 处理和
-  `lineage.health` 要求的架构复审。`execution.revision_transition` 必须绑定当前 `lineage_digest`；第三次
+  `lineage.health` 要求的架构复审。`execution.revision_transition.predecessor_pressure_digest` 必须绑定当前
+  `pressure_digest`；第三次
   累计非语义 transition、同 category 第三次或 legacy incomplete lineage 还必须携带绑定当前
   `pressure_digest` 的 continue decision。Mission change 归类为 semantic，不增加恢复压力。
-- 跨 run supersession 用 `execution.prior_problems` 绑定 source `lineage.problem_snapshot_digest`；每个
+  category 只使用 `execution_contract`、`resource_parameter`、`target_drift`、`role_continuity`、
+  `tester_correction`、`mission_change`、`git_conflict`。
+- 跨 run supersession 用 `execution.prior_problem_dispositions` 绑定 source
+  `lineage.open_problem_snapshot_digest`；每个
   `open_problem_keys` key 恰好选择
   `included`、`handled_elsewhere` 或 `discarded`。`included` 保持 owner 与问题意图，不能携带旧角色身份、
   Tester source 或 evidence。最终仍只输出一份完整、可验证的 v4 contract，不另建 delta contract。

@@ -82,7 +82,7 @@ ledger 派生，不新增旁路 registry。
 Core 还沿 `mission.supersedes` 读取各 source ledger，并把每个 ledger 内的结构化 transition、原始 telemetry
 event 和 problem disposition 派生成唯一 `status.lineage`。该对象汇总墙钟、stage attempt/duration、
 candidate change、evidence attempt/replay、retry、transition category 和当前 open problem；不写 chain
-ledger 或累计缓存。每个新 transition 绑定 predecessor `lineage_digest`。累计第三次非语义 transition、
+ledger 或累计缓存。每个新 transition 绑定 predecessor `pressure_digest`。累计第三次非语义 transition、
 同 category 第三次或 legacy metadata 不完整时，创建 worktree、ref 和 supersede intent 前必须校验一次
 绑定当前 `pressure_digest` 的 architecture-review continue decision。Mission change 保留在总成本和历史中，
 但不增加非语义 pressure。

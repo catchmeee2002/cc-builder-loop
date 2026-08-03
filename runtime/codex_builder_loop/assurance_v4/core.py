@@ -310,7 +310,7 @@ def start(
                     status="NEEDS_USER",
                 )
             transition = contract["execution"].get("revision_transition")
-            prior_problems = contract["execution"].get("prior_problems")
+            prior_problems = contract["execution"].get("prior_problem_dispositions")
             snapshot_digest, source_problems = _open_problem_snapshot(source_ledger)
             legacy_transition = (
                 source_mission["revision"] == 1
@@ -352,8 +352,7 @@ def start(
                         status="NEEDS_USER",
                     )
                 if (
-                    prior_problems.get("source_run_id") != source_ledger["run_id"]
-                    or prior_problems.get("snapshot_digest") != snapshot_digest
+                    prior_problems.get("source_snapshot_digest") != snapshot_digest
                 ):
                     raise AssuranceError(
                         "prior-problem snapshot does not match the source run",
@@ -366,7 +365,7 @@ def start(
                 if set(disposition_by_key) != set(source_by_key):
                     raise AssuranceError(
                         "every open source problem requires exactly one disposition",
-                        code="PRIOR_PROBLEM_DISPOSITION_INCOMPLETE",
+                        code="PRIOR_PROBLEM_DISPOSITIONS_INCOMPLETE",
                         status="NEEDS_USER",
                         details={
                             "missing": sorted(set(source_by_key) - set(disposition_by_key)),
@@ -535,8 +534,6 @@ def start(
                 execution["builder_files"] = copy.deepcopy(source_execution["builder_files"])
                 execution["tester_files"] = []
                 execution["tester_source"] = None
-                if revision_transitions:
-                    execution["agents"] = {}
                 execution["carryover"] = {
                     "source_run_id": source_ledger["run_id"],
                     "source_candidate_head": candidate_head,
@@ -914,8 +911,7 @@ def _timestamp_ms(value: str) -> int:
 
 def telemetry(ledger: Mapping[str, Any]) -> dict[str, Any]:
     events = [item for item in ledger.get("events", []) if isinstance(item, dict)]
-    terminal = ledger.get("phase") in {"finalized", "abandoned", "superseded"}
-    end_at = ledger["updated_at"] if terminal else now()
+    end_at = ledger["updated_at"]
     elapsed_ms = max(0, _timestamp_ms(end_at) - _timestamp_ms(ledger["created_at"]))
     stage_stats: dict[str, dict[str, Any]] = {}
     dispatches: dict[str, tuple[str, int]] = {}
@@ -1085,9 +1081,9 @@ def lineage(repo_value: str | Path, run_value: str) -> dict[str, Any]:
     for ledger in ledgers:
         revision = int(ledger["facets"]["mission"]["revision"])
         recorded = ledger.get("revision_transitions")
+        if revision > 1 and not isinstance(ledger["facets"]["execution"].get("revision_transition"), dict):
+            complete = False
         if recorded is None:
-            if revision > 1:
-                complete = False
             recorded = []
         transitions.extend(copy.deepcopy(recorded))
         run_telemetry = telemetry(ledger)
@@ -1149,11 +1145,6 @@ def lineage(repo_value: str | Path, run_value: str) -> dict[str, Any]:
     review_required = not complete or non_semantic >= 3 or any(
         count >= 3 for category, count in categories.items() if category != "mission_change"
     )
-    active = sum(
-        1
-        for item in current.get("problems", [])
-        if isinstance(item, dict) and item.get("status") == "open"
-    )
     current_problem_snapshot = _problem_snapshot_value(current)
     value = {
         "schema_version": 1,
@@ -1163,13 +1154,10 @@ def lineage(repo_value: str | Path, run_value: str) -> dict[str, Any]:
         "health": "incomplete" if not complete else ("review_required" if review_required else "healthy"),
         "revision_count": int(current["facets"]["mission"]["revision"]),
         "transitions": transitions,
-        "transition_counts": {
-            "total": len(transitions),
-            "semantic": semantic,
-            "non_semantic": non_semantic,
-            "by_category": dict(sorted(categories.items())),
-        },
-        "telemetry": {
+        "transition_count": len(transitions),
+        "non_semantic_transition_count": non_semantic,
+        "transition_category_counts": dict(sorted(categories.items())),
+        "cumulative_telemetry": {
             "elapsed_ms": elapsed_ms,
             "stages": [stage_values[name] for name in sorted(stage_values)],
             "candidate_changes": candidate_changes,
@@ -1177,8 +1165,8 @@ def lineage(repo_value: str | Path, run_value: str) -> dict[str, Any]:
             "evidence_replays": sum(max(0, count - 1) for count in evidence_attempts.values()),
             "retries": {"total": sum(retry_codes.values()), "by_failure_code": dict(sorted(retry_codes.items()))},
         },
-        "problem_dispositions": {**disposition_counts, "active": active},
-        "problem_snapshot_digest": digest(current_problem_snapshot),
+        "problem_disposition_counts": disposition_counts,
+        "open_problem_snapshot_digest": digest(current_problem_snapshot),
         "open_problem_keys": [item["key"] for item in current_problem_snapshot],
         "lineage_digest": lineage_digest,
         "pressure_digest": pressure_digest,
@@ -1189,7 +1177,7 @@ def lineage(repo_value: str | Path, run_value: str) -> dict[str, Any]:
 def _validate_revision_transition(
     source_lineage: Mapping[str, Any], transition: Mapping[str, Any]
 ) -> None:
-    if transition.get("predecessor_lineage_digest") != source_lineage["lineage_digest"]:
+    if transition.get("predecessor_pressure_digest") != source_lineage["pressure_digest"]:
         raise AssuranceError(
             "revision transition does not bind the current predecessor lineage",
             code="REVISION_LINEAGE_DIGEST_MISMATCH",
@@ -1197,15 +1185,14 @@ def _validate_revision_transition(
         )
     category = transition.get("category")
     semantic = category == "mission_change"
-    counts = source_lineage["transition_counts"]
-    proposed_non_semantic = int(counts["non_semantic"]) + (0 if semantic else 1)
-    proposed_category = int(counts["by_category"].get(category, 0)) + 1
+    proposed_non_semantic = int(source_lineage["non_semantic_transition_count"]) + (0 if semantic else 1)
+    proposed_category = int(source_lineage["transition_category_counts"].get(category, 0)) + 1
     requires_review = (
         not source_lineage["complete"]
         or (not semantic and proposed_non_semantic >= 3)
         or (not semantic and proposed_category >= 3)
     )
-    decision = transition.get("continuation_decision")
+    decision = transition.get("architecture_review")
     valid_decision = (
         isinstance(decision, dict)
         and decision.get("decision") == "continue"
@@ -1214,14 +1201,14 @@ def _validate_revision_transition(
     if requires_review and not valid_decision:
         raise AssuranceError(
             "revision lineage pressure requires an architecture-review continuation decision",
-            code="REVISION_ARCHITECTURE_REVIEW_REQUIRED",
+            code="LINEAGE_ARCHITECTURE_REVIEW_REQUIRED",
             status="NEEDS_USER",
             details={"pressure_digest": source_lineage["pressure_digest"]},
         )
     if isinstance(decision, dict) and not valid_decision:
         raise AssuranceError(
             "architecture-review decision is stale for the current lineage pressure",
-            code="REVISION_ARCHITECTURE_REVIEW_STALE",
+            code="LINEAGE_ARCHITECTURE_REVIEW_REQUIRED",
             status="NEEDS_USER",
         )
 
@@ -1236,8 +1223,8 @@ def _recorded_transition(
         "to_revision": to_revision,
         "category": transition["category"],
         "semantic": transition["category"] == "mission_change",
-        "predecessor_lineage_digest": transition["predecessor_lineage_digest"],
-        "continuation_decision": copy.deepcopy(transition.get("continuation_decision")),
+        "predecessor_pressure_digest": transition["predecessor_pressure_digest"],
+        "architecture_review": copy.deepcopy(transition.get("architecture_review")),
     }
 
 
@@ -1580,10 +1567,9 @@ def revise_mission(
         source_lineage = lineage(repo, run_id)
         if transition_value is None:
             transition_value = {
-                "schema_version": 1,
                 "category": "mission_change",
-                "predecessor_lineage_digest": source_lineage["lineage_digest"],
-                "continuation_decision": None,
+                "predecessor_pressure_digest": source_lineage["pressure_digest"],
+                "architecture_review": None,
             }
         if not isinstance(transition_value, dict):
             raise AssuranceError("mission revision transition must be an object", code="REVISION_TRANSITION_REQUIRED")

@@ -6,8 +6,9 @@
   "additionalProperties": false,
   "required": [
     "schema_version", "root_run_id", "current_run_id", "complete", "health",
-    "revision_count", "transitions", "transition_counts", "telemetry",
-    "problem_dispositions", "problem_snapshot_digest", "open_problem_keys",
+    "revision_count", "transition_count", "non_semantic_transition_count",
+    "transition_category_counts", "transitions", "cumulative_telemetry",
+    "problem_disposition_counts", "open_problem_snapshot_digest", "open_problem_keys",
     "lineage_digest", "pressure_digest"
   ],
   "properties": {
@@ -18,18 +19,10 @@
     "health": {"enum": ["healthy", "review_required", "incomplete"]},
     "revision_count": {"type": "integer", "minimum": 1},
     "transitions": {"type": "array", "items": {"$ref": "#/$defs/recordedTransition"}},
-    "transition_counts": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["total", "semantic", "non_semantic", "by_category"],
-      "properties": {
-        "total": {"type": "integer", "minimum": 0},
-        "semantic": {"type": "integer", "minimum": 0},
-        "non_semantic": {"type": "integer", "minimum": 0},
-        "by_category": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 1}}
-      }
-    },
-    "telemetry": {
+    "transition_count": {"type": "integer", "minimum": 0},
+    "non_semantic_transition_count": {"type": "integer", "minimum": 0},
+    "transition_category_counts": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 1}},
+    "cumulative_telemetry": {
       "type": "object",
       "additionalProperties": false,
       "required": ["elapsed_ms", "stages", "candidate_changes", "evidence_attempts", "evidence_replays", "retries"],
@@ -42,18 +35,17 @@
         "retries": {"type": "object", "additionalProperties": false, "required": ["total", "by_failure_code"], "properties": {"total": {"type": "integer", "minimum": 0}, "by_failure_code": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 1}}}}
       }
     },
-    "problem_dispositions": {
+    "problem_disposition_counts": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["included", "handled_elsewhere", "discarded", "active"],
+      "required": ["included", "handled_elsewhere", "discarded"],
       "properties": {
         "included": {"type": "integer", "minimum": 0},
         "handled_elsewhere": {"type": "integer", "minimum": 0},
-        "discarded": {"type": "integer", "minimum": 0},
-        "active": {"type": "integer", "minimum": 0}
+        "discarded": {"type": "integer", "minimum": 0}
       }
     },
-    "problem_snapshot_digest": {"$ref": "#/$defs/sha256"},
+    "open_problem_snapshot_digest": {"$ref": "#/$defs/sha256"},
     "open_problem_keys": {"type": "array", "items": {"type": "string", "minLength": 1}},
     "lineage_digest": {"$ref": "#/$defs/sha256"},
     "pressure_digest": {"$ref": "#/$defs/sha256"}
@@ -68,23 +60,22 @@
     },
     "transitionInput": {
       "type": "object", "additionalProperties": false,
-      "required": ["schema_version", "category", "predecessor_lineage_digest"],
+      "required": ["category", "predecessor_pressure_digest"],
       "properties": {
-        "schema_version": {"const": 1},
         "category": {"$ref": "#/$defs/category"},
-        "predecessor_lineage_digest": {"$ref": "#/$defs/sha256"},
-        "continuation_decision": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/continuationDecision"}]}
+        "predecessor_pressure_digest": {"$ref": "#/$defs/sha256"},
+        "architecture_review": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/continuationDecision"}]}
       }
     },
     "recordedTransition": {
       "type": "object", "additionalProperties": false,
-      "required": ["source_run_id", "target_run_id", "from_revision", "to_revision", "category", "semantic", "predecessor_lineage_digest"],
+      "required": ["source_run_id", "target_run_id", "from_revision", "to_revision", "category", "semantic", "predecessor_pressure_digest"],
       "properties": {
         "source_run_id": {"$ref": "#/$defs/runId"}, "target_run_id": {"$ref": "#/$defs/runId"},
         "from_revision": {"type": "integer", "minimum": 1}, "to_revision": {"type": "integer", "minimum": 2},
         "category": {"$ref": "#/$defs/category"}, "semantic": {"type": "boolean"},
-        "predecessor_lineage_digest": {"$ref": "#/$defs/sha256"},
-        "continuation_decision": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/continuationDecision"}]}
+        "predecessor_pressure_digest": {"$ref": "#/$defs/sha256"},
+        "architecture_review": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/continuationDecision"}]}
       }
     },
     "stage": {

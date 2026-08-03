@@ -145,7 +145,7 @@ def validate_contract(value: Any) -> dict[str, Any]:
     contract["execution"].setdefault("deployment", None)
     contract["execution"].setdefault("driver_enforced", False)
     contract["execution"].setdefault("revision_transition", None)
-    contract["execution"].setdefault("prior_problems", None)
+    contract["execution"].setdefault("prior_problem_dispositions", None)
     all_commands = list(contract["assurance"]["machine_commands"]) + list(
         contract["execution"]["commands"]
     )
@@ -283,7 +283,7 @@ def validate_contract(value: Any) -> dict[str, Any]:
                 details={"paths": invalid_carryover},
             )
     transition = contract["execution"].get("revision_transition")
-    prior_problems = contract["execution"].get("prior_problems")
+    prior_problems = contract["execution"].get("prior_problem_dispositions")
     if contract["mission"]["revision"] == 1 and (transition is not None or prior_problems is not None):
         raise ContractError(
             "mission revision 1 cannot declare revision continuity",
@@ -296,31 +296,6 @@ def validate_contract(value: Any) -> dict[str, Any]:
                 "prior-problem dispositions contain duplicate keys",
                 code="PRIOR_PROBLEM_DUPLICATE",
             )
-        for item in prior_problems["items"]:
-            disposition = item["disposition"]
-            expected_fields = {"key", "disposition"}
-            if disposition == "handled_elsewhere":
-                expected_fields.add("reference")
-            elif disposition == "discarded":
-                expected_fields.add("reason")
-            if set(item) != expected_fields:
-                raise ContractError(
-                    "prior-problem disposition fields do not match its handling",
-                    code="PRIOR_PROBLEM_DISPOSITION_INVALID",
-                    details={"key": item["key"], "disposition": disposition},
-                )
-            if disposition == "handled_elsewhere" and "reference" not in item:
-                raise ContractError(
-                    "handled-elsewhere prior problem requires a reference",
-                    code="PRIOR_PROBLEM_REFERENCE_REQUIRED",
-                    details={"key": item["key"]},
-                )
-            if disposition == "discarded" and "reason" not in item:
-                raise ContractError(
-                    "discarded prior problem requires a reason",
-                    code="PRIOR_PROBLEM_REASON_REQUIRED",
-                    details={"key": item["key"]},
-                )
     execution = contract["execution"]
     builder_files = set(execution["builder_files"])
     tester_files = set(execution["tester_files"])
