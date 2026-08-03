@@ -8,7 +8,7 @@ from typing import Any, Sequence
 
 from . import core
 from . import driver
-from .models import ContractError, load_json_source
+from .models import ContractError, digest, load_json_source
 from .store import StoreError
 
 
@@ -86,6 +86,7 @@ def parser() -> argparse.ArgumentParser:
     update.add_argument("--semantic-revision", action="store_true")
     update.add_argument("--authorize-expansion", action="store_true")
     update.add_argument("--authorize-downgrade", action="store_true")
+    update.add_argument("--resolve-plan-problem-key")
 
     revise = commands.add_parser("revise-mission")
     revise.add_argument("--repo", default=".")
@@ -301,7 +302,22 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.driver_runtime_version,
                 args.driver_protocol_schema_digest,
             )
-            if any(driver_values):
+            if args.driver_kind == "full_driver_skill" and not any(driver_values[1:]):
+                wire_schema = json.loads(
+                    (
+                        Path(__file__).resolve().parents[3]
+                        / "schema"
+                        / "assurance-v4-native-agent-wire-result.schema.json"
+                    ).read_text()
+                )
+                runtime = {
+                    "kind": "full_driver_skill",
+                    "protocol_version": 1,
+                    "transport": "native_tools",
+                    "runtime_version": "full-driver-v4-experiment",
+                    "protocol_schema_digest": digest(wire_schema),
+                }
+            elif any(driver_values):
                 if not all(driver_values):
                     raise core.AssuranceError(
                         "all driver runtime fields are required together",
@@ -340,6 +356,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 semantic_revision=args.semantic_revision,
                 authorize_expansion=args.authorize_expansion,
                 authorize_downgrade=args.authorize_downgrade,
+                resolve_plan_problem_key=args.resolve_plan_problem_key,
             )
         elif args.command == "revise-mission":
             payload = core.revise_mission(args.repo, args.run, _json(args.mission))

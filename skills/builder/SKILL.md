@@ -41,3 +41,11 @@ description: 执行已接受的 Builder-loop 实验方案，把同 session 紧�
    切换承载或让两个控制器同时 mutation。
 
 legacy v2/v3 既有 ledger 的诊断、恢复或 cleanup 仍直接使用对应 CLI，不通过本实验入口创建 revision。
+
+## 终态复盘
+
+Native Driver 或 Full Driver 到达 `FINALIZED`、`NEEDS_USER`、`FATAL`、continuity failure 或 abandon
+后，都只加载同一份
+[交付后事故归属](references/post-delivery-retrospective.md)。复盘不重新打开 delivery gate，也不改写
+finalized target 或原失败事实。`FINALIZED` 只有在复盘确认无事故，或事故已完成查重与授权分流后，
+才输出 `FULL_DRIVER_V4_RESULT: finalized`；其他终态保留原状态和诊断，不用成功标记覆盖。

@@ -651,6 +651,65 @@ class NativeCoordinatorContractTest(unittest.TestCase):
             self.assertEqual(core.calls.count("begin-dispatch"), 1)
             self.assertEqual(core.calls.count("consume-dispatch"), 1)
 
+    def test_builder_fix_result_checkpoints_before_consumption_and_replays_after_crash(self) -> None:
+        class FakeCore:
+            def __init__(self) -> None:
+                self.calls: list[str] = []
+                self.fail_consume_once = True
+
+            def call(self, command: str, *args: str, input_value=None):
+                self.calls.append(command)
+                if command == "consume-dispatch" and self.fail_consume_once:
+                    self.fail_consume_once = False
+                    raise RuntimeError("simulated crash after checkpoint")
+                return {"status": "ACTIVE"}
+
+        core = FakeCore()
+        coordinator = NativeCoordinator(
+            repo=ROOT,
+            run_id="native-builder-fix-replay",
+            core=core,
+            transport=object(),
+            project_root=ROOT,
+        )
+        action = {"action": "builder_fix", "action_id": "a" * 64}
+        context = {
+            "facets": {
+                "execution": {
+                    "agents": {
+                        "builder": {
+                            "agent_id": "builder-agent",
+                            "thread_id": "builder-thread",
+                        }
+                    }
+                }
+            }
+        }
+        result = {
+            "result": "implemented",
+            "evidence_report": None,
+            "proof_spec": None,
+            "problem_report": None,
+        }
+
+        with self.assertRaisesRegex(RuntimeError, "simulated crash"):
+            coordinator._apply_agent_result(
+                action, "builder", result, context
+            )
+        self.assertEqual(core.calls, ["checkpoint-builder", "consume-dispatch"])
+
+        coordinator._apply_agent_result(action, "builder", result, context)
+
+        self.assertEqual(
+            core.calls,
+            [
+                "checkpoint-builder",
+                "consume-dispatch",
+                "checkpoint-builder",
+                "consume-dispatch",
+            ],
+        )
+
     def test_coordinator_executes_deployment_restore_before_blackbox_completion(self) -> None:
         with tempfile.TemporaryDirectory(prefix="native-deployment-actions-") as raw:
             root = Path(raw)

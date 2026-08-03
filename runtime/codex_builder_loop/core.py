@@ -5150,6 +5150,272 @@ def python_weakening_marker(current_text: str) -> str | None:
     return visitor.marker
 
 
+def python_test_role_boundary_marker(current_text: str) -> str | None:
+    """Return a syntax-aware marker when a test wraps or disables the proof runner."""
+
+    try:
+        tree = ast.parse(current_text)
+    except SyntaxError:
+        return None
+
+    aliases: dict[str, str] = {}
+    value_bindings: dict[str, ast.AST] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                root = alias.name.split(".", 1)[0]
+                if root in {"pytest", "subprocess"}:
+                    aliases[alias.asname or root] = root
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            root = node.module.split(".", 1)[0]
+            if root in {"pytest", "subprocess"}:
+                for alias in node.names:
+                    aliases[alias.asname or alias.name] = f"{root}.{alias.name}"
+        elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            value = node.value
+            if value is None:
+                continue
+            for target in targets:
+                if isinstance(target, ast.Name):
+                    value_bindings[target.id] = value
+
+    def resolve(node: ast.AST) -> str:
+        if isinstance(node, ast.Name):
+            return aliases.get(node.id, node.id)
+        if isinstance(node, ast.Attribute):
+            prefix = resolve(node.value)
+            return f"{prefix}.{node.attr}" if prefix else node.attr
+        return ""
+
+    def scalar(node: ast.AST, seen: frozenset[str] = frozenset()) -> str | None:
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return node.value
+        if isinstance(node, ast.Name):
+            if node.id in seen or node.id not in value_bindings:
+                return None
+            return scalar(value_bindings[node.id], seen | {node.id})
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            left = scalar(node.left, seen)
+            right = scalar(node.right, seen)
+            return left + right if left is not None and right is not None else None
+        if isinstance(node, ast.JoinedStr):
+            parts: list[str] = []
+            for item in node.values:
+                if isinstance(item, ast.Constant) and isinstance(item.value, str):
+                    parts.append(item.value)
+                elif isinstance(item, ast.FormattedValue):
+                    value = scalar(item.value, seen)
+                    if value is None:
+                        return None
+                    parts.append(value)
+                else:
+                    return None
+            return "".join(parts)
+        if isinstance(node, ast.Call) and len(node.args) == 1:
+            target = resolve(node.func).lower()
+            if target in {"str", "path", "pathlib.path", "os.fspath"}:
+                return scalar(node.args[0], seen)
+        return None
+
+    def shell_tokens(value: str) -> list[str] | None:
+        try:
+            lexer = shlex.shlex(value, posix=True, punctuation_chars=";&|")
+            lexer.whitespace_split = True
+            lexer.commenters = ""
+            return list(lexer)
+        except ValueError:
+            return None
+
+    def command_tokens(
+        node: ast.AST, seen: frozenset[str] = frozenset()
+    ) -> list[str | None] | None:
+        if isinstance(node, ast.Name):
+            if node.id in seen or node.id not in value_bindings:
+                return None
+            return command_tokens(value_bindings[node.id], seen | {node.id})
+        if isinstance(node, (ast.List, ast.Tuple)):
+            values: list[str | None] = []
+            for item in node.elts:
+                if isinstance(item, ast.Starred):
+                    nested = command_tokens(item.value, seen)
+                    values.extend(nested if nested is not None else [None])
+                    continue
+                value = scalar(item, seen)
+                if value is not None:
+                    values.append(value)
+                    continue
+                nested = command_tokens(item, seen)
+                values.extend(nested if nested is not None else [None])
+            return values
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            left = command_tokens(node.left, seen)
+            right = command_tokens(node.right, seen)
+            if left is not None and right is not None:
+                return [*left, *right]
+        value = scalar(node, seen)
+        return shell_tokens(value) if value is not None else None
+
+    def strings(node: ast.AST) -> list[str]:
+        values = [
+            item.value
+            for item in ast.walk(node)
+            if isinstance(item, ast.Constant) and isinstance(item.value, str)
+        ]
+        resolved = scalar(node)
+        if resolved is not None:
+            values.append(resolved)
+        tokens = command_tokens(node)
+        if tokens is not None:
+            values.extend(value for value in tokens if value is not None)
+        return values
+
+    uv_flags = {
+        "--frozen",
+        "--offline",
+        "--no-env-file",
+        "--no-project",
+        "--isolated",
+        "--locked",
+    }
+    uv_options_with_values = {
+        "--config-file",
+        "--default-index",
+        "--directory",
+        "--env-file",
+        "--extra-index-url",
+        "--find-links",
+        "--index",
+        "--index-url",
+        "--project",
+        "--python",
+        "--python-platform",
+        "--resolution",
+        "--with",
+        "--with-editable",
+        "--with-requirements",
+    }
+
+    def direct_runner(tokens: Sequence[str | None]) -> bool:
+        if not tokens or tokens[0] is None:
+            return False
+        executable = Path(tokens[0]).name.lower()
+        if executable in {"pytest", "py.test", "unittest"}:
+            return True
+        return (
+            executable.startswith(("python", "pypy"))
+            and len(tokens) >= 3
+            and tokens[1] == "-m"
+            and tokens[2] in {"pytest", "unittest"}
+        )
+
+    def uv_runner(tokens: Sequence[str | None]) -> bool:
+        if not tokens:
+            return False
+        executable = tokens[0]
+        if executable is not None and Path(executable).name.lower() != "uv":
+            return False
+        if len(tokens) < 2 or tokens[1] != "run":
+            return False
+        index = 2
+        while index < len(tokens):
+            token = tokens[index]
+            if token is None:
+                return False
+            if token == "--":
+                index += 1
+                break
+            if not token.startswith("-"):
+                break
+            option = token.split("=", 1)[0]
+            if "=" in token or option in uv_flags:
+                index += 1
+                continue
+            if option in uv_options_with_values and index + 1 < len(tokens):
+                index += 2
+                continue
+            return False
+        return direct_runner(tokens[index:])
+
+    def invokes_test_runner(tokens: Sequence[str | None]) -> bool:
+        segments: list[list[str | None]] = [[]]
+        for token in tokens:
+            if token in {"&&", "||", ";", "|"}:
+                if segments[-1]:
+                    segments.append([])
+                continue
+            segments[-1].append(token)
+        for segment in segments:
+            if not segment:
+                continue
+            if direct_runner(segment) or uv_runner(segment):
+                return True
+            executable = segment[0]
+            if executable is None:
+                continue
+            name = Path(executable).name.lower()
+            if name == "env":
+                index = 1
+                while index < len(segment):
+                    token = segment[index]
+                    if token is None:
+                        break
+                    if token.startswith("-") or re.fullmatch(
+                        r"[A-Za-z_][A-Za-z0-9_]*=.*", token
+                    ):
+                        index += 1
+                        continue
+                    break
+                if invokes_test_runner(segment[index:]):
+                    return True
+            if name in {"sh", "bash", "dash", "zsh"} and "-c" in segment:
+                command_index = segment.index("-c") + 1
+                if command_index < len(segment) and isinstance(
+                    segment[command_index], str
+                ):
+                    nested = shell_tokens(segment[command_index])
+                    if nested is not None and invokes_test_runner(nested):
+                        return True
+        return False
+
+    protected_environment = {"PYTEST_PLUGINS"}
+
+    def is_protected_environment(value: str) -> bool:
+        return value in protected_environment or value.startswith("CODEX_BUILDER_PROOF")
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            target = resolve(node.func).lower()
+            if target == "pytest.main":
+                return "pytest.main"
+            if target in {
+                "subprocess.run",
+                "subprocess.popen",
+                "subprocess.call",
+                "subprocess.check_call",
+                "subprocess.check_output",
+            }:
+                command_nodes = list(node.args[:1])
+                command_nodes.extend(
+                    keyword.value
+                    for keyword in node.keywords
+                    if keyword.arg in {"args", "argv", "command", "cmd"}
+                )
+                if any(
+                    tokens is not None and invokes_test_runner(tokens)
+                    for command_node in command_nodes
+                    if (tokens := command_tokens(command_node)) is not None
+                ):
+                    return target
+            if isinstance(node.func, ast.Attribute) and node.func.attr in {"pop", "remove"}:
+                if any(is_protected_environment(value) for argument in node.args for value in strings(argument)):
+                    return f"environment.{node.func.attr}"
+        elif isinstance(node, ast.Delete):
+            if any(is_protected_environment(value) for target in node.targets for value in strings(target)):
+                return "environment.delete"
+    return None
+
+
 def reward_hacking_findings(worktree: Path, base: str, paths: Iterable[str]) -> list[dict[str, str]]:
     suspicious = re.compile(
         r"pytest\.mark\.(?:skip|skipif|xfail|flaky)|"
@@ -5171,7 +5437,9 @@ def reward_hacking_findings(worktree: Path, base: str, paths: Iterable[str]) -> 
                 current_text = current_path.read_text(encoding="utf-8")
             except (OSError, UnicodeError):
                 continue
-            marker = python_weakening_marker(current_text)
+            marker = python_weakening_marker(current_text) or python_test_role_boundary_marker(
+                current_text
+            )
             if marker:
                 findings.append(
                     {
@@ -8369,6 +8637,156 @@ def allowlisted_proof_runner(argv: Sequence[str]) -> dict[str, Any] | None:
     return None
 
 
+def parse_canonical_uv_proof_command(
+    argv: Sequence[str],
+) -> dict[str, Any] | None:
+    if not argv:
+        return None
+    requested = Path(argv[0])
+    if requested.name.lower() != "uv":
+        return None
+    if not requested.is_absolute():
+        raise RuntimeProblem(
+            "proof uv launcher must be an absolute path",
+            result="NEEDS_USER",
+            code="TEST_PROOF_LAUNCHER_INVALID",
+            details={"requested": argv[0]},
+            exit_code=EXIT_FAIL,
+        )
+    prefix = ["run", "--frozen", "--offline", "--no-env-file"]
+    if list(argv[1:5]) != prefix:
+        raise RuntimeProblem(
+            "proof uv launcher requires canonical frozen offline options",
+            result="NEEDS_USER",
+            code="TEST_PROOF_LAUNCHER_INVALID",
+            details={"argv": list(argv)},
+            exit_code=EXIT_FAIL,
+        )
+    nested = list(argv[5:])
+    if nested[:1] == ["pytest"]:
+        args = proof_pytest_args(nested[1:])
+        execution_tail = ["pytest", *args]
+        control_argv = ["pytest", *args]
+        framework = "pytest"
+    elif nested[:3] in (["python", "-m", "pytest"], ["python", "-m", "unittest"]):
+        framework = nested[2]
+        args = (
+            proof_pytest_args(nested[3:])
+            if framework == "pytest"
+            else proof_unittest_args(nested[3:])
+        )
+        execution_tail = ["python", "-m", framework, *args]
+        control_argv = [framework, *args]
+    else:
+        raise RuntimeProblem(
+            "proof uv launcher must directly execute pytest or python -m pytest/unittest",
+            result="NEEDS_USER",
+            code="TEST_PROOF_COMMAND_UNSUPPORTED",
+            details={"argv": list(argv)},
+            exit_code=EXIT_FAIL,
+        )
+    return {
+        "prefix": prefix,
+        "execution_tail": execution_tail,
+        "control_argv": control_argv,
+        "framework": framework,
+    }
+
+
+def allowlisted_uv_proof_runner(argv: Sequence[str]) -> dict[str, Any] | None:
+    parsed = parse_canonical_uv_proof_command(argv)
+    if parsed is None:
+        return None
+    requested = Path(argv[0])
+    if requested.is_symlink():
+        raise RuntimeProblem(
+            "proof uv launcher cannot be a symlink",
+            result="NEEDS_USER",
+            code="TEST_PROOF_LAUNCHER_INVALID",
+            details={"requested": argv[0]},
+            exit_code=EXIT_FAIL,
+        )
+    identity = executable_identity(
+        requested, requested=argv[0], kind="absolute-uv-launcher"
+    )
+    return {
+        "argv": list(argv),
+        "execution_argv": [
+            identity["path"],
+            *parsed["prefix"],
+            *parsed["execution_tail"],
+        ],
+        "control_argv": parsed["control_argv"],
+        "framework": parsed["framework"],
+        "executable_identity": identity,
+    }
+
+
+def uv_proof_project_identity(repo: Path, head: str, worktree: Path) -> dict[str, Any]:
+    files: list[dict[str, str]] = []
+    for relative in ("pyproject.toml", "uv.lock"):
+        entry = git(repo, "ls-tree", head, "--", relative, check=False).stdout.strip()
+        fields = entry.split(None, 3)
+        path = worktree / relative
+        try:
+            mode = os.lstat(path).st_mode
+        except OSError as exc:
+            raise RuntimeProblem(
+                "uv proof project binding is missing",
+                result="NEEDS_USER",
+                code="TEST_PROOF_PROJECT_BINDING_INVALID",
+                details={"path": relative, "head": head},
+                exit_code=EXIT_FAIL,
+            ) from exc
+        if (
+            len(fields) < 3
+            or fields[0] not in {"100644", "100755"}
+            or fields[1] != "blob"
+            or not stat.S_ISREG(mode)
+            or path.is_symlink()
+        ):
+            raise RuntimeProblem(
+                "uv proof requires regular frozen pyproject.toml and uv.lock files",
+                result="NEEDS_USER",
+                code="TEST_PROOF_PROJECT_BINDING_INVALID",
+                details={"path": relative, "head": head},
+                exit_code=EXIT_FAIL,
+            )
+        files.append(
+            {"path": relative, "blob": fields[2], "sha256": sha256_file(path)}
+        )
+    return {"files": files}
+
+
+def validate_uv_proof_execution(
+    repo: Path, head: str, worktree: Path, group: Mapping[str, Any]
+) -> dict[str, Any] | None:
+    identity = group.get("executable_identity")
+    if not isinstance(identity, dict) or identity.get("kind") != "absolute-uv-launcher":
+        return None
+    requested = Path(str(identity.get("requested", "")))
+    if requested.is_symlink():
+        raise RuntimeProblem(
+            "proof uv launcher identity changed before execution",
+            result="NEEDS_USER",
+            code="TEST_PROOF_LAUNCHER_INVALID",
+            details={"requested": str(requested)},
+            exit_code=EXIT_FAIL,
+        )
+    current = executable_identity(
+        requested, requested=str(identity["requested"]), kind="absolute-uv-launcher"
+    )
+    if current != identity:
+        raise RuntimeProblem(
+            "proof uv launcher identity changed before execution",
+            result="NEEDS_USER",
+            code="TEST_PROOF_LAUNCHER_INVALID",
+            details={"expected": identity, "actual": current},
+            exit_code=EXIT_FAIL,
+        )
+    return uv_proof_project_identity(repo, head, worktree)
+
+
 def repository_wrapper_runner(
     argv: Sequence[str], repository_paths: Sequence[str]
 ) -> dict[str, Any] | None:
@@ -8645,6 +9063,31 @@ def validate_proof_argv(
 
     if len(errors) > initial_error_count:
         return {**fallback, "argv": argv, "execution_argv": argv}
+
+    if normalized_executable == "uv":
+        try:
+            uv_runner = allowlisted_uv_proof_runner(argv)
+        except RuntimeProblem as exc:
+            errors.append(f"{field} uv launcher is invalid: {exc} [{exc.code}]")
+            return {**fallback, "argv": argv, "execution_argv": argv}
+        assert uv_runner is not None
+        try:
+            validate_runner_ownership(
+                contract,
+                [
+                    {
+                        "stage": "test-proof",
+                        "cmd": shlex.join(uv_runner["control_argv"]),
+                        "timeout": 1,
+                    }
+                ],
+            )
+        except RuntimeProblem as exc:
+            errors.append(
+                f"{field} test runner control files are not protected: "
+                f"{exc} [{exc.code}]"
+            )
+        return {**uv_runner, "selector_argv": uv_runner["control_argv"]}
 
     allowlisted_runner = None
     if "/" not in argv[0] and "\\" not in argv[0]:
@@ -9271,10 +9714,6 @@ def classify_text_proof_test_result(
         classification = "configuration-error"
     elif returncode == 5 or "no tests ran" in lowered:
         classification = "zero-tests"
-    elif returncode == 4 or "usageerror" in lowered:
-        classification = "usage-error"
-    elif returncode == 3 or "internalerror" in lowered:
-        classification = "unclassified-failure"
     elif (
         returncode == 2
         or "error collecting" in lowered
@@ -9282,6 +9721,10 @@ def classify_text_proof_test_result(
         or "errors during collection" in lowered
     ):
         classification = "collection-error"
+    elif returncode == 4 or "usageerror" in lowered:
+        classification = "usage-error"
+    elif returncode == 3 or "internalerror" in lowered:
+        classification = "unclassified-failure"
     elif counts.get("errors", 0) > 0:
         classification = "non-assertion-test-failure"
     elif (
@@ -9624,6 +10067,29 @@ raise SystemExit(main())
 '''
 
 
+UNITTEST_PROOF_SHIM_INIT_SOURCE = r'''
+import importlib.util
+import pathlib
+import sys
+import sysconfig
+
+stdlib_package = pathlib.Path(sysconfig.get_path("stdlib")) / "unittest"
+spec = importlib.util.spec_from_file_location(
+    "_codex_stdlib_unittest",
+    stdlib_package / "__init__.py",
+    submodule_search_locations=[str(stdlib_package)],
+)
+if spec is None or spec.loader is None:
+    raise ImportError("cannot load stdlib unittest")
+module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module
+spec.loader.exec_module(module)
+for name, value in vars(module).items():
+    if name not in {"__name__", "__package__", "__loader__", "__spec__", "__path__"}:
+        globals()[name] = value
+'''
+
+
 def proof_supervisor_argv(argv: Sequence[str], framework: str) -> list[str]:
     return [
         str(Path(sys.executable).resolve()),
@@ -9652,6 +10118,17 @@ def proof_supervised_child_argv(
                 *values[index + 2 :],
             ]
     return values
+
+
+def uv_unittest_proof_command(argv: Sequence[str], framework: str) -> bool:
+    values = list(argv)
+    return (
+        framework == "unittest"
+        and bool(values)
+        and Path(values[0]).name.lower() == "uv"
+        and values[1:5] == ["run", "--frozen", "--offline", "--no-env-file"]
+        and values[5:8] == ["python", "-m", "unittest"]
+    )
 
 
 def parse_structured_proof_payloads(raw: str) -> list[dict[str, Any]]:
@@ -9690,7 +10167,14 @@ def cmd_internal_proof_supervisor(
             code="TEST_PROOF_SUPERVISOR_INVALID",
         )
 
-    child_argv = proof_supervised_child_argv(requested_argv, str(args.framework))
+    shim_unittest = uv_unittest_proof_command(
+        requested_argv, str(args.framework)
+    )
+    child_argv = (
+        requested_argv
+        if shim_unittest
+        else proof_supervised_child_argv(requested_argv, str(args.framework))
+    )
     child_env = trusted_proof_environment()
     cache_prefix = os.environ.get("PYTHONPYCACHEPREFIX")
     if cache_prefix:
@@ -9704,6 +10188,17 @@ def cmd_internal_proof_supervisor(
             PYTEST_PROOF_PLUGIN_SOURCE,
             encoding="utf-8",
         )
+        if shim_unittest:
+            unittest_package = Path(plugin_dir, "unittest")
+            unittest_package.mkdir()
+            Path(unittest_package, "__init__.py").write_text(
+                UNITTEST_PROOF_SHIM_INIT_SOURCE,
+                encoding="utf-8",
+            )
+            Path(unittest_package, "__main__.py").write_text(
+                UNITTEST_PROOF_CHILD_SOURCE,
+                encoding="utf-8",
+            )
         with tempfile.TemporaryFile(mode="w+b") as raw_channel:
             child_env.update(
                 {
@@ -10300,6 +10795,8 @@ def cmd_prove_tests(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                     "test_ids": group["test_ids"],
                     "timeout_seconds": group["timeout_seconds"],
                 }
+                if group.get("executable_identity", {}).get("kind") == "absolute-uv-launcher":
+                    result["launcher_identity"] = group["executable_identity"]
                 if method == "reviewed-boundaries":
                     result["reason"] = group["reason"]
                     result["reviewed_boundaries"] = group[
@@ -10312,6 +10809,9 @@ def cmd_prove_tests(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                 candidate_path = proof_root / f"{index + 1:02d}-candidate"
                 add_detached_worktree(repo, candidate_path, candidate)
                 created.append(candidate_path)
+                candidate_project = validate_uv_proof_execution(
+                    repo, candidate, candidate_path, group
+                )
                 candidate_run = run_proof_argv(
                     group["execution_argv"],
                     framework=str(group["framework"]),
@@ -10321,6 +10821,8 @@ def cmd_prove_tests(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                     log_path=evidence_dir / f"{index + 1:02d}-{method}-candidate.log",
                     cache_path=evidence_dir / "pycache" / f"{index + 1:02d}-candidate",
                 )
+                if candidate_project is not None:
+                    candidate_run["project_identity"] = candidate_project
                 candidate_run["worktree_residue"] = proof_worktree_residue(
                     candidate_path
                 )
@@ -10331,10 +10833,20 @@ def cmd_prove_tests(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                     or full_head(candidate_path) != candidate
                     or candidate_run["worktree_residue"]
                 ):
+                    uv_observation_invalid = (
+                        group.get("executable_identity", {}).get("kind")
+                        == "absolute-uv-launcher"
+                        and candidate_run["returncode"] == 0
+                        and candidate_run["test_result"].get("classification") != "pass"
+                    )
                     raise RuntimeProblem(
                         "test proof candidate command did not pass cleanly",
                         result="FAIL",
-                        code="TEST_PROOF_CANDIDATE_FAILED",
+                        code=(
+                            "TEST_PROOF_OBSERVATION_INVALID"
+                            if uv_observation_invalid
+                            else "TEST_PROOF_CANDIDATE_FAILED"
+                        ),
                         details=proof_failure_details(
                             index, group, candidate_run
                         ),
@@ -10349,6 +10861,9 @@ def cmd_prove_tests(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                     baseline_path = proof_root / f"{index + 1:02d}-baseline"
                     add_detached_worktree(repo, baseline_path, tester_source_head)
                     created.append(baseline_path)
+                    baseline_project = validate_uv_proof_execution(
+                        repo, tester_source_head, baseline_path, group
+                    )
                     baseline_run = run_proof_argv(
                         group["execution_argv"],
                         framework=str(group["framework"]),
@@ -10361,6 +10876,8 @@ def cmd_prove_tests(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                         / "pycache"
                         / f"{index + 1:02d}-baseline",
                     )
+                    if baseline_project is not None:
+                        baseline_run["project_identity"] = baseline_project
                     baseline_run["worktree_residue"] = proof_worktree_residue(
                         baseline_path
                     )
@@ -10375,7 +10892,12 @@ def cmd_prove_tests(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                         raise RuntimeProblem(
                             "baseline-red did not distinguish baseline from candidate",
                             result="FAIL",
-                            code="TEST_BASELINE_RED_NOT_PROVEN",
+                            code=(
+                                "TEST_PROOF_COUNTEREXAMPLE_INVALID"
+                                if group.get("executable_identity", {}).get("kind")
+                                == "absolute-uv-launcher"
+                                else "TEST_BASELINE_RED_NOT_PROVEN"
+                            ),
                             details=proof_failure_details(
                                 index, group, baseline_run
                             ),
@@ -10437,6 +10959,9 @@ def cmd_prove_tests(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                         check=True,
                     ).stdout
                     mutation_diff_sha = sha256_text(mutation_diff)
+                    mutation_project = validate_uv_proof_execution(
+                        repo, candidate, mutation_path, group
+                    )
                     mutation_run = run_proof_argv(
                         group["execution_argv"],
                         framework=str(group["framework"]),
@@ -10449,6 +10974,8 @@ def cmd_prove_tests(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                         / "pycache"
                         / f"{index + 1:02d}-mutation",
                     )
+                    if mutation_project is not None:
+                        mutation_run["project_identity"] = mutation_project
                     mutation_run["worktree_residue"] = proof_worktree_residue(
                         mutation_path, allowed_tracked_paths=changed_paths
                     )

@@ -809,6 +809,27 @@ cases:
                 "NEEDS_USER",
             ),
             (
+                "nested-pytest-main",
+                _source(
+                    "import pytest as pt\nfrom src.calc import add\n\n",
+                    "def test_value():\n",
+                    "    result = pt.main(['tests/test_calc.py'])\n",
+                    "    assert result == 0 and add(1, 2) == 3\n",
+                ),
+                "NEEDS_USER",
+            ),
+            (
+                "proof-channel-removal",
+                _source(
+                    "import os\nfrom src.calc import add\n\n",
+                    "def test_value():\n",
+                    "    os.environ.pop('CODEX_BUILDER_PROOF', None)\n",
+                    "    os.environ.pop('PYTEST_PLUGINS', None)\n",
+                    "    assert add(1, 2) == 3\n",
+                ),
+                "NEEDS_USER",
+            ),
+            (
                 "bare-pytestmark-container",
                 _source(
                     "from pytest import mark\n",

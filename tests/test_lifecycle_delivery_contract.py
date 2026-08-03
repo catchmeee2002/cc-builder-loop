@@ -222,6 +222,7 @@ class LifecycleDeliveryContractTest(unittest.TestCase):
 
     def route_path(self, run_path: Path) -> Path:
         matches = []
+        expected_ledger = str((run_path / "ledger.json").resolve())
         for path in self.runtime_json(run_path.name):
             try:
                 value = json.loads(path.read_text())
@@ -231,6 +232,7 @@ class LifecycleDeliveryContractTest(unittest.TestCase):
                 isinstance(value, dict)
                 and "event" not in value
                 and "turn_id" not in value
+                and value.get("ledger_path") == expected_ledger
             ):
                 matches.append(path)
         self.assertEqual(len(matches), 1, matches)

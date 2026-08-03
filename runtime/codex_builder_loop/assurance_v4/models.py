@@ -393,13 +393,30 @@ def validate_test_proof_spec(value: Any) -> dict[str, Any]:
 
 
 def validate_ledger(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ContractError("ledger must be an object", code="ASSURANCE_LEDGER_INVALID")
+    normalized = copy.deepcopy(value)
+    if "runtime_identity" not in normalized:
+        normalized["runtime_identity"] = {
+            "adapter": "unknown",
+            "adapter_commit": None,
+            "adapter_dirty": None,
+            "capture_status": "legacy-unavailable",
+        }
+    elif normalized["runtime_identity"] is None:
+        normalized["runtime_identity"] = {
+            "adapter": "unknown",
+            "adapter_commit": None,
+            "adapter_dirty": None,
+            "capture_status": "unavailable",
+        }
     contract_schema = _schema("assurance-v4-contract.schema.json")
     ledger_schema = _schema("assurance-v4-ledger.schema.json")
     registry = Registry().with_resource(
         contract_schema["$id"], Resource.from_contents(contract_schema)
     )
     try:
-        jsonschema.Draft202012Validator(ledger_schema, registry=registry).validate(value)
+        jsonschema.Draft202012Validator(ledger_schema, registry=registry).validate(normalized)
     except jsonschema.ValidationError as exc:
         path = "/".join(str(part) for part in exc.absolute_path)
         raise ContractError(
@@ -407,14 +424,13 @@ def validate_ledger(value: Any) -> dict[str, Any]:
             code="ASSURANCE_LEDGER_INVALID",
             details={"path": path},
         ) from exc
-    assert isinstance(value, dict)
-    validate_contract(value["facets"])
-    if facet_digests(value["facets"]) != value["digests"]:
+    validate_contract(normalized["facets"])
+    if facet_digests(normalized["facets"]) != normalized["digests"]:
         raise ContractError(
             "ledger facet digests do not match their canonical values",
             code="ASSURANCE_LEDGER_DIGEST_MISMATCH",
         )
-    return copy.deepcopy(value)
+    return normalized
 
 
 def validate_repo_path(value: str) -> str:
@@ -441,6 +457,27 @@ def requirement(contract: Mapping[str, Any], kind: str) -> Any:
     return {"required": kind in contract["assurance"]["required"]}
 
 
+def tester_source_dependency(execution: Mapping[str, Any]) -> Any:
+    source = execution.get("tester_source")
+    if not isinstance(source, Mapping):
+        return None
+    files = sorted(
+        (copy.deepcopy(item) for item in source.get("files", [])),
+        key=lambda item: (item.get("path", ""), item.get("blob", "")),
+    )
+    replaced = sorted(
+        (copy.deepcopy(item) for item in source.get("replaces_files", [])),
+        key=lambda item: (item.get("path", ""), item.get("blob", "")),
+    )
+    return {
+        "head": source.get("head"),
+        "base_head": source.get("base_head"),
+        "files": files,
+        "replaces_files": replaced,
+        "agent": copy.deepcopy(source.get("agent")),
+    }
+
+
 def evidence_dependency(
     ledger: Mapping[str, Any], kind: str, *, evidence: Mapping[str, Any] | None = None
 ) -> str:
@@ -454,7 +491,10 @@ def evidence_dependency(
         "requirement": requirement(contract, kind),
     }
     if kind == "machine":
-        base.update(candidate_head=candidate)
+        base.update(
+            candidate_head=candidate,
+            tester_source=tester_source_dependency(execution),
+        )
     elif kind == "tester":
         base.update(
             target_start_head=ledger["target_start_head"],

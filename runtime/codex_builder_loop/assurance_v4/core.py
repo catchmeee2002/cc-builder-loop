@@ -459,8 +459,11 @@ def start(
                 execution["builder_files"] = sorted(set(execution["builder_files"]) | set(captured))
             contract["execution"] = execution
             created_at = now()
+            from ..core import capture_runtime_identity
+
             ledger = {
                 "schema_version": SCHEMA_VERSION,
+                "runtime_identity": capture_runtime_identity(),
                 "run_id": run_id,
                 "owner_session_id": session_id.strip(),
                 "phase": "active",
@@ -771,9 +774,12 @@ def evidence_state(ledger: Mapping[str, Any], kind: str) -> str:
     record = ledger.get("evidence", {}).get(kind)
     if not isinstance(record, dict):
         return "missing"
-    if record.get("status") != "pass":
-        return "failed"
-    if kind == "tester":
+    dependency_evidence = record if kind == "machine" else None
+    if record.get("dependency_digest") != evidence_dependency(
+        ledger, kind, evidence=dependency_evidence
+    ):
+        return "stale"
+    if record.get("status") == "pass" and kind == "tester":
         candidate = ledger["facets"]["execution"].get("candidate_head")
         files = record.get("details", {}).get("files", [])
         if not isinstance(candidate, str) or any(
@@ -783,12 +789,7 @@ def evidence_state(ledger: Mapping[str, Any], kind: str) -> str:
             for item in files
         ):
             return "stale"
-    dependency_evidence = record if kind == "machine" else None
-    if record.get("dependency_digest") != evidence_dependency(
-        ledger, kind, evidence=dependency_evidence
-    ):
-        return "stale"
-    return "pass"
+    return "pass" if record.get("status") == "pass" else "failed"
 
 
 def readiness(ledger: Mapping[str, Any]) -> dict[str, Any]:
@@ -919,6 +920,7 @@ def status(repo_value: str | Path, run_value: str) -> dict[str, Any]:
     return {
         "status": "READY" if readiness(ledger)["ready"] else "ACTIVE",
         "run_id": run_id,
+        "runtime_identity": copy.deepcopy(ledger["runtime_identity"]),
         "phase": ledger["phase"],
         "repo_root": ledger["repo_root"],
         "target_branch": ledger["target_branch"],
@@ -949,6 +951,7 @@ def driver_context(repo_value: str | Path, run_value: str) -> dict[str, Any]:
     return {
         "status": "READY",
         "run_id": run_id,
+        "runtime_identity": copy.deepcopy(ledger["runtime_identity"]),
         "phase": ledger["phase"],
         "repo_root": ledger["repo_root"],
         "target_start_head": ledger["target_start_head"],
@@ -976,6 +979,7 @@ def update_facet(
     semantic_revision: bool = False,
     authorize_expansion: bool = False,
     authorize_downgrade: bool = False,
+    resolve_plan_problem_key: str | None = None,
 ) -> dict[str, Any]:
     if facet not in {"mission", "authority", "assurance", "execution"}:
         raise AssuranceError("unknown contract facet", code="ASSURANCE_FACET_INVALID")
@@ -986,7 +990,79 @@ def update_facet(
         if ledger["phase"] != "active":
             raise AssuranceError("run is not active", code="ASSURANCE_RUN_NOT_ACTIVE")
         old = ledger["facets"][facet]
+        plan_problem: dict[str, Any] | None = None
+        expected_resolution: str | None = None
+        if resolve_plan_problem_key is not None:
+            if facet == "execution":
+                raise AssuranceError(
+                    "execution facet cannot resolve a plan problem",
+                    code="PLAN_PROBLEM_NOT_FOUND",
+                    status="FAIL",
+                    details={"key": resolve_plan_problem_key, "facet": facet},
+                )
+            keyed = [
+                item
+                for item in ledger.get("problems", [])
+                if item.get("key") == resolve_plan_problem_key
+            ]
+            open_keyed = [item for item in keyed if item.get("status") == "open"]
+            if len(open_keyed) > 1:
+                raise AssuranceError(
+                    "multiple open problems use the requested key",
+                    code="PLAN_PROBLEM_AMBIGUOUS",
+                    status="FAIL",
+                    details={"key": resolve_plan_problem_key},
+                )
+            matching = [item for item in keyed if item.get("owner") == "plan"]
+            open_matching = [item for item in matching if item.get("status") == "open"]
+            if open_matching:
+                plan_problem = open_matching[0]
+            elif matching:
+                resolved = matching[-1]
+                expected_resolution = (
+                    f"plan-decision:{facet}:{ledger['digests'][facet]}"
+                    if value == old
+                    else None
+                )
+                if (
+                    value == old
+                    and resolved.get("status") == "resolved"
+                    and resolved.get("resolution") == expected_resolution
+                ):
+                    return status(repo, run_id)
+                raise AssuranceError(
+                    "resolved plan problem conflicts with the requested decision",
+                    code="PLAN_PROBLEM_DECISION_CONFLICT",
+                    status="FAIL",
+                    details={"key": resolve_plan_problem_key, "facet": facet},
+                )
+            else:
+                raise AssuranceError(
+                    "plan problem key was not found",
+                    code="PLAN_PROBLEM_NOT_FOUND",
+                    status="FAIL",
+                    details={"key": resolve_plan_problem_key},
+                )
         if value == old:
+            if plan_problem is None:
+                return status(repo, run_id)
+            expected_resolution = f"plan-decision:{facet}:{ledger['digests'][facet]}"
+            plan_problem["status"] = "resolved"
+            plan_problem["resolution"] = expected_resolution
+            plan_problem["resolved_at"] = now()
+            current_digest = ledger["digests"][facet]
+            append_event(
+                ledger,
+                "plan_problem_decision_applied",
+                {
+                    "key": resolve_plan_problem_key,
+                    "facet": facet,
+                    "old_digest": current_digest,
+                    "new_digest": current_digest,
+                    "facet_changed": False,
+                },
+            )
+            save_ledger(repo, ledger)
             return status(repo, run_id)
         if facet == "execution" and old.get("driver_enforced") is True:
             raise AssuranceError(
@@ -1106,20 +1182,39 @@ def update_facet(
                     "execution version must increase",
                     code="EXECUTION_VERSION_INVALID",
                 )
+        old_digest = digest(old)
+        facet_changed = value != old
         ledger["facets"] = validated
         if facet == "execution" and validated["execution"].get("candidate_head") is not None:
             ledger["builder_checkpointed"] = True
         ledger["digests"] = facet_digests(validated)
+        expected_resolution = f"plan-decision:{facet}:{ledger['digests'][facet]}"
         append_event(
             ledger,
             "facet_updated",
             {
                 "facet": facet,
-                "old_digest": digest(old),
+                "old_digest": old_digest,
                 "new_digest": ledger["digests"][facet],
                 "semantic_revision": semantic_revision,
             },
         )
+        if plan_problem is not None:
+            assert expected_resolution is not None
+            plan_problem["status"] = "resolved"
+            plan_problem["resolution"] = expected_resolution
+            plan_problem["resolved_at"] = now()
+            append_event(
+                ledger,
+                "plan_problem_decision_applied",
+                {
+                    "key": resolve_plan_problem_key,
+                    "facet": facet,
+                    "old_digest": old_digest,
+                    "new_digest": ledger["digests"][facet],
+                    "facet_changed": facet_changed,
+                },
+            )
         save_ledger(repo, ledger)
     return status(repo, run_id)
 
@@ -1451,19 +1546,44 @@ def record_problems(
             if expected != {"agent_id": agent_id, "thread_id": thread_id}:
                 raise AssuranceError("problem producer identity mismatch", code="PROBLEM_PRODUCER_MISMATCH")
         candidate = ledger["facets"]["execution"].get("candidate_head")
+        producer = {"role": role, "agent_id": agent_id, "thread_id": thread_id}
+        added: list[str] = []
         for problem in report["problems"]:
+            replay = next(
+                (
+                    item
+                    for item in ledger.get("problems", [])
+                    if item.get("key") == problem["key"]
+                    and item.get("candidate_head") == candidate
+                    and item.get("producer") == producer
+                ),
+                None,
+            )
+            if isinstance(replay, dict):
+                content = {field: replay.get(field) for field in ("key", "summary", "details", "owner")}
+                if content != problem:
+                    raise AssuranceError(
+                        "problem replay changed content for the same producer and candidate",
+                        code="PROBLEM_REPLAY_MISMATCH",
+                        status="FAIL",
+                        details={"key": problem["key"], "candidate_head": candidate},
+                    )
+                continue
             stored = {
                 **copy.deepcopy(problem),
                 "status": "open",
-                "producer": {"role": role, "agent_id": agent_id, "thread_id": thread_id},
+                "producer": producer,
                 "candidate_head": candidate,
                 "recorded_at": now(),
             }
             ledger.setdefault("problems", []).append(stored)
+            added.append(problem["key"])
+        if not added:
+            return status(repo, run_id)
         append_event(
             ledger,
             "problems_recorded",
-            {"role": role, "keys": [item["key"] for item in report["problems"]]},
+            {"role": role, "keys": added},
         )
         save_ledger(repo, ledger)
     return status(repo, run_id)
@@ -1645,6 +1765,29 @@ def integrate_tester(repo_value: str | Path, run_value: str) -> dict[str, Any]:
                     details={"path": path},
                 )
             manifest.append({"path": path, "blob": blob})
+        from ..core import python_test_role_boundary_marker
+
+        role_boundary_findings: list[dict[str, str]] = []
+        for path in tester_files:
+            if not path.endswith(".py"):
+                continue
+            source_text = git(repo, "show", f"{source_head}:{path}", check=False)
+            if source_text.returncode != 0:
+                raise AssuranceError(
+                    "Tester source could not be inspected before integration",
+                    code="TESTER_SOURCE_INSPECTION_FAILED",
+                    details={"path": path},
+                )
+            marker = python_test_role_boundary_marker(source_text.stdout)
+            if marker is not None:
+                role_boundary_findings.append({"path": path, "marker": marker})
+        if role_boundary_findings:
+            raise AssuranceError(
+                "Tester-owned tests cannot wrap another test runner or remove proof channels",
+                code="TESTER_ROLE_BOUNDARY_VIOLATION",
+                status="FAIL",
+                details={"findings": role_boundary_findings},
+            )
         candidate_worktree = Path(ledger["candidate_worktree"])
         if dirty_paths(candidate_worktree):
             raise AssuranceError(
@@ -1934,6 +2077,20 @@ def record_evidence(
 
 
 def _proof_framework(argv: list[str]) -> str:
+    if argv and Path(argv[0]).name.lower() == "uv":
+        from ..core import RuntimeProblem, parse_canonical_uv_proof_command
+
+        try:
+            parsed = parse_canonical_uv_proof_command(argv)
+        except RuntimeProblem as exc:
+            raise AssuranceError(
+                str(exc),
+                code="TEST_PROOF_UV_COMMAND_INVALID",
+                status="FAIL",
+                details={"argv": argv},
+            ) from exc
+        assert parsed is not None
+        return str(parsed["framework"])
     executable = Path(argv[0]).name.lower()
     if executable in {"pytest", "py.test"}:
         return "pytest"
@@ -1950,6 +2107,41 @@ def _proof_framework(argv: list[str]) -> str:
     )
 
 
+def _proof_uv_project_identity(
+    repo: Path, worktree: Path, head: str, argv: list[str]
+) -> dict[str, Any] | None:
+    if not argv or Path(argv[0]).name.lower() != "uv":
+        return None
+    launcher = Path(argv[0])
+    if launcher.is_symlink() or not launcher.is_file() or not os.access(launcher, os.X_OK):
+        raise AssuranceError(
+            "uv proof launcher must be an absolute regular executable file",
+            code="TEST_PROOF_EXECUTABLE_INVALID",
+            status="FAIL",
+            details={"path": argv[0]},
+        )
+    files: list[dict[str, str]] = []
+    for relative in ("pyproject.toml", "uv.lock"):
+        path = worktree / relative
+        if path.is_symlink() or not path.is_file():
+            raise AssuranceError(
+                "uv proof requires regular pyproject.toml and uv.lock files",
+                code="TEST_PROOF_UV_PROJECT_INVALID",
+                status="FAIL",
+                details={"path": relative, "head": head},
+            )
+        blob = _blob_at(repo, head, relative)
+        if blob is None:
+            raise AssuranceError(
+                "uv proof project files must be frozen in the proof HEAD",
+                code="TEST_PROOF_UV_PROJECT_INVALID",
+                status="FAIL",
+                details={"path": relative, "head": head},
+            )
+        files.append({"path": relative, "blob": blob, "sha256": _sha256_file(path)})
+    return {"files": files}
+
+
 def _proof_run(
     repo: Path,
     worktree: Path,
@@ -1957,6 +2149,7 @@ def _proof_run(
     group: Mapping[str, Any],
     artifact_root: Path,
     label: str,
+    expected_launcher_identity: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     from ..core import run_proof_argv
 
@@ -1970,6 +2163,14 @@ def _proof_run(
             status="FAIL",
             details={"identity": identity},
         )
+    if expected_launcher_identity is not None and identity != expected_launcher_identity:
+        raise AssuranceError(
+            "test proof launcher identity changed during proof execution",
+            code="TEST_PROOF_EXECUTABLE_IDENTITY_DRIFT",
+            status="FAIL",
+            details={"expected": expected_launcher_identity, "actual": identity},
+        )
+    project_identity = _proof_uv_project_identity(repo, worktree, head, requested)
     execution_argv = [resolved, *requested[1:]]
     result = run_proof_argv(
         execution_argv,
@@ -1980,7 +2181,12 @@ def _proof_run(
         log_path=artifact_root / f"{label}.log",
         cache_path=artifact_root / f"{label}-cache",
     )
-    return {**result, "requested_argv": requested, "executable_identity": identity}
+    return {
+        **result,
+        "requested_argv": requested,
+        "executable_identity": identity,
+        "project_identity": project_identity,
+    }
 
 
 def prove_tests(
@@ -2078,6 +2284,26 @@ def prove_tests(
                 status="FAIL",
                 details={"tests": unbound_tests},
             )
+        launcher_identities: list[dict[str, Any] | None] = []
+        candidate_worktree_path = Path(ledger["candidate_worktree"])
+        for group in spec["groups"]:
+            requested = list(group["argv"])
+            _proof_framework(requested)
+            if requested and Path(requested[0]).name.lower() == "uv":
+                resolved, identity = _resolve_machine_executable(
+                    repo, candidate_worktree_path, candidate, requested[0]
+                )
+                if resolved is None:
+                    raise AssuranceError(
+                        "test proof uv launcher could not be resolved",
+                        code="TEST_PROOF_EXECUTABLE_INVALID",
+                        status="FAIL",
+                        details={"identity": identity},
+                    )
+                _proof_uv_project_identity(repo, candidate_worktree_path, candidate, requested)
+                launcher_identities.append(identity)
+            else:
+                launcher_identities.append(None)
         artifact_root = run_dir(repo, run_id) / "proof-artifacts" / digest(spec)
         artifact_root.mkdir(parents=True, exist_ok=True)
         proof_root = Path(tempfile.mkdtemp(prefix=f"assurance-v4-{run_id}-proof-"))
@@ -2097,6 +2323,7 @@ def prove_tests(
                     group,
                     artifact_root,
                     f"group-{index}-candidate",
+                    launcher_identities[index],
                 )
                 if candidate_result["test_result"].get("classification") != "pass":
                     raise AssuranceError(
@@ -2120,6 +2347,7 @@ def prove_tests(
                         group,
                         artifact_root,
                         f"group-{index}-baseline",
+                        launcher_identities[index],
                     )
                 elif method == "mutation":
                     mutation_worktree = proof_root / f"mutation-{index}"
@@ -2166,6 +2394,7 @@ def prove_tests(
                         group,
                         artifact_root,
                         f"group-{index}-mutation",
+                        launcher_identities[index],
                     )
                 if counterexample is not None and counterexample["test_result"].get("classification") != "assertion-failure":
                     raise AssuranceError(

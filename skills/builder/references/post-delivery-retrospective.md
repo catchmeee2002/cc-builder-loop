@@ -1,6 +1,8 @@
 # Post-delivery retrospective
 
-只处理已经完成交付后的工程事故归属与用户授权。记忆筛选留给 `$memory-review`。
+只处理 delivery loop 已停止后的工程事故归属与用户授权。入口包括 `FINALIZED`、`NEEDS_USER`、
+`FATAL`、continuity failure 和 abandon；记忆筛选留给 `$memory-review`。复盘不改变这些终态事实，
+也不重新打开 delivery gate。
 
 ## 输入
 
@@ -9,6 +11,13 @@ diff、Git 事实，以及本次对话中用户明确纠正的前提。日志和
 
 版本必须取 ledger 的 `runtime_identity`。`capture_status` 不是 `captured` 时如实写“运行版本未冻结”，
 不得在任务结束后用当前 checkout HEAD 冒充实际运行版本。
+
+## 高信号检查
+
+先机械检查同一 `action_id` 的重复 dispatch、人工 ledger recovery、手工 evidence invalidation、revision
+数量，以及每次 revision 的重复原因。再检查多轮失败、冲突、Tester correction、Reviewer finding、
+角色或 evidence 独立性异常、用户纠正的重要前提和计划外缺陷。没有高信号时允许 no-op；发现事故时
+按唯一 owner 查重并请求授权。实时 ledger、turn、HEAD 和验证快照只作输入，不写入稳定 Markdown。
 
 ## 原子事故与归属
 
@@ -43,6 +52,10 @@ thread continuity 或 workspace isolation 被绕过；无效 evidence 被记录�
 finalized target 不得被复盘静默改脏。问题文档若是版本控制内文件，用户批准后也必须进入项目声明的
 独立 issue/doc 工作流或新的 L1 plan/run；当前已完成 run 只生成客观记录草案。只有项目政策明确声明
 为非交付、ignored/local 的问题容器时，才可在授权后直接更新，且不得把它加入已完成 commit。
+
+成功终态在上述检查完成前不得输出 `FULL_DRIVER_V4_RESULT: finalized`。非成功终态继续展示原
+`NEEDS_USER`、`FATAL`、continuity failure 或 abandon 事实；复盘结果只能追加归属，不得把失败改写
+成成功。
 
 ## 事故模板
 

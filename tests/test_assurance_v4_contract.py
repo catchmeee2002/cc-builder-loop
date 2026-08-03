@@ -289,6 +289,74 @@ class AssuranceV4ContractTest(unittest.TestCase):
         self.assertEqual(rejected.get("code"), "TESTER_SOURCE_ENTRY_UNSUPPORTED")
         self.assertEqual(head(Path(ledger["candidate_worktree"])), candidate_before)
 
+    def test_tester_integration_rejects_generator_style_nested_proof_wrapper(self) -> None:
+        run_id = "tester-proof-wrapper-rejected"
+        _started, run_path = self.start(run_id)
+        ledger = self.load_ledger(run_path)
+        execution = ledger["facets"]["execution"]
+        rc, prepared, _stdout, _stderr = self.invoke(
+            "prepare-tester",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--agent-id",
+            execution["agents"]["tester"]["agent_id"],
+            "--thread-id",
+            execution["agents"]["tester"]["thread_id"],
+        )
+        self.assertEqual(rc, 0, prepared)
+        before = self.load_ledger(run_path)
+        source_before = deepcopy(before["facets"]["execution"]["tester_source"])
+        candidate = Path(before["candidate_worktree"])
+        candidate_head_before = head(candidate)
+        evidence_before = deepcopy(before["evidence"])
+        tester = Path(source_before["worktree"])
+        wrapper = tester / "tests" / "test_generator_wrapper.py"
+        wrapper.write_text(
+            "import os\n"
+            "import subprocess\n\n"
+            "def test_generator_wrapper():\n"
+            "    env = os.environ.copy()\n"
+            "    env.pop('CODEX_BUILDER_PROOF', None)\n"
+            "    env.pop('PYTEST_PLUGINS', None)\n"
+            "    result = subprocess.run(\n"
+            "        ['/tmp/uv', 'run', 'pytest', 'tests/test_target.py'],\n"
+            "        env=env,\n"
+            "        check=False,\n"
+            "    )\n"
+            "    assert result.returncode == 0\n",
+            encoding="utf-8",
+        )
+        commit_all(tester, "author generator-style nested proof wrapper")
+
+        rc, rejected, _stdout, _stderr = self.invoke(
+            "integrate-tester", "--repo", self.repo, "--run", run_id
+        )
+
+        self.assertNotEqual(rc, 0, rejected)
+        self.assertEqual(
+            rejected.get("code"), "TESTER_ROLE_BOUNDARY_VIOLATION", rejected
+        )
+        self.assertTrue(
+            any(
+                item.get("path") == "tests/test_generator_wrapper.py"
+                and str(item.get("marker", "")).strip()
+                for item in rejected.get("findings", [])
+            ),
+            rejected,
+        )
+        after = self.load_ledger(run_path)
+        self.assertEqual(head(candidate), candidate_head_before)
+        self.assertEqual(
+            after["facets"]["execution"]["candidate_head"], candidate_head_before
+        )
+        self.assertEqual(
+            after["facets"]["execution"]["tester_source"], source_before
+        )
+        self.assertEqual(after["facets"]["execution"]["tester_files"], [])
+        self.assertEqual(after["evidence"], evidence_before)
+
     def test_status_derives_stage_retry_and_replay_telemetry_from_events(self) -> None:
         run_id = "telemetry-derived"
         _started, run_path = self.start(run_id)
@@ -1183,6 +1251,302 @@ class AssuranceV4ContractTest(unittest.TestCase):
         self.assertEqual(accepted.get("status"), "ACTIVE", accepted)
         self.assertEqual(self.load_ledger(run_path)["facets"]["authority"], expanded)
 
+    def test_plan_problem_decision_updates_facet_and_resolves_only_the_bound_key_atomically(self) -> None:
+        run_id = "plan-decision-atomic"
+        _data, run_path = self.start(run_id)
+        report = {
+            "schema_version": 1,
+            "problems": [
+                {
+                    "key": "expand-builder-authority",
+                    "summary": "Builder authority must include generated sources.",
+                    "details": "The user must explicitly authorize the exact additional path.",
+                    "owner": "plan",
+                },
+                {
+                    "key": "choose-release-policy",
+                    "summary": "Release policy still needs a separate decision.",
+                    "details": "This decision is independent from source ownership.",
+                    "owner": "plan",
+                },
+            ],
+        }
+        report_path = self.write_json("plan-decision-atomic-problems.json", report)
+        rc, recorded, _stdout, _stderr = self.invoke(
+            "record-problems",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--report",
+            report_path,
+            "--role",
+            "builder",
+            "--agent-id",
+            "plan-decision-builder",
+            "--thread-id",
+            "plan-decision-builder-thread",
+        )
+        self.assertEqual(rc, 0, recorded)
+        original = self.load_ledger(run_path)
+        expanded = deepcopy(original["facets"]["authority"])
+        expanded["builder_write"].append("generated/**")
+        before = (run_path / "ledger.json").read_bytes()
+
+        rc, rejected = self.update_facet(
+            run_id,
+            "authority",
+            expanded,
+            "--resolve-plan-problem-key",
+            "expand-builder-authority",
+        )
+
+        self.assertNotEqual(rc, 0, rejected)
+        self.assertEqual(
+            rejected.get("code"), "AUTHORITY_EXPANSION_REQUIRES_USER", rejected
+        )
+        self.assertEqual((run_path / "ledger.json").read_bytes(), before)
+
+        rc, applied = self.update_facet(
+            run_id,
+            "authority",
+            expanded,
+            "--authorize-expansion",
+            "--resolve-plan-problem-key",
+            "expand-builder-authority",
+        )
+
+        self.assertEqual(rc, 0, applied)
+        ledger = self.load_ledger(run_path)
+        self.assertEqual(ledger["facets"]["authority"], expanded)
+        digest_after = ledger["digests"]["authority"]
+        by_key = {item["key"]: item for item in ledger["problems"]}
+        self.assertEqual(by_key["expand-builder-authority"]["status"], "resolved")
+        self.assertEqual(
+            by_key["expand-builder-authority"]["resolution"],
+            f"plan-decision:authority:{digest_after}",
+        )
+        self.assertEqual(by_key["choose-release-policy"]["status"], "open")
+        event = next(
+            item
+            for item in reversed(ledger["events"])
+            if item.get("kind") == "plan_problem_decision_applied"
+        )
+        self.assertEqual(
+            event["details"],
+            {
+                "key": "expand-builder-authority",
+                "facet": "authority",
+                "old_digest": original["digests"]["authority"],
+                "new_digest": digest_after,
+                "facet_changed": True,
+            },
+        )
+        rc, decision, _stdout, _stderr = self.invoke(
+            "driver-next", "--repo", self.repo, "--run", run_id
+        )
+        self.assertEqual(rc, 0, decision)
+        self.assertEqual(decision.get("action"), "contract_decision", decision)
+        self.assertEqual(decision.get("problem", {}).get("key"), "choose-release-policy")
+
+    def test_plan_problem_decision_recovery_ambiguity_and_conflicts_are_fail_closed(self) -> None:
+        def record(
+            run_id: str,
+            name: str,
+            *,
+            key: str,
+            owner: str = "plan",
+            role: str = "builder",
+            agent_id: str = "plan-recovery-builder",
+            thread_id: str = "plan-recovery-builder-thread",
+            details: str = "The frozen decision requires an atomic update.",
+        ) -> None:
+            path = self.write_json(
+                name,
+                {
+                    "schema_version": 1,
+                    "problems": [
+                        {
+                            "key": key,
+                            "summary": "Apply one frozen plan decision.",
+                            "details": details,
+                            "owner": owner,
+                        }
+                    ],
+                },
+            )
+            rc, value, _stdout, _stderr = self.invoke(
+                "record-problems",
+                "--repo",
+                self.repo,
+                "--run",
+                run_id,
+                "--report",
+                path,
+                "--role",
+                role,
+                "--agent-id",
+                agent_id,
+                "--thread-id",
+                thread_id,
+            )
+            self.assertEqual(rc, 0, value)
+
+        run_id = "plan-decision-recovery"
+        _data, run_path = self.start(run_id)
+        record(run_id, "plan-recovery-problem.json", key="recover-authority")
+        ledger = self.load_ledger(run_path)
+        expanded = deepcopy(ledger["facets"]["authority"])
+        expanded["builder_write"].append("generated/**")
+        rc, updated = self.update_facet(
+            run_id, "authority", expanded, "--authorize-expansion"
+        )
+        self.assertEqual(rc, 0, updated)
+        open_after_update = self.load_ledger(run_path)["problems"][0]
+        self.assertEqual(open_after_update["status"], "open")
+
+        rc, closed = self.update_facet(
+            run_id,
+            "authority",
+            expanded,
+            "--authorize-expansion",
+            "--resolve-plan-problem-key",
+            "recover-authority",
+        )
+        self.assertEqual(rc, 0, closed)
+        closed_ledger = self.load_ledger(run_path)
+        self.assertEqual(closed_ledger["problems"][0]["status"], "resolved")
+        applied_event = next(
+            item
+            for item in reversed(closed_ledger["events"])
+            if item.get("kind") == "plan_problem_decision_applied"
+        )
+        self.assertIs(applied_event["details"]["facet_changed"], False)
+
+        before_replay = (run_path / "ledger.json").read_bytes()
+        rc, replay = self.update_facet(
+            run_id,
+            "authority",
+            expanded,
+            "--authorize-expansion",
+            "--resolve-plan-problem-key",
+            "recover-authority",
+        )
+        self.assertEqual(rc, 0, replay)
+        self.assertEqual((run_path / "ledger.json").read_bytes(), before_replay)
+
+        conflicting = deepcopy(expanded)
+        conflicting["builder_write"].append("another-generated/**")
+        before_conflict = (run_path / "ledger.json").read_bytes()
+        rc, conflict = self.update_facet(
+            run_id,
+            "authority",
+            conflicting,
+            "--authorize-expansion",
+            "--resolve-plan-problem-key",
+            "recover-authority",
+        )
+        self.assertNotEqual(rc, 0, conflict)
+        self.assertEqual(
+            conflict.get("code"), "PLAN_PROBLEM_DECISION_CONFLICT", conflict
+        )
+        self.assertEqual((run_path / "ledger.json").read_bytes(), before_conflict)
+
+        assurance = deepcopy(closed_ledger["facets"]["assurance"])
+        assurance["required"].append("doc_review")
+        before_facet_conflict = (run_path / "ledger.json").read_bytes()
+        rc, facet_conflict = self.update_facet(
+            run_id,
+            "assurance",
+            assurance,
+            "--resolve-plan-problem-key",
+            "recover-authority",
+        )
+        self.assertNotEqual(rc, 0, facet_conflict)
+        self.assertEqual(
+            facet_conflict.get("code"),
+            "PLAN_PROBLEM_DECISION_CONFLICT",
+            facet_conflict,
+        )
+        self.assertEqual(
+            (run_path / "ledger.json").read_bytes(), before_facet_conflict
+        )
+
+        ambiguous_run = "plan-decision-ambiguous"
+        _data, ambiguous_path = self.start(ambiguous_run)
+        record(ambiguous_run, "plan-ambiguous-builder.json", key="duplicate-plan-key")
+        record(
+            ambiguous_run,
+            "plan-ambiguous-reviewer.json",
+            key="duplicate-plan-key",
+            role="reviewer",
+            agent_id="assurance-v4-reviewer",
+            thread_id="assurance-v4-reviewer-thread",
+            details="A second producer reported the same unresolved plan key.",
+        )
+        ambiguous_authority = deepcopy(
+            self.load_ledger(ambiguous_path)["facets"]["authority"]
+        )
+        before_ambiguous = (ambiguous_path / "ledger.json").read_bytes()
+        rc, ambiguous = self.update_facet(
+            ambiguous_run,
+            "authority",
+            ambiguous_authority,
+            "--resolve-plan-problem-key",
+            "duplicate-plan-key",
+        )
+        self.assertNotEqual(rc, 0, ambiguous)
+        self.assertEqual(ambiguous.get("code"), "PLAN_PROBLEM_AMBIGUOUS", ambiguous)
+        self.assertEqual(
+            (ambiguous_path / "ledger.json").read_bytes(), before_ambiguous
+        )
+
+        missing_run = "plan-decision-missing"
+        _data, missing_path = self.start(missing_run)
+        record(
+            missing_run,
+            "plan-non-plan-problem.json",
+            key="builder-owned-key",
+            owner="builder",
+        )
+        unchanged_authority = self.load_ledger(missing_path)["facets"]["authority"]
+        for key in ("missing-plan-key", "builder-owned-key"):
+            before_missing = (missing_path / "ledger.json").read_bytes()
+            rc, missing = self.update_facet(
+                missing_run,
+                "authority",
+                unchanged_authority,
+                "--resolve-plan-problem-key",
+                key,
+            )
+            self.assertNotEqual(rc, 0, missing)
+            self.assertEqual(missing.get("code"), "PLAN_PROBLEM_NOT_FOUND", missing)
+            self.assertEqual(
+                (missing_path / "ledger.json").read_bytes(), before_missing
+            )
+
+        execution_run = "plan-decision-execution-rejected"
+        _data, execution_path = self.start(execution_run)
+        record(
+            execution_run,
+            "plan-execution-problem.json",
+            key="execution-decision",
+        )
+        execution = self.load_ledger(execution_path)["facets"]["execution"]
+        before_execution = (execution_path / "ledger.json").read_bytes()
+        rc, rejected_execution = self.update_facet(
+            execution_run,
+            "execution",
+            execution,
+            "--resolve-plan-problem-key",
+            "execution-decision",
+        )
+        self.assertNotEqual(rc, 0, rejected_execution)
+        self.assertNotEqual(rejected_execution.get("code"), "CLI_USAGE_ERROR")
+        self.assertEqual(
+            (execution_path / "ledger.json").read_bytes(), before_execution
+        )
+
     def test_authority_target_branch_is_immutable(self) -> None:
         run_id = "authority-target-immutable"
         _data, run_path = self.start(run_id)
@@ -1271,6 +1635,118 @@ class AssuranceV4ContractTest(unittest.TestCase):
         ]
         self.assertEqual(unchanged, snapshot)
         self.assertEqual((candidate / path).read_text(), original_content)
+
+    def test_v4_runtime_identity_is_frozen_and_legacy_missing_values_normalize_read_only(self) -> None:
+        runtime_fields = {
+            "adapter",
+            "adapter_commit",
+            "adapter_dirty",
+            "capture_status",
+        }
+        for index, driver_kind in enumerate(("native", "full_driver_skill")):
+            run_id = f"runtime-identity-{driver_kind.replace('_', '-')}"
+            contract_path = self.write_json(
+                f"{run_id}-contract.json", contract_for(self.repo)
+            )
+            rc, started, _stdout, _stderr = self.invoke(
+                "start",
+                "--repo",
+                self.repo,
+                "--run",
+                run_id,
+                "--session-id",
+                f"runtime-identity-session-{index}",
+                "--contract",
+                contract_path,
+                "--driver-kind",
+                driver_kind,
+                "--driver-transport",
+                "codex_app_server" if driver_kind == "native" else "native_tools",
+                "--driver-runtime-version",
+                "fixture-runtime",
+                "--driver-protocol-schema-digest",
+                "a" * 64,
+            )
+            self.assertEqual(rc, 0, started)
+            run_path = Path(started["candidate_worktree"]).parent
+            ledger = self.load_ledger(run_path)
+            identity = ledger.get("runtime_identity")
+            self.assertIsInstance(identity, dict, ledger)
+            self.assertEqual(set(identity), runtime_fields)
+            self.assertIn(identity["capture_status"], {"captured", "partial", "unavailable"})
+            self.assertEqual(started.get("runtime_identity"), identity)
+
+        legacy_run = "runtime-identity-legacy"
+        _started, run_path = self.start(legacy_run)
+        ledger_path = run_path / "ledger.json"
+        original = self.load_ledger(run_path)
+        for label, raw_value, expected_status in (
+            ("missing", object(), "legacy-unavailable"),
+            ("null", None, "unavailable"),
+        ):
+            with self.subTest(label=label):
+                raw = deepcopy(original)
+                if label == "missing":
+                    raw.pop("runtime_identity", None)
+                else:
+                    raw["runtime_identity"] = raw_value
+                ledger_path.write_text(
+                    json.dumps(raw, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
+                    encoding="utf-8",
+                )
+                before = ledger_path.read_bytes()
+                rc, status_value, _stdout, _stderr = self.invoke(
+                    "status", "--repo", self.repo, "--run", legacy_run
+                )
+                self.assertEqual(rc, 0, status_value)
+                normalized = status_value.get("runtime_identity")
+                self.assertIsInstance(normalized, dict, status_value)
+                self.assertEqual(normalized.get("capture_status"), expected_status)
+                self.assertEqual(ledger_path.read_bytes(), before)
+
+        ledger_path.write_text(
+            json.dumps(original, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+    def test_v4_runtime_identity_captures_dirty_and_unavailable_git_truthfully(self) -> None:
+        marker = Path(__file__).resolve().parent / ".runtime-identity-dirty-marker"
+        marker.write_text("dirty during identity capture\n", encoding="utf-8")
+        try:
+            _started, run_path = self.start("runtime-identity-dirty")
+            identity = self.load_ledger(run_path)["runtime_identity"]
+            self.assertEqual(identity["adapter_dirty"], True)
+            self.assertEqual(identity["capture_status"], "captured")
+        finally:
+            marker.unlink(missing_ok=True)
+
+        with tempfile.TemporaryDirectory(prefix="runtime-identity-unavailable-") as raw:
+            copied = Path(raw) / "codex_builder_loop"
+            shutil.copytree(
+                Path(__file__).resolve().parents[1]
+                / "runtime"
+                / "codex_builder_loop",
+                copied,
+            )
+            completed = run_process(
+                [
+                    sys.executable,
+                    "-c",
+                    (
+                        "import json, sys; "
+                        f"sys.path.insert(0, {raw!r}); "
+                        "from codex_builder_loop.core import capture_runtime_identity; "
+                        "print(json.dumps(capture_runtime_identity(), sort_keys=True))"
+                    ),
+                ],
+                cwd=raw,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            unavailable = json.loads(completed.stdout.splitlines()[-1])
+            self.assertEqual(unavailable["adapter"], "codex")
+            self.assertIsNone(unavailable["adapter_commit"])
+            self.assertIsNone(unavailable["adapter_dirty"])
+            self.assertEqual(unavailable["capture_status"], "unavailable")
 
     def test_assurance_downgrade_requires_authorization_but_enhancement_only_adds_missing_gate(self) -> None:
         run_id = "assurance-monotonicity"
@@ -1627,8 +2103,7 @@ class AssuranceV4ContractTest(unittest.TestCase):
         self.assertNotEqual(new_source["worktree"], old_source["worktree"])
         self.assertEqual(after["facets"]["mission"], mission_before)
         self.assertEqual(after["digests"]["mission"], mission_digest_before)
-        self.assertEqual(replaced["readiness"]["states"]["machine"], "pass")
-        for kind in ("tester", "blackbox", "reviewer"):
+        for kind in ("machine", "tester", "blackbox", "reviewer"):
             self.assertEqual(replaced["readiness"]["states"][kind], "stale")
 
         dirty_run = "tester-replace-dirty"

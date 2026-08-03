@@ -375,6 +375,18 @@ adopt、不删除，矛盾的合法来源事件进入结构化 continuity failur
   逻辑应下沉到计划声明的受保护 wrapper。wrapper 必须在 `spec_head` 已存在、位于仓库内且为
   普通文件；symlink、仓库外 target 和 PATH override 均拒绝。
 
+Assurance v4 把 problem replay 绑定到 producer、key 和 candidate identity：同一身份上的相同内容是
+no-op，冲突内容以 `PROBLEM_REPLAY_MISMATCH` 停止；candidate 前移后同 key 可记录为新复发。Native
+Builder turn 的 completed dispatch 先 checkpoint clean commit、关闭 Builder problem 并更新 candidate，
+再消费 dispatch；崩溃恢复重复同一顺序。Driver 在路由 open problem 前先收敛已提交但未 checkpoint
+的 live candidate，避免同一 `builder_fix` 无限重派。
+
+用户批准的 plan decision 复用 `update-facet` 的既有校验与授权参数，并以
+`--resolve-plan-problem-key` 绑定唯一 open `owner=plan` problem。在同一 repo lock 与一次 ledger 保存中，
+事务更新 Mission、Authority 或 Assurance facet、精确关闭该 problem，并记录旧/新 digest；facet 已经
+到达目标时只补齐 problem resolution，重复相同决定为 no-op。execution、歧义 key、缺失 key 或已关闭
+problem 的冲突决定均在写入前拒绝，不建立第二份 decision 状态。
+
 ## Evidence 与失效
 
 ledger v2 为每类 evidence 记录 `observed_head`、`accepted_head`、输入 digest、scope 和 provenance。
@@ -408,7 +420,12 @@ sidecar artifact。`reviewed-boundaries` 含 `reason`，且 `reviewed_boundaries
 与 blob；仓库外 discovery、父路径和 pytest 路径重定向拒绝。runtime 还拒绝
 env/PATH/PYTHONPATH 字段、命令分发器、内联 shell/解释器控制流或跨 ownership 变异。裸
 `python/pytest` 会规范化为当前 runtime 的绝对 Python 可执行文件，仓库脚本 launcher 也会在执行前
-固定并记录路径、摘要和冻结 blob。proof 子进程不继承调用方 PATH，而使用 runtime Python 所在目录
+固定并记录路径、摘要和冻结 blob。Assurance v4 另允许绝对普通可执行 `uv` 作为唯一环境 launcher，
+argv 必须精确以 `run --frozen --offline --no-env-file` 开头，再直接执行 pytest 或
+`python -m pytest/unittest`；runtime 同时绑定 uv SHA-256、proof HEAD 中的普通 `pyproject.toml` 与
+`uv.lock`。Tester source 集成前以语法感知检查拒绝嵌套 runner 和 proof channel 移除。Core 仍只接收
+唯一结构化 pytest/unittest 事件；导入、收集、配置、启动、超时、零测试或未映射失败都不是有效反例。
+proof 子进程不继承调用方 PATH，而使用 runtime Python 所在目录
 加系统默认路径，因此 wrapper 的 shebang 和内部裸命令也不能二次解析到 hostile PATH。候选阶段必须
 从独立监督进程取得声明测试的逐项状态。监督进程独占最终结果 FD，不把它或对应环境变量传给测试
 进程；pytest 的临时插件和 unittest 的临时 runner 只写原始框架事件，监督进程核对事件唯一性与真实
@@ -470,7 +487,8 @@ candidate、intent 和 worktree 身份保持不变。
 start 还把实际执行 adapter 的 `runtime_identity` 冻结进 ledger，包括 Codex/Claude Code 类型、
 adapter commit、checkout dirty 状态和捕获状态。事故记录只能引用这份 planning-time/runtime-time
 事实；旧 ledger 没有该字段时明确标为 `legacy-unavailable`，不得用任务结束时的当前 checkout
-反推历史版本。
+反推历史版本。Assurance v4 与 legacy Full Driver 共用该结构；旧 v4 missing/null 只在内存规范化为
+`legacy-unavailable`/`unavailable`，不回写或改造历史 ledger 的其他事实。
 
 ## 离线 Issue 分流实验
 
@@ -484,10 +502,11 @@ Issue 创建快照与关闭结论分别承担实验输入和事后对照。历�
 
 ## 交付后事故与知识复盘
 
-finalize 完成后，Builder 只在出现多轮失败、冲突/recovery、Tester correction、Reviewer finding、
-角色或 evidence 独立性异常、用户纠正的重要前提，或计划外工程缺陷时加载按需 retrospective
-reference。复盘读取最终 ledger 的问题清单和老一轮逐项处理决定，不再依赖已经离开上下文的旧角色
-文本；复盘不重新打开 delivery gate，也不写 runtime ledger。
+`FINALIZED`、`NEEDS_USER`、`FATAL`、continuity failure 与 abandon 都进入同一终态 retrospective
+reference。复盘先检查重复 dispatch、人工 recovery、evidence invalidation、revision 数量与重复原因，
+再决定 no-op 或事故分流；它读取最终 ledger 的问题清单和老一轮逐项处理决定，不依赖已经离开上下文
+的旧角色文本，不重新打开 delivery gate，也不写 runtime ledger。成功标记只能在复盘完成后输出，
+非成功终态保留原失败事实。
 
 每个工程事故最终只能归属 `current_project`、`builder_loop` 或 `external_platform`。同一因果链
 跨越业务仓库与 builder-loop 时强制拆成两个原子事故；两条可以相互引用，但复现、责任和关闭条件

@@ -112,24 +112,6 @@ def next_action(repo_value: str | Path, run_value: str) -> dict[str, Any]:
     live_target = branch_head(repo, ledger["target_branch"])
     if live_target != ledger["target_start_head"]:
         return decision("CONTINUE", "rematerialize_target", "target_drift")
-    open_problems = [item for item in ledger.get("problems", []) if item.get("status") == "open"]
-    if open_problems:
-        latest = open_problems[-1]
-        owner = latest.get("owner")
-        if owner == "plan":
-            return decision(
-                "NEEDS_USER",
-                "contract_decision",
-                "open_plan_problem",
-                problem=latest,
-            )
-        action = "tester_fix" if owner == "tester" else "builder_fix"
-        payload = {"problem": latest}
-        if action == "builder_fix":
-            payload["agent"] = ledger["facets"]["execution"]["agents"].get("builder")
-        elif action == "tester_fix":
-            payload["agent"] = ledger["facets"]["execution"]["agents"].get("tester")
-        return decision("CONTINUE", action, f"open_{owner}_problem", **payload)
     execution = ledger["facets"]["execution"]
     candidate_worktree = Path(ledger["candidate_worktree"])
     candidate_ref = f"refs/heads/{ledger['candidate_branch']}"
@@ -171,6 +153,24 @@ def next_action(repo_value: str | Path, run_value: str) -> dict[str, Any]:
             candidate_worktree=ledger["candidate_worktree"],
             candidate_head=live_candidate,
         )
+    open_problems = [item for item in ledger.get("problems", []) if item.get("status") == "open"]
+    if open_problems:
+        latest = open_problems[-1]
+        owner = latest.get("owner")
+        if owner == "plan":
+            return decision(
+                "NEEDS_USER",
+                "contract_decision",
+                "open_plan_problem",
+                problem=latest,
+            )
+        action = "tester_fix" if owner == "tester" else "builder_fix"
+        payload = {"problem": latest}
+        if action == "builder_fix":
+            payload["agent"] = execution["agents"].get("builder")
+        elif action == "tester_fix":
+            payload["agent"] = execution["agents"].get("tester")
+        return decision("CONTINUE", action, f"open_{owner}_problem", **payload)
     if not ledger.get("builder_checkpointed", False):
         return decision(
             "CONTINUE",

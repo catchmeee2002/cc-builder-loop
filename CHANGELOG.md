@@ -92,6 +92,11 @@
   工程问题处理后，剩余隐含知识才以 `builder-loop delegated` 模式交给 `$memory-review`。
 - 新 run 在 ledger 中冻结 `runtime_identity`，记录 Codex/Claude Code adapter、实际 commit、dirty
   状态和捕获状态；旧 ledger 明确标为 `legacy-unavailable`，事故版本不再依赖事后猜测。
+- Assurance v4 强化首次跨项目真实 run 暴露的边界：Tester integration 拒绝嵌套 runner 与 proof channel
+  移除；proof 支持绑定绝对 uv、冻结 project/lock 文件和唯一 pytest/unittest 事件；Builder dispatch
+  先 checkpoint 后消费，problem replay 按 producer/key/candidate 幂等；旧 failed evidence 在依赖变化后
+  自动 stale；v4 ledger 冻结 runtime identity；全部成功与失败终态统一进入事故复盘；用户批准的 plan
+  problem 通过 `update-facet --resolve-plan-problem-key` 与 facet 更新原子收敛。
 - 将未授权 dirty 的语义从“全局停止”修正为“默认隔离”：新增 exact-path `workspace-intake` 与
   `workspace-scan`，以不可变 Git snapshot 把用户授权输入交给 Builder，target 与全局 stash 在
   start/abandon 期间保持不变；finalize 只消费未漂移的 captured state。

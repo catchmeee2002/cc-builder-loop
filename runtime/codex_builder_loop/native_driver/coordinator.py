@@ -154,6 +154,25 @@ class NativeCoordinator:
             return
         pending = context.get("dispatch_intent")
         if isinstance(pending, dict):
+            if (
+                role == "builder"
+                and pending.get("state") == "completed"
+                and not pending.get("result_path")
+                and not any(
+                    item.get("owner") == "builder" and item.get("status") == "open"
+                    for item in context.get("problems", [])
+                )
+            ):
+                self.core.call(
+                    "consume-dispatch",
+                    "--repo",
+                    str(self.repo),
+                    "--run",
+                    self.run_id,
+                    "--action-id",
+                    str(action["action_id"]),
+                )
+                return
             result = self._recover_dispatch(pending, role, context)
             if result is None:
                 return
@@ -449,6 +468,18 @@ class NativeCoordinator:
                 "--driver-runtime-kind",
                 "native",
                 input_value=problem,
+            )
+        elif action["action"] in {"builder_implement", "builder_fix"}:
+            self.core.call(
+                "checkpoint-builder",
+                "--repo",
+                str(self.repo),
+                "--run",
+                self.run_id,
+                "--action-id",
+                action_id,
+                "--driver-runtime-kind",
+                "native",
             )
         elif action["action"] in {"tester_author", "tester_fix"}:
             self.core.call(

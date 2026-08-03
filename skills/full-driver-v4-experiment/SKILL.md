@@ -123,13 +123,13 @@ Tester continuity 或 Reviewer continuity 丢失时，优先 same-thread 续接�
 branch/worktree 未漂移时才允许 `prepare-tester --replace`；dirty 或漂移则保留现场并停止。不可恢复的
 Agent 连续性不自动改变 Mission。
 
-## 交付后事故与记忆
+## 终态事故与记忆
 
-finalize 后若出现多轮失败、冲突/recovery、Tester correction、Reviewer finding、角色或 evidence
-独立性异常、用户纠正的重要前提或计划外工程缺陷，读取
-[交付后事故归属](../builder/references/post-delivery-retrospective.md)。完成工程问题分流后，才以
+到达 `FINALIZED`、`NEEDS_USER`、`FATAL`、continuity failure 或 abandon 后，统一读取
+[交付后事故归属](../builder/references/post-delivery-retrospective.md)，检查重复 dispatch、人工 ledger
+recovery、evidence invalidation、revision chain 与既有高信号。完成工程问题分流后，才以
 `builder-loop delegated` 模式调用 `$memory-review`；不得复制旧版五问或把 memory 当成 Issue、代码、
-测试、契约和项目文档的替代品。
+测试、契约和项目文档的替代品。复盘不重新打开 gate，不改写 finalized target，也不覆盖非成功终态。
 
 ## 唯一用户中断边界
 
@@ -140,7 +140,7 @@ finalize 后若出现多轮失败、冲突/recovery、Tester correction、Review
 或可能覆盖用户 dirty；同签名三次 no-progress 后需要设计决定；Tester/Reviewer 连续性不可恢复。
 这些边界之外不得因 revision、普通修复或工具轮次结束打断用户。
 
-成功时最后输出独立行：
+成功且终态复盘完成后最后输出独立行：
 
 `FULL_DRIVER_V4_RESULT: finalized`
 

@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import sys
 import tempfile
 import unittest
@@ -200,6 +201,180 @@ class FullDriverV4ContractTest(unittest.TestCase):
         )
         self.assertEqual(rc, 0, recorded)
         return self.load_ledger(run_path)
+
+    def make_uv_launcher(
+        self,
+        name: str,
+        *,
+        execute_child: bool = True,
+        invocation_marker: Path | None = None,
+    ) -> Path:
+        root = self.artifacts / name
+        root.mkdir(parents=True, exist_ok=True)
+        launcher = root / "uv"
+        child = (
+            "command = sys.argv[5:]\n"
+            "if not command:\n"
+            "    raise SystemExit(93)\n"
+            "if command[0] == 'python':\n"
+            "    command[0] = sys.executable\n"
+            "os.execvpe(command[0], command, os.environ)\n"
+            if execute_child
+            else (
+                "print('tests/test_uv_proof.py::test_observation PASSED')\n"
+                "print('1 passed in 0.01s')\n"
+                "raise SystemExit(0)\n"
+            )
+        )
+        launcher.write_text(
+            "#!/usr/bin/env python3\n"
+            "import os\n"
+            "import sys\n\n"
+            + (
+                f"open({str(invocation_marker)!r}, 'a', encoding='utf-8').write('invoked\\n')\n"
+                if invocation_marker is not None
+                else ""
+            )
+            +
+            "if sys.argv[1:5] != ['run', '--frozen', '--offline', '--no-env-file']:\n"
+            "    raise SystemExit(92)\n"
+            + child,
+            encoding="utf-8",
+        )
+        launcher.chmod(0o755)
+        return launcher.resolve()
+
+    def prepare_uv_proof_run(
+        self,
+        run_id: str,
+        *,
+        baseline_source: str,
+        candidate_source: str,
+        test_source: str,
+        project_modes: dict[str, str] | None = None,
+    ) -> tuple[Path, dict[str, Any], dict[str, Any]]:
+        modes = project_modes or {"pyproject.toml": "regular", "uv.lock": "regular"}
+        (self.repo / "src" / "calc.py").write_text(baseline_source, encoding="utf-8")
+        for name in ("pyproject.toml", "uv.lock"):
+            path = self.repo / name
+            if path.is_symlink() or path.is_file():
+                path.unlink()
+            elif path.is_dir():
+                shutil.rmtree(path)
+            mode = modes.get(name, "missing")
+            if mode == "regular":
+                path.write_text(
+                    (
+                        "[project]\nname = 'proof-fixture'\nversion = '0.0.0'\n"
+                        "requires-python = '>=3.11'\n"
+                        if name == "pyproject.toml"
+                        else "version = 1\nrevision = 3\nrequires-python = '>=3.11'\n"
+                    ),
+                    encoding="utf-8",
+                )
+            elif mode == "symlink":
+                path.symlink_to("README.md")
+            elif mode != "missing":
+                raise AssertionError(f"unsupported project mode: {mode}")
+        commit_all(self.repo, f"prepare uv proof baseline {run_id}")
+        contract = contract_for(self.repo)
+        contract["assurance"]["required"].insert(2, "proof")
+        data, run_path = self.start(run_id, contract=contract)
+        candidate = Path(data["candidate_worktree"])
+        (candidate / "src" / "calc.py").write_text(
+            candidate_source, encoding="utf-8"
+        )
+        commit_all(candidate, f"implement uv proof candidate {run_id}")
+        rc, checkpointed = self.invoke(
+            "checkpoint-builder", "--repo", self.repo, "--run", run_id
+        )
+        self.assertEqual(rc, 0, checkpointed)
+        ledger = self.load_ledger(run_path)
+        tester = ledger["facets"]["execution"]["agents"]["tester"]
+        rc, prepared = self.invoke(
+            "prepare-tester",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--agent-id",
+            tester["agent_id"],
+            "--thread-id",
+            tester["thread_id"],
+        )
+        self.assertEqual(rc, 0, prepared)
+        source = self.load_ledger(run_path)["facets"]["execution"]["tester_source"]
+        worktree = Path(source["worktree"])
+        (worktree / "tests" / "__init__.py").write_text("", encoding="utf-8")
+        (worktree / "tests" / "test_uv_proof.py").write_text(
+            test_source, encoding="utf-8"
+        )
+        commit_all(worktree, f"author uv proof tests {run_id}")
+        rc, integrated = self.invoke(
+            "integrate-tester", "--repo", self.repo, "--run", run_id
+        )
+        self.assertEqual(rc, 0, integrated)
+        ledger = self.load_ledger(run_path)
+        execution = ledger["facets"]["execution"]
+        source = execution["tester_source"]
+        report_path = self.write_json(
+            f"{run_id}-tester-evidence.json",
+            {
+                "schema_version": 1,
+                "kind": "tester",
+                "status": "pass",
+                "candidate_head": execution["candidate_head"],
+                "producer": {"role": "tester", **tester},
+                "details": {
+                    "result": "tests_ready",
+                    "source_head": source["head"],
+                    "files": source["files"],
+                },
+            },
+        )
+        rc, recorded = self.invoke(
+            "record-evidence",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--kind",
+            "tester",
+            "--report",
+            report_path,
+        )
+        self.assertEqual(rc, 0, recorded)
+        rc, action = self.invoke("driver-next", "--repo", self.repo, "--run", run_id)
+        self.assertEqual(rc, 0, action)
+        self.assertEqual(action.get("action"), "tester_proof", action)
+        return run_path, tester, action
+
+    def uv_baseline_spec(self, launcher: Path, *, argv: list[str] | None = None) -> dict[str, Any]:
+        test_id = "tests/test_uv_proof.py::test_observation"
+        return {
+            "schema_version": 1,
+            "groups": [
+                {
+                    "behavior_ids": ["driver-flow"],
+                    "method": "baseline-red",
+                    "argv": argv
+                    or [
+                        str(launcher),
+                        "run",
+                        "--frozen",
+                        "--offline",
+                        "--no-env-file",
+                        "python",
+                        "-m",
+                        "pytest",
+                        test_id,
+                    ],
+                    "test_ids": [test_id],
+                    "timeout_seconds": 30,
+                    "claimed_failure_kind": "assertion-failure",
+                }
+            ],
+        }
 
     def test_tester_integration_replay_is_idempotent(self) -> None:
         run_id = "tester-integration-replay"
@@ -507,6 +682,282 @@ class FullDriverV4ContractTest(unittest.TestCase):
         self.assertEqual(problems[0]["owner"], "tester")
         self.assertIn("tester-fixture-failure", json.dumps(problems))
 
+    def test_problem_report_replay_is_idempotent_conflict_safe_and_candidate_scoped(self) -> None:
+        run_id = "problem-replay-boundary"
+        contract = contract_for(self.repo)
+        contract["execution"]["driver_enforced"] = False
+        data, run_path = self.start(run_id, contract=contract)
+        report = {
+            "schema_version": 1,
+            "problems": [
+                {
+                    "key": "builder-regression",
+                    "summary": "Builder behavior regressed.",
+                    "details": "The current candidate fails the frozen behavior.",
+                    "owner": "builder",
+                }
+            ],
+        }
+        report_path = self.write_json("problem-replay-report.json", report)
+
+        def record(path: Path) -> tuple[int, dict[str, Any]]:
+            return self.invoke(
+                "record-problems",
+                "--repo",
+                self.repo,
+                "--run",
+                run_id,
+                "--report",
+                path,
+                "--role",
+                "builder",
+                "--agent-id",
+                "problem-replay-builder",
+                "--thread-id",
+                "problem-replay-builder-thread",
+            )
+
+        rc, first = record(report_path)
+        self.assertEqual(rc, 0, first)
+        first_ledger = self.load_ledger(run_path)
+        self.assertEqual(len(first_ledger["problems"]), 1)
+        before_replay = (run_path / "ledger.json").read_bytes()
+
+        rc, replay = record(report_path)
+
+        self.assertEqual(rc, 0, replay)
+        self.assertEqual((run_path / "ledger.json").read_bytes(), before_replay)
+        self.assertEqual(len(self.load_ledger(run_path)["problems"]), 1)
+
+        conflicting = deepcopy(report)
+        conflicting["problems"][0]["details"] = (
+            "The same identity reported materially different facts."
+        )
+        conflicting_path = self.write_json("problem-replay-conflict.json", conflicting)
+        before_conflict = (run_path / "ledger.json").read_bytes()
+        rc, rejected = record(conflicting_path)
+        self.assertNotEqual(rc, 0, rejected)
+        self.assertEqual(rejected.get("code"), "PROBLEM_REPLAY_MISMATCH", rejected)
+        self.assertEqual((run_path / "ledger.json").read_bytes(), before_conflict)
+
+        candidate = Path(data["candidate_worktree"])
+        (candidate / "src" / "calc.py").write_text(
+            "def add(a, b):\n    return a + b\n\nPROBLEM_RECURRENCE = 1\n",
+            encoding="utf-8",
+        )
+        new_head = commit_all(candidate, "advance candidate for problem recurrence")
+        rc, checkpointed = self.invoke(
+            "checkpoint-builder", "--repo", self.repo, "--run", run_id
+        )
+        self.assertEqual(rc, 0, checkpointed)
+
+        rc, recurrence = record(report_path)
+
+        self.assertEqual(rc, 0, recurrence)
+        problems = self.load_ledger(run_path)["problems"]
+        self.assertEqual(len(problems), 2)
+        self.assertEqual(problems[0]["status"], "resolved")
+        self.assertEqual(problems[1]["status"], "open")
+        self.assertNotEqual(problems[0]["candidate_head"], problems[1]["candidate_head"])
+        self.assertEqual(problems[1]["candidate_head"], new_head)
+
+    def test_failed_evidence_routes_repair_until_its_dependencies_change(self) -> None:
+        run_id = "failed-machine-dependency"
+        contract = contract_for(self.repo)
+        contract["execution"]["driver_enforced"] = False
+        contract["assurance"]["machine_commands"] = [
+            {
+                "id": "fixture-tests",
+                "argv": [sys.executable, "-c", "raise SystemExit(9)"],
+                "timeout_seconds": 30,
+            }
+        ]
+        _data, run_path = self.start(run_id, contract=contract)
+        rc, checkpointed = self.invoke(
+            "checkpoint-builder", "--repo", self.repo, "--run", run_id
+        )
+        self.assertEqual(rc, 0, checkpointed)
+        self.prepare_and_record_tester(run_id, run_path)
+        rc, failed = self.invoke(
+            "verify-machine", "--repo", self.repo, "--run", run_id
+        )
+        self.assertEqual(rc, 0, failed)
+        self.assertEqual(failed["readiness"]["states"]["machine"], "failed")
+        rc, repair = self.invoke("driver-next", "--repo", self.repo, "--run", run_id)
+        self.assertEqual(rc, 0, repair)
+        self.assertEqual(repair.get("action"), "builder_fix", repair)
+
+        assurance = deepcopy(self.load_ledger(run_path)["facets"]["assurance"])
+        assurance["machine_commands"][0]["argv"] = [
+            sys.executable,
+            "-c",
+            "raise SystemExit(7)",
+        ]
+        assurance_path = self.write_json("changed-machine-command.json", assurance)
+        rc, changed = self.invoke(
+            "update-facet",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--facet",
+            "assurance",
+            "--value",
+            assurance_path,
+            "--authorize-downgrade",
+        )
+        self.assertEqual(rc, 0, changed)
+        self.assertEqual(changed["readiness"]["states"]["machine"], "stale")
+        rc, rerun = self.invoke("driver-next", "--repo", self.repo, "--run", run_id)
+        self.assertEqual(rc, 0, rerun)
+        self.assertEqual(rerun.get("action"), "verify_machine", rerun)
+
+    def test_failed_machine_is_stale_after_candidate_or_tester_source_changes(self) -> None:
+        for change in ("candidate", "tester-source"):
+            with self.subTest(change=change):
+                run_id = f"failed-machine-{change}"
+                contract = contract_for(self.repo)
+                contract["execution"]["driver_enforced"] = False
+                contract["assurance"]["machine_commands"] = [
+                    {
+                        "id": "fixture-tests",
+                        "argv": [sys.executable, "-c", "raise SystemExit(9)"],
+                        "timeout_seconds": 30,
+                    }
+                ]
+                data, run_path = self.start(run_id, contract=contract)
+                rc, checkpointed = self.invoke(
+                    "checkpoint-builder", "--repo", self.repo, "--run", run_id
+                )
+                self.assertEqual(rc, 0, checkpointed)
+                before = self.load_ledger(run_path)
+                candidate_before = before["facets"]["execution"]["candidate_head"]
+                rc, failed = self.invoke(
+                    "verify-machine", "--repo", self.repo, "--run", run_id
+                )
+                self.assertEqual(rc, 0, failed)
+                self.assertEqual(
+                    failed["readiness"]["states"]["machine"], "failed"
+                )
+
+                if change == "candidate":
+                    candidate = Path(data["candidate_worktree"])
+                    (candidate / "src" / "calc.py").write_text(
+                        "def add(a, b):\n    return a + b\n\nCANDIDATE_CHANGED = 1\n",
+                        encoding="utf-8",
+                    )
+                    commit_all(candidate, "advance failed-machine candidate")
+                    rc, changed = self.invoke(
+                        "checkpoint-builder", "--repo", self.repo, "--run", run_id
+                    )
+                    self.assertEqual(rc, 0, changed)
+                else:
+                    tester = before["facets"]["execution"]["agents"]["tester"]
+                    rc, changed = self.invoke(
+                        "prepare-tester",
+                        "--repo",
+                        self.repo,
+                        "--run",
+                        run_id,
+                        "--agent-id",
+                        tester["agent_id"],
+                        "--thread-id",
+                        tester["thread_id"],
+                    )
+                    self.assertEqual(rc, 0, changed)
+                    self.assertEqual(
+                        self.load_ledger(run_path)["facets"]["execution"][
+                            "candidate_head"
+                        ],
+                        candidate_before,
+                    )
+
+                rc, status_value = self.invoke(
+                    "status", "--repo", self.repo, "--run", run_id
+                )
+                self.assertEqual(rc, 0, status_value)
+                self.assertEqual(
+                    status_value["readiness"]["states"]["machine"], "stale"
+                )
+
+    def test_failed_blackbox_is_stale_after_execution_dependency_change(self) -> None:
+        run_id = "failed-blackbox-dependency"
+        contract = contract_for(self.repo)
+        contract["execution"]["driver_enforced"] = False
+        _data, run_path = self.start(run_id, contract=contract)
+        rc, checkpointed = self.invoke(
+            "checkpoint-builder", "--repo", self.repo, "--run", run_id
+        )
+        self.assertEqual(rc, 0, checkpointed)
+        ledger = self.prepare_and_record_tester(run_id, run_path)
+        rc, machine = self.invoke(
+            "verify-machine", "--repo", self.repo, "--run", run_id
+        )
+        self.assertEqual(rc, 0, machine)
+        ledger = self.load_ledger(run_path)
+        candidate = ledger["facets"]["execution"]["candidate_head"]
+        command = ledger["facets"]["execution"]["commands"][0]
+        tester = ledger["facets"]["execution"]["agents"]["tester"]
+        failed_report = {
+            "schema_version": 1,
+            "kind": "blackbox",
+            "status": "fail",
+            "candidate_head": candidate,
+            "producer": {"role": "tester", **tester},
+            "details": {
+                "result": "fail",
+                "worktree": ledger["candidate_worktree"],
+                "before_head": candidate,
+                "after_head": candidate,
+                "executions": [
+                    {
+                        "id": command["id"],
+                        "argv": command["argv"],
+                        "returncode": 9,
+                        "timed_out": False,
+                    }
+                ],
+            },
+        }
+        report_path = self.write_json("failed-blackbox-report.json", failed_report)
+        rc, recorded = self.invoke(
+            "record-evidence",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--kind",
+            "blackbox",
+            "--report",
+            report_path,
+        )
+        self.assertEqual(rc, 0, recorded)
+        self.assertEqual(recorded["readiness"]["states"]["blackbox"], "failed")
+        rc, repair = self.invoke("driver-next", "--repo", self.repo, "--run", run_id)
+        self.assertEqual(rc, 0, repair)
+        self.assertEqual(repair.get("action"), "builder_fix", repair)
+
+        execution = deepcopy(self.load_ledger(run_path)["facets"]["execution"])
+        execution["version"] += 1
+        execution["commands"][0]["argv"] = ["bash", "verify.sh", "--blackbox"]
+        execution_path = self.write_json("changed-blackbox-command.json", execution)
+        rc, changed = self.invoke(
+            "update-facet",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--facet",
+            "execution",
+            "--value",
+            execution_path,
+        )
+        self.assertEqual(rc, 0, changed)
+        self.assertEqual(changed["readiness"]["states"]["blackbox"], "stale")
+        rc, rerun = self.invoke("driver-next", "--repo", self.repo, "--run", run_id)
+        self.assertEqual(rc, 0, rerun)
+        self.assertEqual(rerun.get("action"), "tester_blackbox", rerun)
+
     def test_proof_is_a_distinct_gate_after_tester_and_before_blackbox(self) -> None:
         run_id = "full-driver-proof"
         contract = contract_for(self.repo)
@@ -611,6 +1062,272 @@ class FullDriverV4ContractTest(unittest.TestCase):
         )
         self.assertEqual(rc, 0, advanced)
         self.assertEqual(advanced.get("action"), "verify_machine", advanced)
+
+    def test_absolute_frozen_offline_uv_proof_accepts_only_real_assertion_counterexample(self) -> None:
+        run_id = "uv-proof-assertion"
+        launcher = self.make_uv_launcher("uv-proof-assertion")
+        run_path, tester, action = self.prepare_uv_proof_run(
+            run_id,
+            baseline_source="def add(a, b):\n    return a + b - 1\n",
+            candidate_source="def add(a, b):\n    return a + b\n",
+            test_source=(
+                "from src.calc import add\n\n"
+                "def test_observation():\n"
+                "    assert add(1, 2) == 3\n"
+            ),
+        )
+        spec_path = self.write_json(
+            "uv-proof-assertion-spec.json", self.uv_baseline_spec(launcher)
+        )
+
+        rc, proved = self.invoke(
+            "prove-tests",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--spec",
+            spec_path,
+            "--agent-id",
+            tester["agent_id"],
+            "--thread-id",
+            tester["thread_id"],
+            "--action-id",
+            action["action_id"],
+        )
+
+        self.assertEqual(rc, 0, proved)
+        proof = self.load_ledger(run_path)["evidence"]["proof"]
+        result = proof["details"]["results"][0]
+        self.assertEqual(result["candidate"]["test_result"]["classification"], "pass")
+        self.assertEqual(
+            result["counterexample"]["test_result"]["classification"],
+            "assertion-failure",
+        )
+        self.assertEqual(
+            proof["details"]["spec"]["groups"][0]["argv"][0], str(launcher)
+        )
+
+    def test_uv_baseline_import_collection_and_zero_collector_failures_are_not_counterexamples(self) -> None:
+        cases = (
+            (
+                "import-error",
+                "def add(a, b):\n    return a + b\n",
+                "READY = True\n\ndef add(a, b):\n    return a + b\n",
+                "from src.calc import READY\n\ndef test_observation():\n    assert READY\n",
+                "import-error",
+            ),
+            (
+                "collection-error",
+                "MODE = 'baseline'\n\ndef add(a, b):\n    return a + b\n",
+                "MODE = 'candidate'\n\ndef add(a, b):\n    return a + b\n",
+                (
+                    "from src import calc\n\n"
+                    "if calc.MODE != 'candidate':\n"
+                    "    raise RuntimeError('collection failed')\n\n"
+                    "def test_observation():\n"
+                    "    assert calc.add(1, 2) == 3\n"
+                ),
+                "collection-error",
+            ),
+            (
+                "zero-collectors",
+                "COLLECT = False\n\ndef add(a, b):\n    return a + b\n",
+                "COLLECT = True\n\ndef add(a, b):\n    return a + b\n",
+                (
+                    "from src import calc\n\n"
+                    "if calc.COLLECT:\n"
+                    "    def test_observation():\n"
+                    "        assert calc.add(1, 2) == 3\n"
+                ),
+                "zero-tests",
+            ),
+        )
+        for label, baseline, candidate, source, expected_classification in cases:
+            with self.subTest(label=label):
+                run_id = f"uv-counterexample-{label}"
+                launcher = self.make_uv_launcher(run_id)
+                run_path, tester, action = self.prepare_uv_proof_run(
+                    run_id,
+                    baseline_source=baseline,
+                    candidate_source=candidate,
+                    test_source=source,
+                )
+                spec_path = self.write_json(
+                    f"{run_id}-spec.json", self.uv_baseline_spec(launcher)
+                )
+                before = (run_path / "ledger.json").read_bytes()
+
+                rc, rejected = self.invoke(
+                    "prove-tests",
+                    "--repo",
+                    self.repo,
+                    "--run",
+                    run_id,
+                    "--spec",
+                    spec_path,
+                    "--agent-id",
+                    tester["agent_id"],
+                    "--thread-id",
+                    tester["thread_id"],
+                    "--action-id",
+                    action["action_id"],
+                )
+
+                self.assertNotEqual(rc, 0, rejected)
+                self.assertEqual(
+                    rejected.get("code"), "TEST_PROOF_COUNTEREXAMPLE_INVALID", rejected
+                )
+                self.assertEqual(
+                    rejected.get("result", {})
+                    .get("test_result", {})
+                    .get("classification"),
+                    expected_classification,
+                    rejected,
+                )
+                self.assertEqual((run_path / "ledger.json").read_bytes(), before)
+                self.assertNotIn("proof", self.load_ledger(run_path)["evidence"])
+
+    def test_uv_proof_command_and_project_binding_fail_closed_before_recording(self) -> None:
+        run_id = "uv-command-fail-closed"
+        marker = self.artifacts / "invalid-uv-invoked"
+        launcher = self.make_uv_launcher(
+            run_id, invocation_marker=marker
+        )
+        run_path, tester, action = self.prepare_uv_proof_run(
+            run_id,
+            baseline_source="def add(a, b):\n    return a + b - 1\n",
+            candidate_source="def add(a, b):\n    return a + b\n",
+            test_source=(
+                "from src.calc import add\n\n"
+                "def test_observation():\n"
+                "    assert add(1, 2) == 3\n"
+            ),
+        )
+        test_id = "tests/test_uv_proof.py::test_observation"
+        suffix = ["python", "-m", "pytest", test_id]
+        variants = {
+            "relative-uv": ["uv", "run", "--frozen", "--offline", "--no-env-file", *suffix],
+            "missing-frozen": [str(launcher), "run", "--offline", "--no-env-file", *suffix],
+            "missing-offline": [str(launcher), "run", "--frozen", "--no-env-file", *suffix],
+            "missing-no-env-file": [str(launcher), "run", "--frozen", "--offline", *suffix],
+            "extra-env": [str(launcher), "run", "--frozen", "--offline", "--no-env-file", "--env-file", ".env", *suffix],
+            "extra-index": [str(launcher), "run", "--frozen", "--offline", "--no-env-file", "--index", "https://example.invalid/simple", *suffix],
+            "extra-with": [str(launcher), "run", "--frozen", "--offline", "--no-env-file", "--with", "pytest", *suffix],
+            "extra-directory": [str(launcher), "run", "--frozen", "--offline", "--no-env-file", "--directory", ".", *suffix],
+        }
+        for label, argv in variants.items():
+            with self.subTest(label=label):
+                marker.unlink(missing_ok=True)
+                spec_path = self.write_json(
+                    f"uv-command-{label}.json",
+                    self.uv_baseline_spec(launcher, argv=argv),
+                )
+                before = (run_path / "ledger.json").read_bytes()
+                rc, rejected = self.invoke(
+                    "prove-tests",
+                    "--repo",
+                    self.repo,
+                    "--run",
+                    run_id,
+                    "--spec",
+                    spec_path,
+                    "--agent-id",
+                    tester["agent_id"],
+                    "--thread-id",
+                    tester["thread_id"],
+                    "--action-id",
+                    action["action_id"],
+                )
+                self.assertNotEqual(rc, 0, rejected)
+                self.assertEqual((run_path / "ledger.json").read_bytes(), before)
+                self.assertNotIn("proof", self.load_ledger(run_path)["evidence"])
+                self.assertFalse(marker.exists(), (label, rejected))
+
+        for bad_path in ("pyproject.toml", "uv.lock"):
+            for mode in ("missing", "symlink"):
+                with self.subTest(path=bad_path, mode=mode):
+                    invalid_run = f"uv-project-{bad_path.split('.')[0]}-{mode}"
+                    project_modes = {
+                        "pyproject.toml": "regular",
+                        "uv.lock": "regular",
+                    }
+                    project_modes[bad_path] = mode
+                    invalid_path, invalid_tester, invalid_action = self.prepare_uv_proof_run(
+                        invalid_run,
+                        baseline_source="def add(a, b):\n    return a + b - 1\n",
+                        candidate_source="def add(a, b):\n    return a + b\n",
+                        test_source=(
+                            "from src.calc import add\n\n"
+                            "def test_observation():\n"
+                            "    assert add(1, 2) == 3\n"
+                        ),
+                        project_modes=project_modes,
+                    )
+                    invalid_launcher = self.make_uv_launcher(invalid_run)
+                    spec_path = self.write_json(
+                        f"{invalid_run}-spec.json",
+                        self.uv_baseline_spec(invalid_launcher),
+                    )
+                    before = (invalid_path / "ledger.json").read_bytes()
+                    rc, rejected = self.invoke(
+                        "prove-tests",
+                        "--repo",
+                        self.repo,
+                        "--run",
+                        invalid_run,
+                        "--spec",
+                        spec_path,
+                        "--agent-id",
+                        invalid_tester["agent_id"],
+                        "--thread-id",
+                        invalid_tester["thread_id"],
+                        "--action-id",
+                        invalid_action["action_id"],
+                    )
+                    self.assertNotEqual(rc, 0, rejected)
+                    self.assertEqual(
+                        (invalid_path / "ledger.json").read_bytes(), before
+                    )
+                    self.assertNotIn(
+                        "proof", self.load_ledger(invalid_path)["evidence"]
+                    )
+
+        silent_run = "uv-structured-event-missing"
+        silent_path, silent_tester, silent_action = self.prepare_uv_proof_run(
+            silent_run,
+            baseline_source="def add(a, b):\n    return a + b - 1\n",
+            candidate_source="def add(a, b):\n    return a + b\n",
+            test_source=(
+                "from src.calc import add\n\n"
+                "def test_observation():\n"
+                "    assert add(1, 2) == 3\n"
+            ),
+        )
+        silent_launcher = self.make_uv_launcher(silent_run, execute_child=False)
+        silent_spec = self.write_json(
+            "uv-structured-event-missing-spec.json",
+            self.uv_baseline_spec(silent_launcher),
+        )
+        before_silent = (silent_path / "ledger.json").read_bytes()
+        rc, silent = self.invoke(
+            "prove-tests",
+            "--repo",
+            self.repo,
+            "--run",
+            silent_run,
+            "--spec",
+            silent_spec,
+            "--agent-id",
+            silent_tester["agent_id"],
+            "--thread-id",
+            silent_tester["thread_id"],
+            "--action-id",
+            silent_action["action_id"],
+        )
+        self.assertNotEqual(rc, 0, silent)
+        self.assertEqual((silent_path / "ledger.json").read_bytes(), before_silent)
+        self.assertNotIn("proof", self.load_ledger(silent_path)["evidence"])
 
     def test_prove_tests_rejects_unbound_reviewed_boundary_ids(self) -> None:
         run_id = "full-driver-reviewed-boundaries"
@@ -1090,6 +1807,77 @@ class FullDriverV4ContractTest(unittest.TestCase):
         )
         self.assertEqual(rc, 0, advanced)
         self.assertEqual(advanced.get("action"), "tester_author", advanced)
+
+    def test_uncheckpointed_builder_fix_precedes_open_problem_redispatch_and_converges(self) -> None:
+        run_id = "builder-fix-progress"
+        contract = contract_for(self.repo)
+        contract["execution"]["driver_enforced"] = False
+        data, run_path = self.start(run_id, contract=contract)
+        rc, checkpointed = self.invoke(
+            "checkpoint-builder", "--repo", self.repo, "--run", run_id
+        )
+        self.assertEqual(rc, 0, checkpointed)
+        report_path = self.write_json(
+            "builder-fix-progress-problem.json",
+            {
+                "schema_version": 1,
+                "problems": [
+                    {
+                        "key": "builder-fix-required",
+                        "summary": "Builder correction is required.",
+                        "details": "The committed correction must advance the candidate once.",
+                        "owner": "builder",
+                    }
+                ],
+            },
+        )
+        rc, recorded = self.invoke(
+            "record-problems",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--report",
+            report_path,
+            "--role",
+            "builder",
+            "--agent-id",
+            "builder-fix-agent",
+            "--thread-id",
+            "builder-fix-thread",
+        )
+        self.assertEqual(rc, 0, recorded)
+        rc, routed = self.invoke("driver-next", "--repo", self.repo, "--run", run_id)
+        self.assertEqual(rc, 0, routed)
+        self.assertEqual(routed.get("action"), "builder_fix", routed)
+
+        candidate = Path(data["candidate_worktree"])
+        (candidate / "src" / "calc.py").write_text(
+            "def add(a, b):\n    return a + b\n\nFIXED_ONCE = 1\n",
+            encoding="utf-8",
+        )
+        committed = commit_all(candidate, "commit builder fix once")
+
+        rc, recovery = self.invoke("driver-next", "--repo", self.repo, "--run", run_id)
+
+        self.assertEqual(rc, 0, recovery)
+        self.assertEqual(recovery.get("action"), "checkpoint_builder", recovery)
+        rc, applied = self.invoke(
+            "checkpoint-builder", "--repo", self.repo, "--run", run_id
+        )
+        self.assertEqual(rc, 0, applied)
+        ledger = self.load_ledger(run_path)
+        self.assertEqual(ledger["facets"]["execution"]["candidate_head"], committed)
+        problem = next(
+            item for item in ledger["problems"] if item["key"] == "builder-fix-required"
+        )
+        self.assertEqual(problem["status"], "resolved")
+        rc, advanced = self.invoke("driver-next", "--repo", self.repo, "--run", run_id)
+        self.assertEqual(rc, 0, advanced)
+        self.assertEqual(advanced.get("action"), "tester_author", advanced)
+        rc, repeated = self.invoke("driver-next", "--repo", self.repo, "--run", run_id)
+        self.assertEqual(rc, 0, repeated)
+        self.assertNotEqual(repeated.get("action"), "builder_fix", repeated)
 
     def test_driver_action_id_authorizes_current_mutation_and_rejects_stale_replay(self) -> None:
         run_id = "full-driver-action-id"

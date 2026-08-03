@@ -5,13 +5,14 @@
   "type": "object",
   "additionalProperties": false,
   "required": [
-    "schema_version", "run_id", "owner_session_id", "phase", "repo_root",
+    "schema_version", "runtime_identity", "run_id", "owner_session_id", "phase", "repo_root",
     "target_branch", "target_start_head", "candidate_branch", "candidate_worktree",
     "facets", "digests", "evidence", "retired_tester_sources", "finalize_intent", "final_head",
     "created_at", "updated_at", "events"
   ],
   "properties": {
     "schema_version": {"const": 4},
+    "runtime_identity": {"$ref": "#/$defs/runtimeIdentity"},
     "run_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"},
     "owner_session_id": {"type": "string", "minLength": 1},
     "phase": {"enum": ["active", "finalizing", "finalized", "abandoned", "superseded"]},
@@ -124,7 +125,26 @@
     "events": {"type": "array", "items": {"type": "object"}}
   },
   "$defs": {
+    "commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "nullableCommit": {
+      "oneOf": [{"$ref": "#/$defs/commit"}, {"type": "null"}]
+    },
     "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "runtimeIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["adapter", "adapter_commit", "adapter_dirty", "capture_status"],
+      "properties": {
+        "adapter": {"enum": ["codex", "claude-code", "unknown"]},
+        "adapter_commit": {"$ref": "#/$defs/nullableCommit"},
+        "adapter_dirty": {
+          "oneOf": [{"type": "boolean"}, {"type": "null"}]
+        },
+        "capture_status": {
+          "enum": ["captured", "partial", "unavailable", "legacy-unavailable"]
+        }
+      }
+    },
     "driverRuntime": {
       "type": "object",
       "additionalProperties": false,
