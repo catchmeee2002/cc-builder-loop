@@ -370,7 +370,11 @@ class AssuranceV4LineageContractTest(unittest.TestCase):
             "tester-thread",
         )
         self.assertEqual(rc, 0, recorded)
-        open_by_key = {item["key"]: item for item in recorded["lineage"]["open_problems"]}
+        open_by_key = {
+            item["key"]: item
+            for item in recorded["problems"]
+            if item["status"] == "open"
+        }
 
         omitted = self.next_contract(recorded, category="execution_contract")
         rc, omission = self.invoke(
@@ -385,23 +389,20 @@ class AssuranceV4LineageContractTest(unittest.TestCase):
             self.write_json("problems-omitted.json", omitted),
         )
         self.assertEqual(rc, 1, omission)
-        self.assertEqual(omission["code"], "PRIOR_PROBLEMS_INCOMPLETE")
+        self.assertEqual(omission["code"], "PRIOR_PROBLEM_DISPOSITIONS_INCOMPLETE")
 
         items = [
             {
-                "problem_id": open_by_key["builder-fix-needed"]["problem_id"],
-                "handling": "include",
-                "plan_refs": ["behavior:add-values"],
+                "key": open_by_key["builder-fix-needed"]["key"],
+                "disposition": "included",
             },
             {
-                "problem_id": open_by_key["handled-externally"]["problem_id"],
-                "handling": "handled_elsewhere",
-                "reference": "https://example.invalid/issues/1",
+                "key": open_by_key["handled-externally"]["key"],
+                "disposition": "handled_elsewhere",
             },
             {
-                "problem_id": open_by_key["discarded-finding"]["problem_id"],
-                "handling": "discard",
-                "reason": "The frozen reproduction disproved it.",
+                "key": open_by_key["discarded-finding"]["key"],
+                "disposition": "discarded",
             },
         ]
         second = self.start(
@@ -423,9 +424,8 @@ class AssuranceV4LineageContractTest(unittest.TestCase):
                 category="role_continuity",
                 prior_items=[
                     {
-                        "problem_id": included["problem_id"],
-                        "handling": "include",
-                        "plan_refs": ["behavior:add-values"],
+                        "key": included["key"],
+                        "disposition": "included",
                     }
                 ],
             ),
@@ -450,36 +450,46 @@ class AssuranceV4LineageContractTest(unittest.TestCase):
 
     def test_snapshot_drift_and_duplicate_dispositions_fail_before_mutation(self) -> None:
         first = self.start("invalid-r1", base_contract())
-        malformed = self.next_contract(first, category="execution_contract")
-        malformed["execution"]["prior_problem_dispositions"]["source_snapshot_digest"] = "f" * 64
-        malformed["execution"]["prior_problem_dispositions"]["items"] = [
-            {
-                "problem_id": "a" * 64,
-                "handling": "discard",
-                "reason": "not applicable",
-            },
-            {
-                "problem_id": "a" * 64,
-                "handling": "discard",
-                "reason": "duplicate",
-            },
-        ]
-        rc, rejected = self.invoke(
+        stale = self.next_contract(first, category="execution_contract")
+        stale["execution"]["prior_problem_dispositions"]["source_snapshot_digest"] = "f" * 64
+        rc, rejected_stale = self.invoke(
             "start",
             "--repo",
             self.repo,
             "--run",
-            "invalid-r2",
+            "invalid-stale-r2",
             "--session-id",
-            "session-invalid-r2",
+            "session-invalid-stale-r2",
             "--contract",
-            self.write_json("invalid-r2.json", malformed),
+            self.write_json("invalid-stale-r2.json", stale),
         )
-        self.assertNotEqual(rc, 0, rejected)
-        self.assertIn(
-            rejected["code"],
-            {"PRIOR_PROBLEM_SNAPSHOT_MISMATCH", "PRIOR_PROBLEM_DISPOSITION_DUPLICATE"},
+        self.assertNotEqual(rc, 0, rejected_stale)
+        self.assertEqual(rejected_stale["code"], "PRIOR_PROBLEM_SNAPSHOT_MISMATCH")
+
+        duplicate = self.next_contract(first, category="execution_contract")
+        duplicate["execution"]["prior_problem_dispositions"]["items"] = [
+            {
+                "key": "duplicate-problem",
+                "disposition": "discarded",
+            },
+            {
+                "key": "duplicate-problem",
+                "disposition": "discarded",
+            },
+        ]
+        rc, rejected_duplicate = self.invoke(
+            "start",
+            "--repo",
+            self.repo,
+            "--run",
+            "invalid-duplicate-r2",
+            "--session-id",
+            "session-invalid-duplicate-r2",
+            "--contract",
+            self.write_json("invalid-duplicate-r2.json", duplicate),
         )
+        self.assertNotEqual(rc, 0, rejected_duplicate)
+        self.assertEqual(rejected_duplicate["code"], "ASSURANCE_CONTRACT_INVALID")
         self.assertIsNone(self.status("invalid-r1")["supersede_intent"])
 
     def test_retained_ledger_without_transition_metadata_is_honestly_incomplete(self) -> None:
