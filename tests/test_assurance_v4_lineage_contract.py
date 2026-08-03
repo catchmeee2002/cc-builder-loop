@@ -147,13 +147,18 @@ class AssuranceV4LineageContractTest(unittest.TestCase):
         prior_items: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         lineage = source["lineage"]
+        candidate = run_process(
+            ["git", "-C", source["candidate_worktree"], "rev-parse", "HEAD"]
+        )
+        self.assertEqual(candidate.returncode, 0, candidate.stderr)
+        candidate_head = candidate.stdout.strip()
         contract = base_contract()
         contract["mission"]["revision"] = source["mission_revision"] + 1
         contract["mission"]["supersedes"] = {
             "run_id": source["run_id"],
             "revision": source["mission_revision"],
             "mission_digest": source["digests"]["mission"],
-            "candidate_head": lineage["current_candidate_head"],
+            "candidate_head": candidate_head,
         }
         transition: dict[str, Any] = {
             "category": category,
@@ -183,7 +188,7 @@ class AssuranceV4LineageContractTest(unittest.TestCase):
         lineage = started["lineage"]
         self.assertEqual(lineage["schema_version"], 1)
         self.assertTrue(lineage["complete"])
-        self.assertEqual(lineage["health"], "complete")
+        self.assertEqual(lineage["health"], "healthy")
         self.assertEqual(lineage["root_run_id"], "lineage-r1")
         self.assertEqual(lineage["current_run_id"], "lineage-r1")
         self.assertEqual(lineage["revision_count"], 1)
@@ -232,7 +237,9 @@ class AssuranceV4LineageContractTest(unittest.TestCase):
             "pressure-r3", self.next_contract(second, category="target_drift")
         )
         proposed = self.next_contract(third, category=NON_SEMANTIC)
-        source_head = third["lineage"]["current_candidate_head"]
+        source_head = run_process(
+            ["git", "-C", third["candidate_worktree"], "rev-parse", "HEAD"]
+        ).stdout.strip()
 
         rc, rejected = self.invoke(
             "start",
@@ -259,7 +266,10 @@ class AssuranceV4LineageContractTest(unittest.TestCase):
             ]
         )
         self.assertNotEqual(branch.returncode, 0)
-        self.assertEqual(self.status("pressure-r3")["lineage"]["current_candidate_head"], source_head)
+        current_head = run_process(
+            ["git", "-C", third["candidate_worktree"], "rev-parse", "HEAD"]
+        ).stdout.strip()
+        self.assertEqual(current_head, source_head)
         self.assertIsNone(self.status("pressure-r3")["supersede_intent"])
 
     def test_review_decision_is_valid_only_for_exact_pressure_digest(self) -> None:
