@@ -79,6 +79,20 @@ candidate Git snapshot 建 worktree，但不继承 Tester/Reviewer identity 或�
 intent、target receipt、source seal 三步持久化；只有当前制品、目标、deployment contract 和 probe 全部
 一致才转移 lease，否则先恢复 source 环境再部署新制品。同一目标的唯一 owner 由 Core 在仓库锁内从
 ledger 派生，不新增旁路 registry。
+Core 还沿 `mission.supersedes` 读取各 source ledger，并把每个 ledger 内的结构化 transition、原始 telemetry
+event 和 problem disposition 派生成唯一 `status.lineage`。该对象汇总墙钟、stage attempt/duration、
+candidate change、evidence attempt/replay、retry、transition category 和当前 open problem；不写 chain
+ledger 或累计缓存。每个新 transition 绑定 predecessor `lineage_digest`。累计第三次非语义 transition、
+同 category 第三次或 legacy metadata 不完整时，创建 worktree、ref 和 supersede intent 前必须校验一次
+绑定当前 `pressure_digest` 的 architecture-review continue decision。Mission change 保留在总成本和历史中，
+但不增加非语义 pressure。
+
+跨 run problem continuity 同样只消费 source ledger：对当前全部 open key 的规范 snapshot 计算 digest，
+新 contract 必须逐条声明 included、handled elsewhere 或 discarded。included 在新 ledger 中重建为 open
+problem，只保留内容和 owner；旧 producer、Tester/Reviewer identity、test source 与全部 evidence 均不复制。
+因此满足“每个事实只有一个家”和“独立判据重新绑定真实输入”，同时把三次同类恢复压力在 mutation 前
+落实为架构复审门禁。
+
 可恢复的 App Server transport failure 在同一 role thread 和 dispatch 上最多尝试三次，attempt 与 turn id
 持久化进 ledger；第三次失败后 Core 返回 `NEEDS_USER`，Driver 不重置上限或另建 thread 绕过连续性。
 App Server turn 使用 host-level `danger-full-access`，因为部分本地环境无法创建 bwrap namespace；这不

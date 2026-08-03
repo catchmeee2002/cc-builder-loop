@@ -92,6 +92,7 @@ def parser() -> argparse.ArgumentParser:
     revise.add_argument("--repo", default=".")
     revise.add_argument("--run", required=True)
     revise.add_argument("--mission", required=True)
+    revise.add_argument("--transition")
 
     evidence = commands.add_parser("record-evidence")
     evidence.add_argument("--repo", default=".")
@@ -359,7 +360,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 resolve_plan_problem_key=args.resolve_plan_problem_key,
             )
         elif args.command == "revise-mission":
-            payload = core.revise_mission(args.repo, args.run, _json(args.mission))
+            payload = core.revise_mission(
+                args.repo,
+                args.run,
+                _json(args.mission),
+                _json(args.transition) if args.transition else None,
+            )
         elif args.command == "record-evidence":
             accepted = {
                 "tester": {"tester_author", "tester_fix"},

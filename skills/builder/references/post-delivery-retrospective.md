@@ -14,8 +14,9 @@ diff、Git 事实，以及本次对话中用户明确纠正的前提。日志和
 
 ## 高信号检查
 
-先机械检查同一 `action_id` 的重复 dispatch、人工 ledger recovery、手工 evidence invalidation、revision
-数量，以及每次 revision 的重复原因。再检查多轮失败、冲突、Tester correction、Reviewer finding、
+先直接读取 `status.lineage` 的累计 revision 数量、transition category 与重复原因、stage attempts/duration、candidate change、
+evidence replay、retry、problem disposition 和 health；不得从 transcript 重新计算 revision chain。
+再机械检查同一 `action_id` 的重复 dispatch、人工 ledger recovery、手工 evidence invalidation，以及多轮失败、冲突、Tester correction、Reviewer finding、
 角色或 evidence 独立性异常、用户纠正的重要前提和计划外缺陷。没有高信号时允许 no-op；发现事故时
 按唯一 owner 查重并请求授权。实时 ledger、turn、HEAD 和验证快照只作输入，不写入稳定 Markdown。
 

@@ -3,7 +3,8 @@
 该离线 corpus 冻结 Issue #160 调查时的 26 个 self-hosting abandoned run、#158 的 R1–R8 链和两个
 产品变化/Git 冲突控制场景。它只检查 v4 恢复分类是否把执行契约、Tester correction、角色连续性、
 资源参数和可重物化 target drift 留在同一 Mission；真实产品变化仍进入 Semantic Revision，Git 冲突
-仍保留现场并停止。
+仍保留现场并停止。runner 同时用 runtime 的 trigger category 计算 R1–R8 非语义 pressure，验证第三次
+累计 transition 或同 category 第三次会要求 architecture review。
 
 `python3 experiments/assurance-v4-replay/runner.py` 只读取版本化 JSON 并输出机械统计，不读取或修改旧
 ledger，不把分类结果冒充真实 Full Driver 交付证据。

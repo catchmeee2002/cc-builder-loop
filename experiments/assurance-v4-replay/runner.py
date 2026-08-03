@@ -16,6 +16,30 @@ ACTION_BY_TRIGGER = {
     "mission_change": "semantic_revision",
     "git_conflict": "preserve_and_stop",
 }
+SEMANTIC_TRIGGERS = {"mission_change"}
+UNSAFE_TRIGGERS = {"git_conflict"}
+
+
+def classify_transition(trigger: str) -> dict[str, Any]:
+    if trigger not in ACTION_BY_TRIGGER:
+        raise ValueError(f"unknown replay trigger: {trigger}")
+    return {
+        "category": trigger,
+        "semantic": trigger in SEMANTIC_TRIGGERS,
+        "needs_user": trigger in SEMANTIC_TRIGGERS | UNSAFE_TRIGGERS,
+        "action": ACTION_BY_TRIGGER[trigger],
+    }
+
+
+def lineage_pressure(triggers: list[str]) -> dict[str, Any]:
+    classified = [classify_transition(item) for item in triggers]
+    non_semantic = [item for item in classified if not item["semantic"]]
+    counts = Counter(item["category"] for item in non_semantic)
+    return {
+        "non_semantic": len(non_semantic),
+        "by_category": dict(sorted(counts.items())),
+        "review_required": len(non_semantic) >= 3 or any(value >= 3 for value in counts.values()),
+    }
 
 
 def load() -> list[dict[str, Any]]:
@@ -36,21 +60,21 @@ def report() -> dict[str, Any]:
     false_revisions = [
         item["source_run"]
         for item in scenarios
-        if item["trigger"] not in {"mission_change"} and item["semantic_revision"]
+        if not classify_transition(item["trigger"])["semantic"] and item["semantic_revision"]
     ]
     unsafe_continuations = [
         item["source_run"]
         for item in scenarios
-        if item["trigger"] in {"mission_change", "git_conflict"} and not item["needs_user"]
+        if classify_transition(item["trigger"])["needs_user"] and not item["needs_user"]
     ]
     action_mismatches = [
         {
             "source_run": item["source_run"],
             "expected": item["expected_action"],
-            "actual": ACTION_BY_TRIGGER.get(item["trigger"]),
+            "actual": classify_transition(item["trigger"])["action"],
         }
         for item in scenarios
-        if ACTION_BY_TRIGGER.get(item["trigger"]) != item["expected_action"]
+        if classify_transition(item["trigger"])["action"] != item["expected_action"]
     ]
     return {
         "status": "PASS"
@@ -63,6 +87,7 @@ def report() -> dict[str, Any]:
         "audit_sample_count": len(audit),
         "issue_158_chain_count": len(chain),
         "trigger_counts": dict(sorted(Counter(item["trigger"] for item in audit).items())),
+        "issue_158_pressure": lineage_pressure([item["trigger"] for item in chain]),
         "false_semantic_revisions": false_revisions,
         "unsafe_continuations": unsafe_continuations,
         "action_mismatches": action_mismatches,

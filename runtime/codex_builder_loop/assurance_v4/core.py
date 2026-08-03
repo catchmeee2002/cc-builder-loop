@@ -27,6 +27,7 @@ from .models import (
     validate_agent_result,
     validate_environment_probe,
     validate_evidence_report,
+    validate_lineage,
     validate_problem_report,
     validate_repo_path,
     validate_telemetry,
@@ -248,6 +249,9 @@ def start(
                 status="NEEDS_USER",
             )
         source_ledger: dict[str, Any] | None = None
+        inherited_problems: list[dict[str, Any]] = []
+        problem_dispositions: list[dict[str, Any]] = []
+        revision_transitions: list[dict[str, Any]] = []
         candidate_base = target_head
         if isinstance(supersedes, dict):
             source_ledger = read_ledger(repo, supersedes["run_id"])
@@ -304,6 +308,90 @@ def start(
                     "superseding run changed the deployment contract",
                     code="SUPERSEDE_DEPLOYMENT_MISMATCH",
                     status="NEEDS_USER",
+                )
+            transition = contract["execution"].get("revision_transition")
+            prior_problems = contract["execution"].get("prior_problems")
+            snapshot_digest, source_problems = _open_problem_snapshot(source_ledger)
+            legacy_transition = (
+                source_mission["revision"] == 1
+                and transition is None
+                and prior_problems is None
+                and not source_problems
+            )
+            if not legacy_transition and (
+                not isinstance(transition, dict) or not isinstance(prior_problems, dict)
+            ):
+                raise AssuranceError(
+                    "supersession requires revision transition and prior-problem dispositions",
+                    code="REVISION_CONTINUITY_REQUIRED",
+                    status="NEEDS_USER",
+                )
+            source_semantics = {
+                key: source_mission.get(key)
+                for key in (
+                    "delivery_kind", "objective", "behaviors", "interfaces",
+                    "acceptance_cases", "trust_boundaries",
+                )
+            }
+            target_semantics = {
+                key: contract["mission"].get(key)
+                for key in (
+                    "delivery_kind", "objective", "behaviors", "interfaces",
+                    "acceptance_cases", "trust_boundaries",
+                )
+            }
+            semantic_changed = source_semantics != target_semantics
+            if not legacy_transition:
+                assert isinstance(transition, dict) and isinstance(prior_problems, dict)
+                source_lineage = lineage(repo, source_ledger["run_id"])
+                _validate_revision_transition(source_lineage, transition)
+                if (transition["category"] == "mission_change") != semantic_changed:
+                    raise AssuranceError(
+                        "revision transition category does not match the mission semantic delta",
+                        code="REVISION_TRANSITION_SEMANTICS_MISMATCH",
+                        status="NEEDS_USER",
+                    )
+                if (
+                    prior_problems.get("source_run_id") != source_ledger["run_id"]
+                    or prior_problems.get("snapshot_digest") != snapshot_digest
+                ):
+                    raise AssuranceError(
+                        "prior-problem snapshot does not match the source run",
+                        code="PRIOR_PROBLEM_SNAPSHOT_MISMATCH",
+                        status="NEEDS_USER",
+                    )
+                source_by_key = {item["key"]: item for item in source_problems}
+                dispositions = prior_problems.get("items", [])
+                disposition_by_key = {item["key"]: item for item in dispositions}
+                if set(disposition_by_key) != set(source_by_key):
+                    raise AssuranceError(
+                        "every open source problem requires exactly one disposition",
+                        code="PRIOR_PROBLEM_DISPOSITION_INCOMPLETE",
+                        status="NEEDS_USER",
+                        details={
+                            "missing": sorted(set(source_by_key) - set(disposition_by_key)),
+                            "unexpected": sorted(set(disposition_by_key) - set(source_by_key)),
+                        },
+                    )
+                for key in sorted(disposition_by_key):
+                    decision = disposition_by_key[key]
+                    problem_dispositions.append(
+                        {
+                            "source_run_id": source_ledger["run_id"],
+                            "target_run_id": run_id,
+                            **copy.deepcopy(decision),
+                        }
+                    )
+                    if decision["disposition"] == "included":
+                        inherited_problems.append(copy.deepcopy(source_by_key[key]))
+                revision_transitions.append(
+                    _recorded_transition(
+                        transition,
+                        source_run=source_ledger["run_id"],
+                        target_run=run_id,
+                        from_revision=source_mission["revision"],
+                        to_revision=contract["mission"]["revision"],
+                    )
                 )
             expected_supersede_intent = {
                 "source_run_id": supersedes["run_id"],
@@ -447,6 +535,8 @@ def start(
                 execution["builder_files"] = copy.deepcopy(source_execution["builder_files"])
                 execution["tester_files"] = []
                 execution["tester_source"] = None
+                if revision_transitions:
+                    execution["agents"] = {}
                 execution["carryover"] = {
                     "source_run_id": source_ledger["run_id"],
                     "source_candidate_head": candidate_head,
@@ -484,7 +574,18 @@ def start(
                 "environment_lease": None,
                 "supersede_intent": None,
                 "abandon_intent": None,
-                "problems": [],
+                "problems": [
+                    {
+                        **problem,
+                        "status": "open",
+                        "producer": None,
+                        "candidate_head": candidate_head,
+                        "recorded_at": created_at,
+                    }
+                    for problem in inherited_problems
+                ],
+                "revision_transitions": revision_transitions,
+                "problem_dispositions": problem_dispositions,
                 "publication": {
                     "required": bool(contract["authority"].get("public_prerequisites")),
                     "paths": list(contract["authority"].get("public_prerequisites", [])),
@@ -913,6 +1014,233 @@ def telemetry(ledger: Mapping[str, Any]) -> dict[str, Any]:
     )
 
 
+def _problem_snapshot_value(ledger: Mapping[str, Any]) -> list[dict[str, Any]]:
+    problems = [
+        {
+            "key": item["key"],
+            "summary": item["summary"],
+            "details": item["details"],
+            "owner": item["owner"],
+        }
+        for item in ledger.get("problems", [])
+        if isinstance(item, dict) and item.get("status") == "open"
+    ]
+    problems.sort(key=lambda item: item["key"])
+    return problems
+
+
+def _open_problem_snapshot(ledger: Mapping[str, Any]) -> tuple[str, list[dict[str, Any]]]:
+    problems = _problem_snapshot_value(ledger)
+    keys = [item["key"] for item in problems]
+    if len(keys) != len(set(keys)):
+        raise AssuranceError(
+            "source run has ambiguous duplicate open problem keys",
+            code="PRIOR_PROBLEM_SOURCE_DUPLICATE",
+            status="NEEDS_USER",
+            details={"keys": keys},
+        )
+    return digest(problems), problems
+
+
+def _lineage_ledgers(repo: Path, current: Mapping[str, Any]) -> tuple[list[dict[str, Any]], bool]:
+    values = [copy.deepcopy(dict(current))]
+    complete = True
+    seen = {str(current["run_id"])}
+    cursor = current
+    while True:
+        supersedes = cursor["facets"]["mission"].get("supersedes")
+        if not isinstance(supersedes, dict) or supersedes.get("run_id") == cursor.get("run_id"):
+            break
+        source_run = str(supersedes["run_id"])
+        if source_run in seen:
+            raise AssuranceError(
+                "revision lineage contains a cycle",
+                code="REVISION_LINEAGE_CYCLE",
+                status="NEEDS_USER",
+            )
+        try:
+            source = read_ledger(repo, source_run)
+        except StoreError:
+            complete = False
+            break
+        values.append(source)
+        seen.add(source_run)
+        cursor = source
+    values.reverse()
+    return values, complete
+
+
+def lineage(repo_value: str | Path, run_value: str) -> dict[str, Any]:
+    repo = resolve_repo(repo_value)
+    run_id = ensure_run_id(run_value)
+    current = read_ledger(repo, run_id)
+    ledgers, complete = _lineage_ledgers(repo, current)
+    transitions: list[dict[str, Any]] = []
+    stage_values: dict[str, dict[str, Any]] = {}
+    evidence_attempts = {kind: 0 for kind in EVIDENCE_KINDS}
+    retry_codes: dict[str, int] = {}
+    elapsed_ms = 0
+    candidate_changes = 0
+    disposition_counts = {"included": 0, "handled_elsewhere": 0, "discarded": 0}
+    for ledger in ledgers:
+        revision = int(ledger["facets"]["mission"]["revision"])
+        recorded = ledger.get("revision_transitions")
+        if recorded is None:
+            if revision > 1:
+                complete = False
+            recorded = []
+        transitions.extend(copy.deepcopy(recorded))
+        run_telemetry = telemetry(ledger)
+        elapsed_ms += run_telemetry["elapsed_ms"]
+        candidate_changes += run_telemetry["candidate_changes"]
+        for kind, count in run_telemetry["evidence_attempts"].items():
+            evidence_attempts[kind] += count
+        for code, count in run_telemetry["retries"]["by_failure_code"].items():
+            retry_codes[code] = retry_codes.get(code, 0) + count
+        for item in run_telemetry["stages"]:
+            target = stage_values.setdefault(
+                item["name"],
+                {
+                    "name": item["name"], "attempts": 0, "completed_attempts": 0,
+                    "failed_attempts": 0, "retry_count": 0, "total_duration_ms": 0,
+                    "last_failure_code": None,
+                },
+            )
+            for field in ("attempts", "completed_attempts", "failed_attempts", "retry_count", "total_duration_ms"):
+                target[field] += item[field]
+            if item["last_failure_code"] is not None:
+                target["last_failure_code"] = item["last_failure_code"]
+        for item in ledger.get("problem_dispositions", []):
+            disposition = item.get("disposition")
+            if disposition in disposition_counts:
+                disposition_counts[disposition] += 1
+    transitions.sort(key=lambda item: (item["to_revision"], item["source_run_id"], item["target_run_id"]))
+    semantic = sum(1 for item in transitions if item["semantic"])
+    categories: dict[str, int] = {}
+    for item in transitions:
+        categories[item["category"]] = categories.get(item["category"], 0) + 1
+    non_semantic = len(transitions) - semantic
+    pressure_value = {
+        "root_run_id": ledgers[0]["run_id"],
+        "current_run_id": run_id,
+        "complete": complete,
+        "non_semantic": non_semantic,
+        "by_category": {key: value for key, value in sorted(categories.items()) if key != "mission_change"},
+    }
+    pressure_digest = digest(pressure_value)
+    lineage_digest = digest(
+        [
+            {
+                "run_id": item["run_id"],
+                "mission_digest": item["digests"]["mission"],
+                "candidate_head": item["facets"]["execution"].get("candidate_head"),
+                "revision_transitions": item.get("revision_transitions"),
+                "problem_dispositions": item.get("problem_dispositions"),
+                "open_problem_snapshot": digest(_problem_snapshot_value(item)),
+                "telemetry": {
+                    key: value
+                    for key, value in telemetry(item).items()
+                    if key not in {"elapsed_ms", "active_stage"}
+                },
+            }
+            for item in ledgers
+        ]
+    )
+    review_required = not complete or non_semantic >= 3 or any(
+        count >= 3 for category, count in categories.items() if category != "mission_change"
+    )
+    active = sum(
+        1
+        for item in current.get("problems", [])
+        if isinstance(item, dict) and item.get("status") == "open"
+    )
+    current_problem_snapshot = _problem_snapshot_value(current)
+    value = {
+        "schema_version": 1,
+        "root_run_id": ledgers[0]["run_id"],
+        "current_run_id": run_id,
+        "complete": complete,
+        "health": "incomplete" if not complete else ("review_required" if review_required else "healthy"),
+        "revision_count": int(current["facets"]["mission"]["revision"]),
+        "transitions": transitions,
+        "transition_counts": {
+            "total": len(transitions),
+            "semantic": semantic,
+            "non_semantic": non_semantic,
+            "by_category": dict(sorted(categories.items())),
+        },
+        "telemetry": {
+            "elapsed_ms": elapsed_ms,
+            "stages": [stage_values[name] for name in sorted(stage_values)],
+            "candidate_changes": candidate_changes,
+            "evidence_attempts": evidence_attempts,
+            "evidence_replays": sum(max(0, count - 1) for count in evidence_attempts.values()),
+            "retries": {"total": sum(retry_codes.values()), "by_failure_code": dict(sorted(retry_codes.items()))},
+        },
+        "problem_dispositions": {**disposition_counts, "active": active},
+        "problem_snapshot_digest": digest(current_problem_snapshot),
+        "open_problem_keys": [item["key"] for item in current_problem_snapshot],
+        "lineage_digest": lineage_digest,
+        "pressure_digest": pressure_digest,
+    }
+    return validate_lineage(value)
+
+
+def _validate_revision_transition(
+    source_lineage: Mapping[str, Any], transition: Mapping[str, Any]
+) -> None:
+    if transition.get("predecessor_lineage_digest") != source_lineage["lineage_digest"]:
+        raise AssuranceError(
+            "revision transition does not bind the current predecessor lineage",
+            code="REVISION_LINEAGE_DIGEST_MISMATCH",
+            status="NEEDS_USER",
+        )
+    category = transition.get("category")
+    semantic = category == "mission_change"
+    counts = source_lineage["transition_counts"]
+    proposed_non_semantic = int(counts["non_semantic"]) + (0 if semantic else 1)
+    proposed_category = int(counts["by_category"].get(category, 0)) + 1
+    requires_review = (
+        not source_lineage["complete"]
+        or (not semantic and proposed_non_semantic >= 3)
+        or (not semantic and proposed_category >= 3)
+    )
+    decision = transition.get("continuation_decision")
+    valid_decision = (
+        isinstance(decision, dict)
+        and decision.get("decision") == "continue"
+        and decision.get("pressure_digest") == source_lineage["pressure_digest"]
+    )
+    if requires_review and not valid_decision:
+        raise AssuranceError(
+            "revision lineage pressure requires an architecture-review continuation decision",
+            code="REVISION_ARCHITECTURE_REVIEW_REQUIRED",
+            status="NEEDS_USER",
+            details={"pressure_digest": source_lineage["pressure_digest"]},
+        )
+    if isinstance(decision, dict) and not valid_decision:
+        raise AssuranceError(
+            "architecture-review decision is stale for the current lineage pressure",
+            code="REVISION_ARCHITECTURE_REVIEW_STALE",
+            status="NEEDS_USER",
+        )
+
+
+def _recorded_transition(
+    transition: Mapping[str, Any], *, source_run: str, target_run: str, from_revision: int, to_revision: int
+) -> dict[str, Any]:
+    return {
+        "source_run_id": source_run,
+        "target_run_id": target_run,
+        "from_revision": from_revision,
+        "to_revision": to_revision,
+        "category": transition["category"],
+        "semantic": transition["category"] == "mission_change",
+        "predecessor_lineage_digest": transition["predecessor_lineage_digest"],
+        "continuation_decision": copy.deepcopy(transition.get("continuation_decision")),
+    }
+
+
 def status(repo_value: str | Path, run_value: str) -> dict[str, Any]:
     repo = resolve_repo(repo_value)
     run_id = ensure_run_id(run_value)
@@ -938,6 +1266,7 @@ def status(repo_value: str | Path, run_value: str) -> dict[str, Any]:
         "supersede_intent": copy.deepcopy(ledger.get("supersede_intent")),
         "abandon_intent": copy.deepcopy(ledger.get("abandon_intent")),
         "telemetry": telemetry(ledger),
+        "lineage": lineage(repo, run_id),
         "readiness": readiness(ledger),
         "publication": copy.deepcopy(ledger.get("publication")),
         "problems": copy.deepcopy(ledger.get("problems", [])),
@@ -967,6 +1296,7 @@ def driver_context(repo_value: str | Path, run_value: str) -> dict[str, Any]:
         "environment_lease": copy.deepcopy(ledger.get("environment_lease")),
         "supersede_intent": copy.deepcopy(ledger.get("supersede_intent")),
         "abandon_intent": copy.deepcopy(ledger.get("abandon_intent")),
+        "lineage": lineage(repo, run_id),
     }
 
 
@@ -1219,7 +1549,12 @@ def update_facet(
     return status(repo, run_id)
 
 
-def revise_mission(repo_value: str | Path, run_value: str, mission_value: Any) -> dict[str, Any]:
+def revise_mission(
+    repo_value: str | Path,
+    run_value: str,
+    mission_value: Any,
+    transition_value: Any,
+) -> dict[str, Any]:
     repo = resolve_repo(repo_value)
     run_id = ensure_run_id(run_value)
     with locked(repo):
@@ -1242,8 +1577,26 @@ def revise_mission(repo_value: str | Path, run_value: str, mission_value: Any) -
                 status="NEEDS_USER",
                 details={"expected_supersedes": expected_supersedes},
             )
+        source_lineage = lineage(repo, run_id)
+        if transition_value is None:
+            transition_value = {
+                "schema_version": 1,
+                "category": "mission_change",
+                "predecessor_lineage_digest": source_lineage["lineage_digest"],
+                "continuation_decision": None,
+            }
+        if not isinstance(transition_value, dict):
+            raise AssuranceError("mission revision transition must be an object", code="REVISION_TRANSITION_REQUIRED")
+        _validate_revision_transition(source_lineage, transition_value)
+        if transition_value.get("category") != "mission_change":
+            raise AssuranceError(
+                "revise-mission requires the mission-change transition category",
+                code="REVISION_TRANSITION_SEMANTICS_MISMATCH",
+                status="NEEDS_USER",
+            )
         candidate = copy.deepcopy(ledger["facets"])
         candidate["mission"] = copy.deepcopy(mission_value)
+        candidate["execution"]["revision_transition"] = copy.deepcopy(transition_value)
         validated = validate_contract(candidate)
         lease = ledger.get("environment_lease")
         if isinstance(lease, dict) and lease.get("state") == "held":
@@ -1274,10 +1627,23 @@ def revise_mission(repo_value: str | Path, run_value: str, mission_value: Any) -
             lease["mission_revision"] = mission_value["revision"]
         ledger["facets"] = validated
         ledger["digests"] = facet_digests(validated)
+        ledger.setdefault("revision_transitions", []).append(
+            _recorded_transition(
+                transition_value,
+                source_run=run_id,
+                target_run=run_id,
+                from_revision=old["revision"],
+                to_revision=mission_value["revision"],
+            )
+        )
         append_event(
             ledger,
             "mission_revised",
-            {"old_revision": old["revision"], "new_revision": mission_value["revision"]},
+            {
+                "old_revision": old["revision"],
+                "new_revision": mission_value["revision"],
+                "category": transition_value["category"],
+            },
         )
         save_ledger(repo, ledger)
     return status(repo, run_id)

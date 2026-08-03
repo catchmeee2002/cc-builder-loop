@@ -231,6 +231,40 @@
             }
           ]
         },
+        "revision_transition": {
+          "oneOf": [
+            {"type": "null"},
+            {"$ref": "assurance-v4-lineage.schema.json#/$defs/transitionInput"}
+          ]
+        },
+        "prior_problems": {
+          "oneOf": [
+            {"type": "null"},
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["schema_version", "source_run_id", "snapshot_digest", "items"],
+              "properties": {
+                "schema_version": {"const": 1},
+                "source_run_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"},
+                "snapshot_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+                "items": {
+                  "type": "array", "uniqueItems": true,
+                  "items": {
+                    "type": "object", "additionalProperties": false,
+                    "required": ["key", "disposition"],
+                    "properties": {
+                      "key": {"type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"},
+                      "disposition": {"enum": ["included", "handled_elsewhere", "discarded"]},
+                      "reference": {"type": "string", "minLength": 1, "pattern": "\\S"},
+                      "reason": {"type": "string", "minLength": 1, "pattern": "\\S"}
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        },
         "deployment": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/deployment"}]},
         "dirty_snapshot": {
           "type": "array",

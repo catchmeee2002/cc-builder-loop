@@ -95,8 +95,11 @@ dispatch。直到 `finalize` 或明确的决策边界。动作面如下，不能
   blackbox evidence。跳过 deploy 的事务只重新 probe 并确认环境未漂移，不执行会改变既有环境的恢复
   命令。计划授权 lease 时，`complete_blackbox` 可在当前 probe 与 lease 一致后登记 evidence 并继续
   Reviewer；finalize、abandon 前仍由 Driver 恢复。恢复失败或复用状态漂移只返回用户决定。
-- Mission Revision 使用 Core `revise-mission` 原子绑定上一 revision。新 run 的 `mission.supersedes` 只携带
+- Mission Revision 使用 Core `revise-mission --transition` 原子绑定上一 revision 和 ledger 派生
+  `lineage_digest`。新 run 的 `mission.supersedes` 只携带
   candidate snapshot 和 environment lease；Tester/Reviewer 必须创建新 thread 并重建全部 evidence。
+  supersession 还必须在任何 worktree/ref/intent mutation 前校验 transition pressure decision 与完整
+  `prior_problems` disposition；included problem 只继承问题意图和 owner，不继承 producer identity。
   lease 转移或制品不一致恢复由 `complete-supersede-transfer`、`restore-superseded-environment` 自动收敛。
 - `reviewer_final`：只有 Tester、proof、machine、blackbox 等全部 reviewer prerequisites 齐全且
   current 后，才用只允许 identity bootstrap 的最小 prompt spawn Reviewer，调用 `prepare-reviewer`

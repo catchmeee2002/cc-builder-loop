@@ -100,6 +100,8 @@
       ]
     },
     "problems": {"type": "array", "items": {"$ref": "#/$defs/problem"}},
+    "revision_transitions": {"type": "array", "items": {"$ref": "assurance-v4-lineage.schema.json#/$defs/recordedTransition"}},
+    "problem_dispositions": {"type": "array", "items": {"$ref": "#/$defs/problemDisposition"}},
     "publication": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/publication"}]},
     "builder_checkpointed": {"type": "boolean"},
     "continuation_consumed_by": {"oneOf": [{"type": "string"}, {"type": "null"}]},
@@ -291,19 +293,36 @@
         "owner": {"enum": ["builder", "tester", "plan", "current_project", "builder_loop", "external_platform"]},
         "status": {"enum": ["open", "resolved"]},
         "producer": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["role", "agent_id", "thread_id"],
-          "properties": {
-            "role": {"enum": ["builder", "tester", "reviewer"]},
-            "agent_id": {"type": "string", "minLength": 1},
-            "thread_id": {"type": "string", "minLength": 1}
-          }
+          "oneOf": [
+            {"type": "null"},
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["role", "agent_id", "thread_id"],
+              "properties": {
+                "role": {"enum": ["builder", "tester", "reviewer"]},
+                "agent_id": {"type": "string", "minLength": 1},
+                "thread_id": {"type": "string", "minLength": 1}
+              }
+            }
+          ]
         },
         "candidate_head": {"oneOf": [{"type": "null"}, {"type": "string", "pattern": "^[0-9a-f]{40}$"}]},
         "recorded_at": {"type": "string", "minLength": 1},
         "resolution": {"type": "string", "minLength": 1},
         "resolved_at": {"type": "string", "minLength": 1}
+      }
+    },
+    "problemDisposition": {
+      "type": "object", "additionalProperties": false,
+      "required": ["source_run_id", "target_run_id", "key", "disposition"],
+      "properties": {
+        "source_run_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"},
+        "target_run_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"},
+        "key": {"type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"},
+        "disposition": {"enum": ["included", "handled_elsewhere", "discarded"]},
+        "reference": {"type": "string", "minLength": 1},
+        "reason": {"type": "string", "minLength": 1}
       }
     },
     "finalizeIntent": {

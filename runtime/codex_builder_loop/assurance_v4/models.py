@@ -78,6 +78,31 @@ def validate_telemetry(value: Any) -> dict[str, Any]:
     return copy.deepcopy(value)
 
 
+def _schema_registry(*names: str) -> Registry:
+    registry = Registry()
+    for name in names:
+        value = _schema(name)
+        registry = registry.with_resource(value["$id"], Resource.from_contents(value))
+    return registry
+
+
+def validate_lineage(value: Any) -> dict[str, Any]:
+    try:
+        jsonschema.Draft202012Validator(
+            _schema("assurance-v4-lineage.schema.json"),
+            registry=_schema_registry("assurance-v4-telemetry.schema.json"),
+        ).validate(value)
+    except jsonschema.ValidationError as exc:
+        path = "/".join(str(part) for part in exc.absolute_path)
+        raise ContractError(
+            exc.message,
+            code="ASSURANCE_LINEAGE_INVALID",
+            details={"path": path},
+        ) from exc
+    assert isinstance(value, dict)
+    return copy.deepcopy(value)
+
+
 def validate_environment_probe(value: Any) -> dict[str, Any]:
     try:
         jsonschema.Draft202012Validator(
@@ -96,7 +121,13 @@ def validate_environment_probe(value: Any) -> dict[str, Any]:
 
 def validate_contract(value: Any) -> dict[str, Any]:
     try:
-        jsonschema.Draft202012Validator(_schema("assurance-v4-contract.schema.json")).validate(value)
+        jsonschema.Draft202012Validator(
+            _schema("assurance-v4-contract.schema.json"),
+            registry=_schema_registry(
+                "assurance-v4-lineage.schema.json",
+                "assurance-v4-telemetry.schema.json",
+            ),
+        ).validate(value)
     except jsonschema.ValidationError as exc:
         path = "/".join(str(part) for part in exc.absolute_path)
         raise ContractError(
@@ -113,6 +144,8 @@ def validate_contract(value: Any) -> dict[str, Any]:
     contract["execution"].setdefault("continuation", None)
     contract["execution"].setdefault("deployment", None)
     contract["execution"].setdefault("driver_enforced", False)
+    contract["execution"].setdefault("revision_transition", None)
+    contract["execution"].setdefault("prior_problems", None)
     all_commands = list(contract["assurance"]["machine_commands"]) + list(
         contract["execution"]["commands"]
     )
@@ -249,6 +282,45 @@ def validate_contract(value: Any) -> dict[str, Any]:
                 code="CARRYOVER_AUTHORITY_INVALID",
                 details={"paths": invalid_carryover},
             )
+    transition = contract["execution"].get("revision_transition")
+    prior_problems = contract["execution"].get("prior_problems")
+    if contract["mission"]["revision"] == 1 and (transition is not None or prior_problems is not None):
+        raise ContractError(
+            "mission revision 1 cannot declare revision continuity",
+            code="REVISION_CONTINUITY_UNEXPECTED",
+        )
+    if isinstance(prior_problems, dict):
+        keys = [item["key"] for item in prior_problems["items"]]
+        if len(keys) != len(set(keys)):
+            raise ContractError(
+                "prior-problem dispositions contain duplicate keys",
+                code="PRIOR_PROBLEM_DUPLICATE",
+            )
+        for item in prior_problems["items"]:
+            disposition = item["disposition"]
+            expected_fields = {"key", "disposition"}
+            if disposition == "handled_elsewhere":
+                expected_fields.add("reference")
+            elif disposition == "discarded":
+                expected_fields.add("reason")
+            if set(item) != expected_fields:
+                raise ContractError(
+                    "prior-problem disposition fields do not match its handling",
+                    code="PRIOR_PROBLEM_DISPOSITION_INVALID",
+                    details={"key": item["key"], "disposition": disposition},
+                )
+            if disposition == "handled_elsewhere" and "reference" not in item:
+                raise ContractError(
+                    "handled-elsewhere prior problem requires a reference",
+                    code="PRIOR_PROBLEM_REFERENCE_REQUIRED",
+                    details={"key": item["key"]},
+                )
+            if disposition == "discarded" and "reason" not in item:
+                raise ContractError(
+                    "discarded prior problem requires a reason",
+                    code="PRIOR_PROBLEM_REASON_REQUIRED",
+                    details={"key": item["key"]},
+                )
     execution = contract["execution"]
     builder_files = set(execution["builder_files"])
     tester_files = set(execution["tester_files"])
@@ -410,10 +482,11 @@ def validate_ledger(value: Any) -> dict[str, Any]:
             "adapter_dirty": None,
             "capture_status": "unavailable",
         }
-    contract_schema = _schema("assurance-v4-contract.schema.json")
     ledger_schema = _schema("assurance-v4-ledger.schema.json")
-    registry = Registry().with_resource(
-        contract_schema["$id"], Resource.from_contents(contract_schema)
+    registry = _schema_registry(
+        "assurance-v4-contract.schema.json",
+        "assurance-v4-lineage.schema.json",
+        "assurance-v4-telemetry.schema.json",
     )
     try:
         jsonschema.Draft202012Validator(ledger_schema, registry=registry).validate(normalized)
