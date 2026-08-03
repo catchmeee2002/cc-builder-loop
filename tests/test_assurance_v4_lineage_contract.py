@@ -162,7 +162,7 @@ class AssuranceV4LineageContractTest(unittest.TestCase):
         }
         transition: dict[str, Any] = {
             "category": category,
-            "predecessor_lineage_digest": lineage["lineage_digest"],
+            "predecessor_pressure_digest": lineage["pressure_digest"],
         }
         if decision_digest is not None:
             transition["architecture_review"] = {
@@ -193,8 +193,7 @@ class AssuranceV4LineageContractTest(unittest.TestCase):
         self.assertEqual(lineage["current_run_id"], "lineage-r1")
         self.assertEqual(lineage["revision_count"], 1)
         self.assertEqual(lineage["transitions"], [])
-        self.assertEqual(lineage["pressure"]["non_semantic_total"], 0)
-        self.assertFalse(lineage["pressure"]["review_required"])
+        self.assertEqual(lineage["non_semantic_transition_count"], 0)
 
         context_rc, context = self.invoke(
             "driver-context", "--repo", self.repo, "--run", "lineage-r1"
@@ -213,8 +212,7 @@ class AssuranceV4LineageContractTest(unittest.TestCase):
         self.assertEqual(lineage["current_run_id"], "aggregate-r2")
         self.assertEqual(lineage["revision_count"], 2)
         self.assertEqual([item["category"] for item in lineage["transitions"]], ["resource_parameter"])
-        self.assertEqual(lineage["pressure"]["non_semantic_total"], 1)
-        self.assertEqual(lineage["pressure"]["category_counts"], {"resource_parameter": 1})
+        self.assertEqual(lineage["non_semantic_transition_count"], 1)
         for field in (
             "elapsed_ms",
             "stage_attempts",
@@ -301,8 +299,7 @@ class AssuranceV4LineageContractTest(unittest.TestCase):
             "review-r4",
             self.next_contract(third, category=NON_SEMANTIC, decision_digest=digest),
         )
-        self.assertEqual(fourth["lineage"]["pressure"]["non_semantic_total"], 3)
-        self.assertFalse(fourth["lineage"]["pressure"]["review_required"])
+        self.assertEqual(fourth["lineage"]["non_semantic_transition_count"], 3)
 
         later = self.next_contract(fourth, category="role_continuity", decision_digest=digest)
         rc, rejected_later = self.invoke(
@@ -329,7 +326,7 @@ class AssuranceV4LineageContractTest(unittest.TestCase):
         self.assertEqual(lineage["revision_count"], 2)
         self.assertEqual(lineage["transitions"][0]["category"], SEMANTIC)
         self.assertEqual(lineage["telemetry"]["transition_counts"][SEMANTIC], 1)
-        self.assertEqual(lineage["pressure"]["non_semantic_total"], 0)
+        self.assertEqual(lineage["non_semantic_transition_count"], 0)
 
     def test_prior_problem_dispositions_are_complete_and_survive_by_intent(self) -> None:
         first = self.start("problems-r1", base_contract())
