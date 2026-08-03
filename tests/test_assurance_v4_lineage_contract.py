@@ -215,16 +215,15 @@ class AssuranceV4LineageContractTest(unittest.TestCase):
         self.assertEqual(lineage["transition_category_counts"], {"resource_parameter": 1})
         for field in (
             "elapsed_ms",
-            "stage_attempts",
-            "stage_duration_ms",
             "candidate_changes",
             "evidence_attempts",
             "evidence_replays",
             "retries",
-            "transition_counts",
+            "stages",
         ):
             self.assertIn(field, lineage["cumulative_telemetry"])
         self.assertGreaterEqual(lineage["cumulative_telemetry"]["elapsed_ms"], 0)
+        self.assertIsInstance(lineage["cumulative_telemetry"]["stages"], list)
 
     def test_third_nonsemantic_transition_stops_before_any_mutation(self) -> None:
         first = self.start("pressure-r1", base_contract())
