@@ -11,12 +11,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SPEC_HEAD = "1b512b120a673470a4ee154b7c8dd8ac3c3f7e1f"
 DELIVERY_HEAD = "e238fe159ce16f225ab7e4dd35a19052f02b2122"
-PLANNER_BLOB = "ae1760877a3d7836ace0ae6ff1d97f9709438024"
 PLANNER_PATH = Path("skills/builder-loop-planner/SKILL.md")
 BUILDER_PATH = Path("skills/builder/SKILL.md")
 BUILDER_VARIANTS_PATH = Path("experiments/agent-behavior/variants.json")
 BUILDER_LINE_LIMIT = 278
 BUILDER_MAINTENANCE_LINE_ALLOWANCE = 0
+PLANNER_LINE_ALLOWANCE = 36
 REFERENCE_PATH = Path("skills/builder-loop-planner/references/design-decisions.md")
 REVIEWER_BLOB = "f2703b04e4082a0c77fafb8e1d0073f8081005ae"
 REVIEWER_PATH = Path("agents/reviewer.toml")
@@ -571,6 +571,7 @@ class PlanningDesignDisciplineTest(unittest.TestCase):
         self.assertNotIn(REFERENCE_PATH.name, reviewer)
 
     def test_role_prompts_stay_within_frozen_line_budgets(self) -> None:
+        planner_baseline = git_text(SPEC_HEAD, PLANNER_PATH).splitlines()
         reviewer_baseline = git_text(SPEC_HEAD, REVIEWER_PATH).splitlines()
         tester_baseline = git_text(SPEC_HEAD, TESTER_PATH).splitlines()
         variants = json.loads(read(BUILDER_VARIANTS_PATH))
@@ -581,8 +582,11 @@ class PlanningDesignDisciplineTest(unittest.TestCase):
             item for item in variants["variants"] if item["id"] == "reviewer-current"
         ]
 
-        self.assertEqual(git_blob("HEAD", PLANNER_PATH), PLANNER_BLOB)
-        self.assertEqual(worktree_blob(PLANNER_PATH), PLANNER_BLOB)
+        self.assertEqual(git_blob("HEAD", PLANNER_PATH), worktree_blob(PLANNER_PATH))
+        self.assertLessEqual(
+            len(read(PLANNER_PATH).splitlines()),
+            len(planner_baseline) + PLANNER_LINE_ALLOWANCE,
+        )
         self.assertEqual(len(builder_current), 1, builder_current)
         self.assertEqual(
             builder_current[0]["instruction_source"]["path"], str(BUILDER_PATH)
@@ -608,6 +612,43 @@ class PlanningDesignDisciplineTest(unittest.TestCase):
         )
         self.assertLessEqual(len(read(REVIEWER_PATH).splitlines()), len(reviewer_baseline) + 28)
         self.assertLessEqual(len(read(TESTER_PATH).splitlines()), len(tester_baseline) + 24)
+
+    def test_planner_revision_guidance_uses_one_ledger_derived_lineage_view(self) -> None:
+        planner = read(PLANNER_PATH)
+        retrospective = read(Path("skills/builder/references/post-delivery-retrospective.md"))
+
+        self.assertTrue(
+            has_terms(
+                planner,
+                ("lineage", "沿革", "修订链"),
+                ("status", "driver-context"),
+                ("摘要", "health", "健康"),
+            ),
+            "Planner must consume the runtime lineage view instead of reconstructing revisions",
+        )
+        self.assertTrue(
+            has_terms(
+                planner,
+                ("变化", "changed", "delta"),
+                ("语义", "semantic"),
+                ("prior", "问题"),
+                ("pressure", "压力", "架构审查"),
+            ),
+            "higher revisions ask only for changed semantics, problem dispositions, and pressure decisions",
+        )
+        self.assertTrue(
+            has_terms(
+                retrospective,
+                ("lineage", "沿革", "修订链"),
+                ("status", "ledger"),
+                ("pressure", "压力", "重复原因"),
+            ),
+            "retrospective must reuse the same structured lineage pressure",
+        )
+        self.assertFalse(
+            has_terms(retrospective, ("transcript", "对话"), ("重建", "推断")),
+            "retrospective must not reconstruct lineage from transcripts",
+        )
 
     def test_reference_is_not_duplicated_into_always_loaded_roles_or_docs(self) -> None:
         reference = read(REFERENCE_PATH)
