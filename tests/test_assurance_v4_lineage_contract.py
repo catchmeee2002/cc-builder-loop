@@ -292,7 +292,7 @@ class AssuranceV4LineageContractTest(unittest.TestCase):
             self.write_json("review-stale.json", stale),
         )
         self.assertEqual(rc, 1, rejected)
-        self.assertEqual(rejected["code"], "LINEAGE_REVIEW_DIGEST_MISMATCH")
+        self.assertEqual(rejected["code"], "LINEAGE_ARCHITECTURE_REVIEW_REQUIRED")
 
         fourth = self.start(
             "review-r4",
@@ -313,7 +313,9 @@ class AssuranceV4LineageContractTest(unittest.TestCase):
             self.write_json("review-r5.json", later),
         )
         self.assertEqual(rc, 1, rejected_later)
-        self.assertEqual(rejected_later["code"], "LINEAGE_REVIEW_DIGEST_MISMATCH")
+        self.assertEqual(
+            rejected_later["code"], "LINEAGE_ARCHITECTURE_REVIEW_REQUIRED"
+        )
 
     def test_mission_change_is_visible_but_excluded_from_pressure(self) -> None:
         first = self.start("semantic-r1", base_contract())
