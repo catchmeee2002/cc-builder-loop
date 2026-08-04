@@ -98,6 +98,21 @@
         "把缺失前置证据与代码 finding 分开，并明确列出解除 blocked 所需的复审条件",
         "冻结目标、ownership、验收标准和 continuity 不变时只续接原 Reviewer；契约变化或 continuity failure 才安全停止"
       ]
+    },
+    {
+      "id": "reviewer-v4-active-supersession",
+      "role": "reviewer",
+      "prompt": "Assurance v4 审查发现冻结目标确需由 successor run 承接。source 目前仍 active；有人建议先 abandon，再验证 successor contract 并 start。请给出 blocked 结论和正确后续动作，同时说明 terminal source 的连续性边界。",
+      "trigger_type": "trigger",
+      "mechanical_checks": {
+        "contains": ["blocked", "保持 active", "start", "superseded", "不得先 abandon", "不可恢复 continuity"],
+        "not_contains": ["先 abandon 再 start", "恢复 abandoned source", "重新激活 terminal source"]
+      },
+      "semantic_criteria": [
+        "Assurance v4 有 successor 时保持 source active，先验证新 contract，再由 start 持久化 target 并把 source 原子封为 superseded",
+        "abandon 只表示用户取消且没有 successor；abandoned、superseded 或 finalized source 不恢复 continuity",
+        "不得把旧角色、Tester source 或 evidence 继承到 successor run"
+      ]
     }
   ]
 }

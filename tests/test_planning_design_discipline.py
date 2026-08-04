@@ -3,22 +3,27 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-import subprocess
 import unittest
 from pathlib import Path
+
+from harness import run_process
 
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC_HEAD = "1b512b120a673470a4ee154b7c8dd8ac3c3f7e1f"
 DELIVERY_HEAD = "e238fe159ce16f225ab7e4dd35a19052f02b2122"
+AGENTS_PATH = Path("AGENTS.md")
 PLANNER_PATH = Path("skills/builder-loop-planner/SKILL.md")
+FULL_DRIVER_PATH = Path("skills/full-driver-v4-experiment/SKILL.md")
 BUILDER_PATH = Path("skills/builder/SKILL.md")
 BUILDER_VARIANTS_PATH = Path("experiments/agent-behavior/variants.json")
+SCENARIOS_PATH = Path("experiments/agent-behavior/scenarios.json")
+BEHAVIOR_RUNNER_PATH = Path("experiments/agent-behavior/runner.py")
 BUILDER_LINE_LIMIT = 278
 BUILDER_MAINTENANCE_LINE_ALLOWANCE = 0
 PLANNER_LINE_ALLOWANCE = 36
 REFERENCE_PATH = Path("skills/builder-loop-planner/references/design-decisions.md")
-REVIEWER_BLOB = "f2703b04e4082a0c77fafb8e1d0073f8081005ae"
+REVIEWER_BLOB = "1839e0b614df8b3d330da3321c1721c54e01a96f"
 REVIEWER_PATH = Path("agents/reviewer.toml")
 TESTER_PATH = Path("agents/tester.toml")
 PHILOSOPHY_PATH = Path("docs/design-philosophy.md")
@@ -135,6 +140,24 @@ def local_clauses(text: str) -> list[str]:
         for clause in re.split(r"[；;。.!！？?]+", line)
         if clause.strip()
     ]
+
+
+def affirmative_abandon_before_start(text: str) -> list[str]:
+    violations: list[str] = []
+    patterns = (
+        r"先abandon.{0,16}(?:再|后)?.{0,8}start",
+        r"abandon.{0,16}(?:后再|再|before|then).{0,8}start",
+    )
+    negations = ("不得", "不要", "禁止", "不能", "不可", "不应", "无需", "never", "mustnot")
+    for clause in local_clauses(text):
+        compact = re.sub(r"\s+", "", clause).lower()
+        for pattern in patterns:
+            for match in re.finditer(pattern, compact):
+                prefix = compact[max(0, match.start() - 12) : match.start()]
+                if any(negation in prefix for negation in negations):
+                    continue
+                violations.append(clause)
+    return violations
 
 
 def unconditional_alternative_requirements(text: str) -> list[str]:
@@ -259,12 +282,9 @@ def fixed_seven_questionnaires(text: str) -> list[str]:
 
 
 def git_text(revision: str, path: Path) -> str:
-    result = subprocess.run(
+    result = run_process(
         ["git", "show", f"{revision}:{path.as_posix()}"],
         cwd=ROOT,
-        text=True,
-        capture_output=True,
-        check=False,
     )
     if result.returncode != 0:
         raise AssertionError(result.stderr)
@@ -272,12 +292,9 @@ def git_text(revision: str, path: Path) -> str:
 
 
 def git_blob(revision: str, path: Path) -> str:
-    result = subprocess.run(
+    result = run_process(
         ["git", "rev-parse", f"{revision}:{path.as_posix()}"],
         cwd=ROOT,
-        text=True,
-        capture_output=True,
-        check=False,
     )
     if result.returncode != 0:
         raise AssertionError(result.stderr)
@@ -285,12 +302,9 @@ def git_blob(revision: str, path: Path) -> str:
 
 
 def worktree_blob(path: Path) -> str:
-    result = subprocess.run(
+    result = run_process(
         ["git", "hash-object", path.as_posix()],
         cwd=ROOT,
-        text=True,
-        capture_output=True,
-        check=False,
     )
     if result.returncode != 0:
         raise AssertionError(result.stderr)
@@ -298,12 +312,9 @@ def worktree_blob(path: Path) -> str:
 
 
 def changed_paths() -> list[str]:
-    result = subprocess.run(
+    result = run_process(
         ["git", "diff", "--name-only", SPEC_HEAD, DELIVERY_HEAD],
         cwd=ROOT,
-        text=True,
-        capture_output=True,
-        check=False,
     )
     if result.returncode != 0:
         raise AssertionError(result.stderr)
@@ -649,6 +660,173 @@ class PlanningDesignDisciplineTest(unittest.TestCase):
             has_terms(retrospective, ("transcript", "对话"), ("重建", "推断")),
             "retrospective must not reconstruct lineage from transcripts",
         )
+
+    def test_v4_supersession_guidance_is_active_first_and_version_scoped(self) -> None:
+        self.assertTrue(
+            affirmative_abandon_before_start(
+                "Assurance v4 有 successor 时先 abandon，再 start。"
+            )
+        )
+        self.assertEqual(
+            affirmative_abandon_before_start(
+                "Assurance v4 有 successor 时不得先 abandon，再 start。"
+            ),
+            [],
+        )
+        sources = {
+            "project rules": read(AGENTS_PATH),
+            "Planner": read(PLANNER_PATH),
+            "Full Driver": read(FULL_DRIVER_PATH),
+            "Reviewer": read(REVIEWER_PATH),
+            "architecture": read(ARCHITECTURE_PATH),
+        }
+
+        for label, text in sources.items():
+            lifecycle = matching_paragraphs(
+                text,
+                ("assurancev4", "v4", "assurance_schema_version=4", "schemaversion=4"),
+                ("successor", "后继", "新run", "更高revision"),
+                ("active",),
+                ("start",),
+                ("superseded",),
+                ("abandon",),
+            )
+            self.assertTrue(
+                lifecycle,
+                f"{label} must describe the v4 active-to-superseded transaction",
+            )
+            self.assertTrue(
+                any(
+                    has_terms(
+                        block,
+                        ("用户取消", "取消"),
+                        ("没有successor", "无successor", "没有后继", "没有承接"),
+                    )
+                    for block in lifecycle
+                ),
+                f"{label} must reserve abandon for cancellation without a successor",
+            )
+            self.assertTrue(
+                matching_paragraphs(
+                    text,
+                    ("assurancev4", "v4", "assurance_schema_version=4", "schemaversion=4"),
+                    ("legacy", "v2", "v3"),
+                    ("abandon",),
+                ),
+                f"{label} must explicitly split the v4 lifecycle from legacy v2/v3",
+            )
+            self.assertTrue(
+                matching_paragraphs(
+                    text,
+                    ("assurancev4", "v4", "assurance_schema_version=4", "schemaversion=4"),
+                    ("update-facet", "revise-mission"),
+                    ("同一", "same"),
+                    ("active",),
+                ),
+                f"{label} must converge expressible decisions in the same active v4 run",
+            )
+            self.assertEqual(
+                [
+                    clause
+                    for block in lifecycle
+                    for clause in affirmative_abandon_before_start(block)
+                ],
+                [],
+                f"{label} still recommends abandon before v4 start",
+            )
+
+        for label in ("project rules", "Planner", "Full Driver", "architecture"):
+            self.assertTrue(
+                matching_paragraphs(
+                    sources[label],
+                    ("执行信息", "execution"),
+                    ("普通", "常规", "非语义"),
+                    ("不得", "不应", "不能", "无需"),
+                    ("abandon", "新run", "revision"),
+                ),
+                f"{label} must not escalate ordinary execution information to abandon/new run",
+            )
+
+        for label in ("Planner", "Full Driver"):
+            self.assertTrue(
+                matching_paragraphs(
+                    sources[label],
+                    ("terminal", "abandoned", "superseded", "finalized"),
+                    ("continuity", "连续性"),
+                    ("不可恢复", "不能恢复", "不恢复"),
+                ),
+                f"{label} must state that terminal source continuity cannot be restored",
+            )
+
+    def test_reviewer_v4_scenario_mechanically_rejects_abandon_first(self) -> None:
+        scenarios = json.loads(read(SCENARIOS_PATH))
+        matches = [
+            item
+            for item in scenarios["scenarios"]
+            if item["id"] == "reviewer-v4-active-supersession"
+        ]
+        self.assertEqual(len(matches), 1, matches)
+        scenario = matches[0]
+        self.assertEqual(scenario["role"], "reviewer")
+        self.assertEqual(scenario["trigger_type"], "trigger")
+        combined = scenario["prompt"] + "\n" + "\n".join(
+            scenario["semantic_criteria"]
+        )
+        self.assertTrue(
+            has_terms(
+                combined,
+                ("assurancev4", "v4"),
+                ("successor", "后继"),
+                ("active",),
+                ("start",),
+                ("superseded",),
+                ("abandon",),
+                ("continuity", "连续性"),
+            )
+        )
+        checks = scenario["mechanical_checks"]
+        self.assertIn("不得先 abandon", checks["contains"])
+        self.assertIn("先 abandon 再 start", checks["not_contains"])
+
+        accepted_response = "；".join(checks["contains"])
+        accepted = run_process(
+            [
+                "python3",
+                BEHAVIOR_RUNNER_PATH,
+                "score",
+                "--scenario-id",
+                scenario["id"],
+                "--variant-id",
+                "reviewer-current",
+            ],
+            cwd=ROOT,
+            input_text=accepted_response,
+        )
+        self.assertEqual(
+            accepted.returncode, 0, (accepted.stdout, accepted.stderr)
+        )
+        accepted_score = json.loads(accepted.stdout.splitlines()[-1])
+        self.assertTrue(accepted_score["mechanical_pass"], accepted_score)
+
+        rejected = run_process(
+            [
+                "python3",
+                BEHAVIOR_RUNNER_PATH,
+                "score",
+                "--scenario-id",
+                scenario["id"],
+                "--variant-id",
+                "reviewer-current",
+            ],
+            cwd=ROOT,
+            input_text=accepted_response + "；先 abandon 再 start",
+        )
+        self.assertEqual(
+            rejected.returncode, 0, (rejected.stdout, rejected.stderr)
+        )
+        rejected_score = json.loads(rejected.stdout.splitlines()[-1])
+        self.assertFalse(rejected_score["mechanical_pass"], rejected_score)
+        self.assertEqual(rejected_score["false_triggers"], ["先 abandon 再 start"])
 
     def test_reference_is_not_duplicated_into_always_loaded_roles_or_docs(self) -> None:
         reference = read(REFERENCE_PATH)

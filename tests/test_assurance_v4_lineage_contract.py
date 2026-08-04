@@ -202,9 +202,40 @@ class AssuranceV4LineageContractTest(unittest.TestCase):
 
     def test_superseding_runs_aggregate_source_ledger_telemetry(self) -> None:
         first = self.start("aggregate-r1", base_contract())
+        self.assertEqual(self.status("aggregate-r1")["phase"], "active")
+        source_candidate = run_process(
+            ["git", "-C", first["candidate_worktree"], "rev-parse", "HEAD"]
+        ).stdout.strip()
         second = self.start(
             "aggregate-r2", self.next_contract(first, category="resource_parameter")
         )
+
+        source_after = self.status("aggregate-r1")
+        self.assertEqual(source_after["phase"], "superseded")
+        self.assertEqual(
+            source_after["supersede_intent"],
+            {
+                "source_run_id": "aggregate-r1",
+                "target_run_id": "aggregate-r2",
+                "state": "received",
+            },
+        )
+        context_rc, context = self.invoke(
+            "driver-context", "--repo", self.repo, "--run", "aggregate-r2"
+        )
+        self.assertEqual(context_rc, 0, context)
+        execution = context["facets"]["execution"]
+        self.assertEqual(
+            execution["carryover"]["source_run_id"], "aggregate-r1"
+        )
+        self.assertEqual(
+            execution["carryover"]["source_candidate_head"],
+            source_candidate,
+        )
+        self.assertEqual(execution["candidate_head"], source_candidate)
+        self.assertEqual(execution["agents"], {})
+        self.assertIsNone(execution["tester_source"])
+        self.assertEqual(context["evidence"], {})
 
         lineage = second["lineage"]
         self.assertEqual(lineage["root_run_id"], "aggregate-r1")
