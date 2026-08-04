@@ -28,6 +28,12 @@ REVIEWER_PATH = Path("agents/reviewer.toml")
 TESTER_PATH = Path("agents/tester.toml")
 PHILOSOPHY_PATH = Path("docs/design-philosophy.md")
 ARCHITECTURE_PATH = Path("docs/architecture.md")
+V4_LIFECYCLE_TERMS = (
+    "assurancev4",
+    "v4",
+    "assurance_schema_version=4",
+    "schemaversion=4",
+)
 
 
 def read(relative: Path) -> str:
@@ -682,12 +688,6 @@ class PlanningDesignDisciplineTest(unittest.TestCase):
         )
 
     def test_v4_supersession_guidance_is_active_first_and_version_scoped(self) -> None:
-        v4_terms = (
-            "assurancev4",
-            "v4",
-            "assurance_schema_version=4",
-            "schemaversion=4",
-        )
         self.assertTrue(
             affirmative_abandon_before_start(
                 "Assurance v4 有 successor 时先 abandon，再 start。"
@@ -708,7 +708,7 @@ class PlanningDesignDisciplineTest(unittest.TestCase):
         self.assertTrue(
             heading_scoped_paragraphs(
                 scoped_example,
-                v4_terms,
+                V4_LIFECYCLE_TERMS,
                 ("update-facet", "revise-mission"),
                 ("同一", "same"),
                 ("active",),
@@ -735,7 +735,7 @@ class PlanningDesignDisciplineTest(unittest.TestCase):
         for label, text in sources.items():
             lifecycle = matching_paragraphs(
                 text,
-                v4_terms,
+                V4_LIFECYCLE_TERMS,
                 ("successor", "后继", "新run", "更高revision"),
                 ("active",),
                 ("start",),
@@ -757,18 +757,9 @@ class PlanningDesignDisciplineTest(unittest.TestCase):
                 ),
                 f"{label} must reserve abandon for cancellation without a successor",
             )
-            self.assertTrue(
-                matching_paragraphs(
-                    text,
-                    v4_terms,
-                    ("legacy", "v2", "v3"),
-                    ("abandon",),
-                ),
-                f"{label} must explicitly split the v4 lifecycle from legacy v2/v3",
-            )
             same_run_guidance = matching_paragraphs(
                 text,
-                v4_terms,
+                V4_LIFECYCLE_TERMS,
                 ("update-facet", "revise-mission"),
                 ("同一", "same"),
                 ("active",),
@@ -776,7 +767,7 @@ class PlanningDesignDisciplineTest(unittest.TestCase):
             same_run_guidance.extend(
                 heading_scoped_paragraphs(
                     text,
-                    v4_terms,
+                    V4_LIFECYCLE_TERMS,
                     ("update-facet", "revise-mission"),
                     ("同一", "same"),
                     ("active",),
@@ -817,6 +808,28 @@ class PlanningDesignDisciplineTest(unittest.TestCase):
                     ("不可恢复", "不能恢复", "不恢复"),
                 ),
                 f"{label} must state that terminal source continuity cannot be restored",
+            )
+
+    def test_v4_guidance_preserves_legacy_abandoned_source_contract(self) -> None:
+        sources = {
+            "project rules": read(AGENTS_PATH),
+            "Planner": read(PLANNER_PATH),
+            "Full Driver": read(FULL_DRIVER_PATH),
+            "Reviewer": read(REVIEWER_PATH),
+            "architecture": read(ARCHITECTURE_PATH),
+        }
+
+        for label, text in sources.items():
+            self.assertTrue(
+                matching_paragraphs(
+                    text,
+                    V4_LIFECYCLE_TERMS,
+                    ("legacy", "v2", "v3"),
+                    ("abandon",),
+                    ("successor", "revision", "supersed"),
+                    ("保持", "既有", "不由", "继续", "仍按"),
+                ),
+                f"{label} must preserve the legacy abandoned-source revision contract",
             )
 
     def test_reviewer_v4_scenario_mechanically_rejects_abandon_first(self) -> None:
