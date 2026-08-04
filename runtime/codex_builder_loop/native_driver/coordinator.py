@@ -171,6 +171,8 @@ class NativeCoordinator:
                     self.run_id,
                     "--action-id",
                     str(action["action_id"]),
+                    "--consumer-source",
+                    "native_driver",
                 )
                 return
             result = self._recover_dispatch(pending, role, context)
@@ -585,6 +587,8 @@ class NativeCoordinator:
             self.run_id,
             "--action-id",
             action_id,
+            "--consumer-source",
+            "native_driver",
         )
 
     def _record_evidence(self, kind: str, evidence: dict[str, Any], action_id: str) -> None:

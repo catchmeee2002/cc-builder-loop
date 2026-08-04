@@ -2719,9 +2719,15 @@ class AssuranceV4ContractTest(unittest.TestCase):
         self,
     ) -> None:
         run_id = "external-problem-resolution"
+        external_ready = self.artifacts / "external-ready"
         contract = contract_for(
             self.repo,
-            machine_argv=[sys.executable, "-c", "raise SystemExit(9)"],
+            machine_argv=[
+                sys.executable,
+                "-c",
+                "from pathlib import Path; import sys; Path(sys.argv[1]).read_text()",
+                str(external_ready),
+            ],
         )
         data, run_path = self.start(run_id, contract=contract)
         candidate = Path(data["candidate_worktree"])
@@ -2733,6 +2739,19 @@ class AssuranceV4ContractTest(unittest.TestCase):
         self.assertEqual(rc, 0, failed)
         failed_ledger = self.load_ledger(run_path)
         self.assertEqual(failed_ledger["evidence"]["machine"]["status"], "fail")
+        machine_failure = next(
+            event
+            for event in failed_ledger["events"]
+            if event.get("kind") == "machine_verified"
+            and event.get("details", {}).get("status") == "fail"
+        )
+        failed_ledger["events"].extend(
+            [deepcopy(machine_failure), deepcopy(machine_failure)]
+        )
+        (run_path / "ledger.json").write_text(
+            json.dumps(failed_ledger, ensure_ascii=False, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
 
         report_path = self.write_json(
             "external-problem-resolution.json",
@@ -2857,6 +2876,207 @@ class AssuranceV4ContractTest(unittest.TestCase):
         )
         self.assertEqual(rc, 0, decision)
         self.assertEqual(decision.get("action"), "verify_machine", decision)
+
+        external_ready.write_text("ready\n", encoding="utf-8")
+        rc, verified, _stdout, _stderr = self.invoke(
+            "verify-machine", "--repo", self.repo, "--run", run_id
+        )
+        self.assertEqual(rc, 0, verified)
+        self.assertEqual(
+            verified.get("readiness", {}).get("states", {}).get("machine"),
+            "pass",
+            verified,
+        )
+        rc, after_recovery, _stdout, _stderr = self.invoke(
+            "driver-next", "--repo", self.repo, "--run", run_id
+        )
+        self.assertEqual(rc, 0, after_recovery)
+        self.assertEqual(
+            after_recovery.get("action"), "tester_blackbox", after_recovery
+        )
+
+    def test_external_recovery_does_not_hide_a_fresh_machine_failure(self) -> None:
+        run_id = "external-problem-recovery-fails"
+        contract = contract_for(
+            self.repo,
+            machine_argv=[sys.executable, "-c", "raise SystemExit(9)"],
+        )
+        data, run_path = self.start(run_id, contract=contract)
+        candidate = Path(data["candidate_worktree"])
+        self.commit_candidate_change(run_id, run_path, candidate)
+        self.record_role_evidence(run_id, run_path, "tester")
+        rc, failed, _stdout, _stderr = self.invoke(
+            "verify-machine", "--repo", self.repo, "--run", run_id
+        )
+        self.assertEqual(rc, 0, failed)
+        failed_ledger = self.load_ledger(run_path)
+        machine_failure = next(
+            event
+            for event in failed_ledger["events"]
+            if event.get("kind") == "machine_verified"
+            and event.get("details", {}).get("status") == "fail"
+        )
+        failed_ledger["events"].extend(
+            [deepcopy(machine_failure), deepcopy(machine_failure)]
+        )
+        (run_path / "ledger.json").write_text(
+            json.dumps(failed_ledger, ensure_ascii=False, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        report_path = self.write_json(
+            "external-problem-recovery-fails.json",
+            {
+                "schema_version": 1,
+                "problems": [
+                    {
+                        "key": "external-still-unavailable",
+                        "summary": "The external dependency appeared to recover.",
+                        "details": "The next machine observation must decide whether recovery succeeded.",
+                        "owner": "external_platform",
+                    }
+                ],
+            },
+        )
+        rc, recorded, _stdout, _stderr = self.invoke(
+            "record-problems",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--report",
+            report_path,
+            "--role",
+            "builder",
+            "--agent-id",
+            "external-recovery-failure-builder",
+            "--thread-id",
+            "external-recovery-failure-builder-thread",
+        )
+        self.assertEqual(rc, 0, recorded)
+        rc, resolved, _stdout, _stderr = self.invoke(
+            "resolve-external-problem",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--problem-key",
+            "external-still-unavailable",
+            "--reason",
+            "User authorized one fresh machine observation after the external probe recovered.",
+        )
+        self.assertEqual(rc, 0, resolved)
+        rc, retry, _stdout, _stderr = self.invoke(
+            "driver-next", "--repo", self.repo, "--run", run_id
+        )
+        self.assertEqual(rc, 0, retry)
+        self.assertEqual(retry.get("action"), "verify_machine", retry)
+
+        rc, fresh_failure, _stdout, _stderr = self.invoke(
+            "verify-machine", "--repo", self.repo, "--run", run_id
+        )
+        self.assertEqual(rc, 0, fresh_failure)
+        self.assertEqual(
+            fresh_failure.get("readiness", {}).get("states", {}).get("machine"),
+            "failed",
+            fresh_failure,
+        )
+        rc, blocked, _stdout, _stderr = self.invoke(
+            "driver-next", "--repo", self.repo, "--run", run_id
+        )
+        self.assertEqual(rc, 0, blocked)
+        self.assertEqual(blocked.get("action"), "architecture_review", blocked)
+
+    def test_external_recovery_only_bypasses_its_bound_machine_signature(self) -> None:
+        run_id = "external-problem-signature-boundary"
+        contract = contract_for(
+            self.repo,
+            machine_argv=[sys.executable, "-c", "raise SystemExit(9)"],
+        )
+        data, run_path = self.start(run_id, contract=contract)
+        candidate = Path(data["candidate_worktree"])
+        self.commit_candidate_change(run_id, run_path, candidate)
+        self.record_role_evidence(run_id, run_path, "tester")
+        rc, failed, _stdout, _stderr = self.invoke(
+            "verify-machine", "--repo", self.repo, "--run", run_id
+        )
+        self.assertEqual(rc, 0, failed)
+        failed_ledger = self.load_ledger(run_path)
+        machine_index = next(
+            index
+            for index, event in enumerate(failed_ledger["events"])
+            if event.get("kind") == "machine_verified"
+            and event.get("details", {}).get("status") == "fail"
+        )
+        machine_failure = failed_ledger["events"][machine_index]
+        bound_signature = machine_failure["details"]["failure_signature"]
+        unrelated_signature = "f" * 64
+        unrelated_failure = deepcopy(machine_failure)
+        unrelated_failure["details"]["failure_signature"] = unrelated_signature
+        failed_ledger["events"][machine_index:machine_index] = [
+            deepcopy(unrelated_failure),
+            deepcopy(unrelated_failure),
+            deepcopy(unrelated_failure),
+        ]
+        failed_ledger["events"].extend(
+            [deepcopy(machine_failure), deepcopy(machine_failure)]
+        )
+        (run_path / "ledger.json").write_text(
+            json.dumps(failed_ledger, ensure_ascii=False, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        report_path = self.write_json(
+            "external-problem-signature-boundary.json",
+            {
+                "schema_version": 1,
+                "problems": [
+                    {
+                        "key": "external-bound-signature",
+                        "summary": "One exact machine failure was attributed externally.",
+                        "details": "An unrelated repeated machine failure must remain blocking.",
+                        "owner": "external_platform",
+                    }
+                ],
+            },
+        )
+        rc, recorded, _stdout, _stderr = self.invoke(
+            "record-problems",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--report",
+            report_path,
+            "--role",
+            "builder",
+            "--agent-id",
+            "external-signature-builder",
+            "--thread-id",
+            "external-signature-builder-thread",
+        )
+        self.assertEqual(rc, 0, recorded)
+        rc, resolved, _stdout, _stderr = self.invoke(
+            "resolve-external-problem",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--problem-key",
+            "external-bound-signature",
+            "--reason",
+            "User authorized recovery for the currently bound external failure only.",
+        )
+        self.assertEqual(rc, 0, resolved)
+
+        rc, blocked, _stdout, _stderr = self.invoke(
+            "driver-next", "--repo", self.repo, "--run", run_id
+        )
+        self.assertEqual(rc, 0, blocked)
+        self.assertEqual(blocked.get("action"), "architecture_review", blocked)
+        signatures = {
+            item["failure_signature"] for item in blocked.get("failures", [])
+        }
+        self.assertIn(unrelated_signature, signatures)
+        self.assertNotIn(bound_signature, signatures)
 
     def test_external_problem_resolution_rejects_wrong_or_stale_problem_without_bypass(
         self,
@@ -3083,26 +3303,37 @@ class AssuranceV4ContractTest(unittest.TestCase):
                 }
             ],
         }
-        for role in ("builder", "reviewer"):
-            report_path = self.write_json(
-                f"duplicate-external-{role}.json", duplicate_report
-            )
-            rc, recorded, _stdout, _stderr = self.invoke(
-                "record-problems",
-                "--repo",
-                self.repo,
-                "--run",
-                ambiguous_run,
-                "--report",
-                report_path,
-                "--role",
-                role,
-                "--agent-id",
-                f"duplicate-{role}",
-                "--thread-id",
-                f"duplicate-{role}-thread",
-            )
-            self.assertEqual(rc, 0, recorded)
+        report_path = self.write_json(
+            "duplicate-external-builder.json", duplicate_report
+        )
+        rc, recorded, _stdout, _stderr = self.invoke(
+            "record-problems",
+            "--repo",
+            self.repo,
+            "--run",
+            ambiguous_run,
+            "--report",
+            report_path,
+            "--role",
+            "builder",
+            "--agent-id",
+            "duplicate-builder",
+            "--thread-id",
+            "duplicate-builder-thread",
+        )
+        self.assertEqual(rc, 0, recorded)
+        ambiguous_ledger = self.load_ledger(ambiguous_path)
+        duplicate_problem = deepcopy(ambiguous_ledger["problems"][0])
+        duplicate_problem["producer"] = {
+            "role": "reviewer",
+            "agent_id": "retained-reviewer",
+            "thread_id": "retained-reviewer-thread",
+        }
+        ambiguous_ledger["problems"].append(duplicate_problem)
+        (ambiguous_path / "ledger.json").write_text(
+            json.dumps(ambiguous_ledger, ensure_ascii=False, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
         before_ambiguous = (ambiguous_path / "ledger.json").read_bytes()
         rc, ambiguous, _stdout, _stderr = self.invoke(
             "resolve-external-problem",

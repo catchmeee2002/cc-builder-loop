@@ -1254,6 +1254,9 @@ def _derive_retrospective_snapshot(
                 action = str(details.get("action", ""))
                 if action in {"tester_fix", "builder_fix"}:
                     correction_counts[action] = correction_counts.get(action, 0) + 1
+            elif kind == "tester_continuity_replaced":
+                action = "tester_continuity_replaced"
+                correction_counts[action] = correction_counts.get(action, 0) + 1
             elif kind == "dispatch_completed" and isinstance(action_id, str):
                 completed.add(action_id)
             elif kind == "dispatch_retry_scheduled" and isinstance(action_id, str):
@@ -1331,15 +1334,39 @@ def _derive_retrospective_snapshot(
                         {"kind": evidence_kind, "attempts": count},
                     )
                 )
-        revision = int(mission["revision"])
-        if revision > 1:
+        lineage_facts = _derive_lineage(repo, ledger)
+        if (
+            lineage_facts["revision_count"] > 1
+            or lineage_facts["transition_count"] > 0
+            or lineage_facts["health"] != "healthy"
+        ):
+            severity = (
+                "mandatory"
+                if lineage_facts["revision_count"] >= 3
+                or lineage_facts["health"] != "healthy"
+                else "advisory"
+            )
             signals.append(
                 _retrospective_signal(
                     "revision-pressure",
-                    "mandatory" if revision >= 3 else "advisory",
+                    severity,
                     [run_id],
-                    f"Run {run_id} reached mission revision {revision}",
-                    {"mission_revision": revision},
+                    (
+                        f"Run {run_id} recorded revision pressure "
+                        f"{lineage_facts['pressure_digest']}"
+                    ),
+                    {
+                        "pressure_digest": lineage_facts["pressure_digest"],
+                        "revision_count": lineage_facts["revision_count"],
+                        "transition_count": lineage_facts["transition_count"],
+                        "non_semantic_transition_count": lineage_facts[
+                            "non_semantic_transition_count"
+                        ],
+                        "transition_category_counts": lineage_facts[
+                            "transition_category_counts"
+                        ],
+                        "health": lineage_facts["health"],
+                    },
                 )
             )
         if runtime_identity.get("capture_status") != "captured":

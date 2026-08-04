@@ -283,7 +283,7 @@ class RetrospectiveCompletionGateTest(unittest.TestCase):
             ["retrospective-status-run"],
         )
         self.assertRegex(snapshot["snapshot_digest"], r"^[0-9a-f]{64}$")
-        self.assertTrue(required.get("required_block"), required)
+        self.assertNotIn("required_block", required)
         self.assertEqual((run_path / "ledger.json").read_bytes(), terminal_before)
 
     def test_false_negative_chain_inventory_is_deterministic_and_honest(self) -> None:
@@ -319,12 +319,14 @@ class RetrospectiveCompletionGateTest(unittest.TestCase):
             snapshot,
         )
 
-        manual = next(
-            item
-            for item in snapshot["signals"]
-            if item["kind"] == "manual-dispatch-recovery"
+        manual_facts = json.dumps(
+            [
+                item["facts"]
+                for item in snapshot["signals"]
+                if item["kind"] == "manual-dispatch-recovery"
+            ],
+            sort_keys=True,
         )
-        manual_facts = json.dumps(manual["facts"], sort_keys=True)
         self.assertIn("operator_recovery", manual_facts)
         self.assertIn("d" * 64, manual_facts)
         self.assertNotIn("5" * 64, manual_facts)
@@ -564,11 +566,10 @@ class RetrospectiveCompletionGateTest(unittest.TestCase):
 
         self.assertEqual(fatal.get("status"), "FATAL", fatal)
         self.assertIn("retrospective-malformed-run", json.dumps(fatal))
-        snapshot = fatal.get("snapshot")
-        self.assertIsInstance(snapshot, dict, fatal)
-        self.assertIn(
-            "malformed-ledger",
-            {item["kind"] for item in snapshot["signals"]},
+        self.assertNotIn("snapshot", fatal)
+        self.assertEqual(
+            fatal.get("malformed_ledgers", [{}])[0].get("code"),
+            "ASSURANCE_LEDGER_INVALID",
         )
         self.assertEqual(ledger_path.read_bytes(), before)
 

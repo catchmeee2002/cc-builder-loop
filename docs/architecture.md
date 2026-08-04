@@ -394,6 +394,8 @@ no-op，冲突内容以 `PROBLEM_REPLAY_MISMATCH` 停止；candidate 前移后�
 Builder turn 的 completed dispatch 先 checkpoint clean commit、关闭 Builder problem 并更新 candidate，
 再消费 dispatch；崩溃恢复重复同一顺序。Driver 在路由 open problem 前先收敛已提交但未 checkpoint
 的 live candidate，避免同一 `builder_fix` 无限重派。
+`dispatch_consumed.details.consumer_source` 是消费事实的唯一来源，值为 `native_driver`、
+`full_driver_skill` 或 `operator_recovery`；旧事件缺少该字段时只按保守规则推断，不回写历史 ledger。
 
 用户批准的 plan decision 复用 `update-facet` 的既有校验与授权参数，并以
 `--resolve-plan-problem-key` 绑定唯一 open `owner=plan` problem。在同一 repo lock 与一次 ledger 保存中，

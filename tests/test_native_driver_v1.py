@@ -261,7 +261,7 @@ class NativeDriverCoreContractTest(unittest.TestCase):
             "--action-id",
             action["action_id"],
             "--consumer-source",
-            "native",
+            "native_driver",
         )
         consumed_ledger = json.loads((run_path / "ledger.json").read_text())
         self.assertIsNone(consumed_ledger["dispatch_intent"])
@@ -271,7 +271,7 @@ class NativeDriverCoreContractTest(unittest.TestCase):
             if item.get("kind") == "dispatch_consumed"
         )
         self.assertEqual(
-            consumed.get("details", {}).get("consumer_source"), "native"
+            consumed.get("details", {}).get("consumer_source"), "native_driver"
         )
 
 
@@ -398,7 +398,7 @@ class NativeCoordinatorContractTest(unittest.TestCase):
                     return {
                         "driver_protocol_version": 1,
                         "status": "NEEDS_USER",
-                        "action": "none",
+                        "action": "external_problem_decision",
                         "reason": "open_external_platform_problem",
                         "action_id": "a" * 64,
                         "problem": {
@@ -436,7 +436,7 @@ class NativeCoordinatorContractTest(unittest.TestCase):
 
         self.assertEqual(result.get("status"), "NEEDS_USER", result)
         self.assertEqual(
-            result.get("problem", {}).get("key"),
+            result.get("decision", {}).get("problem", {}).get("key"),
             "external-probe-unavailable",
         )
         commands = [command for command, _args in core.calls]
@@ -728,7 +728,7 @@ class NativeCoordinatorContractTest(unittest.TestCase):
             self.assertEqual(len(core.consume_args), 1)
             self.assertIn("--consumer-source", core.consume_args[0])
             source_index = core.consume_args[0].index("--consumer-source") + 1
-            self.assertEqual(core.consume_args[0][source_index], "native")
+            self.assertEqual(core.consume_args[0][source_index], "native_driver")
 
     def test_builder_fix_result_checkpoints_before_consumption_and_replays_after_crash(self) -> None:
         class FakeCore:

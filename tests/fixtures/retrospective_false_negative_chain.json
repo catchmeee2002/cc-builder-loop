@@ -80,6 +80,13 @@
         },
         {
           "at": "2026-08-01T00:00:07+00:00",
+          "kind": "dispatch_retry_scheduled",
+          "details": {
+            "action_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          }
+        },
+        {
+          "at": "2026-08-01T00:00:07.500000+00:00",
           "kind": "dispatch_consumed",
           "details": {
             "action_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",

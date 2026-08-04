@@ -8,13 +8,17 @@ from .models import digest
 from .store import branch_head, dirty_paths, git, read_ledger, resolve_repo
 
 
-def _external_recovery_pending(
+def _external_recovery_context(
     ledger: Mapping[str, Any], candidate_head: str | None
-) -> bool:
-    machine_verified_after = False
-    for event in reversed(ledger.get("events", [])):
-        if event.get("kind") == "machine_verified":
-            machine_verified_after = True
+) -> dict[str, Any] | None:
+    """Derive the one-shot machine recovery boundary from immutable events."""
+
+    events = ledger.get("events", [])
+    if not isinstance(events, list):
+        return None
+    for event_index in range(len(events) - 1, -1, -1):
+        event = events[event_index]
+        if not isinstance(event, Mapping):
             continue
         if event.get("kind") != "external_problem_resolved":
             continue
@@ -24,8 +28,6 @@ def _external_recovery_pending(
             or details.get("candidate_head") != candidate_head
         ):
             continue
-        if machine_verified_after:
-            return False
         key = details.get("key")
         resolved = [
             problem
@@ -36,15 +38,55 @@ def _external_recovery_pending(
             and problem.get("resolution") == details.get("reason")
         ]
         if len(resolved) != 1:
-            return False
+            return None
+        prior_machine_details: Mapping[str, Any] | None = None
+        for prior_event in reversed(events[:event_index]):
+            if not isinstance(prior_event, Mapping):
+                continue
+            if prior_event.get("kind") != "machine_verified":
+                continue
+            candidate_details = prior_event.get("details")
+            if isinstance(candidate_details, Mapping):
+                prior_machine_details = candidate_details
+            break
+        failure_signature = None
+        if (
+            details.get("machine_state") == "failed"
+            and isinstance(prior_machine_details, Mapping)
+            and prior_machine_details.get("status") == "fail"
+        ):
+            failure_signature = prior_machine_details.get("failure_signature")
+        later_machine = [
+            item
+            for item in events[event_index + 1 :]
+            if isinstance(item, Mapping) and item.get("kind") == "machine_verified"
+        ]
+        if later_machine:
+            first_details = later_machine[0].get("details")
+            first_status = (
+                first_details.get("status")
+                if isinstance(first_details, Mapping)
+                else None
+            )
+            return {
+                "state": "succeeded" if first_status == "pass" else "failed",
+                "event_index": event_index,
+                "failure_signature": failure_signature,
+            }
         machine_record = ledger.get("evidence", {}).get("machine")
         current_digest = (
             digest(machine_record) if isinstance(machine_record, dict) else None
         )
         if details.get("machine_evidence_digest") != current_digest:
-            return False
-        return evidence_state(ledger, "machine") in {"missing", "stale", "failed"}
-    return False
+            return None
+        if evidence_state(ledger, "machine") not in {"missing", "stale", "failed"}:
+            return None
+        return {
+            "state": "pending",
+            "event_index": event_index,
+            "failure_signature": failure_signature,
+        }
+    return None
 
 
 def next_action(repo_value: str | Path, run_value: str) -> dict[str, Any]:
@@ -239,22 +281,64 @@ def next_action(repo_value: str | Path, run_value: str) -> dict[str, Any]:
             "serial_prerequisites_unpublished",
             paths=publication.get("paths", []),
         )
+    external_recovery = _external_recovery_context(
+        ledger, ledger["facets"]["execution"].get("candidate_head")
+    )
+    recovery_state = (
+        external_recovery.get("state")
+        if isinstance(external_recovery, dict)
+        else None
+    )
+    recovery_event_index = (
+        external_recovery.get("event_index")
+        if isinstance(external_recovery, dict)
+        else None
+    )
+    recovery_signature = (
+        external_recovery.get("failure_signature")
+        if isinstance(external_recovery, dict)
+        else None
+    )
     repeated: dict[tuple[str, str], int] = {}
-    for event in ledger.get("events", []):
+    for event_index, event in enumerate(ledger.get("events", [])):
         if event.get("kind") not in {"evidence_recorded", "machine_verified"}:
             continue
         details = event.get("details", {})
         signature = details.get("failure_signature")
         kind = details.get("kind", "machine" if event.get("kind") == "machine_verified" else "")
+        if (
+            kind == "machine"
+            and recovery_state == "succeeded"
+            and isinstance(recovery_event_index, int)
+            and event_index < recovery_event_index
+            and signature == recovery_signature
+        ):
+            continue
         if signature and kind:
             repeated[(kind, signature)] = repeated.get((kind, signature), 0) + 1
-    if repeated and max(repeated.values()) >= 3:
-        return decision("NEEDS_USER", "architecture_review", "same_failure_three_times")
     states = readiness(ledger)["states"]
     required = set(ledger["facets"]["assurance"]["required"])
-    recovered_external = _external_recovery_pending(
-        ledger, ledger["facets"]["execution"].get("candidate_head")
-    )
+    recovered_external = recovery_state == "pending"
+    review_failures = [
+        (kind, signature, count)
+        for (kind, signature), count in repeated.items()
+        if count >= 3
+        and not (
+            recovered_external
+            and kind == "machine"
+            and signature == recovery_signature
+        )
+    ]
+    if review_failures:
+        return decision(
+            "NEEDS_USER",
+            "architecture_review",
+            "same_failure_three_times",
+            failures=[
+                {"kind": kind, "failure_signature": signature, "count": count}
+                for kind, signature, count in sorted(review_failures)
+            ],
+        )
     for kind in ("tester", "proof", "machine", "blackbox", "reviewer", "doc_review"):
         if kind not in required:
             continue
