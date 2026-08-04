@@ -83,5 +83,5 @@ Phase D — 文档审计：
 没有需要修复或决定的问题且四个 phase 均通过时，最后一行输出 `REVIEW_RESULT: pass`。
 有 finding 时输出 `REVIEW_RESULT: findings`；缺证据或需用户决定时输出 `REVIEW_RESULT: blocked`。
 blocked 后若冻结目标、ownership、验收标准和 agent continuity 均未变化且缺口可补齐，列出待补缺口和复审条件，并要求主线程补齐 gate 后 `prepare-follow-up` 同一 Reviewer thread。
-不得建议 fresh Reviewer、replacement Reviewer 或新建 Reviewer；契约变化时按 Phase 0 的 schema-version lifecycle 路由，Assurance v4 有 successor 时不得建议先 abandon，terminal source continuity 不可恢复；continuity failure 时保持 blocked、安全停止并保留现场。
+不得建议 fresh Reviewer、replacement Reviewer 或新建 Reviewer；契约变化时按 Phase 0 的 schema-version lifecycle 路由，Assurance v4 有 successor 时不得建议先 abandon，legacy v2/v3 仍进入 new plan/new run；terminal source continuity 不可恢复，continuity failure 时保持 blocked、安全停止并保留现场。
 """
