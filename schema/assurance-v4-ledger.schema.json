@@ -55,6 +55,12 @@
         {"$ref": "#/$defs/dispatchIntent"}
       ]
     },
+    "proof_failure": {
+      "oneOf": [
+        {"type": "null"},
+        {"$ref": "#/$defs/proofFailure"}
+      ]
+    },
     "deployment_transaction": {
       "oneOf": [
         {"type": "null"},
@@ -180,6 +186,61 @@
         "result_digest": {"$ref": "#/$defs/sha256"},
         "created_at": {"type": "string", "minLength": 1},
         "completed_at": {"type": "string", "minLength": 1}
+      }
+    },
+    "proofFailure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "action_id", "candidate_head", "tester_source_head", "producer",
+        "spec", "spec_digest", "dependency_digest", "failure", "recovery",
+        "failure_signature", "failure_digest", "artifact_root", "recorded_at"
+      ],
+      "properties": {
+        "action_id": {
+          "oneOf": [
+            {"type": "null"},
+            {"$ref": "#/$defs/sha256"}
+          ]
+        },
+        "candidate_head": {"$ref": "#/$defs/nullableCommit"},
+        "tester_source_head": {"$ref": "#/$defs/nullableCommit"},
+        "producer": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["role", "agent_id", "thread_id"],
+          "properties": {
+            "role": {"const": "tester"},
+            "agent_id": {"type": "string", "minLength": 1},
+            "thread_id": {"type": "string", "minLength": 1}
+          }
+        },
+        "spec": {
+          "$ref": "https://github.com/catchmeee2002/cc-builder-loop/schema/codex-test-proof.schema.json"
+        },
+        "spec_digest": {"$ref": "#/$defs/sha256"},
+        "dependency_digest": {"$ref": "#/$defs/sha256"},
+        "failure": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "code", "message", "details"],
+          "properties": {
+            "status": {"type": "string", "minLength": 1},
+            "code": {"type": "string", "minLength": 1},
+            "message": {"type": "string", "minLength": 1},
+            "details": {"type": "object"}
+          }
+        },
+        "recovery": {"enum": ["tester_diagnosis", "needs_user"]},
+        "failure_signature": {"$ref": "#/$defs/sha256"},
+        "failure_digest": {"$ref": "#/$defs/sha256"},
+        "artifact_root": {
+          "oneOf": [
+            {"type": "null"},
+            {"type": "string", "minLength": 1}
+          ]
+        },
+        "recorded_at": {"type": "string", "minLength": 1}
       }
     },
     "probe": {

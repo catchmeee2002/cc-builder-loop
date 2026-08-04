@@ -492,6 +492,7 @@ def validate_ledger(value: Any) -> dict[str, Any]:
         "assurance-v4-contract.schema.json",
         "assurance-v4-lineage.schema.json",
         "assurance-v4-telemetry.schema.json",
+        "codex-test-proof.schema.json",
     )
     try:
         jsonschema.Draft202012Validator(ledger_schema, registry=registry).validate(normalized)

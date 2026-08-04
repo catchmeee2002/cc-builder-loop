@@ -25,6 +25,7 @@ AGENT_ACTION_ROLES = {
     "tester_author": "tester",
     "tester_fix": "tester",
     "tester_proof": "tester",
+    "tester_proof_diagnose": "tester",
     "tester_blackbox": "tester",
     "reviewer_final": "reviewer",
 }
@@ -449,6 +450,8 @@ class NativeCoordinator:
     ) -> None:
         action_id = str(action["action_id"])
         agent = context["facets"]["execution"]["agents"][role]
+        if action["action"] == "tester_proof_diagnose":
+            self._validate_proof_diagnosis(result)
         problem = result.get("problem_report")
         if isinstance(problem, dict):
             self.core.call(
@@ -515,24 +518,34 @@ class NativeCoordinator:
             if not isinstance(spec, dict):
                 raise NativeDriverError("Tester returned no proof spec", code="NATIVE_PROOF_SPEC_MISSING")
             spec = self._bind_proof_test_ids(spec, context)
-            self.core.call(
-                "prove-tests",
-                "--repo",
-                str(self.repo),
-                "--run",
-                self.run_id,
-                "--spec",
-                "-",
-                "--agent-id",
-                str(agent["agent_id"]),
-                "--thread-id",
-                str(agent["thread_id"]),
-                "--action-id",
-                action_id,
-                "--driver-runtime-kind",
-                "native",
-                input_value=spec,
-            )
+            try:
+                self.core.call(
+                    "prove-tests",
+                    "--repo",
+                    str(self.repo),
+                    "--run",
+                    self.run_id,
+                    "--spec",
+                    "-",
+                    "--agent-id",
+                    str(agent["agent_id"]),
+                    "--thread-id",
+                    str(agent["thread_id"]),
+                    "--action-id",
+                    action_id,
+                    "--driver-runtime-kind",
+                    "native",
+                    input_value=spec,
+                )
+            except CorePortError as exc:
+                failed = self._context()
+                if not self._proof_failure_matches(
+                    failed.get("proof_failure"),
+                    failed.get("proof_failure_state"),
+                    action_id,
+                    exc,
+                ):
+                    raise
         elif action["action"] == "tester_blackbox":
             evidence = result.get("evidence_report")
             if not isinstance(evidence, dict):
@@ -735,6 +748,7 @@ class NativeCoordinator:
                 "tester_author": "author",
                 "tester_fix": "author",
                 "tester_proof": "proof",
+                "tester_proof_diagnose": "proof_diagnose",
                 "tester_blackbox": "blackbox",
                 "reviewer_final": "final",
             }.get(str(action["action"]), "implement"),
@@ -772,6 +786,15 @@ class NativeCoordinator:
             payload["proof_execution_rule"] = (
                 "Choose argv that executes exactly the declared canonical test_ids. Do not reuse "
                 "unittest discover -s with ids that include the omitted start-directory prefix."
+            )
+        if action.get("action") == "tester_proof_diagnose":
+            payload["proof_failure"] = copy.deepcopy(action.get("proof_failure"))
+            payload["proof_diagnosis_rule"] = (
+                "Do not edit files or rerun the proof as a replacement for Core. Classify each "
+                "independent cause from the frozen contract, persisted spec, structured result, "
+                "and bound artifacts. Use owner=builder for a candidate implementation defect, "
+                "owner=tester for Tester-owned tests or proof input, and owner=plan only when the "
+                "frozen target, authority, or acceptance contract must change."
             )
         return "CBL_ACTION_ID:" + str(action["action_id"]) + "\n" + json.dumps(
             payload, ensure_ascii=False, sort_keys=True, indent=2
@@ -850,6 +873,12 @@ class NativeCoordinator:
                 "proof_spec": "required_unless_problem_report_is_non_null",
                 "problem_report": "object_only_when_blocked_or_target_change_required_else_null",
             }
+        if action == "tester_proof_diagnose":
+            return {
+                "evidence_report": "must_be_null",
+                "proof_spec": "must_be_null",
+                "problem_report": "required_non_empty_with_builder_tester_or_plan_owner",
+            }
         return {
             "evidence_report": "required_on_pass_else_null",
             "proof_spec": "must_be_null",
@@ -868,9 +897,56 @@ class NativeCoordinator:
             value["proof_spec"] = None
         elif action == "tester_proof":
             value["evidence_report"] = None
+        elif action == "tester_proof_diagnose":
+            value["evidence_report"] = None
+            value["proof_spec"] = None
         else:
             value["proof_spec"] = None
         return value
+
+    @staticmethod
+    def _validate_proof_diagnosis(result: dict[str, Any]) -> None:
+        report = result.get("problem_report")
+        problems = report.get("problems") if isinstance(report, dict) else None
+        if result.get("result") not in {"fail", "blocked", "target_change_required"}:
+            raise NativeDriverError(
+                "proof diagnosis returned an invalid terminal result",
+                code="NATIVE_PROOF_DIAGNOSIS_INVALID",
+            )
+        if not isinstance(problems, list) or not problems:
+            raise NativeDriverError(
+                "proof diagnosis returned no problems",
+                code="NATIVE_PROOF_DIAGNOSIS_MISSING",
+            )
+        invalid = [
+            item.get("owner")
+            for item in problems
+            if not isinstance(item, dict)
+            or item.get("owner") not in {"builder", "tester", "plan"}
+        ]
+        if invalid:
+            raise NativeDriverError(
+                "proof diagnosis returned an unsupported owner",
+                code="NATIVE_PROOF_DIAGNOSIS_OWNER_INVALID",
+                details={"owners": invalid},
+            )
+
+    @staticmethod
+    def _proof_failure_matches(
+        value: Any,
+        state: Any,
+        action_id: str,
+        error: CorePortError,
+    ) -> bool:
+        failure = value.get("failure") if isinstance(value, dict) else None
+        return bool(
+            state == "current"
+            and value.get("action_id") == action_id
+            and isinstance(value.get("failure_digest"), str)
+            and isinstance(failure, dict)
+            and failure.get("code") == error.code
+            and failure.get("status") == error.status
+        )
 
     def _turn_cwd(self, action: dict[str, Any], role: str, context: dict[str, Any]) -> str:
         if role == "builder" or action.get("action") in {"tester_blackbox", "reviewer_final"}:

@@ -436,7 +436,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         elif args.command == "record-problems":
             role_actions = {
                 "builder": {"builder_implement", "builder_fix", "checkpoint_builder"},
-                "tester": {"tester_author", "tester_proof", "tester_blackbox", "tester_fix"},
+                "tester": {
+                    "tester_author",
+                    "tester_proof",
+                    "tester_proof_diagnose",
+                    "tester_blackbox",
+                    "tester_fix",
+                },
                 "reviewer": {"reviewer_final"},
             }
             _guard_dispatch(args, role_actions[args.role])
@@ -456,6 +462,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 _json(args.spec),
                 agent_id=args.agent_id,
                 thread_id=args.thread_id,
+                action_id=args.action_id,
             )
         elif args.command == "integrate-tester":
             _guard_dispatch(args, {"tester_author", "tester_fix"})

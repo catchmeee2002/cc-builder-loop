@@ -64,6 +64,23 @@ TRUSTED_SYSTEM_ROOTS = tuple(Path(item).resolve() for item in TRUSTED_SYSTEM_PAT
 
 RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
+PROOF_TESTER_DIAGNOSIS_CODES = frozenset(
+    {
+        "PROOF_BEHAVIOR_COVERAGE_MISMATCH",
+        "TEST_PROOF_BOUNDARY_TEST_IDS_INVALID",
+        "TEST_PROOF_CANDIDATE_FAILED",
+        "TEST_PROOF_COMMAND_UNSUPPORTED",
+        "TEST_PROOF_COUNTEREXAMPLE_INVALID",
+        "TEST_PROOF_MUTATION_AUTHORITY_VIOLATION",
+        "TEST_PROOF_MUTATION_INVALID",
+        "TEST_PROOF_TEST_SOURCE_UNBOUND",
+        "TEST_PROOF_UV_COMMAND_INVALID",
+    }
+)
+PROOF_FAILURE_VOLATILE_DETAIL_KEYS = frozenset(
+    {"duration_ms", "log_path", "log_sha256", "log_tail"}
+)
+
 
 class AssuranceError(RuntimeError):
     def __init__(
@@ -570,6 +587,7 @@ def start(
                 "retired_reviewer_agents": [],
                 "driver_runtime": copy.deepcopy(driver_runtime),
                 "dispatch_intent": None,
+                "proof_failure": None,
                 "deployment_transaction": None,
                 "pending_blackbox": None,
                 "environment_lease": None,
@@ -1688,6 +1706,37 @@ def evidence_state(ledger: Mapping[str, Any], kind: str) -> str:
     return "pass" if record.get("status") == "pass" else "failed"
 
 
+def proof_failure_state(ledger: Mapping[str, Any]) -> str:
+    record = ledger.get("proof_failure")
+    if not isinstance(record, Mapping):
+        return "missing"
+    if record.get("dependency_digest") != evidence_dependency(ledger, "proof"):
+        return "stale"
+    execution = ledger["facets"]["execution"]
+    source = execution.get("tester_source")
+    source_head = source.get("head") if isinstance(source, Mapping) else None
+    if record.get("candidate_head") != execution.get("candidate_head"):
+        return "stale"
+    if record.get("tester_source_head") != source_head:
+        return "stale"
+    expected_producer = execution.get("agents", {}).get("tester")
+    producer = record.get("producer")
+    if not isinstance(expected_producer, Mapping) or producer != {
+        "role": "tester",
+        "agent_id": expected_producer.get("agent_id"),
+        "thread_id": expected_producer.get("thread_id"),
+    }:
+        return "stale"
+    return "current"
+
+
+def current_proof_failure(ledger: Mapping[str, Any]) -> dict[str, Any] | None:
+    if proof_failure_state(ledger) != "current":
+        return None
+    record = ledger.get("proof_failure")
+    return copy.deepcopy(record) if isinstance(record, dict) else None
+
+
 def readiness(ledger: Mapping[str, Any]) -> dict[str, Any]:
     required = ledger["facets"]["assurance"]["required"]
     states = {kind: evidence_state(ledger, kind) for kind in required}
@@ -1785,6 +1834,15 @@ def telemetry(ledger: Mapping[str, Any]) -> dict[str, Any]:
                 current = stage(f"evidence_{evidence_kind}")
                 current["failed_attempts"] += 1
                 current["last_failure_code"] = f"{evidence_kind}_failed"
+        elif kind == "proof_failure_recorded":
+            evidence_attempts["proof"] += 1
+            current = stage("tester_proof")
+            if current["attempts"] == 0:
+                current["attempts"] = 1
+                current["completed_attempts"] = 1
+            current["failed_attempts"] += 1
+            current["total_duration_ms"] += int(details.get("duration_ms", 0))
+            current["last_failure_code"] = str(details.get("code", "proof_failed"))
         if kind in {"builder_checkpointed", "tester_source_integrated", "target_rematerialized"}:
             candidate_changes += 1
 
@@ -2051,6 +2109,8 @@ def status(repo_value: str | Path, run_value: str) -> dict[str, Any]:
         "builder_checkpointed": ledger.get("builder_checkpointed", False),
         "driver_runtime": copy.deepcopy(ledger.get("driver_runtime")),
         "dispatch_intent": copy.deepcopy(ledger.get("dispatch_intent")),
+        "proof_failure": copy.deepcopy(ledger.get("proof_failure")),
+        "proof_failure_state": proof_failure_state(ledger),
         "deployment_transaction": copy.deepcopy(ledger.get("deployment_transaction")),
         "pending_blackbox": copy.deepcopy(ledger.get("pending_blackbox")),
         "environment_lease": copy.deepcopy(ledger.get("environment_lease")),
@@ -2082,6 +2142,8 @@ def driver_context(repo_value: str | Path, run_value: str) -> dict[str, Any]:
         "problems": copy.deepcopy(ledger.get("problems", [])),
         "driver_runtime": copy.deepcopy(ledger.get("driver_runtime")),
         "dispatch_intent": copy.deepcopy(ledger.get("dispatch_intent")),
+        "proof_failure": copy.deepcopy(ledger.get("proof_failure")),
+        "proof_failure_state": proof_failure_state(ledger),
         "deployment_transaction": copy.deepcopy(ledger.get("deployment_transaction")),
         "pending_blackbox": copy.deepcopy(ledger.get("pending_blackbox")),
         "environment_lease": copy.deepcopy(ledger.get("environment_lease")),
@@ -3345,6 +3407,106 @@ def _proof_run(
     }
 
 
+def _proof_failure_action_id(value: str | None) -> str | None:
+    if isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value):
+        return value
+    return None
+
+
+def _stable_proof_failure_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        has_requested_argv = isinstance(value.get("requested_argv"), list)
+        return {
+            str(key): _stable_proof_failure_value(item)
+            for key, item in value.items()
+            if key not in PROOF_FAILURE_VOLATILE_DETAIL_KEYS
+            and not (key == "argv" and has_requested_argv)
+        }
+    if isinstance(value, list):
+        return [_stable_proof_failure_value(item) for item in value]
+    return copy.deepcopy(value)
+
+
+def _proof_failure_signature(error: AssuranceError) -> str:
+    return digest(
+        {
+            "code": error.code,
+            "details": _stable_proof_failure_value(error.details),
+        }
+    )
+
+
+def _raise_recorded_proof_failure(record: Mapping[str, Any]) -> None:
+    failure = record["failure"]
+    raise AssuranceError(
+        str(failure["message"]),
+        code=str(failure["code"]),
+        status=str(failure["status"]),
+        details=copy.deepcopy(failure["details"]),
+    )
+
+
+def _record_proof_failure(
+    ledger: dict[str, Any],
+    *,
+    spec: Mapping[str, Any],
+    action_id: str | None,
+    agent_id: str,
+    thread_id: str,
+    error: AssuranceError,
+    artifact_root: Path | None,
+    duration_ms: int,
+) -> dict[str, Any]:
+    execution = ledger["facets"]["execution"]
+    source = execution.get("tester_source")
+    failure = {
+        "status": error.status,
+        "code": error.code,
+        "message": str(error),
+        "details": copy.deepcopy(error.details),
+    }
+    recovery = (
+        "tester_diagnosis"
+        if error.code in PROOF_TESTER_DIAGNOSIS_CODES
+        else "needs_user"
+    )
+    base = {
+        "action_id": _proof_failure_action_id(action_id),
+        "candidate_head": execution.get("candidate_head"),
+        "tester_source_head": source.get("head") if isinstance(source, Mapping) else None,
+        "producer": {"role": "tester", "agent_id": agent_id, "thread_id": thread_id},
+        "spec": copy.deepcopy(spec),
+        "spec_digest": digest(spec),
+        "dependency_digest": evidence_dependency(ledger, "proof"),
+        "failure": failure,
+        "recovery": recovery,
+        "failure_signature": _proof_failure_signature(error),
+        "artifact_root": str(artifact_root) if artifact_root is not None else None,
+    }
+    record = {
+        **base,
+        "failure_digest": digest(base),
+        "recorded_at": now(),
+    }
+    ledger["proof_failure"] = record
+    append_event(
+        ledger,
+        "proof_failure_recorded",
+        {
+            "action_id": record["action_id"],
+            "candidate_head": record["candidate_head"],
+            "code": error.code,
+            "recovery": recovery,
+            "spec_digest": record["spec_digest"],
+            "failure_signature": record["failure_signature"],
+            "failure_digest": record["failure_digest"],
+            "artifact_root": record["artifact_root"],
+            "duration_ms": duration_ms,
+        },
+    )
+    return record
+
+
 def prove_tests(
     repo_value: str | Path,
     run_value: str,
@@ -3352,6 +3514,7 @@ def prove_tests(
     *,
     agent_id: str,
     thread_id: str,
+    action_id: str | None = None,
 ) -> dict[str, Any]:
     spec = validate_test_proof_spec(spec_value)
     repo = resolve_repo(repo_value)
@@ -3366,27 +3529,83 @@ def prove_tests(
         expected_agent = ledger["facets"]["execution"]["agents"].get("tester")
         if expected_agent != {"agent_id": agent_id, "thread_id": thread_id}:
             raise AssuranceError("proof producer identity mismatch", code="EVIDENCE_PRODUCER_MISMATCH")
+        producer = {"role": "tester", "agent_id": agent_id, "thread_id": thread_id}
+        existing_proof = ledger.get("evidence", {}).get("proof")
+        if (
+            isinstance(existing_proof, dict)
+            and evidence_state(ledger, "proof") == "pass"
+            and existing_proof.get("producer") == producer
+            and existing_proof.get("details", {}).get("spec") == spec
+        ):
+            return status(repo, run_id)
+        normalized_action_id = _proof_failure_action_id(action_id)
+        existing_failure = current_proof_failure(ledger)
+        if (
+            isinstance(existing_failure, dict)
+            and existing_failure.get("action_id") == normalized_action_id
+        ):
+            input_changed = (
+                existing_failure.get("spec_digest") != digest(spec)
+                or existing_failure.get("producer") != producer
+            )
+            if not input_changed:
+                _raise_recorded_proof_failure(existing_failure)
+            if normalized_action_id is not None:
+                raise AssuranceError(
+                    "proof failure replay changed the completed action input",
+                    code="PROOF_FAILURE_REPLAY_MISMATCH",
+                    status="NEEDS_USER",
+                )
+
+        artifact_root: Path | None = None
+
+        def fail(error: AssuranceError) -> None:
+            _record_proof_failure(
+                ledger,
+                spec=spec,
+                action_id=action_id,
+                agent_id=agent_id,
+                thread_id=thread_id,
+                error=error,
+                artifact_root=artifact_root,
+                duration_ms=int((time.monotonic() - started_at) * 1000),
+            )
+            save_ledger(repo, ledger)
+            raise error
+
+        def capture(call):
+            try:
+                return call()
+            except AssuranceError as error:
+                fail(error)
+
         if evidence_state(ledger, "tester") != "pass":
-            raise AssuranceError(
-                "test proof requires current Tester author evidence",
-                code="TEST_PROOF_TESTER_MISSING",
-                status="FAIL",
+            fail(
+                AssuranceError(
+                    "test proof requires current Tester author evidence",
+                    code="TEST_PROOF_TESTER_MISSING",
+                    status="FAIL",
+                )
             )
         execution = ledger["facets"]["execution"]
         candidate = execution.get("candidate_head")
         tester_source = execution.get("tester_source")
         if not isinstance(candidate, str) or not isinstance(tester_source, dict):
-            raise AssuranceError("test proof source is unavailable", code="TEST_PROOF_SOURCE_MISSING")
+            fail(AssuranceError("test proof source is unavailable", code="TEST_PROOF_SOURCE_MISSING"))
         behavior_ids = [item["id"] for item in ledger["facets"]["mission"]["behaviors"]]
         observed_behaviors = [
             behavior
             for group in spec["groups"]
             for behavior in group["behavior_ids"]
         ]
-        if sorted(observed_behaviors) != sorted(behavior_ids) or len(observed_behaviors) != len(set(observed_behaviors)):
-            raise AssuranceError(
-                "test proof groups must cover every frozen behavior exactly once",
-                code="PROOF_BEHAVIOR_COVERAGE_MISMATCH",
+        if sorted(observed_behaviors) != sorted(behavior_ids) or len(
+            observed_behaviors
+        ) != len(set(observed_behaviors)):
+            fail(
+                AssuranceError(
+                    "test proof groups must cover every frozen behavior exactly once",
+                    code="PROOF_BEHAVIOR_COVERAGE_MISMATCH",
+                )
             )
         source_manifest = {item["path"]: item["blob"] for item in tester_source["files"]}
         mismatched = [
@@ -3396,18 +3615,20 @@ def prove_tests(
             or _blob_at(repo, candidate, path) != blob
         ]
         if mismatched:
-            raise AssuranceError(
-                "Tester source differs from the integrated candidate",
-                code="TEST_PROOF_MANIFEST_MISMATCH",
-                status="FAIL",
-                details={"paths": mismatched},
+            fail(
+                AssuranceError(
+                    "Tester source differs from the integrated candidate",
+                    code="TEST_PROOF_MANIFEST_MISMATCH",
+                    status="FAIL",
+                    details={"paths": mismatched},
+                )
             )
         from ..core import proof_test_source_path
 
         tester_patterns = ledger["facets"]["authority"]["tester_write"]
         unbound_tests: list[dict[str, str]] = []
         for group in spec["groups"]:
-            framework = _proof_framework(list(group["argv"]))
+            framework = capture(lambda: _proof_framework(list(group["argv"])))
             if group["method"] == "reviewed-boundaries":
                 boundary_ids = {
                     test_id
@@ -3415,14 +3636,16 @@ def prove_tests(
                     for test_id in values
                 }
                 if boundary_ids != set(group["test_ids"]):
-                    raise AssuranceError(
-                        "reviewed-boundaries ids must exactly equal the executed Tester test ids",
-                        code="TEST_PROOF_BOUNDARY_TEST_IDS_INVALID",
-                        status="FAIL",
-                        details={
-                            "declared_test_ids": sorted(group["test_ids"]),
-                            "reviewed_boundary_ids": sorted(boundary_ids),
-                        },
+                    fail(
+                        AssuranceError(
+                            "reviewed-boundaries ids must exactly equal the executed Tester test ids",
+                            code="TEST_PROOF_BOUNDARY_TEST_IDS_INVALID",
+                            status="FAIL",
+                            details={
+                                "declared_test_ids": sorted(group["test_ids"]),
+                                "reviewed_boundary_ids": sorted(boundary_ids),
+                            },
+                        )
                     )
             for test_id in group["test_ids"]:
                 if proof_test_source_path(
@@ -3434,29 +3657,39 @@ def prove_tests(
                 ) is None:
                     unbound_tests.append({"test_id": test_id, "framework": framework})
         if unbound_tests:
-            raise AssuranceError(
-                "test proof ids are not bound to Tester-owned source",
-                code="TEST_PROOF_TEST_SOURCE_UNBOUND",
-                status="FAIL",
-                details={"tests": unbound_tests},
+            fail(
+                AssuranceError(
+                    "test proof ids are not bound to Tester-owned source",
+                    code="TEST_PROOF_TEST_SOURCE_UNBOUND",
+                    status="FAIL",
+                    details={"tests": unbound_tests},
+                )
             )
         launcher_identities: list[dict[str, Any] | None] = []
         candidate_worktree_path = Path(ledger["candidate_worktree"])
         for group in spec["groups"]:
             requested = list(group["argv"])
-            _proof_framework(requested)
+            capture(lambda: _proof_framework(requested))
             if requested and Path(requested[0]).name.lower() == "uv":
-                resolved, identity = _resolve_machine_executable(
-                    repo, candidate_worktree_path, candidate, requested[0]
+                resolved, identity = capture(
+                    lambda: _resolve_machine_executable(
+                        repo, candidate_worktree_path, candidate, requested[0]
+                    )
                 )
                 if resolved is None:
-                    raise AssuranceError(
-                        "test proof uv launcher could not be resolved",
-                        code="TEST_PROOF_EXECUTABLE_INVALID",
-                        status="FAIL",
-                        details={"identity": identity},
+                    fail(
+                        AssuranceError(
+                            "test proof uv launcher could not be resolved",
+                            code="TEST_PROOF_EXECUTABLE_INVALID",
+                            status="FAIL",
+                            details={"identity": identity},
+                        )
                     )
-                _proof_uv_project_identity(repo, candidate_worktree_path, candidate, requested)
+                capture(
+                    lambda: _proof_uv_project_identity(
+                        repo, candidate_worktree_path, candidate, requested
+                    )
+                )
                 launcher_identities.append(identity)
             else:
                 launcher_identities.append(None)
@@ -3470,23 +3703,32 @@ def prove_tests(
                 candidate_worktree = proof_root / f"candidate-{index}"
                 added = git(repo, "worktree", "add", "--detach", str(candidate_worktree), candidate, check=False)
                 if added.returncode != 0:
-                    raise AssuranceError("proof candidate worktree creation failed", code="TEST_PROOF_WORKTREE_CREATE_FAILED")
+                    fail(
+                        AssuranceError(
+                            "proof candidate worktree creation failed",
+                            code="TEST_PROOF_WORKTREE_CREATE_FAILED",
+                        )
+                    )
                 created_worktrees.append(candidate_worktree)
-                candidate_result = _proof_run(
-                    repo,
-                    candidate_worktree,
-                    candidate,
-                    group,
-                    artifact_root,
-                    f"group-{index}-candidate",
-                    launcher_identities[index],
+                candidate_result = capture(
+                    lambda: _proof_run(
+                        repo,
+                        candidate_worktree,
+                        candidate,
+                        group,
+                        artifact_root,
+                        f"group-{index}-candidate",
+                        launcher_identities[index],
+                    )
                 )
                 if candidate_result["test_result"].get("classification") != "pass":
-                    raise AssuranceError(
-                        "candidate tests did not pass before effectiveness proof",
-                        code="TEST_PROOF_CANDIDATE_FAILED",
-                        status="FAIL",
-                        details={"group": index, "result": candidate_result},
+                    fail(
+                        AssuranceError(
+                            "candidate tests did not pass before effectiveness proof",
+                            code="TEST_PROOF_CANDIDATE_FAILED",
+                            status="FAIL",
+                            details={"group": index, "result": candidate_result},
+                        )
                     )
                 method = group["method"]
                 counterexample: dict[str, Any] | None = None
@@ -3494,22 +3736,34 @@ def prove_tests(
                     baseline_worktree = proof_root / f"baseline-{index}"
                     added = git(repo, "worktree", "add", "--detach", str(baseline_worktree), tester_source["head"], check=False)
                     if added.returncode != 0:
-                        raise AssuranceError("proof baseline worktree creation failed", code="TEST_PROOF_WORKTREE_CREATE_FAILED")
+                        fail(
+                            AssuranceError(
+                                "proof baseline worktree creation failed",
+                                code="TEST_PROOF_WORKTREE_CREATE_FAILED",
+                            )
+                        )
                     created_worktrees.append(baseline_worktree)
-                    counterexample = _proof_run(
-                        repo,
-                        baseline_worktree,
-                        tester_source["head"],
-                        group,
-                        artifact_root,
-                        f"group-{index}-baseline",
-                        launcher_identities[index],
+                    counterexample = capture(
+                        lambda: _proof_run(
+                            repo,
+                            baseline_worktree,
+                            tester_source["head"],
+                            group,
+                            artifact_root,
+                            f"group-{index}-baseline",
+                            launcher_identities[index],
+                        )
                     )
                 elif method == "mutation":
                     mutation_worktree = proof_root / f"mutation-{index}"
                     added = git(repo, "worktree", "add", "--detach", str(mutation_worktree), candidate, check=False)
                     if added.returncode != 0:
-                        raise AssuranceError("proof mutation worktree creation failed", code="TEST_PROOF_WORKTREE_CREATE_FAILED")
+                        fail(
+                            AssuranceError(
+                                "proof mutation worktree creation failed",
+                                code="TEST_PROOF_WORKTREE_CREATE_FAILED",
+                            )
+                        )
                     created_worktrees.append(mutation_worktree)
                     applied = subprocess.run(
                         ["git", "-C", str(mutation_worktree), "apply", "--whitespace=nowarn", "-"],
@@ -3520,11 +3774,13 @@ def prove_tests(
                         check=False,
                     )
                     if applied.returncode != 0:
-                        raise AssuranceError(
-                            "test proof mutation patch could not be applied",
-                            code="TEST_PROOF_MUTATION_INVALID",
-                            status="FAIL",
-                            details={"stderr": applied.stderr[-8000:]},
+                        fail(
+                            AssuranceError(
+                                "test proof mutation patch could not be applied",
+                                code="TEST_PROOF_MUTATION_INVALID",
+                                status="FAIL",
+                                details={"stderr": applied.stderr[-8000:]},
+                            )
                         )
                     mutation_paths = dirty_paths(mutation_worktree)
                     invalid_paths = [
@@ -3537,27 +3793,33 @@ def prove_tests(
                         or (mutation_worktree / path).is_symlink()
                     ]
                     if not mutation_paths or invalid_paths:
-                        raise AssuranceError(
-                            "test proof mutation escaped Builder-owned implementation files",
-                            code="TEST_PROOF_MUTATION_AUTHORITY_VIOLATION",
-                            status="FAIL",
-                            details={"paths": invalid_paths or mutation_paths},
+                        fail(
+                            AssuranceError(
+                                "test proof mutation escaped Builder-owned implementation files",
+                                code="TEST_PROOF_MUTATION_AUTHORITY_VIOLATION",
+                                status="FAIL",
+                                details={"paths": invalid_paths or mutation_paths},
+                            )
                         )
-                    counterexample = _proof_run(
-                        repo,
-                        mutation_worktree,
-                        candidate,
-                        group,
-                        artifact_root,
-                        f"group-{index}-mutation",
-                        launcher_identities[index],
+                    counterexample = capture(
+                        lambda: _proof_run(
+                            repo,
+                            mutation_worktree,
+                            candidate,
+                            group,
+                            artifact_root,
+                            f"group-{index}-mutation",
+                            launcher_identities[index],
+                        )
                     )
                 if counterexample is not None and counterexample["test_result"].get("classification") != "assertion-failure":
-                    raise AssuranceError(
-                        "test proof counterexample was not an assertion failure",
-                        code="TEST_PROOF_COUNTEREXAMPLE_INVALID",
-                        status="FAIL",
-                        details={"group": index, "result": counterexample},
+                    fail(
+                        AssuranceError(
+                            "test proof counterexample was not an assertion failure",
+                            code="TEST_PROOF_COUNTEREXAMPLE_INVALID",
+                            status="FAIL",
+                            details={"group": index, "result": counterexample},
+                        )
                     )
                 results.append(
                     {
@@ -3589,6 +3851,7 @@ def prove_tests(
             "details": details,
             "recorded_at": now(),
         }
+        ledger["proof_failure"] = None
         ledger["evidence"]["proof"] = record
         record["dependency_digest"] = evidence_dependency(ledger, "proof")
         append_event(

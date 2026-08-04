@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Mapping
 
-from .core import ensure_run_id, evidence_state, readiness
+from .core import current_proof_failure, ensure_run_id, evidence_state, readiness
 from .models import digest
 from .store import branch_head, dirty_paths, git, read_ledger, resolve_repo
 
@@ -248,6 +248,29 @@ def next_action(repo_value: str | Path, run_value: str) -> dict[str, Any]:
             candidate_worktree=ledger["candidate_worktree"],
             candidate_head=live_candidate,
         )
+    repeated_proof_failures: dict[str, int] = {}
+    for event in ledger.get("events", []):
+        if not isinstance(event, Mapping) or event.get("kind") != "proof_failure_recorded":
+            continue
+        details = event.get("details")
+        signature = details.get("failure_signature") if isinstance(details, Mapping) else None
+        if isinstance(signature, str) and signature:
+            repeated_proof_failures[signature] = repeated_proof_failures.get(signature, 0) + 1
+    proof_review_failures = [
+        (signature, count)
+        for signature, count in repeated_proof_failures.items()
+        if count >= 3
+    ]
+    if proof_review_failures:
+        return decision(
+            "NEEDS_USER",
+            "architecture_review",
+            "same_failure_three_times",
+            failures=[
+                {"kind": "proof", "failure_signature": signature, "count": count}
+                for signature, count in sorted(proof_review_failures)
+            ],
+        )
     if open_problems:
         latest = open_problems[-1]
         owner = latest.get("owner")
@@ -265,6 +288,23 @@ def next_action(repo_value: str | Path, run_value: str) -> dict[str, Any]:
         elif action == "tester_fix":
             payload["agent"] = execution["agents"].get("tester")
         return decision("CONTINUE", action, f"open_{owner}_problem", **payload)
+    proof_failure = current_proof_failure(ledger)
+    if isinstance(proof_failure, dict):
+        if proof_failure.get("recovery") == "tester_diagnosis":
+            return decision(
+                "CONTINUE",
+                "tester_proof_diagnose",
+                "proof_failure_requires_diagnosis",
+                proof_failure=proof_failure,
+                agent=execution["agents"].get("tester"),
+                tester_source=execution.get("tester_source"),
+            )
+        return decision(
+            "NEEDS_USER",
+            "proof_failure_decision",
+            "proof_failure_requires_user",
+            proof_failure=proof_failure,
+        )
     if not ledger.get("builder_checkpointed", False):
         return decision(
             "CONTINUE",
@@ -301,11 +341,23 @@ def next_action(repo_value: str | Path, run_value: str) -> dict[str, Any]:
     )
     repeated: dict[tuple[str, str], int] = {}
     for event_index, event in enumerate(ledger.get("events", [])):
-        if event.get("kind") not in {"evidence_recorded", "machine_verified"}:
+        event_kind = event.get("kind")
+        if event_kind not in {
+            "evidence_recorded",
+            "machine_verified",
+            "proof_failure_recorded",
+        }:
             continue
         details = event.get("details", {})
         signature = details.get("failure_signature")
-        kind = details.get("kind", "machine" if event.get("kind") == "machine_verified" else "")
+        kind = details.get(
+            "kind",
+            "machine"
+            if event_kind == "machine_verified"
+            else "proof"
+            if event_kind == "proof_failure_recorded"
+            else "",
+        )
         if (
             kind == "machine"
             and recovery_state == "succeeded"

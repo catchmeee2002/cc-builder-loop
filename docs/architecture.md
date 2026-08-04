@@ -50,6 +50,16 @@ Core 在隔离 worktree 先证明 candidate tests 通过，再执行 baseline-re
 才记录 proof；ledger 同时保存规范化 spec、逐组执行结果、executable identity、log digest 与 artifact
 位置，任意 report digest 不能替代真实执行。
 
+有效 Tester identity 与当前 Driver action 已绑定后，`prove-tests` 的失败先写入 ledger 唯一
+`proof_failure`，绑定 candidate、Tester source、原 spec、结构化错误、artifact 和 dependency digest；它
+是当前失败尝试的恢复事实，不是 proof evidence，不能满足 readiness 或 Reviewer prerequisite。candidate、
+counterexample、coverage、test-id、command 和 mutation 输入类失败由 Driver 续接原 Tester thread 执行
+只读 `tester_proof_diagnose`，再按其非空 problem owner 路由 Builder、Tester 或 plan；环境、身份完整性
+及未知错误返回 `proof_failure_decision / NEEDS_USER`，runtime 不猜修复者。Native Coordinator 只有在
+Core error 与同 action 的 current failure 精确匹配后才消费 completed dispatch；进程在 failure 落盘或
+problem 记录后中断时重放同一事务，不重复执行 proof 命令或追加 attempt。成功 proof 仍是唯一 PASS
+来源，并清除当前 failure。
+
 Native Driver 使用 App Server 稳定 stdio thread/turn 接口并在启动前检查当前协议 schema；不启用
 `experimentalApi` 字段，也不新增 API Key。Builder、Tester、Reviewer 的唯一 role policy 仍来自
 `agents/*.toml`，App Server `outputSchema` 把终态收敛为公共 v4 JSON。Core 机械核对 thread identity、
@@ -394,6 +404,10 @@ no-op，冲突内容以 `PROBLEM_REPLAY_MISMATCH` 停止；candidate 前移后�
 Builder turn 的 completed dispatch 先 checkpoint clean commit、关闭 Builder problem 并更新 candidate，
 再消费 dispatch；崩溃恢复重复同一顺序。Driver 在路由 open problem 前先收敛已提交但未 checkpoint
 的 live candidate，避免同一 `builder_fix` 无限重派。
+Native `tester_proof` 的 completed dispatch 同样先应用 Core gate：成功 evidence 或 current
+`proof_failure` 二者必须恰有一个与该 action 对应，Coordinator 才能消费。failure 的相同 action/spec
+replay 返回已存错误且不追加 event；消费后 Driver 才能派生独立的诊断 turn，因此 dispatch intent 不缓存
+后续 correction loop 或第二份 evidence。
 `dispatch_consumed.details.consumer_source` 是消费事实的唯一来源，值为 `native_driver`、
 `full_driver_skill` 或 `operator_recovery`；旧事件缺少该字段时只按保守规则推断，不回写历史 ledger。
 

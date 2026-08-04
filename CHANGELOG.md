@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Assurance v4 现在把可信 `prove-tests` 失败持久化为 candidate、Tester source、spec、结构化错误与
+  artifact 绑定的 `proof_failure`，不再让 Native Driver 因 `TEST_PROOF_CANDIDATE_FAILED` 或
+  `TEST_PROOF_COUNTEREXAMPLE_INVALID` 直接退出并无限重放 completed dispatch。可在冻结 run 内修正的
+  失败续接原 Tester thread 做只读归因，再按 builder/tester/plan problem 路由；环境、完整性与未知失败
+  明确停到 `NEEDS_USER`。成功与失败的 exact replay 均不重复执行 proof，失败不生成 PASS evidence，
+  telemetry 与三次同类失败门禁继续从 ledger event 派生（#166）。
+
 - Assurance v4 新增完整 Revision continuity：计划可显式保留唯一 owner 的 environment lease，同 run
   Mission Revision 绑定上一 mission digest 并继续使用未漂移环境；跨 run `supersedes` 携带精确 candidate
   snapshot，按 source intent、target receipt、source seal 转移 lease。制品变化时先恢复旧环境再部署，

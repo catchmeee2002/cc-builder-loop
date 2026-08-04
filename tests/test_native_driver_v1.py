@@ -16,8 +16,8 @@ from codex_builder_loop.native_driver.app_server import (
     TurnResult,
     probe_app_server,
 )
-from codex_builder_loop.native_driver.coordinator import NativeCoordinator
-from codex_builder_loop.native_driver.core_port import CorePort
+from codex_builder_loop.native_driver.coordinator import NativeCoordinator, NativeDriverError
+from codex_builder_loop.native_driver.core_port import CorePort, CorePortError
 
 
 def native_contract(repo: Path) -> dict:
@@ -518,6 +518,204 @@ class NativeCoordinatorContractTest(unittest.TestCase):
             payload["proof_test_id_hints"][0]["unittest_module"], "tests.test_calc"
         )
         self.assertIn("exactly", payload["proof_execution_rule"])
+
+    def test_proof_failure_prompt_reuses_tester_thread_for_read_only_diagnosis(self) -> None:
+        coordinator = NativeCoordinator(
+            repo=ROOT,
+            run_id="native-proof-diagnosis",
+            core=object(),
+            transport=object(),
+            project_root=ROOT,
+        )
+        context = {
+            "target_start_head": "1" * 40,
+            "candidate_worktree": str(ROOT),
+            "facets": native_contract(ROOT),
+            "evidence": {},
+            "publication": None,
+            "problems": [],
+        }
+        failure = {
+            "action_id": "a" * 64,
+            "failure_digest": "b" * 64,
+            "failure": {
+                "status": "FAIL",
+                "code": "TEST_PROOF_CANDIDATE_FAILED",
+                "message": "candidate failed",
+                "details": {"group": 0},
+            },
+        }
+        prompt = coordinator._prompt(
+            {
+                "action": "tester_proof_diagnose",
+                "action_id": "c" * 64,
+                "proof_failure": failure,
+            },
+            "tester",
+            context,
+        )
+        payload = json.loads(prompt.split("\n", 1)[1])
+        self.assertEqual(payload["phase"], "proof_diagnose")
+        self.assertEqual(payload["proof_failure"], failure)
+        self.assertNotIn("proof_spec_schema", payload)
+        self.assertIn("Do not edit files", payload["proof_diagnosis_rule"])
+        self.assertIn(
+            "required_non_empty",
+            payload["result_field_contract"]["problem_report"],
+        )
+
+    def test_recorded_proof_core_failure_is_consumed_but_unrecorded_error_is_not(self) -> None:
+        action_id = "a" * 64
+        error = CorePortError(
+            "candidate failed",
+            payload={"status": "FAIL", "code": "TEST_PROOF_CANDIDATE_FAILED"},
+            returncode=1,
+        )
+
+        class FakeCore:
+            def __init__(self, *, recorded: bool) -> None:
+                self.recorded = recorded
+                self.calls: list[str] = []
+
+            def call(self, command: str, *args: str, input_value=None):
+                self.calls.append(command)
+                if command == "prove-tests":
+                    raise error
+                if command == "driver-context":
+                    return {
+                        "proof_failure_state": "current" if self.recorded else "missing",
+                        "proof_failure": (
+                            {
+                                "action_id": action_id,
+                                "failure_digest": "b" * 64,
+                                "failure": {
+                                    "status": "FAIL",
+                                    "code": "TEST_PROOF_CANDIDATE_FAILED",
+                                },
+                            }
+                            if self.recorded
+                            else None
+                        ),
+                    }
+                if command == "consume-dispatch":
+                    return {"status": "ACTIVE"}
+                raise AssertionError(command)
+
+        context = {
+            "facets": {
+                "authority": {"tester_write": []},
+                "execution": {
+                    "agents": {
+                        "tester": {
+                            "agent_id": "tester-agent",
+                            "thread_id": "tester-thread",
+                        }
+                    },
+                    "tester_source": None,
+                },
+            }
+        }
+        result = {
+            "result": "pass",
+            "evidence_report": None,
+            "proof_spec": {"schema_version": 1, "groups": []},
+            "problem_report": None,
+        }
+        action = {"action": "tester_proof", "action_id": action_id}
+
+        recorded_core = FakeCore(recorded=True)
+        NativeCoordinator(
+            repo=ROOT,
+            run_id="native-proof-recorded",
+            core=recorded_core,
+            transport=object(),
+            project_root=ROOT,
+        )._apply_agent_result(action, "tester", result, context)
+        self.assertEqual(
+            recorded_core.calls,
+            ["prove-tests", "driver-context", "consume-dispatch"],
+        )
+
+        unrecorded_core = FakeCore(recorded=False)
+        with self.assertRaises(CorePortError):
+            NativeCoordinator(
+                repo=ROOT,
+                run_id="native-proof-unrecorded",
+                core=unrecorded_core,
+                transport=object(),
+                project_root=ROOT,
+            )._apply_agent_result(action, "tester", result, context)
+        self.assertNotIn("consume-dispatch", unrecorded_core.calls)
+
+    def test_proof_diagnosis_records_problem_before_dispatch_consumption(self) -> None:
+        class FakeCore:
+            def __init__(self) -> None:
+                self.calls: list[str] = []
+
+            def call(self, command: str, *args: str, input_value=None):
+                self.calls.append(command)
+                return {"status": "ACTIVE"}
+
+        core = FakeCore()
+        coordinator = NativeCoordinator(
+            repo=ROOT,
+            run_id="native-proof-problem",
+            core=core,
+            transport=object(),
+            project_root=ROOT,
+        )
+        context = {
+            "facets": {
+                "execution": {
+                    "agents": {
+                        "tester": {
+                            "agent_id": "tester-agent",
+                            "thread_id": "tester-thread",
+                        }
+                    }
+                }
+            }
+        }
+        coordinator._apply_agent_result(
+            {"action": "tester_proof_diagnose", "action_id": "a" * 64},
+            "tester",
+            {
+                "result": "fail",
+                "evidence_report": None,
+                "proof_spec": None,
+                "problem_report": {
+                    "schema_version": 1,
+                    "problems": [
+                        {
+                            "key": "candidate-contract-failure",
+                            "summary": "Candidate violates the frozen behavior.",
+                            "details": "The persisted candidate test assertion failed.",
+                            "owner": "builder",
+                        }
+                    ],
+                },
+            },
+            context,
+        )
+        self.assertEqual(core.calls, ["record-problems", "consume-dispatch"])
+
+        with self.assertRaisesRegex(NativeDriverError, "unsupported owner"):
+            coordinator._validate_proof_diagnosis(
+                {
+                    "result": "fail",
+                    "problem_report": {
+                        "schema_version": 1,
+                        "problems": [
+                            {
+                                "key": "runtime-defect",
+                                "summary": "Runtime defect.",
+                                "details": "Not a target correction.",
+                                "owner": "builder_loop",
+                            }
+                        ],
+                    },
+                }
+            )
 
     def test_builder_wire_drops_unowned_evidence_fields(self) -> None:
         result = NativeCoordinator._normalize_action_result(

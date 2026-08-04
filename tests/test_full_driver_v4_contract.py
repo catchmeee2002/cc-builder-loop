@@ -140,6 +140,25 @@ class FullDriverV4ContractTest(unittest.TestCase):
     def load_ledger(self, run_path: Path) -> dict[str, Any]:
         return json.loads((run_path / "ledger.json").read_text(encoding="utf-8"))
 
+    def assert_proof_failure(
+        self,
+        run_path: Path,
+        *,
+        code: str,
+        recovery: str,
+        action_id: str | None = None,
+    ) -> dict[str, Any]:
+        ledger = self.load_ledger(run_path)
+        self.assertNotIn("proof", ledger["evidence"])
+        failure = ledger.get("proof_failure")
+        self.assertIsInstance(failure, dict)
+        self.assertEqual(failure["failure"]["code"], code)
+        self.assertEqual(failure["recovery"], recovery)
+        if action_id is not None:
+            self.assertEqual(failure["action_id"], action_id)
+        self.assertEqual(ledger["proof_failure"], failure)
+        return failure
+
     def prepare_and_record_tester(self, run_id: str, run_path: Path) -> dict[str, Any]:
         ledger = self.load_ledger(run_path)
         tester = ledger["facets"]["execution"]["agents"]["tester"]
@@ -252,6 +271,7 @@ class FullDriverV4ContractTest(unittest.TestCase):
         candidate_source: str,
         test_source: str,
         project_modes: dict[str, str] | None = None,
+        driver_enforced: bool = True,
     ) -> tuple[Path, dict[str, Any], dict[str, Any]]:
         modes = project_modes or {"pyproject.toml": "regular", "uv.lock": "regular"}
         (self.repo / "src" / "calc.py").write_text(baseline_source, encoding="utf-8")
@@ -279,6 +299,7 @@ class FullDriverV4ContractTest(unittest.TestCase):
         commit_all(self.repo, f"prepare uv proof baseline {run_id}")
         contract = contract_for(self.repo)
         contract["assurance"]["required"].insert(2, "proof")
+        contract["execution"]["driver_enforced"] = driver_enforced
         data, run_path = self.start(run_id, contract=contract)
         candidate = Path(data["candidate_worktree"])
         (candidate / "src" / "calc.py").write_text(
@@ -1108,6 +1129,464 @@ class FullDriverV4ContractTest(unittest.TestCase):
             proof["details"]["spec"]["groups"][0]["argv"][0], str(launcher)
         )
 
+    def test_proof_success_and_failure_replay_do_not_rerun_commands(self) -> None:
+        failure_run = "proof-failure-replay"
+        failure_marker = self.artifacts / "proof-failure-replay-invoked"
+        failure_launcher = self.make_uv_launcher(
+            failure_run, invocation_marker=failure_marker
+        )
+        failure_path, failure_tester, _failure_action = self.prepare_uv_proof_run(
+            failure_run,
+            baseline_source="def add(a, b):\n    return a + b - 1\n",
+            candidate_source="def add(a, b):\n    return a + b\n",
+            test_source=(
+                "from src.calc import add\n\n"
+                "def test_observation():\n"
+                "    assert add(1, 2) == 99\n"
+            ),
+            driver_enforced=False,
+        )
+        failure_spec = self.write_json(
+            "proof-failure-replay.json", self.uv_baseline_spec(failure_launcher)
+        )
+        failure_args = (
+            "prove-tests",
+            "--repo",
+            self.repo,
+            "--run",
+            failure_run,
+            "--spec",
+            failure_spec,
+            "--agent-id",
+            failure_tester["agent_id"],
+            "--thread-id",
+            failure_tester["thread_id"],
+        )
+        rc, first_failure = self.invoke(*failure_args)
+        self.assertNotEqual(rc, 0, first_failure)
+        self.assertEqual(first_failure.get("code"), "TEST_PROOF_CANDIDATE_FAILED")
+        first_failure_ledger = self.load_ledger(failure_path)
+        first_failure_events = len(first_failure_ledger["events"])
+        self.assertEqual(failure_marker.read_text().splitlines(), ["invoked"])
+        rc, failure_status = self.invoke(
+            "status", "--repo", self.repo, "--run", failure_run
+        )
+        self.assertEqual(rc, 0, failure_status)
+        self.assertEqual(failure_status["telemetry"]["evidence_attempts"]["proof"], 1)
+        proof_stage = next(
+            item
+            for item in failure_status["telemetry"]["stages"]
+            if item["name"] == "tester_proof"
+        )
+        self.assertEqual(proof_stage["failed_attempts"], 1)
+        self.assertEqual(
+            proof_stage["last_failure_code"], "TEST_PROOF_CANDIDATE_FAILED"
+        )
+
+        rc, replayed_failure = self.invoke(*failure_args)
+        self.assertNotEqual(rc, 0, replayed_failure)
+        self.assertEqual(replayed_failure.get("code"), "TEST_PROOF_CANDIDATE_FAILED")
+        self.assertEqual(failure_marker.read_text().splitlines(), ["invoked"])
+        self.assertEqual(
+            len(self.load_ledger(failure_path)["events"]), first_failure_events
+        )
+
+        success_run = "proof-success-replay"
+        success_marker = self.artifacts / "proof-success-replay-invoked"
+        success_launcher = self.make_uv_launcher(
+            success_run, invocation_marker=success_marker
+        )
+        success_path, success_tester, _success_action = self.prepare_uv_proof_run(
+            success_run,
+            baseline_source="def add(a, b):\n    return a + b - 1\n",
+            candidate_source="def add(a, b):\n    return a + b\n",
+            test_source=(
+                "from src.calc import add\n\n"
+                "def test_observation():\n"
+                "    assert add(1, 2) == 3\n"
+            ),
+            driver_enforced=False,
+        )
+        success_spec = self.write_json(
+            "proof-success-replay.json", self.uv_baseline_spec(success_launcher)
+        )
+        success_args = (
+            "prove-tests",
+            "--repo",
+            self.repo,
+            "--run",
+            success_run,
+            "--spec",
+            success_spec,
+            "--agent-id",
+            success_tester["agent_id"],
+            "--thread-id",
+            success_tester["thread_id"],
+        )
+        rc, first_success = self.invoke(*success_args)
+        self.assertEqual(rc, 0, first_success)
+        first_success_ledger = self.load_ledger(success_path)
+        first_success_events = len(first_success_ledger["events"])
+        self.assertEqual(len(success_marker.read_text().splitlines()), 2)
+
+        rc, replayed_success = self.invoke(*success_args)
+        self.assertEqual(rc, 0, replayed_success)
+        self.assertEqual(len(success_marker.read_text().splitlines()), 2)
+        self.assertEqual(
+            len(self.load_ledger(success_path)["events"]), first_success_events
+        )
+
+    def test_manual_proof_failure_can_retry_a_corrected_spec_without_action_id(self) -> None:
+        run_id = "manual-proof-corrected-spec"
+        launcher = self.make_uv_launcher(run_id)
+        run_path, tester, _action = self.prepare_uv_proof_run(
+            run_id,
+            baseline_source="def add(a, b):\n    return a + b - 1\n",
+            candidate_source="def add(a, b):\n    return a + b\n",
+            test_source=(
+                "from src.calc import add\n\n"
+                "def test_observation():\n"
+                "    assert add(1, 2) == 3\n"
+            ),
+            driver_enforced=False,
+        )
+        invalid_spec = self.uv_baseline_spec(launcher)
+        invalid_spec["groups"][0]["argv"] = [
+            "echo",
+            "tests/test_uv_proof.py::test_observation",
+        ]
+        invalid_path = self.write_json(
+            "manual-proof-invalid-spec.json", invalid_spec
+        )
+        rc, rejected = self.invoke(
+            "prove-tests",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--spec",
+            invalid_path,
+            "--agent-id",
+            tester["agent_id"],
+            "--thread-id",
+            tester["thread_id"],
+        )
+        self.assertNotEqual(rc, 0, rejected)
+        self.assertEqual(rejected.get("code"), "TEST_PROOF_COMMAND_UNSUPPORTED")
+        self.assert_proof_failure(
+            run_path,
+            code="TEST_PROOF_COMMAND_UNSUPPORTED",
+            recovery="tester_diagnosis",
+        )
+
+        corrected_path = self.write_json(
+            "manual-proof-corrected-spec.json", self.uv_baseline_spec(launcher)
+        )
+        rc, proved = self.invoke(
+            "prove-tests",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--spec",
+            corrected_path,
+            "--agent-id",
+            tester["agent_id"],
+            "--thread-id",
+            tester["thread_id"],
+        )
+        self.assertEqual(rc, 0, proved)
+        ledger = self.load_ledger(run_path)
+        self.assertIsNone(ledger["proof_failure"])
+        self.assertEqual(ledger["evidence"]["proof"]["status"], "pass")
+
+    def test_native_completed_proof_dispatch_replays_failure_without_rerun(self) -> None:
+        run_id = "native-proof-failure-replay"
+        marker = self.artifacts / "native-proof-failure-invoked"
+        launcher = self.make_uv_launcher(run_id, invocation_marker=marker)
+        run_path, tester, action = self.prepare_uv_proof_run(
+            run_id,
+            baseline_source="def add(a, b):\n    return a + b - 1\n",
+            candidate_source="def add(a, b):\n    return a + b\n",
+            test_source=(
+                "from src.calc import add\n\n"
+                "def test_observation():\n"
+                "    assert add(1, 2) == 99\n"
+            ),
+        )
+        ledger_path = run_path / "ledger.json"
+        ledger = self.load_ledger(run_path)
+        ledger["driver_runtime"] = {
+            "kind": "native",
+            "protocol_version": 1,
+            "transport": "codex_app_server",
+            "runtime_version": "native-proof-test",
+            "protocol_schema_digest": "f" * 64,
+        }
+        ledger_path.write_text(
+            json.dumps(ledger, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        spec = self.uv_baseline_spec(launcher)
+        spec_path = self.write_json("native-proof-failure.json", spec)
+        rc, begun = self.invoke(
+            "begin-dispatch",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--action-id",
+            action["action_id"],
+            "--action",
+            "tester_proof",
+            "--role",
+            "tester",
+            "--thread-id",
+            tester["thread_id"],
+            "--prompt-digest",
+            "a" * 64,
+            "--output-schema-digest",
+            "b" * 64,
+        )
+        self.assertEqual(rc, 0, begun)
+        result_path = self.write_json(
+            "native-proof-result.json",
+            {
+                "result": "pass",
+                "evidence_report": None,
+                "proof_spec": spec,
+                "problem_report": None,
+            },
+        )
+        rc, completed = self.invoke(
+            "complete-dispatch",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--action-id",
+            action["action_id"],
+            "--result",
+            result_path,
+        )
+        self.assertEqual(rc, 0, completed)
+
+        proof_args = (
+            "prove-tests",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--spec",
+            spec_path,
+            "--agent-id",
+            tester["agent_id"],
+            "--thread-id",
+            tester["thread_id"],
+            "--action-id",
+            action["action_id"],
+            "--driver-runtime-kind",
+            "native",
+        )
+        rc, first = self.invoke(*proof_args)
+        self.assertNotEqual(rc, 0, first)
+        self.assertEqual(first.get("code"), "TEST_PROOF_CANDIDATE_FAILED")
+        first_ledger = self.load_ledger(run_path)
+        first_events = len(first_ledger["events"])
+        self.assertEqual(first_ledger["dispatch_intent"]["state"], "completed")
+        self.assertEqual(marker.read_text().splitlines(), ["invoked"])
+
+        rc, replayed = self.invoke(*proof_args)
+        self.assertNotEqual(rc, 0, replayed)
+        self.assertEqual(replayed.get("code"), "TEST_PROOF_CANDIDATE_FAILED")
+        replayed_ledger = self.load_ledger(run_path)
+        self.assertEqual(len(replayed_ledger["events"]), first_events)
+        self.assertEqual(marker.read_text().splitlines(), ["invoked"])
+
+        rc, consumed = self.invoke(
+            "consume-dispatch",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--action-id",
+            action["action_id"],
+            "--consumer-source",
+            "native_driver",
+        )
+        self.assertEqual(rc, 0, consumed)
+        rc, diagnosis = self.invoke(
+            "driver-next", "--repo", self.repo, "--run", run_id
+        )
+        self.assertEqual(rc, 0, diagnosis)
+        self.assertEqual(diagnosis.get("action"), "tester_proof_diagnose")
+
+    def test_proof_diagnosis_problem_routes_to_declared_owner(self) -> None:
+        for owner, expected_action in (
+            ("tester", "tester_fix"),
+            ("builder", "builder_fix"),
+            ("plan", "contract_decision"),
+        ):
+            with self.subTest(owner=owner):
+                run_id = f"proof-diagnosis-{owner}"
+                launcher = self.make_uv_launcher(run_id)
+                run_path, tester, action = self.prepare_uv_proof_run(
+                    run_id,
+                    baseline_source="def add(a, b):\n    return a + b - 1\n",
+                    candidate_source="def add(a, b):\n    return a + b\n",
+                    test_source=(
+                        "from src.calc import add\n\n"
+                        "def test_observation():\n"
+                        "    assert add(1, 2) == 99\n"
+                    ),
+                )
+                spec_path = self.write_json(
+                    f"{run_id}.json", self.uv_baseline_spec(launcher)
+                )
+                rc, failed = self.invoke(
+                    "prove-tests",
+                    "--repo",
+                    self.repo,
+                    "--run",
+                    run_id,
+                    "--spec",
+                    spec_path,
+                    "--agent-id",
+                    tester["agent_id"],
+                    "--thread-id",
+                    tester["thread_id"],
+                    "--action-id",
+                    action["action_id"],
+                )
+                self.assertNotEqual(rc, 0, failed)
+                rc, diagnosis = self.invoke(
+                    "driver-next", "--repo", self.repo, "--run", run_id
+                )
+                self.assertEqual(rc, 0, diagnosis)
+                self.assertEqual(diagnosis.get("action"), "tester_proof_diagnose")
+                report_path = self.write_json(
+                    f"{run_id}-problem.json",
+                    {
+                        "schema_version": 1,
+                        "problems": [
+                            {
+                                "key": f"proof-{owner}-failure",
+                                "summary": f"Proof failure belongs to {owner}.",
+                                "details": "The original Tester classified the persisted failure.",
+                                "owner": owner,
+                            }
+                        ],
+                    },
+                )
+                rc, recorded = self.invoke(
+                    "record-problems",
+                    "--repo",
+                    self.repo,
+                    "--run",
+                    run_id,
+                    "--report",
+                    report_path,
+                    "--role",
+                    "tester",
+                    "--agent-id",
+                    tester["agent_id"],
+                    "--thread-id",
+                    tester["thread_id"],
+                    "--action-id",
+                    diagnosis["action_id"],
+                )
+                self.assertEqual(rc, 0, recorded)
+                self.assertEqual(
+                    self.load_ledger(run_path)["problems"][-1]["owner"], owner
+                )
+                rc, routed = self.invoke(
+                    "driver-next", "--repo", self.repo, "--run", run_id
+                )
+                self.assertEqual(rc, 0, routed)
+                self.assertEqual(routed.get("action"), expected_action)
+
+    def test_three_recorded_proof_failure_signatures_require_architecture_review(self) -> None:
+        launcher = self.make_uv_launcher("proof-failure-architecture-review")
+        failures: list[tuple[Path, dict[str, Any]]] = []
+        for index in range(2):
+            run_id = f"proof-failure-architecture-review-{index}"
+            run_path, tester, action = self.prepare_uv_proof_run(
+                run_id,
+                baseline_source=f"def add(a, b):\n    return a + b - {index + 1}\n",
+                candidate_source="def add(a, b):\n    return a + b\n",
+                test_source=(
+                    "from src.calc import add\n\n"
+                    "def test_observation():\n"
+                    "    assert add(1, 2) == 99\n"
+                ),
+            )
+            spec_path = self.write_json(
+                f"{run_id}.json", self.uv_baseline_spec(launcher)
+            )
+            rc, rejected = self.invoke(
+                "prove-tests",
+                "--repo",
+                self.repo,
+                "--run",
+                run_id,
+                "--spec",
+                spec_path,
+                "--agent-id",
+                tester["agent_id"],
+                "--thread-id",
+                tester["thread_id"],
+                "--action-id",
+                action["action_id"],
+            )
+            self.assertNotEqual(rc, 0, rejected)
+            failures.append((run_path, self.load_ledger(run_path)))
+
+        signatures = [
+            ledger["proof_failure"]["failure_signature"]
+            for _run_path, ledger in failures
+        ]
+        self.assertEqual(len(set(signatures)), 1)
+
+        run_path, ledger = failures[-1]
+        prior_event = next(
+            event
+            for event in failures[0][1]["events"]
+            if event.get("kind") == "proof_failure_recorded"
+        )
+        ledger["events"].extend([deepcopy(prior_event), deepcopy(prior_event)])
+        ledger_path = run_path / "ledger.json"
+        ledger_path.write_text(
+            json.dumps(ledger, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        rc, decision = self.invoke(
+            "driver-next",
+            "--repo",
+            self.repo,
+            "--run",
+            "proof-failure-architecture-review-1",
+        )
+        self.assertEqual(rc, 0, decision)
+        self.assertEqual(decision.get("action"), "architecture_review")
+        self.assertEqual(decision.get("reason"), "same_failure_three_times")
+        self.assertEqual(decision["failures"][0]["kind"], "proof")
+        self.assertEqual(decision["failures"][0]["count"], 3)
+
+    def test_legacy_v4_ledger_without_proof_failure_field_remains_readable(self) -> None:
+        run_id = "legacy-proof-failure-field"
+        _data, run_path = self.start(run_id)
+        ledger_path = run_path / "ledger.json"
+        ledger = self.load_ledger(run_path)
+        ledger.pop("proof_failure")
+        ledger_path.write_text(
+            json.dumps(ledger, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        rc, observed = self.invoke("status", "--repo", self.repo, "--run", run_id)
+        self.assertEqual(rc, 0, observed)
+        self.assertIsNone(observed["proof_failure"])
+        self.assertEqual(observed["proof_failure_state"], "missing")
+
     def test_uv_baseline_import_collection_and_zero_collector_failures_are_not_counterexamples(self) -> None:
         cases = (
             (
@@ -1156,8 +1635,6 @@ class FullDriverV4ContractTest(unittest.TestCase):
                 spec_path = self.write_json(
                     f"{run_id}-spec.json", self.uv_baseline_spec(launcher)
                 )
-                before = (run_path / "ledger.json").read_bytes()
-
                 rc, rejected = self.invoke(
                     "prove-tests",
                     "--repo",
@@ -1185,45 +1662,71 @@ class FullDriverV4ContractTest(unittest.TestCase):
                     expected_classification,
                     rejected,
                 )
-                self.assertEqual((run_path / "ledger.json").read_bytes(), before)
-                self.assertNotIn("proof", self.load_ledger(run_path)["evidence"])
+                self.assert_proof_failure(
+                    run_path,
+                    code="TEST_PROOF_COUNTEREXAMPLE_INVALID",
+                    recovery="tester_diagnosis",
+                    action_id=action["action_id"],
+                )
+                rc, diagnosis = self.invoke(
+                    "driver-next", "--repo", self.repo, "--run", run_id
+                )
+                self.assertEqual(rc, 0, diagnosis)
+                self.assertEqual(diagnosis.get("action"), "tester_proof_diagnose")
 
-    def test_uv_proof_command_and_project_binding_fail_closed_before_recording(self) -> None:
-        run_id = "uv-command-fail-closed"
+    def test_uv_proof_failures_persist_recovery_without_evidence(self) -> None:
         marker = self.artifacts / "invalid-uv-invoked"
-        launcher = self.make_uv_launcher(
-            run_id, invocation_marker=marker
-        )
-        run_path, tester, action = self.prepare_uv_proof_run(
-            run_id,
-            baseline_source="def add(a, b):\n    return a + b - 1\n",
-            candidate_source="def add(a, b):\n    return a + b\n",
-            test_source=(
-                "from src.calc import add\n\n"
-                "def test_observation():\n"
-                "    assert add(1, 2) == 3\n"
-            ),
-        )
         test_id = "tests/test_uv_proof.py::test_observation"
         suffix = ["python", "-m", "pytest", test_id]
         variants = {
-            "relative-uv": ["uv", "run", "--frozen", "--offline", "--no-env-file", *suffix],
-            "missing-frozen": [str(launcher), "run", "--offline", "--no-env-file", *suffix],
-            "missing-offline": [str(launcher), "run", "--frozen", "--no-env-file", *suffix],
-            "missing-no-env-file": [str(launcher), "run", "--frozen", "--offline", *suffix],
-            "extra-env": [str(launcher), "run", "--frozen", "--offline", "--no-env-file", "--env-file", ".env", *suffix],
-            "extra-index": [str(launcher), "run", "--frozen", "--offline", "--no-env-file", "--index", "https://example.invalid/simple", *suffix],
-            "extra-with": [str(launcher), "run", "--frozen", "--offline", "--no-env-file", "--with", "pytest", *suffix],
-            "extra-directory": [str(launcher), "run", "--frozen", "--offline", "--no-env-file", "--directory", ".", *suffix],
+            "relative-uv": lambda launcher: [
+                "uv", "run", "--frozen", "--offline", "--no-env-file", *suffix
+            ],
+            "missing-frozen": lambda launcher: [
+                str(launcher), "run", "--offline", "--no-env-file", *suffix
+            ],
+            "missing-offline": lambda launcher: [
+                str(launcher), "run", "--frozen", "--no-env-file", *suffix
+            ],
+            "missing-no-env-file": lambda launcher: [
+                str(launcher), "run", "--frozen", "--offline", *suffix
+            ],
+            "extra-env": lambda launcher: [
+                str(launcher), "run", "--frozen", "--offline", "--no-env-file",
+                "--env-file", ".env", *suffix
+            ],
+            "extra-index": lambda launcher: [
+                str(launcher), "run", "--frozen", "--offline", "--no-env-file",
+                "--index", "https://example.invalid/simple", *suffix
+            ],
+            "extra-with": lambda launcher: [
+                str(launcher), "run", "--frozen", "--offline", "--no-env-file",
+                "--with", "pytest", *suffix
+            ],
+            "extra-directory": lambda launcher: [
+                str(launcher), "run", "--frozen", "--offline", "--no-env-file",
+                "--directory", ".", *suffix
+            ],
         }
-        for label, argv in variants.items():
+        for label, make_argv in variants.items():
             with self.subTest(label=label):
+                run_id = f"uv-command-{label}"
                 marker.unlink(missing_ok=True)
+                launcher = self.make_uv_launcher(run_id, invocation_marker=marker)
+                run_path, tester, action = self.prepare_uv_proof_run(
+                    run_id,
+                    baseline_source="def add(a, b):\n    return a + b - 1\n",
+                    candidate_source="def add(a, b):\n    return a + b\n",
+                    test_source=(
+                        "from src.calc import add\n\n"
+                        "def test_observation():\n"
+                        "    assert add(1, 2) == 3\n"
+                    ),
+                )
                 spec_path = self.write_json(
                     f"uv-command-{label}.json",
-                    self.uv_baseline_spec(launcher, argv=argv),
+                    self.uv_baseline_spec(launcher, argv=make_argv(launcher)),
                 )
-                before = (run_path / "ledger.json").read_bytes()
                 rc, rejected = self.invoke(
                     "prove-tests",
                     "--repo",
@@ -1240,8 +1743,13 @@ class FullDriverV4ContractTest(unittest.TestCase):
                     action["action_id"],
                 )
                 self.assertNotEqual(rc, 0, rejected)
-                self.assertEqual((run_path / "ledger.json").read_bytes(), before)
-                self.assertNotIn("proof", self.load_ledger(run_path)["evidence"])
+                self.assertEqual(rejected.get("code"), "TEST_PROOF_UV_COMMAND_INVALID")
+                self.assert_proof_failure(
+                    run_path,
+                    code="TEST_PROOF_UV_COMMAND_INVALID",
+                    recovery="tester_diagnosis",
+                    action_id=action["action_id"],
+                )
                 self.assertFalse(marker.exists(), (label, rejected))
 
         for bad_path in ("pyproject.toml", "uv.lock"):
@@ -1269,7 +1777,6 @@ class FullDriverV4ContractTest(unittest.TestCase):
                         f"{invalid_run}-spec.json",
                         self.uv_baseline_spec(invalid_launcher),
                     )
-                    before = (invalid_path / "ledger.json").read_bytes()
                     rc, rejected = self.invoke(
                         "prove-tests",
                         "--repo",
@@ -1287,11 +1794,20 @@ class FullDriverV4ContractTest(unittest.TestCase):
                     )
                     self.assertNotEqual(rc, 0, rejected)
                     self.assertEqual(
-                        (invalid_path / "ledger.json").read_bytes(), before
+                        rejected.get("code"), "TEST_PROOF_UV_PROJECT_INVALID"
                     )
-                    self.assertNotIn(
-                        "proof", self.load_ledger(invalid_path)["evidence"]
+                    self.assert_proof_failure(
+                        invalid_path,
+                        code="TEST_PROOF_UV_PROJECT_INVALID",
+                        recovery="needs_user",
+                        action_id=invalid_action["action_id"],
                     )
+                    rc, decision = self.invoke(
+                        "driver-next", "--repo", self.repo, "--run", invalid_run
+                    )
+                    self.assertEqual(rc, 0, decision)
+                    self.assertEqual(decision.get("action"), "proof_failure_decision")
+                    self.assertEqual(decision.get("status"), "NEEDS_USER")
 
         silent_run = "uv-structured-event-missing"
         silent_path, silent_tester, silent_action = self.prepare_uv_proof_run(
@@ -1309,7 +1825,6 @@ class FullDriverV4ContractTest(unittest.TestCase):
             "uv-structured-event-missing-spec.json",
             self.uv_baseline_spec(silent_launcher),
         )
-        before_silent = (silent_path / "ledger.json").read_bytes()
         rc, silent = self.invoke(
             "prove-tests",
             "--repo",
@@ -1326,8 +1841,13 @@ class FullDriverV4ContractTest(unittest.TestCase):
             silent_action["action_id"],
         )
         self.assertNotEqual(rc, 0, silent)
-        self.assertEqual((silent_path / "ledger.json").read_bytes(), before_silent)
-        self.assertNotIn("proof", self.load_ledger(silent_path)["evidence"])
+        self.assertEqual(silent.get("code"), "TEST_PROOF_CANDIDATE_FAILED")
+        self.assert_proof_failure(
+            silent_path,
+            code="TEST_PROOF_CANDIDATE_FAILED",
+            recovery="tester_diagnosis",
+            action_id=silent_action["action_id"],
+        )
 
     def test_prove_tests_rejects_unbound_reviewed_boundary_ids(self) -> None:
         run_id = "full-driver-reviewed-boundaries"
@@ -1376,7 +1896,6 @@ class FullDriverV4ContractTest(unittest.TestCase):
                 ],
             },
         )
-        before = (run_path / "ledger.json").read_bytes()
         rc, rejected = self.invoke(
             "prove-tests",
             "--repo",
@@ -1396,8 +1915,12 @@ class FullDriverV4ContractTest(unittest.TestCase):
         self.assertEqual(
             rejected.get("code"), "TEST_PROOF_BOUNDARY_TEST_IDS_INVALID", rejected
         )
-        self.assertEqual((run_path / "ledger.json").read_bytes(), before)
-        self.assertNotIn("proof", self.load_ledger(run_path)["evidence"])
+        self.assert_proof_failure(
+            run_path,
+            code="TEST_PROOF_BOUNDARY_TEST_IDS_INVALID",
+            recovery="tester_diagnosis",
+            action_id=action["action_id"],
+        )
 
     def test_prove_tests_rejects_false_out_of_scope_and_stale_proofs_without_evidence(self) -> None:
         run_id = "full-driver-false-proof"
@@ -1423,6 +1946,21 @@ class FullDriverV4ContractTest(unittest.TestCase):
             expected_code: str,
             expected_classification: str | None = None,
         ) -> None:
+            case_run = f"full-driver-false-{label}"
+            case_contract = contract_for(self.repo)
+            case_contract["assurance"]["required"].insert(2, "proof")
+            _data, case_path = self.start(case_run, contract=case_contract)
+            rc, checkpointed = self.invoke(
+                "checkpoint-builder", "--repo", self.repo, "--run", case_run
+            )
+            self.assertEqual(rc, 0, checkpointed)
+            case_ledger = self.prepare_and_record_tester(case_run, case_path)
+            case_tester = case_ledger["facets"]["execution"]["agents"]["tester"]
+            rc, case_action = self.invoke(
+                "driver-next", "--repo", self.repo, "--run", case_run
+            )
+            self.assertEqual(rc, 0, case_action)
+            self.assertEqual(case_action.get("action"), "tester_proof")
             spec = {
                 "schema_version": 1,
                 "groups": [
@@ -1449,15 +1987,15 @@ class FullDriverV4ContractTest(unittest.TestCase):
                 "--repo",
                 self.repo,
                 "--run",
-                run_id,
+                case_run,
                 "--spec",
                 spec_path,
                 "--agent-id",
-                tester["agent_id"],
+                case_tester["agent_id"],
                 "--thread-id",
-                tester["thread_id"],
+                case_tester["thread_id"],
                 "--action-id",
-                action["action_id"],
+                case_action["action_id"],
             )
             self.assertNotEqual(rc, 0, rejected)
             self.assertEqual(rejected.get("code"), expected_code, rejected)
@@ -1469,7 +2007,12 @@ class FullDriverV4ContractTest(unittest.TestCase):
                     expected_classification,
                     rejected,
                 )
-            self.assertNotIn("proof", self.load_ledger(run_path)["evidence"])
+            self.assert_proof_failure(
+                case_path,
+                code=expected_code,
+                recovery="tester_diagnosis",
+                action_id=case_action["action_id"],
+            )
 
         assert_rejected(
             "surviving-mutation",

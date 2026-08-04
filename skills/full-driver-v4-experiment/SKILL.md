@@ -79,7 +79,13 @@ dispatch。直到 `finalize` 或明确的决策边界。动作面如下，不能
 - `prove-tests` / `tester_proof`：由同一 Tester thread 对冻结 behaviors 产出 proof spec；主线程把
   spec 和真实 Tester identity 交给实验 namespace 的 `prove-tests --action-id <action_id>`。Core 按
   公共 `schema/codex-test-proof.schema.json` 隔离运行 candidate 与 baseline-red/mutation，只有每个
-  behavior 恰好一次且反例为真实 assertion failure 时才记录 proof evidence。
+  behavior 恰好一次且反例为真实 assertion failure 时才记录 proof evidence。命令非零后先读回
+  `status.proof_failure`：只有它仍为 current、绑定同一 action/code 时，才把本次 Core failure 视为已
+  持久化并继续调用 `driver-next`；否则保持原错误并停止。
+- `tester_proof_diagnose`：续接原 Tester thread，只把 Driver 返回的 current `proof_failure` 交给
+  `phase=proof_diagnose`。本 turn 只归因、不改文件；必须返回非空 problem，owner 仅为 builder、tester
+  或 plan，随后调用 `record-problems --action-id <action_id>`。`proof_failure_decision` 直接停止到用户，
+  不把环境、身份或完整性错误猜成角色修复。
 - `verify_machine`：调用 Core `verify-machine`，保留真实 argv、runner identity、returncode 与
   observed HEAD；`run_before_full_suite:true` 的本地关键测试先执行，实际 returncode 必须命中计划冻结的
   `expected_returncodes`，失败不能被 shell 包装成 PASS。
