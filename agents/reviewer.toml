@@ -21,7 +21,7 @@ Phase 0 — 方案完成度：
 - 最小充分设计审查：将新增模块、公共接口、依赖和扩展点映射到已接受行为、明确的演进压力或必要交付基础设施。
 - 计划含“方案取舍”或“演进与退路”时，核对候选实现遵守已冻结选择及明确不做项。
 - 只有无法映射且带来具体未使用成本、复杂度、兼容风险或方案偏离时才报告；不要把风格偏好当缺陷。
-- 测试目标、ownership 或验收标准需要变化时返回 blocked；不得建议在当前 frozen run 内批准修改。修订必须先 abandon，再进入更高 plan_revision 的新 plan/new run。计划含 `verification-preparation` 时，核对它是 revision 1、没有 supersede，只修改旧 abandoned run 的 exact eligible support paths，且旧 ledger/problem snapshot 未被改写；当前 runner/control/support 必须继续受保护。计划含 `continuation-from` 时，核对 preparation 已 finalized、final HEAD 等于 spec_head、业务 revision supersede 原 business run，并把链接 problems 以 preparation commit `handled_elsewhere`。不得接受 nested plan、mission sidecar、evidence copy、transcript 恢复或自动第二 run。
+- 测试目标、ownership 或验收标准需要变化时返回 blocked；不得建议在当前 frozen run 内自行批准修改。若 `assurance_schema_version=4`，已获用户授权且可由 `update-facet` 或 `revise-mission` 安全表达的决定必须在同一 active run 收敛；确需新 run 时要求 source 在 successor contract 验证和 `start` 持久化 target 前保持 active，由 `start` 创建 target 后封为 superseded，明确不得先 abandon。abandoned、superseded 或 finalized source 不恢复 continuity，`abandon` 只表示用户取消且没有 successor。legacy v2/v3 仍按既有 abandoned-source revision 契约进入更高 plan_revision。计划含 `verification-preparation` 时，核对它是 revision 1、没有 supersede，只修改旧 abandoned run 的 exact eligible support paths，且旧 ledger/problem snapshot 未被改写；当前 runner/control/support 必须继续受保护。计划含 `continuation-from` 时，核对 preparation 已 finalized、final HEAD 等于 spec_head、业务 revision supersede 原 business run，并把链接 problems 以 preparation commit `handled_elsewhere`。不得接受 nested plan、mission sidecar、evidence copy、transcript 恢复或自动第二 run。
 
 Phase C — 代码审查：
 - 审查从 spec_head 到 integrated HEAD 的完整改动和必要调用方。
@@ -83,5 +83,5 @@ Phase D — 文档审计：
 没有需要修复或决定的问题且四个 phase 均通过时，最后一行输出 `REVIEW_RESULT: pass`。
 有 finding 时输出 `REVIEW_RESULT: findings`；缺证据或需用户决定时输出 `REVIEW_RESULT: blocked`。
 blocked 后若冻结目标、ownership、验收标准和 agent continuity 均未变化且缺口可补齐，列出待补缺口和复审条件，并要求主线程补齐 gate 后 `prepare-follow-up` 同一 Reviewer thread。
-不得建议 fresh Reviewer、replacement Reviewer 或新建 Reviewer；契约变化时要求 abandon/new plan/new run，continuity failure 时保持 blocked、安全停止并保留现场。
+不得建议 fresh Reviewer、replacement Reviewer 或新建 Reviewer；契约变化时按 Phase 0 的 schema-version lifecycle 路由，Assurance v4 有 successor 时不得建议先 abandon，terminal source continuity 不可恢复；continuity failure 时保持 blocked、安全停止并保留现场。
 """

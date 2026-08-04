@@ -23,9 +23,10 @@ legacy v2/v3 新 run 与无实验标志的 v4 CLI 保持关闭；面向用户的
 Authority 只定义 target、角色写范围和 dirty intake；Assurance Policy 定义所需判据及机器命令；
 Execution Manifest 记录实际 candidate、文件、命令和 Agent identity。Execution 在授权内变化只使依赖
 它的 evidence stale；只有 Mission 变化才提升 semantic revision，Authority 扩大和 Assurance 降级
-分别要求用户授权。
+分别要求用户授权。已授权且 `update-facet` 或 `revise-mission` 能安全表达的 plan decision 在同一 active
+run 收敛；普通执行信息变化不以 abandon 或新 run 代替局部失效与重验。
 
-Core ledger 保存 `active/finalizing/finalized/abandoned`、facet/evidence digest、candidate、target 与
+Core ledger 保存 `active/finalizing/finalized/abandoned/superseded`、facet/evidence digest、candidate、target 与
 可恢复事务，不保存“下一步让谁做”、correction budget 或普通 Agent 循环。Native Driver 在启动外部
 role turn 前只额外持久化一个 dispatch intent，绑定 action/thread/prompt/output digest 和 turn/result；
 它是跨进程副作用的恢复事实，不是调度状态，消费后立即清空。`driver.py` 每轮从 readiness 重新决定
@@ -84,11 +85,16 @@ Core 跳过重复 deploy；当前 Revision 仍重新执行 blackbox，结束时�
 owner 的 lease，Reviewer 和同 run Mission Revision 继续使用当前状态；finalize、abandon 前必须恢复。
 复用状态漂移时 fail closed。多仓部署仍不支持。
 
-跨 run Revision 通过 `mission.supersedes` 绑定上一 mission digest 和 candidate HEAD。新 run 从精确
-candidate Git snapshot 建 worktree，但不继承 Tester/Reviewer identity 或旧 evidence。环境转移按 source
-intent、target receipt、source seal 三步持久化；只有当前制品、目标、deployment contract 和 probe 全部
-一致才转移 lease，否则先恢复 source 环境再部署新制品。同一目标的唯一 owner 由 Core 在仓库锁内从
-ledger 派生，不新增旁路 registry。
+只有同 run 事务不能保持语义、授权或事务安全时，Assurance v4 才通过 `mission.supersedes` 创建 successor。
+source 必须在新 contract 验证、transition/problem disposition 预检和 `start` 持久化 target ledger 前保持
+active；`start` 从精确 candidate Git snapshot 建 target worktree，target 持久化成功后才把 source 封为
+superseded。新 run 不继承 Tester/Reviewer identity 或旧 evidence。环境转移按 source intent、target receipt、
+source seal 三步持久化；只有当前制品、目标、deployment contract 和 probe 全部一致才转移 lease，否则先
+恢复 source 环境再部署新制品。同一目标的唯一 owner 由 Core 在仓库锁内从 ledger 派生，不新增旁路 registry。
+若 source 已 abandoned、superseded 或 finalized，Core 在 target ledger、ref、worktree 或 supersede intent
+mutation 前返回 `SUPERSEDED_RUN_NOT_ACTIVE`，source ledger 保持不变；terminal run 不重新激活或 rescue，
+其 continuity 不可恢复。`abandon` 只表达用户取消且没有 successor。该约束只修正 Assurance v4，
+legacy v2/v3 继续使用既有 abandoned-source revision 与恢复契约。
 Core 还沿 `mission.supersedes` 读取各 source ledger，并把每个 ledger 内的结构化 transition、原始 telemetry
 event 和 problem disposition 派生成唯一 `status.lineage`。该对象汇总墙钟、stage attempt/duration、
 candidate change、evidence attempt/replay、retry、transition category 和当前 open problem；不写 chain

@@ -101,12 +101,19 @@ dispatch。直到 `finalize` 或明确的决策边界。动作面如下，不能
   blackbox evidence。跳过 deploy 的事务只重新 probe 并确认环境未漂移，不执行会改变既有环境的恢复
   命令。计划授权 lease 时，`complete_blackbox` 可在当前 probe 与 lease 一致后登记 evidence 并继续
   Reviewer；finalize、abandon 前仍由 Driver 恢复。恢复失败或复用状态漂移只返回用户决定。
-- Mission Revision 使用 Core `revise-mission --transition` 原子绑定上一 revision 和 ledger 派生
-  `pressure_digest`。新 run 的 `mission.supersedes` 只携带
-  candidate snapshot 和 environment lease；Tester/Reviewer 必须创建新 thread 并重建全部 evidence。
-  supersession 还必须在任何 worktree/ref/intent mutation 前校验 transition pressure decision 与完整
-  `prior_problem_dispositions`；included problem 只继承问题意图和 owner，不继承 producer identity。
+- 已授权且 Core `update-facet` 或 `revise-mission --transition` 能安全表达的 plan decision，必须在同一
+  active run 原子收敛；普通执行信息变化不触发 abandon 或新 run。Mission Revision 绑定上一 revision 和
+  ledger 派生 `pressure_digest`。
+- 只有现有事务不能保持语义、授权或事务安全时才交给 Planner 形成 Assurance v4 successor。source 在
+  successor contract 验证和 `start` 持久化 target 前必须保持 active，Driver 不得先调用 `abandon`；
+  `start` 创建 target 后才把 source 封为 superseded。新 run 的 `mission.supersedes` 只携带 candidate
+  snapshot 和 environment lease；Tester/Reviewer 必须创建新 thread 并重建全部 evidence。
+- supersession 必须在任何 worktree/ref/intent mutation 前校验 source active、transition pressure decision
+  与完整 `prior_problem_dispositions`；included problem 只继承问题意图和 owner，不继承 producer identity。
   lease 转移或制品不一致恢复由 `complete-supersede-transfer`、`restore-superseded-environment` 自动收敛。
+  abandoned、superseded 或 finalized source 都是 terminal，其 continuity 不可恢复，也不重新激活或
+  rescue；必须在 target ledger/ref/worktree mutation 前拒绝。`abandon` 只用于用户明确取消且没有
+  successor。legacy v2/v3 的 abandoned-source revision 行为不由本 v4 路由改写。
 - `reviewer_final`：只有 Tester、proof、machine、blackbox 等全部 reviewer prerequisites 齐全且
   current 后，才用只允许 identity bootstrap 的最小 prompt spawn Reviewer，调用 `prepare-reviewer`
   绑定真实 identity，再 follow-up 同一 thread 开始审查。Reviewer 只使用成熟终态
@@ -156,7 +163,8 @@ snapshot，再逐项完成分流并通过 `assurance record-retrospective` 原�
 
 仅以下情况输出最终标记：Mission 或验收目标必须改变；Authority 必须扩大；出现产品取舍；Git 冲突
 或可能覆盖用户 dirty；同签名三次 no-progress 后需要设计决定；Tester/Reviewer 连续性不可恢复。
-这些边界之外不得因 revision、普通修复或工具轮次结束打断用户。
+用户授权决定后优先通过同一 active run 的既有事务恢复；只有确需 successor 时才按上述
+active-to-superseded 交接。这些边界之外不得因 revision、普通修复或工具轮次结束打断用户。
 
 成功且终态复盘完成后最后输出独立行：
 

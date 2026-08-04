@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Assurance v4 修正 contract-change lifecycle：授权决定优先由 `update-facet` 或 `revise-mission` 在同一
+  active run 收敛；确需 successor 时，source 保持 active 直到 `start` 持久化 target，再原子封为
+  superseded，并连续携带 candidate、lineage 与逐条 problem disposition，重新绑定角色和 evidence。
+  `abandon` 只表示没有 successor 的用户取消，terminal source 在任何 target mutation 前拒绝且不恢复；
+  legacy v2/v3 的 abandoned-source revision 行为保持不变（#169）。
+
 - Assurance v4 现在把可信 `prove-tests` 失败持久化为 candidate、Tester source、spec、结构化错误与
   artifact 绑定的 `proof_failure`，不再让 Native Driver 因 `TEST_PROOF_CANDIDATE_FAILED` 或
   `TEST_PROOF_COUNTEREXAMPLE_INVALID` 直接退出并无限重放 completed dispatch。可在冻结 run 内修正的

@@ -23,8 +23,16 @@ description: 在 Codex Plan mode 中为显式选择的 Builder-loop 实验路线
 ## Contract 约束
 
 - `mission` 只放目标、行为、接口、验收场景和信任边界；只有这些语义变化才提升 revision。
-  同 run Revision 绑定上一 mission digest；必须新建 run 时用 `mission.supersedes` 绑定上一 run、revision、
-  mission digest 和 candidate HEAD，不从 transcript 猜 continuity。
+  已授权且现有 `update-facet` 或 `revise-mission` 事务能安全表达的 plan decision，先在同一 active run
+  收敛；普通执行信息变化不得先 abandon 或自动升级为新 run。同 run Revision 绑定上一 mission digest。
+- 只有现有事务不能保持语义、授权或事务安全时才规划新 run。Assurance v4 source 必须在 successor
+  contract 完成验证、`start` 持久化 target 前保持 active；不得先调用 `abandon`。新 contract 用
+  `mission.supersedes` 绑定 source run、revision、mission digest 和 candidate HEAD；`start` 创建 target 后
+  才把 source 封为 superseded，不从 transcript 猜 continuity。
+- `abandon` 只用于用户显式取消且没有 successor。abandoned、superseded 或 finalized run 都是 terminal，
+  不重新激活、不 rescue，也不能作为连续 supersession source；遇到 terminal source 时停止交接并说明
+  continuity 已不可恢复。以上 active-to-superseded 路由只适用于 Assurance v4，legacy v2/v3 保持既有
+  abandoned-source revision 契约。
 - 更高 revision 先读取 `status.lineage`，只向用户呈现发生变化的语义 facet、逐条 open problem 处理和
   `lineage.health` 要求的架构复审。`execution.revision_transition.predecessor_pressure_digest` 必须绑定当前
   `pressure_digest`；第三次
