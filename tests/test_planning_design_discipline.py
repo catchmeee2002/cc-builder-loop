@@ -52,6 +52,26 @@ def matching_paragraphs(text: str, *groups: tuple[str, ...]) -> list[str]:
     return [item for item in paragraphs(text) if has_terms(item, *groups)]
 
 
+def heading_scoped_paragraphs(
+    text: str,
+    heading_terms: tuple[str, ...],
+    *groups: tuple[str, ...],
+) -> list[str]:
+    headings = list(re.finditer(r"^(#{1,6})\s+(.+?)\s*$", text, flags=re.MULTILINE))
+    matches: list[str] = []
+    for index, heading in enumerate(headings):
+        if not has_terms(heading.group(2), heading_terms):
+            continue
+        level = len(heading.group(1))
+        end = len(text)
+        for later in headings[index + 1 :]:
+            if len(later.group(1)) <= level:
+                end = later.start()
+                break
+        matches.extend(matching_paragraphs(text[heading.end() : end], *groups))
+    return matches
+
+
 UNIVERSAL_CUES = tuple(
     quantifier + subject
     for quantifier in ("所有", "每个", "全部")
@@ -662,6 +682,12 @@ class PlanningDesignDisciplineTest(unittest.TestCase):
         )
 
     def test_v4_supersession_guidance_is_active_first_and_version_scoped(self) -> None:
+        v4_terms = (
+            "assurancev4",
+            "v4",
+            "assurance_schema_version=4",
+            "schemaversion=4",
+        )
         self.assertTrue(
             affirmative_abandon_before_start(
                 "Assurance v4 有 successor 时先 abandon，再 start。"
@@ -670,6 +696,31 @@ class PlanningDesignDisciplineTest(unittest.TestCase):
         self.assertEqual(
             affirmative_abandon_before_start(
                 "Assurance v4 有 successor 时不得先 abandon，再 start。"
+            ),
+            [],
+        )
+        scoped_example = (
+            "## v4 lifecycle\n\n"
+            "Use update-facet in the same active run.\n\n"
+            "## legacy lifecycle\n\n"
+            "Use update-facet in the same active run.\n"
+        )
+        self.assertTrue(
+            heading_scoped_paragraphs(
+                scoped_example,
+                v4_terms,
+                ("update-facet", "revise-mission"),
+                ("同一", "same"),
+                ("active",),
+            )
+        )
+        self.assertEqual(
+            heading_scoped_paragraphs(
+                scoped_example,
+                ("v5",),
+                ("update-facet", "revise-mission"),
+                ("同一", "same"),
+                ("active",),
             ),
             [],
         )
@@ -684,7 +735,7 @@ class PlanningDesignDisciplineTest(unittest.TestCase):
         for label, text in sources.items():
             lifecycle = matching_paragraphs(
                 text,
-                ("assurancev4", "v4", "assurance_schema_version=4", "schemaversion=4"),
+                v4_terms,
                 ("successor", "后继", "新run", "更高revision"),
                 ("active",),
                 ("start",),
@@ -709,20 +760,30 @@ class PlanningDesignDisciplineTest(unittest.TestCase):
             self.assertTrue(
                 matching_paragraphs(
                     text,
-                    ("assurancev4", "v4", "assurance_schema_version=4", "schemaversion=4"),
+                    v4_terms,
                     ("legacy", "v2", "v3"),
                     ("abandon",),
                 ),
                 f"{label} must explicitly split the v4 lifecycle from legacy v2/v3",
             )
-            self.assertTrue(
-                matching_paragraphs(
+            same_run_guidance = matching_paragraphs(
+                text,
+                v4_terms,
+                ("update-facet", "revise-mission"),
+                ("同一", "same"),
+                ("active",),
+            )
+            same_run_guidance.extend(
+                heading_scoped_paragraphs(
                     text,
-                    ("assurancev4", "v4", "assurance_schema_version=4", "schemaversion=4"),
+                    v4_terms,
                     ("update-facet", "revise-mission"),
                     ("同一", "same"),
                     ("active",),
-                ),
+                )
+            )
+            self.assertTrue(
+                same_run_guidance,
                 f"{label} must converge expressible decisions in the same active v4 run",
             )
             self.assertEqual(
@@ -741,7 +802,7 @@ class PlanningDesignDisciplineTest(unittest.TestCase):
                     sources[label],
                     ("执行信息", "execution"),
                     ("普通", "常规", "非语义"),
-                    ("不得", "不应", "不能", "无需"),
+                    ("不得", "不应", "不能", "无需", "不以", "不触发", "不升级"),
                     ("abandon", "新run", "revision"),
                 ),
                 f"{label} must not escalate ordinary execution information to abandon/new run",
