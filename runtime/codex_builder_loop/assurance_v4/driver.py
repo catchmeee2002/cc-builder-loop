@@ -1,11 +1,50 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
-from .core import ensure_run_id, readiness
+from .core import ensure_run_id, evidence_state, readiness
 from .models import digest
 from .store import branch_head, dirty_paths, git, read_ledger, resolve_repo
+
+
+def _external_recovery_pending(
+    ledger: Mapping[str, Any], candidate_head: str | None
+) -> bool:
+    machine_verified_after = False
+    for event in reversed(ledger.get("events", [])):
+        if event.get("kind") == "machine_verified":
+            machine_verified_after = True
+            continue
+        if event.get("kind") != "external_problem_resolved":
+            continue
+        details = event.get("details")
+        if (
+            not isinstance(details, dict)
+            or details.get("candidate_head") != candidate_head
+        ):
+            continue
+        if machine_verified_after:
+            return False
+        key = details.get("key")
+        resolved = [
+            problem
+            for problem in ledger.get("problems", [])
+            if problem.get("key") == key
+            and problem.get("owner") == "external_platform"
+            and problem.get("status") == "resolved"
+            and problem.get("resolution") == details.get("reason")
+        ]
+        if len(resolved) != 1:
+            return False
+        machine_record = ledger.get("evidence", {}).get("machine")
+        current_digest = (
+            digest(machine_record) if isinstance(machine_record, dict) else None
+        )
+        if details.get("machine_evidence_digest") != current_digest:
+            return False
+        return evidence_state(ledger, "machine") in {"missing", "stale", "failed"}
+    return False
 
 
 def next_action(repo_value: str | Path, run_value: str) -> dict[str, Any]:
@@ -109,6 +148,20 @@ def next_action(repo_value: str | Path, run_value: str) -> dict[str, Any]:
                 "deployment_failed_after_restore",
                 deployment=deployment_transaction,
             )
+    open_problems = [
+        item for item in ledger.get("problems", []) if item.get("status") == "open"
+    ]
+    external_problems = [
+        item for item in open_problems if item.get("owner") == "external_platform"
+    ]
+    if external_problems:
+        return decision(
+            "NEEDS_USER",
+            "external_problem_decision",
+            "open_external_platform_problem",
+            problem=external_problems[-1],
+            problems=external_problems,
+        )
     live_target = branch_head(repo, ledger["target_branch"])
     if live_target != ledger["target_start_head"]:
         return decision("CONTINUE", "rematerialize_target", "target_drift")
@@ -153,7 +206,6 @@ def next_action(repo_value: str | Path, run_value: str) -> dict[str, Any]:
             candidate_worktree=ledger["candidate_worktree"],
             candidate_head=live_candidate,
         )
-    open_problems = [item for item in ledger.get("problems", []) if item.get("status") == "open"]
     if open_problems:
         latest = open_problems[-1]
         owner = latest.get("owner")
@@ -200,6 +252,9 @@ def next_action(repo_value: str | Path, run_value: str) -> dict[str, Any]:
         return decision("NEEDS_USER", "architecture_review", "same_failure_three_times")
     states = readiness(ledger)["states"]
     required = set(ledger["facets"]["assurance"]["required"])
+    recovered_external = _external_recovery_pending(
+        ledger, ledger["facets"]["execution"].get("candidate_head")
+    )
     for kind in ("tester", "proof", "machine", "blackbox", "reviewer", "doc_review"):
         if kind not in required:
             continue
@@ -209,6 +264,8 @@ def next_action(repo_value: str | Path, run_value: str) -> dict[str, Any]:
         elif kind == "proof" and state in {"missing", "stale"}:
             action = "tester_proof"
         elif kind == "machine" and state in {"missing", "stale"}:
+            action = "verify_machine"
+        elif kind == "machine" and state == "failed" and recovered_external:
             action = "verify_machine"
         elif kind == "blackbox" and state in {"missing", "stale"}:
             deployment = execution.get("deployment")

@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Codex lifecycle gates for the builder-loop adapter.
 
-This hook records agent lifecycle events through the runtime ledger and blocks only an
-ACTIVE root turn. It never owns phases or writes a second state file.
+This hook records agent lifecycle events through the runtime ledger and enforces the
+active-run and terminal retrospective completion gates. It never owns phases or writes
+runtime state directly.
 """
 
 from __future__ import annotations
@@ -209,6 +210,76 @@ def stop(event: dict[str, Any]) -> None:
     last_message = str(event.get("last_assistant_message") or "")
     if not session_id:
         emit({"systemMessage": "Builder-loop Stop hook 缺少 session_id，已安全放行。"})
+        return
+
+    retrospective, retrospective_error = run_runtime(
+        "assurance",
+        "--experimental-v4",
+        "retrospective-status",
+        "--repo",
+        cwd,
+        "--session-id",
+        session_id,
+        cwd=cwd,
+    )
+    if retrospective_error:
+        emit({"systemMessage": retrospective_error})
+        return
+    retrospective_status = str(retrospective.get("status"))
+    is_retrospective_payload = isinstance(
+        retrospective.get("owner_session_id"), str
+    ) or bool(str(retrospective.get("code") or "").strip())
+    if is_retrospective_payload and retrospective_status != "NOOP":
+        message = str(retrospective.get("message") or retrospective_status)
+        if retrospective_status == "ACTIVE":
+            run_id = str(retrospective.get("run_id") or "")
+            input_marker = f"BUILDER_INPUT_REQUIRED:{run_id}" if run_id else ""
+            waiting_for_user = bool(input_marker) and any(
+                line.strip() == input_marker for line in last_message.splitlines()
+            )
+            if waiting_for_user:
+                emit(
+                    {
+                        "systemMessage": (
+                            "Builder-loop 正在等待用户决定，已保留 active run 并放行本轮停止。"
+                        )
+                    }
+                )
+                return
+            if not already_continued:
+                emit({"decision": "block", "reason": message})
+                return
+            emit({"systemMessage": "Builder-loop 仍为 ACTIVE；已避免 Stop hook 自循环。"})
+            return
+        required_block = str(retrospective.get("required_block") or "")
+        surfaced = bool(required_block) and required_block in last_message
+        if retrospective_status in {"NEEDS_USER", "READY"} and surfaced:
+            active_payload, active_error = run_runtime(
+                "status",
+                "--repo",
+                cwd,
+                "--session-id",
+                session_id,
+                cwd=cwd,
+            )
+            if active_error:
+                emit({"systemMessage": active_error})
+                return
+            if str(active_payload.get("status")) == "ACTIVE":
+                emit(
+                    {
+                        "decision": "block",
+                        "reason": str(
+                            active_payload.get("message")
+                            or "Builder-loop run remains active"
+                        ),
+                    }
+                )
+                return
+            emit({})
+            return
+        reason = required_block or message
+        emit({"decision": "block", "reason": reason})
         return
 
     payload, error = run_runtime(

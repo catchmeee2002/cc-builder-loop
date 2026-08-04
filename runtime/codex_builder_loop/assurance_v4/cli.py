@@ -64,6 +64,22 @@ def parser() -> argparse.ArgumentParser:
     status.add_argument("--repo", default=".")
     status.add_argument("--run", required=True)
 
+    retrospective_status = commands.add_parser("retrospective-status")
+    retrospective_status.add_argument("--repo", default=".")
+    retrospective_status.add_argument("--session-id", required=True)
+
+    record_retrospective = commands.add_parser("record-retrospective")
+    record_retrospective.add_argument("--repo", default=".")
+    record_retrospective.add_argument("--session-id", required=True)
+    record_retrospective.add_argument("--report", required=True)
+    record_retrospective.add_argument("--replace", action="store_true")
+
+    resolve_external_problem = commands.add_parser("resolve-external-problem")
+    resolve_external_problem.add_argument("--repo", default=".")
+    resolve_external_problem.add_argument("--run", required=True)
+    resolve_external_problem.add_argument("--problem-key", required=True)
+    resolve_external_problem.add_argument("--reason", required=True)
+
     context = commands.add_parser("driver-context")
     context.add_argument("--repo", default=".")
     context.add_argument("--run", required=True)
@@ -234,6 +250,10 @@ def parser() -> argparse.ArgumentParser:
     consume_dispatch.add_argument("--repo", default=".")
     consume_dispatch.add_argument("--run", required=True)
     consume_dispatch.add_argument("--action-id", required=True)
+    consume_dispatch.add_argument(
+        "--consumer-source",
+        choices=["native_driver", "full_driver_skill", "operator_recovery"],
+    )
 
     retry_dispatch = commands.add_parser("retry-dispatch")
     retry_dispatch.add_argument("--repo", default=".")
@@ -340,6 +360,22 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         elif args.command == "status":
             payload = core.status(args.repo, args.run)
+        elif args.command == "retrospective-status":
+            payload = core.retrospective_status(args.repo, args.session_id)
+        elif args.command == "record-retrospective":
+            payload = core.record_retrospective(
+                args.repo,
+                args.session_id,
+                _json(args.report),
+                replace=args.replace,
+            )
+        elif args.command == "resolve-external-problem":
+            payload = core.resolve_external_problem(
+                args.repo,
+                args.run,
+                problem_key=args.problem_key,
+                reason=args.reason,
+            )
         elif args.command == "driver-context":
             payload = core.driver_context(args.repo, args.run)
         elif args.command == "checkpoint-builder":
@@ -484,7 +520,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 result_value=_json(args.result),
             )
         elif args.command == "consume-dispatch":
-            payload = core.consume_dispatch(args.repo, args.run, action_id=args.action_id)
+            payload = core.consume_dispatch(
+                args.repo,
+                args.run,
+                action_id=args.action_id,
+                consumer_source=args.consumer_source,
+            )
         elif args.command == "retry-dispatch":
             payload = core.retry_dispatch(
                 args.repo,

@@ -1,0 +1,161 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openai.local/codex-builder-loop/assurance-v4-retrospective.schema.json",
+  "title": "Builder Assurance v4 Session Retrospective",
+  "oneOf": [
+    {"$ref": "#/$defs/snapshot"},
+    {"$ref": "#/$defs/reportInput"},
+    {"$ref": "#/$defs/storedReport"},
+    {"$ref": "#/$defs/status"}
+  ],
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "signalId": {"type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*-[0-9a-f]{16}$"},
+    "runtimeIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["adapter", "adapter_commit", "adapter_dirty", "capture_status"],
+      "properties": {
+        "adapter": {"enum": ["codex", "claude-code", "unknown"]},
+        "adapter_commit": {"oneOf": [{"type": "null"}, {"type": "string", "pattern": "^[0-9a-f]{40}$"}]},
+        "adapter_dirty": {"oneOf": [{"type": "null"}, {"type": "boolean"}]},
+        "capture_status": {"enum": ["captured", "partial", "unavailable", "legacy-unavailable"]}
+      }
+    },
+    "runFact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "run_id", "phase", "terminal_status", "root_run_id", "mission_revision", "ledger_digest",
+        "runtime_identity", "problem_count", "event_count"
+      ],
+      "properties": {
+        "run_id": {"type": "string", "minLength": 1},
+        "phase": {"type": "string", "minLength": 1},
+        "terminal_status": {"enum": ["finalized", "abandoned", "superseded", "needs-user", "fatal", "continuity-failure"]},
+        "root_run_id": {"type": "string", "minLength": 1},
+        "mission_revision": {"type": "integer", "minimum": 1},
+        "ledger_digest": {"$ref": "#/$defs/sha256"},
+        "runtime_identity": {"$ref": "#/$defs/runtimeIdentity"},
+        "problem_count": {"type": "integer", "minimum": 0},
+        "event_count": {"type": "integer", "minimum": 0}
+      }
+    },
+    "signal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["signal_id", "kind", "severity", "run_ids", "summary", "facts"],
+      "properties": {
+        "signal_id": {"$ref": "#/$defs/signalId"},
+        "kind": {
+          "enum": [
+            "recorded-problem", "multiple-terminal-roots", "repeated-role-correction",
+            "repeated-dispatch", "manual-dispatch-recovery", "failed-evidence",
+            "replayed-evidence", "revision-pressure", "runtime-identity-unavailable",
+            "malformed-ledger", "terminal-runtime-failure"
+          ]
+        },
+        "severity": {"enum": ["mandatory", "advisory"]},
+        "run_ids": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        },
+        "summary": {"type": "string", "minLength": 1, "pattern": "\\S"},
+        "facts": {"type": "object"}
+      }
+    },
+    "snapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "repo_root", "owner_session_id", "runs", "signals", "snapshot_digest"],
+      "properties": {
+        "schema_version": {"const": 1},
+        "repo_root": {"type": "string", "minLength": 1},
+        "owner_session_id": {"type": "string", "minLength": 1},
+        "runs": {"type": "array", "items": {"$ref": "#/$defs/runFact"}},
+        "signals": {"type": "array", "items": {"$ref": "#/$defs/signal"}},
+        "snapshot_digest": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "disposition": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["signal_id", "disposition", "owner", "reference"],
+          "properties": {
+            "signal_id": {"$ref": "#/$defs/signalId"},
+            "disposition": {"const": "issue"},
+            "owner": {"enum": ["current_project", "builder_loop", "external_platform"]},
+            "reference": {"type": "string", "minLength": 1, "pattern": "\\S"}
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["signal_id", "disposition", "reason"],
+          "properties": {
+            "signal_id": {"$ref": "#/$defs/signalId"},
+            "disposition": {"const": "not-incident"},
+            "reason": {"type": "string", "minLength": 1, "pattern": "\\S"}
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["signal_id", "disposition", "reason"],
+          "properties": {
+            "signal_id": {"$ref": "#/$defs/signalId"},
+            "disposition": {"const": "needs-user"},
+            "reason": {"type": "string", "minLength": 1, "pattern": "\\S"}
+          }
+        }
+      ]
+    },
+    "reportInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "snapshot_digest", "dispositions"],
+      "properties": {
+        "schema_version": {"const": 1},
+        "snapshot_digest": {"$ref": "#/$defs/sha256"},
+        "dispositions": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/disposition"}
+        }
+      }
+    },
+    "storedReport": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version", "repo_root", "owner_session_id", "snapshot_digest",
+        "dispositions", "report_digest", "recorded_at"
+      ],
+      "properties": {
+        "schema_version": {"const": 1},
+        "repo_root": {"type": "string", "minLength": 1},
+        "owner_session_id": {"type": "string", "minLength": 1},
+        "snapshot_digest": {"$ref": "#/$defs/sha256"},
+        "dispositions": {"type": "array", "items": {"$ref": "#/$defs/disposition"}},
+        "report_digest": {"$ref": "#/$defs/sha256"},
+        "recorded_at": {"type": "string", "minLength": 1}
+      }
+    },
+    "status": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["status", "owner_session_id"],
+      "properties": {
+        "status": {"enum": ["NOOP", "ACTIVE", "REQUIRED", "STALE", "NEEDS_USER", "READY", "FATAL"]},
+        "owner_session_id": {"type": "string", "minLength": 1},
+        "snapshot": {"$ref": "#/$defs/snapshot"},
+        "report": {"$ref": "#/$defs/storedReport"},
+        "required_block": {"type": "string", "minLength": 1},
+        "message": {"type": "string", "minLength": 1}
+      }
+    }
+  }
+}

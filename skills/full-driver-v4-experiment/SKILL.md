@@ -112,6 +112,10 @@ dispatch。直到 `finalize` 或明确的决策边界。动作面如下，不能
 - `tester_fix`：结构化问题 owner=tester 时回到 Tester 同一 thread；普通测试修正或 fixture 修正
   不修改 Mission。
 - `builder_fix`：结构化问题 owner=builder 时回到 Builder，在原 candidate 修复并 checkpoint。
+- `external_problem_decision`：`owner=external_platform` 的 open problem 必须停止 dispatch，通过
+  `request_user_input` 取得继续授权；新的外部 probe 成功后调用
+  `resolve-external-problem --problem-key <key> --reason <reason>`。不得派 `builder_fix`、重复
+  `record-problems`、修改 candidate，或把恢复决定当成 PASS evidence；下一步由 Driver 重跑原 gate。
 - `rematerialize_target`：target drift 无冲突时调用 Core 重物化并重验受影响 evidence，不请求用户。
 - `recover_finalize`：只重放已经持久化的 finalize intent。
 - `architecture_review`：相同 failure signature 连续三次形成 no-progress 才暂停普通重试。
@@ -119,7 +123,8 @@ dispatch。直到 `finalize` 或明确的决策边界。动作面如下，不能
 
 每个 Tester/Reviewer 的非通过结果都必须携带唯一、非空、符合
 `schema/codex-problem-report.schema.json` 的 `PROBLEM_REPORT`。主线程调用 `record-problems` 原样登记，
-按 owner 路由：`tester` → `tester_fix`，`builder` → `builder_fix`，`plan` → 产品/契约决定。
+按 owner 路由：`tester` → `tester_fix`，`builder` → `builder_fix`，`plan` → 产品/契约决定，
+`external_platform` → 上述授权恢复流程。
 交付后事故归属只允许 `current_project` 或 `builder_loop`（外部平台另行记录），不能混成一个问题。
 
 Tester continuity 或 Reviewer continuity 丢失时，优先 same-thread 续接。Tester 只有旧 source clean、
@@ -129,10 +134,14 @@ Agent 连续性不自动改变 Mission。
 ## 终态事故与记忆
 
 到达 `FINALIZED`、`NEEDS_USER`、`FATAL`、continuity failure 或 abandon 后，统一读取
-[交付后事故归属](../builder/references/post-delivery-retrospective.md)，检查重复 dispatch、人工 ledger
-recovery、evidence invalidation、revision chain 与既有高信号。完成工程问题分流后，才以
+[交付后事故归属](../builder/references/post-delivery-retrospective.md)，先调用
+`assurance retrospective-status --repo <repo> --session-id <session>` 取得所有 terminal root 的 canonical
+snapshot，再逐项完成分流并通过 `assurance record-retrospective` 原子记录。Full Driver Skill 调
+`consume-dispatch` 时显式传 `--consumer-source full_driver_skill`；operator recovery 传
+`--consumer-source operator_recovery`。完成工程问题分流后，才以
 `builder-loop delegated` 模式调用 `$memory-review`；不得复制旧版五问或把 memory 当成 Issue、代码、
-测试、契约和项目文档的替代品。复盘不重新打开 gate，不改写 finalized target，也不覆盖非成功终态。
+测试、契约和项目文档的替代品。最终消息必须逐字包含 status 返回的 `required_block`；复盘不重新
+打开 gate，不改写 finalized target，也不覆盖非成功终态。
 
 ## 唯一用户中断边界
 

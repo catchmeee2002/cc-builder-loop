@@ -439,6 +439,36 @@ def validate_test_proof_spec(value: Any) -> dict[str, Any]:
     return copy.deepcopy(value)
 
 
+def _validate_retrospective(value: Any, definition: str) -> dict[str, Any]:
+    schema = _schema("assurance-v4-retrospective.schema.json")
+    try:
+        jsonschema.Draft202012Validator(
+            {"$ref": f"{schema['$id']}#/$defs/{definition}"},
+            registry=Registry().with_resource(schema["$id"], Resource.from_contents(schema)),
+        ).validate(value)
+    except jsonschema.ValidationError as exc:
+        path = "/".join(str(part) for part in exc.absolute_path)
+        raise ContractError(
+            exc.message,
+            code="RETROSPECTIVE_REPORT_INVALID",
+            details={"path": path},
+        ) from exc
+    assert isinstance(value, dict)
+    return copy.deepcopy(value)
+
+
+def validate_retrospective_snapshot(value: Any) -> dict[str, Any]:
+    return _validate_retrospective(value, "snapshot")
+
+
+def validate_retrospective_report(value: Any) -> dict[str, Any]:
+    return _validate_retrospective(value, "reportInput")
+
+
+def validate_stored_retrospective_report(value: Any) -> dict[str, Any]:
+    return _validate_retrospective(value, "storedReport")
+
+
 def validate_ledger(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ContractError("ledger must be an object", code="ASSURANCE_LEDGER_INVALID")

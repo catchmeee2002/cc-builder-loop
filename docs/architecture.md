@@ -401,6 +401,17 @@ Builder turn 的 completed dispatch 先 checkpoint clean commit、关闭 Builder
 到达目标时只补齐 problem resolution，重复相同决定为 no-op。execution、歧义 key、缺失 key 或已关闭
 problem 的冲突决定均在写入前拒绝，不建立第二份 decision 状态。
 
+`owner=external_platform` 的 open problem 不进入 `builder_fix`。Driver 返回
+`external_problem_decision`，root Agent 先通过 `request_user_input` 取得继续授权并在 ledger 外完成一次
+新的外部环境 probe；确认环境恢复后，只能调用
+`resolve-external-problem --problem-key <key> --reason <reason>`。Core 在 repo lock 内校验 active phase、
+唯一 key、owner、problem candidate 与当前 candidate 一致，精确关闭一条 problem 并追加唯一
+`external_problem_resolved` event；相同 replay 为 no-op，冲突 reason、重复 event、旧 candidate、非外部
+owner 或 terminal run 都拒绝。该事务不改 Git ref、candidate、target 或 evidence；Driver 只允许同一
+candidate 重新执行原 machine gate，不能把旧失败 evidence 转成 PASS，也不能重新派 Builder。这遵循
+“显式授权，默认隔离”和“每个事实只有一个家”：授权决定留在 ledger event，环境恢复由新 probe 观察，
+通过结论仍只能来自重跑后的 machine evidence。
+
 ## Evidence 与失效
 
 ledger v2 为每类 evidence 记录 `observed_head`、`accepted_head`、输入 digest、scope 和 provenance。
@@ -517,10 +528,23 @@ Issue 创建快照与关闭结论分别承担实验输入和事后对照。历�
 ## 交付后事故与知识复盘
 
 `FINALIZED`、`NEEDS_USER`、`FATAL`、continuity failure 与 abandon 都进入同一终态 retrospective
-reference。复盘先检查重复 dispatch、人工 recovery、evidence invalidation、revision 数量与重复原因，
-再决定 no-op 或事故分流；它读取最终 ledger 的问题清单和老一轮逐项处理决定，不依赖已经离开上下文
-的旧角色文本，不重新打开 delivery gate，也不写 runtime ledger。成功标记只能在复盘完成后输出，
-非成功终态保留原失败事实。
+reference。Core 从 Git common state 中按 repository + owner session 读取所有匹配 ledger，派生 canonical
+snapshot、deterministic signals 与 snapshot digest；多个没有 supersession lineage 的 root run 也必须
+聚合。session report 只保存逐 signal disposition 和 source digest，不复制可驱动执行的 ledger 状态。
+新 run 或 terminal ledger 事实变化会使旧 report stale，但不修改任何 ledger、ref、worktree、role 或
+evidence。这遵循“每个事实只有一个家”：ledger 仍是执行事实源，schema 是 report 契约，独立 report
+只是终态事故处理结果。
+
+`retrospective-status` 返回 `NOOP`、`ACTIVE`、`REQUIRED`、`STALE`、`NEEDS_USER`、`READY` 或 `FATAL`。
+`record-retrospective` 要求当前 snapshot 的完整、无重复 dispositions；mandatory signal 必须路由 issue
+container 或等待用户授权，advisory 的 not-incident 必须带显式理由。写入通过 repo lock 与 atomic rename
+实现幂等；同 snapshot 的冲突替换需要 `--replace`。Core 不访问 GitHub，只记录 root Agent 已完成的
+owner/reference/decision。
+
+Stop hook 先执行 terminal retrospective gate，再保留既有 active-run gate。只有 byte-identical
+runtime-rendered summary block 出现在 root assistant message 中，`NEEDS_USER` 或 `READY` 才允许停止；
+marker-only、digest-only、prose-only 和 `stop_hook_active` recursion 都不能绕过。没有匹配 v4 run 时为
+`NOOP`，不改变普通 Codex 行为；active run 仍由既有完成门禁负责。
 
 每个工程事故最终只能归属 `current_project`、`builder_loop` 或 `external_platform`。同一因果链
 跨越业务仓库与 builder-loop 时强制拆成两个原子事故；两条可以相互引用，但复现、责任和关闭条件

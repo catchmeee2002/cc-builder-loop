@@ -30,8 +30,12 @@ from .models import (
     validate_lineage,
     validate_problem_report,
     validate_repo_path,
+    validate_retrospective_report,
+    validate_retrospective_snapshot,
+    validate_stored_retrospective_report,
     validate_telemetry,
     validate_test_proof_spec,
+    validate_ledger,
 )
 from .store import (
     StoreError,
@@ -848,7 +852,13 @@ def retry_dispatch(
     return status(repo, run_id)
 
 
-def consume_dispatch(repo_value: str | Path, run_value: str, *, action_id: str) -> dict[str, Any]:
+def consume_dispatch(
+    repo_value: str | Path,
+    run_value: str,
+    *,
+    action_id: str,
+    consumer_source: str | None = None,
+) -> dict[str, Any]:
     repo = resolve_repo(repo_value)
     run_id = ensure_run_id(run_value)
     with locked(repo):
@@ -858,14 +868,775 @@ def consume_dispatch(repo_value: str | Path, run_value: str, *, action_id: str) 
             raise AssuranceError("dispatch action is stale", code="DRIVER_ACTION_STALE", status="FAIL")
         if intent.get("state") != "completed":
             raise AssuranceError("dispatch is not complete", code="DISPATCH_NOT_COMPLETE")
+        if consumer_source is None:
+            runtime = ledger.get("driver_runtime")
+            kind = runtime.get("kind") if isinstance(runtime, dict) else None
+            consumer_source = {
+                "native": "native_driver",
+                "full_driver_skill": "full_driver_skill",
+            }.get(kind)
+        if consumer_source not in {"native_driver", "full_driver_skill", "operator_recovery"}:
+            raise AssuranceError(
+                "dispatch consumer source is required",
+                code="DISPATCH_CONSUMER_SOURCE_REQUIRED",
+            )
         append_event(
             ledger,
             "dispatch_consumed",
-            {"action_id": action_id, "result_digest": intent.get("result_digest")},
+            {
+                "action_id": action_id,
+                "result_digest": intent.get("result_digest"),
+                "consumer_source": consumer_source,
+            },
         )
         ledger["dispatch_intent"] = None
         save_ledger(repo, ledger)
     return status(repo, run_id)
+
+
+def resolve_external_problem(
+    repo_value: str | Path,
+    run_value: str,
+    *,
+    problem_key: str,
+    reason: str,
+) -> dict[str, Any]:
+    """Record one authorized recovery decision without manufacturing evidence."""
+
+    key = problem_key.strip()
+    normalized_reason = reason.strip()
+    if not key:
+        raise AssuranceError(
+            "external problem key is required",
+            code="EXTERNAL_PROBLEM_KEY_REQUIRED",
+            status="FAIL",
+        )
+    if not normalized_reason:
+        raise AssuranceError(
+            "external problem resolution requires a non-empty reason",
+            code="EXTERNAL_PROBLEM_REASON_REQUIRED",
+            status="FAIL",
+        )
+    repo = resolve_repo(repo_value)
+    run_id = ensure_run_id(run_value)
+    with locked(repo):
+        ledger = read_ledger(repo, run_id)
+        if ledger["phase"] != "active":
+            raise AssuranceError(
+                "external problems can only be resolved on an active run",
+                code="EXTERNAL_PROBLEM_RUN_TERMINAL",
+                status="FAIL",
+                details={"phase": ledger["phase"]},
+            )
+        keyed = [item for item in ledger.get("problems", []) if item.get("key") == key]
+        if not keyed:
+            raise AssuranceError(
+                "external problem key was not found",
+                code="EXTERNAL_PROBLEM_NOT_FOUND",
+                status="FAIL",
+                details={"key": key},
+            )
+        if len(keyed) != 1:
+            raise AssuranceError(
+                "external problem key is ambiguous",
+                code="EXTERNAL_PROBLEM_AMBIGUOUS",
+                status="FAIL",
+                details={"key": key, "matches": len(keyed)},
+            )
+        problem = keyed[0]
+        if problem.get("owner") != "external_platform":
+            raise AssuranceError(
+                "only external-platform problems use this recovery transition",
+                code="EXTERNAL_PROBLEM_OWNER_INVALID",
+                status="FAIL",
+                details={"key": key, "owner": problem.get("owner")},
+            )
+        current_candidate = ledger["facets"]["execution"].get("candidate_head")
+        if problem.get("candidate_head") != current_candidate:
+            raise AssuranceError(
+                "external problem no longer binds the current candidate",
+                code="EXTERNAL_PROBLEM_STALE",
+                status="FAIL",
+                details={
+                    "key": key,
+                    "problem_candidate_head": problem.get("candidate_head"),
+                    "candidate_head": current_candidate,
+                },
+            )
+        resolution_events = [
+            event
+            for event in ledger.get("events", [])
+            if event.get("kind") == "external_problem_resolved"
+            and isinstance(event.get("details"), dict)
+            and event["details"].get("key") == key
+        ]
+        if len(resolution_events) > 1:
+            raise AssuranceError(
+                "external problem has duplicate resolution events",
+                code="EXTERNAL_PROBLEM_RESOLUTION_DUPLICATE",
+                status="FAIL",
+                details={"key": key, "events": len(resolution_events)},
+            )
+        if problem.get("status") == "resolved":
+            event_details = (
+                resolution_events[0].get("details", {}) if resolution_events else {}
+            )
+            if (
+                problem.get("resolution") == normalized_reason
+                and event_details.get("reason") == normalized_reason
+                and event_details.get("candidate_head") == current_candidate
+            ):
+                return status(repo, run_id)
+            raise AssuranceError(
+                "resolved external problem conflicts with this replay",
+                code="EXTERNAL_PROBLEM_RESOLUTION_CONFLICT",
+                status="FAIL",
+                details={"key": key},
+            )
+        if problem.get("status") != "open" or resolution_events:
+            raise AssuranceError(
+                "external problem resolution state is inconsistent",
+                code="EXTERNAL_PROBLEM_RESOLUTION_CONFLICT",
+                status="FAIL",
+                details={"key": key},
+            )
+        if isinstance(ledger.get("dispatch_intent"), dict):
+            raise AssuranceError(
+                "external problem cannot be resolved while a dispatch is pending",
+                code="EXTERNAL_PROBLEM_DISPATCH_PENDING",
+                status="FAIL",
+                details={"key": key},
+            )
+        machine_record = ledger.get("evidence", {}).get("machine")
+        machine_record_digest = (
+            digest(machine_record) if isinstance(machine_record, dict) else None
+        )
+        problem["status"] = "resolved"
+        problem["resolution"] = normalized_reason
+        problem["resolved_at"] = now()
+        append_event(
+            ledger,
+            "external_problem_resolved",
+            {
+                "key": key,
+                "reason": normalized_reason,
+                "candidate_head": current_candidate,
+                "machine_state": evidence_state(ledger, "machine"),
+                "machine_evidence_digest": machine_record_digest,
+            },
+        )
+        save_ledger(repo, ledger)
+    return status(repo, run_id)
+
+
+RETROSPECTIVE_TERMINAL_PHASES = {"finalized", "abandoned", "superseded"}
+
+
+def _retrospective_report_path(repo: Path, session_id: str) -> Path:
+    key = digest({"owner_session_id": session_id})
+    return state_root(repo) / "retrospectives" / f"{key}.json"
+
+
+def _retrospective_signal(
+    kind: str,
+    severity: str,
+    run_ids: list[str],
+    summary: str,
+    facts: Mapping[str, Any],
+) -> dict[str, Any]:
+    normalized_runs = sorted(set(run_ids))
+    identity = digest(
+        {
+            "kind": kind,
+            "run_ids": normalized_runs,
+            "facts": facts,
+        }
+    )[:16]
+    return {
+        "signal_id": f"{kind}-{identity}",
+        "kind": kind,
+        "severity": severity,
+        "run_ids": normalized_runs,
+        "summary": summary,
+        "facts": copy.deepcopy(dict(facts)),
+    }
+
+
+def _retrospective_root_run_id(ledger: Mapping[str, Any]) -> str:
+    supersedes = ledger.get("facets", {}).get("mission", {}).get("supersedes")
+    if isinstance(supersedes, dict) and isinstance(supersedes.get("run_id"), str):
+        return str(supersedes["run_id"])
+    return str(ledger["run_id"])
+
+
+def _matching_retrospective_ledgers(
+    repo: Path, session_id: str
+) -> tuple[list[tuple[dict[str, Any], str]], list[dict[str, Any]]]:
+    matched: list[tuple[dict[str, Any], str]] = []
+    malformed: list[dict[str, Any]] = []
+    runs = state_root(repo) / "runs"
+    if not runs.is_dir():
+        return matched, malformed
+    for path in sorted(runs.glob("*/ledger.json")):
+        try:
+            raw_bytes = path.read_bytes()
+            raw = json.loads(raw_bytes)
+        except OSError as exc:
+            malformed.append(
+                {
+                    "run_id": path.parent.name,
+                    "code": "ASSURANCE_LEDGER_UNREADABLE",
+                    "message": str(exc),
+                    "path": None,
+                }
+            )
+            continue
+        except json.JSONDecodeError as exc:
+            malformed.append(
+                {
+                    "run_id": path.parent.name,
+                    "code": "ASSURANCE_LEDGER_INVALID",
+                    "message": str(exc),
+                    "path": None,
+                }
+            )
+            continue
+        if not isinstance(raw, dict):
+            malformed.append(
+                {
+                    "run_id": path.parent.name,
+                    "code": "ASSURANCE_LEDGER_INVALID",
+                    "message": "ledger must be an object",
+                    "path": None,
+                }
+            )
+            continue
+        if raw.get("owner_session_id") != session_id:
+            continue
+        try:
+            raw_repo = resolve_repo(str(raw.get("repo_root", "")))
+            raw_run_id = ensure_run_id(str(raw.get("run_id", "")))
+            expected_path = ledger_path(raw_repo, raw_run_id).resolve()
+            same_repository = state_root(raw_repo) == state_root(repo)
+        except (AssuranceError, OSError, RuntimeError, StoreError) as exc:
+            malformed.append(
+                {
+                    "run_id": str(raw.get("run_id") or path.parent.name),
+                    "code": getattr(exc, "code", "ASSURANCE_LEDGER_INVALID"),
+                    "message": str(exc),
+                    "path": None,
+                }
+            )
+            continue
+        if not same_repository or expected_path != path.resolve():
+            malformed.append(
+                {
+                    "run_id": raw_run_id,
+                    "code": "ASSURANCE_LEDGER_LOCATION_MISMATCH",
+                    "message": "ledger is outside its recorded repository state root",
+                    "path": None,
+                }
+            )
+            continue
+        try:
+            ledger = validate_ledger(raw)
+        except ContractError as exc:
+            malformed.append(
+                {
+                    "run_id": str(raw.get("run_id") or path.parent.name),
+                    "code": exc.code,
+                    "message": str(exc),
+                    "path": exc.details.get("path"),
+                }
+            )
+            continue
+        matched.append((ledger, hashlib.sha256(raw_bytes).hexdigest()))
+    return matched, malformed
+
+
+def _derive_retrospective_snapshot(
+    repo: Path,
+    session_id: str,
+    ledgers: list[tuple[dict[str, Any], str]],
+    terminal_facts: Mapping[str, Mapping[str, Any]],
+) -> dict[str, Any]:
+    run_facts: list[dict[str, Any]] = []
+    signals: list[dict[str, Any]] = []
+    roots: dict[str, list[str]] = {}
+    by_run = {str(item[0]["run_id"]): item[0] for item in ledgers}
+
+    def root_for(ledger: Mapping[str, Any]) -> str:
+        current = str(ledger["run_id"])
+        seen: set[str] = set()
+        while current in by_run and current not in seen:
+            seen.add(current)
+            parent = _retrospective_root_run_id(by_run[current])
+            if parent == current or parent not in by_run:
+                return current
+            current = parent
+        return current
+
+    for ledger, ledger_digest in sorted(ledgers, key=lambda item: str(item[0]["run_id"])):
+        run_id = str(ledger["run_id"])
+        mission = ledger["facets"]["mission"]
+        root_run_id = root_for(ledger)
+        roots.setdefault(root_run_id, []).append(run_id)
+        events = [item for item in ledger.get("events", []) if isinstance(item, dict)]
+        runtime_identity = copy.deepcopy(ledger["runtime_identity"])
+        problems = [item for item in ledger.get("problems", []) if isinstance(item, dict)]
+        run_facts.append(
+            {
+                "run_id": run_id,
+                "phase": str(ledger["phase"]),
+                "terminal_status": str(terminal_facts[run_id]["terminal_status"]),
+                "root_run_id": root_run_id,
+                "mission_revision": int(mission["revision"]),
+                "ledger_digest": ledger_digest,
+                "runtime_identity": runtime_identity,
+                "problem_count": len(problems),
+                "event_count": len(events),
+            }
+        )
+        terminal_fact = terminal_facts[run_id]
+        if terminal_fact["terminal_status"] in {"needs-user", "fatal", "continuity-failure"}:
+            signals.append(
+                _retrospective_signal(
+                    "terminal-runtime-failure",
+                    "mandatory",
+                    [run_id],
+                    f"Run {run_id} ended with {terminal_fact['terminal_status']}",
+                    terminal_fact,
+                )
+            )
+        sorted_problems = sorted(
+            problems,
+            key=lambda item: (
+                str(item.get("key", "")),
+                str(item.get("recorded_at", "")),
+                digest(item),
+            ),
+        )
+        for occurrence, problem in enumerate(sorted_problems, start=1):
+            facts = {
+                "key": str(problem.get("key", "unknown")),
+                "owner": str(problem.get("owner", "unknown")),
+                "status": str(problem.get("status", "unknown")),
+                "summary": str(problem.get("summary", "recorded problem")),
+                "details": str(problem.get("details", "")),
+                "candidate_head": problem.get("candidate_head"),
+                "producer": copy.deepcopy(problem.get("producer")),
+                "recorded_at": problem.get("recorded_at"),
+                "occurrence": occurrence,
+            }
+            signals.append(
+                _retrospective_signal(
+                    "recorded-problem",
+                    "mandatory",
+                    [run_id],
+                    f"Run {run_id} recorded problem {facts['key']}",
+                    facts,
+                )
+            )
+
+        prepared_counts: dict[str, int] = {}
+        completed: set[str] = set()
+        correction_counts: dict[str, int] = {}
+        evidence_attempts: dict[str, int] = {}
+        evidence_failures: dict[str, int] = {}
+        retry_counts: dict[str, int] = {}
+        manual_recoveries: list[dict[str, Any]] = []
+        for event in events:
+            kind = event.get("kind")
+            details = event.get("details") if isinstance(event.get("details"), dict) else {}
+            action_id = details.get("action_id")
+            if kind == "dispatch_prepared" and isinstance(action_id, str):
+                prepared_counts[action_id] = prepared_counts.get(action_id, 0) + 1
+                action = str(details.get("action", ""))
+                if action in {"tester_fix", "builder_fix"}:
+                    correction_counts[action] = correction_counts.get(action, 0) + 1
+            elif kind == "dispatch_completed" and isinstance(action_id, str):
+                completed.add(action_id)
+            elif kind == "dispatch_retry_scheduled" and isinstance(action_id, str):
+                retry_counts[action_id] = retry_counts.get(action_id, 0) + 1
+            elif kind == "dispatch_consumed" and isinstance(action_id, str):
+                source = details.get("consumer_source")
+                if source == "operator_recovery" or (source is None and action_id not in completed):
+                    manual_recoveries.append(
+                        {
+                            "action_id": action_id,
+                            "consumer_source": source or "legacy-inferred",
+                        }
+                    )
+            elif kind == "evidence_recorded":
+                evidence_kind = str(details.get("kind", "unknown"))
+                evidence_attempts[evidence_kind] = evidence_attempts.get(evidence_kind, 0) + 1
+                if details.get("status") == "fail":
+                    evidence_failures[evidence_kind] = evidence_failures.get(evidence_kind, 0) + 1
+            elif kind == "machine_verified":
+                evidence_attempts["machine"] = evidence_attempts.get("machine", 0) + 1
+                if details.get("status") != "pass":
+                    evidence_failures["machine"] = evidence_failures.get("machine", 0) + 1
+
+        for action, count in sorted(correction_counts.items()):
+            if count > 1:
+                signals.append(
+                    _retrospective_signal(
+                        "repeated-role-correction",
+                        "mandatory",
+                        [run_id],
+                        f"Run {run_id} required {count} {action} dispatches",
+                        {"action": action, "count": count},
+                    )
+                )
+        for action_id in sorted(set(prepared_counts) | set(retry_counts)):
+            attempts = prepared_counts.get(action_id, 0) + retry_counts.get(action_id, 0)
+            if attempts > 1:
+                signals.append(
+                    _retrospective_signal(
+                        "repeated-dispatch",
+                        "mandatory",
+                        [run_id],
+                        f"Run {run_id} replayed dispatch {action_id}",
+                        {"action_id": action_id, "attempts": attempts},
+                    )
+                )
+        for recovery in manual_recoveries:
+            signals.append(
+                _retrospective_signal(
+                    "manual-dispatch-recovery",
+                    "mandatory",
+                    [run_id],
+                    f"Run {run_id} consumed a dispatch through manual recovery",
+                    recovery,
+                )
+            )
+        for evidence_kind, count in sorted(evidence_failures.items()):
+            signals.append(
+                _retrospective_signal(
+                    "failed-evidence",
+                    "mandatory",
+                    [run_id],
+                    f"Run {run_id} recorded failed {evidence_kind} evidence",
+                    {"kind": evidence_kind, "failures": count},
+                )
+            )
+        for evidence_kind, count in sorted(evidence_attempts.items()):
+            if count > 1:
+                signals.append(
+                    _retrospective_signal(
+                        "replayed-evidence",
+                        "mandatory",
+                        [run_id],
+                        f"Run {run_id} recorded {count} {evidence_kind} evidence attempts",
+                        {"kind": evidence_kind, "attempts": count},
+                    )
+                )
+        revision = int(mission["revision"])
+        if revision > 1:
+            signals.append(
+                _retrospective_signal(
+                    "revision-pressure",
+                    "mandatory" if revision >= 3 else "advisory",
+                    [run_id],
+                    f"Run {run_id} reached mission revision {revision}",
+                    {"mission_revision": revision},
+                )
+            )
+        if runtime_identity.get("capture_status") != "captured":
+            signals.append(
+                _retrospective_signal(
+                    "runtime-identity-unavailable",
+                    "mandatory",
+                    [run_id],
+                    f"Run {run_id} did not capture a complete runtime identity",
+                    runtime_identity,
+                )
+            )
+
+    if len(roots) > 1:
+        root_ids = sorted(roots)
+        signals.append(
+            _retrospective_signal(
+                "multiple-terminal-roots",
+                "mandatory",
+                [run_id for root in root_ids for run_id in sorted(roots[root])],
+                f"Session contains {len(root_ids)} independent terminal root runs",
+                {"root_run_ids": root_ids},
+            )
+        )
+    signals.sort(key=lambda item: item["signal_id"])
+    repository_identity = str(Path(str(ledgers[0][0]["repo_root"])).resolve())
+    snapshot_base = {
+        "schema_version": 1,
+        "repo_root": repository_identity,
+        "owner_session_id": session_id,
+        "runs": run_facts,
+        "signals": signals,
+    }
+    snapshot = {**snapshot_base, "snapshot_digest": digest(snapshot_base)}
+    return validate_retrospective_snapshot(snapshot)
+
+
+def _read_retrospective_report(repo: Path, session_id: str) -> dict[str, Any] | None:
+    path = _retrospective_report_path(repo, session_id)
+    if not path.exists():
+        return None
+    try:
+        value = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        raise AssuranceError(
+            str(exc), code="RETROSPECTIVE_REPORT_STORED_INVALID", status="FATAL"
+        ) from exc
+    try:
+        report = validate_stored_retrospective_report(value)
+    except ContractError as exc:
+        raise AssuranceError(
+            str(exc),
+            code="RETROSPECTIVE_REPORT_STORED_INVALID",
+            status="FATAL",
+            details=exc.details,
+        ) from exc
+    report_base = {
+        key: report[key]
+        for key in (
+            "schema_version",
+            "repo_root",
+            "owner_session_id",
+            "snapshot_digest",
+            "dispositions",
+        )
+    }
+    if report["report_digest"] != digest(report_base):
+        raise AssuranceError(
+            "stored retrospective report digest does not match its content",
+            code="RETROSPECTIVE_REPORT_DIGEST_MISMATCH",
+            status="FATAL",
+        )
+    return report
+
+
+def _render_retrospective_block(
+    snapshot: Mapping[str, Any], report: Mapping[str, Any], *, pending: bool
+) -> str:
+    signal_by_id = {item["signal_id"]: item for item in snapshot["signals"]}
+    heading = (
+        "Builder-loop retrospective requires user input."
+        if pending
+        else "Builder-loop retrospective complete."
+    )
+    lines = [
+        heading,
+        f"Session: {snapshot['owner_session_id']}",
+        f"Snapshot: {snapshot['snapshot_digest']}",
+        f"Report: {report['report_digest']}",
+        "Dispositions:",
+    ]
+    if not report["dispositions"]:
+        lines.append("- No retrospective signals.")
+    for item in report["dispositions"]:
+        signal = signal_by_id[item["signal_id"]]
+        if item["disposition"] == "issue":
+            result = f"issue {item['owner']} {item['reference']}"
+        else:
+            result = f"{item['disposition']} {item['reason']}"
+        lines.append(
+            f"- {item['signal_id']} [{signal['severity']}] {signal['summary']} => {result}"
+        )
+    if pending:
+        lines.append(
+            f"BUILDER_INPUT_REQUIRED:{snapshot['owner_session_id']}:{snapshot['snapshot_digest']}"
+        )
+    else:
+        lines.append(
+            f"BUILDER_RETROSPECTIVE_READY:{snapshot['snapshot_digest']}:{report['report_digest']}"
+        )
+    return "\n".join(lines)
+
+
+def retrospective_status(repo_value: str | Path, session_id: str) -> dict[str, Any]:
+    repo = resolve_repo(repo_value)
+    owner_session_id = session_id.strip()
+    if not owner_session_id:
+        raise AssuranceError("session id is required", code="SESSION_ID_REQUIRED")
+    ledgers, malformed = _matching_retrospective_ledgers(repo, owner_session_id)
+    if malformed:
+        return {
+            "status": "FATAL",
+            "owner_session_id": owner_session_id,
+            "message": "matching Assurance v4 ledgers are malformed",
+            "code": "RETROSPECTIVE_LEDGER_MALFORMED",
+            "malformed_ledgers": malformed,
+        }
+    if not ledgers:
+        return {
+            "status": "NOOP",
+            "owner_session_id": owner_session_id,
+            "message": "no matching Assurance v4 runs",
+        }
+    terminal_facts: dict[str, dict[str, Any]] = {}
+    active: list[str] = []
+    for ledger, _ledger_digest in ledgers:
+        run_id = str(ledger["run_id"])
+        phase = str(ledger["phase"])
+        if phase in RETROSPECTIVE_TERMINAL_PHASES:
+            terminal_facts[run_id] = {"terminal_status": phase}
+            continue
+        try:
+            from .driver import next_action
+
+            decision = next_action(repo, run_id)
+        except (AssuranceError, ContractError, StoreError) as exc:
+            terminal_facts[run_id] = {
+                "terminal_status": "fatal",
+                "code": getattr(exc, "code", "RETROSPECTIVE_DRIVER_STATUS_FAILED"),
+                "reason": str(exc),
+            }
+            continue
+        if decision.get("status") == "NEEDS_USER":
+            reason = str(decision.get("reason") or "needs_user")
+            action = str(decision.get("action") or "unknown")
+            terminal_status = (
+                "continuity-failure"
+                if action == "continuity_decision" or "continuity" in reason
+                else "needs-user"
+            )
+            terminal_facts[run_id] = {
+                "terminal_status": terminal_status,
+                "action": action,
+                "reason": reason,
+            }
+        else:
+            active.append(run_id)
+    active.sort()
+    if active:
+        return {
+            "status": "ACTIVE",
+            "owner_session_id": owner_session_id,
+            "message": "Assurance v4 run remains active",
+            "active_runs": active,
+            "run_id": active[0] if len(active) == 1 else None,
+        }
+    snapshot = _derive_retrospective_snapshot(
+        repo, owner_session_id, ledgers, terminal_facts
+    )
+    report = _read_retrospective_report(repo, owner_session_id)
+    if report is None:
+        return {
+            "status": "REQUIRED",
+            "owner_session_id": owner_session_id,
+            "message": "terminal Assurance v4 runs require a retrospective report",
+            "snapshot": snapshot,
+        }
+    if (
+        report["repo_root"] != snapshot["repo_root"]
+        or report["owner_session_id"] != owner_session_id
+        or report["snapshot_digest"] != snapshot["snapshot_digest"]
+    ):
+        return {
+            "status": "STALE",
+            "owner_session_id": owner_session_id,
+            "message": "the stored retrospective report is stale",
+            "snapshot": snapshot,
+            "report": report,
+        }
+    pending = any(item["disposition"] == "needs-user" for item in report["dispositions"])
+    required_block = _render_retrospective_block(snapshot, report, pending=pending)
+    return {
+        "status": "NEEDS_USER" if pending else "READY",
+        "owner_session_id": owner_session_id,
+        "message": (
+            "retrospective awaits an authorized user decision"
+            if pending
+            else "retrospective report is complete"
+        ),
+        "snapshot": snapshot,
+        "report": report,
+        "required_block": required_block,
+    }
+
+
+def record_retrospective(
+    repo_value: str | Path,
+    session_id: str,
+    report_value: Any,
+    *,
+    replace: bool = False,
+) -> dict[str, Any]:
+    repo = resolve_repo(repo_value)
+    owner_session_id = session_id.strip()
+    report_input = validate_retrospective_report(report_value)
+    with locked(repo):
+        current = retrospective_status(repo, owner_session_id)
+        if current["status"] in {"NOOP", "ACTIVE", "FATAL"}:
+            raise AssuranceError(
+                "retrospective report cannot be recorded in the current session state",
+                code="RETROSPECTIVE_NOT_RECORDABLE",
+                status="NEEDS_USER" if current["status"] == "ACTIVE" else "FATAL",
+                details={"retrospective_status": current["status"]},
+            )
+        snapshot = current["snapshot"]
+        if report_input["snapshot_digest"] != snapshot["snapshot_digest"]:
+            raise AssuranceError(
+                "retrospective report does not bind the current snapshot",
+                code="RETROSPECTIVE_SNAPSHOT_STALE",
+                status="FAIL",
+                details={
+                    "expected_snapshot_digest": snapshot["snapshot_digest"],
+                    "actual_snapshot_digest": report_input["snapshot_digest"],
+                },
+            )
+        signals = {item["signal_id"]: item for item in snapshot["signals"]}
+        dispositions = report_input["dispositions"]
+        ids = [item["signal_id"] for item in dispositions]
+        duplicates = sorted({item for item in ids if ids.count(item) > 1})
+        unknown = sorted(set(ids) - set(signals))
+        missing = sorted(set(signals) - set(ids))
+        if duplicates or unknown or missing:
+            raise AssuranceError(
+                "retrospective dispositions must cover every current signal exactly once",
+                code="RETROSPECTIVE_COVERAGE_INVALID",
+                status="FAIL",
+                details={"duplicates": duplicates, "unknown": unknown, "missing": missing},
+            )
+        by_id = {item["signal_id"]: item for item in dispositions}
+        ordered = [copy.deepcopy(by_id[item["signal_id"]]) for item in snapshot["signals"]]
+        invalid_mandatory = [
+            item["signal_id"]
+            for item in ordered
+            if signals[item["signal_id"]]["severity"] == "mandatory"
+            and item["disposition"] == "not-incident"
+        ]
+        if invalid_mandatory:
+            raise AssuranceError(
+                "mandatory retrospective signals require issue routing or a user decision",
+                code="RETROSPECTIVE_MANDATORY_ROUTE_REQUIRED",
+                status="FAIL",
+                details={"signal_ids": invalid_mandatory},
+            )
+        report_base = {
+            "schema_version": 1,
+            "repo_root": snapshot["repo_root"],
+            "owner_session_id": owner_session_id,
+            "snapshot_digest": snapshot["snapshot_digest"],
+            "dispositions": ordered,
+        }
+        stored = {
+            **report_base,
+            "report_digest": digest(report_base),
+            "recorded_at": now(),
+        }
+        existing = _read_retrospective_report(repo, owner_session_id)
+        if existing is not None and existing["snapshot_digest"] == stored["snapshot_digest"]:
+            if existing["report_digest"] == stored["report_digest"]:
+                return retrospective_status(repo, owner_session_id)
+            if not replace:
+                raise AssuranceError(
+                    "a different report already exists for this snapshot",
+                    code="RETROSPECTIVE_REPORT_CONFLICT",
+                    status="FAIL",
+                )
+        atomic_write_json(_retrospective_report_path(repo, owner_session_id), stored)
+    return retrospective_status(repo, owner_session_id)
 
 
 def evidence_state(ledger: Mapping[str, Any], kind: str) -> str:
