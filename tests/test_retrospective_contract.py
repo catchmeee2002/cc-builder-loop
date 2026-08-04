@@ -4,6 +4,8 @@ import json
 import unittest
 from pathlib import Path
 
+from jsonschema import Draft202012Validator
+
 
 ROOT = Path(__file__).resolve().parents[1]
 BUILDER_SKILL = (
@@ -16,9 +18,100 @@ RETROSPECTIVE = (
 VARIANTS = json.loads(
     (ROOT / "experiments" / "agent-behavior" / "variants.json").read_text()
 )
+ARCHITECTURE = (ROOT / "docs" / "architecture.md").read_text()
+RETROSPECTIVE_SCHEMA = json.loads(
+    (ROOT / "schema" / "assurance-v4-retrospective.schema.json").read_text()
+)
 
 
 class RetrospectiveContractTest(unittest.TestCase):
+    def test_retrospective_schema_validates_public_snapshot_report_and_status_shapes(
+        self,
+    ) -> None:
+        Draft202012Validator.check_schema(RETROSPECTIVE_SCHEMA)
+        validator = Draft202012Validator(RETROSPECTIVE_SCHEMA)
+        signal_id = "recorded-problem-0123456789abcdef"
+        snapshot = {
+            "schema_version": 1,
+            "repo_root": "/tmp/retrospective-schema-fixture",
+            "owner_session_id": "retrospective-schema-session",
+            "runs": [
+                {
+                    "run_id": "retrospective-schema-run",
+                    "phase": "abandoned",
+                    "terminal_status": "abandoned",
+                    "root_run_id": "retrospective-schema-run",
+                    "mission_revision": 1,
+                    "ledger_digest": "a" * 64,
+                    "runtime_identity": {
+                        "adapter": "codex",
+                        "adapter_commit": "b" * 40,
+                        "adapter_dirty": False,
+                        "capture_status": "captured",
+                    },
+                    "problem_count": 1,
+                    "event_count": 2,
+                }
+            ],
+            "signals": [
+                {
+                    "signal_id": signal_id,
+                    "kind": "recorded-problem",
+                    "severity": "mandatory",
+                    "run_ids": ["retrospective-schema-run"],
+                    "summary": "One recorded problem requires routing.",
+                    "facts": {"problem_key": "schema-fixture-problem"},
+                }
+            ],
+            "snapshot_digest": "c" * 64,
+        }
+        report_input = {
+            "schema_version": 1,
+            "snapshot_digest": snapshot["snapshot_digest"],
+            "dispositions": [
+                {
+                    "signal_id": signal_id,
+                    "disposition": "issue",
+                    "owner": "builder_loop",
+                    "reference": "https://example.invalid/issues/1",
+                }
+            ],
+        }
+        stored_report = {
+            **report_input,
+            "repo_root": snapshot["repo_root"],
+            "owner_session_id": snapshot["owner_session_id"],
+            "report_digest": "d" * 64,
+            "recorded_at": "2026-08-04T00:00:00+00:00",
+        }
+        status = {
+            "status": "READY",
+            "owner_session_id": snapshot["owner_session_id"],
+            "snapshot": snapshot,
+            "report": stored_report,
+            "required_block": (
+                "Canonical summary\n"
+                f"BUILDER_RETROSPECTIVE_READY:{snapshot['snapshot_digest']}:"
+                f"{stored_report['report_digest']}"
+            ),
+        }
+        for value in (snapshot, report_input, stored_report, status):
+            with self.subTest(value=value):
+                validator.validate(value)
+
+        invalid_advisory = {
+            "schema_version": 1,
+            "snapshot_digest": "e" * 64,
+            "dispositions": [
+                {
+                    "signal_id": "revision-pressure-fedcba9876543210",
+                    "disposition": "not-incident",
+                    "reason": "   ",
+                }
+            ],
+        }
+        self.assertFalse(validator.is_valid(invalid_advisory))
+
     def test_builder_delegates_memory_screening_without_copying_old_scoring(self) -> None:
         self.assertIn("post-delivery-retrospective.md", BUILDER_SKILL)
         self.assertIn("$memory-review", BUILDER_SKILL)
@@ -110,6 +203,44 @@ class RetrospectiveContractTest(unittest.TestCase):
         self.assertEqual(builder_variants[0].get("roles"), ["builder"])
         self.assertEqual(builder_variants[0].get("kind"), "instruction")
         self.assertIn("post-delivery-retrospective.md", ENTRY_SKILL)
+
+    def test_terminal_gate_and_external_recovery_are_shipped_as_public_contracts(
+        self,
+    ) -> None:
+        shipped = "\n".join(
+            (ENTRY_SKILL, BUILDER_SKILL, RETROSPECTIVE, ARCHITECTURE)
+        )
+        for token in (
+            "retrospective-status",
+            "record-retrospective",
+            "BUILDER_INPUT_REQUIRED",
+            "BUILDER_RETROSPECTIVE_READY",
+            "resolve-external-problem",
+            "--consumer-source",
+            "consumer_source",
+            "full_driver_skill",
+            "operator_recovery",
+        ):
+            with self.subTest(token=token):
+                self.assertIn(token, shipped)
+        self.assertIn("request_user_input", shipped)
+        self.assertIn("external_platform", shipped)
+
+        ordered_sources = [
+            source
+            for source in (ENTRY_SKILL, BUILDER_SKILL, RETROSPECTIVE, ARCHITECTURE)
+            if "FULL_DRIVER_V4_RESULT" in source
+            and "BUILDER_RETROSPECTIVE_READY" in source
+        ]
+        self.assertTrue(ordered_sources, shipped)
+        self.assertTrue(
+            any(
+                source.index("BUILDER_RETROSPECTIVE_READY")
+                < source.index("FULL_DRIVER_V4_RESULT")
+                for source in ordered_sources
+            ),
+            ordered_sources,
+        )
 
 
 if __name__ == "__main__":

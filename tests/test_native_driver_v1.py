@@ -260,8 +260,19 @@ class NativeDriverCoreContractTest(unittest.TestCase):
             run_id,
             "--action-id",
             action["action_id"],
+            "--consumer-source",
+            "native",
         )
-        self.assertIsNone(json.loads((run_path / "ledger.json").read_text())["dispatch_intent"])
+        consumed_ledger = json.loads((run_path / "ledger.json").read_text())
+        self.assertIsNone(consumed_ledger["dispatch_intent"])
+        consumed = next(
+            item
+            for item in reversed(consumed_ledger["events"])
+            if item.get("kind") == "dispatch_consumed"
+        )
+        self.assertEqual(
+            consumed.get("details", {}).get("consumer_source"), "native"
+        )
 
 
 class AppServerTransportContractTest(unittest.TestCase):
@@ -375,6 +386,68 @@ class NativeCoordinatorContractTest(unittest.TestCase):
         self.assertTrue(retried)
         self.assertEqual(core.calls[0][0], "retry-dispatch")
         self.assertIn("serverOverloaded", core.calls[0][1])
+
+    def test_external_problem_needs_user_stops_without_agent_dispatch(self) -> None:
+        class FakeCore:
+            def __init__(self) -> None:
+                self.calls: list[tuple[str, tuple[str, ...]]] = []
+
+            def call(self, command: str, *args: str, input_value=None):
+                self.calls.append((command, args))
+                if command == "driver-next":
+                    return {
+                        "driver_protocol_version": 1,
+                        "status": "NEEDS_USER",
+                        "action": "none",
+                        "reason": "open_external_platform_problem",
+                        "action_id": "a" * 64,
+                        "problem": {
+                            "key": "external-probe-unavailable",
+                            "owner": "external_platform",
+                            "status": "open",
+                        },
+                    }
+                if command == "driver-context":
+                    return {
+                        "repo_root": str(ROOT),
+                        "candidate_worktree": str(ROOT),
+                        "facets": native_contract(ROOT),
+                        "evidence": {},
+                        "publication": None,
+                        "problems": [],
+                    }
+                raise AssertionError(f"unexpected command: {command}")
+
+        class NoDispatchTransport:
+            def start_thread(self, **_):
+                raise AssertionError("external problem must not start an agent")
+
+            def run_turn(self, **_):
+                raise AssertionError("external problem must not dispatch an agent")
+
+        core = FakeCore()
+        result = NativeCoordinator(
+            repo=ROOT,
+            run_id="native-external-needs-user",
+            core=core,
+            transport=NoDispatchTransport(),
+            project_root=ROOT,
+        ).run()
+
+        self.assertEqual(result.get("status"), "NEEDS_USER", result)
+        self.assertEqual(
+            result.get("problem", {}).get("key"),
+            "external-probe-unavailable",
+        )
+        commands = [command for command, _args in core.calls]
+        self.assertEqual(commands[0], "driver-next")
+        for forbidden in (
+            "prepare-builder",
+            "begin-dispatch",
+            "record-problems",
+            "checkpoint-builder",
+        ):
+            self.assertNotIn(forbidden, commands)
 
     def test_reviewer_prompt_maps_v4_contract_to_frozen_review_inputs(self) -> None:
         coordinator = NativeCoordinator(
@@ -568,6 +641,7 @@ class NativeCoordinatorContractTest(unittest.TestCase):
                     self.pending = None
                     self.done = False
                     self.calls: list[str] = []
+                    self.consume_args: list[tuple[str, ...]] = []
 
                 def call(self, command: str, *args: str, input_value=None):
                     self.calls.append(command)
@@ -615,6 +689,7 @@ class NativeCoordinatorContractTest(unittest.TestCase):
                     elif command == "complete-dispatch":
                         self.pending = {"state": "completed"}
                     elif command == "consume-dispatch":
+                        self.consume_args.append(args)
                         self.pending = None
                         self.done = True
                     return {"status": "ACTIVE"}
@@ -650,6 +725,10 @@ class NativeCoordinatorContractTest(unittest.TestCase):
             self.assertEqual(core.calls.count("prepare-builder"), 1)
             self.assertEqual(core.calls.count("begin-dispatch"), 1)
             self.assertEqual(core.calls.count("consume-dispatch"), 1)
+            self.assertEqual(len(core.consume_args), 1)
+            self.assertIn("--consumer-source", core.consume_args[0])
+            source_index = core.consume_args[0].index("--consumer-source") + 1
+            self.assertEqual(core.consume_args[0][source_index], "native")
 
     def test_builder_fix_result_checkpoints_before_consumption_and_replays_after_crash(self) -> None:
         class FakeCore:

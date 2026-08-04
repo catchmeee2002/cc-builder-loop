@@ -3,13 +3,28 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 
 
 def main() -> int:
-    status = os.environ.get("MOCK_RUNTIME_STATUS", "NOOP")
-    message = os.environ.get("MOCK_RUNTIME_MESSAGE", f"mock status {status}")
+    retrospective = "retrospective-status" in sys.argv[1:]
+    prefix = "MOCK_RETROSPECTIVE" if retrospective else "MOCK_RUNTIME"
+    status = os.environ.get(f"{prefix}_STATUS", "NOOP")
+    message = os.environ.get(f"{prefix}_MESSAGE", f"mock status {status}")
     run_id = os.environ.get("MOCK_RUNTIME_RUN_ID", "fixture-run")
-    print(json.dumps({"status": status, "message": message, "run_id": run_id}))
+    payload = {"status": status, "message": message, "run_id": run_id}
+    if retrospective:
+        payload.update(
+            {
+                "owner_session_id": os.environ.get(
+                    "MOCK_RETROSPECTIVE_SESSION_ID", "hook-fixture-session"
+                ),
+                "required_block": os.environ.get(
+                    "MOCK_RETROSPECTIVE_BLOCK", f"fixture retrospective {status}"
+                ),
+            }
+        )
+    print(json.dumps(payload))
     return 0
 
 

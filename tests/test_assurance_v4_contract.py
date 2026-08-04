@@ -2665,6 +2665,461 @@ class AssuranceV4ContractTest(unittest.TestCase):
         evidence = self.load_ledger(symlink_path)["evidence"].get("machine")
         self.assertTrue(evidence is None or evidence["status"] != "pass")
 
+    def test_open_external_problem_requires_user_recovery_instead_of_builder_fix(
+        self,
+    ) -> None:
+        run_id = "external-problem-needs-user"
+        _data, run_path = self.start(run_id)
+        report_path = self.write_json(
+            "external-problem-needs-user.json",
+            {
+                "schema_version": 1,
+                "problems": [
+                    {
+                        "key": "external-probe-unavailable",
+                        "summary": "The external probe is unavailable.",
+                        "details": "A fresh environment probe must succeed before assurance can resume.",
+                        "owner": "external_platform",
+                    }
+                ],
+            },
+        )
+        rc, recorded, _stdout, _stderr = self.invoke(
+            "record-problems",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--report",
+            report_path,
+            "--role",
+            "builder",
+            "--agent-id",
+            "external-problem-builder",
+            "--thread-id",
+            "external-problem-builder-thread",
+        )
+        self.assertEqual(rc, 0, recorded)
+        before = (run_path / "ledger.json").read_bytes()
+
+        rc, decision, _stdout, _stderr = self.invoke(
+            "driver-next", "--repo", self.repo, "--run", run_id
+        )
+
+        self.assertIn(rc, (0, 1), decision)
+        self.assertEqual(decision.get("status"), "NEEDS_USER", decision)
+        self.assertNotEqual(decision.get("action"), "builder_fix", decision)
+        self.assertEqual(
+            decision.get("problem", {}).get("key"),
+            "external-probe-unavailable",
+        )
+        self.assertEqual((run_path / "ledger.json").read_bytes(), before)
+
+    def test_external_problem_resolution_is_atomic_idempotent_and_reenters_machine_gate(
+        self,
+    ) -> None:
+        run_id = "external-problem-resolution"
+        contract = contract_for(
+            self.repo,
+            machine_argv=[sys.executable, "-c", "raise SystemExit(9)"],
+        )
+        data, run_path = self.start(run_id, contract=contract)
+        candidate = Path(data["candidate_worktree"])
+        self.commit_candidate_change(run_id, run_path, candidate)
+        self.record_role_evidence(run_id, run_path, "tester")
+        rc, failed, _stdout, _stderr = self.invoke(
+            "verify-machine", "--repo", self.repo, "--run", run_id
+        )
+        self.assertEqual(rc, 0, failed)
+        failed_ledger = self.load_ledger(run_path)
+        self.assertEqual(failed_ledger["evidence"]["machine"]["status"], "fail")
+
+        report_path = self.write_json(
+            "external-problem-resolution.json",
+            {
+                "schema_version": 1,
+                "problems": [
+                    {
+                        "key": "external-network-restored",
+                        "summary": "The external network probe failed.",
+                        "details": "The user authorized a fresh probe after the environment recovered.",
+                        "owner": "external_platform",
+                    }
+                ],
+            },
+        )
+        rc, recorded, _stdout, _stderr = self.invoke(
+            "record-problems",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--report",
+            report_path,
+            "--role",
+            "builder",
+            "--agent-id",
+            "external-resolution-builder",
+            "--thread-id",
+            "external-resolution-builder-thread",
+        )
+        self.assertEqual(rc, 0, recorded)
+        rc, blocked, _stdout, _stderr = self.invoke(
+            "driver-next", "--repo", self.repo, "--run", run_id
+        )
+        self.assertIn(rc, (0, 1), blocked)
+        self.assertEqual(blocked.get("status"), "NEEDS_USER", blocked)
+
+        before = self.load_ledger(run_path)
+        ledger_bytes_before = (run_path / "ledger.json").read_bytes()
+        target_before = head(self.repo)
+        candidate_before = head(candidate)
+        candidate_ref_before = git(
+            self.repo, "rev-parse", before["candidate_branch"]
+        )
+        worktrees_before = git(self.repo, "worktree", "list", "--porcelain")
+        evidence_before = deepcopy(before["evidence"])
+        reason = "User authorized continuation after a fresh external probe succeeded."
+
+        rc, resolved, _stdout, _stderr = self.invoke(
+            "resolve-external-problem",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--problem-key",
+            "external-network-restored",
+            "--reason",
+            reason,
+        )
+
+        self.assertEqual(rc, 0, resolved)
+        after = self.load_ledger(run_path)
+        problem = next(
+            item
+            for item in after["problems"]
+            if item["key"] == "external-network-restored"
+        )
+        self.assertEqual(problem["status"], "resolved")
+        self.assertIn(reason, problem["resolution"])
+        events = after["events"][len(before["events"]) :]
+        self.assertEqual(len(events), 1, after["events"])
+        event_payload = json.dumps(events[0], ensure_ascii=False, sort_keys=True)
+        self.assertIn("external-network-restored", event_payload)
+        self.assertIn(reason, event_payload)
+        self.assertEqual(after["evidence"], evidence_before)
+        self.assertEqual(after["evidence"]["machine"]["status"], "fail")
+        self.assertEqual(head(self.repo), target_before)
+        self.assertEqual(head(candidate), candidate_before)
+        self.assertEqual(
+            git(self.repo, "rev-parse", after["candidate_branch"]),
+            candidate_ref_before,
+        )
+        self.assertEqual(
+            git(self.repo, "worktree", "list", "--porcelain"),
+            worktrees_before,
+        )
+        self.assertNotEqual(
+            (run_path / "ledger.json").read_bytes(), ledger_bytes_before
+        )
+
+        resolved_bytes = (run_path / "ledger.json").read_bytes()
+        rc, replayed, _stdout, _stderr = self.invoke(
+            "resolve-external-problem",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--problem-key",
+            "external-network-restored",
+            "--reason",
+            reason,
+        )
+        self.assertEqual(rc, 0, replayed)
+        self.assertEqual((run_path / "ledger.json").read_bytes(), resolved_bytes)
+
+        rc, conflict, _stdout, _stderr = self.invoke(
+            "resolve-external-problem",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--problem-key",
+            "external-network-restored",
+            "--reason",
+            "A conflicting replay reason.",
+        )
+        self.assertNotEqual(rc, 0, conflict)
+        self.assertEqual((run_path / "ledger.json").read_bytes(), resolved_bytes)
+
+        rc, decision, _stdout, _stderr = self.invoke(
+            "driver-next", "--repo", self.repo, "--run", run_id
+        )
+        self.assertEqual(rc, 0, decision)
+        self.assertEqual(decision.get("action"), "verify_machine", decision)
+
+    def test_external_problem_resolution_rejects_wrong_or_stale_problem_without_bypass(
+        self,
+    ) -> None:
+        run_id = "external-problem-boundaries"
+        _data, run_path = self.start(run_id)
+        report_path = self.write_json(
+            "external-problem-boundaries.json",
+            {
+                "schema_version": 1,
+                "problems": [
+                    {
+                        "key": "external-only",
+                        "summary": "An external dependency is unavailable.",
+                        "details": "Only this exact problem may use external recovery.",
+                        "owner": "external_platform",
+                    },
+                    {
+                        "key": "builder-owned",
+                        "summary": "Builder work remains.",
+                        "details": "External recovery must not close Builder work.",
+                        "owner": "builder",
+                    },
+                    {
+                        "key": "tester-owned",
+                        "summary": "Tester work remains.",
+                        "details": "External recovery must not close Tester work.",
+                        "owner": "tester",
+                    },
+                    {
+                        "key": "plan-owned",
+                        "summary": "A plan decision remains.",
+                        "details": "External recovery must not close plan work.",
+                        "owner": "plan",
+                    },
+                ],
+            },
+        )
+        rc, recorded, _stdout, _stderr = self.invoke(
+            "record-problems",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--report",
+            report_path,
+            "--role",
+            "builder",
+            "--agent-id",
+            "external-boundary-builder",
+            "--thread-id",
+            "external-boundary-builder-thread",
+        )
+        self.assertEqual(rc, 0, recorded)
+        reason = "User authorized recovery after the external dependency returned."
+        rc, resolved, _stdout, _stderr = self.invoke(
+            "resolve-external-problem",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--problem-key",
+            "external-only",
+            "--reason",
+            reason,
+        )
+        self.assertEqual(rc, 0, resolved)
+        statuses = {
+            item["key"]: item["status"]
+            for item in self.load_ledger(run_path)["problems"]
+        }
+        self.assertEqual(statuses["external-only"], "resolved")
+        for key in ("builder-owned", "tester-owned", "plan-owned"):
+            self.assertEqual(statuses[key], "open")
+            before = (run_path / "ledger.json").read_bytes()
+            rc, rejected, _stdout, _stderr = self.invoke(
+                "resolve-external-problem",
+                "--repo",
+                self.repo,
+                "--run",
+                run_id,
+                "--problem-key",
+                key,
+                "--reason",
+                reason,
+            )
+            self.assertNotEqual(rc, 0, rejected)
+            self.assertEqual((run_path / "ledger.json").read_bytes(), before)
+
+        before_missing = (run_path / "ledger.json").read_bytes()
+        rc, missing, _stdout, _stderr = self.invoke(
+            "resolve-external-problem",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--problem-key",
+            "missing-external-problem",
+            "--reason",
+            reason,
+        )
+        self.assertNotEqual(rc, 0, missing)
+        self.assertEqual((run_path / "ledger.json").read_bytes(), before_missing)
+
+        stale_run = "external-problem-stale"
+        stale_data, stale_path = self.start(stale_run)
+        stale_report = self.write_json(
+            "external-problem-stale.json",
+            {
+                "schema_version": 1,
+                "problems": [
+                    {
+                        "key": "stale-external",
+                        "summary": "The external problem belongs to an older candidate.",
+                        "details": "Changing the candidate must make recovery stale.",
+                        "owner": "external_platform",
+                    }
+                ],
+            },
+        )
+        rc, recorded, _stdout, _stderr = self.invoke(
+            "record-problems",
+            "--repo",
+            self.repo,
+            "--run",
+            stale_run,
+            "--report",
+            stale_report,
+            "--role",
+            "builder",
+            "--agent-id",
+            "stale-external-builder",
+            "--thread-id",
+            "stale-external-builder-thread",
+        )
+        self.assertEqual(rc, 0, recorded)
+        self.commit_candidate_change(
+            stale_run, stale_path, Path(stale_data["candidate_worktree"])
+        )
+        before_stale = (stale_path / "ledger.json").read_bytes()
+        rc, stale, _stdout, _stderr = self.invoke(
+            "resolve-external-problem",
+            "--repo",
+            self.repo,
+            "--run",
+            stale_run,
+            "--problem-key",
+            "stale-external",
+            "--reason",
+            reason,
+        )
+        self.assertNotEqual(rc, 0, stale)
+        self.assertEqual((stale_path / "ledger.json").read_bytes(), before_stale)
+
+        terminal_run = "external-problem-terminal"
+        _terminal_data, terminal_path = self.start(terminal_run)
+        terminal_report = self.write_json(
+            "external-problem-terminal.json",
+            {
+                "schema_version": 1,
+                "problems": [
+                    {
+                        "key": "terminal-external",
+                        "summary": "The run is already terminal.",
+                        "details": "Terminal delivery facts cannot be reopened by recovery.",
+                        "owner": "external_platform",
+                    }
+                ],
+            },
+        )
+        rc, recorded, _stdout, _stderr = self.invoke(
+            "record-problems",
+            "--repo",
+            self.repo,
+            "--run",
+            terminal_run,
+            "--report",
+            terminal_report,
+            "--role",
+            "builder",
+            "--agent-id",
+            "terminal-external-builder",
+            "--thread-id",
+            "terminal-external-builder-thread",
+        )
+        self.assertEqual(rc, 0, recorded)
+        rc, abandoned, _stdout, _stderr = self.invoke(
+            "abandon",
+            "--repo",
+            self.repo,
+            "--run",
+            terminal_run,
+            "--reason",
+            "terminal recovery rejection fixture",
+        )
+        self.assertEqual(rc, 0, abandoned)
+        before_terminal = (terminal_path / "ledger.json").read_bytes()
+        rc, terminal, _stdout, _stderr = self.invoke(
+            "resolve-external-problem",
+            "--repo",
+            self.repo,
+            "--run",
+            terminal_run,
+            "--problem-key",
+            "terminal-external",
+            "--reason",
+            reason,
+        )
+        self.assertNotEqual(rc, 0, terminal)
+        self.assertEqual(
+            (terminal_path / "ledger.json").read_bytes(), before_terminal
+        )
+
+        ambiguous_run = "external-problem-ambiguous"
+        _ambiguous_data, ambiguous_path = self.start(ambiguous_run)
+        duplicate_report = {
+            "schema_version": 1,
+            "problems": [
+                {
+                    "key": "duplicate-external",
+                    "summary": "The same external key has two producers.",
+                    "details": "Ambiguous recovery must not choose one producer.",
+                    "owner": "external_platform",
+                }
+            ],
+        }
+        for role in ("builder", "reviewer"):
+            report_path = self.write_json(
+                f"duplicate-external-{role}.json", duplicate_report
+            )
+            rc, recorded, _stdout, _stderr = self.invoke(
+                "record-problems",
+                "--repo",
+                self.repo,
+                "--run",
+                ambiguous_run,
+                "--report",
+                report_path,
+                "--role",
+                role,
+                "--agent-id",
+                f"duplicate-{role}",
+                "--thread-id",
+                f"duplicate-{role}-thread",
+            )
+            self.assertEqual(rc, 0, recorded)
+        before_ambiguous = (ambiguous_path / "ledger.json").read_bytes()
+        rc, ambiguous, _stdout, _stderr = self.invoke(
+            "resolve-external-problem",
+            "--repo",
+            self.repo,
+            "--run",
+            ambiguous_run,
+            "--problem-key",
+            "duplicate-external",
+            "--reason",
+            reason,
+        )
+        self.assertNotEqual(rc, 0, ambiguous)
+        self.assertEqual(
+            (ambiguous_path / "ledger.json").read_bytes(), before_ambiguous
+        )
+
     def test_driver_next_derives_gate_order_without_persisting_dispatch_state(self) -> None:
         run_id = "driver-order"
         data, run_path = self.start(run_id)

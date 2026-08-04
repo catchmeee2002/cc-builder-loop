@@ -1,0 +1,196 @@
+{
+  "schema_version": 1,
+  "owner_session_id": "retrospective-false-negative-session",
+  "expected_signal_kinds": [
+    "recorded-problem",
+    "multiple-terminal-roots",
+    "repeated-role-correction",
+    "repeated-dispatch",
+    "manual-dispatch-recovery",
+    "failed-evidence",
+    "replayed-evidence",
+    "revision-pressure",
+    "runtime-identity-unavailable"
+  ],
+  "runs": [
+    {
+      "run_id": "false-negative-root-a",
+      "problems": [
+        {
+          "key": "lost-proof-failure",
+          "summary": "A failed proof was not surfaced at terminal completion.",
+          "details": "The retained run contains repeated proof failures and manual dispatch recovery.",
+          "owner": "builder_loop"
+        }
+      ],
+      "runtime_identity": {
+        "adapter": "unknown",
+        "adapter_commit": null,
+        "adapter_dirty": null,
+        "capture_status": "legacy-unavailable"
+      },
+      "events": [
+        {
+          "at": "2026-08-01T00:00:01+00:00",
+          "kind": "tester_continuity_replaced",
+          "details": {
+            "old_agent": {"agent_id": "tester-a", "thread_id": "thread-a"},
+            "new_agent": {"agent_id": "tester-b", "thread_id": "thread-b"}
+          }
+        },
+        {
+          "at": "2026-08-01T00:00:02+00:00",
+          "kind": "tester_continuity_replaced",
+          "details": {
+            "old_agent": {"agent_id": "tester-b", "thread_id": "thread-b"},
+            "new_agent": {"agent_id": "tester-c", "thread_id": "thread-c"}
+          }
+        },
+        {
+          "at": "2026-08-01T00:00:03+00:00",
+          "kind": "dispatch_prepared",
+          "details": {
+            "action_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "action": "tester_author"
+          }
+        },
+        {
+          "at": "2026-08-01T00:00:04+00:00",
+          "kind": "dispatch_completed",
+          "details": {
+            "action_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "result": "fail"
+          }
+        },
+        {
+          "at": "2026-08-01T00:00:05+00:00",
+          "kind": "dispatch_prepared",
+          "details": {
+            "action_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "action": "tester_author"
+          }
+        },
+        {
+          "at": "2026-08-01T00:00:06+00:00",
+          "kind": "dispatch_completed",
+          "details": {
+            "action_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "result": "fail"
+          }
+        },
+        {
+          "at": "2026-08-01T00:00:07+00:00",
+          "kind": "dispatch_consumed",
+          "details": {
+            "action_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "result_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "consumer_source": "operator_recovery"
+          }
+        },
+        {
+          "at": "2026-08-01T00:00:08+00:00",
+          "kind": "dispatch_consumed",
+          "details": {
+            "action_id": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "result_digest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+          }
+        },
+        {
+          "at": "2026-08-01T00:00:09+00:00",
+          "kind": "evidence_recorded",
+          "details": {
+            "kind": "proof",
+            "status": "fail",
+            "failure_signature": "1111111111111111111111111111111111111111111111111111111111111111"
+          }
+        },
+        {
+          "at": "2026-08-01T00:00:10+00:00",
+          "kind": "evidence_recorded",
+          "details": {
+            "kind": "proof",
+            "status": "fail",
+            "failure_signature": "1111111111111111111111111111111111111111111111111111111111111111"
+          }
+        },
+        {
+          "at": "2026-08-01T00:00:11+00:00",
+          "kind": "machine_verified",
+          "details": {
+            "status": "fail",
+            "failure_signature": "2222222222222222222222222222222222222222222222222222222222222222",
+            "duration_ms": 25
+          }
+        },
+        {
+          "at": "2026-08-01T00:00:12+00:00",
+          "kind": "machine_verified",
+          "details": {
+            "status": "fail",
+            "failure_signature": "2222222222222222222222222222222222222222222222222222222222222222",
+            "duration_ms": 30
+          }
+        }
+      ],
+      "revision_transitions": [
+        {
+          "source_run_id": "false-negative-root-a",
+          "target_run_id": "false-negative-revision-b",
+          "from_revision": 1,
+          "to_revision": 2,
+          "category": "tester_correction",
+          "semantic": false,
+          "predecessor_pressure_digest": "3333333333333333333333333333333333333333333333333333333333333333"
+        },
+        {
+          "source_run_id": "false-negative-revision-b",
+          "target_run_id": "false-negative-revision-c",
+          "from_revision": 2,
+          "to_revision": 3,
+          "category": "role_continuity",
+          "semantic": false,
+          "predecessor_pressure_digest": "4444444444444444444444444444444444444444444444444444444444444444"
+        }
+      ]
+    },
+    {
+      "run_id": "false-negative-root-b",
+      "problems": [],
+      "events": [
+        {
+          "at": "2026-08-01T01:00:01+00:00",
+          "kind": "dispatch_prepared",
+          "details": {
+            "action_id": "5555555555555555555555555555555555555555555555555555555555555555",
+            "action": "builder_implement"
+          }
+        },
+        {
+          "at": "2026-08-01T01:00:02+00:00",
+          "kind": "dispatch_turn_bound",
+          "details": {
+            "action_id": "5555555555555555555555555555555555555555555555555555555555555555",
+            "turn_id": "historical-native-turn"
+          }
+        },
+        {
+          "at": "2026-08-01T01:00:03+00:00",
+          "kind": "dispatch_completed",
+          "details": {
+            "action_id": "5555555555555555555555555555555555555555555555555555555555555555",
+            "result": "implemented"
+          }
+        },
+        {
+          "at": "2026-08-01T01:00:04+00:00",
+          "kind": "dispatch_consumed",
+          "details": {
+            "action_id": "5555555555555555555555555555555555555555555555555555555555555555",
+            "result_digest": "6666666666666666666666666666666666666666666666666666666666666666"
+          }
+        }
+      ],
+      "revision_transitions": []
+    }
+  ]
+}

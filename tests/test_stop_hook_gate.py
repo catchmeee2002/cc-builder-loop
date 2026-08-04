@@ -16,6 +16,8 @@ class StopHookGateTest(unittest.TestCase):
         self,
         status: str,
         *,
+        retrospective_status: str = "NOOP",
+        retrospective_block: str = "",
         stop_hook_active: bool = False,
         last_assistant_message: str = "",
     ) -> tuple[int, dict]:
@@ -33,6 +35,12 @@ class StopHookGateTest(unittest.TestCase):
                 "BUILDER_LOOP_CLI": str(MOCK_RUNTIME),
                 "MOCK_RUNTIME_STATUS": status,
                 "MOCK_RUNTIME_MESSAGE": f"fixture {status}",
+                "MOCK_RETROSPECTIVE_STATUS": retrospective_status,
+                "MOCK_RETROSPECTIVE_MESSAGE": (
+                    f"fixture retrospective {retrospective_status}"
+                ),
+                "MOCK_RETROSPECTIVE_BLOCK": retrospective_block,
+                "MOCK_RETROSPECTIVE_SESSION_ID": "hook-fixture-session",
             },
             input_text=json.dumps(event),
         )
@@ -96,21 +104,117 @@ class StopHookGateTest(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(result.get("decision"), "block", result)
 
-    def test_every_non_active_status_allows_stop(self) -> None:
-        for status in (
-            "NOOP",
-            "READY",
-            "NEEDS_USER",
-            "CONFLICT",
-            "CONTINUITY_FAILURE",
-            "FATAL",
-            "FATAL_AMBIGUOUS",
-            "COMPLETE",
-        ):
+    def test_retrospective_marker_cannot_bypass_an_active_run(self) -> None:
+        block = (
+            "Canonical completed retrospective\n"
+            f"BUILDER_RETROSPECTIVE_READY:{'a' * 64}:{'b' * 64}"
+        )
+        rc, result = self.call_stop(
+            "ACTIVE",
+            retrospective_status="READY",
+            retrospective_block=block,
+            last_assistant_message=block,
+        )
+        self.assertEqual(rc, 0)
+        self.assertEqual(result.get("decision"), "block", result)
+
+    def test_no_matching_terminal_run_preserves_ordinary_stop_behavior(self) -> None:
+        for status in ("NOOP", "COMPLETE"):
             with self.subTest(status=status):
-                rc, result = self.call_stop(status)
+                rc, result = self.call_stop(
+                    status, retrospective_status="NOOP"
+                )
                 self.assertEqual(rc, 0)
                 self.assertNotIn("decision", result, result)
+
+    def test_required_or_stale_retrospective_blocks_even_during_recursion(self) -> None:
+        terminal_statuses = (
+            "READY",
+            "NEEDS_USER",
+            "CONTINUITY_FAILURE",
+            "FATAL",
+            "COMPLETE",
+        )
+        for runtime_status in terminal_statuses:
+            for retrospective_status in ("REQUIRED", "STALE", "FATAL"):
+                with self.subTest(
+                    runtime_status=runtime_status,
+                    retrospective_status=retrospective_status,
+                ):
+                    rc, result = self.call_stop(
+                        runtime_status,
+                        retrospective_status=retrospective_status,
+                        retrospective_block=(
+                            f"Canonical {retrospective_status} retrospective"
+                        ),
+                        stop_hook_active=True,
+                        last_assistant_message="A prose-only completion claim.",
+                    )
+                    self.assertEqual(rc, 0)
+                    self.assertEqual(result.get("decision"), "block", result)
+
+    def test_pending_retrospective_requires_the_exact_runtime_block(self) -> None:
+        block = (
+            "Canonical pending retrospective\n"
+            "Signal recorded-problem-0123456789abcdef: needs user\n"
+            f"BUILDER_INPUT_REQUIRED:hook-fixture-session:{'a' * 64}"
+        )
+        for message in (
+            "",
+            "The retrospective is waiting for the user.",
+            f"BUILDER_INPUT_REQUIRED:hook-fixture-session:{'b' * 64}",
+            block.replace("needs user", "needs approval"),
+        ):
+            with self.subTest(message=message):
+                rc, result = self.call_stop(
+                    "COMPLETE",
+                    retrospective_status="NEEDS_USER",
+                    retrospective_block=block,
+                    stop_hook_active=True,
+                    last_assistant_message=message,
+                )
+                self.assertEqual(rc, 0)
+                self.assertEqual(result.get("decision"), "block", result)
+
+        rc, surfaced = self.call_stop(
+            "COMPLETE",
+            retrospective_status="NEEDS_USER",
+            retrospective_block=block,
+            last_assistant_message=block,
+        )
+        self.assertEqual(rc, 0)
+        self.assertNotIn("decision", surfaced, surfaced)
+
+    def test_ready_retrospective_requires_the_exact_runtime_summary(self) -> None:
+        block = (
+            "Canonical completed retrospective\n"
+            "Signal advisory-0123456789abcdef: not incident because reviewed\n"
+            f"BUILDER_RETROSPECTIVE_READY:{'a' * 64}:{'b' * 64}"
+        )
+        for message in (
+            "",
+            "Retrospective complete.",
+            f"BUILDER_RETROSPECTIVE_READY:{'a' * 64}:{'b' * 64}",
+            block.replace("because reviewed", "reviewed"),
+        ):
+            with self.subTest(message=message):
+                rc, result = self.call_stop(
+                    "COMPLETE",
+                    retrospective_status="READY",
+                    retrospective_block=block,
+                    last_assistant_message=message,
+                )
+                self.assertEqual(rc, 0)
+                self.assertEqual(result.get("decision"), "block", result)
+
+        rc, surfaced = self.call_stop(
+            "COMPLETE",
+            retrospective_status="READY",
+            retrospective_block=block,
+            last_assistant_message=f"Delivery facts\n{block}",
+        )
+        self.assertEqual(rc, 0)
+        self.assertNotIn("decision", surfaced, surfaced)
 
     def test_subagent_result_must_be_exactly_the_last_line(self) -> None:
         rc, missing = self.call_subagent_stop("tests finished without marker")
