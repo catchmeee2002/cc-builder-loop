@@ -527,6 +527,24 @@ def validate_stored_retrospective_report(value: Any) -> dict[str, Any]:
     return _validate_retrospective(value, "storedReport")
 
 
+def doc_reference_scan_digest_input(value: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        key: copy.deepcopy(value.get(key))
+        for key in (
+            "contract_version",
+            "target_start_head",
+            "candidate_head",
+            "status",
+            "changed_paths",
+            "changed_definitions",
+            "documents",
+            "broken_references",
+            "semantic_checks",
+            "error",
+        )
+    }
+
+
 def validate_ledger(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ContractError("ledger must be an object", code="ASSURANCE_LEDGER_INVALID")
@@ -573,6 +591,30 @@ def validate_ledger(value: Any) -> dict[str, Any]:
             "ledger facet digests do not match their canonical values",
             code="ASSURANCE_LEDGER_DIGEST_MISMATCH",
         )
+    scan = normalized.get("doc_reference_scan")
+    if isinstance(scan, Mapping):
+        expected_digest = digest(doc_reference_scan_digest_input(scan))
+        if scan.get("result_digest") != expected_digest:
+            raise ContractError(
+                "documentation reference scan digest does not match its result",
+                code="DOC_REFERENCE_SCAN_DIGEST_MISMATCH",
+            )
+        scan_status = scan.get("status")
+        broken = scan.get("broken_references")
+        error = scan.get("error")
+        valid_status = (
+            scan_status == "pass" and broken == [] and error is None
+        ) or (
+            scan_status == "fail"
+            and isinstance(broken, list)
+            and bool(broken)
+            and error is None
+        ) or (scan_status == "error" and isinstance(error, Mapping))
+        if not valid_status:
+            raise ContractError(
+                "documentation reference scan status does not match its findings",
+                code="DOC_REFERENCE_SCAN_STATUS_MISMATCH",
+            )
     return normalized
 
 
@@ -697,6 +739,17 @@ def evidence_dependency(
             assurance=ledger["digests"]["assurance"],
             execution=ledger["digests"]["execution"],
             publication=publication_identity,
+            doc_reference_scan=(
+                {
+                    "contract_version": ledger.get("doc_reference_contract_version"),
+                    "status": ledger.get("doc_reference_scan", {}).get("status"),
+                    "result_digest": ledger.get("doc_reference_scan", {}).get(
+                        "result_digest"
+                    ),
+                }
+                if isinstance(ledger.get("doc_reference_scan"), Mapping)
+                else None
+            ),
         )
         if kind == "reviewer":
             prereq = {}

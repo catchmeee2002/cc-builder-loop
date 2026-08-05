@@ -113,6 +113,8 @@ class NativeCoordinator:
                 self._simple("verify-machine", action)
             elif name == "verify_preflight":
                 self._simple("verify-preflight", action)
+            elif name == "scan_doc_references":
+                self._simple("scan-doc-references", action)
             elif name == "prepare_deployment":
                 self._simple("prepare-deployment", action)
             elif name == "restore_deployment":
@@ -815,6 +817,8 @@ class NativeCoordinator:
             "publication": context.get("publication"),
             "recomposition": action.get("recomposition"),
             "evidence": context.get("evidence"),
+            "doc_reference_scan": context.get("doc_reference_scan"),
+            "doc_reference_scan_state": context.get("doc_reference_scan_state"),
             "problems": context.get("problems"),
             "problem_report_schema": self.problem_schema,
             "result_field_contract": self._result_field_contract(str(action["action"])),
@@ -919,6 +923,8 @@ class NativeCoordinator:
                 else None
             ),
             "documentation_policy_path": str(self.project_root / "policies" / "doc-policy.md"),
+            "doc_reference_scan": context.get("doc_reference_scan"),
+            "doc_reference_scan_state": context.get("doc_reference_scan_state"),
             "pre_turn_gates": {
                 "required": (
                     [
@@ -939,6 +945,8 @@ class NativeCoordinator:
                     else facets["assurance"].get("required", [])
                 ),
                 "evidence": context.get("evidence", {}),
+                "doc_reference_scan": context.get("doc_reference_scan"),
+                "doc_reference_scan_state": context.get("doc_reference_scan_state"),
                 "publication": context.get("publication"),
             },
             "mapping_note": (

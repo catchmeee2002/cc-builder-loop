@@ -648,6 +648,14 @@ class NativeCoordinatorContractTest(unittest.TestCase):
             "candidate_worktree": str(ROOT),
             "facets": native_contract(ROOT),
             "evidence": {},
+            "doc_reference_scan": {
+                "status": "pass",
+                "candidate_head": "2" * 40,
+                "semantic_checks": [
+                    {"file": "README.md", "question": "Verify the symbol reference."}
+                ],
+            },
+            "doc_reference_scan_state": "pass",
             "publication": None,
             "problems": [],
         }
@@ -672,6 +680,10 @@ class NativeCoordinatorContractTest(unittest.TestCase):
         self.assertEqual(review["documentation_spec"]["authorized_paths"], ["README.md"])
         self.assertEqual(review["complete_diff"]["argv"][-1], f"{'1' * 40}..{'2' * 40}")
         self.assertTrue(Path(review["documentation_policy_path"]).is_file())
+        self.assertEqual(review["doc_reference_scan_state"], "pass")
+        self.assertEqual(
+            review["doc_reference_scan"]["semantic_checks"][0]["file"], "README.md"
+        )
 
     def test_reviewer_preflight_prompt_is_early_evidence_not_the_final_gate(self) -> None:
         coordinator = NativeCoordinator(
@@ -1369,6 +1381,45 @@ class NativeCoordinatorContractTest(unittest.TestCase):
                 ],
                 ["prepare-deployment", "restore-deployment", "complete-blackbox"],
             )
+
+    def test_coordinator_executes_doc_reference_scan_action(self) -> None:
+        class FakeCore:
+            def __init__(self) -> None:
+                self.actions = iter(["scan_doc_references"])
+                self.calls: list[str] = []
+
+            def call(self, command: str, *args: str, input_value=None):
+                self.calls.append(command)
+                if command == "driver-next":
+                    try:
+                        action = next(self.actions)
+                    except StopIteration:
+                        return {
+                            "driver_protocol_version": 1,
+                            "status": "STOP",
+                            "action": "none",
+                            "reason": "finalized",
+                            "action_id": "f" * 64,
+                        }
+                    return {
+                        "driver_protocol_version": 1,
+                        "status": "CONTINUE",
+                        "action": action,
+                        "reason": action,
+                        "action_id": "a" * 64,
+                    }
+                return {"status": "ACTIVE"}
+
+        core = FakeCore()
+        result = NativeCoordinator(
+            repo=ROOT,
+            run_id="native-doc-reference-scan",
+            core=core,
+            transport=object(),
+            project_root=ROOT,
+        ).run()
+        self.assertEqual(result["status"], "FINALIZED")
+        self.assertIn("scan-doc-references", core.calls)
 
     def test_invalid_deployment_blackbox_requires_restore_before_consumption(self) -> None:
         class FakeCore:

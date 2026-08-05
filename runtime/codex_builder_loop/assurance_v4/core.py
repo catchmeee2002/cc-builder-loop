@@ -15,12 +15,18 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from . import SCHEMA_VERSION
+from .doc_references import (
+    DOC_REFERENCE_CONTRACT_VERSION,
+    DocReferenceScanError,
+    scan_repository,
+)
 from .models import (
     EVIDENCE_KINDS,
     ContractError,
     assurance_downgrades,
     authority_expands,
     digest,
+    doc_reference_scan_digest_input,
     evidence_dependency,
     facet_digests,
     acceptance_observation_mode,
@@ -598,6 +604,8 @@ def start(
                 "facets": contract,
                 "digests": facet_digests(contract),
                 "evidence": {},
+                "doc_reference_contract_version": DOC_REFERENCE_CONTRACT_VERSION,
+                "doc_reference_scan": None,
                 "retired_tester_sources": retired_tester_sources,
                 "retired_reviewer_agents": [],
                 "driver_runtime": copy.deepcopy(driver_runtime),
@@ -2172,6 +2180,26 @@ def evidence_state(ledger: Mapping[str, Any], kind: str) -> str:
     return "pass" if record.get("status") == "pass" else "failed"
 
 
+def doc_reference_scan_state(ledger: Mapping[str, Any]) -> str:
+    if ledger.get("doc_reference_contract_version") is None:
+        return "not_required"
+    scan = ledger.get("doc_reference_scan")
+    if not isinstance(scan, Mapping):
+        return "missing"
+    execution = ledger["facets"]["execution"]
+    if (
+        scan.get("target_start_head") != ledger.get("target_start_head")
+        or scan.get("candidate_head") != execution.get("candidate_head")
+    ):
+        return "stale"
+    status_value = scan.get("status")
+    if status_value == "pass":
+        return "pass"
+    if status_value == "fail":
+        return "failed"
+    return "error"
+
+
 def proof_failure_state(ledger: Mapping[str, Any]) -> str:
     record = ledger.get("proof_failure")
     if not isinstance(record, Mapping):
@@ -2206,9 +2234,12 @@ def current_proof_failure(ledger: Mapping[str, Any]) -> dict[str, Any] | None:
 def readiness(ledger: Mapping[str, Any]) -> dict[str, Any]:
     required = ledger["facets"]["assurance"]["required"]
     states = {kind: evidence_state(ledger, kind) for kind in required}
+    scan_state = doc_reference_scan_state(ledger)
+    if scan_state != "not_required":
+        states["doc_reference_scan"] = scan_state
     missing = [kind for kind, state in states.items() if state == "missing"]
     stale = [kind for kind, state in states.items() if state == "stale"]
-    failed = [kind for kind, state in states.items() if state == "failed"]
+    failed = [kind for kind, state in states.items() if state in {"failed", "error"}]
     ready = not missing and not stale and not failed and bool(
         ledger["facets"]["execution"].get("candidate_head")
     )
@@ -2773,6 +2804,9 @@ def status(repo_value: str | Path, run_value: str) -> dict[str, Any]:
         "recomposition_intent": copy.deepcopy(ledger.get("recomposition_intent")),
         "deployment_transaction": copy.deepcopy(ledger.get("deployment_transaction")),
         "pending_blackbox": copy.deepcopy(ledger.get("pending_blackbox")),
+        "doc_reference_contract_version": ledger.get("doc_reference_contract_version"),
+        "doc_reference_scan": copy.deepcopy(ledger.get("doc_reference_scan")),
+        "doc_reference_scan_state": doc_reference_scan_state(ledger),
         "environment_lease": copy.deepcopy(ledger.get("environment_lease")),
         "supersede_intent": copy.deepcopy(ledger.get("supersede_intent")),
         "abandon_intent": copy.deepcopy(ledger.get("abandon_intent")),
@@ -2811,6 +2845,9 @@ def driver_context(repo_value: str | Path, run_value: str) -> dict[str, Any]:
         "recomposition_intent": copy.deepcopy(ledger.get("recomposition_intent")),
         "deployment_transaction": copy.deepcopy(ledger.get("deployment_transaction")),
         "pending_blackbox": copy.deepcopy(ledger.get("pending_blackbox")),
+        "doc_reference_contract_version": ledger.get("doc_reference_contract_version"),
+        "doc_reference_scan": copy.deepcopy(ledger.get("doc_reference_scan")),
+        "doc_reference_scan_state": doc_reference_scan_state(ledger),
         "environment_lease": copy.deepcopy(ledger.get("environment_lease")),
         "supersede_intent": copy.deepcopy(ledger.get("supersede_intent")),
         "abandon_intent": copy.deepcopy(ledger.get("abandon_intent")),
@@ -3556,6 +3593,74 @@ def prepare_reviewer(
     return status(repo, run_id)
 
 
+def scan_doc_references(repo_value: str | Path, run_value: str) -> dict[str, Any]:
+    repo = resolve_repo(repo_value)
+    run_id = ensure_run_id(run_value)
+    with locked(repo):
+        ledger = read_ledger(repo, run_id)
+        if ledger["phase"] != "active":
+            raise AssuranceError("run is not active", code="ASSURANCE_RUN_NOT_ACTIVE")
+        if ledger.get("doc_reference_contract_version") != DOC_REFERENCE_CONTRACT_VERSION:
+            raise AssuranceError(
+                "documentation reference scan is not enabled for this ledger",
+                code="DOC_REFERENCE_SCAN_NOT_ENABLED",
+            )
+        candidate = ledger["facets"]["execution"].get("candidate_head")
+        if not isinstance(candidate, str):
+            raise AssuranceError(
+                "documentation reference scan requires a committed candidate",
+                code="DOC_REFERENCE_CANDIDATE_MISSING",
+            )
+        target_start_head = ledger["target_start_head"]
+        try:
+            scanned = scan_repository(repo, target_start_head, candidate)
+            record: dict[str, Any] = {
+                "contract_version": DOC_REFERENCE_CONTRACT_VERSION,
+                "target_start_head": scanned["base_head"],
+                "candidate_head": scanned["candidate_head"],
+                "status": "fail" if scanned["broken_references"] else "pass",
+                "changed_paths": scanned["changed_paths"],
+                "changed_definitions": scanned["changed_definitions"],
+                "documents": scanned["documents"],
+                "broken_references": scanned["broken_references"],
+                "semantic_checks": scanned["semantic_checks"],
+                "error": None,
+            }
+        except DocReferenceScanError as exc:
+            record = {
+                "contract_version": DOC_REFERENCE_CONTRACT_VERSION,
+                "target_start_head": target_start_head,
+                "candidate_head": candidate,
+                "status": "error",
+                "changed_paths": [],
+                "changed_definitions": [],
+                "documents": [],
+                "broken_references": [],
+                "semantic_checks": [],
+                "error": {"code": exc.code, "message": str(exc)},
+            }
+        record["result_digest"] = digest(doc_reference_scan_digest_input(record))
+        record["scanned_at"] = now()
+        ledger["doc_reference_scan"] = record
+        append_event(
+            ledger,
+            "doc_reference_scan_recorded",
+            {
+                "status": record["status"],
+                "result_digest": record["result_digest"],
+                "broken_reference_count": len(record["broken_references"]),
+                "semantic_check_count": len(record["semantic_checks"]),
+                "error_code": (
+                    record["error"]["code"]
+                    if isinstance(record.get("error"), Mapping)
+                    else None
+                ),
+            },
+        )
+        save_ledger(repo, ledger)
+    return status(repo, run_id)
+
+
 def record_problems(
     repo_value: str | Path,
     run_value: str,
@@ -3940,6 +4045,17 @@ def record_evidence(
                 "evidence candidate does not match the execution manifest",
                 code="EVIDENCE_CANDIDATE_MISMATCH",
             )
+        if kind in {"reviewer_preflight", "reviewer", "doc_review"} and report[
+            "status"
+        ] == "pass":
+            scan_state = doc_reference_scan_state(ledger)
+            if scan_state not in {"pass", "not_required"}:
+                raise AssuranceError(
+                    "Reviewer evidence requires a current passing documentation reference scan",
+                    code="DOC_REFERENCE_SCAN_BLOCKING",
+                    status="NEEDS_USER",
+                    details={"doc_reference_scan_state": scan_state},
+                )
         role = "tester" if kind in {"tester", "proof", "blackbox"} else "reviewer"
         expected_producer = ledger["facets"]["execution"]["agents"].get(role)
         producer = report["producer"]
@@ -6821,6 +6937,14 @@ def finalize(repo_value: str | Path, run_value: str, message: str) -> dict[str, 
                     code="DEPLOYMENT_FINALIZE_BLOCKED",
                     status="NEEDS_USER",
                 )
+        scan_state = doc_reference_scan_state(ledger)
+        if scan_state not in {"pass", "not_required"}:
+            raise AssuranceError(
+                "documentation reference scan is not ready for finalize",
+                code="DOC_REFERENCE_SCAN_FINALIZE_BLOCKED",
+                status="NEEDS_USER",
+                details={"doc_reference_scan_state": scan_state},
+            )
         ready = readiness(ledger)
         if not ready["ready"]:
             raise AssuranceError(

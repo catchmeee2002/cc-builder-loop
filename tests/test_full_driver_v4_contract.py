@@ -11,8 +11,11 @@ import unittest
 from copy import deepcopy
 from pathlib import Path
 from typing import Any, Mapping
+from unittest.mock import patch
 
 from harness import CLI, ROOT, cleanup_repo, commit_all, git, head, init_repo, run_process
+from runtime.codex_builder_loop.assurance_v4 import core, driver
+from runtime.codex_builder_loop.assurance_v4.doc_references import DocReferenceScanError
 
 
 SKILL = ROOT / "skills" / "full-driver-v4-experiment" / "SKILL.md"
@@ -149,6 +152,7 @@ class FullDriverV4ContractTest(unittest.TestCase):
         *args: str | Path,
         experimental: bool = True,
         env: dict[str, str] | None = None,
+        auto_doc_scan: bool = True,
     ) -> tuple[int, dict[str, Any]]:
         argv: list[str | Path] = [sys.executable, CLI, "assurance"]
         if experimental:
@@ -159,6 +163,47 @@ class FullDriverV4ContractTest(unittest.TestCase):
         self.assertTrue(lines, (completed.returncode, completed.stdout, completed.stderr))
         data = json.loads(lines[-1])
         self.assertIsInstance(data, dict)
+        if (
+            auto_doc_scan
+            and completed.returncode == 0
+            and command
+            in {
+                "checkpoint-builder",
+                "integrate-tester",
+                "recompose-candidate",
+                "rematerialize-target",
+            }
+        ):
+            values = list(args)
+            run_id = str(values[values.index("--run") + 1])
+            repo = str(values[values.index("--repo") + 1])
+            next_rc, next_action = self.invoke(
+                "driver-next",
+                "--repo",
+                repo,
+                "--run",
+                run_id,
+                auto_doc_scan=False,
+            )
+            self.assertEqual(next_rc, 0, next_action)
+            if next_action.get("action") == "scan_doc_references":
+                scan_args: list[str | Path] = [
+                    "--repo",
+                    repo,
+                    "--run",
+                    run_id,
+                    "--action-id",
+                    str(next_action["action_id"]),
+                ]
+                runtime_kind = next_action.get("driver_runtime_kind")
+                if isinstance(runtime_kind, str):
+                    scan_args.extend(["--driver-runtime-kind", runtime_kind])
+                scan_rc, scanned = self.invoke(
+                    "scan-doc-references",
+                    *scan_args,
+                    auto_doc_scan=False,
+                )
+                self.assertEqual(scan_rc, 0, scanned)
         return completed.returncode, data
 
     def start(
@@ -540,6 +585,7 @@ class FullDriverV4ContractTest(unittest.TestCase):
             "builder_fix",
             "tester_author",
             "tester_fix",
+            "scan_doc_references",
             "verify_preflight",
             "verify_machine",
             "tester_machine_diagnose",
@@ -1804,12 +1850,14 @@ class FullDriverV4ContractTest(unittest.TestCase):
         self.assertEqual(decision["failures"][0]["kind"], "proof")
         self.assertEqual(decision["failures"][0]["count"], 3)
 
-    def test_legacy_v4_ledger_without_proof_failure_field_remains_readable(self) -> None:
+    def test_legacy_v4_ledger_without_new_runtime_fields_remains_readable(self) -> None:
         run_id = "legacy-proof-failure-field"
         _data, run_path = self.start(run_id)
         ledger_path = run_path / "ledger.json"
         ledger = self.load_ledger(run_path)
         ledger.pop("proof_failure")
+        ledger.pop("doc_reference_contract_version")
+        ledger.pop("doc_reference_scan")
         ledger_path.write_text(
             json.dumps(ledger, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
@@ -1818,6 +1866,7 @@ class FullDriverV4ContractTest(unittest.TestCase):
         self.assertEqual(rc, 0, observed)
         self.assertIsNone(observed["proof_failure"])
         self.assertEqual(observed["proof_failure_state"], "missing")
+        self.assertEqual(observed["doc_reference_scan_state"], "not_required")
 
     def test_uv_baseline_import_collection_and_zero_collector_failures_are_not_counterexamples(self) -> None:
         cases = (
@@ -2583,6 +2632,163 @@ class FullDriverV4ContractTest(unittest.TestCase):
         )
         self.assertEqual(rc, 0, advanced)
         self.assertEqual(advanced.get("action"), "tester_author", advanced)
+
+    def test_doc_reference_scan_routes_broken_pointer_before_tester(self) -> None:
+        (self.repo / "docs").mkdir()
+        (self.repo / "docs" / "architecture.md").write_text(
+            "# Architecture\n\nUse `src/calc.py::add`.\n",
+            encoding="utf-8",
+        )
+        commit_all(self.repo, "add qualified documentation pointer")
+        run_id = "doc-reference-broken"
+        contract = contract_for(self.repo)
+        contract["execution"]["driver_enforced"] = False
+        data, run_path = self.start(run_id, contract=contract)
+        candidate = Path(data["candidate_worktree"])
+        (candidate / "src" / "calc.py").write_text("VALUE = 1\n", encoding="utf-8")
+        (candidate / "src" / "math.py").write_text(
+            "def add(a, b):\n    return a + b\n",
+            encoding="utf-8",
+        )
+        commit_all(candidate, "move add implementation")
+        rc, checkpointed = self.invoke(
+            "checkpoint-builder",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            auto_doc_scan=False,
+        )
+        self.assertEqual(rc, 0, checkpointed)
+        rc, scan_action = self.invoke(
+            "driver-next", "--repo", self.repo, "--run", run_id
+        )
+        self.assertEqual(rc, 0, scan_action)
+        self.assertEqual(scan_action.get("action"), "scan_doc_references")
+        rc, scanned = self.invoke(
+            "scan-doc-references",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--action-id",
+            scan_action["action_id"],
+            auto_doc_scan=False,
+        )
+        self.assertEqual(rc, 0, scanned)
+        ledger = self.load_ledger(run_path)
+        scan = ledger["doc_reference_scan"]
+        self.assertEqual(scan["status"], "fail")
+        self.assertEqual(scan["target_start_head"], ledger["target_start_head"])
+        self.assertEqual(scan["candidate_head"], head(candidate))
+        self.assertEqual(
+            scan["broken_references"][0]["old_path"], "src/calc.py"
+        )
+        self.assertEqual(
+            scan["broken_references"][0]["new_paths"], ["src/math.py"]
+        )
+        rc, repair = self.invoke(
+            "driver-next", "--repo", self.repo, "--run", run_id
+        )
+        self.assertEqual(rc, 0, repair)
+        self.assertEqual(repair.get("action"), "builder_fix", repair)
+
+        reviewer = ledger["facets"]["execution"]["agents"]["reviewer"]
+        report = self.write_json(
+            "blocked-reviewer-report.json",
+            {
+                "schema_version": 1,
+                "kind": "reviewer",
+                "status": "pass",
+                "candidate_head": head(candidate),
+                "producer": {"role": "reviewer", **reviewer},
+                "details": {"result": "pass", "reviewed_head": head(candidate)},
+            },
+        )
+        rc, rejected = self.invoke(
+            "record-evidence",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--kind",
+            "reviewer",
+            "--report",
+            report,
+        )
+        self.assertNotEqual(rc, 0, rejected)
+        self.assertEqual(rejected.get("code"), "DOC_REFERENCE_SCAN_BLOCKING")
+
+        (candidate / "docs" / "architecture.md").write_text(
+            "# Architecture\n\nUse `src/math.py::add`.\n",
+            encoding="utf-8",
+        )
+        commit_all(candidate, "update qualified documentation pointer")
+        rc, checkpointed = self.invoke(
+            "checkpoint-builder",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            auto_doc_scan=False,
+        )
+        self.assertEqual(rc, 0, checkpointed)
+        self.assertEqual(
+            core.doc_reference_scan_state(self.load_ledger(run_path)), "stale"
+        )
+        rc, rescan_action = self.invoke(
+            "driver-next", "--repo", self.repo, "--run", run_id
+        )
+        self.assertEqual(rc, 0, rescan_action)
+        self.assertEqual(rescan_action.get("action"), "scan_doc_references")
+        rc, rescanned = self.invoke(
+            "scan-doc-references",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--action-id",
+            rescan_action["action_id"],
+            auto_doc_scan=False,
+        )
+        self.assertEqual(rc, 0, rescanned)
+        self.assertEqual(
+            self.load_ledger(run_path)["doc_reference_scan"]["status"], "pass"
+        )
+        rc, advanced = self.invoke(
+            "driver-next", "--repo", self.repo, "--run", run_id
+        )
+        self.assertEqual(rc, 0, advanced)
+        self.assertEqual(advanced.get("action"), "tester_author", advanced)
+
+    def test_doc_reference_scan_error_is_persisted_and_fail_closed(self) -> None:
+        run_id = "doc-reference-error"
+        _data, run_path = self.start(run_id)
+        rc, checkpointed = self.invoke(
+            "checkpoint-builder",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            auto_doc_scan=False,
+        )
+        self.assertEqual(rc, 0, checkpointed)
+        with patch.object(
+            core,
+            "scan_repository",
+            side_effect=DocReferenceScanError(
+                "fixture scanner failure", code="DOC_REFERENCE_FIXTURE_FAILURE"
+            ),
+        ):
+            result = core.scan_doc_references(self.repo, run_id)
+        self.assertEqual(result["doc_reference_scan_state"], "error")
+        scan = self.load_ledger(run_path)["doc_reference_scan"]
+        self.assertEqual(scan["status"], "error")
+        self.assertEqual(scan["error"]["code"], "DOC_REFERENCE_FIXTURE_FAILURE")
+        decision = driver.next_action(self.repo, run_id)
+        self.assertEqual(decision["status"], "NEEDS_USER")
+        self.assertEqual(decision["action"], "doc_reference_scan_decision")
+        self.assertFalse(core.readiness(self.load_ledger(run_path))["ready"])
 
     def test_uncheckpointed_builder_fix_precedes_open_problem_redispatch_and_converges(self) -> None:
         run_id = "builder-fix-progress"

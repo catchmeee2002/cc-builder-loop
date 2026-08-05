@@ -11,6 +11,7 @@ from .core import (
     _validate_revision_transition,
     current_machine_failure,
     current_proof_failure,
+    doc_reference_scan_state,
     ensure_run_id,
     evidence_state,
     readiness,
@@ -915,6 +916,30 @@ def next_action(repo_value: str | Path, run_value: str) -> dict[str, Any]:
             "candidate_missing",
             candidate_worktree=ledger["candidate_worktree"],
             agent=execution["agents"].get("builder"),
+        )
+    scan_state = doc_reference_scan_state(ledger)
+    if scan_state in {"missing", "stale"}:
+        return decision(
+            "CONTINUE",
+            "scan_doc_references",
+            f"doc_reference_scan_{scan_state}",
+            candidate_worktree=ledger["candidate_worktree"],
+        )
+    if scan_state == "failed":
+        return decision(
+            "CONTINUE",
+            "builder_fix",
+            "doc_reference_scan_failed",
+            candidate_worktree=ledger["candidate_worktree"],
+            doc_reference_scan=copy.deepcopy(ledger.get("doc_reference_scan")),
+            agent=execution["agents"].get("builder"),
+        )
+    if scan_state == "error":
+        return decision(
+            "NEEDS_USER",
+            "doc_reference_scan_decision",
+            "doc_reference_scan_error",
+            doc_reference_scan=copy.deepcopy(ledger.get("doc_reference_scan")),
         )
     publication = ledger.get("publication")
     if isinstance(publication, dict) and publication.get("required") and not publication.get("head"):

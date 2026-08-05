@@ -210,6 +210,11 @@ def parser() -> argparse.ArgumentParser:
     preflight.add_argument("--run", required=True)
     dispatch_guard(preflight)
 
+    scan_doc_references = commands.add_parser("scan-doc-references")
+    scan_doc_references.add_argument("--repo", default=".")
+    scan_doc_references.add_argument("--run", required=True)
+    dispatch_guard(scan_doc_references)
+
     prepare_deployment = commands.add_parser("prepare-deployment")
     prepare_deployment.add_argument("--repo", default=".")
     prepare_deployment.add_argument("--run", required=True)
@@ -560,6 +565,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         elif args.command == "verify-preflight":
             _guard_dispatch(args, {"verify_preflight"})
             payload = core.verify_preflight(args.repo, args.run, action_id=args.action_id)
+        elif args.command == "scan-doc-references":
+            _guard_dispatch(args, {"scan_doc_references"})
+            payload = core.scan_doc_references(args.repo, args.run)
         elif args.command == "prepare-deployment":
             _guard_dispatch(args, {"prepare_deployment"})
             payload = core.prepare_deployment(args.repo, args.run)

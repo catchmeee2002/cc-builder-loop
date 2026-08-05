@@ -41,7 +41,8 @@ Agent spawn、same-thread follow-up、结构化结果解析和持续循环由本
 到达 `reviewer_preflight` 或 `reviewer_final` 后只允许一次初始
 `spawn_agent(agent_type="reviewer", fork_turns="none")`，一个 run 只 spawn 一次 Reviewer。最小 brief
 包含冻结 contract、candidate、完整 diff、当前阶段可用验证证据和文档政策路径；
-不得夹带父线程讨论、用户倾向或 Builder 辩护。Reviewer 必须看到候选信息；候选与完整 diff 是必需审查输入。
+不得夹带父线程讨论、用户倾向或 Builder 辩护。Reviewer 必须看到候选信息、当前
+`doc_reference_scan` 及其 semantic checks；候选与完整 diff 是必需审查输入。
 
 ### 后续 turn
 
@@ -67,6 +68,12 @@ dispatch。直到 `finalize` 或明确的决策边界。动作面如下，不能
   修复、fixture 修正和实现缺陷不修改 Mission。
 - `checkpoint_builder`：Builder 工作完成后先提交 candidate，再调用 `checkpoint-builder`，让 Core
   计算并绑定 candidate HEAD、builder files 和 evidence invalidation；Skill 不手写 Execution 清单。
+- `scan_doc_references`：每次 candidate identity 变化后、进入 Tester 或 Reviewer 前调用 Core
+  `scan-doc-references`。Core 只读取 `target_start_head..candidate_head` 的 Git objects，机械检查
+  Python、JavaScript/TypeScript、Go、Rust 与 Shell 定义迁移、删除或重命名后残留的
+  `old_path::symbol` Markdown 指针。硬 finding 回 `builder_fix`；symbol-only 提及作为 semantic check
+  交给 Reviewer；scanner error 停到用户决定。不得用 live dirty 文件、grep 摘要或 Agent 自述替代该
+  ledger 事实。
 - `parallel_ready:true`：先用只允许 identity bootstrap、禁止读写仓库的最小 prompt spawn `tester`
   custom agent；使用工具返回的真实 identity 调用 `prepare-tester`，再 follow-up 同一 thread 执行
   `phase=author`。Tester 以 spec HEAD 为独立基线。
@@ -130,7 +137,8 @@ dispatch。直到 `finalize` 或明确的决策边界。动作面如下，不能
   做早期只读代码/测试/文档语义审计。PASS 只记录 `reviewer_preflight` evidence，不满足最终 gate；finding
   回原 owner 修复并让失效事实重取。
 - `reviewer_final`：只有 Tester、proof、machine、blackbox 等全部 reviewer prerequisites 齐全且
-  current 后，才用只允许 identity bootstrap 的最小 prompt spawn Reviewer，调用 `prepare-reviewer`
+  current，且当前 candidate 的 `doc_reference_scan` 无 scanner error 或 broken qualified pointer 后，
+  才用只允许 identity bootstrap 的最小 prompt spawn Reviewer，调用 `prepare-reviewer`
   绑定真实 identity，再 follow-up 同一 thread 开始审查。Reviewer 只使用成熟终态
   `REVIEW_RESULT: pass`、`REVIEW_RESULT: findings` 或 `REVIEW_RESULT: blocked`，并继续返回
   `REVIEW_HEAD` 和 `PROBLEM_REPORT` 唯一终态；主线程只把这些结构字段规范成 v4 evidence report，

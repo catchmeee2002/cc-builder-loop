@@ -162,6 +162,7 @@ class AssuranceV4ContractTest(unittest.TestCase):
         *args: str | Path,
         experimental: bool = True,
         env: Mapping[str, str] | None = None,
+        auto_doc_scan: bool = True,
     ) -> tuple[int, dict[str, Any], str, str]:
         argv: list[str | Path] = [sys.executable, CLI, "assurance"]
         if experimental:
@@ -176,6 +177,48 @@ class AssuranceV4ContractTest(unittest.TestCase):
         )
         data = json.loads(lines[-1])
         self.assertIsInstance(data, dict)
+        if (
+            auto_doc_scan
+            and completed.returncode == 0
+            and command
+            in {
+                "checkpoint-builder",
+                "integrate-tester",
+                "recompose-candidate",
+                "rematerialize-target",
+                "update-facet",
+            }
+        ):
+            values = list(args)
+            run_id = str(values[values.index("--run") + 1])
+            repo = str(values[values.index("--repo") + 1])
+            next_rc, next_action, _next_stdout, _next_stderr = self.invoke(
+                "driver-next",
+                "--repo",
+                repo,
+                "--run",
+                run_id,
+                auto_doc_scan=False,
+            )
+            self.assertEqual(next_rc, 0, next_action)
+            if next_action.get("action") == "scan_doc_references":
+                scan_args: list[str | Path] = [
+                    "--repo",
+                    repo,
+                    "--run",
+                    run_id,
+                    "--action-id",
+                    str(next_action["action_id"]),
+                ]
+                runtime_kind = next_action.get("driver_runtime_kind")
+                if isinstance(runtime_kind, str):
+                    scan_args.extend(["--driver-runtime-kind", runtime_kind])
+                scan_rc, scanned, _scan_stdout, _scan_stderr = self.invoke(
+                    "scan-doc-references",
+                    *scan_args,
+                    auto_doc_scan=False,
+                )
+                self.assertEqual(scan_rc, 0, scanned)
         return completed.returncode, data, completed.stdout, completed.stderr
 
     def start(
@@ -229,6 +272,13 @@ class AssuranceV4ContractTest(unittest.TestCase):
     ) -> dict[str, Any]:
         if kind == "tester":
             self.prepare_tester_source(run_id, run_path)
+        if kind in {"reviewer_preflight", "reviewer", "doc_review"}:
+            ledger_before_review = self.load_ledger(run_path)
+            if assurance_core.doc_reference_scan_state(ledger_before_review) in {
+                "missing",
+                "stale",
+            }:
+                assurance_core.scan_doc_references(self.repo, run_id)
         ledger = self.load_ledger(run_path)
         role = "tester" if kind in {"tester", "blackbox"} else "reviewer"
         agent = ledger["facets"]["execution"]["agents"][role]
@@ -2534,7 +2584,7 @@ class AssuranceV4ContractTest(unittest.TestCase):
         self.assertEqual(ledger["evidence"], evidence_before)
         self.assertEqual(
             set(accepted.get("readiness", {}).get("missing", [])),
-            {"machine", "blackbox", "doc_review"},
+            {"machine", "blackbox", "doc_review", "doc_reference_scan"},
             accepted,
         )
         self.assertEqual(accepted["readiness"]["states"]["tester"], "pass")
@@ -2549,7 +2599,14 @@ class AssuranceV4ContractTest(unittest.TestCase):
         self.assertEqual(rc, 0, enhanced)
         self.assertEqual(
             set(enhanced["readiness"]["missing"]),
-            {"machine", "tester", "blackbox", "reviewer", "doc_review"},
+            {
+                "machine",
+                "tester",
+                "blackbox",
+                "reviewer",
+                "doc_review",
+                "doc_reference_scan",
+            },
         )
         recorded = self.record_role_evidence(run_id, run_path, "tester")
         self.assertEqual(recorded.get("status"), "ACTIVE", recorded)

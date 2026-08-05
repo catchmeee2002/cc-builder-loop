@@ -38,6 +38,13 @@
       "propertyNames": {"enum": ["preflight", "machine", "tester", "proof", "blackbox", "reviewer_preflight", "reviewer", "doc_review"]},
       "additionalProperties": {"$ref": "#/$defs/evidence"}
     },
+    "doc_reference_contract_version": {"const": 1},
+    "doc_reference_scan": {
+      "oneOf": [
+        {"type": "null"},
+        {"$ref": "#/$defs/docReferenceScan"}
+      ]
+    },
     "retired_tester_sources": {
       "type": "array",
       "items": {"$ref": "assurance-v4-contract.schema.json#/$defs/testerSource"}
@@ -599,6 +606,112 @@
         "details": {"type": "object"},
         "recorded_at": {"type": "string", "minLength": 1}
       }
+    },
+    "docReferenceChangedDefinition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["definition_kind", "symbol", "old_path", "change", "new_paths"],
+      "properties": {
+        "definition_kind": {"enum": ["function", "type"]},
+        "symbol": {"type": "string", "minLength": 1},
+        "old_path": {"type": "string", "minLength": 1},
+        "change": {"enum": ["moved", "removed_or_renamed"]},
+        "new_paths": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "docReferenceBroken": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["file", "line", "symbol", "old_path", "new_paths", "change"],
+      "properties": {
+        "file": {"type": "string", "minLength": 1},
+        "line": {"type": "integer", "minimum": 1},
+        "symbol": {"type": "string", "minLength": 1},
+        "old_path": {"type": "string", "minLength": 1},
+        "new_paths": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "change": {"enum": ["moved", "removed_or_renamed"]}
+      }
+    },
+    "docReferenceSemantic": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["file", "line", "symbol", "old_path", "new_paths", "question"],
+      "properties": {
+        "file": {"type": "string", "minLength": 1},
+        "line": {"type": "integer", "minimum": 1},
+        "symbol": {"type": "string", "minLength": 1},
+        "old_path": {"type": "string", "minLength": 1},
+        "new_paths": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "question": {"type": "string", "minLength": 1}
+      }
+    },
+    "docReferenceScan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract_version", "target_start_head", "candidate_head", "status",
+        "changed_paths", "changed_definitions", "documents", "broken_references",
+        "semantic_checks", "error", "result_digest", "scanned_at"
+      ],
+      "properties": {
+        "contract_version": {"const": 1},
+        "target_start_head": {"$ref": "#/$defs/commit"},
+        "candidate_head": {"$ref": "#/$defs/commit"},
+        "status": {"enum": ["pass", "fail", "error"]},
+        "changed_paths": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "changed_definitions": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/docReferenceChangedDefinition"}
+        },
+        "documents": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "broken_references": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/docReferenceBroken"}
+        },
+        "semantic_checks": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/docReferenceSemantic"}
+        },
+        "error": {
+          "oneOf": [
+            {"type": "null"},
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["code", "message"],
+              "properties": {
+                "code": {"type": "string", "minLength": 1},
+                "message": {"type": "string", "minLength": 1}
+              }
+            }
+          ]
+        },
+        "result_digest": {"$ref": "#/$defs/sha256"},
+        "scanned_at": {"type": "string", "minLength": 1}
+      }
     }
+  },
+  "dependentRequired": {
+    "doc_reference_scan": ["doc_reference_contract_version"]
   }
 }

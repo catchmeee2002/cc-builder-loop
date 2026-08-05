@@ -98,6 +98,14 @@ not-applicable 都不能形成 PASS。Planner 与 Reviewer 仍负责根据项目
 声明表面，runtime 不通过识别 curl、浏览器或 fixture 名称建立输出特判。保留的旧 v4 ledger 缺少该结构时
 继续 command-only 路径；新 run 和已升级 mission 不能移除已经冻结的 observation。
 
+新 v4 ledger 以 `doc_reference_contract_version=1` 启用提交对象文档引用扫描。Core 只从
+`target_start_head..candidate_head` 的 Git tree/blob 读取受维护 Markdown 和变更源码定义，检测 Python、
+JavaScript/TypeScript、Go、Rust 与 Shell 定义迁移、删除或重命名后仍指向
+`old_path::symbol` 的 qualified pointer；symbol-only 提及仅形成 Reviewer semantic check，已更新的新
+路径、同文件签名变化及 CHANGELOG/improvements 历史容器保持 clean。扫描结果与 candidate 一起写入
+唯一 ledger；candidate 变化使其 stale，scanner error 或 broken pointer 阻止 Reviewer/doc-review PASS
+和 finalize。旧 ledger 缺少该 contract version 时继续 legacy 路径，不伪造补扫事实。
+
 可选 deployment contract 只支持当前 run 的单个已授权外部目标。Core 从 candidate HEAD 创建独立
 deployment worktree，在其中运行项目提供的 probe/build/deploy/restore wrapper，绑定制品 SHA256、
 部署前状态、部署后状态和恢复状态；target checkout 不切换。Tester blackbox 结果先暂存，Driver 无论
