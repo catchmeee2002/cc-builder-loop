@@ -44,7 +44,16 @@ def contract_for(
                 {"id": "calc-api", "description": "src.calc.add(a, b) -> int"}
             ],
             "acceptance_cases": [
-                {"id": "add-positive", "description": "add(1, 2) returns 3."}
+                {
+                    "id": "add-positive",
+                    "description": "add(1, 2) returns 3.",
+                    "observation": {
+                        "surface_id": "public-calculator",
+                        "surface_description": "The public calculator behavior observed by the blackbox command.",
+                        "execution_ids": ["fixture-blackbox"],
+                        "required_dimensions": ["verify"],
+                    },
+                }
             ],
             "trust_boundaries": [
                 {
@@ -95,6 +104,41 @@ def contract_for(
             },
         },
     }
+
+
+def blackbox_case_results(
+    ledger: Mapping[str, Any], *, passed: bool = True
+) -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    for case in ledger["facets"]["mission"]["acceptance_cases"]:
+        observation = case.get("observation")
+        if not isinstance(observation, dict):
+            continue
+        required = set(observation["required_dimensions"])
+        dimensions = {
+            name: {
+                "status": (
+                    "pass"
+                    if passed and name in required
+                    else "fail"
+                    if not passed and name in required
+                    else "not_applicable"
+                ),
+                "observation": f"fixture {name} observation",
+            }
+            for name in ("mechanical", "verify", "quality")
+        }
+        result = {
+            "case_id": case["id"],
+            "surface_id": observation["surface_id"],
+            "execution_ids": list(observation["execution_ids"]),
+            **dimensions,
+            "outcome": "pass" if passed else "fail",
+        }
+        if "target_id" in observation:
+            result["target_id"] = observation["target_id"]
+        results.append(result)
+    return results
 
 
 class AssuranceV4ContractTest(unittest.TestCase):
@@ -212,6 +256,7 @@ class AssuranceV4ContractTest(unittest.TestCase):
                         "timed_out": False,
                     }
                 ],
+                "cases": blackbox_case_results(ledger),
             }
         else:
             details = {"result": "pass", "reviewed_head": candidate_head}
@@ -547,6 +592,7 @@ class AssuranceV4ContractTest(unittest.TestCase):
                         "timed_out": False,
                     }
                 ],
+                "cases": blackbox_case_results(ledger),
             },
         }
         report_path = self.write_json("expected-nonzero-report.json", report)
@@ -580,6 +626,170 @@ class AssuranceV4ContractTest(unittest.TestCase):
         )
         self.assertEqual(rc, 2, rejected)
         self.assertEqual(rejected.get("code"), "BLACKBOX_EXECUTION_FAILED")
+
+    def test_new_blackbox_contract_requires_valid_observation_bindings(self) -> None:
+        for name, mutate, expected_code in (
+            (
+                "missing",
+                lambda contract: contract["mission"]["acceptance_cases"][0].pop(
+                    "observation"
+                ),
+                "ACCEPTANCE_OBSERVATION_REQUIRED",
+            ),
+            (
+                "command",
+                lambda contract: contract["mission"]["acceptance_cases"][0][
+                    "observation"
+                ].update(execution_ids=["unknown-blackbox"]),
+                "ACCEPTANCE_OBSERVATION_COMMAND_INVALID",
+            ),
+            (
+                "target",
+                lambda contract: contract["mission"]["acceptance_cases"][0][
+                    "observation"
+                ].update(target_id="unknown-target"),
+                "ACCEPTANCE_OBSERVATION_TARGET_INVALID",
+            ),
+        ):
+            with self.subTest(name=name):
+                contract = contract_for(self.repo)
+                mutate(contract)
+                path = self.write_json(f"invalid-observation-{name}.json", contract)
+                rc, rejected, _stdout, _stderr = self.invoke(
+                    "start",
+                    "--repo",
+                    self.repo,
+                    "--run",
+                    f"invalid-observation-{name}",
+                    "--session-id",
+                    "assurance-v4-test-session",
+                    "--contract",
+                    path,
+                )
+                self.assertNotEqual(rc, 0, rejected)
+                self.assertEqual(rejected.get("code"), expected_code, rejected)
+
+    def test_blackbox_case_surface_command_and_dimensions_are_bound(self) -> None:
+        run_id = "bound-blackbox-cases"
+        _data, run_path = self.start(run_id)
+        self.record_role_evidence(run_id, run_path, "tester")
+        self.invoke("verify-machine", "--repo", self.repo, "--run", run_id)
+        ledger = self.load_ledger(run_path)
+        execution = ledger["facets"]["execution"]
+        command = execution["commands"][0]
+        report = {
+            "schema_version": 1,
+            "kind": "blackbox",
+            "status": "pass",
+            "candidate_head": execution["candidate_head"],
+            "producer": {"role": "tester", **execution["agents"]["tester"]},
+            "details": {
+                "result": "pass",
+                "worktree": ledger["candidate_worktree"],
+                "before_head": execution["candidate_head"],
+                "after_head": execution["candidate_head"],
+                "executions": [
+                    {
+                        "id": command["id"],
+                        "argv": command["argv"],
+                        "returncode": 0,
+                        "timed_out": False,
+                    }
+                ],
+                "cases": blackbox_case_results(ledger),
+            },
+        }
+
+        def record(name: str, value: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+            path = self.write_json(f"bound-blackbox-{name}.json", value)
+            rc, data, _stdout, _stderr = self.invoke(
+                "record-evidence",
+                "--repo",
+                self.repo,
+                "--run",
+                run_id,
+                "--kind",
+                "blackbox",
+                "--report",
+                path,
+            )
+            return rc, data
+
+        missing = deepcopy(report)
+        missing["details"].pop("cases")
+        rc, rejected = record("missing", missing)
+        self.assertNotEqual(rc, 0, rejected)
+        self.assertEqual(rejected.get("code"), "BLACKBOX_CASE_COVERAGE_MISMATCH")
+
+        proxy = deepcopy(report)
+        proxy["details"]["cases"][0]["surface_id"] = "internal-api"
+        rc, rejected = record("proxy", proxy)
+        self.assertNotEqual(rc, 0, rejected)
+        self.assertEqual(
+            rejected.get("code"), "BLACKBOX_OBSERVATION_BINDING_MISMATCH"
+        )
+
+        inapplicable = deepcopy(report)
+        inapplicable["details"]["cases"][0]["verify"]["status"] = "not_applicable"
+        rc, rejected = record("inapplicable", inapplicable)
+        self.assertNotEqual(rc, 0, rejected)
+        self.assertEqual(rejected.get("code"), "BLACKBOX_CASE_RESULT_MISMATCH")
+
+        rc, accepted = record("accepted", report)
+        self.assertEqual(rc, 0, accepted)
+        self.assertEqual(accepted["readiness"]["states"]["blackbox"], "pass")
+
+    def test_retained_legacy_v4_ledger_accepts_command_only_blackbox(self) -> None:
+        run_id = "legacy-command-only-blackbox"
+        _data, run_path = self.start(run_id)
+        ledger = self.load_ledger(run_path)
+        ledger["facets"]["mission"]["acceptance_cases"][0].pop("observation")
+        ledger["digests"]["mission"] = canonical_digest(ledger["facets"]["mission"])
+        (run_path / "ledger.json").write_text(
+            json.dumps(ledger, ensure_ascii=False, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+
+        self.record_role_evidence(run_id, run_path, "tester")
+        self.invoke("verify-machine", "--repo", self.repo, "--run", run_id)
+        ledger = self.load_ledger(run_path)
+        execution = ledger["facets"]["execution"]
+        command = execution["commands"][0]
+        report = {
+            "schema_version": 1,
+            "kind": "blackbox",
+            "status": "pass",
+            "candidate_head": execution["candidate_head"],
+            "producer": {"role": "tester", **execution["agents"]["tester"]},
+            "details": {
+                "result": "pass",
+                "worktree": ledger["candidate_worktree"],
+                "before_head": execution["candidate_head"],
+                "after_head": execution["candidate_head"],
+                "executions": [
+                    {
+                        "id": command["id"],
+                        "argv": command["argv"],
+                        "returncode": 0,
+                        "timed_out": False,
+                    }
+                ],
+            },
+        }
+        path = self.write_json("legacy-command-only-blackbox.json", report)
+        rc, accepted, _stdout, _stderr = self.invoke(
+            "record-evidence",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--kind",
+            "blackbox",
+            "--report",
+            path,
+        )
+        self.assertEqual(rc, 0, accepted)
+        self.assertEqual(accepted["readiness"]["states"]["blackbox"], "pass")
 
     def deployment_fixture(
         self, *, retention: str = "lease"
@@ -619,6 +829,9 @@ class AssuranceV4ContractTest(unittest.TestCase):
         contract["authority"]["external_targets"] = [
             {"id": "revision-fixture", "description": "Revision continuity fixture."}
         ]
+        contract["mission"]["acceptance_cases"][0]["observation"][
+            "target_id"
+        ] = "revision-fixture"
         command = lambda command_id, mode: {
             "id": command_id,
             "argv": ["./revision_deploy_fixture.py", mode],
@@ -659,6 +872,7 @@ class AssuranceV4ContractTest(unittest.TestCase):
                         "timed_out": False,
                     }
                 ],
+                "cases": blackbox_case_results(ledger),
             },
         }
         path = self.write_json(f"{run_id}-staged-blackbox.json", report)
@@ -1015,6 +1229,9 @@ class AssuranceV4ContractTest(unittest.TestCase):
         contract["authority"]["external_targets"] = [
             {"id": "shared-fixture", "description": "Disposable shared fixture."}
         ]
+        contract["mission"]["acceptance_cases"][0]["observation"][
+            "target_id"
+        ] = "shared-fixture"
         command = lambda command_id, mode: {
             "id": command_id,
             "argv": ["./deploy_fixture.py", mode],
@@ -1074,6 +1291,7 @@ class AssuranceV4ContractTest(unittest.TestCase):
                 "before_head": candidate,
                 "after_head": candidate,
                 "executions": [{"id": command_spec["id"], "argv": command_spec["argv"], "returncode": 0, "timed_out": False}],
+                "cases": blackbox_case_results(ledger),
             },
         }
         report_path = self.write_json("deployment-blackbox.json", report)
@@ -2446,6 +2664,7 @@ class AssuranceV4ContractTest(unittest.TestCase):
                         "timed_out": False,
                     }
                 ],
+                "cases": blackbox_case_results(ledger),
             },
         }
         mismatch_path = self.write_json("kind-role-mismatch.json", mismatched_kind)
@@ -2923,6 +3142,7 @@ class AssuranceV4ContractTest(unittest.TestCase):
                         "timed_out": False,
                     }
                 ],
+                "cases": blackbox_case_results(ledger),
             },
         }
         report_path = self.write_json("incomplete-blackbox-report.json", report)
@@ -2965,6 +3185,7 @@ class AssuranceV4ContractTest(unittest.TestCase):
                         "timed_out": False,
                     }
                 ],
+                "cases": blackbox_case_results(ledger),
             },
         }
         report_path = self.write_json("early-blackbox.json", report)

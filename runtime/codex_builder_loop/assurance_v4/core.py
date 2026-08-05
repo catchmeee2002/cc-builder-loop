@@ -23,7 +23,9 @@ from .models import (
     digest,
     evidence_dependency,
     facet_digests,
+    acceptance_observation_mode,
     validate_contract,
+    validate_new_contract,
     validate_agent_result,
     validate_environment_probe,
     validate_evidence_report,
@@ -204,8 +206,21 @@ def _candidate_manifest(repo: Path, base: str, candidate: str) -> list[dict[str,
 
 
 def validate(contract: Any) -> dict[str, Any]:
-    value = validate_contract(contract)
+    value = validate_new_contract(contract)
     return {"status": "READY", "schema_version": SCHEMA_VERSION, "digests": facet_digests(value)}
+
+
+def _reject_acceptance_observation_downgrade(
+    old_mission: Mapping[str, Any], new_mission: Mapping[str, Any]
+) -> None:
+    old_mode = acceptance_observation_mode({"mission": old_mission})
+    new_mode = acceptance_observation_mode({"mission": new_mission})
+    if old_mode == "bound" and new_mode != "bound":
+        raise AssuranceError(
+            "an active mission cannot remove frozen acceptance observations",
+            code="ACCEPTANCE_OBSERVATION_DOWNGRADE_FORBIDDEN",
+            status="NEEDS_USER",
+        )
 
 
 def start(
@@ -217,7 +232,7 @@ def start(
     driver_runtime: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     source_contract_digest = digest(contract_value)
-    contract = validate_contract(contract_value)
+    contract = validate_new_contract(contract_value)
     run_id = ensure_run_id(run_value)
     if not session_id.strip():
         raise AssuranceError("session id is required", code="SESSION_ID_REQUIRED")
@@ -3020,6 +3035,8 @@ def update_facet(
             )
         candidate = copy.deepcopy(ledger["facets"])
         candidate[facet] = copy.deepcopy(value)
+        if facet == "mission":
+            _reject_acceptance_observation_downgrade(old, candidate["mission"])
         validated = validate_contract(candidate)
         if facet == "execution":
             if value.get("dirty_snapshot") != old["dirty_snapshot"]:
@@ -3226,6 +3243,7 @@ def revise_mission(
         candidate = copy.deepcopy(ledger["facets"])
         candidate["mission"] = copy.deepcopy(mission_value)
         candidate["execution"]["revision_transition"] = copy.deepcopy(transition_value)
+        _reject_acceptance_observation_downgrade(old, candidate["mission"])
         validated = validate_contract(candidate)
         lease = ledger.get("environment_lease")
         if isinstance(lease, dict) and lease.get("state") == "held":
@@ -3972,34 +3990,7 @@ def record_evidence(
                     code="PROOF_BEHAVIOR_COVERAGE_MISMATCH",
                 )
         elif kind == "blackbox":
-            if details["result"] != report["status"]:
-                raise AssuranceError("blackbox result does not match evidence status", code="EVIDENCE_RESULT_MISMATCH")
-            if Path(details["worktree"]).resolve() != Path(ledger["candidate_worktree"]).resolve():
-                raise AssuranceError("blackbox worktree is not the candidate worktree", code="BLACKBOX_WORKTREE_MISMATCH")
-            if details["before_head"] != candidate or details["after_head"] != candidate:
-                raise AssuranceError("blackbox execution changed or missed the candidate HEAD", code="BLACKBOX_HEAD_MISMATCH")
-            declared_commands = [
-                (item["id"], item["argv"])
-                for item in ledger["facets"]["execution"]["commands"]
-            ]
-            observed_commands = [
-                (item["id"], item["argv"])
-                for item in details["executions"]
-            ]
-            if not declared_commands or observed_commands != declared_commands:
-                raise AssuranceError("blackbox executions are not frozen in Execution", code="BLACKBOX_COMMAND_MISMATCH")
-            expected = {
-                item["id"]: item["expected_returncodes"]
-                for item in ledger["facets"]["execution"]["commands"]
-            }
-            if report["status"] == "pass" and any(
-                item["timed_out"] or item["returncode"] not in expected[item["id"]]
-                for item in details["executions"]
-            ):
-                raise AssuranceError(
-                    "blackbox execution did not match its frozen expected return codes",
-                    code="BLACKBOX_EXECUTION_FAILED",
-                )
+            _validate_blackbox_report(ledger, report)
             deployment = ledger["facets"]["execution"].get("deployment")
             if isinstance(deployment, dict):
                 transaction = ledger.get("deployment_transaction")
@@ -4096,6 +4087,143 @@ def record_evidence(
             _close_problems(ledger, role, f"evidence:{kind}")
         save_ledger(repo, ledger)
     return status(repo, run_id)
+
+
+def _validate_blackbox_report(ledger: Mapping[str, Any], report: Mapping[str, Any]) -> None:
+    candidate = ledger["facets"]["execution"].get("candidate_head")
+    producer = report["producer"]
+    expected_producer = ledger["facets"]["execution"]["agents"].get("tester")
+    if not isinstance(expected_producer, Mapping) or {
+        "agent_id": producer["agent_id"],
+        "thread_id": producer["thread_id"],
+    } != expected_producer:
+        raise AssuranceError(
+            "evidence producer does not match the execution manifest",
+            code="EVIDENCE_PRODUCER_MISMATCH",
+        )
+    if report.get("candidate_head") != candidate:
+        raise AssuranceError(
+            "evidence candidate does not match the execution manifest",
+            code="EVIDENCE_CANDIDATE_MISMATCH",
+        )
+    details = report["details"]
+    if details["result"] != report["status"]:
+        raise AssuranceError(
+            "blackbox result does not match evidence status",
+            code="EVIDENCE_RESULT_MISMATCH",
+        )
+    if Path(details["worktree"]).resolve() != Path(ledger["candidate_worktree"]).resolve():
+        raise AssuranceError(
+            "blackbox worktree is not the candidate worktree",
+            code="BLACKBOX_WORKTREE_MISMATCH",
+        )
+    if details["before_head"] != candidate or details["after_head"] != candidate:
+        raise AssuranceError(
+            "blackbox execution changed or missed the candidate HEAD",
+            code="BLACKBOX_HEAD_MISMATCH",
+        )
+    declared_commands = [
+        (item["id"], item["argv"])
+        for item in ledger["facets"]["execution"]["commands"]
+    ]
+    observed_commands = [
+        (item["id"], item["argv"])
+        for item in details["executions"]
+    ]
+    if not declared_commands or observed_commands != declared_commands:
+        raise AssuranceError(
+            "blackbox executions are not frozen in Execution",
+            code="BLACKBOX_COMMAND_MISMATCH",
+        )
+    expected_returncodes = {
+        item["id"]: item["expected_returncodes"]
+        for item in ledger["facets"]["execution"]["commands"]
+    }
+    if report["status"] == "pass" and any(
+        item["timed_out"]
+        or item["returncode"] not in expected_returncodes[item["id"]]
+        for item in details["executions"]
+    ):
+        raise AssuranceError(
+            "blackbox execution did not match its frozen expected return codes",
+            code="BLACKBOX_EXECUTION_FAILED",
+        )
+    _validate_blackbox_case_bindings(ledger, report)
+
+
+def _validate_blackbox_case_bindings(
+    ledger: Mapping[str, Any], report: Mapping[str, Any]
+) -> None:
+    contract = ledger["facets"]
+    mode = acceptance_observation_mode(contract)
+    cases = report["details"].get("cases")
+    if mode == "legacy":
+        if cases is not None:
+            raise AssuranceError(
+                "legacy acceptance contracts cannot bind new blackbox case evidence",
+                code="BLACKBOX_CASE_COVERAGE_MISMATCH",
+            )
+        return
+    if not isinstance(cases, list):
+        raise AssuranceError(
+            "blackbox evidence must cover every frozen acceptance case",
+            code="BLACKBOX_CASE_COVERAGE_MISMATCH",
+        )
+    expected_cases = {
+        item["id"]: item for item in contract["mission"]["acceptance_cases"]
+    }
+    observed_ids = [item.get("case_id") for item in cases if isinstance(item, Mapping)]
+    if len(observed_ids) != len(set(observed_ids)) or set(observed_ids) != set(expected_cases):
+        raise AssuranceError(
+            "blackbox case ids do not exactly cover the frozen acceptance cases",
+            code="BLACKBOX_CASE_COVERAGE_MISMATCH",
+            details={
+                "expected": sorted(expected_cases),
+                "observed": sorted(str(item) for item in observed_ids),
+            },
+        )
+    executed_ids = {item["id"] for item in report["details"]["executions"]}
+    outcomes: list[str] = []
+    for observed in cases:
+        expected = expected_cases[observed["case_id"]]["observation"]
+        expected_target = expected.get("target_id")
+        observed_target = observed.get("target_id")
+        if (
+            observed.get("surface_id") != expected["surface_id"]
+            or set(observed.get("execution_ids", [])) != set(expected["execution_ids"])
+            or observed_target != expected_target
+            or not set(observed.get("execution_ids", [])).issubset(executed_ids)
+        ):
+            raise AssuranceError(
+                "blackbox case evidence does not match its frozen observation surface",
+                code="BLACKBOX_OBSERVATION_BINDING_MISMATCH",
+                details={"case_id": observed["case_id"]},
+            )
+        statuses = {
+            dimension: observed[dimension]["status"]
+            for dimension in ("mechanical", "verify", "quality")
+        }
+        required = set(expected["required_dimensions"])
+        derived = (
+            "pass"
+            if all(statuses[item] == "pass" for item in required)
+            and all(value != "fail" for value in statuses.values())
+            else "fail"
+        )
+        if observed["outcome"] != derived:
+            raise AssuranceError(
+                "blackbox case outcome does not match its required dimensions",
+                code="BLACKBOX_CASE_RESULT_MISMATCH",
+                details={"case_id": observed["case_id"], "derived": derived},
+            )
+        outcomes.append(derived)
+    derived_report = "pass" if all(item == "pass" for item in outcomes) else "fail"
+    if report["status"] != derived_report:
+        raise AssuranceError(
+            "blackbox report status does not match its case outcomes",
+            code="BLACKBOX_CASE_RESULT_MISMATCH",
+            details={"derived": derived_report},
+        )
 
 
 def _proof_framework(argv: list[str]) -> str:
@@ -5243,6 +5371,7 @@ def stage_blackbox(repo_value: str | Path, run_value: str, report_value: Any) ->
         candidate = ledger["facets"]["execution"].get("candidate_head")
         if report["candidate_head"] != candidate:
             raise AssuranceError("blackbox candidate is stale", code="EVIDENCE_CANDIDATE_MISMATCH")
+        _validate_blackbox_report(ledger, report)
         pending = ledger.get("pending_blackbox")
         report_digest = digest(report)
         if isinstance(pending, dict):

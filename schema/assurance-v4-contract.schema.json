@@ -25,6 +25,38 @@
         "description": {"type": "string", "minLength": 1}
       }
     },
+    "observation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["surface_id", "surface_description", "execution_ids", "required_dimensions"],
+      "properties": {
+        "surface_id": {"$ref": "#/$defs/id"},
+        "surface_description": {"type": "string", "minLength": 1},
+        "execution_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/id"}
+        },
+        "required_dimensions": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"enum": ["mechanical", "verify", "quality"]}
+        },
+        "target_id": {"$ref": "#/$defs/id"}
+      }
+    },
+    "acceptanceCase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "description"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"},
+        "description": {"type": "string", "minLength": 1},
+        "observation": {"$ref": "#/$defs/observation"}
+      }
+    },
     "mission": {
       "type": "object",
       "additionalProperties": false,
@@ -51,7 +83,7 @@
         "objective": {"type": "string", "minLength": 1},
         "behaviors": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/statement"}},
         "interfaces": {"type": "array", "items": {"$ref": "#/$defs/statement"}},
-        "acceptance_cases": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/statement"}},
+        "acceptance_cases": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/acceptanceCase"}},
         "trust_boundaries": {"type": "array", "items": {"$ref": "#/$defs/statement"}}
       }
     },

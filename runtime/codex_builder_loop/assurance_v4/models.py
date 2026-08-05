@@ -180,6 +180,26 @@ def validate_contract(value: Any) -> dict[str, Any]:
                     code="ASSURANCE_CONTRACT_DUPLICATE_ID",
                     details={"facet": facet, "field": field},
                 )
+    observation_mode = acceptance_observation_mode(contract)
+    if observation_mode == "bound":
+        execution_ids = {item["id"] for item in contract["execution"]["commands"]}
+        target_ids = {item["id"] for item in contract["authority"]["external_targets"]}
+        for case in contract["mission"]["acceptance_cases"]:
+            observation = case["observation"]
+            unknown_commands = sorted(set(observation["execution_ids"]) - execution_ids)
+            if unknown_commands:
+                raise ContractError(
+                    "acceptance observation references unknown blackbox commands",
+                    code="ACCEPTANCE_OBSERVATION_COMMAND_INVALID",
+                    details={"case_id": case["id"], "command_ids": unknown_commands},
+                )
+            target_id = observation.get("target_id")
+            if target_id is not None and target_id not in target_ids:
+                raise ContractError(
+                    "acceptance observation references an unauthorized external target",
+                    code="ACCEPTANCE_OBSERVATION_TARGET_INVALID",
+                    details={"case_id": case["id"], "target_id": target_id},
+                )
     command_ids = [item["id"] for item in contract["assurance"]["machine_commands"]]
     if len(command_ids) != len(set(command_ids)):
         raise ContractError(
@@ -385,9 +405,36 @@ def validate_contract(value: Any) -> dict[str, Any]:
     return contract
 
 
+def acceptance_observation_mode(contract: Mapping[str, Any]) -> str:
+    cases = contract.get("mission", {}).get("acceptance_cases", [])
+    present = [isinstance(item, Mapping) and "observation" in item for item in cases]
+    if any(present) and not all(present):
+        raise ContractError(
+            "every acceptance case must freeze an observation when any case does",
+            code="ACCEPTANCE_OBSERVATION_REQUIRED",
+        )
+    return "bound" if present and all(present) else "legacy"
+
+
+def validate_new_contract(value: Any) -> dict[str, Any]:
+    contract = validate_contract(value)
+    if (
+        "blackbox" in set(contract["assurance"]["required"])
+        and acceptance_observation_mode(contract) != "bound"
+    ):
+        raise ContractError(
+            "new blackbox Assurance v4 contracts require an observation for every acceptance case",
+            code="ACCEPTANCE_OBSERVATION_REQUIRED",
+        )
+    return contract
+
+
 def validate_evidence_report(value: Any) -> dict[str, Any]:
     try:
-        jsonschema.Draft202012Validator(_schema("assurance-v4-evidence.schema.json")).validate(value)
+        jsonschema.Draft202012Validator(
+            _schema("assurance-v4-evidence.schema.json"),
+            registry=_schema_registry("codex-blackbox-case.schema.json"),
+        ).validate(value)
     except jsonschema.ValidationError as exc:
         path = "/".join(str(part) for part in exc.absolute_path)
         raise ContractError(

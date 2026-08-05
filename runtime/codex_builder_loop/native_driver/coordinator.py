@@ -68,6 +68,7 @@ class NativeCoordinator:
         self.output_schema_digest = digest(self.output_schema)
         self.problem_schema = self._load_schema("codex-problem-report.schema.json")
         self.evidence_schema = self._load_schema("assurance-v4-evidence.schema.json")
+        self.blackbox_case_schema = self._load_schema("codex-blackbox-case.schema.json")
         self.proof_schema = self._load_schema("codex-test-proof.schema.json")
         self._active_threads: set[str] = set()
         self.current_action: dict[str, Any] | None = None
@@ -820,6 +821,7 @@ class NativeCoordinator:
         }
         if role in {"tester", "reviewer"}:
             payload["evidence_report_schema"] = self.evidence_schema
+            payload["blackbox_case_schema"] = self.blackbox_case_schema
         if role == "tester":
             payload["test_identity_contract"] = {
                 "unittest": (

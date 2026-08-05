@@ -33,7 +33,18 @@ def native_contract(repo: Path) -> dict:
             "objective": "Deliver a native driver fixture.",
             "behaviors": [{"id": "native-loop", "description": "Native Driver advances one action."}],
             "interfaces": [],
-            "acceptance_cases": [{"id": "final", "description": "The run can finalize."}],
+            "acceptance_cases": [
+                {
+                    "id": "final",
+                    "description": "The run can finalize.",
+                    "observation": {
+                        "surface_id": "driver-cli",
+                        "surface_description": "The public driver behavior observed by the frozen fixture command.",
+                        "execution_ids": ["blackbox"],
+                        "required_dimensions": ["verify"],
+                    },
+                }
+            ],
             "trust_boundaries": [{"id": "roles", "description": "Role threads remain distinct."}],
         },
         "authority": {
@@ -738,6 +749,7 @@ class NativeCoordinatorContractTest(unittest.TestCase):
             context,
         )
         payload = json.loads(prompt.split("\n", 1)[1])
+        self.assertIn("boundCaseResult", payload["blackbox_case_schema"]["$defs"])
         self.assertIn("tests.test_calc", payload["test_identity_contract"]["unittest"])
         self.assertEqual(
             payload["proof_test_id_hints"][0]["unittest_module"], "tests.test_calc"
@@ -1357,6 +1369,60 @@ class NativeCoordinatorContractTest(unittest.TestCase):
                 ],
                 ["prepare-deployment", "restore-deployment", "complete-blackbox"],
             )
+
+    def test_invalid_deployment_blackbox_requires_restore_before_consumption(self) -> None:
+        class FakeCore:
+            def __init__(self) -> None:
+                self.calls: list[str] = []
+
+            def call(self, command: str, *args: str, input_value=None):
+                self.calls.append(command)
+                if command == "stage-blackbox":
+                    raise CorePortError(
+                        "observation binding mismatch",
+                        payload={
+                            "status": "FATAL",
+                            "code": "BLACKBOX_OBSERVATION_BINDING_MISMATCH",
+                        },
+                        returncode=2,
+                    )
+                return {"status": "ACTIVE"}
+
+        core = FakeCore()
+        coordinator = NativeCoordinator(
+            repo=ROOT,
+            run_id="native-invalid-deployment-blackbox",
+            core=core,
+            transport=object(),
+            project_root=ROOT,
+        )
+        coordinator._apply_agent_result(
+            {"action": "tester_blackbox", "action_id": "a" * 64},
+            "tester",
+            {
+                "result": "pass",
+                "evidence_report": {"kind": "blackbox"},
+                "proof_spec": None,
+                "problem_report": None,
+            },
+            {
+                "facets": {
+                    "execution": {
+                        "deployment": {"target_id": "fixture"},
+                        "agents": {
+                            "tester": {
+                                "agent_id": "tester-agent",
+                                "thread_id": "tester-thread",
+                            }
+                        },
+                    }
+                }
+            },
+        )
+        self.assertEqual(
+            core.calls,
+            ["stage-blackbox", "require-deployment-restore"],
+        )
 
     def test_coordinator_executes_supersede_recovery_actions(self) -> None:
         with tempfile.TemporaryDirectory(prefix="native-supersede-actions-") as raw:

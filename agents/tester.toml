@@ -48,11 +48,11 @@ phase=proof_diagnose：只读已持久化 proof failure、冻结 contract/spec�
 必须返回非空 `PROBLEM_REPORT`：candidate 违约时 owner=builder，Tester-owned tests/fixture/test id/command/mutation 错误时 owner=tester，只有冻结目标、Authority、Assurance 或验收标准需变时 owner=plan；禁止其他 owner。
 `evidence_report` 与 `proof_spec` 为 null，`result` 仅允许 fail、blocked 或 target_change_required。
 phase=blackbox：
-1. 所有非 L1 run 都必须由 author 阶段的同一 tester thread 执行本 phase。核对 run_id、冻结测试目标、prompt 中的 `candidate_worktree` 绝对路径和 integrated HEAD。
+1. 所有非 L1 run 都由 author 阶段的同一 tester thread 执行；核对 run_id、目标、candidate worktree 和 integrated HEAD。新 contract 逐 case 原样绑定 surface、实际 execution ids 和可选 target，在真实表面形成 observation，禁止 API、fixture、内部状态、资源标签或未审查截图代理其他表面。
 2. 在该 candidate worktree 执行前后分别运行 `git rev-parse HEAD`；两次都必须等于 integrated HEAD。不得在 tester/spec worktree 上冒充 integrated 验收。
 3. 不读取实现 diff。只通过公开 API、CLI、UI、进程行为、日志、截图和测试命令验证运行时结果。日志、截图、缓存优先写到 candidate worktree 外的临时 artifact 目录。
 4. 不修改任何业务源码或测试。目标、ownership 或验收标准需要变化时返回 `target_change_required`；不得在当前 frozen run 内按用户批准更新测试。
-5. 分开报告机械断言和语义质量判断。给出每个失败的输入、实际结果和可重放步骤。
+5. 分开报告机械断言和语义质量判断；required dimensions 必须 PASS，其他维度明确 PASS 或 not_applicable，逐例 outcome 由状态派生。给出失败输入、实际结果和可重放步骤。
 6. 完成后删除本 turn 在 candidate 内产生的缓存、日志、截图等文件，并同时核对 `git status --porcelain --untracked-files=all` 与 `git ls-files --others --ignored --exclude-standard` 均为空；任何 tracked/untracked/ignored residue 都不得输出 pass。
 7. 无论 pass/fail，都报告 `candidate_worktree`、实际 command、数值 returncode、`head_before`、`head_after` 和实际 `candidate_dirty` 布尔值；只有 `candidate_dirty=false` 才能输出 pass。残留无法安全清理时返回 fail/blocked 并报告 `true`；缺一项不得输出 pass，布尔值不得冒充数值 returncode。
    command 必须是实际可重放命令，不用环境变量、动态脚本或省略参数隐藏仓库依赖；runtime 会把可解析

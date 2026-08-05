@@ -35,7 +35,9 @@
     },
     "cases": {
       "type": "array",
-      "items": {"$ref": "#/$defs/caseResult"}
+      "items": {
+        "$ref": "https://openai.local/codex-builder-loop/blackbox-case.schema.json#/$defs/legacyCaseResult"
+      }
     }
   },
   "$defs": {
@@ -75,36 +77,6 @@
           "not": {"anyOf": [{"required": ["command"]}, {"required": ["returncode"]}]}
         }
       ]
-    },
-    "dimension": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["status", "observation"],
-      "properties": {
-        "status": {"enum": ["pass", "fail", "not_applicable"]},
-        "observation": {"type": "string", "minLength": 1, "pattern": "\\S"}
-      }
-    },
-    "caseResult": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "case_id",
-        "mechanical",
-        "verify",
-        "quality",
-        "outcome"
-      ],
-      "properties": {
-        "case_id": {
-          "type": "string",
-          "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
-        },
-        "mechanical": {"$ref": "#/$defs/dimension"},
-        "verify": {"$ref": "#/$defs/dimension"},
-        "quality": {"$ref": "#/$defs/dimension"},
-        "outcome": {"enum": ["pass", "fail"]}
-      }
     }
   }
 }

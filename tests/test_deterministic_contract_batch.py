@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from jsonschema import Draft202012Validator
+from referencing import Registry, Resource
 
 from harness import (
     ROOT,
@@ -351,8 +352,16 @@ class DeterministicContractBatchTest(unittest.TestCase):
         )
 
         schema = json.loads(BLACKBOX_SCHEMA.read_text())
+        case_schema = json.loads(
+            (ROOT / "schema" / "codex-blackbox-case.schema.json").read_text()
+        )
         Draft202012Validator.check_schema(schema)
-        validator = Draft202012Validator(schema)
+        validator = Draft202012Validator(
+            schema,
+            registry=Registry().with_resource(
+                case_schema["$id"], Resource.from_contents(case_schema)
+            ),
+        )
         failures: list[str] = []
 
         zero_accepted = _v2_details(

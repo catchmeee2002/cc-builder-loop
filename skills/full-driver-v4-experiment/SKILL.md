@@ -103,7 +103,9 @@ dispatch。直到 `finalize` 或明确的决策边界。动作面如下，不能
   结果。
 - `tester_blackbox`：在 tester author 与 prove-tests、machine 都 current 后，续接同一 Tester
   thread，在 candidate worktree 的 integrated HEAD 执行结构化 blackbox；逐命令实际 returncode 必须
-  命中冻结的 `expected_returncodes`。部署型 run 先调用 `stage-blackbox` 暂存结果，不直接登记 PASS。
+  命中冻结的 `expected_returncodes`。新 observation contract 还必须逐 case 回传相同 surface、实际
+  execution ids、外部 target 和三个判据维度；缺 case、错表面或代理 evidence 都不能登记 PASS。
+  部署型 run 先调用 `stage-blackbox` 暂存结果，不直接登记 PASS。
 - `restore_deployment` / `complete_blackbox`：部署型 run 无论 Tester 通过、失败或控制面中断，都先执行
   项目恢复命令并由 probe 证明回到部署前状态；恢复成功后才把暂存结果绑定制品、环境和恢复事实，登记
   blackbox evidence。跳过 deploy 的事务只重新 probe 并确认环境未漂移，不执行会改变既有环境的恢复

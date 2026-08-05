@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Assurance v4 的 blackbox acceptance case 现在逐条冻结真实观察面、实际 execution ids、必需判据维度
+  和可选外部目标；Core 在 stage 与最终 evidence 使用同一校验，拒绝用 API、fixture、内部状态或其他
+  表面的代理证据满足声明。旧 active v4 ledger 保留 command-only 兼容，deployment restore、同 run
+  environment lease 与 cross-run transfer 仍重新取得当前 mission 的 case evidence（#76、#151、#154）。
+
 - Assurance v4 将 target drift 与已发布 prerequisite 修复统一为 crash-safe candidate recomposition：
   publication 采用冻结路径、不可变 generation，Builder/Tester 冲突回原 thread 的 ownership staging，
   target 再推进可重启并以最终 CAS 收敛；status 提前列出同 target contenders。新增 focused machine

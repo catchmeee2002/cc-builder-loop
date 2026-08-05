@@ -67,6 +67,12 @@ description: 在 Codex Plan mode 中为显式选择的 Builder-loop 实验路线
   字符串数组，`expected_returncodes` 冻结什么实际返回码算通过。交付必跑且本地无副作用的关键测试用
   `run_before_full_suite:true` 标记在 machine commands 中，并同时设置 `preflight_before_proof:true`；不得靠
   分析 argv 猜顺序。
+- 需要 blackbox 的新 contract 必须把每条 `mission.acceptance_cases` 写成单一可观察声明，并冻结
+  `observation.surface_id/surface_description/execution_ids/required_dimensions`；观察外部目标时再绑定已授权
+  `target_id`。同一声明跨多个观察面时拆成多个 case。surface id 只在本计划内命名，不建立强 E2E
+  类型或项目 Profile；项目 AGENTS、用户目标或公开契约要求 UI、设备、CLI 等真实表面时，不能改写为
+  API、fixture、内部 diagnostics 或资源存在性。每个 execution id 必须来自本 contract 的
+  `execution.commands`。
 - 需要真实环境时，只允许计划冻结一个 `authority.external_targets` 目标和项目提供的
   `execution.deployment` probe/build/deploy/restore wrapper。若当前 probe 证明同一目标已经承载同一候选
   制品，Core 可跳过重复 deploy，但本 Revision 的 blackbox 仍重新执行。只有用户明确允许 Revision

@@ -10,7 +10,7 @@ import tempfile
 import unittest
 from copy import deepcopy
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from harness import CLI, ROOT, cleanup_repo, commit_all, git, head, init_repo, run_process
 
@@ -36,7 +36,16 @@ def contract_for(repo: Path) -> dict[str, Any]:
             ],
             "interfaces": [],
             "acceptance_cases": [
-                {"id": "driver-final", "description": "The candidate is finalized."}
+                {
+                    "id": "driver-final",
+                    "description": "The candidate is finalized.",
+                    "observation": {
+                        "surface_id": "driver-cli",
+                        "surface_description": "The public driver behavior observed by the frozen blackbox command.",
+                        "execution_ids": ["fixture-blackbox"],
+                        "required_dimensions": ["verify"],
+                    },
+                }
             ],
             "trust_boundaries": [
                 {"id": "independent-gates", "description": "Roles remain independent."}
@@ -85,6 +94,38 @@ def contract_for(repo: Path) -> dict[str, Any]:
             },
         },
     }
+
+
+def blackbox_case_results(
+    ledger: Mapping[str, Any], *, passed: bool = True
+) -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    for case in ledger["facets"]["mission"]["acceptance_cases"]:
+        observation = case.get("observation")
+        if not isinstance(observation, dict):
+            continue
+        required = set(observation["required_dimensions"])
+        result: dict[str, Any] = {
+            "case_id": case["id"],
+            "surface_id": observation["surface_id"],
+            "execution_ids": list(observation["execution_ids"]),
+            "outcome": "pass" if passed else "fail",
+        }
+        for name in ("mechanical", "verify", "quality"):
+            result[name] = {
+                "status": (
+                    "pass"
+                    if passed and name in required
+                    else "fail"
+                    if not passed and name in required
+                    else "not_applicable"
+                ),
+                "observation": f"fixture {name} observation",
+            }
+        if "target_id" in observation:
+            result["target_id"] = observation["target_id"]
+        results.append(result)
+    return results
 
 
 class FullDriverV4ContractTest(unittest.TestCase):
@@ -628,6 +669,7 @@ class FullDriverV4ContractTest(unittest.TestCase):
         contract["authority"]["tester_write"] = []
         contract["assurance"] = {"required": ["reviewer"], "machine_commands": []}
         contract["execution"]["commands"] = []
+        contract["mission"]["acceptance_cases"][0].pop("observation")
         _data, run_path = self.start(run_id, contract=contract)
         rc, checkpointed = self.invoke(
             "checkpoint-builder", "--repo", self.repo, "--run", run_id
@@ -1035,6 +1077,7 @@ class FullDriverV4ContractTest(unittest.TestCase):
                         "timed_out": False,
                     }
                 ],
+                "cases": blackbox_case_results(ledger, passed=False),
             },
         }
         report_path = self.write_json("failed-blackbox-report.json", failed_report)
@@ -2341,6 +2384,7 @@ class FullDriverV4ContractTest(unittest.TestCase):
             "machine_commands": [],
         }
         preparation["execution"]["commands"] = []
+        preparation["mission"]["acceptance_cases"][0].pop("observation")
         data, preparation_path = self.start(preparation_run, contract=preparation)
         candidate = Path(data["candidate_worktree"])
         (candidate / "src" / "support.py").write_text(
@@ -2769,6 +2813,7 @@ class FullDriverV4ContractTest(unittest.TestCase):
         contract["authority"]["builder_write"] = ["README.md"]
         contract["assurance"] = {"required": ["reviewer"], "machine_commands": []}
         contract["execution"]["commands"] = []
+        contract["mission"]["acceptance_cases"][0].pop("observation")
         data, run_path = self.start(run_id, contract=contract)
         candidate = Path(data["candidate_worktree"])
         (candidate / "README.md").write_text("L1 documentation fixture\n", encoding="utf-8")

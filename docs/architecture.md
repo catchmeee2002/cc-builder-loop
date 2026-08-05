@@ -90,6 +90,14 @@ proof 使用与 Tester-owned 路径一致的 canonical test id，Native wire 只
 可选 `reviewer_preflight` 在 Tester/focused preflight 后续接同一 Reviewer thread 做早期语义审计；其
 evidence 不能满足最终 Reviewer gate，最终审查仍要求当前 machine、proof 和 blackbox 全部齐备。
 
+需要 blackbox 的新 Assurance v4 contract 将每条 acceptance case 冻结为单一观察声明：plan-local
+`surface_id` 与描述、允许产生结论的 `execution.commands` ids、必需的 mechanical/verify/quality 维度，
+以及可选已授权 external target。Tester evidence 必须逐 case 回传相同绑定并引用本轮真实 execution；
+Core 机械派生 case outcome 和总状态，缺失、代理表面、未执行 command、错误 target 或把必需维度标为
+not-applicable 都不能形成 PASS。Planner 与 Reviewer 仍负责根据项目规则判断冻结 command 是否真的观察
+声明表面，runtime 不通过识别 curl、浏览器或 fixture 名称建立输出特判。保留的旧 v4 ledger 缺少该结构时
+继续 command-only 路径；新 run 和已升级 mission 不能移除已经冻结的 observation。
+
 可选 deployment contract 只支持当前 run 的单个已授权外部目标。Core 从 candidate HEAD 创建独立
 deployment worktree，在其中运行项目提供的 probe/build/deploy/restore wrapper，绑定制品 SHA256、
 部署前状态、部署后状态和恢复状态；target checkout 不切换。Tester blackbox 结果先暂存，Driver 无论

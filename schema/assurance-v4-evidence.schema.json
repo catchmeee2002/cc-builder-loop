@@ -110,6 +110,13 @@
                   }
                 }
               },
+              "cases": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "$ref": "https://openai.local/codex-builder-loop/blackbox-case.schema.json#/$defs/boundCaseResult"
+                }
+              },
               "deployment": {
                 "type": "object",
                 "additionalProperties": false,
