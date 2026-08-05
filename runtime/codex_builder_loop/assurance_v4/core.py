@@ -2469,17 +2469,19 @@ def telemetry(ledger: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _problem_snapshot_value(ledger: Mapping[str, Any]) -> list[dict[str, Any]]:
-    problems = [
-        {
+    problems = []
+    for item in ledger.get("problems", []):
+        if not isinstance(item, dict) or item.get("status") != "open":
+            continue
+        problem = {
             "key": item["key"],
             "summary": item["summary"],
             "details": item["details"],
             "owner": item["owner"],
-            "decision_request": copy.deepcopy(item.get("decision_request")),
         }
-        for item in ledger.get("problems", [])
-        if isinstance(item, dict) and item.get("status") == "open"
-    ]
+        if isinstance(item.get("decision_request"), Mapping):
+            problem["decision_request"] = copy.deepcopy(item["decision_request"])
+        problems.append(problem)
     problems.sort(key=lambda item: item["key"])
     return problems
 

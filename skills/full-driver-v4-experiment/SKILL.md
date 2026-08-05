@@ -40,7 +40,7 @@ Agent spawn、same-thread follow-up、结构化结果解析和持续循环由本
 
 到达 `reviewer_preflight` 或 `reviewer_final` 后只允许一次初始
 `spawn_agent(agent_type="reviewer", fork_turns="none")`，一个 run 只 spawn 一次 Reviewer。最小 brief
-包含冻结 contract、candidate、完整 diff、当前阶段可用验证事实和文档政策路径；
+包含冻结 contract、candidate、完整 diff、当前阶段可用验证证据和文档政策路径；
 不得夹带父线程讨论、用户倾向或 Builder 辩护。Reviewer 必须看到候选信息；候选与完整 diff 是必需审查输入。
 
 ### 后续 turn
