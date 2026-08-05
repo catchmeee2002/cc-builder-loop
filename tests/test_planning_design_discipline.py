@@ -615,6 +615,9 @@ class PlanningDesignDisciplineTest(unittest.TestCase):
         builder_current = [
             item for item in variants["variants"] if item["id"] == "builder-current"
         ]
+        planner_current = [
+            item for item in variants["variants"] if item["id"] == "planner-current"
+        ]
         reviewer_current = [
             item for item in variants["variants"] if item["id"] == "reviewer-current"
         ]
@@ -633,6 +636,14 @@ class PlanningDesignDisciplineTest(unittest.TestCase):
             hashlib.sha256((ROOT / BUILDER_PATH).read_bytes()).hexdigest(),
         )
         self.assertEqual(git_blob("HEAD", BUILDER_PATH), worktree_blob(BUILDER_PATH))
+        self.assertEqual(len(planner_current), 1, planner_current)
+        self.assertEqual(
+            planner_current[0]["instruction_source"]["path"], str(PLANNER_PATH)
+        )
+        self.assertEqual(
+            planner_current[0]["instruction_source"]["sha256"],
+            hashlib.sha256((ROOT / PLANNER_PATH).read_bytes()).hexdigest(),
+        )
         self.assertEqual(len(reviewer_current), 1, reviewer_current)
         self.assertEqual(
             reviewer_current[0]["instruction_source"]["path"], str(REVIEWER_PATH)
@@ -686,6 +697,34 @@ class PlanningDesignDisciplineTest(unittest.TestCase):
             has_terms(retrospective, ("transcript", "对话"), ("重建", "推断")),
             "retrospective must not reconstruct lineage from transcripts",
         )
+
+    def test_planner_closes_role_manifest_authority_and_uses_plain_language(self) -> None:
+        planner = read(PLANNER_PATH)
+
+        self.assertTrue(
+            has_terms(
+                planner,
+                ("instruction source", "角色"),
+                ("manifest",),
+                ("直接引用",),
+                ("Builder写边界",),
+            ),
+            "Planner must freeze versioned verification manifests before implementation",
+        )
+        self.assertTrue(
+            has_terms(
+                planner,
+                ("request_user_input",),
+                ("用户能观察",),
+                ("行为",),
+                ("成本",),
+                ("退路",),
+            ),
+            "Planner choices must lead with user-observable behavior and cost",
+        )
+        for internal_term in ("carryover", "turn", "supersession", "actionable finding"):
+            self.assertIn(internal_term, planner)
+        self.assertTrue(has_terms(planner, ("内部词",), ("不能单独",)))
 
     def test_v4_supersession_guidance_is_active_first_and_version_scoped(self) -> None:
         self.assertTrue(

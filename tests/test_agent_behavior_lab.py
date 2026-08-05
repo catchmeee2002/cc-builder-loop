@@ -13,6 +13,7 @@ from harness import ROOT, git, run_process
 
 RUNNER = ROOT / "experiments" / "agent-behavior" / "runner.py"
 BUILDER_SKILL = ROOT / "skills" / "builder" / "SKILL.md"
+PLANNER_SKILL = ROOT / "skills" / "builder-loop-planner" / "SKILL.md"
 VARIANTS = ROOT / "experiments" / "agent-behavior" / "variants.json"
 
 
@@ -56,6 +57,41 @@ class AgentBehaviorLabTest(unittest.TestCase):
         self.assertEqual(
             git(ROOT, "rev-parse", "HEAD:skills/builder/SKILL.md"),
             git(ROOT, "hash-object", "skills/builder/SKILL.md"),
+        )
+
+    def test_planner_current_binds_the_frozen_planner_skill(self) -> None:
+        variants = json.loads(VARIANTS.read_text())
+        matches = [
+            item for item in variants["variants"] if item["id"] == "planner-current"
+        ]
+        self.assertEqual(len(matches), 1, matches)
+        source = matches[0]["instruction_source"]
+        self.assertEqual(source["path"], "skills/builder-loop-planner/SKILL.md")
+        self.assertEqual(source["revision"], "WORKTREE")
+        self.assertEqual(
+            source["sha256"], hashlib.sha256(PLANNER_SKILL.read_bytes()).hexdigest()
+        )
+
+    def test_planner_contract_scenarios_cover_manifest_closure_and_plain_language(
+        self,
+    ) -> None:
+        scenarios = json.loads(
+            (ROOT / "experiments" / "agent-behavior" / "scenarios.json").read_text()
+        )
+        by_id = {item["id"]: item for item in scenarios["scenarios"]}
+
+        manifest = by_id["planner-role-manifest-closure"]
+        self.assertEqual(manifest["role"], "planner")
+        self.assertIn(
+            "experiments/agent-behavior/variants.json",
+            manifest["mechanical_checks"]["contains"],
+        )
+        plain = by_id["planner-plain-language-choice"]
+        self.assertEqual(plain["role"], "planner")
+        self.assertTrue(
+            {"carryover", "actionable finding", "turn", "supersession"}.issubset(
+                set(plain["mechanical_checks"]["not_contains"])
+            )
         )
 
     def test_prepare_and_score_are_deterministic_offline_and_ephemeral(self) -> None:
@@ -108,6 +144,7 @@ class AgentBehaviorLabTest(unittest.TestCase):
             self.assertEqual(len(requests), len(scenario_ids))
             current_roles = {
                 "builder-current": "skills/builder/SKILL.md",
+                "planner-current": "skills/builder-loop-planner/SKILL.md",
                 "reviewer-current": "agents/reviewer.toml",
                 "tester-current": "agents/tester.toml",
             }

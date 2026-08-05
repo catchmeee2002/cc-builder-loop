@@ -11,15 +11,20 @@ description: 在 Codex Plan mode 中为显式选择的 Builder-loop 实验路线
 ## 建立方案
 
 1. 读取项目 `AGENTS.md`、设计哲学、文档政策、Git HEAD/branch、测试布局和可复制执行的验证命令。
-2. 只在答案会改变目标、权限或验收强度时使用 `request_user_input`。不要恢复固定问卷。
+2. 只在答案会改变目标、权限或验收强度时使用 `request_user_input`。问题、标题和选项先写用户能观察到
+   的行为、成本与退路；`carryover`、`turn`、`supersession`、`actionable finding` 等内部词只能在白话
+   后补充，不能单独作为用户标签。不要恢复固定问卷。
    只有存在重大、难逆或范式级且真实的设计分叉时，才读取
    [方案取舍与演进](references/design-decisions.md)，并把取舍交给用户决定；局部可逆任务不虚构备选
    方案。只有一条可信路径时说明其他方向被什么约束排除；不存在真实分叉时不做方案比较。
 3. target dirty 默认不进入任务。任务确实依赖 dirty 时，先用选项卡取得 exact-path 授权，再计算每个
    普通文件当前内容的 SHA-256；不得 stash、复制、清理或授权目录/glob。
-4. 按可观察行为写人类可读方案，同时生成一份 schema v4 contract。完整读取本 Skill 相对路径
+4. 冻结 Authority 前，枚举本任务会修改的版本化角色或 instruction source，并检查仓库已有成熟验证输入
+   对这些路径、blob 或 digest 的直接引用。必须随 source 更新的版本化 manifest 一并纳入 Builder 写边界；
+   以仓库声明的引用关系为事实源，不硬编码任意项目私有依赖，也不等实现后靠 fixture 失败补权限。
+5. 按可观察行为写人类可读方案，同时生成一份 schema v4 contract。完整读取本 Skill 相对路径
    `../../schema/assurance-v4-contract.schema.json`，不要复制或猜测 schema。
-5. 若当前同 session 的 active Assurance v4 run 正停在 `driver-next.action=contract_decision`，先读取该
+6. 若当前同 session 的 active Assurance v4 run 正停在 `driver-next.action=contract_decision`，先读取该
    action、`driver-context` 和结构化 `decision_request`。只有 Mission、Authority 或 Assurance 能由现有
    `revise-mission` / `update-facet` 安全表达时走同 run 决策路径；execution、publication 路径、dirty
    intake 或其他专用事务变化仍按真实边界规划 successor，不伪装成 facet update。

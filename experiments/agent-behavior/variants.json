@@ -22,8 +22,8 @@
       "kind": "instruction",
       "roles": ["planner"],
       "instruction_source": {
-        "path": "skills/builder-loop-planner/references/design-decisions.md",
-        "sha256": "c8eba1707b0aeabae45c30c2c591130850e9bd28ae2d460738f4af5727ef05da",
+        "path": "skills/builder-loop-planner/SKILL.md",
+        "sha256": "e6000ad1f7c74c6eecc47f95f1dbd0cb5a37e6a3794a9f08232d07d7cd89cbdf",
         "revision": "WORKTREE"
       }
     },

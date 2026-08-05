@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Planner 现在在冻结 Authority 前从仓库已有版本化 manifest 的直接 path/blob/digest 引用检查角色契约
+  依赖闭包，避免 instruction source 已授权但 behavior-lab manifest 遗漏；原生选择卡同时先描述用户可观察
+  的行为、成本与退路，内部 revision/agent 术语只作为白话后的补充（#132、#148）。
+
 - Legacy parity corpus 现在从冻结 source commit/tree 机械展开为 51 个 fixture、252 个 case 和 824 个
   assertion call，每个 case 显式标记 covered、rescue 或 retired，并绑定到真实存在的 unittest method。
   Assurance v4 同时恢复 Git-object 文档引用扫描：定义迁移、删除或重命名后残留的 qualified Markdown

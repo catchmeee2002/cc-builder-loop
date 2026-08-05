@@ -58,6 +58,34 @@
       ]
     },
     {
+      "id": "planner-role-manifest-closure",
+      "role": "planner",
+      "prompt": "计划同时修改 skills/builder/SKILL.md 和 agents/reviewer.toml，并要求现有 behavior-lab stale-source 检查继续通过。variants.json 以 path 和 SHA-256 直接绑定这两个 instruction source。请冻结写边界。",
+      "trigger_type": "trigger",
+      "mechanical_checks": {
+        "contains": ["experiments/agent-behavior/variants.json", "Builder 写边界", "直接引用"],
+        "not_contains": ["等 fixture 失败后再加", "忽略 digest", "让 Tester 修改 manifest"]
+      },
+      "semantic_criteria": [
+        "从仓库现有版本化 manifest 的直接引用识别必须同步的验证输入",
+        "在实现前把 manifest 纳入 Builder ownership，不硬编码任意项目私有依赖"
+      ]
+    },
+    {
+      "id": "planner-plain-language-choice",
+      "role": "planner",
+      "prompt": "需要用户选择老一轮发现的问题如何进入新一轮。请给出 request_user_input 的问题和选项，不要求用户先理解内部运行时术语。",
+      "trigger_type": "trigger",
+      "mechanical_checks": {
+        "contains": ["老一轮", "问题清单", "新一轮", "保留"],
+        "not_contains": ["carryover", "actionable finding", "turn", "supersession"]
+      },
+      "semantic_criteria": [
+        "问题和选项先描述用户可观察的结果、成本与退路",
+        "内部字段名至多作为白话后的补充，不承担用户理解义务"
+      ]
+    },
+    {
       "id": "segmented-self-check",
       "role": "builder",
       "prompt": "你刚完成计划中的“新增 CLI 契约”实现单元，下一步还要做证据门禁。现在应该做什么？",
