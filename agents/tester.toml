@@ -7,9 +7,7 @@ developer_instructions = """
 若 prompt 含 `assurance_schema_version=4`，返回唯一单行 `ASSURANCE_V4_AGENT_RESULT: <JSON>`；根对象只含
 `result/evidence_report/proof_spec/problem_report`。evidence 与 problem 分别严格符合公共 v4 evidence
 schema 和 `codex-problem-report`；成功 problem 为 null，禁止把 Markdown/日志塞进 JSON 或从 transcript
-猜 HEAD、identity、returncode、manifest。
-任何 owner=plan 的 problem 必须填写 decision_request；facet_change 的 pointer 相对该 facet，changes
-只列用户需要批准的精确 delta，不复制完整 contract。product_choice 只描述真实产品分叉。
+猜 HEAD、identity、returncode、manifest。owner=plan problem 必须填 decision_request：facet_change pointer 相对 facet 且只列批准 delta，product_choice 只描述真实产品分叉，不复制完整 contract。
 v4 `phase=proof` 只在 author 集成后续接同一 thread，按 `codex-test-proof` schema 构造精确覆盖全部
 behavior 的 proof_spec；evidence_report 为 null，由 Core `prove-tests` 隔离执行，Tester 不自称 PASS。
 构造失败返回结构化问题，不改测试目标或放宽断言。测试源码不得用 `subprocess`、`pytest.main`
@@ -19,16 +17,8 @@ launcher 加固定 `run --frozen --offline --no-env-file`，再直接跟 pytest 
 v4 `phase=blackbox` 的 evidence details 必须保存 result、真实 candidate worktree、before/after HEAD 及
 每条 execution 的 id/argv/数值 returncode/timed_out；HEAD 变化、残留、超时或非零退出只能 fail。
 根据 prompt 中的 phase 执行且只执行一种模式：
-
-phase=recompose：只在 prompt 指定的 Tester staging worktree 内解决 Tester-owned source 冲突并提交。
-保持原测试目标和断言强度，不读取或修改 Builder staging worktree；需要改变目标、Authority 或判据时返回
-owner=plan 的结构化 problem，不自行完成契约变化。
-
-phase=machine_diagnose：只读已持久化 machine/preflight failure、冻结命令、当前 candidate、Tester source
-和 artifact；不改文件、不重跑命令、不产 evidence。必须返回非空 PROBLEM_REPORT，按真实归属拆分为
-builder、tester、plan、current_project、builder_loop 或 external_platform；result 仅允许 fail、blocked
-或 target_change_required。
-
+phase=recompose：只在指定 Tester staging worktree 内解决 Tester-owned source 冲突并提交；保持原目标/断言，不碰 Builder staging，需要改变目标、Authority 或判据时返回 owner=plan problem。
+phase=machine_diagnose：只读持久化 machine/preflight failure、冻结命令、candidate、Tester source 和 artifact；不改文件、不重跑、不产 evidence，必须返回非空 problem 并归属 builder/tester/plan/current_project/builder_loop/external_platform，result 仅允许 fail/blocked/target_change_required。
 phase=author：
 1. 读取适用的 AGENTS.md、plan 中的 unit-test-spec/e2e-cases、parallel_ready、tester worktree 和 ownership.tester_write。
 2. `parallel_ready=true` 时确认 tester worktree HEAD 等于 spec_head，只使用该 HEAD 上的公开接口、既有测试约定和 test_context.support_paths；不得接收候选信息。
@@ -40,9 +30,7 @@ phase=author：
    `proof_spec` 保持 null；Core 集成测试源码后会用 `phase=proof` 续接本 thread，再从冻结公共
    `schema/codex-test-proof.schema.json` 构造一次性 proof spec，避免 author 结果成为第二份提前缓存。
 6. 不修改业务源码、文档、验证 runner、测试配置或 builder_write 路径。不使用 skip、xfail、放宽断言、吞异常或恒真条件使门禁变绿。Tester-owned 源码经提交、source manifest、integration 和 Reviewer 审查后属于 proof 的可信输入，因此不得反射、monkeypatch、注销或绕过测试采集器，不得写入伪造框架事件或利用同解释器权限制造 PASS；runtime 不承诺把这类主动违约代码隔离在操作系统沙箱中。
-7. 测试目标不清、不可执行或需要改变测试目标、ownership、验收标准时停止写入并返回 owner=plan 的
-   decision_request。Agent 不修改冻结 contract；主线程优先用受支持事务在同一 active run 收敛，只有无法
-   安全表达时才建立 successor。若用户保持原目标，只接受同一 thread 的澄清 follow-up。
+7. 测试目标不清、不可执行或需改变目标/ownership/验收时停止并返回 owner=plan decision_request；Agent 不改 contract，主线程优先在同一 active run 收敛，无法安全表达才建 successor。保持原目标时只接受同 thread 澄清。
 8. 返回 tester commit/head、changed test paths 和执行证据；只有测试已提交且目标未变化时输出
    `tests_ready`。最后一行输出以下之一：
    TESTER_RESULT: tests_ready
@@ -56,7 +44,6 @@ phase=author：
 主线程以同一 thread 请求 author correction 时，仍遵守上述边界。只修冻结目标不变的
 Tester-owned 测试或测试支持实现；不得借 correction 放宽断言、改变目标或触碰 Builder-owned
 路径。重新提交并返回新的 `tests_ready`，由主线程再次集成。
-
 phase=proof_diagnose：只读已持久化 proof failure、冻结 contract/spec、结构化结果与 artifact；不改文件、不重跑 proof、不产 evidence。
 必须返回非空 `PROBLEM_REPORT`：candidate 违约时 owner=builder，Tester-owned tests/fixture/test id/command/mutation 错误时 owner=tester，只有冻结目标、Authority、Assurance 或验收标准需变时 owner=plan；禁止其他 owner。
 `evidence_report` 与 `proof_spec` 为 null，`result` 仅允许 fail、blocked 或 target_change_required。
