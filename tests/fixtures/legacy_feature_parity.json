@@ -1,53 +1,3442 @@
-[
-  {"fixture":"test-abandon-loop-flow.sh","status":"covered","replacement":"abandon ledger contract","rationale":"Worktrees remain preserved and abandon is idempotent.","test_ids":["test_abandon_contract"]},
-  {"fixture":"test-arbitration-apply.sh","status":"retired","replacement":"conflict-safe stop","rationale":"The runtime does not apply model-authored conflict patches.","test_ids":["test_conflict_safe_stop"]},
-  {"fixture":"test-askuserquestion-silence.sh","status":"covered","replacement":"native request_user_input and Stop waiting marker","rationale":"User waiting is represented by the native interaction surface.","test_ids":["test_stop_hook_gate"]},
-  {"fixture":"test-bare-loop-merge.sh","status":"retired","replacement":"isolated worktrees only","rationale":"Bare mode cannot provide the required role and candidate isolation.","test_ids":["test_start_contract"]},
-  {"fixture":"test-bare-reviewer-gate.sh","status":"retired","replacement":"isolated reviewer prerequisite gate","rationale":"Reviewer evidence is bound to an isolated integrated candidate.","test_ids":["test_reviewer_prerequisite_order"]},
-  {"fixture":"test-conflict.sh","status":"covered","replacement":"conflict-safe stop and preserved intent","rationale":"Conflicts never auto-apply or overwrite target state.","test_ids":["test_conflict_safe_stop","test_full_driver_v4_contract"]},
-  {"fixture":"test-cross-session-isolation.sh","status":"covered","replacement":"owner_session_id ledger selection","rationale":"A session can own only one active run and cannot capture another run.","test_ids":["test_agent_thread_resume"]},
-  {"fixture":"test-diff-level-check.sh","status":"covered","replacement":"L1 documentation-spec versus L2/L3 unit-test-spec","rationale":"Plan validation freezes the delivery level before execution.","test_ids":["test_plan_contract"]},
-  {"fixture":"test-dirty-stash-flow.sh","status":"rescue","replacement":"immutable workspace intake snapshot","rationale":"Exact dirty files enter Builder without mutating target or global stash.","test_ids":["test_workspace_intake","test_full_driver_v4_contract"]},
-  {"fixture":"test-doc-lint.sh","status":"covered","replacement":"Reviewer Phase D document-policy audit","rationale":"Documentation correctness remains an independent review gate.","test_ids":["test_doc_audit_gate"]},
-  {"fixture":"test-e2e-default-bare.sh","status":"retired","replacement":"worktree blackbox only","rationale":"Bare execution was removed with bare mode.","test_ids":["test_evidence_head_contract"]},
-  {"fixture":"test-e2e-pending-dirty-guard.sh","status":"covered","replacement":"clean candidate blackbox contract","rationale":"Tracked, untracked and ignored candidate residue blocks pass.","test_ids":["test_evidence_head_contract"]},
-  {"fixture":"test-e2e-verification-stage.sh","status":"covered","replacement":"same-thread Tester blackbox evidence","rationale":"Blackbox evidence is a distinct mandatory gate.","test_ids":["test_evidence_head_contract","test_full_driver_v4_contract"]},
-  {"fixture":"test-e2e-verified-head-ancestor.sh","status":"rescue","replacement":"planner-scoped evidence input digest","rationale":"Evidence can cross HEAD only when its frozen inputs are unchanged.","test_ids":["test_evidence_scope"]},
-  {"fixture":"test-early-stop-tampering.sh","status":"rescue","replacement":"protected inputs plus deterministic progress stops","rationale":"Control-path tampering is rejected and repeated failures require review.","test_ids":["test_diagnostics_progress","test_role_ownership"]},
-  {"fixture":"test-empty-repo.sh","status":"retired","replacement":"immutable spec_head requirement","rationale":"A repository without a commit has no provable Git baseline.","test_ids":["test_start_contract"]},
-  {"fixture":"test-extract-e2e-cases.sh","status":"covered","replacement":"canonical v3 structured e2e-cases marker","rationale":"E2E targets, behavior coverage, mechanical rules, verification and quality criteria are frozen directly rather than inferred from prose.","test_ids":["test_plan_contract","test_planning_v3_e2e_contract"]},
-  {"fixture":"test-handle-pass-agent-id.sh","status":"covered","replacement":"agent and turn identity ledger","rationale":"Evidence is accepted only from the recorded role thread and turn.","test_ids":["test_agent_thread_resume"]},
-  {"fixture":"test-install-matcher-update.sh","status":"covered","replacement":"transactional hook registration","rationale":"Reinstall replaces only managed handlers.","test_ids":["test_install_contract"]},
-  {"fixture":"test-install-uninstall-roundtrip.sh","status":"covered","replacement":"transactional install/uninstall","rationale":"Foreign configuration and symlink targets are preserved.","test_ids":["test_install_contract"]},
-  {"fixture":"test-judge-agent.sh","status":"retired","replacement":"Reviewer plus independent machine/Tester gates","rationale":"An external Judge model is outside the deterministic runtime boundary.","test_ids":["test_reviewer_prerequisite_order"]},
-  {"fixture":"test-judge-edge-cases.sh","status":"retired","replacement":"Reviewer plus independent machine/Tester gates","rationale":"Judge-specific heuristics no longer define completion.","test_ids":["test_reviewer_prerequisite_order"]},
-  {"fixture":"test-judge-env-file-load.sh","status":"retired","replacement":"native custom-agent configuration","rationale":"External Judge environment loading is no longer part of the product.","test_ids":["test_install_contract"]},
-  {"fixture":"test-judge-integration.sh","status":"retired","replacement":"Reviewer prerequisite snapshots","rationale":"Review cannot override missing machine or Tester evidence.","test_ids":["test_reviewer_prerequisite_order"]},
-  {"fixture":"test-judge-model-fallback.sh","status":"retired","replacement":"native inherited agent model","rationale":"The adapter does not own model fallback policy.","test_ids":["test_install_contract"]},
-  {"fixture":"test-locate-state-strategy5.sh","status":"covered","replacement":"session id and repository ledger discovery","rationale":"Run selection does not infer ownership from CWD heuristics.","test_ids":["test_hook_runtime_integration"]},
-  {"fixture":"test-merge-and-cleanup-detached-head.sh","status":"covered","replacement":"explicit target branch and CAS","rationale":"Target identity is explicit even when another checkout is detached.","test_ids":["test_finalize_lifecycle"]},
-  {"fixture":"test-merge-and-cleanup-dirty-abort.sh","status":"covered","replacement":"dirty role and target blockers","rationale":"Dirty state stops finalization while preserving worktrees.","test_ids":["test_finalize_lifecycle"]},
-  {"fixture":"test-merge-and-cleanup-idempotent.sh","status":"covered","replacement":"finalize intent recovery","rationale":"CAS, sync and cleanup are persisted and retryable.","test_ids":["test_finalize_lifecycle","test_full_driver_v4_contract"]},
-  {"fixture":"test-multi-worktree-feedback.sh","status":"rescue","replacement":"structured doctor diagnostics","rationale":"All owned and orphan worktrees are reported with precise state.","test_ids":["test_diagnostics_progress"]},
-  {"fixture":"test-new-repo-loop.sh","status":"covered","replacement":"committed repository start contract","rationale":"A newly initialized repository works after its first immutable commit.","test_ids":["test_start_contract"]},
-  {"fixture":"test-no-diff-silence.sh","status":"covered","replacement":"native orchestration and idempotent verification","rationale":"No-diff turns do not require transcript-driven hook nudges.","test_ids":["test_verify_contract"]},
-  {"fixture":"test-nudge-max-reads-worktree.sh","status":"retired","replacement":"ledger-provided worktree paths","rationale":"Prompt nudging is replaced by explicit runtime facts.","test_ids":["test_start_contract"]},
-  {"fixture":"test-observation-expiry-gh.sh","status":"retired","replacement":"external project workflow","rationale":"Issue observation expiry is unrelated to delivery correctness.","test_ids":["test_install_contract"]},
-  {"fixture":"test-old-state-compat.sh","status":"rescue","replacement":"complete active-v2 continuation under the v3 runtime and honest incomplete lineage for retained v4 ledgers","rationale":"Existing active v2 runs retain run, thread, candidate and finalize-intent identity through completion while new v2 plans are rejected; retained v4 ledgers remain readable without inventing missing transition facts.","test_ids":["test_diagnostics_progress","test_planning_v3_e2e_contract","test_full_driver_v4_contract","test_assurance_v4_lineage_contract"]},
-  {"fixture":"test-orphan-worktree-reuse.sh","status":"rescue","replacement":"doctor, recover and safe cleanup","rationale":"Unknown worktrees are diagnosed but never silently adopted or deleted.","test_ids":["test_diagnostics_progress"]},
-  {"fixture":"test-parallel-loop.sh","status":"covered","replacement":"parallel_ready role worktrees","rationale":"Builder and Tester start from the same frozen baseline when allowed.","test_ids":["test_parallel_role_isolation","test_full_driver_v4_contract"]},
-  {"fixture":"test-pass-cmd-runs-worktree.sh","status":"covered","replacement":"detached clean verification worktree","rationale":"Machine commands execute against the committed candidate.","test_ids":["test_verify_contract"]},
-  {"fixture":"test-passed-pending-review-lifecycle.sh","status":"covered","replacement":"review prerequisite and evidence lifecycle","rationale":"Review remains mandatory after deterministic verification passes.","test_ids":["test_reviewer_prerequisite_order","test_full_driver_v4_contract"]},
-  {"fixture":"test-pause-file.sh","status":"retired","replacement":"native user-input wait state","rationale":"A side-channel pause file is unnecessary and creates a second state source.","test_ids":["test_stop_hook_gate"]},
-  {"fixture":"test-plan-detection.sh","status":"covered","replacement":"explicit frozen plan path and markers","rationale":"The runtime does not heuristically discover plans.","test_ids":["test_plan_contract"]},
-  {"fixture":"test-reviewer-compat.sh","status":"covered","replacement":"custom Reviewer result contract","rationale":"Reviewer completion uses a stable structured marker.","test_ids":["test_reviewer_prerequisite_order"]},
-  {"fixture":"test-reviewer-timing-check-phase.sh","status":"covered","replacement":"start and completion prerequisite snapshots","rationale":"Review cannot be started before required evidence exists.","test_ids":["test_reviewer_prerequisite_order","test_full_driver_v4_contract"]},
-  {"fixture":"test-reward-hacking-detect.sh","status":"covered","replacement":"protected runner paths plus Reviewer test audit","rationale":"Runner weakening and test bypasses cannot silently create PASS.","test_ids":["test_role_ownership","test_reviewer_prerequisite_order"]},
-  {"fixture":"test-run-pass-cmd-args.sh","status":"covered","replacement":"frozen pass_cmd stage contract","rationale":"Commands, timeouts and working directory are validated before execution.","test_ids":["test_verify_contract"]},
-  {"fixture":"test-stop-hook-cursor.sh","status":"retired","replacement":"native lifecycle turn identity","rationale":"Transcript cursors are not a reliable source of execution truth.","test_ids":["test_agent_thread_resume"]},
-  {"fixture":"test-stop-hook-debug-log.sh","status":"rescue","replacement":"ledger events and doctor output","rationale":"Diagnostics are structured around runtime facts rather than hook text logs.","test_ids":["test_diagnostics_progress"]},
-  {"fixture":"test-stop-hook-race-and-commit-msg.sh","status":"covered","replacement":"repository lock and staged final commit","rationale":"Concurrent finalization and commit hooks are transactionally guarded.","test_ids":["test_finalize_lifecycle"]},
-  {"fixture":"test-stop-hook-slug-binding.sh","status":"retired","replacement":"run id plus session and agent identity","rationale":"Slug and CWD inference are replaced by explicit identities.","test_ids":["test_hook_runtime_integration"]},
-  {"fixture":"test-worktree-commit-only.sh","status":"covered","replacement":"checkpointed candidate and squash finalization","rationale":"Only committed candidate trees can produce evidence and final commits.","test_ids":["test_verify_contract","test_full_driver_v4_contract"]},
-  {"fixture":"test-zombie-selfheal.sh","status":"rescue","replacement":"fail-closed migration and doctor","rationale":"Corrupt or missing state is reported and never silently discarded.","test_ids":["test_diagnostics_progress"]}
-]
+{
+  "schema_version": 2,
+  "source": {
+    "commit": "185ee02a259f6a0d7917523a4e20481e6246e0b2",
+    "tree": "2bcc4c4b0adf83f0d1ca1a282a41ba3584ee87e2",
+    "path_prefix": "skills/builder-loop/fixtures/e2e",
+    "disposition_commit": "8fe1e13230b2310d21bb9e3d95f8f62563cda836",
+    "fixture_count": 51,
+    "case_count": 252,
+    "assertion_count": 824
+  },
+  "fixtures": [
+    {
+      "fixture": "test-abandon-loop-flow.sh",
+      "source_blob": "197b41e5799725cc5d0584e9b3606a404bbc6172",
+      "precondition_assertion_count": 2,
+      "cases": [
+        {
+          "id": "case-001",
+          "title": "A1: reason 必填",
+          "source_line": 97,
+          "assertion_count": 4,
+          "status": "covered",
+          "replacement": "abandon ledger contract",
+          "rationale": "Worktrees remain preserved and abandon is idempotent.",
+          "test_ids": [
+            "tests.test_abandon_contract.AbandonContractTest.test_abandon_preserves_role_worktrees_and_is_idempotent"
+          ]
+        },
+        {
+          "id": "case-002",
+          "title": "A2: state 文件不存在",
+          "source_line": 109,
+          "assertion_count": 2,
+          "status": "covered",
+          "replacement": "abandon ledger contract",
+          "rationale": "Worktrees remain preserved and abandon is idempotent.",
+          "test_ids": [
+            "tests.test_abandon_contract.AbandonContractTest.test_abandon_preserves_role_worktrees_and_is_idempotent"
+          ]
+        },
+        {
+          "id": "case-003",
+          "title": "A3: reason 仅空白",
+          "source_line": 117,
+          "assertion_count": 3,
+          "status": "covered",
+          "replacement": "abandon ledger contract",
+          "rationale": "Worktrees remain preserved and abandon is idempotent.",
+          "test_ids": [
+            "tests.test_abandon_contract.AbandonContractTest.test_abandon_preserves_role_worktrees_and_is_idempotent"
+          ]
+        },
+        {
+          "id": "case-004",
+          "title": "A4: state.phase=空 拒绝",
+          "source_line": 127,
+          "assertion_count": 3,
+          "status": "covered",
+          "replacement": "abandon ledger contract",
+          "rationale": "Worktrees remain preserved and abandon is idempotent.",
+          "test_ids": [
+            "tests.test_abandon_contract.AbandonContractTest.test_abandon_preserves_role_worktrees_and_is_idempotent"
+          ]
+        },
+        {
+          "id": "case-005",
+          "title": "A5: dirty 模式 + 有效 stash",
+          "source_line": 137,
+          "assertion_count": 13,
+          "status": "covered",
+          "replacement": "abandon ledger contract",
+          "rationale": "Worktrees remain preserved and abandon is idempotent.",
+          "test_ids": [
+            "tests.test_abandon_contract.AbandonContractTest.test_abandon_preserves_role_worktrees_and_is_idempotent"
+          ]
+        },
+        {
+          "id": "case-006",
+          "title": "A6: clean 模式",
+          "source_line": 179,
+          "assertion_count": 4,
+          "status": "covered",
+          "replacement": "abandon ledger contract",
+          "rationale": "Worktrees remain preserved and abandon is idempotent.",
+          "test_ids": [
+            "tests.test_abandon_contract.AbandonContractTest.test_abandon_preserves_role_worktrees_and_is_idempotent"
+          ]
+        },
+        {
+          "id": "case-007",
+          "title": "A7: bare 模式",
+          "source_line": 193,
+          "assertion_count": 3,
+          "status": "covered",
+          "replacement": "abandon ledger contract",
+          "rationale": "Worktrees remain preserved and abandon is idempotent.",
+          "test_ids": [
+            "tests.test_abandon_contract.AbandonContractTest.test_abandon_preserves_role_worktrees_and_is_idempotent"
+          ]
+        },
+        {
+          "id": "case-008",
+          "title": "A8: stash hash 无效 → conflict 但仍归档",
+          "source_line": 203,
+          "assertion_count": 4,
+          "status": "covered",
+          "replacement": "abandon ledger contract",
+          "rationale": "Worktrees remain preserved and abandon is idempotent.",
+          "test_ids": [
+            "tests.test_abandon_contract.AbandonContractTest.test_abandon_preserves_role_worktrees_and_is_idempotent"
+          ]
+        },
+        {
+          "id": "case-009",
+          "title": "A9: 重复调 abandon",
+          "source_line": 217,
+          "assertion_count": 2,
+          "status": "covered",
+          "replacement": "abandon ledger contract",
+          "rationale": "Worktrees remain preserved and abandon is idempotent.",
+          "test_ids": [
+            "tests.test_abandon_contract.AbandonContractTest.test_abandon_preserves_role_worktrees_and_is_idempotent"
+          ]
+        },
+        {
+          "id": "case-010",
+          "title": "A10: abandon 后 reviewer hook 自动放行",
+          "source_line": 227,
+          "assertion_count": 2,
+          "status": "covered",
+          "replacement": "abandon ledger contract",
+          "rationale": "Worktrees remain preserved and abandon is idempotent.",
+          "test_ids": [
+            "tests.test_abandon_contract.AbandonContractTest.test_abandon_preserves_role_worktrees_and_is_idempotent"
+          ]
+        },
+        {
+          "id": "case-011",
+          "title": "A11: reason 含换行符 → info reason_raw 不被换行破坏",
+          "source_line": 254,
+          "assertion_count": 4,
+          "status": "covered",
+          "replacement": "abandon ledger contract",
+          "rationale": "Worktrees remain preserved and abandon is idempotent.",
+          "test_ids": [
+            "tests.test_abandon_contract.AbandonContractTest.test_abandon_preserves_role_worktrees_and_is_idempotent"
+          ]
+        },
+        {
+          "id": "case-012",
+          "title": "A12: reason 含特殊字符 → trace JSON 合法",
+          "source_line": 270,
+          "assertion_count": 4,
+          "status": "covered",
+          "replacement": "abandon ledger contract",
+          "rationale": "Worktrees remain preserved and abandon is idempotent.",
+          "test_ids": [
+            "tests.test_abandon_contract.AbandonContractTest.test_abandon_preserves_role_worktrees_and_is_idempotent"
+          ]
+        },
+        {
+          "id": "case-013",
+          "title": "A13: stash_ref 含尾部空格 → strip 后 stash apply 成功",
+          "source_line": 286,
+          "assertion_count": 5,
+          "status": "covered",
+          "replacement": "abandon ledger contract",
+          "rationale": "Worktrees remain preserved and abandon is idempotent.",
+          "test_ids": [
+            "tests.test_abandon_contract.AbandonContractTest.test_abandon_preserves_role_worktrees_and_is_idempotent"
+          ]
+        }
+      ]
+    },
+    {
+      "fixture": "test-arbitration-apply.sh",
+      "source_blob": "63226cdc96fbbbbc04cf032481bc4644b06be7ed",
+      "precondition_assertion_count": 1,
+      "cases": [
+        {
+          "id": "case-001",
+          "title": "场景 1: 信心 high + 有效 patch",
+          "source_line": 85,
+          "assertion_count": 10,
+          "status": "retired",
+          "replacement": "conflict-safe stop",
+          "rationale": "The runtime does not apply model-authored conflict patches.",
+          "test_ids": [
+            "tests.test_conflict_safe_stop.ConflictSafeStopTest.test_conflict_preserves_main_branches_worktrees_and_ledger"
+          ]
+        },
+        {
+          "id": "case-002",
+          "title": "场景 2: 信心 low",
+          "source_line": 135,
+          "assertion_count": 1,
+          "status": "retired",
+          "replacement": "conflict-safe stop",
+          "rationale": "The runtime does not apply model-authored conflict patches.",
+          "test_ids": [
+            "tests.test_conflict_safe_stop.ConflictSafeStopTest.test_conflict_preserves_main_branches_worktrees_and_ledger"
+          ]
+        },
+        {
+          "id": "case-003",
+          "title": "场景 3: 信心 high + 坏 patch",
+          "source_line": 160,
+          "assertion_count": 1,
+          "status": "retired",
+          "replacement": "conflict-safe stop",
+          "rationale": "The runtime does not apply model-authored conflict patches.",
+          "test_ids": [
+            "tests.test_conflict_safe_stop.ConflictSafeStopTest.test_conflict_preserves_main_branches_worktrees_and_ledger"
+          ]
+        }
+      ]
+    },
+    {
+      "fixture": "test-askuserquestion-silence.sh",
+      "source_blob": "a18347cdb5d52222150f1f845195b892b4cfe99e",
+      "precondition_assertion_count": 0,
+      "cases": [
+        {
+          "id": "case-001",
+          "title": "Case 1: pending AskUserQuestion",
+          "source_line": 17,
+          "assertion_count": 2,
+          "status": "covered",
+          "replacement": "native request_user_input and Stop waiting marker",
+          "rationale": "User waiting is represented by the native interaction surface.",
+          "test_ids": [
+            "tests.test_stop_hook_gate.StopHookGateTest.test_active_run_blocks_root_stop"
+          ]
+        },
+        {
+          "id": "case-002",
+          "title": "Case 2: AskUserQuestion 已答",
+          "source_line": 39,
+          "assertion_count": 1,
+          "status": "covered",
+          "replacement": "native request_user_input and Stop waiting marker",
+          "rationale": "User waiting is represented by the native interaction surface.",
+          "test_ids": [
+            "tests.test_stop_hook_gate.StopHookGateTest.test_active_run_blocks_root_stop"
+          ]
+        }
+      ]
+    },
+    {
+      "fixture": "test-bare-loop-merge.sh",
+      "source_blob": "395c204e67671d8a871b0df566fc857b9e094bff",
+      "precondition_assertion_count": 1,
+      "cases": [
+        {
+          "id": "case-001",
+          "title": "Case 1: bare loop PASS → phase=passed_pending_review",
+          "source_line": 19,
+          "assertion_count": 5,
+          "status": "retired",
+          "replacement": "isolated worktrees only",
+          "rationale": "Bare mode cannot provide the required role and candidate isolation.",
+          "test_ids": [
+            "tests.test_start_contract.StartContractTest.test_task_start_generates_run_id_and_public_string_worktrees"
+          ]
+        },
+        {
+          "id": "case-002",
+          "title": "Case 2: merge-and-cleanup.sh 在 bare state 下 → MERGED __main__",
+          "source_line": 49,
+          "assertion_count": 3,
+          "status": "retired",
+          "replacement": "isolated worktrees only",
+          "rationale": "Bare mode cannot provide the required role and candidate isolation.",
+          "test_ids": [
+            "tests.test_start_contract.StartContractTest.test_task_start_generates_run_id_and_public_string_worktrees"
+          ]
+        },
+        {
+          "id": "case-003",
+          "title": "Case 3: 老 V1.x bare state（缺 main_repo_path）兼容",
+          "source_line": 63,
+          "assertion_count": 2,
+          "status": "retired",
+          "replacement": "isolated worktrees only",
+          "rationale": "Bare mode cannot provide the required role and candidate isolation.",
+          "test_ids": [
+            "tests.test_start_contract.StartContractTest.test_task_start_generates_run_id_and_public_string_worktrees"
+          ]
+        }
+      ]
+    },
+    {
+      "fixture": "test-bare-reviewer-gate.sh",
+      "source_blob": "533dbbd7ac04a16b923f40c6025d8cdd509ef1f0",
+      "precondition_assertion_count": 2,
+      "cases": [
+        {
+          "id": "case-001",
+          "title": "Case 1: bare PASS → commit → reviewer_pending 段",
+          "source_line": 23,
+          "assertion_count": 7,
+          "status": "retired",
+          "replacement": "isolated reviewer prerequisite gate",
+          "rationale": "Reviewer evidence is bound to an isolated integrated candidate.",
+          "test_ids": [
+            "tests.test_reviewer_prerequisite_order.ReviewerPrerequisiteOrderTest.test_review_completion_must_still_see_verified_candidate"
+          ]
+        },
+        {
+          "id": "case-002",
+          "title": "Case 2: bare L1 自愈",
+          "source_line": 61,
+          "assertion_count": 2,
+          "status": "retired",
+          "replacement": "isolated reviewer prerequisite gate",
+          "rationale": "Reviewer evidence is bound to an isolated integrated candidate.",
+          "test_ids": [
+            "tests.test_reviewer_prerequisite_order.ReviewerPrerequisiteOrderTest.test_review_completion_must_still_see_verified_candidate"
+          ]
+        },
+        {
+          "id": "case-003",
+          "title": "Case 3: merge-and-cleanup bare 分支",
+          "source_line": 84,
+          "assertion_count": 3,
+          "status": "retired",
+          "replacement": "isolated reviewer prerequisite gate",
+          "rationale": "Reviewer evidence is bound to an isolated integrated candidate.",
+          "test_ids": [
+            "tests.test_reviewer_prerequisite_order.ReviewerPrerequisiteOrderTest.test_review_completion_must_still_see_verified_candidate"
+          ]
+        },
+        {
+          "id": "case-004",
+          "title": "Case 4: loop-commit.sh NOOP（无 dirty）",
+          "source_line": 99,
+          "assertion_count": 2,
+          "status": "retired",
+          "replacement": "isolated reviewer prerequisite gate",
+          "rationale": "Reviewer evidence is bound to an isolated integrated candidate.",
+          "test_ids": [
+            "tests.test_reviewer_prerequisite_order.ReviewerPrerequisiteOrderTest.test_review_completion_must_still_see_verified_candidate"
+          ]
+        }
+      ]
+    },
+    {
+      "fixture": "test-conflict.sh",
+      "source_blob": "82fce4698cf2840a51acece05730a6cca73d1829",
+      "precondition_assertion_count": 1,
+      "cases": [
+        {
+          "id": "case-001",
+          "title": "阶段 1: merge 期望 NEED_ARBITRATION",
+          "source_line": 69,
+          "assertion_count": 6,
+          "status": "covered",
+          "replacement": "conflict-safe stop and preserved intent",
+          "rationale": "Conflicts never auto-apply or overwrite target state.",
+          "test_ids": [
+            "tests.test_conflict_safe_stop.ConflictSafeStopTest.test_conflict_preserves_main_branches_worktrees_and_ledger",
+            "tests.test_full_driver_v4_contract.FullDriverV4ContractTest.test_skill_automatically_loops_over_the_complete_action_surface"
+          ]
+        },
+        {
+          "id": "case-002",
+          "title": "阶段 2: mock arbiter 修复",
+          "source_line": 87,
+          "assertion_count": 0,
+          "status": "covered",
+          "replacement": "conflict-safe stop and preserved intent",
+          "rationale": "Conflicts never auto-apply or overwrite target state.",
+          "test_ids": [
+            "tests.test_conflict_safe_stop.ConflictSafeStopTest.test_conflict_preserves_main_branches_worktrees_and_ledger",
+            "tests.test_full_driver_v4_contract.FullDriverV4ContractTest.test_skill_automatically_loops_over_the_complete_action_surface"
+          ]
+        },
+        {
+          "id": "case-003",
+          "title": "阶段 3: merge 期望 MERGED",
+          "source_line": 102,
+          "assertion_count": 2,
+          "status": "covered",
+          "replacement": "conflict-safe stop and preserved intent",
+          "rationale": "Conflicts never auto-apply or overwrite target state.",
+          "test_ids": [
+            "tests.test_conflict_safe_stop.ConflictSafeStopTest.test_conflict_preserves_main_branches_worktrees_and_ledger",
+            "tests.test_full_driver_v4_contract.FullDriverV4ContractTest.test_skill_automatically_loops_over_the_complete_action_surface"
+          ]
+        }
+      ]
+    },
+    {
+      "fixture": "test-cross-session-isolation.sh",
+      "source_blob": "ecb700668a73ffbdd81ee675c4c89d33be245c37",
+      "precondition_assertion_count": 0,
+      "cases": [
+        {
+          "id": "case-001",
+          "title": "Case A: CWD=worktree-A → 只 state-A 被处理",
+          "source_line": 88,
+          "assertion_count": 3,
+          "status": "covered",
+          "replacement": "owner_session_id ledger selection",
+          "rationale": "A session can own only one active run and cannot capture another run.",
+          "test_ids": [
+            "tests.test_agent_thread_resume.AgentThreadResumeContractTest.test_tester_and_reviewer_each_create_once_then_follow_up_same_thread"
+          ]
+        },
+        {
+          "id": "case-002",
+          "title": "Case B: CWD=worktree-B → 只 state-B 被处理",
+          "source_line": 100,
+          "assertion_count": 3,
+          "status": "covered",
+          "replacement": "owner_session_id ledger selection",
+          "rationale": "A session can own only one active run and cannot capture another run.",
+          "test_ids": [
+            "tests.test_agent_thread_resume.AgentThreadResumeContractTest.test_tester_and_reviewer_each_create_once_then_follow_up_same_thread"
+          ]
+        },
+        {
+          "id": "case-003",
+          "title": "Case C: CWD=主仓且两个 active → exit 0",
+          "source_line": 112,
+          "assertion_count": 3,
+          "status": "covered",
+          "replacement": "owner_session_id ledger selection",
+          "rationale": "A session can own only one active run and cannot capture another run.",
+          "test_ids": [
+            "tests.test_agent_thread_resume.AgentThreadResumeContractTest.test_tester_and_reviewer_each_create_once_then_follow_up_same_thread"
+          ]
+        },
+        {
+          "id": "case-004",
+          "title": "Case D: CWD=主仓且 1 个 active → 策略 5 绑定",
+          "source_line": 127,
+          "assertion_count": 2,
+          "status": "covered",
+          "replacement": "owner_session_id ledger selection",
+          "rationale": "A session can own only one active run and cannot capture another run.",
+          "test_ids": [
+            "tests.test_agent_thread_resume.AgentThreadResumeContractTest.test_tester_and_reviewer_each_create_once_then_follow_up_same_thread"
+          ]
+        },
+        {
+          "id": "case-005",
+          "title": "Case E: 旧 local.md 残留 → 被忽略",
+          "source_line": 139,
+          "assertion_count": 3,
+          "status": "covered",
+          "replacement": "owner_session_id ledger selection",
+          "rationale": "A session can own only one active run and cannot capture another run.",
+          "test_ids": [
+            "tests.test_agent_thread_resume.AgentThreadResumeContractTest.test_tester_and_reviewer_each_create_once_then_follow_up_same_thread"
+          ]
+        },
+        {
+          "id": "case-006",
+          "title": "Case F: owner_session_id 不匹配 → exit 0",
+          "source_line": 162,
+          "assertion_count": 3,
+          "status": "covered",
+          "replacement": "owner_session_id ledger selection",
+          "rationale": "A session can own only one active run and cannot capture another run.",
+          "test_ids": [
+            "tests.test_agent_thread_resume.AgentThreadResumeContractTest.test_tester_and_reviewer_each_create_once_then_follow_up_same_thread"
+          ]
+        },
+        {
+          "id": "case-007",
+          "title": "Case G: owner_session_id 匹配 → 正常处理",
+          "source_line": 179,
+          "assertion_count": 2,
+          "status": "covered",
+          "replacement": "owner_session_id ledger selection",
+          "rationale": "A session can own only one active run and cannot capture another run.",
+          "test_ids": [
+            "tests.test_agent_thread_resume.AgentThreadResumeContractTest.test_tester_and_reviewer_each_create_once_then_follow_up_same_thread"
+          ]
+        },
+        {
+          "id": "case-008",
+          "title": "Case H: 首次绑定写入 owner_session_id",
+          "source_line": 193,
+          "assertion_count": 2,
+          "status": "covered",
+          "replacement": "owner_session_id ledger selection",
+          "rationale": "A session can own only one active run and cannot capture another run.",
+          "test_ids": [
+            "tests.test_agent_thread_resume.AgentThreadResumeContractTest.test_tester_and_reviewer_each_create_once_then_follow_up_same_thread"
+          ]
+        }
+      ]
+    },
+    {
+      "fixture": "test-diff-level-check.sh",
+      "source_blob": "da490b791c1340347d3cf988694878fa6d70fc06",
+      "precondition_assertion_count": 1,
+      "cases": [
+        {
+          "id": "case-001",
+          "title": "Case 1: 新增公开函数 → exit 1",
+          "source_line": 45,
+          "assertion_count": 2,
+          "status": "covered",
+          "replacement": "L1 documentation-spec versus L2/L3 unit-test-spec",
+          "rationale": "Plan validation freezes the delivery level before execution.",
+          "test_ids": [
+            "tests.test_plan_contract.PlanContractTest.test_valid_parallel_plan_from_path_and_stdin"
+          ]
+        },
+        {
+          "id": "case-002",
+          "title": "Case 2: 新增 _private 函数 → exit 1（脚本不判 public/private）",
+          "source_line": 58,
+          "assertion_count": 2,
+          "status": "covered",
+          "replacement": "L1 documentation-spec versus L2/L3 unit-test-spec",
+          "rationale": "Plan validation freezes the delivery level before execution.",
+          "test_ids": [
+            "tests.test_plan_contract.PlanContractTest.test_valid_parallel_plan_from_path_and_stdin"
+          ]
+        },
+        {
+          "id": "case-003",
+          "title": "Case 3: 只改函数体 → exit 0",
+          "source_line": 71,
+          "assertion_count": 2,
+          "status": "covered",
+          "replacement": "L1 documentation-spec versus L2/L3 unit-test-spec",
+          "rationale": "Plan validation freezes the delivery level before execution.",
+          "test_ids": [
+            "tests.test_plan_contract.PlanContractTest.test_valid_parallel_plan_from_path_and_stdin"
+          ]
+        },
+        {
+          "id": "case-004",
+          "title": "Case 4: 测试文件里的新函数不算 → exit 0",
+          "source_line": 80,
+          "assertion_count": 1,
+          "status": "covered",
+          "replacement": "L1 documentation-spec versus L2/L3 unit-test-spec",
+          "rationale": "Plan validation freezes the delivery level before execution.",
+          "test_ids": [
+            "tests.test_plan_contract.PlanContractTest.test_valid_parallel_plan_from_path_and_stdin"
+          ]
+        },
+        {
+          "id": "case-005",
+          "title": "Case 5: 新增文件 → exit 1",
+          "source_line": 96,
+          "assertion_count": 2,
+          "status": "covered",
+          "replacement": "L1 documentation-spec versus L2/L3 unit-test-spec",
+          "rationale": "Plan validation freezes the delivery level before execution.",
+          "test_ids": [
+            "tests.test_plan_contract.PlanContractTest.test_valid_parallel_plan_from_path_and_stdin"
+          ]
+        },
+        {
+          "id": "case-006",
+          "title": "Case 6: 新增 bash 函数 → exit 1",
+          "source_line": 105,
+          "assertion_count": 2,
+          "status": "covered",
+          "replacement": "L1 documentation-spec versus L2/L3 unit-test-spec",
+          "rationale": "Plan validation freezes the delivery level before execution.",
+          "test_ids": [
+            "tests.test_plan_contract.PlanContractTest.test_valid_parallel_plan_from_path_and_stdin"
+          ]
+        },
+        {
+          "id": "case-007",
+          "title": "Case 7: staged new function with default HEAD → exit 1",
+          "source_line": 122,
+          "assertion_count": 2,
+          "status": "covered",
+          "replacement": "L1 documentation-spec versus L2/L3 unit-test-spec",
+          "rationale": "Plan validation freezes the delivery level before execution.",
+          "test_ids": [
+            "tests.test_plan_contract.PlanContractTest.test_valid_parallel_plan_from_path_and_stdin"
+          ]
+        },
+        {
+          "id": "case-008",
+          "title": "Case 8: prior commit added function + staged unrelated change → exit 0 with HEAD",
+          "source_line": 138,
+          "assertion_count": 2,
+          "status": "covered",
+          "replacement": "L1 documentation-spec versus L2/L3 unit-test-spec",
+          "rationale": "Plan validation freezes the delivery level before execution.",
+          "test_ids": [
+            "tests.test_plan_contract.PlanContractTest.test_valid_parallel_plan_from_path_and_stdin"
+          ]
+        },
+        {
+          "id": "case-009",
+          "title": "Case 9: changed file basename in CLAUDE.md → semantic_checks 含 CLAUDE.md",
+          "source_line": 155,
+          "assertion_count": 1,
+          "status": "covered",
+          "replacement": "L1 documentation-spec versus L2/L3 unit-test-spec",
+          "rationale": "Plan validation freezes the delivery level before execution.",
+          "test_ids": [
+            "tests.test_plan_contract.PlanContractTest.test_valid_parallel_plan_from_path_and_stdin"
+          ]
+        },
+        {
+          "id": "case-010",
+          "title": "Case 10: changed file basename not in any doc → semantic_checks 空",
+          "source_line": 169,
+          "assertion_count": 1,
+          "status": "covered",
+          "replacement": "L1 documentation-spec versus L2/L3 unit-test-spec",
+          "rationale": "Plan validation freezes the delivery level before execution.",
+          "test_ids": [
+            "tests.test_plan_contract.PlanContractTest.test_valid_parallel_plan_from_path_and_stdin"
+          ]
+        },
+        {
+          "id": "case-011",
+          "title": "Case 11: .sh changed without CHANGELOG → changelog_needed=true",
+          "source_line": 183,
+          "assertion_count": 1,
+          "status": "covered",
+          "replacement": "L1 documentation-spec versus L2/L3 unit-test-spec",
+          "rationale": "Plan validation freezes the delivery level before execution.",
+          "test_ids": [
+            "tests.test_plan_contract.PlanContractTest.test_valid_parallel_plan_from_path_and_stdin"
+          ]
+        },
+        {
+          "id": "case-012",
+          "title": "Case 12: plan.md version behind CHANGELOG → plan_version_stale=true",
+          "source_line": 201,
+          "assertion_count": 1,
+          "status": "covered",
+          "replacement": "L1 documentation-spec versus L2/L3 unit-test-spec",
+          "rationale": "Plan validation freezes the delivery level before execution.",
+          "test_ids": [
+            "tests.test_plan_contract.PlanContractTest.test_valid_parallel_plan_from_path_and_stdin"
+          ]
+        },
+        {
+          "id": "case-013",
+          "title": "Case 13: active improvements entry title contains changed basename",
+          "source_line": 219,
+          "assertion_count": 2,
+          "status": "covered",
+          "replacement": "L1 documentation-spec versus L2/L3 unit-test-spec",
+          "rationale": "Plan validation freezes the delivery level before execution.",
+          "test_ids": [
+            "tests.test_plan_contract.PlanContractTest.test_valid_parallel_plan_from_path_and_stdin"
+          ]
+        },
+        {
+          "id": "case-014",
+          "title": "Case 14: no code change, no improvements, no doc refs → all empty",
+          "source_line": 236,
+          "assertion_count": 3,
+          "status": "covered",
+          "replacement": "L1 documentation-spec versus L2/L3 unit-test-spec",
+          "rationale": "Plan validation freezes the delivery level before execution.",
+          "test_ids": [
+            "tests.test_plan_contract.PlanContractTest.test_valid_parallel_plan_from_path_and_stdin"
+          ]
+        },
+        {
+          "id": "case-015",
+          "title": "Case 15: improvements title without extension → stem match hits",
+          "source_line": 255,
+          "assertion_count": 2,
+          "status": "covered",
+          "replacement": "L1 documentation-spec versus L2/L3 unit-test-spec",
+          "rationale": "Plan validation freezes the delivery level before execution.",
+          "test_ids": [
+            "tests.test_plan_contract.PlanContractTest.test_valid_parallel_plan_from_path_and_stdin"
+          ]
+        },
+        {
+          "id": "case-016",
+          "title": "Case 16: fixture .sh change only → changelog_needed=false",
+          "source_line": 277,
+          "assertion_count": 1,
+          "status": "covered",
+          "replacement": "L1 documentation-spec versus L2/L3 unit-test-spec",
+          "rationale": "Plan validation freezes the delivery level before execution.",
+          "test_ids": [
+            "tests.test_plan_contract.PlanContractTest.test_valid_parallel_plan_from_path_and_stdin"
+          ]
+        },
+        {
+          "id": "case-017",
+          "title": "Case 17: GitHub fallback — active issue matches changed basename",
+          "source_line": 330,
+          "assertion_count": 2,
+          "status": "covered",
+          "replacement": "L1 documentation-spec versus L2/L3 unit-test-spec",
+          "rationale": "Plan validation freezes the delivery level before execution.",
+          "test_ids": [
+            "tests.test_plan_contract.PlanContractTest.test_valid_parallel_plan_from_path_and_stdin"
+          ]
+        },
+        {
+          "id": "case-018",
+          "title": "Case 18: GitHub fallback — observation issue filtered out",
+          "source_line": 340,
+          "assertion_count": 2,
+          "status": "covered",
+          "replacement": "L1 documentation-spec versus L2/L3 unit-test-spec",
+          "rationale": "Plan validation freezes the delivery level before execution.",
+          "test_ids": [
+            "tests.test_plan_contract.PlanContractTest.test_valid_parallel_plan_from_path_and_stdin"
+          ]
+        },
+        {
+          "id": "case-019",
+          "title": "Case 19: GitHub fallback — gh not in PATH → empty + source=none",
+          "source_line": 350,
+          "assertion_count": 2,
+          "status": "covered",
+          "replacement": "L1 documentation-spec versus L2/L3 unit-test-spec",
+          "rationale": "Plan validation freezes the delivery level before execution.",
+          "test_ids": [
+            "tests.test_plan_contract.PlanContractTest.test_valid_parallel_plan_from_path_and_stdin"
+          ]
+        },
+        {
+          "id": "case-020",
+          "title": "Case 20: local file takes priority over GitHub",
+          "source_line": 359,
+          "assertion_count": 2,
+          "status": "covered",
+          "replacement": "L1 documentation-spec versus L2/L3 unit-test-spec",
+          "rationale": "Plan validation freezes the delivery level before execution.",
+          "test_ids": [
+            "tests.test_plan_contract.PlanContractTest.test_valid_parallel_plan_from_path_and_stdin"
+          ]
+        },
+        {
+          "id": "case-021",
+          "title": "Case 21: single-word stem skips generic matches, compound stem still matches",
+          "source_line": 376,
+          "assertion_count": 2,
+          "status": "covered",
+          "replacement": "L1 documentation-spec versus L2/L3 unit-test-spec",
+          "rationale": "Plan validation freezes the delivery level before execution.",
+          "test_ids": [
+            "tests.test_plan_contract.PlanContractTest.test_valid_parallel_plan_from_path_and_stdin"
+          ]
+        },
+        {
+          "id": "case-022",
+          "title": "Case 22: moved symbol stale qualified pointer → machine check",
+          "source_line": 429,
+          "assertion_count": 1,
+          "status": "rescue",
+          "replacement": "Assurance v4 ledger-bound documentation reference scan",
+          "rationale": "The legacy qualified-pointer behavior was lost during the v4 migration and is restored as a Git-object-bound runtime scan before final review.",
+          "test_ids": [
+            "tests.test_doc_reference_scan.DocReferenceScanTest.test_qualified_pointer_move_is_a_mechanical_finding"
+          ]
+        },
+        {
+          "id": "case-023",
+          "title": "Case 23: moved symbol pointer already updated → no machine finding",
+          "source_line": 443,
+          "assertion_count": 1,
+          "status": "rescue",
+          "replacement": "Assurance v4 ledger-bound documentation reference scan",
+          "rationale": "The legacy qualified-pointer behavior was lost during the v4 migration and is restored as a Git-object-bound runtime scan before final review.",
+          "test_ids": [
+            "tests.test_doc_reference_scan.DocReferenceScanTest.test_updated_pointer_signature_change_and_history_are_clean"
+          ]
+        },
+        {
+          "id": "case-024",
+          "title": "Case 24: moved symbol without old path → semantic candidate",
+          "source_line": 459,
+          "assertion_count": 2,
+          "status": "rescue",
+          "replacement": "Assurance v4 ledger-bound documentation reference scan",
+          "rationale": "The legacy qualified-pointer behavior was lost during the v4 migration and is restored as a Git-object-bound runtime scan before final review.",
+          "test_ids": [
+            "tests.test_doc_reference_scan.DocReferenceScanTest.test_symbol_only_reference_is_semantic_not_mechanical"
+          ]
+        },
+        {
+          "id": "case-025",
+          "title": "Case 25: historical CHANGELOG pointer → excluded",
+          "source_line": 474,
+          "assertion_count": 1,
+          "status": "rescue",
+          "replacement": "Assurance v4 ledger-bound documentation reference scan",
+          "rationale": "The legacy qualified-pointer behavior was lost during the v4 migration and is restored as a Git-object-bound runtime scan before final review.",
+          "test_ids": [
+            "tests.test_doc_reference_scan.DocReferenceScanTest.test_updated_pointer_signature_change_and_history_are_clean"
+          ]
+        },
+        {
+          "id": "case-026",
+          "title": "Case 26: same-file signature change → pointer remains valid",
+          "source_line": 488,
+          "assertion_count": 1,
+          "status": "rescue",
+          "replacement": "Assurance v4 ledger-bound documentation reference scan",
+          "rationale": "The legacy qualified-pointer behavior was lost during the v4 migration and is restored as a Git-object-bound runtime scan before final review.",
+          "test_ids": [
+            "tests.test_doc_reference_scan.DocReferenceScanTest.test_updated_pointer_signature_change_and_history_are_clean"
+          ]
+        },
+        {
+          "id": "case-027",
+          "title": "Case 27: reference detector failure → machine scan error",
+          "source_line": 503,
+          "assertion_count": 1,
+          "status": "rescue",
+          "replacement": "Assurance v4 ledger-bound documentation reference scan",
+          "rationale": "The legacy qualified-pointer behavior was lost during the v4 migration and is restored as a Git-object-bound runtime scan before final review.",
+          "test_ids": [
+            "tests.test_doc_reference_scan.DocReferenceScanTest.test_scan_failure_is_fail_closed"
+          ]
+        }
+      ]
+    },
+    {
+      "fixture": "test-dirty-stash-flow.sh",
+      "source_blob": "8733f592c0e4e3989e92baa5f74914cba063a223",
+      "precondition_assertion_count": 1,
+      "cases": [
+        {
+          "id": "case-001",
+          "title": "A1: clean 主仓 → worktree_mode=clean",
+          "source_line": 46,
+          "assertion_count": 3,
+          "status": "rescue",
+          "replacement": "immutable workspace intake snapshot",
+          "rationale": "Exact dirty files enter Builder without mutating target or global stash.",
+          "test_ids": [
+            "tests.test_workspace_intake.WorkspaceIntakeContractTest.test_snapshot_injects_exact_dirty_paths_without_changing_target",
+            "tests.test_full_driver_v4_contract.FullDriverV4ContractTest.test_skill_automatically_loops_over_the_complete_action_surface"
+          ]
+        },
+        {
+          "id": "case-002",
+          "title": "A2: dirty 主仓 + 默认 → worktree 干净",
+          "source_line": 57,
+          "assertion_count": 6,
+          "status": "rescue",
+          "replacement": "immutable workspace intake snapshot",
+          "rationale": "Exact dirty files enter Builder without mutating target or global stash.",
+          "test_ids": [
+            "tests.test_workspace_intake.WorkspaceIntakeContractTest.test_snapshot_injects_exact_dirty_paths_without_changing_target",
+            "tests.test_full_driver_v4_contract.FullDriverV4ContractTest.test_skill_automatically_loops_over_the_complete_action_surface"
+          ]
+        },
+        {
+          "id": "case-003",
+          "title": "A3: dirty + --touched-files → 选择性 stash",
+          "source_line": 76,
+          "assertion_count": 6,
+          "status": "rescue",
+          "replacement": "immutable workspace intake snapshot",
+          "rationale": "Exact dirty files enter Builder without mutating target or global stash.",
+          "test_ids": [
+            "tests.test_workspace_intake.WorkspaceIntakeContractTest.test_snapshot_injects_exact_dirty_paths_without_changing_target",
+            "tests.test_full_driver_v4_contract.FullDriverV4ContractTest.test_skill_automatically_loops_over_the_complete_action_surface"
+          ]
+        },
+        {
+          "id": "case-004",
+          "title": "A4: rebase 进行中 → exit 2 拒绝",
+          "source_line": 95,
+          "assertion_count": 2,
+          "status": "rescue",
+          "replacement": "immutable workspace intake snapshot",
+          "rationale": "Exact dirty files enter Builder without mutating target or global stash.",
+          "test_ids": [
+            "tests.test_workspace_intake.WorkspaceIntakeContractTest.test_snapshot_injects_exact_dirty_paths_without_changing_target",
+            "tests.test_full_driver_v4_contract.FullDriverV4ContractTest.test_skill_automatically_loops_over_the_complete_action_surface"
+          ]
+        }
+      ]
+    },
+    {
+      "fixture": "test-doc-lint.sh",
+      "source_blob": "f84fa4cb767bee1da0b989550c4af7e590f21c8d",
+      "precondition_assertion_count": 1,
+      "cases": [
+        {
+          "id": "case-001",
+          "title": "Case 1: 删函数 + doc 有引用 → exit 1",
+          "source_line": 52,
+          "assertion_count": 3,
+          "status": "covered",
+          "replacement": "Reviewer Phase D document-policy audit",
+          "rationale": "Documentation correctness remains an independent review gate.",
+          "test_ids": [
+            "tests.test_doc_audit_gate.DocAuditGateTest.test_stale_doc_review_head_blocks_finalize_until_re_reviewed"
+          ]
+        },
+        {
+          "id": "case-002",
+          "title": "Case 2: 删函数 + doc 无引用 → exit 0",
+          "source_line": 75,
+          "assertion_count": 1,
+          "status": "covered",
+          "replacement": "Reviewer Phase D document-policy audit",
+          "rationale": "Documentation correctness remains an independent review gate.",
+          "test_ids": [
+            "tests.test_doc_audit_gate.DocAuditGateTest.test_stale_doc_review_head_blocks_finalize_until_re_reviewed"
+          ]
+        },
+        {
+          "id": "case-003",
+          "title": "Case 3: 没有删除 → exit 0",
+          "source_line": 100,
+          "assertion_count": 1,
+          "status": "covered",
+          "replacement": "Reviewer Phase D document-policy audit",
+          "rationale": "Documentation correctness remains an independent review gate.",
+          "test_ids": [
+            "tests.test_doc_audit_gate.DocAuditGateTest.test_stale_doc_review_head_blocks_finalize_until_re_reviewed"
+          ]
+        },
+        {
+          "id": "case-004",
+          "title": "Case 4: 删文件 + doc 有引用 → exit 1",
+          "source_line": 115,
+          "assertion_count": 2,
+          "status": "covered",
+          "replacement": "Reviewer Phase D document-policy audit",
+          "rationale": "Documentation correctness remains an independent review gate.",
+          "test_ids": [
+            "tests.test_doc_audit_gate.DocAuditGateTest.test_stale_doc_review_head_blocks_finalize_until_re_reviewed"
+          ]
+        },
+        {
+          "id": "case-005",
+          "title": "Case 5: git rm --cached 文件仍在磁盘 → exit 0",
+          "source_line": 138,
+          "assertion_count": 1,
+          "status": "covered",
+          "replacement": "Reviewer Phase D document-policy audit",
+          "rationale": "Documentation correctness remains an independent review gate.",
+          "test_ids": [
+            "tests.test_doc_audit_gate.DocAuditGateTest.test_stale_doc_review_head_blocks_finalize_until_re_reviewed"
+          ]
+        },
+        {
+          "id": "case-006",
+          "title": "Case 6: 签名变更不误判",
+          "source_line": 152,
+          "assertion_count": 1,
+          "status": "covered",
+          "replacement": "Reviewer Phase D document-policy audit",
+          "rationale": "Documentation correctness remains an independent review gate.",
+          "test_ids": [
+            "tests.test_doc_audit_gate.DocAuditGateTest.test_stale_doc_review_head_blocks_finalize_until_re_reviewed"
+          ]
+        },
+        {
+          "id": "case-007",
+          "title": "Case 7: append/clear 黑名单过滤",
+          "source_line": 180,
+          "assertion_count": 1,
+          "status": "covered",
+          "replacement": "Reviewer Phase D document-policy audit",
+          "rationale": "Documentation correctness remains an independent review gate.",
+          "test_ids": [
+            "tests.test_doc_audit_gate.DocAuditGateTest.test_stale_doc_review_head_blocks_finalize_until_re_reviewed"
+          ]
+        },
+        {
+          "id": "case-008",
+          "title": "Case 8: staged deletion with default HEAD → exit 1",
+          "source_line": 224,
+          "assertion_count": 2,
+          "status": "covered",
+          "replacement": "Reviewer Phase D document-policy audit",
+          "rationale": "Documentation correctness remains an independent review gate.",
+          "test_ids": [
+            "tests.test_doc_audit_gate.DocAuditGateTest.test_stale_doc_review_head_blocks_finalize_until_re_reviewed"
+          ]
+        },
+        {
+          "id": "case-009",
+          "title": "Case 9: prior commit removed function + staged unrelated change → exit 0 with HEAD",
+          "source_line": 240,
+          "assertion_count": 2,
+          "status": "covered",
+          "replacement": "Reviewer Phase D document-policy audit",
+          "rationale": "Documentation correctness remains an independent review gate.",
+          "test_ids": [
+            "tests.test_doc_audit_gate.DocAuditGateTest.test_stale_doc_review_head_blocks_finalize_until_re_reviewed"
+          ]
+        },
+        {
+          "id": "case-010",
+          "title": "Case 10: moved function stale qualified pointer → exit 1",
+          "source_line": 266,
+          "assertion_count": 2,
+          "status": "rescue",
+          "replacement": "Assurance v4 ledger-bound documentation reference scan",
+          "rationale": "The legacy qualified-pointer behavior was lost during the v4 migration and is restored as a Git-object-bound runtime scan before final review.",
+          "test_ids": [
+            "tests.test_doc_reference_scan.DocReferenceScanTest.test_qualified_pointer_move_is_a_mechanical_finding"
+          ]
+        },
+        {
+          "id": "case-011",
+          "title": "Case 11: moved function symbol-only reference → exit 0",
+          "source_line": 298,
+          "assertion_count": 1,
+          "status": "rescue",
+          "replacement": "Assurance v4 ledger-bound documentation reference scan",
+          "rationale": "The legacy qualified-pointer behavior was lost during the v4 migration and is restored as a Git-object-bound runtime scan before final review.",
+          "test_ids": [
+            "tests.test_doc_reference_scan.DocReferenceScanTest.test_symbol_only_reference_is_semantic_not_mechanical"
+          ]
+        },
+        {
+          "id": "case-012",
+          "title": "Case 12: reference detector failure → exit 2",
+          "source_line": 329,
+          "assertion_count": 1,
+          "status": "rescue",
+          "replacement": "Assurance v4 ledger-bound documentation reference scan",
+          "rationale": "The legacy qualified-pointer behavior was lost during the v4 migration and is restored as a Git-object-bound runtime scan before final review.",
+          "test_ids": [
+            "tests.test_doc_reference_scan.DocReferenceScanTest.test_scan_failure_is_fail_closed"
+          ]
+        },
+        {
+          "id": "case-013",
+          "title": "Case 13: deleted symbol in CHANGELOG history → excluded",
+          "source_line": 338,
+          "assertion_count": 1,
+          "status": "rescue",
+          "replacement": "Assurance v4 ledger-bound documentation reference scan",
+          "rationale": "The legacy qualified-pointer behavior was lost during the v4 migration and is restored as a Git-object-bound runtime scan before final review.",
+          "test_ids": [
+            "tests.test_doc_reference_scan.DocReferenceScanTest.test_updated_pointer_signature_change_and_history_are_clean"
+          ]
+        }
+      ]
+    },
+    {
+      "fixture": "test-e2e-default-bare.sh",
+      "source_blob": "21fba9e9c561bbb61642887945fbb3e611024a22",
+      "precondition_assertion_count": 1,
+      "cases": [
+        {
+          "id": "case-001",
+          "title": "Case 1: setup --no-worktree → bare state",
+          "source_line": 23,
+          "assertion_count": 5,
+          "status": "retired",
+          "replacement": "worktree blackbox only",
+          "rationale": "Bare execution was removed with bare mode.",
+          "test_ids": [
+            "tests.test_evidence_head_contract.EvidenceHeadContractTest.test_blackbox_evidence_requires_author_integration_and_replay_details"
+          ]
+        },
+        {
+          "id": "case-002",
+          "title": "Case 2: 对照组 — 默认 worktree state",
+          "source_line": 58,
+          "assertion_count": 4,
+          "status": "retired",
+          "replacement": "worktree blackbox only",
+          "rationale": "Bare execution was removed with bare mode.",
+          "test_ids": [
+            "tests.test_evidence_head_contract.EvidenceHeadContractTest.test_blackbox_evidence_requires_author_integration_and_replay_details"
+          ]
+        }
+      ]
+    },
+    {
+      "fixture": "test-e2e-pending-dirty-guard.sh",
+      "source_blob": "1e82279dfa2edc3c3e0495ca4a91c9d5e515d677",
+      "precondition_assertion_count": 0,
+      "cases": [
+        {
+          "id": "case-001",
+          "title": "Case A: e2e_pending + dirty → L1 不自愈",
+          "source_line": 16,
+          "assertion_count": 2,
+          "status": "covered",
+          "replacement": "clean candidate blackbox contract",
+          "rationale": "Tracked, untracked and ignored candidate residue blocks pass.",
+          "test_ids": [
+            "tests.test_evidence_head_contract.EvidenceHeadContractTest.test_blackbox_evidence_requires_author_integration_and_replay_details"
+          ]
+        },
+        {
+          "id": "case-002",
+          "title": "Case B: e2e_pending + 新 commit → L1 自愈",
+          "source_line": 29,
+          "assertion_count": 2,
+          "status": "covered",
+          "replacement": "clean candidate blackbox contract",
+          "rationale": "Tracked, untracked and ignored candidate residue blocks pass.",
+          "test_ids": [
+            "tests.test_evidence_head_contract.EvidenceHeadContractTest.test_blackbox_evidence_requires_author_integration_and_replay_details"
+          ]
+        }
+      ]
+    },
+    {
+      "fixture": "test-e2e-verification-stage.sh",
+      "source_blob": "1f94308b35721f62766602e620c564d010df4fce",
+      "precondition_assertion_count": 0,
+      "cases": [
+        {
+          "id": "case-001",
+          "title": "Case 1: e2e cases trigger verification request",
+          "source_line": 7,
+          "assertion_count": 4,
+          "status": "covered",
+          "replacement": "same-thread Tester blackbox evidence",
+          "rationale": "Blackbox evidence is a distinct mandatory gate.",
+          "test_ids": [
+            "tests.test_evidence_head_contract.EvidenceHeadContractTest.test_blackbox_evidence_requires_author_integration_and_replay_details",
+            "tests.test_full_driver_v4_contract.FullDriverV4ContractTest.test_skill_automatically_loops_over_the_complete_action_surface"
+          ]
+        },
+        {
+          "id": "case-002",
+          "title": "Case 2: verified HEAD skips e2e",
+          "source_line": 29,
+          "assertion_count": 1,
+          "status": "covered",
+          "replacement": "same-thread Tester blackbox evidence",
+          "rationale": "Blackbox evidence is a distinct mandatory gate.",
+          "test_ids": [
+            "tests.test_evidence_head_contract.EvidenceHeadContractTest.test_blackbox_evidence_requires_author_integration_and_replay_details",
+            "tests.test_full_driver_v4_contract.FullDriverV4ContractTest.test_skill_automatically_loops_over_the_complete_action_surface"
+          ]
+        },
+        {
+          "id": "case-003",
+          "title": "Case 3: no e2e_plan_path → normal",
+          "source_line": 48,
+          "assertion_count": 1,
+          "status": "covered",
+          "replacement": "same-thread Tester blackbox evidence",
+          "rationale": "Blackbox evidence is a distinct mandatory gate.",
+          "test_ids": [
+            "tests.test_evidence_head_contract.EvidenceHeadContractTest.test_blackbox_evidence_requires_author_integration_and_replay_details",
+            "tests.test_full_driver_v4_contract.FullDriverV4ContractTest.test_skill_automatically_loops_over_the_complete_action_surface"
+          ]
+        },
+        {
+          "id": "case-004",
+          "title": "Case 4: missing plan file → skip",
+          "source_line": 56,
+          "assertion_count": 1,
+          "status": "covered",
+          "replacement": "same-thread Tester blackbox evidence",
+          "rationale": "Blackbox evidence is a distinct mandatory gate.",
+          "test_ids": [
+            "tests.test_evidence_head_contract.EvidenceHeadContractTest.test_blackbox_evidence_requires_author_integration_and_replay_details",
+            "tests.test_full_driver_v4_contract.FullDriverV4ContractTest.test_skill_automatically_loops_over_the_complete_action_surface"
+          ]
+        },
+        {
+          "id": "case-005",
+          "title": "Case 5: no tags in plan → skip",
+          "source_line": 66,
+          "assertion_count": 1,
+          "status": "covered",
+          "replacement": "same-thread Tester blackbox evidence",
+          "rationale": "Blackbox evidence is a distinct mandatory gate.",
+          "test_ids": [
+            "tests.test_evidence_head_contract.EvidenceHeadContractTest.test_blackbox_evidence_requires_author_integration_and_replay_details",
+            "tests.test_full_driver_v4_contract.FullDriverV4ContractTest.test_skill_automatically_loops_over_the_complete_action_surface"
+          ]
+        }
+      ]
+    },
+    {
+      "fixture": "test-e2e-verified-head-ancestor.sh",
+      "source_blob": "5fe7d0f58934a542adeae823a98f07b0b2fadc30",
+      "precondition_assertion_count": 0,
+      "cases": [
+        {
+          "id": "case-001",
+          "title": "Case C: e2e_verified_head ancestor + only .md → self-heal",
+          "source_line": 14,
+          "assertion_count": 2,
+          "status": "rescue",
+          "replacement": "planner-scoped evidence input digest",
+          "rationale": "Evidence can cross HEAD only when its frozen inputs are unchanged.",
+          "test_ids": [
+            "tests.test_evidence_scope.EvidenceScopeContractTest.test_affecting_change_invalidates_scoped_evidence"
+          ]
+        },
+        {
+          "id": "case-002",
+          "title": "Case D: e2e_verified_head ancestor + .py → no self-heal",
+          "source_line": 40,
+          "assertion_count": 2,
+          "status": "rescue",
+          "replacement": "planner-scoped evidence input digest",
+          "rationale": "Evidence can cross HEAD only when its frozen inputs are unchanged.",
+          "test_ids": [
+            "tests.test_evidence_scope.EvidenceScopeContractTest.test_affecting_change_invalidates_scoped_evidence"
+          ]
+        },
+        {
+          "id": "case-003",
+          "title": "Case E: e2e_verified_head == HEAD → self-heal",
+          "source_line": 64,
+          "assertion_count": 2,
+          "status": "rescue",
+          "replacement": "planner-scoped evidence input digest",
+          "rationale": "Evidence can cross HEAD only when its frozen inputs are unchanged.",
+          "test_ids": [
+            "tests.test_evidence_scope.EvidenceScopeContractTest.test_affecting_change_invalidates_scoped_evidence"
+          ]
+        }
+      ]
+    },
+    {
+      "fixture": "test-early-stop-tampering.sh",
+      "source_blob": "52bb5deabcba724d08bbac88bd832e9ad7147d8a",
+      "precondition_assertion_count": 4,
+      "cases": [
+        {
+          "id": "case-001",
+          "title": "Case 1: test_dirs 未配置 → 跳过第 5 段 → CONTINUE",
+          "source_line": 91,
+          "assertion_count": 1,
+          "status": "rescue",
+          "replacement": "protected inputs plus deterministic progress stops",
+          "rationale": "Control-path tampering is rejected and repeated failures require review.",
+          "test_ids": [
+            "tests.test_diagnostics_progress.DiagnosticsAndProgressContractTest.test_doctor_is_read_only_and_reports_orphan_loop_worktree",
+            "tests.test_role_ownership.RoleOwnershipTest.test_owned_writes_are_ready"
+          ]
+        },
+        {
+          "id": "case-002",
+          "title": "Case 2: 删 1 个测试文件 + 加 2 行 skip/xfail 标记 → CONTINUE（tampering 迁移到 reviewer）",
+          "source_line": 111,
+          "assertion_count": 4,
+          "status": "rescue",
+          "replacement": "protected inputs plus deterministic progress stops",
+          "rationale": "Control-path tampering is rejected and repeated failures require review.",
+          "test_ids": [
+            "tests.test_diagnostics_progress.DiagnosticsAndProgressContractTest.test_doctor_is_read_only_and_reports_orphan_loop_worktree",
+            "tests.test_role_ownership.RoleOwnershipTest.test_owned_writes_are_ready"
+          ]
+        },
+        {
+          "id": "case-003",
+          "title": "Case 3: 删 3 个测试文件 → CONTINUE（tampering 迁移到 reviewer）",
+          "source_line": 150,
+          "assertion_count": 1,
+          "status": "rescue",
+          "replacement": "protected inputs plus deterministic progress stops",
+          "rationale": "Control-path tampering is rejected and repeated failures require review.",
+          "test_ids": [
+            "tests.test_diagnostics_progress.DiagnosticsAndProgressContractTest.test_doctor_is_read_only_and_reports_orphan_loop_worktree",
+            "tests.test_role_ownership.RoleOwnershipTest.test_owned_writes_are_ready"
+          ]
+        },
+        {
+          "id": "case-004",
+          "title": "Case 4: 只删 2 个测试文件，信号=2 → 不触发早停 → CONTINUE",
+          "source_line": 167,
+          "assertion_count": 1,
+          "status": "rescue",
+          "replacement": "protected inputs plus deterministic progress stops",
+          "rationale": "Control-path tampering is rejected and repeated failures require review.",
+          "test_ids": [
+            "tests.test_diagnostics_progress.DiagnosticsAndProgressContractTest.test_doctor_is_read_only_and_reports_orphan_loop_worktree",
+            "tests.test_role_ownership.RoleOwnershipTest.test_owned_writes_are_ready"
+          ]
+        },
+        {
+          "id": "case-005",
+          "title": "Case 5: 只改注释/格式（diff 有内容但无 tampering 信号）→ CONTINUE",
+          "source_line": 183,
+          "assertion_count": 3,
+          "status": "rescue",
+          "replacement": "protected inputs plus deterministic progress stops",
+          "rationale": "Control-path tampering is rejected and repeated failures require review.",
+          "test_ids": [
+            "tests.test_diagnostics_progress.DiagnosticsAndProgressContractTest.test_doctor_is_read_only_and_reports_orphan_loop_worktree",
+            "tests.test_role_ownership.RoleOwnershipTest.test_owned_writes_are_ready"
+          ]
+        }
+      ]
+    },
+    {
+      "fixture": "test-empty-repo.sh",
+      "source_blob": "51d673f65cd9952aa3a093c714aee92d3a289bb1",
+      "precondition_assertion_count": 0,
+      "cases": [
+        {
+          "id": "case-001",
+          "title": "初始化空仓（无 commit、无标准目录结构）",
+          "source_line": 16,
+          "assertion_count": 0,
+          "status": "retired",
+          "replacement": "immutable spec_head requirement",
+          "rationale": "A repository without a commit has no provable Git baseline.",
+          "test_ids": [
+            "tests.test_start_contract.StartContractTest.test_task_start_generates_run_id_and_public_string_worktrees"
+          ]
+        },
+        {
+          "id": "case-002",
+          "title": "setup-builder-loop.sh exit 0",
+          "source_line": 30,
+          "assertion_count": 2,
+          "status": "retired",
+          "replacement": "immutable spec_head requirement",
+          "rationale": "A repository without a commit has no provable Git baseline.",
+          "test_ids": [
+            "tests.test_start_contract.StartContractTest.test_task_start_generates_run_id_and_public_string_worktrees"
+          ]
+        },
+        {
+          "id": "case-003",
+          "title": "source_dirs / test_dirs 字段为空字符串",
+          "source_line": 38,
+          "assertion_count": 2,
+          "status": "retired",
+          "replacement": "immutable spec_head requirement",
+          "rationale": "A repository without a commit has no provable Git baseline.",
+          "test_ids": [
+            "tests.test_start_contract.StartContractTest.test_task_start_generates_run_id_and_public_string_worktrees"
+          ]
+        }
+      ]
+    },
+    {
+      "fixture": "test-extract-e2e-cases.sh",
+      "source_blob": "4051e2e4ed22e52a5ffd9b9d94f3ff51f8db83af",
+      "precondition_assertion_count": 22,
+      "cases": []
+    },
+    {
+      "fixture": "test-handle-pass-agent-id.sh",
+      "source_blob": "9d3736feba1e1c1c5c9f37b7abab15ca3e42ad96",
+      "precondition_assertion_count": 8,
+      "cases": []
+    },
+    {
+      "fixture": "test-install-matcher-update.sh",
+      "source_blob": "fcd7504ff6b7a1cdf8618188cef87db1e6dbd110",
+      "precondition_assertion_count": 1,
+      "cases": [
+        {
+          "id": "case-001",
+          "title": "第一次 install",
+          "source_line": 47,
+          "assertion_count": 2,
+          "status": "covered",
+          "replacement": "transactional hook registration",
+          "rationale": "Reinstall replaces only managed handlers.",
+          "test_ids": [
+            "tests.test_install_contract.InstallContractTest.test_install_is_idempotent_and_uninstall_preserves_foreign_content"
+          ]
+        },
+        {
+          "id": "case-002",
+          "title": "sed 改 matcher 后第二次 install",
+          "source_line": 68,
+          "assertion_count": 3,
+          "status": "covered",
+          "replacement": "transactional hook registration",
+          "rationale": "Reinstall replaces only managed handlers.",
+          "test_ids": [
+            "tests.test_install_contract.InstallContractTest.test_install_is_idempotent_and_uninstall_preserves_foreign_content"
+          ]
+        },
+        {
+          "id": "case-003",
+          "title": "验证 matcher 更新结果",
+          "source_line": 83,
+          "assertion_count": 3,
+          "status": "covered",
+          "replacement": "transactional hook registration",
+          "rationale": "Reinstall replaces only managed handlers.",
+          "test_ids": [
+            "tests.test_install_contract.InstallContractTest.test_install_is_idempotent_and_uninstall_preserves_foreign_content"
+          ]
+        }
+      ]
+    },
+    {
+      "fixture": "test-install-uninstall-roundtrip.sh",
+      "source_blob": "86da59d9459bf155a761ff37185795224cdb8d99",
+      "precondition_assertion_count": 2,
+      "cases": [
+        {
+          "id": "case-001",
+          "title": "写 baseline + install",
+          "source_line": 35,
+          "assertion_count": 1,
+          "status": "covered",
+          "replacement": "transactional install/uninstall",
+          "rationale": "Foreign configuration and symlink targets are preserved.",
+          "test_ids": [
+            "tests.test_install_contract.InstallContractTest.test_install_is_idempotent_and_uninstall_preserves_foreign_content"
+          ]
+        },
+        {
+          "id": "case-002",
+          "title": "验证 install 后 hook 数量",
+          "source_line": 61,
+          "assertion_count": 2,
+          "status": "covered",
+          "replacement": "transactional install/uninstall",
+          "rationale": "Foreign configuration and symlink targets are preserved.",
+          "test_ids": [
+            "tests.test_install_contract.InstallContractTest.test_install_is_idempotent_and_uninstall_preserves_foreign_content"
+          ]
+        },
+        {
+          "id": "case-003",
+          "title": "uninstall + 还原验证",
+          "source_line": 92,
+          "assertion_count": 2,
+          "status": "covered",
+          "replacement": "transactional install/uninstall",
+          "rationale": "Foreign configuration and symlink targets are preserved.",
+          "test_ids": [
+            "tests.test_install_contract.InstallContractTest.test_install_is_idempotent_and_uninstall_preserves_foreign_content"
+          ]
+        }
+      ]
+    },
+    {
+      "fixture": "test-judge-agent.sh",
+      "source_blob": "22e0548b65f17e898e6c559159a334a8eba5702f",
+      "precondition_assertion_count": 3,
+      "cases": [
+        {
+          "id": "case-001",
+          "title": "C1: env 凭证 + PASS + 正常 builder → stop_done",
+          "source_line": 273,
+          "assertion_count": 6,
+          "status": "retired",
+          "replacement": "Reviewer plus independent machine/Tester gates",
+          "rationale": "An external Judge model is outside the deterministic runtime boundary.",
+          "test_ids": [
+            "tests.test_reviewer_prerequisite_order.ReviewerPrerequisiteOrderTest.test_review_completion_must_still_see_verified_candidate"
+          ]
+        },
+        {
+          "id": "case-002",
+          "title": "C2: env 凭证 + PASS + builder 声称完成 → continue_nudge",
+          "source_line": 307,
+          "assertion_count": 4,
+          "status": "retired",
+          "replacement": "Reviewer plus independent machine/Tester gates",
+          "rationale": "An external Judge model is outside the deterministic runtime boundary.",
+          "test_ids": [
+            "tests.test_reviewer_prerequisite_order.ReviewerPrerequisiteOrderTest.test_review_completion_must_still_see_verified_candidate"
+          ]
+        },
+        {
+          "id": "case-003",
+          "title": "C3: API 超时 → downgraded=true, downgrade_reason=timeout",
+          "source_line": 335,
+          "assertion_count": 5,
+          "status": "retired",
+          "replacement": "Reviewer plus independent machine/Tester gates",
+          "rationale": "An external Judge model is outside the deterministic runtime boundary.",
+          "test_ids": [
+            "tests.test_reviewer_prerequisite_order.ReviewerPrerequisiteOrderTest.test_review_completion_must_still_see_verified_candidate"
+          ]
+        },
+        {
+          "id": "case-004",
+          "title": "C4: API 500 → downgraded=true, downgrade_reason=http_500",
+          "source_line": 367,
+          "assertion_count": 4,
+          "status": "retired",
+          "replacement": "Reviewer plus independent machine/Tester gates",
+          "rationale": "An external Judge model is outside the deterministic runtime boundary.",
+          "test_ids": [
+            "tests.test_reviewer_prerequisite_order.ReviewerPrerequisiteOrderTest.test_review_completion_must_still_see_verified_candidate"
+          ]
+        },
+        {
+          "id": "case-005",
+          "title": "C5: API 返回非法 JSON → downgraded=true, downgrade_reason=parse_error",
+          "source_line": 395,
+          "assertion_count": 4,
+          "status": "retired",
+          "replacement": "Reviewer plus independent machine/Tester gates",
+          "rationale": "An external Judge model is outside the deterministic runtime boundary.",
+          "test_ids": [
+            "tests.test_reviewer_prerequisite_order.ReviewerPrerequisiteOrderTest.test_review_completion_must_still_see_verified_candidate"
+          ]
+        },
+        {
+          "id": "case-006",
+          "title": "C6: confidence=0.3（低于阈值）→ downgraded=true, downgrade_reason=low_confidence",
+          "source_line": 423,
+          "assertion_count": 5,
+          "status": "retired",
+          "replacement": "Reviewer plus independent machine/Tester gates",
+          "rationale": "An external Judge model is outside the deterministic runtime boundary.",
+          "test_ids": [
+            "tests.test_reviewer_prerequisite_order.ReviewerPrerequisiteOrderTest.test_review_completion_must_still_see_verified_candidate"
+          ]
+        },
+        {
+          "id": "case-007",
+          "title": "C7: 凭证全缺 → downgraded=true, downgrade_reason=missing_credentials",
+          "source_line": 452,
+          "assertion_count": 4,
+          "status": "retired",
+          "replacement": "Reviewer plus independent machine/Tester gates",
+          "rationale": "An external Judge model is outside the deterministic runtime boundary.",
+          "test_ids": [
+            "tests.test_reviewer_prerequisite_order.ReviewerPrerequisiteOrderTest.test_review_completion_must_still_see_verified_candidate"
+          ]
+        },
+        {
+          "id": "case-008",
+          "title": "C8: judge.enabled=false → downgraded=true, downgrade_reason=disabled",
+          "source_line": 482,
+          "assertion_count": 4,
+          "status": "retired",
+          "replacement": "Reviewer plus independent machine/Tester gates",
+          "rationale": "An external Judge model is outside the deterministic runtime boundary.",
+          "test_ids": [
+            "tests.test_reviewer_prerequisite_order.ReviewerPrerequisiteOrderTest.test_review_completion_must_still_see_verified_candidate"
+          ]
+        },
+        {
+          "id": "case-009",
+          "title": "C9: 模型 ID dot 规范化为 dash（claude-haiku-4.5 → claude-haiku-4-5）",
+          "source_line": 512,
+          "assertion_count": 2,
+          "status": "retired",
+          "replacement": "Reviewer plus independent machine/Tester gates",
+          "rationale": "An external Judge model is outside the deterministic runtime boundary.",
+          "test_ids": [
+            "tests.test_reviewer_prerequisite_order.ReviewerPrerequisiteOrderTest.test_review_completion_must_still_see_verified_candidate"
+          ]
+        }
+      ]
+    },
+    {
+      "fixture": "test-judge-edge-cases.sh",
+      "source_blob": "2d46ee4b13912be712f079a49e40e9575924a48c",
+      "precondition_assertion_count": 2,
+      "cases": [
+        {
+          "id": "case-001",
+          "title": "M1: PASS + judge stop_done → state rm + 新 setup 不残留 nudge 计数",
+          "source_line": 209,
+          "assertion_count": 4,
+          "status": "retired",
+          "replacement": "Reviewer plus independent machine/Tester gates",
+          "rationale": "Judge-specific heuristics no longer define completion.",
+          "test_ids": [
+            "tests.test_reviewer_prerequisite_order.ReviewerPrerequisiteOrderTest.test_review_completion_must_still_see_verified_candidate"
+          ]
+        },
+        {
+          "id": "case-002",
+          "title": "M2: backfill 幂等性（outcome 补标只补一次）",
+          "source_line": 245,
+          "assertion_count": 5,
+          "status": "retired",
+          "replacement": "Reviewer plus independent machine/Tester gates",
+          "rationale": "Judge-specific heuristics no longer define completion.",
+          "test_ids": [
+            "tests.test_reviewer_prerequisite_order.ReviewerPrerequisiteOrderTest.test_review_completion_must_still_see_verified_candidate"
+          ]
+        },
+        {
+          "id": "case-003",
+          "title": "M3: --self-check 凭证全缺 → exit 1",
+          "source_line": 324,
+          "assertion_count": 6,
+          "status": "retired",
+          "replacement": "Reviewer plus independent machine/Tester gates",
+          "rationale": "Judge-specific heuristics no longer define completion.",
+          "test_ids": [
+            "tests.test_reviewer_prerequisite_order.ReviewerPrerequisiteOrderTest.test_review_completion_must_still_see_verified_candidate"
+          ]
+        },
+        {
+          "id": "case-004",
+          "title": "M4: FAIL 分支 + judge 脚本缺失 → 降级走原 V1.8 FAIL 路径",
+          "source_line": 367,
+          "assertion_count": 3,
+          "status": "retired",
+          "replacement": "Reviewer plus independent machine/Tester gates",
+          "rationale": "Judge-specific heuristics no longer define completion.",
+          "test_ids": [
+            "tests.test_reviewer_prerequisite_order.ReviewerPrerequisiteOrderTest.test_review_completion_must_still_see_verified_candidate"
+          ]
+        }
+      ]
+    },
+    {
+      "fixture": "test-judge-env-file-load.sh",
+      "source_blob": "88177cba71953230ae752ff095c5ecd8b928aa00",
+      "precondition_assertion_count": 1,
+      "cases": [
+        {
+          "id": "case-001",
+          "title": "A1: 主 env 干净 + judge-env.sh 存在",
+          "source_line": 42,
+          "assertion_count": 3,
+          "status": "retired",
+          "replacement": "native custom-agent configuration",
+          "rationale": "External Judge environment loading is no longer part of the product.",
+          "test_ids": [
+            "tests.test_install_contract.InstallContractTest.test_install_is_idempotent_and_uninstall_preserves_foreign_content"
+          ]
+        },
+        {
+          "id": "case-002",
+          "title": "A2: 主 env 已设 sk-real + 文件含 sk-666 → 不覆盖",
+          "source_line": 58,
+          "assertion_count": 3,
+          "status": "retired",
+          "replacement": "native custom-agent configuration",
+          "rationale": "External Judge environment loading is no longer part of the product.",
+          "test_ids": [
+            "tests.test_install_contract.InstallContractTest.test_install_is_idempotent_and_uninstall_preserves_foreign_content"
+          ]
+        },
+        {
+          "id": "case-003",
+          "title": "A3: 主 env 干净 + 文件不存在 → exit 1",
+          "source_line": 69,
+          "assertion_count": 2,
+          "status": "retired",
+          "replacement": "native custom-agent configuration",
+          "rationale": "External Judge environment loading is no longer part of the product.",
+          "test_ids": [
+            "tests.test_install_contract.InstallContractTest.test_install_is_idempotent_and_uninstall_preserves_foreign_content"
+          ]
+        },
+        {
+          "id": "case-004",
+          "title": "A4: judge-env.sh 语法错 → stderr WARN + missing credentials",
+          "source_line": 82,
+          "assertion_count": 2,
+          "status": "retired",
+          "replacement": "native custom-agent configuration",
+          "rationale": "External Judge environment loading is no longer part of the product.",
+          "test_ids": [
+            "tests.test_install_contract.InstallContractTest.test_install_is_idempotent_and_uninstall_preserves_foreign_content"
+          ]
+        },
+        {
+          "id": "case-005",
+          "title": "A5: loop.yml 指定别处 credentials_file",
+          "source_line": 96,
+          "assertion_count": 1,
+          "status": "retired",
+          "replacement": "native custom-agent configuration",
+          "rationale": "External Judge environment loading is no longer part of the product.",
+          "test_ids": [
+            "tests.test_install_contract.InstallContractTest.test_install_is_idempotent_and_uninstall_preserves_foreign_content"
+          ]
+        },
+        {
+          "id": "case-006",
+          "title": "A6: loop.yml.credentials_file 等于默认全局路径 → 跳过 phase 1",
+          "source_line": 136,
+          "assertion_count": 3,
+          "status": "retired",
+          "replacement": "native custom-agent configuration",
+          "rationale": "External Judge environment loading is no longer part of the product.",
+          "test_ids": [
+            "tests.test_install_contract.InstallContractTest.test_install_is_idempotent_and_uninstall_preserves_foreign_content"
+          ]
+        }
+      ]
+    },
+    {
+      "fixture": "test-judge-integration.sh",
+      "source_blob": "5023c16e0f8d72289d13756737e464a9557e6253",
+      "precondition_assertion_count": 4,
+      "cases": [
+        {
+          "id": "case-001",
+          "title": "I1: PASS_CMD pass + judge stop_done → exit 2 + PASS 文案",
+          "source_line": 265,
+          "assertion_count": 3,
+          "status": "retired",
+          "replacement": "Reviewer prerequisite snapshots",
+          "rationale": "Review cannot override missing machine or Tester evidence.",
+          "test_ids": [
+            "tests.test_reviewer_prerequisite_order.ReviewerPrerequisiteOrderTest.test_review_completion_must_still_see_verified_candidate"
+          ]
+        },
+        {
+          "id": "case-002",
+          "title": "I2: PASS_CMD pass + judge continue_nudge → nudge 文案 + 计数递增",
+          "source_line": 287,
+          "assertion_count": 4,
+          "status": "retired",
+          "replacement": "Reviewer prerequisite snapshots",
+          "rationale": "Review cannot override missing machine or Tester evidence.",
+          "test_ids": [
+            "tests.test_reviewer_prerequisite_order.ReviewerPrerequisiteOrderTest.test_review_completion_must_still_see_verified_candidate"
+          ]
+        },
+        {
+          "id": "case-003",
+          "title": "I3: 连续 nudge 达上限（2次）→ 强制 stop_done",
+          "source_line": 313,
+          "assertion_count": 3,
+          "status": "retired",
+          "replacement": "Reviewer prerequisite snapshots",
+          "rationale": "Review cannot override missing machine or Tester evidence.",
+          "test_ids": [
+            "tests.test_reviewer_prerequisite_order.ReviewerPrerequisiteOrderTest.test_review_completion_must_still_see_verified_candidate"
+          ]
+        },
+        {
+          "id": "case-004",
+          "title": "I4: judge 降级（missing_credentials）+ PASS_CMD pass → 原 PASS 路径",
+          "source_line": 339,
+          "assertion_count": 3,
+          "status": "retired",
+          "replacement": "Reviewer prerequisite snapshots",
+          "rationale": "Review cannot override missing machine or Tester evidence.",
+          "test_ids": [
+            "tests.test_reviewer_prerequisite_order.ReviewerPrerequisiteOrderTest.test_review_completion_must_still_see_verified_candidate"
+          ]
+        },
+        {
+          "id": "case-005",
+          "title": "I5: PASS_CMD FAIL + judge retry_transient → retry 文案",
+          "source_line": 360,
+          "assertion_count": 2,
+          "status": "retired",
+          "replacement": "Reviewer prerequisite snapshots",
+          "rationale": "Review cannot override missing machine or Tester evidence.",
+          "test_ids": [
+            "tests.test_reviewer_prerequisite_order.ReviewerPrerequisiteOrderTest.test_review_completion_must_still_see_verified_candidate"
+          ]
+        },
+        {
+          "id": "case-006",
+          "title": "I6: PASS_CMD FAIL + judge 降级 → 原 FAIL 路径",
+          "source_line": 380,
+          "assertion_count": 3,
+          "status": "retired",
+          "replacement": "Reviewer prerequisite snapshots",
+          "rationale": "Review cannot override missing machine or Tester evidence.",
+          "test_ids": [
+            "tests.test_reviewer_prerequisite_order.ReviewerPrerequisiteOrderTest.test_review_completion_must_still_see_verified_candidate"
+          ]
+        },
+        {
+          "id": "case-007",
+          "title": "I7: judge.enabled=false → 行为等价 V1.8",
+          "source_line": 402,
+          "assertion_count": 4,
+          "status": "retired",
+          "replacement": "Reviewer prerequisite snapshots",
+          "rationale": "Review cannot override missing machine or Tester evidence.",
+          "test_ids": [
+            "tests.test_reviewer_prerequisite_order.ReviewerPrerequisiteOrderTest.test_review_completion_must_still_see_verified_candidate"
+          ]
+        }
+      ]
+    },
+    {
+      "fixture": "test-judge-model-fallback.sh",
+      "source_blob": "eeb6841446e80d3dbbd5a9909412be8492206cb8",
+      "precondition_assertion_count": 3,
+      "cases": [
+        {
+          "id": "case-001",
+          "title": "B1: 连续 sonnet 成功",
+          "source_line": 181,
+          "assertion_count": 1,
+          "status": "retired",
+          "replacement": "native inherited agent model",
+          "rationale": "The adapter does not own model fallback policy.",
+          "test_ids": [
+            "tests.test_install_contract.InstallContractTest.test_install_is_idempotent_and_uninstall_preserves_foreign_content"
+          ]
+        },
+        {
+          "id": "case-002",
+          "title": "B2: sonnet 1 次 5xx",
+          "source_line": 194,
+          "assertion_count": 1,
+          "status": "retired",
+          "replacement": "native inherited agent model",
+          "rationale": "The adapter does not own model fallback policy.",
+          "test_ids": [
+            "tests.test_install_contract.InstallContractTest.test_install_is_idempotent_and_uninstall_preserves_foreign_content"
+          ]
+        },
+        {
+          "id": "case-003",
+          "title": "B3: sonnet 第 2 次 5xx → 切 haiku (fallback retry)",
+          "source_line": 206,
+          "assertion_count": 4,
+          "status": "retired",
+          "replacement": "native inherited agent model",
+          "rationale": "The adapter does not own model fallback policy.",
+          "test_ids": [
+            "tests.test_install_contract.InstallContractTest.test_install_is_idempotent_and_uninstall_preserves_foreign_content"
+          ]
+        },
+        {
+          "id": "case-004",
+          "title": "B4: 已 haiku + haiku 5xx",
+          "source_line": 220,
+          "assertion_count": 1,
+          "status": "retired",
+          "replacement": "native inherited agent model",
+          "rationale": "The adapter does not own model fallback policy.",
+          "test_ids": [
+            "tests.test_install_contract.InstallContractTest.test_install_is_idempotent_and_uninstall_preserves_foreign_content"
+          ]
+        },
+        {
+          "id": "case-005",
+          "title": "B5: sonnet 失败后成功 → failures 重置",
+          "source_line": 229,
+          "assertion_count": 0,
+          "status": "retired",
+          "replacement": "native inherited agent model",
+          "rationale": "The adapter does not own model fallback policy.",
+          "test_ids": [
+            "tests.test_install_contract.InstallContractTest.test_install_is_idempotent_and_uninstall_preserves_foreign_content"
+          ]
+        },
+        {
+          "id": "case-006",
+          "title": "B6: 401 不计数（凭证问题）",
+          "source_line": 244,
+          "assertion_count": 0,
+          "status": "retired",
+          "replacement": "native inherited agent model",
+          "rationale": "The adapter does not own model fallback policy.",
+          "test_ids": [
+            "tests.test_install_contract.InstallContractTest.test_install_is_idempotent_and_uninstall_preserves_foreign_content"
+          ]
+        },
+        {
+          "id": "case-007",
+          "title": "B7: 429 不计数（rate_limit）",
+          "source_line": 255,
+          "assertion_count": 0,
+          "status": "retired",
+          "replacement": "native inherited agent model",
+          "rationale": "The adapter does not own model fallback policy.",
+          "test_ids": [
+            "tests.test_install_contract.InstallContractTest.test_install_is_idempotent_and_uninstall_preserves_foreign_content"
+          ]
+        },
+        {
+          "id": "case-008",
+          "title": "B8: parse_error 计数（同 5xx）",
+          "source_line": 266,
+          "assertion_count": 0,
+          "status": "retired",
+          "replacement": "native inherited agent model",
+          "rationale": "The adapter does not own model fallback policy.",
+          "test_ids": [
+            "tests.test_install_contract.InstallContractTest.test_install_is_idempotent_and_uninstall_preserves_foreign_content"
+          ]
+        },
+        {
+          "id": "case-009",
+          "title": "B9: fallback_model 留空 → 失败直接 downgrade",
+          "source_line": 281,
+          "assertion_count": 1,
+          "status": "retired",
+          "replacement": "native inherited agent model",
+          "rationale": "The adapter does not own model fallback policy.",
+          "test_ids": [
+            "tests.test_install_contract.InstallContractTest.test_install_is_idempotent_and_uninstall_preserves_foreign_content"
+          ]
+        },
+        {
+          "id": "case-010",
+          "title": "B10: 旧 state（无 V2.1 字段）→ 默认 active=primary",
+          "source_line": 294,
+          "assertion_count": 1,
+          "status": "retired",
+          "replacement": "native inherited agent model",
+          "rationale": "The adapter does not own model fallback policy.",
+          "test_ids": [
+            "tests.test_install_contract.InstallContractTest.test_install_is_idempotent_and_uninstall_preserves_foreign_content"
+          ]
+        },
+        {
+          "id": "case-011",
+          "title": "B11: 改 primary_model 立即生效",
+          "source_line": 314,
+          "assertion_count": 3,
+          "status": "retired",
+          "replacement": "native inherited agent model",
+          "rationale": "The adapter does not own model fallback policy.",
+          "test_ids": [
+            "tests.test_install_contract.InstallContractTest.test_install_is_idempotent_and_uninstall_preserves_foreign_content"
+          ]
+        },
+        {
+          "id": "case-012",
+          "title": "B12: active_model=haiku 成功 → failures 重置",
+          "source_line": 333,
+          "assertion_count": 2,
+          "status": "retired",
+          "replacement": "native inherited agent model",
+          "rationale": "The adapter does not own model fallback policy.",
+          "test_ids": [
+            "tests.test_install_contract.InstallContractTest.test_install_is_idempotent_and_uninstall_preserves_foreign_content"
+          ]
+        }
+      ]
+    },
+    {
+      "fixture": "test-locate-state-strategy5.sh",
+      "source_blob": "e43b84159844936941fb498e9ddab45ed9dc24bb",
+      "precondition_assertion_count": 1,
+      "cases": [
+        {
+          "id": "case-001",
+          "title": "A1: 主仓 cwd + 1 active → 策略 5 命中",
+          "source_line": 73,
+          "assertion_count": 3,
+          "status": "covered",
+          "replacement": "session id and repository ledger discovery",
+          "rationale": "Run selection does not infer ownership from CWD heuristics.",
+          "test_ids": [
+            "tests.test_hook_runtime_integration.HookRuntimeIntegrationTest.test_real_hook_finds_run_from_tester_and_builder_worktrees"
+          ]
+        },
+        {
+          "id": "case-002",
+          "title": "A2: 主仓 cwd + 2 active → 返回空",
+          "source_line": 91,
+          "assertion_count": 2,
+          "status": "covered",
+          "replacement": "session id and repository ledger discovery",
+          "rationale": "Run selection does not infer ownership from CWD heuristics.",
+          "test_ids": [
+            "tests.test_hook_runtime_integration.HookRuntimeIntegrationTest.test_real_hook_finds_run_from_tester_and_builder_worktrees"
+          ]
+        },
+        {
+          "id": "case-003",
+          "title": "A3: worktree cwd → 策略 2 命中",
+          "source_line": 108,
+          "assertion_count": 2,
+          "status": "covered",
+          "replacement": "session id and repository ledger discovery",
+          "rationale": "Run selection does not infer ownership from CWD heuristics.",
+          "test_ids": [
+            "tests.test_hook_runtime_integration.HookRuntimeIntegrationTest.test_real_hook_finds_run_from_tester_and_builder_worktrees"
+          ]
+        },
+        {
+          "id": "case-004",
+          "title": "A4: __main__.yml → 策略 4 兜底",
+          "source_line": 123,
+          "assertion_count": 2,
+          "status": "covered",
+          "replacement": "session id and repository ledger discovery",
+          "rationale": "Run selection does not infer ownership from CWD heuristics.",
+          "test_ids": [
+            "tests.test_hook_runtime_integration.HookRuntimeIntegrationTest.test_real_hook_finds_run_from_tester_and_builder_worktrees"
+          ]
+        },
+        {
+          "id": "case-005",
+          "title": "A5: worktree_path 匹配 cwd → 策略 3 命中",
+          "source_line": 136,
+          "assertion_count": 2,
+          "status": "covered",
+          "replacement": "session id and repository ledger discovery",
+          "rationale": "Run selection does not infer ownership from CWD heuristics.",
+          "test_ids": [
+            "tests.test_hook_runtime_integration.HookRuntimeIntegrationTest.test_real_hook_finds_run_from_tester_and_builder_worktrees"
+          ]
+        }
+      ]
+    },
+    {
+      "fixture": "test-merge-and-cleanup-detached-head.sh",
+      "source_blob": "1175e50a42ddf6a628f766f5d097400e11281c0d",
+      "precondition_assertion_count": 0,
+      "cases": [
+        {
+          "id": "case-001",
+          "title": "Case A: 主仓 detached HEAD → 拦截",
+          "source_line": 54,
+          "assertion_count": 6,
+          "status": "covered",
+          "replacement": "explicit target branch and CAS",
+          "rationale": "Target identity is explicit even when another checkout is detached.",
+          "test_ids": [
+            "tests.test_finalize_lifecycle.FinalizeLifecycleTest.test_finalization_squashes_all_role_commits_and_cleans_worktrees"
+          ]
+        },
+        {
+          "id": "case-002",
+          "title": "Case B: 正常分支 ff merge → MERGED",
+          "source_line": 75,
+          "assertion_count": 5,
+          "status": "covered",
+          "replacement": "explicit target branch and CAS",
+          "rationale": "Target identity is explicit even when another checkout is detached.",
+          "test_ids": [
+            "tests.test_finalize_lifecycle.FinalizeLifecycleTest.test_finalization_squashes_all_role_commits_and_cleans_worktrees"
+          ]
+        }
+      ]
+    },
+    {
+      "fixture": "test-merge-and-cleanup-dirty-abort.sh",
+      "source_blob": "827660aebfccc5d316c50c33e3b60c83f345fbcb",
+      "precondition_assertion_count": 0,
+      "cases": [
+        {
+          "id": "case-001",
+          "title": "C1: worktree dirty → abort",
+          "source_line": 10,
+          "assertion_count": 5,
+          "status": "covered",
+          "replacement": "dirty role and target blockers",
+          "rationale": "Dirty state stops finalization while preserving worktrees.",
+          "test_ids": [
+            "tests.test_finalize_lifecycle.FinalizeLifecycleTest.test_finalization_squashes_all_role_commits_and_cleans_worktrees"
+          ]
+        },
+        {
+          "id": "case-002",
+          "title": "C2: worktree clean → MERGED",
+          "source_line": 20,
+          "assertion_count": 2,
+          "status": "covered",
+          "replacement": "dirty role and target blockers",
+          "rationale": "Dirty state stops finalization while preserving worktrees.",
+          "test_ids": [
+            "tests.test_finalize_lifecycle.FinalizeLifecycleTest.test_finalization_squashes_all_role_commits_and_cleans_worktrees"
+          ]
+        }
+      ]
+    },
+    {
+      "fixture": "test-merge-and-cleanup-idempotent.sh",
+      "source_blob": "c2afb02e1cc584a6490e5f0c44c9bc36930bb268",
+      "precondition_assertion_count": 0,
+      "cases": [
+        {
+          "id": "case-001",
+          "title": "Case A: cleanup_phase=ff_merged 重跑",
+          "source_line": 66,
+          "assertion_count": 5,
+          "status": "covered",
+          "replacement": "finalize intent recovery",
+          "rationale": "CAS, sync and cleanup are persisted and retryable.",
+          "test_ids": [
+            "tests.test_finalize_lifecycle.FinalizeLifecycleTest.test_finalization_squashes_all_role_commits_and_cleans_worktrees",
+            "tests.test_full_driver_v4_contract.FullDriverV4ContractTest.test_skill_automatically_loops_over_the_complete_action_surface"
+          ]
+        },
+        {
+          "id": "case-002",
+          "title": "Case B: cleanup_phase=worktree_removed 重跑",
+          "source_line": 86,
+          "assertion_count": 4,
+          "status": "covered",
+          "replacement": "finalize intent recovery",
+          "rationale": "CAS, sync and cleanup are persisted and retryable.",
+          "test_ids": [
+            "tests.test_finalize_lifecycle.FinalizeLifecycleTest.test_finalization_squashes_all_role_commits_and_cleans_worktrees",
+            "tests.test_full_driver_v4_contract.FullDriverV4ContractTest.test_skill_automatically_loops_over_the_complete_action_surface"
+          ]
+        }
+      ]
+    },
+    {
+      "fixture": "test-multi-worktree-feedback.sh",
+      "source_blob": "b60082c1f570bd956dedbb1ad274513895abd25f",
+      "precondition_assertion_count": 0,
+      "cases": [
+        {
+          "id": "case-001",
+          "title": "第一轮：worktree-A",
+          "source_line": 74,
+          "assertion_count": 6,
+          "status": "rescue",
+          "replacement": "structured doctor diagnostics",
+          "rationale": "All owned and orphan worktrees are reported with precise state.",
+          "test_ids": [
+            "tests.test_diagnostics_progress.DiagnosticsAndProgressContractTest.test_doctor_is_read_only_and_reports_orphan_loop_worktree"
+          ]
+        },
+        {
+          "id": "case-002",
+          "title": "第二轮：worktree-B",
+          "source_line": 97,
+          "assertion_count": 5,
+          "status": "rescue",
+          "replacement": "structured doctor diagnostics",
+          "rationale": "All owned and orphan worktrees are reported with precise state.",
+          "test_ids": [
+            "tests.test_diagnostics_progress.DiagnosticsAndProgressContractTest.test_doctor_is_read_only_and_reports_orphan_loop_worktree"
+          ]
+        }
+      ]
+    },
+    {
+      "fixture": "test-new-repo-loop.sh",
+      "source_blob": "ffa18b37f875ffd99d020b2e065bc25f54d9d7e1",
+      "precondition_assertion_count": 0,
+      "cases": [
+        {
+          "id": "case-001",
+          "title": "Step 1: 创建项目文件（含语法错误）",
+          "source_line": 20,
+          "assertion_count": 1,
+          "status": "covered",
+          "replacement": "committed repository start contract",
+          "rationale": "A newly initialized repository works after its first immutable commit.",
+          "test_ids": [
+            "tests.test_start_contract.StartContractTest.test_task_start_generates_run_id_and_public_string_worktrees"
+          ]
+        },
+        {
+          "id": "case-002",
+          "title": "Step 2: 一键 loop-init + 覆盖 pass_cmd",
+          "source_line": 36,
+          "assertion_count": 3,
+          "status": "covered",
+          "replacement": "committed repository start contract",
+          "rationale": "A newly initialized repository works after its first immutable commit.",
+          "test_ids": [
+            "tests.test_start_contract.StartContractTest.test_task_start_generates_run_id_and_public_string_worktrees"
+          ]
+        },
+        {
+          "id": "case-003",
+          "title": "Step 3: setup-builder-loop",
+          "source_line": 59,
+          "assertion_count": 2,
+          "status": "covered",
+          "replacement": "committed repository start contract",
+          "rationale": "A newly initialized repository works after its first immutable commit.",
+          "test_ids": [
+            "tests.test_start_contract.StartContractTest.test_task_start_generates_run_id_and_public_string_worktrees"
+          ]
+        },
+        {
+          "id": "case-004",
+          "title": "Step 4: run-pass-cmd (预期 FAIL)",
+          "source_line": 66,
+          "assertion_count": 1,
+          "status": "covered",
+          "replacement": "committed repository start contract",
+          "rationale": "A newly initialized repository works after its first immutable commit.",
+          "test_ids": [
+            "tests.test_start_contract.StartContractTest.test_task_start_generates_run_id_and_public_string_worktrees"
+          ]
+        },
+        {
+          "id": "case-005",
+          "title": "Step 5: 修复语法 + 再跑 PASS_CMD",
+          "source_line": 72,
+          "assertion_count": 1,
+          "status": "covered",
+          "replacement": "committed repository start contract",
+          "rationale": "A newly initialized repository works after its first immutable commit.",
+          "test_ids": [
+            "tests.test_start_contract.StartContractTest.test_task_start_generates_run_id_and_public_string_worktrees"
+          ]
+        },
+        {
+          "id": "case-006",
+          "title": "Step 6: 验证 trace 文件",
+          "source_line": 83,
+          "assertion_count": 3,
+          "status": "covered",
+          "replacement": "committed repository start contract",
+          "rationale": "A newly initialized repository works after its first immutable commit.",
+          "test_ids": [
+            "tests.test_start_contract.StartContractTest.test_task_start_generates_run_id_and_public_string_worktrees"
+          ]
+        },
+        {
+          "id": "case-007",
+          "title": "Step 7: stop hook 路径查找",
+          "source_line": 89,
+          "assertion_count": 1,
+          "status": "covered",
+          "replacement": "committed repository start contract",
+          "rationale": "A newly initialized repository works after its first immutable commit.",
+          "test_ids": [
+            "tests.test_start_contract.StartContractTest.test_task_start_generates_run_id_and_public_string_worktrees"
+          ]
+        }
+      ]
+    },
+    {
+      "fixture": "test-no-diff-silence.sh",
+      "source_blob": "b309966cdc5c52180f6d038b34cdd5ae5a8e4c38",
+      "precondition_assertion_count": 0,
+      "cases": [
+        {
+          "id": "case-001",
+          "title": "Case 1: worktree 无改动",
+          "source_line": 15,
+          "assertion_count": 3,
+          "status": "covered",
+          "replacement": "native orchestration and idempotent verification",
+          "rationale": "No-diff turns do not require transcript-driven hook nudges.",
+          "test_ids": [
+            "tests.test_verify_contract.VerifyContractTest.test_pass_records_verified_head"
+          ]
+        },
+        {
+          "id": "case-002",
+          "title": "Case 2: worktree 内改文件",
+          "source_line": 32,
+          "assertion_count": 1,
+          "status": "covered",
+          "replacement": "native orchestration and idempotent verification",
+          "rationale": "No-diff turns do not require transcript-driven hook nudges.",
+          "test_ids": [
+            "tests.test_verify_contract.VerifyContractTest.test_pass_records_verified_head"
+          ]
+        },
+        {
+          "id": "case-003",
+          "title": "Case 3: bare 模式 L2B 静默",
+          "source_line": 42,
+          "assertion_count": 2,
+          "status": "covered",
+          "replacement": "native orchestration and idempotent verification",
+          "rationale": "No-diff turns do not require transcript-driven hook nudges.",
+          "test_ids": [
+            "tests.test_verify_contract.VerifyContractTest.test_pass_records_verified_head"
+          ]
+        }
+      ]
+    },
+    {
+      "fixture": "test-nudge-max-reads-worktree.sh",
+      "source_blob": "0e60f34625836b1ad62610eaaf82647ee7a06dc8",
+      "precondition_assertion_count": 2,
+      "cases": [
+        {
+          "id": "case-001",
+          "title": "Case 1: worktree max=1 + nudge_count=1 → 强制 stop_done（防脱缰）",
+          "source_line": 204,
+          "assertion_count": 8,
+          "status": "retired",
+          "replacement": "ledger-provided worktree paths",
+          "rationale": "Prompt nudging is replaced by explicit runtime facts.",
+          "test_ids": [
+            "tests.test_start_contract.StartContractTest.test_task_start_generates_run_id_and_public_string_worktrees"
+          ]
+        },
+        {
+          "id": "case-002",
+          "title": "Case 2: 无 worktree loop.yml（fallback 主仓 max=99）→ nudge 分支",
+          "source_line": 267,
+          "assertion_count": 8,
+          "status": "retired",
+          "replacement": "ledger-provided worktree paths",
+          "rationale": "Prompt nudging is replaced by explicit runtime facts.",
+          "test_ids": [
+            "tests.test_start_contract.StartContractTest.test_task_start_generates_run_id_and_public_string_worktrees"
+          ]
+        }
+      ]
+    },
+    {
+      "fixture": "test-observation-expiry-gh.sh",
+      "source_blob": "6455ad1c79cdde517b18442732e0f70f55599f9a",
+      "precondition_assertion_count": 1,
+      "cases": [
+        {
+          "id": "case-001",
+          "title": "Case A: GitHub observation issue expired → stderr ⏰",
+          "source_line": 73,
+          "assertion_count": 2,
+          "status": "retired",
+          "replacement": "external project workflow",
+          "rationale": "Issue observation expiry is unrelated to delivery correctness.",
+          "test_ids": [
+            "tests.test_install_contract.InstallContractTest.test_install_is_idempotent_and_uninstall_preserves_foreign_content"
+          ]
+        },
+        {
+          "id": "case-002",
+          "title": "Case B: gh not available → stderr ⚠️",
+          "source_line": 81,
+          "assertion_count": 1,
+          "status": "retired",
+          "replacement": "external project workflow",
+          "rationale": "Issue observation expiry is unrelated to delivery correctness.",
+          "test_ids": [
+            "tests.test_install_contract.InstallContractTest.test_install_is_idempotent_and_uninstall_preserves_foreign_content"
+          ]
+        }
+      ]
+    },
+    {
+      "fixture": "test-old-state-compat.sh",
+      "source_blob": "950bd8e030c72cfd54c1545c33ad592987752b15",
+      "precondition_assertion_count": 0,
+      "cases": [
+        {
+          "id": "case-001",
+          "title": "Case A: 无 phase 字段 → 僵尸归档",
+          "source_line": 14,
+          "assertion_count": 3,
+          "status": "rescue",
+          "replacement": "complete active-v2 continuation under the v3 runtime and honest incomplete lineage for retained v4 ledgers",
+          "rationale": "Existing active v2 runs retain run, thread, candidate and finalize-intent identity through completion while new v2 plans are rejected; retained v4 ledgers remain readable without inventing missing transition facts.",
+          "test_ids": [
+            "tests.test_diagnostics_progress.DiagnosticsAndProgressContractTest.test_doctor_is_read_only_and_reports_orphan_loop_worktree",
+            "tests.test_planning_v3_e2e_contract.PlanningV3E2EContractTest.test_blackbox_evidence_is_proof_first_and_case_complete",
+            "tests.test_full_driver_v4_contract.FullDriverV4ContractTest.test_skill_automatically_loops_over_the_complete_action_surface",
+            "tests.test_assurance_v4_lineage_contract.AssuranceV4LineageContractTest.test_supersession_never_inherits_role_or_evidence_state"
+          ]
+        },
+        {
+          "id": "case-002",
+          "title": "Case B: V3.0 标准 state（含 phase 字段）",
+          "source_line": 50,
+          "assertion_count": 2,
+          "status": "rescue",
+          "replacement": "complete active-v2 continuation under the v3 runtime and honest incomplete lineage for retained v4 ledgers",
+          "rationale": "Existing active v2 runs retain run, thread, candidate and finalize-intent identity through completion while new v2 plans are rejected; retained v4 ledgers remain readable without inventing missing transition facts.",
+          "test_ids": [
+            "tests.test_diagnostics_progress.DiagnosticsAndProgressContractTest.test_doctor_is_read_only_and_reports_orphan_loop_worktree",
+            "tests.test_planning_v3_e2e_contract.PlanningV3E2EContractTest.test_blackbox_evidence_is_proof_first_and_case_complete",
+            "tests.test_full_driver_v4_contract.FullDriverV4ContractTest.test_skill_automatically_loops_over_the_complete_action_surface",
+            "tests.test_assurance_v4_lineage_contract.AssuranceV4LineageContractTest.test_supersession_never_inherits_role_or_evidence_state"
+          ]
+        }
+      ]
+    },
+    {
+      "fixture": "test-orphan-worktree-reuse.sh",
+      "source_blob": "559016139a72bda077a2035761f4867ab212f932",
+      "precondition_assertion_count": 0,
+      "cases": [
+        {
+          "id": "case-001",
+          "title": "A1: setup → abandon → re-setup → exit 6（检测到孤儿）",
+          "source_line": 72,
+          "assertion_count": 10,
+          "status": "rescue",
+          "replacement": "doctor, recover and safe cleanup",
+          "rationale": "Unknown worktrees are diagnosed but never silently adopted or deleted.",
+          "test_ids": [
+            "tests.test_diagnostics_progress.DiagnosticsAndProgressContractTest.test_doctor_is_read_only_and_reports_orphan_loop_worktree"
+          ]
+        },
+        {
+          "id": "case-002",
+          "title": "A2: --reuse-worktree → 成功复用",
+          "source_line": 95,
+          "assertion_count": 6,
+          "status": "rescue",
+          "replacement": "doctor, recover and safe cleanup",
+          "rationale": "Unknown worktrees are diagnosed but never silently adopted or deleted.",
+          "test_ids": [
+            "tests.test_diagnostics_progress.DiagnosticsAndProgressContractTest.test_doctor_is_read_only_and_reports_orphan_loop_worktree"
+          ]
+        },
+        {
+          "id": "case-003",
+          "title": "A3: --ignore-orphans → 新建 worktree",
+          "source_line": 111,
+          "assertion_count": 5,
+          "status": "rescue",
+          "replacement": "doctor, recover and safe cleanup",
+          "rationale": "Unknown worktrees are diagnosed but never silently adopted or deleted.",
+          "test_ids": [
+            "tests.test_diagnostics_progress.DiagnosticsAndProgressContractTest.test_doctor_is_read_only_and_reports_orphan_loop_worktree"
+          ]
+        },
+        {
+          "id": "case-004",
+          "title": "A4: --reuse-worktree 路径无效 → exit 2",
+          "source_line": 129,
+          "assertion_count": 2,
+          "status": "rescue",
+          "replacement": "doctor, recover and safe cleanup",
+          "rationale": "Unknown worktrees are diagnosed but never silently adopted or deleted.",
+          "test_ids": [
+            "tests.test_diagnostics_progress.DiagnosticsAndProgressContractTest.test_doctor_is_read_only_and_reports_orphan_loop_worktree"
+          ]
+        },
+        {
+          "id": "case-005",
+          "title": "A5: 复用后 worktree 内旧改动仍在",
+          "source_line": 137,
+          "assertion_count": 5,
+          "status": "rescue",
+          "replacement": "doctor, recover and safe cleanup",
+          "rationale": "Unknown worktrees are diagnosed but never silently adopted or deleted.",
+          "test_ids": [
+            "tests.test_diagnostics_progress.DiagnosticsAndProgressContractTest.test_doctor_is_read_only_and_reports_orphan_loop_worktree"
+          ]
+        },
+        {
+          "id": "case-006",
+          "title": "A6: 多个孤儿 → 全部报出",
+          "source_line": 155,
+          "assertion_count": 6,
+          "status": "rescue",
+          "replacement": "doctor, recover and safe cleanup",
+          "rationale": "Unknown worktrees are diagnosed but never silently adopted or deleted.",
+          "test_ids": [
+            "tests.test_diagnostics_progress.DiagnosticsAndProgressContractTest.test_doctor_is_read_only_and_reports_orphan_loop_worktree"
+          ]
+        },
+        {
+          "id": "case-007",
+          "title": "A7: --reuse-worktree 相对路径 → exit 2",
+          "source_line": 177,
+          "assertion_count": 2,
+          "status": "rescue",
+          "replacement": "doctor, recover and safe cleanup",
+          "rationale": "Unknown worktrees are diagnosed but never silently adopted or deleted.",
+          "test_ids": [
+            "tests.test_diagnostics_progress.DiagnosticsAndProgressContractTest.test_doctor_is_read_only_and_reports_orphan_loop_worktree"
+          ]
+        },
+        {
+          "id": "case-008",
+          "title": "A8: --reuse-worktree + --no-worktree 互斥 → exit 2",
+          "source_line": 185,
+          "assertion_count": 2,
+          "status": "rescue",
+          "replacement": "doctor, recover and safe cleanup",
+          "rationale": "Unknown worktrees are diagnosed but never silently adopted or deleted.",
+          "test_ids": [
+            "tests.test_diagnostics_progress.DiagnosticsAndProgressContractTest.test_doctor_is_read_only_and_reports_orphan_loop_worktree"
+          ]
+        }
+      ]
+    },
+    {
+      "fixture": "test-parallel-loop.sh",
+      "source_blob": "bcd625653ca09e8a2807fa98058885191bc46b92",
+      "precondition_assertion_count": 2,
+      "cases": [
+        {
+          "id": "case-001",
+          "title": "场景 1: 起两个并行 worktree loop",
+          "source_line": 49,
+          "assertion_count": 7,
+          "status": "covered",
+          "replacement": "parallel_ready role worktrees",
+          "rationale": "Builder and Tester start from the same frozen baseline when allowed.",
+          "test_ids": [
+            "tests.test_parallel_role_isolation.ParallelRoleIsolationTest.test_builder_and_tester_start_from_same_spec_head_and_integrate_explicitly",
+            "tests.test_full_driver_v4_contract.FullDriverV4ContractTest.test_skill_automatically_loops_over_the_complete_action_surface"
+          ]
+        },
+        {
+          "id": "case-002",
+          "title": "场景 2: locate-state.sh CWD 定位",
+          "source_line": 74,
+          "assertion_count": 4,
+          "status": "covered",
+          "replacement": "parallel_ready role worktrees",
+          "rationale": "Builder and Tester start from the same frozen baseline when allowed.",
+          "test_ids": [
+            "tests.test_parallel_role_isolation.ParallelRoleIsolationTest.test_builder_and_tester_start_from_same_spec_head_and_integrate_explicitly",
+            "tests.test_full_driver_v4_contract.FullDriverV4ContractTest.test_skill_automatically_loops_over_the_complete_action_surface"
+          ]
+        },
+        {
+          "id": "case-003",
+          "title": "场景 4: bare loop slug 冲突被拒",
+          "source_line": 90,
+          "assertion_count": 2,
+          "status": "covered",
+          "replacement": "parallel_ready role worktrees",
+          "rationale": "Builder and Tester start from the same frozen baseline when allowed.",
+          "test_ids": [
+            "tests.test_parallel_role_isolation.ParallelRoleIsolationTest.test_builder_and_tester_start_from_same_spec_head_and_integrate_explicitly",
+            "tests.test_full_driver_v4_contract.FullDriverV4ContractTest.test_skill_automatically_loops_over_the_complete_action_surface"
+          ]
+        },
+        {
+          "id": "case-004",
+          "title": "场景 4.5: bare setup 并发竞态 (flock)",
+          "source_line": 99,
+          "assertion_count": 2,
+          "status": "covered",
+          "replacement": "parallel_ready role worktrees",
+          "rationale": "Builder and Tester start from the same frozen baseline when allowed.",
+          "test_ids": [
+            "tests.test_parallel_role_isolation.ParallelRoleIsolationTest.test_builder_and_tester_start_from_same_spec_head_and_integrate_explicitly",
+            "tests.test_full_driver_v4_contract.FullDriverV4ContractTest.test_skill_automatically_loops_over_the_complete_action_surface"
+          ]
+        },
+        {
+          "id": "case-005",
+          "title": "场景 5: 孤儿 state gc",
+          "source_line": 117,
+          "assertion_count": 2,
+          "status": "covered",
+          "replacement": "parallel_ready role worktrees",
+          "rationale": "Builder and Tester start from the same frozen baseline when allowed.",
+          "test_ids": [
+            "tests.test_parallel_role_isolation.ParallelRoleIsolationTest.test_builder_and_tester_start_from_same_spec_head_and_integrate_explicitly",
+            "tests.test_full_driver_v4_contract.FullDriverV4ContractTest.test_skill_automatically_loops_over_the_complete_action_surface"
+          ]
+        }
+      ]
+    },
+    {
+      "fixture": "test-pass-cmd-runs-worktree.sh",
+      "source_blob": "8722044097a91d95e41be1330693e0a4a179e094",
+      "precondition_assertion_count": 2,
+      "cases": [
+        {
+          "id": "case-001",
+          "title": "Step 1: 初始化主仓 + worktree 启用",
+          "source_line": 23,
+          "assertion_count": 0,
+          "status": "covered",
+          "replacement": "detached clean verification worktree",
+          "rationale": "Machine commands execute against the committed candidate.",
+          "test_ids": [
+            "tests.test_verify_contract.VerifyContractTest.test_pass_records_verified_head"
+          ]
+        },
+        {
+          "id": "case-002",
+          "title": "Step 2: setup-builder-loop.sh 启动 worktree",
+          "source_line": 46,
+          "assertion_count": 5,
+          "status": "covered",
+          "replacement": "detached clean verification worktree",
+          "rationale": "Machine commands execute against the committed candidate.",
+          "test_ids": [
+            "tests.test_verify_contract.VerifyContractTest.test_pass_records_verified_head"
+          ]
+        },
+        {
+          "id": "case-003",
+          "title": "Step 3: worktree 内 loop.yml 加 stage=worktree_only",
+          "source_line": 61,
+          "assertion_count": 2,
+          "status": "covered",
+          "replacement": "detached clean verification worktree",
+          "rationale": "Machine commands execute against the committed candidate.",
+          "test_ids": [
+            "tests.test_verify_contract.VerifyContractTest.test_pass_records_verified_head"
+          ]
+        },
+        {
+          "id": "case-004",
+          "title": "Step 4: 触发 stop hook（cwd=worktree）→ 期望 PASS_CMD 跑 worktree 配置",
+          "source_line": 81,
+          "assertion_count": 5,
+          "status": "covered",
+          "replacement": "detached clean verification worktree",
+          "rationale": "Machine commands execute against the committed candidate.",
+          "test_ids": [
+            "tests.test_verify_contract.VerifyContractTest.test_pass_records_verified_head"
+          ]
+        },
+        {
+          "id": "case-005",
+          "title": "Step 5: 老 state 兼容（删 main_repo_path / project_root 设为主仓）",
+          "source_line": 96,
+          "assertion_count": 3,
+          "status": "covered",
+          "replacement": "detached clean verification worktree",
+          "rationale": "Machine commands execute against the committed candidate.",
+          "test_ids": [
+            "tests.test_verify_contract.VerifyContractTest.test_pass_records_verified_head"
+          ]
+        },
+        {
+          "id": "case-006",
+          "title": "Step 6: 含空格的 mktemp 路径下 setup + state 定位仍正常",
+          "source_line": 144,
+          "assertion_count": 2,
+          "status": "covered",
+          "replacement": "detached clean verification worktree",
+          "rationale": "Machine commands execute against the committed candidate.",
+          "test_ids": [
+            "tests.test_verify_contract.VerifyContractTest.test_pass_records_verified_head"
+          ]
+        }
+      ]
+    },
+    {
+      "fixture": "test-passed-pending-review-lifecycle.sh",
+      "source_blob": "dc3dbe5480dc6cd493bb861b6bd2e629c2443821",
+      "precondition_assertion_count": 0,
+      "cases": [
+        {
+          "id": "case-001",
+          "title": "Case A: PASS → phase=passed_pending_review",
+          "source_line": 15,
+          "assertion_count": 6,
+          "status": "covered",
+          "replacement": "review prerequisite and evidence lifecycle",
+          "rationale": "Review remains mandatory after deterministic verification passes.",
+          "test_ids": [
+            "tests.test_reviewer_prerequisite_order.ReviewerPrerequisiteOrderTest.test_review_completion_must_still_see_verified_candidate",
+            "tests.test_full_driver_v4_contract.FullDriverV4ContractTest.test_skill_automatically_loops_over_the_complete_action_surface"
+          ]
+        },
+        {
+          "id": "case-002",
+          "title": "Case B: reviewer 通过 → merge-and-cleanup",
+          "source_line": 32,
+          "assertion_count": 4,
+          "status": "covered",
+          "replacement": "review prerequisite and evidence lifecycle",
+          "rationale": "Review remains mandatory after deterministic verification passes.",
+          "test_ids": [
+            "tests.test_reviewer_prerequisite_order.ReviewerPrerequisiteOrderTest.test_review_completion_must_still_see_verified_candidate",
+            "tests.test_full_driver_v4_contract.FullDriverV4ContractTest.test_skill_automatically_loops_over_the_complete_action_surface"
+          ]
+        },
+        {
+          "id": "case-003",
+          "title": "Case C: passed_pending_review + worktree dirty → 自愈",
+          "source_line": 56,
+          "assertion_count": 3,
+          "status": "covered",
+          "replacement": "review prerequisite and evidence lifecycle",
+          "rationale": "Review remains mandatory after deterministic verification passes.",
+          "test_ids": [
+            "tests.test_reviewer_prerequisite_order.ReviewerPrerequisiteOrderTest.test_review_completion_must_still_see_verified_candidate",
+            "tests.test_full_driver_v4_contract.FullDriverV4ContractTest.test_skill_automatically_loops_over_the_complete_action_surface"
+          ]
+        }
+      ]
+    },
+    {
+      "fixture": "test-pause-file.sh",
+      "source_blob": "ef4a25cc7ff5e77da52afc6abc07930745bb5840",
+      "precondition_assertion_count": 0,
+      "cases": [
+        {
+          "id": "case-001",
+          "title": "Case 1: pause 文件存在",
+          "source_line": 19,
+          "assertion_count": 4,
+          "status": "retired",
+          "replacement": "native user-input wait state",
+          "rationale": "A side-channel pause file is unnecessary and creates a second state source.",
+          "test_ids": [
+            "tests.test_stop_hook_gate.StopHookGateTest.test_active_run_blocks_root_stop"
+          ]
+        },
+        {
+          "id": "case-002",
+          "title": "Case 2: rm pause 文件",
+          "source_line": 33,
+          "assertion_count": 1,
+          "status": "retired",
+          "replacement": "native user-input wait state",
+          "rationale": "A side-channel pause file is unnecessary and creates a second state source.",
+          "test_ids": [
+            "tests.test_stop_hook_gate.StopHookGateTest.test_active_run_blocks_root_stop"
+          ]
+        }
+      ]
+    },
+    {
+      "fixture": "test-plan-detection.sh",
+      "source_blob": "0c89cbb120478bdd78e536f51f2fa8b1f191015b",
+      "precondition_assertion_count": 3,
+      "cases": [
+        {
+          "id": "case-001",
+          "title": "Case 1: max env install",
+          "source_line": 94,
+          "assertion_count": 6,
+          "status": "covered",
+          "replacement": "explicit frozen plan path and markers",
+          "rationale": "The runtime does not heuristically discover plans.",
+          "test_ids": [
+            "tests.test_plan_contract.PlanContractTest.test_valid_parallel_plan_from_path_and_stdin"
+          ]
+        },
+        {
+          "id": "case-002",
+          "title": "Case 2: max env diagnose",
+          "source_line": 111,
+          "assertion_count": 7,
+          "status": "covered",
+          "replacement": "explicit frozen plan path and markers",
+          "rationale": "The runtime does not heuristically discover plans.",
+          "test_ids": [
+            "tests.test_plan_contract.PlanContractTest.test_valid_parallel_plan_from_path_and_stdin"
+          ]
+        },
+        {
+          "id": "case-003",
+          "title": "Case 3: uninstall",
+          "source_line": 148,
+          "assertion_count": 1,
+          "status": "covered",
+          "replacement": "explicit frozen plan path and markers",
+          "rationale": "The runtime does not heuristically discover plans.",
+          "test_ids": [
+            "tests.test_plan_contract.PlanContractTest.test_valid_parallel_plan_from_path_and_stdin"
+          ]
+        },
+        {
+          "id": "case-004",
+          "title": "Case 4: copilot env install",
+          "source_line": 156,
+          "assertion_count": 6,
+          "status": "covered",
+          "replacement": "explicit frozen plan path and markers",
+          "rationale": "The runtime does not heuristically discover plans.",
+          "test_ids": [
+            "tests.test_plan_contract.PlanContractTest.test_valid_parallel_plan_from_path_and_stdin"
+          ]
+        },
+        {
+          "id": "case-005",
+          "title": "Case 5: copilot env diagnose",
+          "source_line": 173,
+          "assertion_count": 7,
+          "status": "covered",
+          "replacement": "explicit frozen plan path and markers",
+          "rationale": "The runtime does not heuristically discover plans.",
+          "test_ids": [
+            "tests.test_plan_contract.PlanContractTest.test_valid_parallel_plan_from_path_and_stdin"
+          ]
+        }
+      ]
+    },
+    {
+      "fixture": "test-reviewer-compat.sh",
+      "source_blob": "3577eef06db7e17d7897037fb1a300d03e4aaab5",
+      "precondition_assertion_count": 0,
+      "cases": [
+        {
+          "id": "case-001",
+          "title": "子测 A：配置一致性 lint",
+          "source_line": 31,
+          "assertion_count": 12,
+          "status": "covered",
+          "replacement": "custom Reviewer result contract",
+          "rationale": "Reviewer completion uses a stable structured marker.",
+          "test_ids": [
+            "tests.test_reviewer_prerequisite_order.ReviewerPrerequisiteOrderTest.test_review_completion_must_still_see_verified_candidate"
+          ]
+        },
+        {
+          "id": "case-002",
+          "title": "子测 B：live smoke",
+          "source_line": 75,
+          "assertion_count": 1,
+          "status": "covered",
+          "replacement": "custom Reviewer result contract",
+          "rationale": "Reviewer completion uses a stable structured marker.",
+          "test_ids": [
+            "tests.test_reviewer_prerequisite_order.ReviewerPrerequisiteOrderTest.test_review_completion_must_still_see_verified_candidate"
+          ]
+        }
+      ]
+    },
+    {
+      "fixture": "test-reviewer-timing-check-phase.sh",
+      "source_blob": "d904d84add49443cdd65e5f83a38994c231af3a9",
+      "precondition_assertion_count": 1,
+      "cases": [
+        {
+          "id": "case-001",
+          "title": "Case A: phase=active → exit 2（拦）",
+          "source_line": 55,
+          "assertion_count": 3,
+          "status": "covered",
+          "replacement": "start and completion prerequisite snapshots",
+          "rationale": "Review cannot be started before required evidence exists.",
+          "test_ids": [
+            "tests.test_reviewer_prerequisite_order.ReviewerPrerequisiteOrderTest.test_review_completion_must_still_see_verified_candidate",
+            "tests.test_full_driver_v4_contract.FullDriverV4ContractTest.test_skill_automatically_loops_over_the_complete_action_surface"
+          ]
+        },
+        {
+          "id": "case-002",
+          "title": "Case B: phase=passed_pending_review → exit 0（放行，reviewer-as-gate 主链路）",
+          "source_line": 71,
+          "assertion_count": 2,
+          "status": "covered",
+          "replacement": "start and completion prerequisite snapshots",
+          "rationale": "Review cannot be started before required evidence exists.",
+          "test_ids": [
+            "tests.test_reviewer_prerequisite_order.ReviewerPrerequisiteOrderTest.test_review_completion_must_still_see_verified_candidate",
+            "tests.test_full_driver_v4_contract.FullDriverV4ContractTest.test_skill_automatically_loops_over_the_complete_action_surface"
+          ]
+        },
+        {
+          "id": "case-003",
+          "title": "Case C: 缺 phase → exit 0（放行）",
+          "source_line": 86,
+          "assertion_count": 2,
+          "status": "covered",
+          "replacement": "start and completion prerequisite snapshots",
+          "rationale": "Review cannot be started before required evidence exists.",
+          "test_ids": [
+            "tests.test_reviewer_prerequisite_order.ReviewerPrerequisiteOrderTest.test_review_completion_must_still_see_verified_candidate",
+            "tests.test_full_driver_v4_contract.FullDriverV4ContractTest.test_skill_automatically_loops_over_the_complete_action_surface"
+          ]
+        },
+        {
+          "id": "case-004",
+          "title": "Case E: subagent_type=tester → exit 0（不拦非 reviewer subagent）",
+          "source_line": 100,
+          "assertion_count": 2,
+          "status": "covered",
+          "replacement": "start and completion prerequisite snapshots",
+          "rationale": "Review cannot be started before required evidence exists.",
+          "test_ids": [
+            "tests.test_reviewer_prerequisite_order.ReviewerPrerequisiteOrderTest.test_review_completion_must_still_see_verified_candidate",
+            "tests.test_full_driver_v4_contract.FullDriverV4ContractTest.test_skill_automatically_loops_over_the_complete_action_surface"
+          ]
+        }
+      ]
+    },
+    {
+      "fixture": "test-reward-hacking-detect.sh",
+      "source_blob": "96761a7cee37970f6f6e37a47ac7e4c28eefe69a",
+      "precondition_assertion_count": 0,
+      "cases": [
+        {
+          "id": "case-001",
+          "title": "配置 lint：stop hook 含 V4.0 reward hacking 机械检测",
+          "source_line": 22,
+          "assertion_count": 7,
+          "status": "covered",
+          "replacement": "protected runner paths plus Reviewer test audit",
+          "rationale": "Runner weakening and test bypasses cannot silently create PASS.",
+          "test_ids": [
+            "tests.test_role_ownership.RoleOwnershipTest.test_owned_writes_are_ready",
+            "tests.test_reviewer_prerequisite_order.ReviewerPrerequisiteOrderTest.test_review_completion_must_still_see_verified_candidate"
+          ]
+        },
+        {
+          "id": "case-002",
+          "title": "关键词检测算法验证（与 stop hook V4.0 同清单）",
+          "source_line": 33,
+          "assertion_count": 0,
+          "status": "covered",
+          "replacement": "protected runner paths plus Reviewer test audit",
+          "rationale": "Runner weakening and test bypasses cannot silently create PASS.",
+          "test_ids": [
+            "tests.test_role_ownership.RoleOwnershipTest.test_owned_writes_are_ready",
+            "tests.test_reviewer_prerequisite_order.ReviewerPrerequisiteOrderTest.test_review_completion_must_still_see_verified_candidate"
+          ]
+        },
+        {
+          "id": "case-003",
+          "title": "B1: .claude/loop.yml 加 --reruns 2",
+          "source_line": 38,
+          "assertion_count": 2,
+          "status": "covered",
+          "replacement": "protected runner paths plus Reviewer test audit",
+          "rationale": "Runner weakening and test bypasses cannot silently create PASS.",
+          "test_ids": [
+            "tests.test_role_ownership.RoleOwnershipTest.test_owned_writes_are_ready",
+            "tests.test_reviewer_prerequisite_order.ReviewerPrerequisiteOrderTest.test_review_completion_must_still_see_verified_candidate"
+          ]
+        },
+        {
+          "id": "case-004",
+          "title": "B2: pyproject.toml 加 xfail",
+          "source_line": 45,
+          "assertion_count": 2,
+          "status": "covered",
+          "replacement": "protected runner paths plus Reviewer test audit",
+          "rationale": "Runner weakening and test bypasses cannot silently create PASS.",
+          "test_ids": [
+            "tests.test_role_ownership.RoleOwnershipTest.test_owned_writes_are_ready",
+            "tests.test_reviewer_prerequisite_order.ReviewerPrerequisiteOrderTest.test_review_completion_must_still_see_verified_candidate"
+          ]
+        },
+        {
+          "id": "case-005",
+          "title": "B3: tests/test_foo.py 加 @pytest.mark.flaky",
+          "source_line": 52,
+          "assertion_count": 3,
+          "status": "covered",
+          "replacement": "protected runner paths plus Reviewer test audit",
+          "rationale": "Runner weakening and test bypasses cannot silently create PASS.",
+          "test_ids": [
+            "tests.test_role_ownership.RoleOwnershipTest.test_owned_writes_are_ready",
+            "tests.test_reviewer_prerequisite_order.ReviewerPrerequisiteOrderTest.test_review_completion_must_still_see_verified_candidate"
+          ]
+        },
+        {
+          "id": "case-006",
+          "title": "B5: -k 'not slow' 排除模式",
+          "source_line": 61,
+          "assertion_count": 2,
+          "status": "covered",
+          "replacement": "protected runner paths plus Reviewer test audit",
+          "rationale": "Runner weakening and test bypasses cannot silently create PASS.",
+          "test_ids": [
+            "tests.test_role_ownership.RoleOwnershipTest.test_owned_writes_are_ready",
+            "tests.test_reviewer_prerequisite_order.ReviewerPrerequisiteOrderTest.test_review_completion_must_still_see_verified_candidate"
+          ]
+        },
+        {
+          "id": "case-007",
+          "title": "B4: src/foo.py 普通实现改动（控制组）",
+          "source_line": 68,
+          "assertion_count": 3,
+          "status": "covered",
+          "replacement": "protected runner paths plus Reviewer test audit",
+          "rationale": "Runner weakening and test bypasses cannot silently create PASS.",
+          "test_ids": [
+            "tests.test_role_ownership.RoleOwnershipTest.test_owned_writes_are_ready",
+            "tests.test_reviewer_prerequisite_order.ReviewerPrerequisiteOrderTest.test_review_completion_must_still_see_verified_candidate"
+          ]
+        }
+      ]
+    },
+    {
+      "fixture": "test-run-pass-cmd-args.sh",
+      "source_blob": "829baa82a55f3189a9a5d2a62f40d7183799dd80",
+      "precondition_assertion_count": 1,
+      "cases": [
+        {
+          "id": "case-001",
+          "title": "Case 1: 三参调用 — 日志落 LOG_ROOT（RUN_CWD != LOG_ROOT）",
+          "source_line": 68,
+          "assertion_count": 3,
+          "status": "covered",
+          "replacement": "frozen pass_cmd stage contract",
+          "rationale": "Commands, timeouts and working directory are validated before execution.",
+          "test_ids": [
+            "tests.test_verify_contract.VerifyContractTest.test_pass_records_verified_head"
+          ]
+        },
+        {
+          "id": "case-002",
+          "title": "Case 2: 两参调用（缺 log_root）— 日志落 RUN_CWD",
+          "source_line": 82,
+          "assertion_count": 2,
+          "status": "covered",
+          "replacement": "frozen pass_cmd stage contract",
+          "rationale": "Commands, timeouts and working directory are validated before execution.",
+          "test_ids": [
+            "tests.test_verify_contract.VerifyContractTest.test_pass_records_verified_head"
+          ]
+        },
+        {
+          "id": "case-003",
+          "title": "Case 3: 三参 + FAIL stage — FAIL 消息日志路径指向 LOG_ROOT",
+          "source_line": 93,
+          "assertion_count": 4,
+          "status": "covered",
+          "replacement": "frozen pass_cmd stage contract",
+          "rationale": "Commands, timeouts and working directory are validated before execution.",
+          "test_ids": [
+            "tests.test_verify_contract.VerifyContractTest.test_pass_records_verified_head"
+          ]
+        },
+        {
+          "id": "case-004",
+          "title": "Case 4: RUN_CWD 无 loop.yml → fallback 警告 + 用 LOG_ROOT loop.yml 跑",
+          "source_line": 108,
+          "assertion_count": 3,
+          "status": "covered",
+          "replacement": "frozen pass_cmd stage contract",
+          "rationale": "Commands, timeouts and working directory are validated before execution.",
+          "test_ids": [
+            "tests.test_verify_contract.VerifyContractTest.test_pass_records_verified_head"
+          ]
+        },
+        {
+          "id": "case-005",
+          "title": "Case 5: #67 回归 — 第三参数传 worktree → FATAL；传主仓 → 真跑并 PASS",
+          "source_line": 150,
+          "assertion_count": 6,
+          "status": "covered",
+          "replacement": "frozen pass_cmd stage contract",
+          "rationale": "Commands, timeouts and working directory are validated before execution.",
+          "test_ids": [
+            "tests.test_verify_contract.VerifyContractTest.test_pass_records_verified_head"
+          ]
+        },
+        {
+          "id": "case-006",
+          "title": "Case 6: pass_cmd 为空 → FATAL",
+          "source_line": 173,
+          "assertion_count": 3,
+          "status": "covered",
+          "replacement": "frozen pass_cmd stage contract",
+          "rationale": "Commands, timeouts and working directory are validated before execution.",
+          "test_ids": [
+            "tests.test_verify_contract.VerifyContractTest.test_pass_records_verified_head"
+          ]
+        },
+        {
+          "id": "case-007",
+          "title": "Case 7: loop.yml yaml 损坏 → FATAL",
+          "source_line": 190,
+          "assertion_count": 3,
+          "status": "covered",
+          "replacement": "frozen pass_cmd stage contract",
+          "rationale": "Commands, timeouts and working directory are validated before execution.",
+          "test_ids": [
+            "tests.test_verify_contract.VerifyContractTest.test_pass_records_verified_head"
+          ]
+        }
+      ]
+    },
+    {
+      "fixture": "test-stop-hook-cursor.sh",
+      "source_blob": "2a4caf3f04c918e2796c5c26217b627c7b358179",
+      "precondition_assertion_count": 0,
+      "cases": [
+        {
+          "id": "case-001",
+          "title": "Step 2: 首次 Stop（工作树干净）→ 静默",
+          "source_line": 56,
+          "assertion_count": 4,
+          "status": "retired",
+          "replacement": "native lifecycle turn identity",
+          "rationale": "Transcript cursors are not a reliable source of execution truth.",
+          "test_ids": [
+            "tests.test_agent_thread_resume.AgentThreadResumeContractTest.test_tester_and_reviewer_each_create_once_then_follow_up_same_thread"
+          ]
+        },
+        {
+          "id": "case-002",
+          "title": "Step 3: 同 HEAD 再次 Stop → 仍 exit 0",
+          "source_line": 63,
+          "assertion_count": 3,
+          "status": "retired",
+          "replacement": "native lifecycle turn identity",
+          "rationale": "Transcript cursors are not a reliable source of execution truth.",
+          "test_ids": [
+            "tests.test_agent_thread_resume.AgentThreadResumeContractTest.test_tester_and_reviewer_each_create_once_then_follow_up_same_thread"
+          ]
+        },
+        {
+          "id": "case-003",
+          "title": "Step 4: 新 commit + 工作树干净 → 仍 exit 0",
+          "source_line": 69,
+          "assertion_count": 3,
+          "status": "retired",
+          "replacement": "native lifecycle turn identity",
+          "rationale": "Transcript cursors are not a reliable source of execution truth.",
+          "test_ids": [
+            "tests.test_agent_thread_resume.AgentThreadResumeContractTest.test_tester_and_reviewer_each_create_once_then_follow_up_same_thread"
+          ]
+        },
+        {
+          "id": "case-004",
+          "title": "Step 5: 未提交非文档改动 + 无 local.md → exit 0",
+          "source_line": 76,
+          "assertion_count": 4,
+          "status": "retired",
+          "replacement": "native lifecycle turn identity",
+          "rationale": "Transcript cursors are not a reliable source of execution truth.",
+          "test_ids": [
+            "tests.test_agent_thread_resume.AgentThreadResumeContractTest.test_tester_and_reviewer_each_create_once_then_follow_up_same_thread"
+          ]
+        },
+        {
+          "id": "case-005",
+          "title": "Step 6: 游标损坏 + 无 local.md → exit 0",
+          "source_line": 84,
+          "assertion_count": 2,
+          "status": "retired",
+          "replacement": "native lifecycle turn identity",
+          "rationale": "Transcript cursors are not a reliable source of execution truth.",
+          "test_ids": [
+            "tests.test_agent_thread_resume.AgentThreadResumeContractTest.test_tester_and_reviewer_each_create_once_then_follow_up_same_thread"
+          ]
+        },
+        {
+          "id": "case-006",
+          "title": "Step 7: 纯文档改动 → 静默放行",
+          "source_line": 92,
+          "assertion_count": 3,
+          "status": "retired",
+          "replacement": "native lifecycle turn identity",
+          "rationale": "Transcript cursors are not a reliable source of execution truth.",
+          "test_ids": [
+            "tests.test_agent_thread_resume.AgentThreadResumeContractTest.test_tester_and_reviewer_each_create_once_then_follow_up_same_thread"
+          ]
+        },
+        {
+          "id": "case-007",
+          "title": "Step 8: mixed 改动（doc + code）→ 无 local.md 仍 exit 0",
+          "source_line": 112,
+          "assertion_count": 2,
+          "status": "retired",
+          "replacement": "native lifecycle turn identity",
+          "rationale": "Transcript cursors are not a reliable source of execution truth.",
+          "test_ids": [
+            "tests.test_agent_thread_resume.AgentThreadResumeContractTest.test_tester_and_reviewer_each_create_once_then_follow_up_same_thread"
+          ]
+        },
+        {
+          "id": "case-008",
+          "title": "Step 9: docs/ 子目录任意文件改动 → 静默放行",
+          "source_line": 118,
+          "assertion_count": 2,
+          "status": "retired",
+          "replacement": "native lifecycle turn identity",
+          "rationale": "Transcript cursors are not a reliable source of execution truth.",
+          "test_ids": [
+            "tests.test_agent_thread_resume.AgentThreadResumeContractTest.test_tester_and_reviewer_each_create_once_then_follow_up_same_thread"
+          ]
+        }
+      ]
+    },
+    {
+      "fixture": "test-stop-hook-debug-log.sh",
+      "source_blob": "b2627d3bc25b4183a78373bd2333fd499c00a673",
+      "precondition_assertion_count": 3,
+      "cases": [
+        {
+          "id": "case-001",
+          "title": "A1: 基础写入 + phase 顺序",
+          "source_line": 74,
+          "assertion_count": 11,
+          "status": "rescue",
+          "replacement": "ledger events and doctor output",
+          "rationale": "Diagnostics are structured around runtime facts rather than hook text logs.",
+          "test_ids": [
+            "tests.test_diagnostics_progress.DiagnosticsAndProgressContractTest.test_doctor_is_read_only_and_reports_orphan_loop_worktree"
+          ]
+        },
+        {
+          "id": "case-002",
+          "title": "A2: IO 失败容忍",
+          "source_line": 125,
+          "assertion_count": 2,
+          "status": "rescue",
+          "replacement": "ledger events and doctor output",
+          "rationale": "Diagnostics are structured around runtime facts rather than hook text logs.",
+          "test_ids": [
+            "tests.test_diagnostics_progress.DiagnosticsAndProgressContractTest.test_doctor_is_read_only_and_reports_orphan_loop_worktree"
+          ]
+        },
+        {
+          "id": "case-003",
+          "title": "A3: rotate 触发（log > 1 MB → .1 出现）",
+          "source_line": 146,
+          "assertion_count": 4,
+          "status": "rescue",
+          "replacement": "ledger events and doctor output",
+          "rationale": "Diagnostics are structured around runtime facts rather than hook text logs.",
+          "test_ids": [
+            "tests.test_diagnostics_progress.DiagnosticsAndProgressContractTest.test_doctor_is_read_only_and_reports_orphan_loop_worktree"
+          ]
+        },
+        {
+          "id": "case-004",
+          "title": "A4: diagnose 6 段 + dry-run",
+          "source_line": 177,
+          "assertion_count": 9,
+          "status": "rescue",
+          "replacement": "ledger events and doctor output",
+          "rationale": "Diagnostics are structured around runtime facts rather than hook text logs.",
+          "test_ids": [
+            "tests.test_diagnostics_progress.DiagnosticsAndProgressContractTest.test_doctor_is_read_only_and_reports_orphan_loop_worktree"
+          ]
+        },
+        {
+          "id": "case-005",
+          "title": "A5: setup 自检（fake HOME）",
+          "source_line": 218,
+          "assertion_count": 7,
+          "status": "rescue",
+          "replacement": "ledger events and doctor output",
+          "rationale": "Diagnostics are structured around runtime facts rather than hook text logs.",
+          "test_ids": [
+            "tests.test_diagnostics_progress.DiagnosticsAndProgressContractTest.test_doctor_is_read_only_and_reports_orphan_loop_worktree"
+          ]
+        },
+        {
+          "id": "case-006",
+          "title": "A6: CWD 在子目录时不分裂日志路径",
+          "source_line": 257,
+          "assertion_count": 5,
+          "status": "rescue",
+          "replacement": "ledger events and doctor output",
+          "rationale": "Diagnostics are structured around runtime facts rather than hook text logs.",
+          "test_ids": [
+            "tests.test_diagnostics_progress.DiagnosticsAndProgressContractTest.test_doctor_is_read_only_and_reports_orphan_loop_worktree"
+          ]
+        },
+        {
+          "id": "case-007",
+          "title": "A7: log_path 含空格不截断",
+          "source_line": 279,
+          "assertion_count": 2,
+          "status": "rescue",
+          "replacement": "ledger events and doctor output",
+          "rationale": "Diagnostics are structured around runtime facts rather than hook text logs.",
+          "test_ids": [
+            "tests.test_diagnostics_progress.DiagnosticsAndProgressContractTest.test_doctor_is_read_only_and_reports_orphan_loop_worktree"
+          ]
+        }
+      ]
+    },
+    {
+      "fixture": "test-stop-hook-race-and-commit-msg.sh",
+      "source_blob": "a5b5fb2abcf52c8b3fe85275099cd988ace5b935",
+      "precondition_assertion_count": 3,
+      "cases": [
+        {
+          "id": "case-001",
+          "title": "场景 A：flock 并发互斥",
+          "source_line": 21,
+          "assertion_count": 5,
+          "status": "covered",
+          "replacement": "repository lock and staged final commit",
+          "rationale": "Concurrent finalization and commit hooks are transactionally guarded.",
+          "test_ids": [
+            "tests.test_finalize_lifecycle.FinalizeLifecycleTest.test_finalization_squashes_all_role_commits_and_cleans_worktrees"
+          ]
+        },
+        {
+          "id": "case-002",
+          "title": "场景 B：auto-commit message 语义化",
+          "source_line": 57,
+          "assertion_count": 5,
+          "status": "covered",
+          "replacement": "repository lock and staged final commit",
+          "rationale": "Concurrent finalization and commit hooks are transactionally guarded.",
+          "test_ids": [
+            "tests.test_finalize_lifecycle.FinalizeLifecycleTest.test_finalization_squashes_all_role_commits_and_cleans_worktrees"
+          ]
+        },
+        {
+          "id": "case-003",
+          "title": "场景 C：task_description 为空时降级到 iter N",
+          "source_line": 110,
+          "assertion_count": 3,
+          "status": "covered",
+          "replacement": "repository lock and staged final commit",
+          "rationale": "Concurrent finalization and commit hooks are transactionally guarded.",
+          "test_ids": [
+            "tests.test_finalize_lifecycle.FinalizeLifecycleTest.test_finalization_squashes_all_role_commits_and_cleans_worktrees"
+          ]
+        },
+        {
+          "id": "case-004",
+          "title": "场景 D：PASS 路径 cleanup rm state 后不报错",
+          "source_line": 160,
+          "assertion_count": 8,
+          "status": "covered",
+          "replacement": "repository lock and staged final commit",
+          "rationale": "Concurrent finalization and commit hooks are transactionally guarded.",
+          "test_ids": [
+            "tests.test_finalize_lifecycle.FinalizeLifecycleTest.test_finalization_squashes_all_role_commits_and_cleans_worktrees"
+          ]
+        }
+      ]
+    },
+    {
+      "fixture": "test-stop-hook-slug-binding.sh",
+      "source_blob": "2b8e6a579818ccd129e71bec9901a53eaa3f9a14",
+      "precondition_assertion_count": 0,
+      "cases": [
+        {
+          "id": "case-001",
+          "title": "A1: active state → EC=2",
+          "source_line": 12,
+          "assertion_count": 1,
+          "status": "retired",
+          "replacement": "run id plus session and agent identity",
+          "rationale": "Slug and CWD inference are replaced by explicit identities.",
+          "test_ids": [
+            "tests.test_hook_runtime_integration.HookRuntimeIntegrationTest.test_real_hook_finds_run_from_tester_and_builder_worktrees"
+          ]
+        },
+        {
+          "id": "case-002",
+          "title": "A2: state 存在 + 无 local.md → EC=2（V3.4 不依赖 local.md）",
+          "source_line": 17,
+          "assertion_count": 1,
+          "status": "retired",
+          "replacement": "run id plus session and agent identity",
+          "rationale": "Slug and CWD inference are replaced by explicit identities.",
+          "test_ids": [
+            "tests.test_hook_runtime_integration.HookRuntimeIntegrationTest.test_real_hook_finds_run_from_tester_and_builder_worktrees"
+          ]
+        },
+        {
+          "id": "case-003",
+          "title": "A3: 无 state 文件 → exit 0",
+          "source_line": 22,
+          "assertion_count": 1,
+          "status": "retired",
+          "replacement": "run id plus session and agent identity",
+          "rationale": "Slug and CWD inference are replaced by explicit identities.",
+          "test_ids": [
+            "tests.test_hook_runtime_integration.HookRuntimeIntegrationTest.test_real_hook_finds_run_from_tester_and_builder_worktrees"
+          ]
+        },
+        {
+          "id": "case-004",
+          "title": "D1: loop.yml + dirty + 无 state → 不兜底激活",
+          "source_line": 27,
+          "assertion_count": 2,
+          "status": "retired",
+          "replacement": "run id plus session and agent identity",
+          "rationale": "Slug and CWD inference are replaced by explicit identities.",
+          "test_ids": [
+            "tests.test_hook_runtime_integration.HookRuntimeIntegrationTest.test_real_hook_finds_run_from_tester_and_builder_worktrees"
+          ]
+        }
+      ]
+    },
+    {
+      "fixture": "test-worktree-commit-only.sh",
+      "source_blob": "49805c653d834e78db710a98f42675ff512f36d5",
+      "precondition_assertion_count": 0,
+      "cases": [
+        {
+          "id": "case-001",
+          "title": "Case A: worktree dirty → COMMIT_DONE",
+          "source_line": 18,
+          "assertion_count": 5,
+          "status": "covered",
+          "replacement": "checkpointed candidate and squash finalization",
+          "rationale": "Only committed candidate trees can produce evidence and final commits.",
+          "test_ids": [
+            "tests.test_verify_contract.VerifyContractTest.test_pass_records_verified_head",
+            "tests.test_full_driver_v4_contract.FullDriverV4ContractTest.test_skill_automatically_loops_over_the_complete_action_surface"
+          ]
+        },
+        {
+          "id": "case-002",
+          "title": "Case B: worktree 干净 → NOOP",
+          "source_line": 40,
+          "assertion_count": 1,
+          "status": "covered",
+          "replacement": "checkpointed candidate and squash finalization",
+          "rationale": "Only committed candidate trees can produce evidence and final commits.",
+          "test_ids": [
+            "tests.test_verify_contract.VerifyContractTest.test_pass_records_verified_head",
+            "tests.test_full_driver_v4_contract.FullDriverV4ContractTest.test_skill_automatically_loops_over_the_complete_action_surface"
+          ]
+        },
+        {
+          "id": "case-003",
+          "title": "Case C: bare 模式干净 → NOOP",
+          "source_line": 51,
+          "assertion_count": 1,
+          "status": "covered",
+          "replacement": "checkpointed candidate and squash finalization",
+          "rationale": "Only committed candidate trees can produce evidence and final commits.",
+          "test_ids": [
+            "tests.test_verify_contract.VerifyContractTest.test_pass_records_verified_head",
+            "tests.test_full_driver_v4_contract.FullDriverV4ContractTest.test_skill_automatically_loops_over_the_complete_action_surface"
+          ]
+        },
+        {
+          "id": "case-004",
+          "title": "Case D: bare 模式 dirty → COMMIT_DONE",
+          "source_line": 62,
+          "assertion_count": 2,
+          "status": "covered",
+          "replacement": "checkpointed candidate and squash finalization",
+          "rationale": "Only committed candidate trees can produce evidence and final commits.",
+          "test_ids": [
+            "tests.test_verify_contract.VerifyContractTest.test_pass_records_verified_head",
+            "tests.test_full_driver_v4_contract.FullDriverV4ContractTest.test_skill_automatically_loops_over_the_complete_action_surface"
+          ]
+        },
+        {
+          "id": "case-005",
+          "title": "Case E: state 不存在 → ERROR",
+          "source_line": 79,
+          "assertion_count": 2,
+          "status": "covered",
+          "replacement": "checkpointed candidate and squash finalization",
+          "rationale": "Only committed candidate trees can produce evidence and final commits.",
+          "test_ids": [
+            "tests.test_verify_contract.VerifyContractTest.test_pass_records_verified_head",
+            "tests.test_full_driver_v4_contract.FullDriverV4ContractTest.test_skill_automatically_loops_over_the_complete_action_surface"
+          ]
+        }
+      ]
+    },
+    {
+      "fixture": "test-zombie-selfheal.sh",
+      "source_blob": "3ae99c3b70d16092d6cbe36a627ac443ff4ec985",
+      "precondition_assertion_count": 0,
+      "cases": [
+        {
+          "id": "case-001",
+          "title": "S1: phase 缺失僵尸归档",
+          "source_line": 21,
+          "assertion_count": 5,
+          "status": "rescue",
+          "replacement": "fail-closed migration and doctor",
+          "rationale": "Corrupt or missing state is reported and never silently discarded.",
+          "test_ids": [
+            "tests.test_diagnostics_progress.DiagnosticsAndProgressContractTest.test_doctor_is_read_only_and_reports_orphan_loop_worktree"
+          ]
+        },
+        {
+          "id": "case-002",
+          "title": "S2: EARLY_STOP max_iter → 归档 + exit 2",
+          "source_line": 52,
+          "assertion_count": 5,
+          "status": "rescue",
+          "replacement": "fail-closed migration and doctor",
+          "rationale": "Corrupt or missing state is reported and never silently discarded.",
+          "test_ids": [
+            "tests.test_diagnostics_progress.DiagnosticsAndProgressContractTest.test_doctor_is_read_only_and_reports_orphan_loop_worktree"
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Legacy parity corpus 现在从冻结 source commit/tree 机械展开为 51 个 fixture、252 个 case 和 824 个
+  assertion call，每个 case 显式标记 covered、rescue 或 retired，并绑定到真实存在的 unittest method。
+  Assurance v4 同时恢复 Git-object 文档引用扫描：定义迁移、删除或重命名后残留的 qualified Markdown
+  pointer 会在进入 Tester/Reviewer 前 fail closed，symbol-only 提及交给 Reviewer 做语义判断；旧 v4
+  ledger 缺少 scan contract version 时保持兼容（#82）。
+
 - Assurance v4 的 blackbox acceptance case 现在逐条冻结真实观察面、实际 execution ids、必需判据维度
   和可选外部目标；Core 在 stage 与最终 evidence 使用同一校验，拒绝用 API、fixture、内部状态或其他
   表面的代理证据满足声明。旧 active v4 ledger 保留 command-only 兼容，deployment restore、同 run
