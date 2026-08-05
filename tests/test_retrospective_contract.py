@@ -94,10 +94,21 @@ class RetrospectiveContractTest(unittest.TestCase):
                 f"BUILDER_RETROSPECTIVE_READY:{snapshot['snapshot_digest']}:"
                 f"{stored_report['report_digest']}"
             ),
+            "required_user_block": (
+                "Builder-loop retrospective complete.\n"
+                "Runs: 1; Signals: 1; Issue routes: 1.\n"
+                f"Report: {stored_report['report_digest']}\n"
+                f"BUILDER_RETROSPECTIVE_READY:{snapshot['snapshot_digest']}:"
+                f"{stored_report['report_digest']}"
+            ),
         }
         for value in (snapshot, report_input, stored_report, status):
             with self.subTest(value=value):
                 validator.validate(value)
+        self.assertIn(
+            "required_user_block",
+            RETROSPECTIVE_SCHEMA["$defs"]["status"]["properties"],
+        )
 
         invalid_advisory = {
             "schema_version": 1,
@@ -213,6 +224,7 @@ class RetrospectiveContractTest(unittest.TestCase):
         for token in (
             "retrospective-status",
             "record-retrospective",
+            "required_user_block",
             "BUILDER_INPUT_REQUIRED",
             "BUILDER_RETROSPECTIVE_READY",
             "resolve-external-problem",

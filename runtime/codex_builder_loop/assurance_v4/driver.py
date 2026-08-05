@@ -95,21 +95,7 @@ def next_action(repo_value: str | Path, run_value: str) -> dict[str, Any]:
     repo = resolve_repo(repo_value)
     run_id = ensure_run_id(run_value)
     ledger = read_ledger(repo, run_id)
-    pending_dispatch = ledger.get("dispatch_intent")
-    if isinstance(pending_dispatch, dict):
-        return {
-            "driver_protocol_version": 1,
-            "status": "CONTINUE",
-            "run_id": run_id,
-            "action": pending_dispatch["action"],
-            "reason": f"dispatch_{pending_dispatch['state']}",
-            "action_id": pending_dispatch["action_id"],
-            "driver_enforced": True,
-            "driver_runtime_kind": ledger.get("driver_runtime", {}).get("kind")
-            if isinstance(ledger.get("driver_runtime"), dict)
-            else None,
-            "dispatch": pending_dispatch,
-        }
+
     def decision(status: str, action: str, reason: str, **payload: Any) -> dict[str, Any]:
         identity = digest(
             {
@@ -134,6 +120,87 @@ def next_action(repo_value: str | Path, run_value: str) -> dict[str, Any]:
             if isinstance(ledger.get("driver_runtime"), dict)
             else None,
             **payload,
+        }
+
+    def problem_decision(
+        problem: Mapping[str, Any], problems: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        owner = str(problem.get("owner"))
+        if owner == "builder":
+            return decision(
+                "CONTINUE",
+                "builder_fix",
+                "open_builder_problem",
+                problem=problem,
+                agent=ledger["facets"]["execution"]["agents"].get("builder"),
+            )
+        if owner == "tester":
+            return decision(
+                "CONTINUE",
+                "tester_fix",
+                "open_tester_problem",
+                problem=problem,
+                agent=ledger["facets"]["execution"]["agents"].get("tester"),
+            )
+        blocking = {
+            "plan": ("contract_decision", "open_plan_problem"),
+            "external_platform": (
+                "external_problem_decision",
+                "open_external_platform_problem",
+            ),
+            "builder_loop": (
+                "builder_loop_problem_decision",
+                "open_builder_loop_problem",
+            ),
+            "current_project": (
+                "current_project_problem_decision",
+                "open_current_project_problem",
+            ),
+        }
+        if owner in blocking:
+            action, reason = blocking[owner]
+            related = [item for item in problems if item.get("owner") == owner]
+            return decision(
+                "NEEDS_USER",
+                action,
+                reason,
+                problem=problem,
+                problems=related,
+            )
+        return decision(
+            "NEEDS_USER",
+            "problem_owner_decision",
+            "open_problem_owner_unknown",
+            problem=problem,
+        )
+
+    driver_failure = ledger.get("driver_failure")
+    if isinstance(driver_failure, dict) and driver_failure.get("state") in {
+        "recorded",
+        "recovering",
+    }:
+        return decision(
+            "CONTINUE",
+            "complete_driver_failure",
+            f"driver_failure_{driver_failure['state']}",
+            driver_failure=driver_failure,
+        )
+    if ledger["phase"] == "failed":
+        return decision("STOP", "none", "failed", driver_failure=driver_failure)
+    pending_dispatch = ledger.get("dispatch_intent")
+    if isinstance(pending_dispatch, dict):
+        return {
+            "driver_protocol_version": 1,
+            "status": "CONTINUE",
+            "run_id": run_id,
+            "action": pending_dispatch["action"],
+            "reason": f"dispatch_{pending_dispatch['state']}",
+            "action_id": pending_dispatch["action_id"],
+            "driver_enforced": True,
+            "driver_runtime_kind": ledger.get("driver_runtime", {}).get("kind")
+            if isinstance(ledger.get("driver_runtime"), dict)
+            else None,
+            "dispatch": pending_dispatch,
         }
     if ledger["phase"] == "finalizing":
         return decision("CONTINUE", "recover_finalize", "persisted_finalize_intent")
@@ -193,17 +260,12 @@ def next_action(repo_value: str | Path, run_value: str) -> dict[str, Any]:
     open_problems = [
         item for item in ledger.get("problems", []) if item.get("status") == "open"
     ]
-    external_problems = [
-        item for item in open_problems if item.get("owner") == "external_platform"
+    blocking_problems = [
+        item
+        for item in open_problems
+        if item.get("owner")
+        in {"plan", "external_platform", "builder_loop", "current_project"}
     ]
-    if external_problems:
-        return decision(
-            "NEEDS_USER",
-            "external_problem_decision",
-            "open_external_platform_problem",
-            problem=external_problems[-1],
-            problems=external_problems,
-        )
     live_target = branch_head(repo, ledger["target_branch"])
     if live_target != ledger["target_start_head"]:
         return decision("CONTINUE", "rematerialize_target", "target_drift")
@@ -223,6 +285,8 @@ def next_action(repo_value: str | Path, run_value: str) -> dict[str, Any]:
     worktree_head = git(candidate_worktree, "rev-parse", "HEAD").stdout.strip()
     candidate_dirty = dirty_paths(candidate_worktree)
     if candidate_dirty:
+        if blocking_problems:
+            return problem_decision(blocking_problems[-1], open_problems)
         return decision(
             "CONTINUE",
             "builder_implement",
@@ -272,22 +336,8 @@ def next_action(repo_value: str | Path, run_value: str) -> dict[str, Any]:
             ],
         )
     if open_problems:
-        latest = open_problems[-1]
-        owner = latest.get("owner")
-        if owner == "plan":
-            return decision(
-                "NEEDS_USER",
-                "contract_decision",
-                "open_plan_problem",
-                problem=latest,
-            )
-        action = "tester_fix" if owner == "tester" else "builder_fix"
-        payload = {"problem": latest}
-        if action == "builder_fix":
-            payload["agent"] = execution["agents"].get("builder")
-        elif action == "tester_fix":
-            payload["agent"] = execution["agents"].get("tester")
-        return decision("CONTINUE", action, f"open_{owner}_problem", **payload)
+        latest = blocking_problems[-1] if blocking_problems else open_problems[-1]
+        return problem_decision(latest, open_problems)
     proof_failure = current_proof_failure(ledger)
     if isinstance(proof_failure, dict):
         if proof_failure.get("recovery") == "tester_diagnosis":

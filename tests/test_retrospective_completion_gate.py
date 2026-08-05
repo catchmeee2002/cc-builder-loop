@@ -13,6 +13,7 @@ from test_assurance_v4_contract import contract_for
 
 
 ROOT = Path(__file__).resolve().parents[1]
+HOOK = ROOT / "hooks" / "builder-loop.py"
 FALSE_NEGATIVE_FIXTURE = json.loads(
     (
         ROOT
@@ -457,12 +458,21 @@ class RetrospectiveCompletionGateTest(unittest.TestCase):
         pending = self.retrospective_status(session_id)
         self.assertEqual(pending.get("status"), "NEEDS_USER", pending)
         pending_block = pending["required_block"]
+        pending_user_block = pending["required_user_block"]
         self.assertIn("BUILDER_INPUT_REQUIRED", pending_block)
         self.assertIn(session_id, pending_block)
         self.assertIn(digest, pending_block)
         self.assertIn(needs_user_reason, pending_block)
         for signal in signals:
             self.assertIn(signal["signal_id"], pending_block)
+        self.assertIn("Runs:", pending_user_block)
+        self.assertIn("Signals:", pending_user_block)
+        self.assertIn("Pending:", pending_user_block)
+        self.assertIn(needs_user_reason, pending_user_block)
+        self.assertIn(mandatory["signal_id"], pending_user_block)
+        for signal in signals:
+            if signal["signal_id"] != mandatory["signal_id"]:
+                self.assertNotIn(signal["signal_id"], pending_user_block)
 
         first_report = copy.deepcopy(pending["report"])
         rc, replayed = self.record_report(session_id, needs_user_report)
@@ -470,6 +480,9 @@ class RetrospectiveCompletionGateTest(unittest.TestCase):
         replay_status = self.retrospective_status(session_id)
         self.assertEqual(replay_status.get("report"), first_report)
         self.assertEqual(replay_status.get("required_block"), pending_block)
+        self.assertEqual(
+            replay_status.get("required_user_block"), pending_user_block
+        )
 
         conflicting = copy.deepcopy(needs_user_report)
         conflicting["dispositions"][mandatory_index]["reason"] = (
@@ -493,6 +506,7 @@ class RetrospectiveCompletionGateTest(unittest.TestCase):
         ready = self.retrospective_status(session_id)
         self.assertEqual(ready.get("status"), "READY", ready)
         ready_block = ready["required_block"]
+        ready_user_block = ready["required_user_block"]
         report_digest = ready["report"]["report_digest"]
         self.assertIn("BUILDER_RETROSPECTIVE_READY", ready_block)
         self.assertIn(digest, ready_block)
@@ -503,6 +517,21 @@ class RetrospectiveCompletionGateTest(unittest.TestCase):
                 self.assertIn(disposition["reason"], ready_block)
             else:
                 self.assertIn(disposition["reference"], ready_block)
+        self.assertEqual(
+            ready_user_block.splitlines(),
+            [
+                "Builder-loop retrospective complete.",
+                (
+                    f"Runs: {len(snapshot['runs'])}; Signals: {len(signals)}; "
+                    f"Issue routes: {sum(item['disposition'] == 'issue' for item in complete)}."
+                ),
+                f"Report: {report_digest}",
+                f"BUILDER_RETROSPECTIVE_READY:{digest}:{report_digest}",
+            ],
+        )
+        for disposition in complete:
+            self.assertNotIn(disposition["signal_id"], ready_user_block)
+            self.assertNotIn(disposition.get("reference", "<missing>"), ready_user_block)
 
         ready_report_value = copy.deepcopy(ready["report"])
         rc, malformed = self.record_report(
@@ -548,6 +577,101 @@ class RetrospectiveCompletionGateTest(unittest.TestCase):
         self.assertNotEqual(
             stale_after_run["snapshot"]["snapshot_digest"], fact_digest
         )
+
+    def test_issue_routing_does_not_hide_an_active_run_decision(self) -> None:
+        session_id = "retrospective-active-decision-session"
+        run_id = "retrospective-active-decision-run"
+        self.start_run(run_id, session_id)
+        self.record_problems(
+            run_id,
+            [
+                {
+                    "key": "builder-loop-routing-gap",
+                    "summary": "Builder-loop owns the blocking orchestration problem.",
+                    "details": "The active run must wait for an explicit disposition.",
+                    "owner": "builder_loop",
+                }
+            ],
+        )
+
+        required = self.retrospective_status(session_id)
+        self.assertEqual(required.get("status"), "REQUIRED", required)
+        snapshot = required["snapshot"]
+        dispositions = self.complete_dispositions(snapshot["signals"])
+        rc, recorded = self.record_report(
+            session_id,
+            {
+                "schema_version": 1,
+                "snapshot_digest": snapshot["snapshot_digest"],
+                "dispositions": dispositions,
+            },
+        )
+        self.assertEqual(rc, 0, recorded)
+
+        pending = self.retrospective_status(session_id)
+        self.assertEqual(pending.get("status"), "NEEDS_USER", pending)
+        self.assertTrue(
+            all(item["disposition"] != "needs-user" for item in pending["report"]["dispositions"]),
+            pending,
+        )
+        user_block = pending["required_user_block"]
+        self.assertIn(run_id, user_block)
+        self.assertIn("builder_loop_problem_decision", user_block)
+        self.assertIn("BUILDER_INPUT_REQUIRED", user_block)
+        for item in dispositions:
+            if item["disposition"] == "issue":
+                self.assertNotIn(item["reference"], user_block)
+
+    def test_real_stop_hook_accepts_only_the_fresh_compact_core_block(self) -> None:
+        session_id = "retrospective-real-hook-session"
+        run_id = "retrospective-real-hook-run"
+        self.start_run(run_id, session_id)
+        self.abandon_run(run_id)
+        required = self.retrospective_status(session_id)
+        snapshot = required["snapshot"]
+        rc, recorded = self.record_report(
+            session_id,
+            {
+                "schema_version": 1,
+                "snapshot_digest": snapshot["snapshot_digest"],
+                "dispositions": self.complete_dispositions(snapshot["signals"]),
+            },
+        )
+        self.assertEqual(rc, 0, recorded)
+        ready = self.retrospective_status(session_id)
+        self.assertEqual(ready["status"], "READY")
+        home = self.artifacts / "real-hook-home"
+        home.mkdir()
+
+        def call(last_message: str) -> dict[str, Any]:
+            completed = run_process(
+                [sys.executable, HOOK],
+                cwd=self.repo,
+                env={
+                    "HOME": str(home),
+                    "BUILDER_LOOP_CLI": str(CLI),
+                },
+                input_text=json.dumps(
+                    {
+                        "hook_event_name": "Stop",
+                        "cwd": str(self.repo),
+                        "session_id": session_id,
+                        "stop_hook_active": False,
+                        "last_assistant_message": last_message,
+                    }
+                ),
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            lines = [line for line in completed.stdout.splitlines() if line.strip()]
+            self.assertTrue(lines, completed.stderr)
+            return json.loads(lines[-1])
+
+        full_only = call(ready["required_block"])
+        self.assertEqual(full_only.get("decision"), "block", full_only)
+        self.assertEqual(full_only.get("reason"), ready["required_user_block"])
+
+        compact = call(ready["required_user_block"])
+        self.assertNotIn("decision", compact, compact)
 
     def test_malformed_matching_ledger_is_reported_instead_of_disappearing(self) -> None:
         session_id = "retrospective-malformed-session"

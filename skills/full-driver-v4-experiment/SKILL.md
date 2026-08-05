@@ -111,7 +111,7 @@ dispatch。直到 `finalize` 或明确的决策边界。动作面如下，不能
 - supersession 必须在任何 worktree/ref/intent mutation 前校验 source active、transition pressure decision
   与完整 `prior_problem_dispositions`；included problem 只继承问题意图和 owner，不继承 producer identity。
   lease 转移或制品不一致恢复由 `complete-supersede-transfer`、`restore-superseded-environment` 自动收敛。
-  abandoned、superseded 或 finalized source 都是 terminal，其 continuity 不可恢复，也不重新激活或
+  abandoned、superseded、failed 或 finalized source 都是 terminal，其 continuity 不可恢复，也不重新激活或
   rescue；必须在 target ledger/ref/worktree mutation 前拒绝。`abandon` 只用于用户明确取消且没有
   successor。legacy v2/v3 的 abandoned-source revision 行为不由本 v4 路由改写。
 - `reviewer_final`：只有 Tester、proof、machine、blackbox 等全部 reviewer prerequisites 齐全且
@@ -125,19 +125,25 @@ dispatch。直到 `finalize` 或明确的决策边界。动作面如下，不能
 - `tester_fix`：结构化问题 owner=tester 时回到 Tester 同一 thread；普通测试修正或 fixture 修正
   不修改 Mission。
 - `builder_fix`：结构化问题 owner=builder 时回到 Builder，在原 candidate 修复并 checkpoint。
+- `builder_loop_problem_decision` / `current_project_problem_decision`：对应 owner 的 open problem 保持
+  active candidate 并立即停止全部 Agent dispatch，等待用户选择 abandon 或仓库外救援；不得默认派回
+  Builder，也不得把 run 伪造为 failed。
 - `external_problem_decision`：`owner=external_platform` 的 open problem 必须停止 dispatch，通过
   `request_user_input` 取得继续授权；新的外部 probe 成功后调用
   `resolve-external-problem --problem-key <key> --reason <reason>`。不得派 `builder_fix`、重复
   `record-problems`、修改 candidate，或把恢复决定当成 PASS evidence；下一步由 Driver 重跑原 gate。
 - `rematerialize_target`：target drift 无冲突时调用 Core 重物化并重验受影响 evidence，不请求用户。
 - `recover_finalize`：只重放已经持久化的 finalize intent。
+- `complete_driver_failure`：run 创建后的未处理 FATAL 已由 `record-driver-failure` 冻结 action、dispatch
+  与 candidate observation。优先恢复 finalize intent，其次恢复 deployment/lease；只有环境安全后才进入
+  failed。恢复失败保持 recovering/NEEDS_USER，不得 abandon、切换控制器或继续 Agent dispatch。
 - `architecture_review`：相同 failure signature 连续三次形成 no-progress 才暂停普通重试。
 - `finalize`：readiness 全绿后调用 Core 原子收尾，不自行移动 target ref、stash 或删除未知 worktree。
 
 每个 Tester/Reviewer 的非通过结果都必须携带唯一、非空、符合
 `schema/codex-problem-report.schema.json` 的 `PROBLEM_REPORT`。主线程调用 `record-problems` 原样登记，
-按 owner 路由：`tester` → `tester_fix`，`builder` → `builder_fix`，`plan` → 产品/契约决定，
-`external_platform` → 上述授权恢复流程。
+按 owner 穷举路由：`tester` → `tester_fix`，`builder` → `builder_fix`，`plan` → 产品/契约决定，
+`external_platform` → 上述授权恢复流程，`builder_loop` / `current_project` → 专属 NEEDS_USER decision。
 交付后事故归属只允许 `current_project` 或 `builder_loop`（外部平台另行记录），不能混成一个问题。
 
 Tester continuity 或 Reviewer continuity 丢失时，优先 same-thread 续接。Tester 只有旧 source clean、
@@ -153,8 +159,9 @@ snapshot，再逐项完成分流并通过 `assurance record-retrospective` 原�
 `consume-dispatch` 时显式传 `--consumer-source full_driver_skill`；operator recovery 传
 `--consumer-source operator_recovery`。完成工程问题分流后，才以
 `builder-loop delegated` 模式调用 `$memory-review`；不得复制旧版五问或把 memory 当成 Issue、代码、
-测试、契约和项目文档的替代品。最终消息必须逐字包含 status 返回的 `required_block`；复盘不重新
-打开 gate，不改写 finalized target，也不覆盖非成功终态。
+测试、契约和项目文档的替代品。最终消息必须逐字包含 status 返回的 `required_user_block`；完整
+`required_block` 只保留为结构化审计事实。复盘不重新打开 gate，不改写 finalized target，也不覆盖
+非成功终态。
 
 ## 唯一用户中断边界
 

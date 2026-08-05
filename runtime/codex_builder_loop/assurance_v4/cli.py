@@ -64,6 +64,25 @@ def parser() -> argparse.ArgumentParser:
     status.add_argument("--repo", default=".")
     status.add_argument("--run", required=True)
 
+    record_driver_failure = commands.add_parser("record-driver-failure")
+    record_driver_failure.add_argument("--repo", default=".")
+    record_driver_failure.add_argument("--run", required=True)
+    record_driver_failure.add_argument("--failure", required=True)
+    record_driver_failure.add_argument(
+        "--driver-runtime-kind",
+        choices=["native", "full_driver_skill"],
+        required=True,
+    )
+
+    complete_driver_failure = commands.add_parser("complete-driver-failure")
+    complete_driver_failure.add_argument("--repo", default=".")
+    complete_driver_failure.add_argument("--run", required=True)
+    complete_driver_failure.add_argument(
+        "--driver-runtime-kind",
+        choices=["native", "full_driver_skill"],
+        required=True,
+    )
+
     retrospective_status = commands.add_parser("retrospective-status")
     retrospective_status.add_argument("--repo", default=".")
     retrospective_status.add_argument("--session-id", required=True)
@@ -360,6 +379,19 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         elif args.command == "status":
             payload = core.status(args.repo, args.run)
+        elif args.command == "record-driver-failure":
+            payload = core.record_driver_failure(
+                args.repo,
+                args.run,
+                _json(args.failure),
+                driver_runtime_kind=args.driver_runtime_kind,
+            )
+        elif args.command == "complete-driver-failure":
+            payload = core.complete_driver_failure(
+                args.repo,
+                args.run,
+                driver_runtime_kind=args.driver_runtime_kind,
+            )
         elif args.command == "retrospective-status":
             payload = core.retrospective_status(args.repo, args.session_id)
         elif args.command == "record-retrospective":

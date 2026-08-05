@@ -24,6 +24,10 @@ def main() -> int:
                 ),
             }
         )
+        if "MOCK_RETROSPECTIVE_USER_BLOCK" in os.environ:
+            payload["required_user_block"] = os.environ[
+                "MOCK_RETROSPECTIVE_USER_BLOCK"
+            ]
     print(json.dumps(payload))
     return 0
 

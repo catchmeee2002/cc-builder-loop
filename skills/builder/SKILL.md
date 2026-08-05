@@ -31,10 +31,11 @@ description: 执行已接受的 Builder-loop 实验方案，把同 session 紧�
    `codex-builder-loop native-driver start --repo <repo> --run <run-id> --session-id <session-id> --contract -`
 
 5. 看到 `event=native_driver_run_started` 后立即输出 `BUILDER_LOOP_RUN_ID:<run-id>`，持续等待 Native
-   Driver 到 `FINALIZED` 或 `NEEDS_USER`。普通 revision、修复、Agent follow-up、target rematerialize
+   Driver 到 `FINALIZED`、`FAILED` 或 `NEEDS_USER`。普通 revision、修复、Agent follow-up、target rematerialize
    和 finalize recovery 不交还用户。run 创建后若仅遇到 App Server disconnect/overload，用
    `native-driver resume --repo <repo> --run <run-id>` 自动续接；同一 transport signature 连续三次才按
-   continuity failure 停止，不能改走另一控制器。
+   continuity failure 停止，不能改走另一控制器。未处理 FATAL 必须已由 Native Driver 写成
+   `driver_failure` 并完成副作用恢复；若恢复仍需用户，保留 recovering 现场，不用 abandon 覆盖。
 6. 只有 Native Driver 在创建 run 前返回 `NATIVE_DRIVER_CODEX_UNAVAILABLE`、
    `NATIVE_DRIVER_PROTOCOL_UNAVAILABLE` 或 `NATIVE_DRIVER_PROTOCOL_INCOMPATIBLE`，才完整读取相邻
    `../full-driver-v4-experiment/SKILL.md` 并由现有 Full Driver 承载同一 contract。run 一旦创建，禁止
@@ -49,3 +50,5 @@ Native Driver 或 Full Driver 到达 `FINALIZED`、`NEEDS_USER`、`FATAL`、cont
 [交付后事故归属](references/post-delivery-retrospective.md)。复盘不重新打开 delivery gate，也不改写
 finalized target 或原失败事实。`FINALIZED` 只有在复盘确认无事故，或事故已完成查重与授权分流后，
 才输出 `FULL_DRIVER_V4_RESULT: finalized`；其他终态保留原状态和诊断，不用成功标记覆盖。
+最终用户消息逐字包含 `retrospective-status.required_user_block`；完整 `required_block` 只留在结构化
+审计结果，不复制到用户消息。

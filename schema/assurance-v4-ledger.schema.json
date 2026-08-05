@@ -15,7 +15,7 @@
     "runtime_identity": {"$ref": "#/$defs/runtimeIdentity"},
     "run_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"},
     "owner_session_id": {"type": "string", "minLength": 1},
-    "phase": {"enum": ["active", "finalizing", "finalized", "abandoned", "superseded"]},
+    "phase": {"enum": ["active", "finalizing", "finalized", "failed", "abandoned", "superseded"]},
     "repo_root": {"type": "string", "minLength": 1},
     "target_branch": {"type": "string", "minLength": 1},
     "target_start_head": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
@@ -47,6 +47,12 @@
       "oneOf": [
         {"type": "null"},
         {"$ref": "#/$defs/driverRuntime"}
+      ]
+    },
+    "driver_failure": {
+      "oneOf": [
+        {"type": "null"},
+        {"$ref": "#/$defs/driverFailure"}
       ]
     },
     "dispatch_intent": {
@@ -163,6 +169,90 @@
         "transport": {"enum": ["codex_app_server", "native_tools"]},
         "runtime_version": {"type": "string", "minLength": 1},
         "protocol_schema_digest": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "driverFailureAction": {
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["action_id", "action", "reason"],
+          "properties": {
+            "action_id": {"$ref": "#/$defs/sha256"},
+            "action": {"type": "string", "minLength": 1},
+            "reason": {"type": "string", "minLength": 1}
+          }
+        }
+      ]
+    },
+    "driverFailureDispatch": {
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["action_id", "action", "role", "thread_id", "state", "attempt"],
+          "properties": {
+            "action_id": {"$ref": "#/$defs/sha256"},
+            "action": {"type": "string", "minLength": 1},
+            "role": {"enum": ["builder", "tester", "reviewer"]},
+            "thread_id": {"type": "string", "minLength": 1},
+            "state": {"enum": ["prepared", "in_flight", "completed"]},
+            "attempt": {"type": "integer", "minimum": 1, "maximum": 3},
+            "turn_id": {"type": "string", "minLength": 1}
+          }
+        }
+      ]
+    },
+    "driverFailureObservation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ledger_phase", "ledger_candidate_head", "target_head", "candidate_branch",
+        "candidate_branch_head", "candidate_worktree", "candidate_worktree_exists",
+        "candidate_worktree_head", "candidate_dirty_paths"
+      ],
+      "properties": {
+        "ledger_phase": {"enum": ["active", "finalizing", "finalized", "failed", "abandoned", "superseded"]},
+        "ledger_candidate_head": {"$ref": "#/$defs/nullableCommit"},
+        "target_head": {"$ref": "#/$defs/nullableCommit"},
+        "candidate_branch": {"type": "string", "minLength": 1},
+        "candidate_branch_head": {"$ref": "#/$defs/nullableCommit"},
+        "candidate_worktree": {"type": "string", "minLength": 1},
+        "candidate_worktree_exists": {"type": "boolean"},
+        "candidate_worktree_head": {"$ref": "#/$defs/nullableCommit"},
+        "candidate_dirty_paths": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "driverFailure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source", "status", "code", "message", "details", "action", "dispatch",
+        "observation", "signature", "digest", "recovery", "state", "recorded_at"
+      ],
+      "properties": {
+        "source": {"type": "string", "minLength": 1},
+        "status": {"const": "FATAL"},
+        "code": {"type": "string", "minLength": 1},
+        "message": {"type": "string", "minLength": 1},
+        "details": {},
+        "action": {"$ref": "#/$defs/driverFailureAction"},
+        "dispatch": {"$ref": "#/$defs/driverFailureDispatch"},
+        "observation": {"$ref": "#/$defs/driverFailureObservation"},
+        "signature": {"$ref": "#/$defs/sha256"},
+        "digest": {"$ref": "#/$defs/sha256"},
+        "recovery": {"enum": ["none", "finalize", "deployment"]},
+        "state": {"enum": ["recorded", "recovering", "recovered", "terminal"]},
+        "recorded_at": {"type": "string", "minLength": 1},
+        "recovery_started_at": {"type": "string", "minLength": 1},
+        "recovered_at": {"type": "string", "minLength": 1},
+        "terminal_at": {"type": "string", "minLength": 1}
       }
     },
     "dispatchIntent": {

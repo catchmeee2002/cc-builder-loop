@@ -35,11 +35,112 @@ def emit(value: dict[str, Any], returncode: int) -> int:
     return returncode
 
 
+def _exception_payload(exc: CorePortError | NativeDriverError | AppServerError) -> dict[str, Any]:
+    if isinstance(exc, CorePortError):
+        payload = dict(exc.payload)
+        details = payload.get("details")
+        if details is None:
+            details = {
+                key: value
+                for key, value in payload.items()
+                if key not in {"status", "code", "message"}
+            }
+        return {
+            "status": str(payload.get("status", "FATAL")),
+            "code": str(payload.get("code", exc.code)),
+            "message": str(payload.get("message", str(exc))),
+            "details": details,
+        }
+    return {
+        "status": str(getattr(exc, "status", "FATAL")),
+        "code": str(exc.code),
+        "message": str(exc),
+        "details": getattr(exc, "details", None),
+    }
+
+
+def _failure_action(coordinator: NativeCoordinator | None) -> dict[str, Any] | None:
+    action = coordinator.current_action if coordinator is not None else None
+    if not isinstance(action, dict):
+        return None
+    action_id = action.get("action_id")
+    name = action.get("action")
+    reason = action.get("reason")
+    if not all(isinstance(item, str) and item for item in (action_id, name, reason)):
+        return None
+    return {"action_id": action_id, "action": name, "reason": reason}
+
+
+def _persist_fatal(
+    *,
+    core: CorePort,
+    repo: Path,
+    run_id: str,
+    exc: CorePortError | NativeDriverError | AppServerError,
+    coordinator: NativeCoordinator | None,
+) -> tuple[dict[str, Any], int]:
+    original = _exception_payload(exc)
+    failure = {
+        "source": "native_driver",
+        **original,
+        "action": _failure_action(coordinator),
+    }
+    try:
+        core.call(
+            "record-driver-failure",
+            "--repo",
+            str(repo),
+            "--run",
+            run_id,
+            "--failure",
+            "-",
+            "--driver-runtime-kind",
+            "native",
+            input_value=failure,
+        )
+        completed = core.call(
+            "complete-driver-failure",
+            "--repo",
+            str(repo),
+            "--run",
+            run_id,
+            "--driver-runtime-kind",
+            "native",
+        )
+    except CorePortError as recovery_error:
+        recovery = dict(recovery_error.payload)
+        recovery["run_id"] = run_id
+        recovery["original_driver_failure"] = original
+        return recovery, 1 if recovery_error.status in {"FAIL", "NEEDS_USER"} else 2
+    if completed.get("phase") == "finalized":
+        return (
+            {
+                "status": "FINALIZED",
+                "run_id": run_id,
+                "phase": "finalized",
+                "driver_failure": completed.get("driver_failure"),
+                "recovered_failure": original,
+            },
+            0,
+        )
+    return (
+        {
+            **original,
+            "run_id": run_id,
+            "phase": completed.get("phase"),
+            "driver_failure": completed.get("driver_failure"),
+        },
+        2,
+    )
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = parser().parse_args(argv)
     core = CorePort()
+    repo = Path(args.repo).resolve()
+    run_may_exist = args.command == "resume"
+    coordinator: NativeCoordinator | None = None
     try:
-        repo = Path(args.repo).resolve()
         if args.command == "status":
             return emit(
                 core.call("driver-context", "--repo", str(repo), "--run", args.run), 0
@@ -57,6 +158,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     runtime_version=capability.runtime_version,
                     protocol_schema_digest=capability.protocol_schema_digest,
                 )
+                run_may_exist = True
                 print(
                     json.dumps(
                         {
@@ -86,24 +188,31 @@ def main(argv: Sequence[str] | None = None) -> int:
                         code="NATIVE_DRIVER_PORT_INCOMPATIBLE",
                         status="NEEDS_USER",
                     )
-            result = NativeCoordinator(
+            coordinator = NativeCoordinator(
                 repo=repo,
                 run_id=args.run,
                 core=core,
                 transport=transport,
-            ).run()
-            return emit(result, 0 if result.get("status") == "FINALIZED" else 1)
-    except CorePortError as exc:
-        return emit(exc.payload, 1 if exc.status in {"FAIL", "NEEDS_USER"} else 2)
-    except (NativeDriverError, AppServerError) as exc:
-        status = getattr(exc, "status", "FATAL")
-        payload = {
-            "status": status,
-            "code": exc.code,
-            "message": str(exc),
-            "details": getattr(exc, "details", None),
-        }
-        return emit(payload, 1 if status == "NEEDS_USER" else 2)
+            )
+            result = coordinator.run()
+            result_status = result.get("status")
+            return emit(
+                result,
+                0 if result_status == "FINALIZED" else 2 if result_status == "FAILED" else 1,
+            )
+    except (CorePortError, NativeDriverError, AppServerError) as exc:
+        status = str(getattr(exc, "status", "FATAL"))
+        if status == "FATAL" and run_may_exist:
+            payload, returncode = _persist_fatal(
+                core=core,
+                repo=repo,
+                run_id=args.run,
+                exc=exc,
+                coordinator=coordinator,
+            )
+            return emit(payload, returncode)
+        payload = _exception_payload(exc)
+        return emit(payload, 1 if status in {"FAIL", "NEEDS_USER"} else 2)
 
 
 if __name__ == "__main__":

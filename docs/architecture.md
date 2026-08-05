@@ -26,13 +26,19 @@ Execution Manifest 记录实际 candidate、文件、命令和 Agent identity。
 分别要求用户授权。已授权且 `update-facet` 或 `revise-mission` 能安全表达的 plan decision 在同一 active
 run 收敛；普通执行信息变化不以 abandon 或新 run 代替局部失效与重验。
 
-Core ledger 保存 `active/finalizing/finalized/abandoned/superseded`、facet/evidence digest、candidate、target 与
+Core ledger 保存 `active/finalizing/finalized/failed/abandoned/superseded`、facet/evidence digest、candidate、target 与
 可恢复事务，不保存“下一步让谁做”、correction budget 或普通 Agent 循环。Native Driver 在启动外部
 role turn 前只额外持久化一个 dispatch intent，绑定 action/thread/prompt/output digest 和 turn/result；
 它是跨进程副作用的恢复事实，不是调度状态，消费后立即清空。`driver.py` 每轮从 readiness 重新决定
 Builder、Tester、机器、候选部署、黑盒或 Reviewer 动作；
 同一失败签名三次只触发架构复核，不自动创建新 Mission。无冲突 target drift 通过 candidate
 rematerialization 后局部重验，Git 冲突、授权扩大和覆盖风险才停止。
+
+run 创建后的未处理 Driver `FATAL` 先经 `record-driver-failure` 冻结错误、当前 action/dispatch、ledger
+candidate、branch/worktree HEAD 与 dirty observation，再由 `complete-driver-failure` 恢复唯一已持久化
+副作用。finalize intent 优先续接，成功后 run 保持 `finalized` 且 failure 标为 recovered；已部署环境或
+lease 必须先恢复并重新证明安全，之后才进入不可 resume、supersede 或 abandon 的 `failed`。恢复失败
+保留 active/recovering 现场，不伪造 terminal。相同 failure replay 为 no-op，冲突 replay 拒绝。
 
 Full Driver contract 固定 `execution.driver_enforced=true`。该模式下 mutation 即使省略 `action_id` 也
 必须即时匹配当前派生 action；携带 ID 时还要匹配同一 ledger 版本，拒绝错序调用和 stale replay。
@@ -91,7 +97,7 @@ active；`start` 从精确 candidate Git snapshot 建 target worktree，target �
 superseded。新 run 不继承 Tester/Reviewer identity 或旧 evidence。环境转移按 source intent、target receipt、
 source seal 三步持久化；只有当前制品、目标、deployment contract 和 probe 全部一致才转移 lease，否则先
 恢复 source 环境再部署新制品。同一目标的唯一 owner 由 Core 在仓库锁内从 ledger 派生，不新增旁路 registry。
-若 source 已 abandoned、superseded 或 finalized，Core 在 target ledger、ref、worktree 或 supersede intent
+若 source 已 abandoned、superseded、failed 或 finalized，Core 在 target ledger、ref、worktree 或 supersede intent
 mutation 前返回 `SUPERSEDED_RUN_NOT_ACTIVE`，source ledger 保持不变；terminal run 不重新激活或 rescue，
 其 continuity 不可恢复。`abandon` 只表达用户取消且没有 successor。该约束只修正 Assurance v4，
 legacy v2/v3 继续使用既有 abandoned-source revision 与恢复契约。
@@ -410,6 +416,9 @@ no-op，冲突内容以 `PROBLEM_REPLAY_MISMATCH` 停止；candidate 前移后�
 Builder turn 的 completed dispatch 先 checkpoint clean commit、关闭 Builder problem 并更新 candidate，
 再消费 dispatch；崩溃恢复重复同一顺序。Driver 在路由 open problem 前先收敛已提交但未 checkpoint
 的 live candidate，避免同一 `builder_fix` 无限重派。
+open problem 的 owner 采用穷举路由：`builder`/`tester` 分别回原角色，`plan`、`external_platform`、
+`builder_loop`、`current_project` 分别进入专属 `NEEDS_USER` decision。后四类任一仍 open 时禁止新的
+Agent dispatch；clean committed candidate 仍先执行确定性 checkpoint，使失败现场与最新 Git 身份一致。
 Native `tester_proof` 的 completed dispatch 同样先应用 Core gate：成功 evidence 或 current
 `proof_failure` 二者必须恰有一个与该 action 对应，Coordinator 才能消费。failure 的相同 action/spec
 replay 返回已存错误且不追加 event；消费后 Driver 才能派生独立的诊断 turn，因此 dispatch intent 不缓存
@@ -563,10 +572,12 @@ container 或等待用户授权，advisory 的 not-incident 必须带显式理�
 实现幂等；同 snapshot 的冲突替换需要 `--replace`。Core 不访问 GitHub，只记录 root Agent 已完成的
 owner/reference/decision。
 
-Stop hook 先执行 terminal retrospective gate，再保留既有 active-run gate。只有 byte-identical
-runtime-rendered summary block 出现在 root assistant message 中，`NEEDS_USER` 或 `READY` 才允许停止；
-marker-only、digest-only、prose-only 和 `stop_hook_active` recursion 都不能绕过。没有匹配 v4 run 时为
-`NOOP`，不改变普通 Codex 行为；active run 仍由既有完成门禁负责。
+`retrospective-status` 同时返回完整审计 `required_block` 与用户可见 `required_user_block`。前者保留全部
+跨 run disposition inventory；后者只显示 run/signal/pending 计数、report digest、真正待决的 run 或
+disposition 及绑定 marker。Stop hook 优先逐字校验精简块，旧 runtime 缺字段时才回退完整块；marker-only、
+旧 digest、prose-only 和 `stop_hook_active` recursion 都不能绕过。`READY` 仍不能越过普通 active run；
+fresh `NEEDS_USER` 精简块可让 active run 保留现场等待用户，而且已路由 Issue 不会掩盖仍未处理的 run
+decision。没有匹配 v4 run 时为 `NOOP`，不改变普通 Codex 行为。
 
 每个工程事故最终只能归属 `current_project`、`builder_loop` 或 `external_platform`。同一因果链
 跨越业务仓库与 builder-loop 时强制拆成两个原子事故；两条可以相互引用，但复现、责任和关闭条件

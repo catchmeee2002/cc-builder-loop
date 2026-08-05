@@ -66,12 +66,15 @@ class NativeCoordinator:
         self.evidence_schema = self._load_schema("assurance-v4-evidence.schema.json")
         self.proof_schema = self._load_schema("codex-test-proof.schema.json")
         self._active_threads: set[str] = set()
+        self.current_action: dict[str, Any] | None = None
 
     def run(self) -> dict[str, Any]:
         while True:
+            self.current_action = None
             action = self.core.call(
                 "driver-next", "--repo", str(self.repo), "--run", self.run_id
             )
+            self.current_action = action
             if action.get("driver_protocol_version") != 1:
                 raise NativeDriverError(
                     "Core DriverPort version is unsupported",
@@ -83,7 +86,13 @@ class NativeCoordinator:
             if status == "STOP":
                 phase = action.get("reason")
                 return {
-                    "status": "FINALIZED" if phase == "finalized" else "STOPPED",
+                    "status": (
+                        "FINALIZED"
+                        if phase == "finalized"
+                        else "FAILED"
+                        if phase == "failed"
+                        else "STOPPED"
+                    ),
                     "run_id": self.run_id,
                     "decision": action,
                 }
@@ -111,6 +120,16 @@ class NativeCoordinator:
                 self._simple("rematerialize-target", action)
             elif name == "recover_finalize":
                 self._simple("recover-finalize", action)
+            elif name == "complete_driver_failure":
+                self.core.call(
+                    "complete-driver-failure",
+                    "--repo",
+                    str(self.repo),
+                    "--run",
+                    self.run_id,
+                    "--driver-runtime-kind",
+                    "native",
+                )
             elif name == "finalize":
                 self.core.call(
                     "finalize",

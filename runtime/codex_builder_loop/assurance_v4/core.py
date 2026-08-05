@@ -586,6 +586,7 @@ def start(
                 "retired_tester_sources": retired_tester_sources,
                 "retired_reviewer_agents": [],
                 "driver_runtime": copy.deepcopy(driver_runtime),
+                "driver_failure": None,
                 "dispatch_intent": None,
                 "proof_failure": None,
                 "deployment_transaction": None,
@@ -912,6 +913,348 @@ def consume_dispatch(
     return status(repo, run_id)
 
 
+def _require_driver_runtime_owner(
+    ledger: Mapping[str, Any], driver_runtime_kind: str
+) -> None:
+    runtime = ledger.get("driver_runtime")
+    expected = runtime.get("kind") if isinstance(runtime, Mapping) else None
+    if expected is None or expected != driver_runtime_kind:
+        raise AssuranceError(
+            "driver runtime owner does not match this failure transaction",
+            code="DRIVER_RUNTIME_OWNER_MISMATCH",
+            status="FAIL",
+            details={"expected_driver_runtime_kind": expected},
+        )
+
+
+def _normalize_driver_failure_input(value: Any) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise AssuranceError(
+            "driver failure must be a JSON object",
+            code="DRIVER_FAILURE_INVALID",
+            status="FAIL",
+        )
+    required = {"source", "status", "code", "message", "details", "action"}
+    if set(value) != required:
+        raise AssuranceError(
+            "driver failure fields do not match the public transaction contract",
+            code="DRIVER_FAILURE_INVALID",
+            status="FAIL",
+            details={"required_fields": sorted(required)},
+        )
+    normalized: dict[str, Any] = {}
+    for field in ("source", "code", "message"):
+        item = value.get(field)
+        if not isinstance(item, str) or not item.strip():
+            raise AssuranceError(
+                f"driver failure {field} is required",
+                code="DRIVER_FAILURE_INVALID",
+                status="FAIL",
+            )
+        normalized[field] = item.strip()
+    if value.get("status") != "FATAL":
+        raise AssuranceError(
+            "only unhandled FATAL results use the driver failure transaction",
+            code="DRIVER_FAILURE_STATUS_INVALID",
+            status="FAIL",
+        )
+    normalized["status"] = "FATAL"
+    normalized["details"] = copy.deepcopy(value.get("details"))
+    action = value.get("action")
+    if action is None:
+        normalized["action"] = None
+    else:
+        if not isinstance(action, Mapping) or set(action) != {
+            "action_id",
+            "action",
+            "reason",
+        }:
+            raise AssuranceError(
+                "driver failure action identity is invalid",
+                code="DRIVER_FAILURE_ACTION_INVALID",
+                status="FAIL",
+            )
+        action_id = action.get("action_id")
+        action_name = action.get("action")
+        reason = action.get("reason")
+        if (
+            not isinstance(action_id, str)
+            or re.fullmatch(r"[0-9a-f]{64}", action_id) is None
+            or not isinstance(action_name, str)
+            or not action_name.strip()
+            or not isinstance(reason, str)
+            or not reason.strip()
+        ):
+            raise AssuranceError(
+                "driver failure action identity is invalid",
+                code="DRIVER_FAILURE_ACTION_INVALID",
+                status="FAIL",
+            )
+        normalized["action"] = {
+            "action_id": action_id,
+            "action": action_name.strip(),
+            "reason": reason.strip(),
+        }
+    try:
+        digest(normalized)
+    except (TypeError, ValueError) as exc:
+        raise AssuranceError(
+            "driver failure must contain canonical JSON values",
+            code="DRIVER_FAILURE_INVALID",
+            status="FAIL",
+        ) from exc
+    return normalized
+
+
+def _driver_failure_dispatch(ledger: Mapping[str, Any]) -> dict[str, Any] | None:
+    intent = ledger.get("dispatch_intent")
+    if not isinstance(intent, Mapping):
+        return None
+    value = {
+        "action_id": intent["action_id"],
+        "action": intent["action"],
+        "role": intent["role"],
+        "thread_id": intent["thread_id"],
+        "state": intent["state"],
+        "attempt": int(intent.get("attempt", 1)),
+    }
+    if isinstance(intent.get("turn_id"), str):
+        value["turn_id"] = intent["turn_id"]
+    return value
+
+
+def _optional_ref_head(repo: Path, ref: str) -> str | None:
+    result = git(repo, "rev-parse", "--verify", ref, check=False)
+    value = result.stdout.strip()
+    return value if result.returncode == 0 and re.fullmatch(r"[0-9a-f]{40}", value) else None
+
+
+def _driver_failure_observation(
+    repo: Path, ledger: Mapping[str, Any]
+) -> dict[str, Any]:
+    worktree = Path(str(ledger["candidate_worktree"]))
+    worktree_exists = worktree.is_dir()
+    worktree_head = None
+    dirty: list[str] = []
+    if worktree_exists:
+        worktree_head = _optional_ref_head(worktree, "HEAD")
+        try:
+            dirty = dirty_paths(worktree)
+        except StoreError:
+            dirty = ["<unreadable>"]
+    return {
+        "ledger_phase": ledger["phase"],
+        "ledger_candidate_head": ledger["facets"]["execution"].get("candidate_head"),
+        "target_head": _optional_ref_head(
+            repo, f"refs/heads/{ledger['target_branch']}"
+        ),
+        "candidate_branch": ledger["candidate_branch"],
+        "candidate_branch_head": _optional_ref_head(
+            repo, f"refs/heads/{ledger['candidate_branch']}"
+        ),
+        "candidate_worktree": str(worktree),
+        "candidate_worktree_exists": worktree_exists,
+        "candidate_worktree_head": worktree_head,
+        "candidate_dirty_paths": dirty,
+    }
+
+
+def _driver_failure_environment_requires_recovery(
+    ledger: Mapping[str, Any]
+) -> bool:
+    transaction = ledger.get("deployment_transaction")
+    if isinstance(transaction, Mapping) and transaction.get("state") in {
+        "deploying",
+        "deployed",
+        "restore_required",
+        "restoring",
+        "restore_failed",
+    }:
+        return True
+    lease = ledger.get("environment_lease")
+    return isinstance(lease, Mapping) and lease.get("state") in {
+        "held",
+        "transfer_prepared",
+        "restore_required",
+        "restoring",
+        "restore_failed",
+    }
+
+
+def _driver_failure_recovery(ledger: Mapping[str, Any]) -> str:
+    if ledger["phase"] == "finalizing" or isinstance(
+        ledger.get("finalize_intent"), Mapping
+    ):
+        return "finalize"
+    if _driver_failure_environment_requires_recovery(ledger):
+        return "deployment"
+    return "none"
+
+
+def record_driver_failure(
+    repo_value: str | Path,
+    run_value: str,
+    failure_value: Any,
+    *,
+    driver_runtime_kind: str,
+) -> dict[str, Any]:
+    normalized = _normalize_driver_failure_input(failure_value)
+    signature = digest(normalized)
+    repo = resolve_repo(repo_value)
+    run_id = ensure_run_id(run_value)
+    with locked(repo):
+        ledger = read_ledger(repo, run_id)
+        _require_driver_runtime_owner(ledger, driver_runtime_kind)
+        existing = ledger.get("driver_failure")
+        if isinstance(existing, dict):
+            if existing.get("signature") == signature:
+                return status(repo, run_id)
+            raise AssuranceError(
+                "a different driver failure is already persisted",
+                code="DRIVER_FAILURE_CONFLICT",
+                status="FAIL",
+                details={
+                    "existing_signature": existing.get("signature"),
+                    "incoming_signature": signature,
+                },
+            )
+        if ledger["phase"] not in {"active", "finalizing"}:
+            raise AssuranceError(
+                "terminal assurance runs cannot record a new driver failure",
+                code="DRIVER_FAILURE_RUN_TERMINAL",
+                status="FAIL",
+                details={"phase": ledger["phase"]},
+            )
+        recorded_at = now()
+        record = {
+            **normalized,
+            "dispatch": _driver_failure_dispatch(ledger),
+            "observation": _driver_failure_observation(repo, ledger),
+            "signature": signature,
+            "recovery": _driver_failure_recovery(ledger),
+            "state": "recorded",
+            "recorded_at": recorded_at,
+        }
+        record["digest"] = digest(record)
+        ledger["driver_failure"] = record
+        append_event(
+            ledger,
+            "driver_failure_recorded",
+            {
+                "code": record["code"],
+                "signature": record["signature"],
+                "failure_digest": record["digest"],
+                "recovery": record["recovery"],
+                "action_id": (
+                    record["action"].get("action_id")
+                    if isinstance(record.get("action"), dict)
+                    else None
+                ),
+            },
+        )
+        save_ledger(repo, ledger)
+    return status(repo, run_id)
+
+
+def complete_driver_failure(
+    repo_value: str | Path,
+    run_value: str,
+    *,
+    driver_runtime_kind: str,
+) -> dict[str, Any]:
+    repo = resolve_repo(repo_value)
+    run_id = ensure_run_id(run_value)
+    with locked(repo):
+        ledger = read_ledger(repo, run_id)
+        _require_driver_runtime_owner(ledger, driver_runtime_kind)
+        failure = ledger.get("driver_failure")
+        if not isinstance(failure, dict):
+            raise AssuranceError(
+                "run has no persisted driver failure",
+                code="DRIVER_FAILURE_NOT_FOUND",
+                status="FAIL",
+            )
+        if failure["state"] in {"recovered", "terminal"}:
+            return status(repo, run_id)
+        failure_digest = failure["digest"]
+        if failure["state"] == "recorded":
+            failure["state"] = "recovering"
+            failure["recovery_started_at"] = now()
+            append_event(
+                ledger,
+                "driver_failure_recovery_started",
+                {
+                    "failure_digest": failure_digest,
+                    "recovery": failure["recovery"],
+                },
+            )
+            save_ledger(repo, ledger)
+        recovery = failure["recovery"]
+
+    if recovery == "finalize":
+        recover_finalize(repo, run_id)
+        with locked(repo):
+            ledger = read_ledger(repo, run_id)
+            failure = ledger.get("driver_failure")
+            if not isinstance(failure, dict) or failure.get("digest") != failure_digest:
+                raise AssuranceError(
+                    "driver failure identity changed during finalize recovery",
+                    code="DRIVER_FAILURE_IDENTITY_DRIFT",
+                    status="NEEDS_USER",
+                )
+            if ledger["phase"] != "finalized":
+                raise AssuranceError(
+                    "finalize recovery did not reach the finalized phase",
+                    code="DRIVER_FAILURE_RECOVERY_INCOMPLETE",
+                    status="NEEDS_USER",
+                )
+            failure["state"] = "recovered"
+            failure["recovered_at"] = now()
+            append_event(
+                ledger,
+                "driver_failure_recovered",
+                {"failure_digest": failure_digest, "recovery": "finalize"},
+            )
+            save_ledger(repo, ledger)
+        return status(repo, run_id)
+
+    if recovery == "deployment":
+        current = read_ledger(repo, run_id)
+        if _driver_failure_environment_requires_recovery(current):
+            restore_deployment(repo, run_id)
+
+    with locked(repo):
+        ledger = read_ledger(repo, run_id)
+        _require_driver_runtime_owner(ledger, driver_runtime_kind)
+        failure = ledger.get("driver_failure")
+        if not isinstance(failure, dict) or failure.get("digest") != failure_digest:
+            raise AssuranceError(
+                "driver failure identity changed during recovery",
+                code="DRIVER_FAILURE_IDENTITY_DRIFT",
+                status="NEEDS_USER",
+            )
+        if _driver_failure_environment_requires_recovery(ledger):
+            raise AssuranceError(
+                "driver failure recovery has not restored the external environment",
+                code="DRIVER_FAILURE_RECOVERY_INCOMPLETE",
+                status="NEEDS_USER",
+            )
+        ledger["phase"] = "failed"
+        failure["state"] = "terminal"
+        failure["terminal_at"] = now()
+        append_event(
+            ledger,
+            "run_failed",
+            {
+                "code": failure["code"],
+                "failure_digest": failure_digest,
+                "recovery": recovery,
+            },
+        )
+        save_ledger(repo, ledger)
+    return status(repo, run_id)
+
+
 def resolve_external_problem(
     repo_value: str | Path,
     run_value: str,
@@ -1047,7 +1390,7 @@ def resolve_external_problem(
     return status(repo, run_id)
 
 
-RETROSPECTIVE_TERMINAL_PHASES = {"finalized", "abandoned", "superseded"}
+RETROSPECTIVE_TERMINAL_PHASES = {"finalized", "failed", "abandoned", "superseded"}
 
 
 def _retrospective_report_path(repo: Path, session_id: str) -> Path:
@@ -1224,6 +1567,24 @@ def _derive_retrospective_snapshot(
                     [run_id],
                     f"Run {run_id} ended with {terminal_fact['terminal_status']}",
                     terminal_fact,
+                )
+            )
+        elif isinstance(ledger.get("driver_failure"), dict):
+            failure = ledger["driver_failure"]
+            signals.append(
+                _retrospective_signal(
+                    "terminal-runtime-failure",
+                    "mandatory",
+                    [run_id],
+                    f"Run {run_id} recorded recovered driver FATAL {failure['code']}",
+                    {
+                        "terminal_status": terminal_fact["terminal_status"],
+                        "code": failure["code"],
+                        "reason": failure["message"],
+                        "failure_digest": failure["digest"],
+                        "failure_state": failure["state"],
+                        "recovery": failure["recovery"],
+                    },
                 )
             )
         sorted_problems = sorted(
@@ -1498,6 +1859,56 @@ def _render_retrospective_block(
     return "\n".join(lines)
 
 
+def _render_retrospective_user_block(
+    snapshot: Mapping[str, Any],
+    report: Mapping[str, Any],
+    *,
+    pending_runs: Mapping[str, Mapping[str, Any]],
+    pending_dispositions: list[Mapping[str, Any]],
+) -> str:
+    issue_routes = sum(
+        item.get("disposition") == "issue" for item in report["dispositions"]
+    )
+    if not pending_runs and not pending_dispositions:
+        return "\n".join(
+            [
+                "Builder-loop retrospective complete.",
+                (
+                    f"Runs: {len(snapshot['runs'])}; Signals: {len(snapshot['signals'])}; "
+                    f"Issue routes: {issue_routes}."
+                ),
+                f"Report: {report['report_digest']}",
+                (
+                    f"BUILDER_RETROSPECTIVE_READY:{snapshot['snapshot_digest']}:"
+                    f"{report['report_digest']}"
+                ),
+            ]
+        )
+
+    pending_count = len(pending_runs) + len(pending_dispositions)
+    lines = [
+        "Builder-loop retrospective requires user input.",
+        (
+            f"Runs: {len(snapshot['runs'])}; Signals: {len(snapshot['signals'])}; "
+            f"Pending: {pending_count}; Issue routes: {issue_routes}."
+        ),
+        f"Report: {report['report_digest']}",
+        "Pending:",
+    ]
+    for run_id in sorted(pending_runs):
+        fact = pending_runs[run_id]
+        action = " ".join(str(fact.get("action") or "unknown").split())
+        reason = " ".join(str(fact.get("reason") or "needs_user").split())
+        lines.append(f"- Run {run_id}: {action} ({reason})")
+    for item in pending_dispositions:
+        reason = " ".join(str(item.get("reason") or "needs user").split())
+        lines.append(f"- Disposition {item['signal_id']}: {reason}")
+    lines.append(
+        f"BUILDER_INPUT_REQUIRED:{snapshot['owner_session_id']}:{snapshot['snapshot_digest']}"
+    )
+    return "\n".join(lines)
+
+
 def retrospective_status(repo_value: str | Path, session_id: str) -> dict[str, Any]:
     repo = resolve_repo(repo_value)
     owner_session_id = session_id.strip()
@@ -1524,7 +1935,28 @@ def retrospective_status(repo_value: str | Path, session_id: str) -> dict[str, A
         run_id = str(ledger["run_id"])
         phase = str(ledger["phase"])
         if phase in RETROSPECTIVE_TERMINAL_PHASES:
-            terminal_facts[run_id] = {"terminal_status": phase}
+            if phase == "failed":
+                failure = ledger.get("driver_failure")
+                terminal_facts[run_id] = {
+                    "terminal_status": "fatal",
+                    "code": (
+                        failure.get("code")
+                        if isinstance(failure, Mapping)
+                        else "DRIVER_FAILURE_UNAVAILABLE"
+                    ),
+                    "reason": (
+                        failure.get("message")
+                        if isinstance(failure, Mapping)
+                        else "failed run has no readable driver failure"
+                    ),
+                    "failure_digest": (
+                        failure.get("digest")
+                        if isinstance(failure, Mapping)
+                        else None
+                    ),
+                }
+            else:
+                terminal_facts[run_id] = {"terminal_status": phase}
             continue
         try:
             from .driver import next_action
@@ -1584,8 +2016,22 @@ def retrospective_status(repo_value: str | Path, session_id: str) -> dict[str, A
             "snapshot": snapshot,
             "report": report,
         }
-    pending = any(item["disposition"] == "needs-user" for item in report["dispositions"])
+    pending_dispositions = [
+        item for item in report["dispositions"] if item["disposition"] == "needs-user"
+    ]
+    pending_runs = {
+        run_id: fact
+        for run_id, fact in terminal_facts.items()
+        if fact["terminal_status"] in {"needs-user", "continuity-failure"}
+    }
+    pending = bool(pending_dispositions or pending_runs)
     required_block = _render_retrospective_block(snapshot, report, pending=pending)
+    required_user_block = _render_retrospective_user_block(
+        snapshot,
+        report,
+        pending_runs=pending_runs,
+        pending_dispositions=pending_dispositions,
+    )
     return {
         "status": "NEEDS_USER" if pending else "READY",
         "owner_session_id": owner_session_id,
@@ -1597,6 +2043,7 @@ def retrospective_status(repo_value: str | Path, session_id: str) -> dict[str, A
         "snapshot": snapshot,
         "report": report,
         "required_block": required_block,
+        "required_user_block": required_user_block,
     }
 
 
@@ -2094,8 +2541,15 @@ def status(repo_value: str | Path, run_value: str) -> dict[str, Any]:
     repo = resolve_repo(repo_value)
     run_id = ensure_run_id(run_value)
     ledger = read_ledger(repo, run_id)
+    public_status = (
+        "FATAL"
+        if ledger["phase"] == "failed"
+        else "READY"
+        if readiness(ledger)["ready"]
+        else "ACTIVE"
+    )
     return {
-        "status": "READY" if readiness(ledger)["ready"] else "ACTIVE",
+        "status": public_status,
         "run_id": run_id,
         "runtime_identity": copy.deepcopy(ledger["runtime_identity"]),
         "phase": ledger["phase"],
@@ -2108,6 +2562,7 @@ def status(repo_value: str | Path, run_value: str) -> dict[str, Any]:
         "mission_revision": ledger["facets"]["mission"]["revision"],
         "builder_checkpointed": ledger.get("builder_checkpointed", False),
         "driver_runtime": copy.deepcopy(ledger.get("driver_runtime")),
+        "driver_failure": copy.deepcopy(ledger.get("driver_failure")),
         "dispatch_intent": copy.deepcopy(ledger.get("dispatch_intent")),
         "proof_failure": copy.deepcopy(ledger.get("proof_failure")),
         "proof_failure_state": proof_failure_state(ledger),
@@ -2129,7 +2584,7 @@ def driver_context(repo_value: str | Path, run_value: str) -> dict[str, Any]:
     run_id = ensure_run_id(run_value)
     ledger = read_ledger(repo, run_id)
     return {
-        "status": "READY",
+        "status": "FATAL" if ledger["phase"] == "failed" else "READY",
         "run_id": run_id,
         "runtime_identity": copy.deepcopy(ledger["runtime_identity"]),
         "phase": ledger["phase"],
@@ -2141,6 +2596,7 @@ def driver_context(repo_value: str | Path, run_value: str) -> dict[str, Any]:
         "publication": copy.deepcopy(ledger.get("publication")),
         "problems": copy.deepcopy(ledger.get("problems", [])),
         "driver_runtime": copy.deepcopy(ledger.get("driver_runtime")),
+        "driver_failure": copy.deepcopy(ledger.get("driver_failure")),
         "dispatch_intent": copy.deepcopy(ledger.get("dispatch_intent")),
         "proof_failure": copy.deepcopy(ledger.get("proof_failure")),
         "proof_failure_state": proof_failure_state(ledger),
@@ -5387,6 +5843,11 @@ def abandon(repo_value: str | Path, run_value: str, reason: str) -> dict[str, An
         ledger = read_ledger(repo, run_id)
         if ledger["phase"] == "finalized":
             raise AssuranceError("finalized run cannot be abandoned", code="ASSURANCE_RUN_FINALIZED")
+        if ledger["phase"] == "failed":
+            raise AssuranceError(
+                "failed run cannot be rewritten as abandoned",
+                code="ASSURANCE_RUN_FAILED",
+            )
         if ledger["phase"] in {"abandoned", "superseded"}:
             return status(repo, run_id)
         transaction = ledger.get("deployment_transaction")
@@ -5411,18 +5872,66 @@ def cleanup(repo_value: str | Path, run_value: str) -> dict[str, Any]:
     run_id = ensure_run_id(run_value)
     with locked(repo):
         ledger = read_ledger(repo, run_id)
-        if ledger["phase"] not in {"finalized", "abandoned", "superseded"}:
+        if ledger["phase"] not in {"finalized", "failed", "abandoned", "superseded"}:
             raise AssuranceError(
                 "only terminal assurance runs can be cleaned",
                 code="ASSURANCE_CLEANUP_NOT_TERMINAL",
                 status="NEEDS_USER",
             )
+        if any(
+            item.get("kind") == "terminal_worktrees_cleaned"
+            for item in ledger.get("events", [])
+            if isinstance(item, Mapping)
+        ):
+            return status(repo, run_id)
+        candidate_expected_head = ledger["facets"]["execution"].get("candidate_head")
+        failed_blockers: list[dict[str, Any]] = []
+        if ledger["phase"] == "failed":
+            failure = ledger.get("driver_failure")
+            if not isinstance(failure, dict) or failure.get("state") != "terminal":
+                raise AssuranceError(
+                    "failed run has no terminal driver failure observation",
+                    code="ASSURANCE_CLEANUP_DRIFT",
+                    status="NEEDS_USER",
+                )
+            observation = failure["observation"]
+            if (
+                observation.get("candidate_worktree") != ledger["candidate_worktree"]
+                or observation.get("candidate_branch") != ledger["candidate_branch"]
+                or observation.get("candidate_dirty_paths")
+                or not observation.get("candidate_worktree_exists")
+                or not isinstance(observation.get("candidate_worktree_head"), str)
+                or observation.get("candidate_worktree_head")
+                != observation.get("candidate_branch_head")
+            ):
+                failed_blockers.append(
+                    {
+                        "role": "candidate",
+                        "failure_observation": copy.deepcopy(observation),
+                    }
+                )
+            else:
+                candidate_expected_head = observation["candidate_worktree_head"]
+            candidate_path = Path(ledger["candidate_worktree"])
+            if candidate_path.is_dir() != bool(
+                observation.get("candidate_worktree_exists")
+            ):
+                failed_blockers.append(
+                    {
+                        "role": "candidate",
+                        "worktree": str(candidate_path),
+                        "expected_exists": observation.get(
+                            "candidate_worktree_exists"
+                        ),
+                        "actual_exists": candidate_path.is_dir(),
+                    }
+                )
         owned = [
             {
                 "role": "candidate",
                 "worktree": ledger["candidate_worktree"],
                 "branch": ledger["candidate_branch"],
-                "expected_head": ledger["facets"]["execution"].get("candidate_head"),
+                "expected_head": candidate_expected_head,
             }
         ]
         tester_source = ledger["facets"]["execution"].get("tester_source")
@@ -5444,7 +5953,7 @@ def cleanup(repo_value: str | Path, run_value: str) -> dict[str, Any]:
                     "expected_head": source["head"],
                 }
             )
-        blockers: list[dict[str, Any]] = []
+        blockers: list[dict[str, Any]] = failed_blockers
         for item in owned:
             path = Path(item["worktree"])
             if path.exists():

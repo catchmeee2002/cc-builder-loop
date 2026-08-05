@@ -41,11 +41,14 @@ python3 experiments/assurance-v4-replay/runner.py
   后续动作、correction loop 或第二份 evidence。
 - Native Driver 默认承载 Full Driver；App Server capability 失败只能在创建 run 前回退现有 Full
   Driver Skill。run 创建后按 `driver_runtime.kind` 单写，禁止接管或双控制器 mutation。
+- run 创建后的未处理 FATAL 必须先经 `record-driver-failure` 写入 ledger，再恢复 finalize/deployment
+  副作用；环境安全后才进入 `failed`。failed 不 resume、不 supersede、不 abandon，cleanup 只接受与
+  冻结 failure observation 一致的 clean worktree。
 - runtime ledger 是执行事实唯一来源；Skills、hooks 和 agents 不直接改 JSON。
 - Assurance v4 的已授权 plan decision 先用现有 `update-facet` 或 `revise-mission` 在同一 active run
   收敛；普通执行信息变化不得先 abandon 或自动升级为新 run。确需 successor 时，source 必须在新
   contract 验证和 `start` 持久化 target 前保持 active，由 `start` 创建 target 后封为 superseded。
-  `abandon` 只表示用户取消且没有 successor；abandoned、superseded、finalized source 不恢复 continuity。
+  `abandon` 只表示用户取消且没有 successor；abandoned、superseded、failed、finalized source 不恢复 continuity。
   legacy v2/v3 保持既有 abandoned-source revision 契约。
 - 候选变化后按冻结 scope digest 处理 machine/blackbox evidence；未声明 scope 时全 tree 失效。
   Reviewer 与 doc-review 对任何 candidate 变化都失效。
@@ -70,10 +73,14 @@ python3 experiments/assurance-v4-replay/runner.py
 - Builder 写代码和文档，Tester 写计划允许的测试，Reviewer 只读审查。
 - 修复按 ownership 路由；测试实现问题回到原 Tester，目标、ownership 或验收标准变化按上述版本化
   lifecycle 处理，不用无条件 abandon 覆盖 Assurance v4。
+- open problem owner 必须穷举：builder/tester 回原角色，plan/external_platform/builder_loop/
+  current_project 进入各自 NEEDS_USER decision；后四类不得默认回落到 builder_fix。
 - Tester/Reviewer 报出需要修复或决定的问题后，先经 `record-problems` 逐条写入 ledger；Assurance v4
   successor 用 source ledger 的逐条 disposition 连续交接，legacy v2/v3 继续由 abandon 封存问题清单并由
   更高 revision 的 `prior-problems` 逐条处理。旧 ledger 无清单时先显式补录。
 - Git 冲突只安全停止；runtime 不自动仲裁。
+- retrospective 的完整 `required_block` 留作结构化审计，Stop hook 优先校验精简
+  `required_user_block`；READY 不绕过 active run，NEEDS_USER 可在精简块已展示后保留 active 现场等用户。
 
 # Common Pitfalls
 

@@ -154,6 +154,7 @@
         "snapshot": {"$ref": "#/$defs/snapshot"},
         "report": {"$ref": "#/$defs/storedReport"},
         "required_block": {"type": "string", "minLength": 1},
+        "required_user_block": {"type": "string", "minLength": 1},
         "message": {"type": "string", "minLength": 1}
       }
     }

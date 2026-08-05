@@ -18,6 +18,7 @@ class StopHookGateTest(unittest.TestCase):
         *,
         retrospective_status: str = "NOOP",
         retrospective_block: str = "",
+        retrospective_user_block: str | None = None,
         stop_hook_active: bool = False,
         last_assistant_message: str = "",
     ) -> tuple[int, dict]:
@@ -28,20 +29,23 @@ class StopHookGateTest(unittest.TestCase):
             "stop_hook_active": stop_hook_active,
             "last_assistant_message": last_assistant_message,
         }
+        env = {
+            "BUILDER_LOOP_CLI": str(MOCK_RUNTIME),
+            "MOCK_RUNTIME_STATUS": status,
+            "MOCK_RUNTIME_MESSAGE": f"fixture {status}",
+            "MOCK_RETROSPECTIVE_STATUS": retrospective_status,
+            "MOCK_RETROSPECTIVE_MESSAGE": (
+                f"fixture retrospective {retrospective_status}"
+            ),
+            "MOCK_RETROSPECTIVE_BLOCK": retrospective_block,
+            "MOCK_RETROSPECTIVE_SESSION_ID": "hook-fixture-session",
+        }
+        if retrospective_user_block is not None:
+            env["MOCK_RETROSPECTIVE_USER_BLOCK"] = retrospective_user_block
         cp = run_process(
             [sys.executable, HOOK],
             cwd=ROOT,
-            env={
-                "BUILDER_LOOP_CLI": str(MOCK_RUNTIME),
-                "MOCK_RUNTIME_STATUS": status,
-                "MOCK_RUNTIME_MESSAGE": f"fixture {status}",
-                "MOCK_RETROSPECTIVE_STATUS": retrospective_status,
-                "MOCK_RETROSPECTIVE_MESSAGE": (
-                    f"fixture retrospective {retrospective_status}"
-                ),
-                "MOCK_RETROSPECTIVE_BLOCK": retrospective_block,
-                "MOCK_RETROSPECTIVE_SESSION_ID": "hook-fixture-session",
-            },
+            env=env,
             input_text=json.dumps(event),
         )
         lines = [line for line in cp.stdout.splitlines() if line.strip()]
@@ -215,6 +219,93 @@ class StopHookGateTest(unittest.TestCase):
         )
         self.assertEqual(rc, 0)
         self.assertNotIn("decision", surfaced, surfaced)
+
+    def test_new_runtime_requires_exact_compact_user_block_not_full_audit_block(self) -> None:
+        full_block = (
+            "Builder-loop retrospective complete.\n"
+            "Session: hook-fixture-session\n"
+            "Dispositions:\n"
+            "- historical-signal-0123456789abcdef => issue builder_loop old\n"
+            f"BUILDER_RETROSPECTIVE_READY:{'a' * 64}:{'b' * 64}"
+        )
+        user_block = (
+            "Builder-loop retrospective complete.\n"
+            "Runs: 8; Signals: 59; Issue routes: 42.\n"
+            f"Report: {'b' * 64}\n"
+            f"BUILDER_RETROSPECTIVE_READY:{'a' * 64}:{'b' * 64}"
+        )
+        for message in (
+            full_block,
+            f"BUILDER_RETROSPECTIVE_READY:{'a' * 64}:{'b' * 64}",
+            user_block.replace("Issue routes: 42", "Issue routes: 41"),
+            user_block.replace("a" * 64, "c" * 64),
+        ):
+            with self.subTest(message=message):
+                rc, blocked = self.call_stop(
+                    "COMPLETE",
+                    retrospective_status="READY",
+                    retrospective_block=full_block,
+                    retrospective_user_block=user_block,
+                    last_assistant_message=message,
+                )
+                self.assertEqual(rc, 0)
+                self.assertEqual(blocked.get("decision"), "block", blocked)
+
+        rc, surfaced = self.call_stop(
+            "COMPLETE",
+            retrospective_status="READY",
+            retrospective_block=full_block,
+            retrospective_user_block=user_block,
+            last_assistant_message=f"Delivery result\n{user_block}",
+        )
+        self.assertEqual(rc, 0)
+        self.assertNotIn("decision", surfaced, surfaced)
+
+    def test_fresh_needs_user_retrospective_can_wait_with_active_run(self) -> None:
+        full_block = (
+            "Builder-loop retrospective requires user input.\n"
+            "Dispositions:\n"
+            "- archived-signal-0123456789abcdef => issue builder_loop old\n"
+            f"BUILDER_INPUT_REQUIRED:hook-fixture-session:{'a' * 64}"
+        )
+        user_block = (
+            "Builder-loop retrospective requires user input.\n"
+            "Runs: 1; Signals: 2; Pending: 1; Issue routes: 2.\n"
+            f"Report: {'b' * 64}\n"
+            "Pending:\n"
+            "- Run fixture-run: builder_loop_problem_decision (open_builder_loop_problem)\n"
+            f"BUILDER_INPUT_REQUIRED:hook-fixture-session:{'a' * 64}"
+        )
+
+        rc, waiting = self.call_stop(
+            "ACTIVE",
+            retrospective_status="NEEDS_USER",
+            retrospective_block=full_block,
+            retrospective_user_block=user_block,
+            last_assistant_message=user_block,
+        )
+
+        self.assertEqual(rc, 0)
+        self.assertNotIn("decision", waiting, waiting)
+
+    def test_ready_retrospective_still_cannot_bypass_active_run_with_compact_block(
+        self,
+    ) -> None:
+        user_block = (
+            "Builder-loop retrospective complete.\n"
+            "Runs: 1; Signals: 0; Issue routes: 0.\n"
+            f"Report: {'b' * 64}\n"
+            f"BUILDER_RETROSPECTIVE_READY:{'a' * 64}:{'b' * 64}"
+        )
+        rc, blocked = self.call_stop(
+            "ACTIVE",
+            retrospective_status="READY",
+            retrospective_block="legacy full block",
+            retrospective_user_block=user_block,
+            last_assistant_message=user_block,
+        )
+        self.assertEqual(rc, 0)
+        self.assertEqual(blocked.get("decision"), "block", blocked)
 
     def test_subagent_result_must_be_exactly_the_last_line(self) -> None:
         rc, missing = self.call_subagent_stop("tests finished without marker")

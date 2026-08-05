@@ -5,7 +5,11 @@ import os
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from harness import CLI, ROOT, cleanup_repo, commit_all, init_repo, run_process
 
@@ -16,6 +20,7 @@ from codex_builder_loop.native_driver.app_server import (
     TurnResult,
     probe_app_server,
 )
+from codex_builder_loop.native_driver import cli as native_cli
 from codex_builder_loop.native_driver.coordinator import NativeCoordinator, NativeDriverError
 from codex_builder_loop.native_driver.core_port import CorePort, CorePortError
 
@@ -274,6 +279,147 @@ class NativeDriverCoreContractTest(unittest.TestCase):
             consumed.get("details", {}).get("consumer_source"), "native_driver"
         )
 
+    def test_native_cli_persists_unhandled_fatal_after_run_creation(self) -> None:
+        class FakeCore:
+            def __init__(self) -> None:
+                self.calls: list[tuple[str, tuple[str, ...], object | None]] = []
+
+            def start(self, **_kwargs):
+                return {"candidate_worktree": str(self.repo / "candidate")}
+
+            def call(self, command: str, *args: str, input_value=None):
+                self.calls.append((command, args, input_value))
+                if command == "record-driver-failure":
+                    return {
+                        "status": "ACTIVE",
+                        "phase": "active",
+                        "driver_failure": {"state": "recorded"},
+                    }
+                if command == "complete-driver-failure":
+                    return {
+                        "status": "FATAL",
+                        "phase": "failed",
+                        "driver_failure": {"state": "terminal"},
+                    }
+                raise AssertionError(command)
+
+        class FakeTransport:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+        class FatalCoordinator:
+            current_action = {
+                "action_id": "a" * 64,
+                "action": "checkpoint_builder",
+                "reason": "committed_candidate_uncheckpointed",
+            }
+
+            def __init__(self, **_kwargs):
+                pass
+
+            def run(self):
+                raise CorePortError(
+                    "published prerequisite drifted",
+                    payload={
+                        "status": "FATAL",
+                        "code": "PUBLISHED_PREREQUISITE_DRIFT",
+                        "message": "published prerequisite drifted",
+                        "details": {"path": "agents/reviewer.toml"},
+                    },
+                    returncode=2,
+                )
+
+        fake_core = FakeCore()
+        fake_core.repo = self.repo
+        contract_path = self.artifacts / "native-cli-fatal-contract.json"
+        contract_path.write_text(json.dumps(native_contract(self.repo)), encoding="utf-8")
+        output = StringIO()
+        with (
+            patch.object(native_cli, "CorePort", return_value=fake_core),
+            patch.object(
+                native_cli,
+                "probe_app_server",
+                return_value=SimpleNamespace(
+                    runtime_version="codex-test",
+                    protocol_schema_digest="b" * 64,
+                ),
+            ),
+            patch.object(native_cli, "AppServerTransport", return_value=FakeTransport()),
+            patch.object(native_cli, "NativeCoordinator", FatalCoordinator),
+            redirect_stdout(output),
+        ):
+            rc = native_cli.main(
+                [
+                    "start",
+                    "--repo",
+                    str(self.repo),
+                    "--run",
+                    "native-cli-fatal",
+                    "--session-id",
+                    "native-cli-fatal-session",
+                    "--contract",
+                    str(contract_path),
+                ]
+            )
+
+        self.assertEqual(rc, 2)
+        commands = [command for command, _args, _input in fake_core.calls]
+        self.assertEqual(
+            commands, ["record-driver-failure", "complete-driver-failure"]
+        )
+        recorded_failure = fake_core.calls[0][2]
+        self.assertEqual(recorded_failure["code"], "PUBLISHED_PREREQUISITE_DRIFT")
+        self.assertEqual(
+            recorded_failure["action"]["action"], "checkpoint_builder"
+        )
+        payload = json.loads(output.getvalue().splitlines()[-1])
+        self.assertEqual(payload["status"], "FATAL")
+        self.assertEqual(payload["phase"], "failed")
+
+    def test_native_cli_reports_finalized_when_fatal_finalize_recovery_succeeds(
+        self,
+    ) -> None:
+        class FakeCore:
+            def call(self, command: str, *args: str, input_value=None):
+                if command == "record-driver-failure":
+                    return {"status": "ACTIVE", "phase": "finalizing"}
+                if command == "complete-driver-failure":
+                    return {
+                        "status": "READY",
+                        "phase": "finalized",
+                        "driver_failure": {
+                            "state": "recovered",
+                            "recovery": "finalize",
+                        },
+                    }
+                raise AssertionError(command)
+
+        payload, rc = native_cli._persist_fatal(
+            core=FakeCore(),
+            repo=self.repo,
+            run_id="native-finalize-recovered",
+            exc=CorePortError(
+                "finalize interrupted",
+                payload={
+                    "status": "FATAL",
+                    "code": "FINALIZE_INTERRUPTED",
+                    "message": "finalize interrupted",
+                },
+                returncode=2,
+            ),
+            coordinator=None,
+        )
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(payload["status"], "FINALIZED")
+        self.assertEqual(payload["driver_failure"]["state"], "recovered")
+        self.assertEqual(
+            payload["recovered_failure"]["code"], "FINALIZE_INTERRUPTED"
+        )
+
 
 class AppServerTransportContractTest(unittest.TestCase):
     def setUp(self) -> None:
@@ -339,6 +485,35 @@ for line in sys.stdin:
 
 
 class NativeCoordinatorContractTest(unittest.TestCase):
+    def test_driver_next_failure_does_not_reuse_a_stale_action_identity(self) -> None:
+        class FailingCore:
+            def call(self, command: str, *args: str, input_value=None):
+                if command != "driver-next":
+                    raise AssertionError(command)
+                raise CorePortError(
+                    "driver-next failed",
+                    payload={"status": "FATAL", "code": "DRIVER_NEXT_FAILED"},
+                    returncode=2,
+                )
+
+        coordinator = NativeCoordinator(
+            repo=ROOT,
+            run_id="native-stale-action",
+            core=FailingCore(),
+            transport=object(),
+            project_root=ROOT,
+        )
+        coordinator.current_action = {
+            "action_id": "a" * 64,
+            "action": "builder_fix",
+            "reason": "open_builder_problem",
+        }
+
+        with self.assertRaises(CorePortError):
+            coordinator.run()
+
+        self.assertIsNone(coordinator.current_action)
+
     def test_native_wire_normalizes_nested_json_strings(self) -> None:
         evidence = {"schema_version": 1, "kind": "reviewer"}
         result = NativeCoordinator._parse_turn(

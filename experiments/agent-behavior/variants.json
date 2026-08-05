@@ -13,7 +13,7 @@
       "roles": ["builder"],
       "instruction_source": {
         "path": "skills/builder/SKILL.md",
-        "sha256": "2d839f6d1a48583bda334a17336d44a713d526c88d12373894ce29d893b445de",
+        "sha256": "d5ee163c3caed9aec711320b5ee1eb4988d5f2a2454d43f651c316efa893e8c5",
         "revision": "WORKTREE"
       }
     },

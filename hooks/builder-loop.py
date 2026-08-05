@@ -251,7 +251,12 @@ def stop(event: dict[str, Any]) -> None:
                 return
             emit({"systemMessage": "Builder-loop 仍为 ACTIVE；已避免 Stop hook 自循环。"})
             return
-        required_block = str(retrospective.get("required_block") or "")
+        required_user_block = retrospective.get("required_user_block")
+        required_block = (
+            str(required_user_block)
+            if isinstance(required_user_block, str) and required_user_block
+            else str(retrospective.get("required_block") or "")
+        )
         surfaced = bool(required_block) and required_block in last_message
         if retrospective_status in {"NEEDS_USER", "READY"} and surfaced:
             active_payload, active_error = run_runtime(
@@ -266,6 +271,15 @@ def stop(event: dict[str, Any]) -> None:
                 emit({"systemMessage": active_error})
                 return
             if str(active_payload.get("status")) == "ACTIVE":
+                if retrospective_status == "NEEDS_USER":
+                    emit(
+                        {
+                            "systemMessage": (
+                                "Builder-loop 复盘与 active run 均在等待用户决定，已保留现场。"
+                            )
+                        }
+                    )
+                    return
                 emit(
                     {
                         "decision": "block",

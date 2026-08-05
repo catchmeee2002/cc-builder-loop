@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Assurance v4 将 run 创建后的 Native Driver FATAL 持久化为可恢复 `driver_failure`，在 finalize intent
+  或 deployment/lease 安全收敛后进入 `finalized` 或新 `failed` 终态；failed 保留 candidate observation，
+  禁止 resume/supersede/abandon，并仅允许未漂移 clean cleanup。problem owner 改为六类穷举路由，
+  `builder_loop` 与 `current_project` 不再默认派回 Builder。terminal retrospective 保留完整审计块，
+  Stop hook 改校验精简 `required_user_block`，只向用户展示计数、digest 与真正待决项（#167、#170、#171）。
+
 - Assurance v4 修正 contract-change lifecycle：授权决定优先由 `update-facet` 或 `revise-mission` 在同一
   active run 收敛；确需 successor 时，source 保持 active 直到 `start` 持久化 target，再原子封为
   superseded，并连续携带 candidate、lineage 与逐条 problem disposition，重新绑定角色和 evidence。

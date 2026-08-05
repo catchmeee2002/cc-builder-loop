@@ -160,6 +160,21 @@ class AssuranceV4ContractTest(unittest.TestCase):
         self.assertTrue(run_path.is_dir(), data)
         return data, run_path
 
+    def bind_native_runtime(self, run_path: Path) -> None:
+        ledger_path = run_path / "ledger.json"
+        ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+        ledger["driver_runtime"] = {
+            "kind": "native",
+            "protocol_version": 1,
+            "transport": "codex_app_server",
+            "runtime_version": "codex-test",
+            "protocol_schema_digest": "a" * 64,
+        }
+        ledger_path.write_text(
+            json.dumps(ledger, ensure_ascii=False, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+
     def record_role_evidence(
         self,
         run_id: str,
@@ -666,6 +681,120 @@ class AssuranceV4ContractTest(unittest.TestCase):
         self.assertEqual(restored["environment_lease"]["state"], "released")
         self.assertEqual(operations.read_text(), "deploy\nrestore\n")
         self.assertEqual(restored["readiness"]["states"]["blackbox"], "pass")
+
+    def test_driver_failure_restores_deployment_before_entering_failed_phase(self) -> None:
+        contract, _state, operations = self.deployment_fixture()
+        run_id = "driver-failure-deployment-recovery"
+        _started, run_path = self.start(run_id, contract=contract)
+        self.invoke("checkpoint-builder", "--repo", self.repo, "--run", run_id)
+        self.record_role_evidence(run_id, run_path, "tester")
+        self.invoke("verify-machine", "--repo", self.repo, "--run", run_id)
+        rc, deployed, _stdout, _stderr = self.invoke(
+            "prepare-deployment", "--repo", self.repo, "--run", run_id
+        )
+        self.assertEqual(rc, 0, deployed)
+        self.assertEqual(deployed["deployment_transaction"]["state"], "deployed")
+        self.bind_native_runtime(run_path)
+        failure_path = self.write_json(
+            "driver-failure-deployment.json",
+            {
+                "source": "native_driver",
+                "status": "FATAL",
+                "code": "NATIVE_DEPLOYMENT_FIXTURE_FATAL",
+                "message": "Native Driver stopped while the environment lease was held.",
+                "details": {"fixture": run_id},
+                "action": None,
+            },
+        )
+        rc, recorded, _stdout, _stderr = self.invoke(
+            "record-driver-failure",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--failure",
+            failure_path,
+            "--driver-runtime-kind",
+            "native",
+        )
+        self.assertEqual(rc, 0, recorded)
+        self.assertEqual(recorded["phase"], "active")
+        self.assertEqual(recorded["driver_failure"]["recovery"], "deployment")
+
+        rc, failed, _stdout, _stderr = self.invoke(
+            "complete-driver-failure",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--driver-runtime-kind",
+            "native",
+        )
+
+        self.assertEqual(rc, 0, failed)
+        self.assertEqual(failed["phase"], "failed")
+        self.assertEqual(failed["status"], "FATAL")
+        self.assertEqual(failed["driver_failure"]["state"], "terminal")
+        self.assertEqual(failed["deployment_transaction"]["state"], "restored")
+        self.assertEqual(failed["environment_lease"]["state"], "released")
+        self.assertEqual(operations.read_text(), "deploy\nrestore\n")
+
+    def test_driver_failure_restore_failure_stays_recoverable_not_failed(self) -> None:
+        contract, _state, operations = self.deployment_fixture()
+        run_id = "driver-failure-deployment-blocked"
+        _started, run_path = self.start(run_id, contract=contract)
+        self.invoke("checkpoint-builder", "--repo", self.repo, "--run", run_id)
+        self.record_role_evidence(run_id, run_path, "tester")
+        self.invoke("verify-machine", "--repo", self.repo, "--run", run_id)
+        self.invoke("prepare-deployment", "--repo", self.repo, "--run", run_id)
+        self.bind_native_runtime(run_path)
+        operations.unlink()
+        operations.mkdir()
+        failure_path = self.write_json(
+            "driver-failure-deployment-blocked.json",
+            {
+                "source": "native_driver",
+                "status": "FATAL",
+                "code": "NATIVE_DEPLOYMENT_RESTORE_FIXTURE_FATAL",
+                "message": "Native Driver stopped before deployment recovery.",
+                "details": {"fixture": run_id},
+                "action": None,
+            },
+        )
+        rc, recorded, _stdout, _stderr = self.invoke(
+            "record-driver-failure",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--failure",
+            failure_path,
+            "--driver-runtime-kind",
+            "native",
+        )
+        self.assertEqual(rc, 0, recorded)
+
+        rc, blocked, _stdout, _stderr = self.invoke(
+            "complete-driver-failure",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--driver-runtime-kind",
+            "native",
+        )
+
+        self.assertEqual(rc, 1, blocked)
+        self.assertEqual(blocked.get("status"), "NEEDS_USER", blocked)
+        ledger = self.load_ledger(run_path)
+        self.assertEqual(ledger["phase"], "active")
+        self.assertEqual(ledger["driver_failure"]["state"], "recovering")
+        self.assertEqual(ledger["deployment_transaction"]["state"], "restore_failed")
+        rc, decision, _stdout, _stderr = self.invoke(
+            "driver-next", "--repo", self.repo, "--run", run_id
+        )
+        self.assertEqual(rc, 0, decision)
+        self.assertEqual(decision["action"], "complete_driver_failure")
 
     def test_superseding_artifact_change_restores_old_lease_before_deploy(self) -> None:
         contract, _state, operations = self.deployment_fixture()
@@ -3647,6 +3776,79 @@ class AssuranceV4ContractTest(unittest.TestCase):
                 if not after_cas:
                     cleanup_repo(self.repo)
                     self.repo = init_repo()
+
+    def test_driver_failure_recovers_persisted_finalize_intent_before_sealing(self) -> None:
+        run_id = "driver-failure-finalize-recovery"
+        run_path, _candidate, _target_start = self.interrupt_finalize(
+            run_id, after_cas=False
+        )
+        self.bind_native_runtime(run_path)
+        failure_path = self.write_json(
+            "driver-failure-finalize.json",
+            {
+                "source": "native_driver",
+                "status": "FATAL",
+                "code": "NATIVE_FINALIZE_FIXTURE_FATAL",
+                "message": "Native Driver stopped after finalize intent persistence.",
+                "details": {"fixture": run_id},
+                "action": {
+                    "action_id": "b" * 64,
+                    "action": "finalize",
+                    "reason": "all_gates_pass",
+                },
+            },
+        )
+        rc, recorded, _stdout, _stderr = self.invoke(
+            "record-driver-failure",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--failure",
+            failure_path,
+            "--driver-runtime-kind",
+            "native",
+        )
+        self.assertEqual(rc, 0, recorded)
+        self.assertEqual(recorded["phase"], "finalizing")
+        self.assertEqual(recorded["driver_failure"]["recovery"], "finalize")
+
+        rc, decision, _stdout, _stderr = self.invoke(
+            "driver-next", "--repo", self.repo, "--run", run_id
+        )
+        self.assertEqual(rc, 0, decision)
+        self.assertEqual(decision["action"], "complete_driver_failure")
+
+        rc, recovered, _stdout, _stderr = self.invoke(
+            "complete-driver-failure",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--driver-runtime-kind",
+            "native",
+        )
+        self.assertEqual(rc, 0, recovered)
+        self.assertEqual(recovered["phase"], "finalized")
+        self.assertEqual(recovered["driver_failure"]["state"], "recovered")
+        self.assertEqual(head(self.repo), self.load_ledger(run_path)["final_head"])
+
+        retrospective = self.invoke(
+            "retrospective-status",
+            "--repo",
+            self.repo,
+            "--session-id",
+            "assurance-v4-test-session",
+        )[1]
+        self.assertEqual(retrospective["status"], "REQUIRED", retrospective)
+        self.assertTrue(
+            any(
+                item["kind"] == "terminal-runtime-failure"
+                and run_id in item["run_ids"]
+                for item in retrospective["snapshot"]["signals"]
+            ),
+            retrospective,
+        )
 
     def test_recover_finalize_preserves_intent_when_target_diverged(self) -> None:
         run_id = "recover-target-diverged"
