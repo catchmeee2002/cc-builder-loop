@@ -50,6 +50,18 @@ def parser() -> argparse.ArgumentParser:
     validate = commands.add_parser("validate")
     validate.add_argument("--contract", required=True)
 
+    validate_decision = commands.add_parser("validate-decision")
+    validate_decision.add_argument("--repo", default=".")
+    validate_decision.add_argument("--run", required=True)
+    validate_decision.add_argument("--session-id", required=True)
+    validate_decision.add_argument("--problem-key", required=True)
+    validate_decision.add_argument("--action-id", required=True)
+    validate_decision.add_argument(
+        "--facet", choices=["mission", "authority", "assurance"], required=True
+    )
+    validate_decision.add_argument("--facet-digest", required=True)
+    validate_decision.add_argument("--contract", required=True)
+
     start = commands.add_parser("start")
     start.add_argument("--repo", default=".")
     start.add_argument("--run", required=True)
@@ -122,12 +134,19 @@ def parser() -> argparse.ArgumentParser:
     update.add_argument("--authorize-expansion", action="store_true")
     update.add_argument("--authorize-downgrade", action="store_true")
     update.add_argument("--resolve-plan-problem-key")
+    update.add_argument("--decision-action-id")
+    update.add_argument("--expected-facet-digest")
+    update.add_argument("--session-id")
 
     revise = commands.add_parser("revise-mission")
     revise.add_argument("--repo", default=".")
     revise.add_argument("--run", required=True)
     revise.add_argument("--mission", required=True)
     revise.add_argument("--transition")
+    revise.add_argument("--resolve-plan-problem-key")
+    revise.add_argument("--decision-action-id")
+    revise.add_argument("--expected-facet-digest")
+    revise.add_argument("--session-id")
 
     evidence = commands.add_parser("record-evidence")
     evidence.add_argument("--repo", default=".")
@@ -186,6 +205,11 @@ def parser() -> argparse.ArgumentParser:
     verify.add_argument("--run", required=True)
     dispatch_guard(verify)
 
+    preflight = commands.add_parser("verify-preflight")
+    preflight.add_argument("--repo", default=".")
+    preflight.add_argument("--run", required=True)
+    dispatch_guard(preflight)
+
     prepare_deployment = commands.add_parser("prepare-deployment")
     prepare_deployment.add_argument("--repo", default=".")
     prepare_deployment.add_argument("--run", required=True)
@@ -233,6 +257,11 @@ def parser() -> argparse.ArgumentParser:
     rematerialize.add_argument("--repo", default=".")
     rematerialize.add_argument("--run", required=True)
     dispatch_guard(rematerialize)
+
+    recompose = commands.add_parser("recompose-candidate")
+    recompose.add_argument("--repo", default=".")
+    recompose.add_argument("--run", required=True)
+    dispatch_guard(recompose)
 
     recover_finalize = commands.add_parser("recover-finalize")
     recover_finalize.add_argument("--repo", default=".")
@@ -334,6 +363,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         if args.command == "validate":
             payload = core.validate(_json(args.contract))
+        elif args.command == "validate-decision":
+            payload = driver.validate_decision(
+                args.repo,
+                args.run,
+                session_id=args.session_id,
+                problem_key=args.problem_key,
+                action_id=args.action_id,
+                facet=args.facet,
+                facet_digest=args.facet_digest,
+                replacement_contract=_json(args.contract),
+            )
         elif args.command == "start":
             runtime = None
             driver_values = (
@@ -426,6 +466,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 authorize_expansion=args.authorize_expansion,
                 authorize_downgrade=args.authorize_downgrade,
                 resolve_plan_problem_key=args.resolve_plan_problem_key,
+                decision_action_id=args.decision_action_id,
+                expected_facet_digest=args.expected_facet_digest,
+                owner_session_id=args.session_id,
             )
         elif args.command == "revise-mission":
             payload = core.revise_mission(
@@ -433,19 +476,24 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.run,
                 _json(args.mission),
                 _json(args.transition) if args.transition else None,
+                resolve_plan_problem_key=args.resolve_plan_problem_key,
+                decision_action_id=args.decision_action_id,
+                expected_facet_digest=args.expected_facet_digest,
+                owner_session_id=args.session_id,
             )
         elif args.command == "record-evidence":
             accepted = {
                 "tester": {"tester_author", "tester_fix"},
                 "proof": {"tester_proof"},
                 "blackbox": {"tester_blackbox"},
-                "reviewer": {"reviewer_final"},
+                "reviewer_preflight": {"reviewer_preflight"},
+                "reviewer": {"reviewer_preflight", "reviewer_final"},
                 "doc_review": {"reviewer_final"},
             }.get(args.kind, set())
             _guard_dispatch(args, accepted)
             payload = core.record_evidence(args.repo, args.run, args.kind, _json(args.report))
         elif args.command == "prepare-tester":
-            _guard_dispatch(args, {"tester_author", "tester_fix"})
+            _guard_dispatch(args, {"tester_author", "tester_fix", "tester_recompose_fix"})
             payload = core.prepare_tester(
                 args.repo,
                 args.run,
@@ -454,10 +502,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 replace=args.replace,
             )
         elif args.command == "prepare-builder":
-            _guard_dispatch(args, {"builder_implement", "builder_fix"})
+            _guard_dispatch(args, {"builder_implement", "builder_fix", "builder_recompose_fix"})
             payload = core.prepare_builder(args.repo, args.run, args.agent_id, args.thread_id)
         elif args.command == "prepare-reviewer":
-            _guard_dispatch(args, {"reviewer_final"})
+            _guard_dispatch(args, {"reviewer_preflight", "reviewer_final"})
             payload = core.prepare_reviewer(
                 args.repo,
                 args.run,
@@ -467,15 +515,22 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         elif args.command == "record-problems":
             role_actions = {
-                "builder": {"builder_implement", "builder_fix", "checkpoint_builder"},
+                "builder": {
+                    "builder_implement",
+                    "builder_fix",
+                    "builder_recompose_fix",
+                    "checkpoint_builder",
+                },
                 "tester": {
                     "tester_author",
                     "tester_proof",
                     "tester_proof_diagnose",
+                    "tester_machine_diagnose",
                     "tester_blackbox",
                     "tester_fix",
+                    "tester_recompose_fix",
                 },
-                "reviewer": {"reviewer_final"},
+                "reviewer": {"reviewer_preflight", "reviewer_final"},
             }
             _guard_dispatch(args, role_actions[args.role])
             payload = core.record_problems(
@@ -501,7 +556,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             payload = core.integrate_tester(args.repo, args.run)
         elif args.command == "verify-machine":
             _guard_dispatch(args, {"verify_machine"})
-            payload = core.verify_machine(args.repo, args.run)
+            payload = core.verify_machine(args.repo, args.run, action_id=args.action_id)
+        elif args.command == "verify-preflight":
+            _guard_dispatch(args, {"verify_preflight"})
+            payload = core.verify_preflight(args.repo, args.run, action_id=args.action_id)
         elif args.command == "prepare-deployment":
             _guard_dispatch(args, {"prepare_deployment"})
             payload = core.prepare_deployment(args.repo, args.run)
@@ -529,8 +587,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             _guard_dispatch(args, {"finalize"})
             payload = core.finalize(args.repo, args.run, args.message)
         elif args.command == "rematerialize-target":
-            _guard_dispatch(args, {"rematerialize_target"})
+            _guard_dispatch(args, {"rematerialize_target", "recompose_candidate"})
             payload = core.rematerialize_target(args.repo, args.run)
+        elif args.command == "recompose-candidate":
+            _guard_dispatch(
+                args,
+                {"recompose_candidate", "builder_recompose_fix", "tester_recompose_fix"},
+            )
+            payload = core.recompose_candidate(args.repo, args.run)
         elif args.command == "recover-finalize":
             _guard_dispatch(args, {"recover_finalize"})
             payload = core.recover_finalize(args.repo, args.run)

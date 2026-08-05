@@ -127,7 +127,9 @@
           "uniqueItems": true,
           "items": {"enum": ["machine", "tester", "proof", "blackbox", "reviewer", "doc_review"]}
         },
-        "machine_commands": {"type": "array", "items": {"$ref": "#/$defs/command"}}
+        "machine_commands": {"type": "array", "items": {"$ref": "#/$defs/command"}},
+        "preflight_before_proof": {"type": "boolean"},
+        "reviewer_preflight": {"type": "boolean"}
       }
     },
     "agent": {

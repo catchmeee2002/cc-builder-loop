@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Assurance v4 将 target drift 与已发布 prerequisite 修复统一为 crash-safe candidate recomposition：
+  publication 采用冻结路径、不可变 generation，Builder/Tester 冲突回原 thread 的 ownership staging，
+  target 再推进可重启并以最终 CAS 收敛；status 提前列出同 target contenders。新增 focused machine
+  preflight、同 Reviewer thread 的非最终 preflight、持久化 machine failure 归因，以及从 ledger event
+  派生的时间分类、重组统计、warning 和前三大耗时。plan problem 使用结构化 `decision_request`，
+  Planner 只向用户展示 delta，但 `validate-decision` 仍绑定同 session/action/facet digest 和唯一完整
+  replacement contract；Builder 原子更新原 run 后 resume，不再为可表达变化重建整轮计划
+  （#110、#111、#130、#137、#139、#143、#145、#153、#155）。
+
 - Assurance v4 将 run 创建后的 Native Driver FATAL 持久化为可恢复 `driver_failure`，在 finalize intent
   或 deployment/lease 安全收敛后进入 `finalized` 或新 `failed` 终态；failed 保留 candidate observation，
   禁止 resume/supersede/abandon，并仅允许未漂移 clean cleanup。problem owner 改为六类穷举路由，

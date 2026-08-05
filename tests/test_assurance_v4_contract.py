@@ -10,8 +10,10 @@ import unittest
 from copy import deepcopy
 from pathlib import Path
 from typing import Any, Mapping
+from unittest.mock import patch
 
 from harness import CLI, cleanup_repo, commit_all, git, head, init_repo, run_process
+from runtime.codex_builder_loop.assurance_v4 import core as assurance_core
 
 
 def canonical_digest(value: Any) -> str:
@@ -269,6 +271,43 @@ class AssuranceV4ContractTest(unittest.TestCase):
         self.assertEqual(rc, 0, result)
         integrated = self.load_ledger(run_path)["facets"]["execution"]
         self.assertEqual(integrated["tester_files"], [path])
+
+    def prepare_publication_refresh(
+        self, run_id: str
+    ) -> tuple[Path, Path, dict[str, Any]]:
+        contract = contract_for(self.repo)
+        contract["authority"]["public_prerequisites"] = ["src/calc.py"]
+        started, run_path = self.start(run_id, contract=contract)
+        candidate = Path(started["candidate_worktree"])
+        (candidate / "src" / "calc.py").write_text(
+            "def add(a, b):\n    return a + b\n\nPUBLIC_API = 1\n",
+            encoding="utf-8",
+        )
+        commit_all(candidate, "publish prerequisite")
+        rc, checkpointed, _stdout, _stderr = self.invoke(
+            "checkpoint-builder", "--repo", self.repo, "--run", run_id
+        )
+        self.assertEqual(rc, 0, checkpointed)
+        rc, published, _stdout, _stderr = self.invoke(
+            "publish-prerequisites", "--repo", self.repo, "--run", run_id
+        )
+        self.assertEqual(rc, 0, published)
+        self.prepare_tester_source(run_id, run_path)
+        before = self.load_ledger(run_path)
+        (candidate / "src" / "calc.py").write_text(
+            "def add(a, b):\n    return a + b\n\nPUBLIC_API = 2\n",
+            encoding="utf-8",
+        )
+        commit_all(candidate, "refresh prerequisite")
+        rc, refreshing, _stdout, _stderr = self.invoke(
+            "checkpoint-builder", "--repo", self.repo, "--run", run_id
+        )
+        self.assertEqual(rc, 0, refreshing)
+        self.assertEqual(
+            refreshing.get("recomposition_intent", {}).get("kind"),
+            "publication_refresh",
+        )
+        return run_path, candidate, before
 
     def test_tester_source_deletion_is_rejected_before_candidate_integration(self) -> None:
         run_id = "tester-deletion-rejected"
@@ -1262,6 +1301,75 @@ class AssuranceV4ContractTest(unittest.TestCase):
         )
         return rc, data
 
+    def record_plan_problem(
+        self,
+        run_id: str,
+        *,
+        key: str,
+        decision_request: dict[str, Any] | None,
+    ) -> None:
+        problem = {
+            "key": key,
+            "summary": "A frozen contract decision is required.",
+            "details": "The user must approve the exact replacement delta.",
+            "owner": "plan",
+        }
+        if decision_request is not None:
+            problem["decision_request"] = decision_request
+        report_path = self.write_json(
+            f"{run_id}-{key}-problem.json",
+            {"schema_version": 1, "problems": [problem]},
+        )
+        rc, value, _stdout, _stderr = self.invoke(
+            "record-problems",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--report",
+            report_path,
+            "--role",
+            "builder",
+            "--agent-id",
+            "decision-builder",
+            "--thread-id",
+            "decision-builder-thread",
+        )
+        self.assertEqual(rc, 0, value)
+
+    def validate_contract_decision(
+        self,
+        run_id: str,
+        *,
+        key: str,
+        action_id: str,
+        facet: str,
+        facet_digest: str,
+        contract: dict[str, Any],
+        session_id: str = "assurance-v4-test-session",
+    ) -> tuple[int, dict[str, Any]]:
+        contract_path = self.write_json(f"{run_id}-{key}-replacement.json", contract)
+        rc, value, _stdout, _stderr = self.invoke(
+            "validate-decision",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--session-id",
+            session_id,
+            "--problem-key",
+            key,
+            "--action-id",
+            action_id,
+            "--facet",
+            facet,
+            "--facet-digest",
+            facet_digest,
+            "--contract",
+            contract_path,
+        )
+        return rc, value
+
     def test_namespace_requires_experimental_switch_without_side_effects(self) -> None:
         contract_path = self.write_json("contract.json", contract_for(self.repo))
         before_status = git(self.repo, "status", "--porcelain=v1", "--untracked-files=all")
@@ -1379,6 +1487,277 @@ class AssuranceV4ContractTest(unittest.TestCase):
         self.assertEqual(rc, 0, accepted)
         self.assertEqual(accepted.get("status"), "ACTIVE", accepted)
         self.assertEqual(self.load_ledger(run_path)["facets"]["authority"], expanded)
+
+    def test_validate_decision_binds_exact_delta_and_rejects_stale_handoff(self) -> None:
+        run_id = "validated-authority-decision"
+        _data, run_path = self.start(run_id)
+        key = "expand-generated-authority"
+        self.record_plan_problem(
+            run_id,
+            key=key,
+            decision_request={
+                "kind": "facet_change",
+                "facet": "authority",
+                "changes": [
+                    {
+                        "pointer": "/builder_write/-",
+                        "operation": "add",
+                        "value": "generated/**",
+                    }
+                ],
+                "question": "Allow Builder to update generated sources?",
+            },
+        )
+        rc, action, _stdout, _stderr = self.invoke(
+            "driver-next", "--repo", self.repo, "--run", run_id
+        )
+        self.assertEqual(rc, 0, action)
+        self.assertEqual(action.get("action"), "contract_decision", action)
+        ledger = self.load_ledger(run_path)
+        replacement = deepcopy(ledger["facets"])
+        replacement["authority"]["builder_write"].append("generated/**")
+
+        rc, validated = self.validate_contract_decision(
+            run_id,
+            key=key,
+            action_id=action["action_id"],
+            facet="authority",
+            facet_digest=ledger["digests"]["authority"],
+            contract=replacement,
+        )
+
+        self.assertEqual(rc, 0, validated)
+        self.assertEqual(validated.get("status"), "READY", validated)
+        self.assertEqual(validated.get("apply", {}).get("command"), "update-facet")
+        self.assertEqual(
+            validated.get("apply", {}).get("authorization_flags"),
+            ["authorize_expansion"],
+        )
+
+        hidden = deepcopy(replacement)
+        hidden["assurance"]["reviewer_preflight"] = True
+        rc, rejected = self.validate_contract_decision(
+            run_id,
+            key=key,
+            action_id=action["action_id"],
+            facet="authority",
+            facet_digest=ledger["digests"]["authority"],
+            contract=hidden,
+        )
+        self.assertNotEqual(rc, 0, rejected)
+        self.assertEqual(rejected.get("code"), "DECISION_REPLACEMENT_DRIFT", rejected)
+
+        rc, applied = self.update_facet(
+            run_id,
+            "authority",
+            replacement["authority"],
+            "--authorize-expansion",
+            "--resolve-plan-problem-key",
+            key,
+            "--decision-action-id",
+            action["action_id"],
+            "--expected-facet-digest",
+            ledger["digests"]["authority"],
+            "--session-id",
+            "assurance-v4-test-session",
+        )
+        self.assertEqual(rc, 0, applied)
+        resolved = self.load_ledger(run_path)
+        self.assertEqual(resolved["problems"][0]["status"], "resolved")
+
+        rc, stale = self.validate_contract_decision(
+            run_id,
+            key=key,
+            action_id=action["action_id"],
+            facet="authority",
+            facet_digest=ledger["digests"]["authority"],
+            contract=replacement,
+        )
+        self.assertNotEqual(rc, 0, stale)
+        self.assertEqual(stale.get("code"), "DECISION_ACTION_STALE", stale)
+
+    def test_validate_decision_supports_legacy_problem_fallback_and_session_binding(self) -> None:
+        run_id = "legacy-decision-fallback"
+        _data, run_path = self.start(run_id)
+        key = "legacy-assurance-choice"
+        self.record_plan_problem(run_id, key=key, decision_request=None)
+        rc, action, _stdout, _stderr = self.invoke(
+            "driver-next", "--repo", self.repo, "--run", run_id
+        )
+        self.assertEqual(rc, 0, action)
+        ledger = self.load_ledger(run_path)
+        replacement = deepcopy(ledger["facets"])
+        replacement["assurance"]["reviewer_preflight"] = True
+
+        rc, wrong_session = self.validate_contract_decision(
+            run_id,
+            key=key,
+            action_id=action["action_id"],
+            facet="assurance",
+            facet_digest=ledger["digests"]["assurance"],
+            contract=replacement,
+            session_id="different-session",
+        )
+        self.assertNotEqual(rc, 0, wrong_session)
+        self.assertEqual(wrong_session.get("code"), "DECISION_SESSION_MISMATCH")
+
+        rc, validated = self.validate_contract_decision(
+            run_id,
+            key=key,
+            action_id=action["action_id"],
+            facet="assurance",
+            facet_digest=ledger["digests"]["assurance"],
+            contract=replacement,
+        )
+        self.assertEqual(rc, 0, validated)
+        self.assertEqual(validated.get("apply", {}).get("command"), "update-facet")
+
+    def test_decision_mutation_rechecks_live_driver_action_under_repo_lock(self) -> None:
+        run_id = "stale-decision-mutation"
+        _data, run_path = self.start(run_id)
+        key = "enable-review-preflight"
+        self.record_plan_problem(
+            run_id,
+            key=key,
+            decision_request={
+                "kind": "facet_change",
+                "facet": "assurance",
+                "changes": [
+                    {
+                        "pointer": "/reviewer_preflight",
+                        "operation": "replace",
+                        "value": True,
+                    }
+                ],
+                "question": "Enable Reviewer preflight?",
+            },
+        )
+        rc, action, _stdout, _stderr = self.invoke(
+            "driver-next", "--repo", self.repo, "--run", run_id
+        )
+        self.assertEqual(rc, 0, action)
+        ledger = self.load_ledger(run_path)
+        replacement = deepcopy(ledger["facets"]["assurance"])
+        replacement["reviewer_preflight"] = True
+        (self.repo / "README.md").write_text(
+            "fixture\ntarget moved after decision validation\n", encoding="utf-8"
+        )
+        commit_all(self.repo, "move target after decision validation")
+
+        before = (run_path / "ledger.json").read_bytes()
+        rc, rejected = self.update_facet(
+            run_id,
+            "assurance",
+            replacement,
+            "--resolve-plan-problem-key",
+            key,
+            "--decision-action-id",
+            action["action_id"],
+            "--expected-facet-digest",
+            ledger["digests"]["assurance"],
+            "--session-id",
+            "assurance-v4-test-session",
+        )
+        self.assertNotEqual(rc, 0, rejected)
+        self.assertEqual(rejected.get("code"), "DECISION_ACTION_STALE", rejected)
+        self.assertEqual((run_path / "ledger.json").read_bytes(), before)
+
+    def test_validate_decision_revises_mission_and_resolves_problem_atomically(self) -> None:
+        run_id = "validated-mission-decision"
+        _data, run_path = self.start(run_id)
+        key = "change-objective"
+        objective = "Deliver the revised calculator behavior."
+        self.record_plan_problem(
+            run_id,
+            key=key,
+            decision_request={
+                "kind": "facet_change",
+                "facet": "mission",
+                "changes": [
+                    {
+                        "pointer": "/objective",
+                        "operation": "replace",
+                        "value": objective,
+                    }
+                ],
+                "question": "Approve the revised objective?",
+            },
+        )
+        rc, action, _stdout, _stderr = self.invoke(
+            "driver-next", "--repo", self.repo, "--run", run_id
+        )
+        self.assertEqual(rc, 0, action)
+        ledger = self.load_ledger(run_path)
+        replacement = deepcopy(ledger["facets"])
+        replacement["mission"]["revision"] += 1
+        replacement["mission"]["objective"] = objective
+        replacement["mission"]["supersedes"] = {
+            "run_id": run_id,
+            "revision": ledger["facets"]["mission"]["revision"],
+            "mission_digest": ledger["digests"]["mission"],
+            "candidate_head": ledger["facets"]["execution"]["candidate_head"],
+        }
+        replacement["execution"]["revision_transition"] = {
+            "category": "mission_change",
+            "predecessor_pressure_digest": action.get("lineage", {}).get(
+                "pressure_digest"
+            ),
+            "architecture_review": None,
+        }
+        if replacement["execution"]["revision_transition"][
+            "predecessor_pressure_digest"
+        ] is None:
+            rc, current_status, _stdout, _stderr = self.invoke(
+                "status", "--repo", self.repo, "--run", run_id
+            )
+            self.assertEqual(rc, 0, current_status)
+            replacement["execution"]["revision_transition"][
+                "predecessor_pressure_digest"
+            ] = current_status["lineage"]["pressure_digest"]
+
+        rc, validated = self.validate_contract_decision(
+            run_id,
+            key=key,
+            action_id=action["action_id"],
+            facet="mission",
+            facet_digest=ledger["digests"]["mission"],
+            contract=replacement,
+        )
+        self.assertEqual(rc, 0, validated)
+        self.assertEqual(validated.get("apply", {}).get("command"), "revise-mission")
+
+        mission_path = self.write_json("validated-mission.json", replacement["mission"])
+        transition_path = self.write_json(
+            "validated-mission-transition.json",
+            replacement["execution"]["revision_transition"],
+        )
+        rc, applied, _stdout, _stderr = self.invoke(
+            "revise-mission",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--mission",
+            mission_path,
+            "--transition",
+            transition_path,
+            "--resolve-plan-problem-key",
+            key,
+            "--decision-action-id",
+            action["action_id"],
+            "--expected-facet-digest",
+            ledger["digests"]["mission"],
+            "--session-id",
+            "assurance-v4-test-session",
+        )
+        self.assertEqual(rc, 0, applied)
+        revised = self.load_ledger(run_path)
+        self.assertEqual(revised["facets"]["mission"], replacement["mission"])
+        self.assertEqual(revised["problems"][0]["status"], "resolved")
+        self.assertEqual(
+            revised["problems"][0]["resolution"],
+            f"plan-decision:mission:{revised['digests']['mission']}",
+        )
 
     def test_plan_problem_decision_updates_facet_and_resolves_only_the_bound_key_atomically(self) -> None:
         run_id = "plan-decision-atomic"
@@ -1876,6 +2255,36 @@ class AssuranceV4ContractTest(unittest.TestCase):
             self.assertIsNone(unavailable["adapter_commit"])
             self.assertIsNone(unavailable["adapter_dirty"])
             self.assertEqual(unavailable["capture_status"], "unavailable")
+
+    def test_legacy_v4_ledger_normalizes_new_optional_reliability_fields_read_only(self) -> None:
+        run_id = "legacy-reliability-fields"
+        _started, run_path = self.start(run_id)
+        ledger_path = run_path / "ledger.json"
+        legacy = self.load_ledger(run_path)
+        legacy.pop("machine_failure", None)
+        legacy.pop("recomposition_intent", None)
+        legacy["publication"].pop("generation", None)
+        legacy["facets"]["assurance"].pop("preflight_before_proof", None)
+        legacy["facets"]["assurance"].pop("reviewer_preflight", None)
+        legacy["digests"] = {
+            facet: canonical_digest(legacy["facets"][facet])
+            for facet in ("mission", "authority", "assurance", "execution")
+        }
+        ledger_path.write_text(
+            json.dumps(legacy, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        before = ledger_path.read_bytes()
+
+        rc, current, _stdout, _stderr = self.invoke(
+            "status", "--repo", self.repo, "--run", run_id
+        )
+
+        self.assertEqual(rc, 0, current)
+        self.assertIsNone(current["machine_failure"])
+        self.assertIsNone(current["recomposition_intent"])
+        self.assertEqual(current["publication"]["generation"], 0)
+        self.assertEqual(ledger_path.read_bytes(), before)
 
     def test_assurance_downgrade_requires_authorization_but_enhancement_only_adds_missing_gate(self) -> None:
         run_id = "assurance-monotonicity"
@@ -3561,7 +3970,7 @@ class AssuranceV4ContractTest(unittest.TestCase):
         for kind in ("tester", "machine", "blackbox", "reviewer"):
             self.assertEqual(rematerialized["readiness"]["states"][kind], "stale")
 
-    def test_conflicting_target_drift_stops_without_moving_heads(self) -> None:
+    def test_conflicting_target_drift_routes_to_builder_without_moving_canonical_heads(self) -> None:
         run_id = "rematerialize-conflict"
         data, run_path = self.start(run_id)
         candidate = Path(data["candidate_worktree"])
@@ -3581,13 +3990,250 @@ class AssuranceV4ContractTest(unittest.TestCase):
         rc, stopped, _stdout, _stderr = self.invoke(
             "rematerialize-target", "--repo", self.repo, "--run", run_id
         )
-        self.assertNotEqual(rc, 0, stopped)
-        self.assertIn(stopped.get("status"), {"NEEDS_USER", "FATAL"}, stopped)
+        self.assertEqual(rc, 0, stopped)
+        self.assertEqual(stopped["recomposition_intent"]["state"], "waiting_builder")
+        self.assertEqual(stopped["recomposition_intent"]["conflict_owner"], "builder")
+        self.assertEqual(stopped["recomposition_intent"]["conflict_paths"], ["src/calc.py"])
         self.assertEqual(head(self.repo), target_advanced)
         self.assertEqual(head(candidate), candidate_before)
         after = self.load_ledger(run_path)
         self.assertEqual(after["target_start_head"], ledger_before["target_start_head"])
         self.assertEqual(after["facets"]["execution"], ledger_before["facets"]["execution"])
+
+    def test_builder_conflict_repair_completes_same_recomposition_transaction(self) -> None:
+        run_id = "recomposition-builder-repair"
+        data, run_path = self.start(run_id)
+        candidate = Path(data["candidate_worktree"])
+        self.commit_candidate_change(
+            run_id,
+            run_path,
+            candidate,
+            content="def add(a, b):\n    return a + b + 1\n",
+        )
+        (self.repo / "src" / "calc.py").write_text(
+            "def add(a, b):\n    return a + b - 1\n", encoding="utf-8"
+        )
+        target_advanced = commit_all(self.repo, "conflicting target advance")
+        rc, waiting, _stdout, _stderr = self.invoke(
+            "recompose-candidate", "--repo", self.repo, "--run", run_id
+        )
+        self.assertEqual(rc, 0, waiting)
+        intent = waiting["recomposition_intent"]
+        self.assertEqual(intent["state"], "waiting_builder")
+        staging = Path(intent["builder_worktree"])
+        (staging / "src" / "calc.py").write_text(
+            "def add(a, b):\n    return a + b + 2\n", encoding="utf-8"
+        )
+        git(staging, "add", "--", "src/calc.py")
+        commit_all(staging, "resolve builder recomposition conflict")
+
+        rc, completed, _stdout, _stderr = self.invoke(
+            "recompose-candidate", "--repo", self.repo, "--run", run_id
+        )
+        self.assertEqual(rc, 0, completed)
+        self.assertIsNone(completed.get("recomposition_intent"))
+        after = self.load_ledger(run_path)
+        self.assertEqual(after["target_start_head"], target_advanced)
+        self.assertIn(
+            "return a + b + 2",
+            (candidate / "src" / "calc.py").read_text(encoding="utf-8"),
+        )
+        self.assertTrue(
+            any(
+                event.get("kind") == "recomposition_conflict_resolved"
+                and event.get("details", {}).get("owner") == "builder"
+                for event in after["events"]
+            )
+        )
+
+    def test_tester_conflict_repair_completes_without_builder_owning_tests(self) -> None:
+        run_id = "recomposition-tester-repair"
+        data, run_path = self.start(run_id)
+        candidate = Path(data["candidate_worktree"])
+        self.prepare_tester_source(run_id, run_path)
+        target_test = self.repo / "tests" / "test_assurance_fixture.py"
+        target_test.write_text(
+            "def test_target_version():\n    assert True\n", encoding="utf-8"
+        )
+        target_advanced = commit_all(self.repo, "conflicting tester target advance")
+
+        rc, waiting, _stdout, _stderr = self.invoke(
+            "recompose-candidate", "--repo", self.repo, "--run", run_id
+        )
+        self.assertEqual(rc, 0, waiting)
+        intent = waiting["recomposition_intent"]
+        self.assertEqual(intent["state"], "waiting_tester")
+        self.assertEqual(intent["conflict_owner"], "tester")
+        staging = Path(intent["tester_worktree"])
+        (staging / "tests" / "test_assurance_fixture.py").write_text(
+            "from src.calc import add\n\n"
+            "def test_assurance_fixture():\n    assert add(2, 3) == 5\n\n"
+            "def test_target_version():\n    assert True\n",
+            encoding="utf-8",
+        )
+        git(staging, "add", "--", "tests/test_assurance_fixture.py")
+        commit_all(staging, "resolve tester recomposition conflict")
+
+        rc, completed, _stdout, _stderr = self.invoke(
+            "recompose-candidate", "--repo", self.repo, "--run", run_id
+        )
+        self.assertEqual(rc, 0, completed)
+        self.assertIsNone(completed.get("recomposition_intent"))
+        after = self.load_ledger(run_path)
+        self.assertEqual(after["target_start_head"], target_advanced)
+        self.assertEqual(
+            after["facets"]["execution"]["tester_files"],
+            ["tests/test_assurance_fixture.py"],
+        )
+        self.assertNotIn(
+            "tests/test_assurance_fixture.py",
+            after["facets"]["execution"]["builder_files"],
+        )
+        self.assertIn(
+            "test_target_version",
+            (candidate / "tests" / "test_assurance_fixture.py").read_text(
+                encoding="utf-8"
+            ),
+        )
+
+    def test_target_advancing_mid_recomposition_restarts_on_latest_head(self) -> None:
+        run_id = "recomposition-target-advances"
+        run_path, _candidate, _before = self.prepare_publication_refresh(run_id)
+        original = assurance_core._apply_recomposition_delta
+        advanced_head: str | None = None
+        advanced = False
+
+        def advance_after_builder(*args: Any, **kwargs: Any):
+            nonlocal advanced, advanced_head
+            result = original(*args, **kwargs)
+            if not advanced:
+                advanced = True
+                (self.repo / "README.md").write_text(
+                    "fixture\nadvanced during recomposition\n", encoding="utf-8"
+                )
+                advanced_head = commit_all(
+                    self.repo, "advance target during recomposition"
+                )
+            return result
+
+        with patch.object(
+            assurance_core,
+            "_apply_recomposition_delta",
+            side_effect=advance_after_builder,
+        ):
+            completed = assurance_core.recompose_candidate(self.repo, run_id)
+
+        self.assertIsNone(completed.get("recomposition_intent"))
+        after = self.load_ledger(run_path)
+        self.assertEqual(after["target_start_head"], advanced_head)
+        event = next(
+            event
+            for event in after["events"]
+            if event.get("kind") == "prerequisites_republished"
+        )
+        self.assertEqual(event["details"]["target_restart_count"], 1)
+
+    def test_status_lists_other_active_runs_on_the_same_target(self) -> None:
+        first_run = "target-contender-first"
+        second_run = "target-contender-second"
+        self.start(first_run)
+        self.start(second_run)
+
+        rc, current, _stdout, _stderr = self.invoke(
+            "status", "--repo", self.repo, "--run", first_run
+        )
+        self.assertEqual(rc, 0, current)
+        self.assertEqual(
+            [item["run_id"] for item in current["target_contenders"]],
+            [second_run],
+        )
+
+    def test_recomposition_recovers_idempotently_after_each_staging_side_effect(self) -> None:
+        for crash_after in (1, 2, 3):
+            with self.subTest(crash_after=crash_after):
+                run_id = f"recomposition-stage-crash-{crash_after}"
+                run_path, _candidate, before = self.prepare_publication_refresh(run_id)
+                original = assurance_core._apply_recomposition_delta
+                calls = 0
+
+                def crash_after_side_effect(*args: Any, **kwargs: Any):
+                    nonlocal calls
+                    result = original(*args, **kwargs)
+                    calls += 1
+                    if calls == crash_after:
+                        raise RuntimeError("injected recomposition crash")
+                    return result
+
+                with patch.object(
+                    assurance_core,
+                    "_apply_recomposition_delta",
+                    side_effect=crash_after_side_effect,
+                ):
+                    with self.assertRaisesRegex(
+                        RuntimeError, "injected recomposition crash"
+                    ):
+                        assurance_core.recompose_candidate(self.repo, run_id)
+
+                interrupted = self.load_ledger(run_path)
+                self.assertIsInstance(interrupted.get("recomposition_intent"), dict)
+                recovered = assurance_core.recompose_candidate(self.repo, run_id)
+                self.assertIsNone(recovered.get("recomposition_intent"))
+                after = self.load_ledger(run_path)
+                self.assertEqual(after["publication"]["generation"], 2)
+                self.assertEqual(
+                    sum(
+                        1
+                        for event in after["events"]
+                        if event.get("kind") == "prerequisites_republished"
+                    ),
+                    1,
+                )
+                self.assertEqual(
+                    len(after["retired_tester_sources"]),
+                    len(before["retired_tester_sources"]) + 1,
+                )
+
+    def test_recomposition_recovers_after_formal_commit_before_intent_cleanup(self) -> None:
+        run_id = "recomposition-final-commit-crash"
+        run_path, _candidate, before = self.prepare_publication_refresh(run_id)
+        original_cleanup = assurance_core._cleanup_recomposition_staging
+        crashed = False
+
+        def crash_after_cleanup(repo: Path, intent: Mapping[str, Any]) -> None:
+            nonlocal crashed
+            original_cleanup(repo, intent)
+            if not crashed:
+                crashed = True
+                raise RuntimeError("injected cleanup crash")
+
+        with patch.object(
+            assurance_core,
+            "_cleanup_recomposition_staging",
+            side_effect=crash_after_cleanup,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "injected cleanup crash"):
+                assurance_core.recompose_candidate(self.repo, run_id)
+
+        committed = self.load_ledger(run_path)
+        self.assertIsInstance(committed.get("recomposition_intent"), dict)
+        self.assertEqual(committed["publication"]["generation"], 2)
+        version = committed["facets"]["execution"]["version"]
+        retired = len(committed["retired_tester_sources"])
+
+        recovered = assurance_core.recompose_candidate(self.repo, run_id)
+        self.assertIsNone(recovered.get("recomposition_intent"))
+        after = self.load_ledger(run_path)
+        self.assertEqual(after["facets"]["execution"]["version"], version)
+        self.assertEqual(len(after["retired_tester_sources"]), retired)
+        self.assertEqual(retired, len(before["retired_tester_sources"]) + 1)
+        self.assertEqual(
+            sum(
+                1
+                for event in after["events"]
+                if event.get("kind") == "prerequisites_republished"
+            ),
+            1,
+        )
 
     def test_finalize_squashes_candidate_and_preserves_nonoverlapping_dirty(self) -> None:
         run_id = "finalize-clean"

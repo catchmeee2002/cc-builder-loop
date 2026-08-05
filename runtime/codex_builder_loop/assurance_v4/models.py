@@ -13,7 +13,16 @@ from referencing import Registry, Resource
 
 
 FACETS = ("mission", "authority", "assurance", "execution")
-EVIDENCE_KINDS = ("machine", "tester", "proof", "blackbox", "reviewer", "doc_review")
+EVIDENCE_KINDS = (
+    "preflight",
+    "machine",
+    "tester",
+    "proof",
+    "blackbox",
+    "reviewer_preflight",
+    "reviewer",
+    "doc_review",
+)
 
 
 class ContractError(ValueError):
@@ -141,6 +150,8 @@ def validate_contract(value: Any) -> dict[str, Any]:
     contract["authority"].setdefault("public_prerequisites", [])
     contract["authority"].setdefault("protected_support_paths", [])
     contract["authority"].setdefault("external_targets", [])
+    contract["assurance"].setdefault("preflight_before_proof", False)
+    contract["assurance"].setdefault("reviewer_preflight", False)
     contract["execution"].setdefault("continuation", None)
     contract["execution"].setdefault("deployment", None)
     contract["execution"].setdefault("driver_enforced", False)
@@ -487,11 +498,17 @@ def validate_ledger(value: Any) -> dict[str, Any]:
             "adapter_dirty": None,
             "capture_status": "unavailable",
         }
+    normalized.setdefault("machine_failure", None)
+    normalized.setdefault("recomposition_intent", None)
+    publication = normalized.get("publication")
+    if isinstance(publication, dict):
+        publication.setdefault("generation", 1 if publication.get("head") else 0)
     ledger_schema = _schema("assurance-v4-ledger.schema.json")
     registry = _schema_registry(
         "assurance-v4-contract.schema.json",
         "assurance-v4-lineage.schema.json",
         "assurance-v4-telemetry.schema.json",
+        "codex-problem-report.schema.json",
         "codex-test-proof.schema.json",
     )
     try:
@@ -528,10 +545,22 @@ def facet_digests(contract: Mapping[str, Any]) -> dict[str, str]:
 
 
 def requirement(contract: Mapping[str, Any], kind: str) -> Any:
-    if kind == "machine":
+    if kind in {"preflight", "machine"}:
         return {
-            "required": kind in contract["assurance"]["required"],
-            "commands": contract["assurance"]["machine_commands"],
+            "required": (
+                contract["assurance"].get("preflight_before_proof", False)
+                if kind == "preflight"
+                else kind in contract["assurance"]["required"]
+            ),
+            "commands": [
+                copy.deepcopy(item)
+                for item in contract["assurance"]["machine_commands"]
+                if kind == "machine" or item.get("run_before_full_suite")
+            ],
+        }
+    if kind == "reviewer_preflight":
+        return {
+            "required": contract["assurance"].get("reviewer_preflight", False),
         }
     return {"required": kind in contract["assurance"]["required"]}
 
@@ -569,10 +598,21 @@ def evidence_dependency(
         "authority": ledger["digests"]["authority"],
         "requirement": requirement(contract, kind),
     }
-    if kind == "machine":
+    publication = ledger.get("publication")
+    publication_identity = (
+        {
+            "generation": publication.get("generation", 1 if publication.get("head") else 0),
+            "head": publication.get("head"),
+            "manifest_digest": publication.get("manifest_digest"),
+        }
+        if isinstance(publication, Mapping)
+        else None
+    )
+    if kind in {"preflight", "machine"}:
         base.update(
             candidate_head=candidate,
             tester_source=tester_source_dependency(execution),
+            publication=publication_identity,
         )
     elif kind == "tester":
         base.update(
@@ -604,11 +644,12 @@ def evidence_dependency(
             deployment=execution.get("deployment"),
             deployment_observation=deployment_observation,
         )
-    elif kind in {"reviewer", "doc_review"}:
+    elif kind in {"reviewer_preflight", "reviewer", "doc_review"}:
         base.update(
             candidate_head=candidate,
             assurance=ledger["digests"]["assurance"],
             execution=ledger["digests"]["execution"],
+            publication=publication_identity,
         )
         if kind == "reviewer":
             prereq = {}

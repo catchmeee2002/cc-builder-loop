@@ -1,11 +1,512 @@
 from __future__ import annotations
 
+import copy
+import json
 from pathlib import Path
 from typing import Any, Mapping
 
-from .core import current_proof_failure, ensure_run_id, evidence_state, readiness
-from .models import digest
+from .core import (
+    AssuranceError,
+    _derive_lineage,
+    _validate_revision_transition,
+    current_machine_failure,
+    current_proof_failure,
+    ensure_run_id,
+    evidence_state,
+    readiness,
+)
+from .models import (
+    EVIDENCE_KINDS,
+    assurance_downgrades,
+    authority_expands,
+    digest,
+    evidence_dependency,
+    facet_digests,
+    validate_contract,
+)
 from .store import branch_head, dirty_paths, git, read_ledger, resolve_repo
+
+
+def _contract_decision_user_block(
+    ledger: Mapping[str, Any], problem: Mapping[str, Any]
+) -> str:
+    request = problem.get("decision_request")
+    lines = [
+        "Builder-loop 需要你确认一项交付契约决定。",
+        f"Run: {ledger['run_id']}",
+        f"Candidate: {ledger['facets']['execution'].get('candidate_head') or '尚未形成'}",
+    ]
+    states = readiness(ledger)["states"]
+    passed = sorted(kind for kind, state in states.items() if state == "pass")
+    lines.append("已通过 gate: " + (", ".join(passed) if passed else "无"))
+    if isinstance(request, Mapping):
+        lines.append(f"决定类型: {request.get('kind')}")
+        if request.get("facet"):
+            lines.append(f"拟修改 facet: {request.get('facet')}")
+        for change in request.get("changes", []):
+            if not isinstance(change, Mapping):
+                continue
+            rendered = f"- {change.get('operation')} {change.get('pointer')}"
+            if "value" in change:
+                rendered += " = " + json.dumps(
+                    change.get("value"), ensure_ascii=False, sort_keys=True
+                )
+            lines.append(rendered)
+        lines.append("需要确认: " + str(request.get("question")))
+    else:
+        lines.append("需要确认: " + str(problem.get("details", problem.get("summary"))))
+    facet = request.get("facet") if isinstance(request, Mapping) else None
+    invalidated = {
+        "mission": [
+            "tester", "proof", "preflight", "machine", "blackbox",
+            "reviewer_preflight", "reviewer", "doc_review",
+        ],
+        "authority": [
+            "tester", "proof", "preflight", "machine", "blackbox",
+            "reviewer_preflight", "reviewer", "doc_review",
+        ],
+        "assurance": [
+            "tester", "proof", "preflight", "machine", "blackbox",
+            "reviewer_preflight", "reviewer", "doc_review",
+        ],
+        "execution": ["依赖实际专用事务重新计算"],
+    }.get(str(facet), ["依赖验证后重新计算"])
+    lines.extend(
+        [
+            "保留: 当前提交、worktree、角色 thread、日志与问题账本。",
+            "可能失效（以完整 replacement contract 的 dependency 校验为准）: "
+            + ", ".join(invalidated),
+            "目标分支: 当前 run 尚未把半成品 finalize 到 target。",
+            "请选择：批准精确变化；保持原契约并停止；或质疑该 finding。",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _decision_result(
+    ledger: Mapping[str, Any],
+    run_id: str,
+    status: str,
+    action: str,
+    reason: str,
+    **payload: Any,
+) -> dict[str, Any]:
+    identity = digest(
+        {
+            "run_id": run_id,
+            "updated_at": ledger["updated_at"],
+            "phase": ledger["phase"],
+            "digests": ledger["digests"],
+            "action": action,
+            "reason": reason,
+            "payload": payload,
+        }
+    )
+    return {
+        "driver_protocol_version": 1,
+        "status": status,
+        "run_id": run_id,
+        "action": action,
+        "reason": reason,
+        "action_id": identity,
+        "driver_enforced": bool(ledger["facets"]["execution"].get("driver_enforced")),
+        "driver_runtime_kind": ledger.get("driver_runtime", {}).get("kind")
+        if isinstance(ledger.get("driver_runtime"), dict)
+        else None,
+        **payload,
+    }
+
+
+def contract_problem_decision(
+    ledger: Mapping[str, Any],
+    problem: Mapping[str, Any],
+    problems: list[dict[str, Any]],
+) -> dict[str, Any]:
+    request = problem.get("decision_request")
+    payload: dict[str, Any] = {
+        "problem": problem,
+        "problems": [item for item in problems if item.get("owner") == "plan"],
+        "decision_request": copy.deepcopy(request),
+        "contract_digest": digest(ledger["facets"]),
+        "required_user_block": _contract_decision_user_block(ledger, problem),
+    }
+    facet = request.get("facet") if isinstance(request, Mapping) else None
+    if facet in {"mission", "authority", "assurance", "execution"}:
+        payload["facet"] = facet
+        payload["facet_digest"] = ledger["digests"][facet]
+    return _decision_result(
+        ledger,
+        str(ledger["run_id"]),
+        "NEEDS_USER",
+        "contract_decision",
+        "open_plan_problem",
+        **payload,
+    )
+
+
+def _json_pointer_parts(pointer: str) -> list[str]:
+    if not pointer.startswith("/"):
+        raise AssuranceError(
+            "decision change pointer must be an absolute JSON pointer",
+            code="DECISION_POINTER_INVALID",
+            status="FAIL",
+            details={"pointer": pointer},
+        )
+    return [part.replace("~1", "/").replace("~0", "~") for part in pointer[1:].split("/")]
+
+
+def _apply_decision_changes(value: Any, changes: Any) -> Any:
+    if not isinstance(changes, list) or not changes:
+        raise AssuranceError(
+            "structured decision request must declare at least one exact change",
+            code="DECISION_CHANGES_REQUIRED",
+            status="FAIL",
+        )
+    result = copy.deepcopy(value)
+    for change in changes:
+        if not isinstance(change, Mapping):
+            raise AssuranceError(
+                "decision change must be an object",
+                code="DECISION_CHANGE_INVALID",
+                status="FAIL",
+            )
+        operation = change.get("operation")
+        pointer = change.get("pointer")
+        if operation not in {"add", "replace", "remove"} or not isinstance(pointer, str):
+            raise AssuranceError(
+                "decision change operation or pointer is invalid",
+                code="DECISION_CHANGE_INVALID",
+                status="FAIL",
+                details={"change": copy.deepcopy(change)},
+            )
+        if operation in {"add", "replace"} and "value" not in change:
+            raise AssuranceError(
+                "decision add or replace change requires a value",
+                code="DECISION_CHANGE_VALUE_REQUIRED",
+                status="FAIL",
+                details={"pointer": pointer, "operation": operation},
+            )
+        parts = _json_pointer_parts(pointer)
+        parent = result
+        for token in parts[:-1]:
+            if isinstance(parent, list):
+                try:
+                    index = int(token)
+                except ValueError as exc:
+                    raise AssuranceError(
+                        "decision array pointer is invalid",
+                        code="DECISION_POINTER_INVALID",
+                        status="FAIL",
+                        details={"pointer": pointer},
+                    ) from exc
+                if index < 0 or index >= len(parent):
+                    raise AssuranceError(
+                        "decision pointer does not exist",
+                        code="DECISION_POINTER_MISSING",
+                        status="FAIL",
+                        details={"pointer": pointer},
+                    )
+                parent = parent[index]
+            elif isinstance(parent, dict) and token in parent:
+                parent = parent[token]
+            else:
+                raise AssuranceError(
+                    "decision pointer does not exist",
+                    code="DECISION_POINTER_MISSING",
+                    status="FAIL",
+                    details={"pointer": pointer},
+                )
+        token = parts[-1]
+        if isinstance(parent, list):
+            if operation == "add" and token == "-":
+                parent.append(copy.deepcopy(change["value"]))
+                continue
+            try:
+                index = int(token)
+            except ValueError as exc:
+                raise AssuranceError(
+                    "decision array pointer is invalid",
+                    code="DECISION_POINTER_INVALID",
+                    status="FAIL",
+                    details={"pointer": pointer},
+                ) from exc
+            upper = len(parent) if operation == "add" else len(parent) - 1
+            if index < 0 or index > upper:
+                raise AssuranceError(
+                    "decision array pointer is out of range",
+                    code="DECISION_POINTER_MISSING",
+                    status="FAIL",
+                    details={"pointer": pointer},
+                )
+            if operation == "add":
+                parent.insert(index, copy.deepcopy(change["value"]))
+            elif operation == "replace":
+                parent[index] = copy.deepcopy(change["value"])
+            else:
+                parent.pop(index)
+        elif isinstance(parent, dict):
+            if operation in {"replace", "remove"} and token not in parent:
+                raise AssuranceError(
+                    "decision pointer does not exist",
+                    code="DECISION_POINTER_MISSING",
+                    status="FAIL",
+                    details={"pointer": pointer},
+                )
+            if operation == "remove":
+                parent.pop(token)
+            else:
+                parent[token] = copy.deepcopy(change["value"])
+        else:
+            raise AssuranceError(
+                "decision pointer parent is not a container",
+                code="DECISION_POINTER_INVALID",
+                status="FAIL",
+                details={"pointer": pointer},
+            )
+    return result
+
+
+def _mission_semantics(value: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        key: copy.deepcopy(value.get(key))
+        for key in (
+            "delivery_kind",
+            "objective",
+            "behaviors",
+            "interfaces",
+            "acceptance_cases",
+            "trust_boundaries",
+        )
+    }
+
+
+def validate_decision(
+    repo_value: str | Path,
+    run_value: str,
+    *,
+    session_id: str,
+    problem_key: str,
+    action_id: str,
+    facet: str,
+    facet_digest: str,
+    replacement_contract: Any,
+) -> dict[str, Any]:
+    """Validate one same-run contract replacement without mutating the ledger."""
+
+    if facet not in {"mission", "authority", "assurance"}:
+        raise AssuranceError(
+            "this decision cannot be expressed by a supported same-run facet transaction",
+            code="DECISION_FACET_UNSUPPORTED",
+            status="NEEDS_USER",
+            details={"facet": facet},
+        )
+    repo = resolve_repo(repo_value)
+    run_id = ensure_run_id(run_value)
+    ledger = read_ledger(repo, run_id)
+    if ledger.get("phase") != "active":
+        raise AssuranceError(
+            "contract decision requires an active run",
+            code="DECISION_RUN_NOT_ACTIVE",
+            status="FAIL",
+        )
+    if ledger.get("owner_session_id") != session_id.strip():
+        raise AssuranceError(
+            "contract decision belongs to another Codex session",
+            code="DECISION_SESSION_MISMATCH",
+            status="FAIL",
+        )
+    current = next_action(repo, run_id)
+    current_problem = current.get("problem")
+    if (
+        current.get("status") != "NEEDS_USER"
+        or current.get("action") != "contract_decision"
+        or current.get("action_id") != action_id
+    ):
+        raise AssuranceError(
+            "contract decision handoff is stale",
+            code="DECISION_ACTION_STALE",
+            status="FAIL",
+            details={
+                "expected_action": current.get("action"),
+                "expected_action_id": current.get("action_id"),
+            },
+        )
+    if (
+        not isinstance(current_problem, Mapping)
+        or current_problem.get("key") != problem_key
+        or current_problem.get("owner") != "plan"
+        or current_problem.get("status") != "open"
+    ):
+        raise AssuranceError(
+            "contract decision problem binding is stale or ambiguous",
+            code="DECISION_PROBLEM_MISMATCH",
+            status="FAIL",
+            details={"problem_key": problem_key},
+        )
+    if ledger["digests"].get(facet) != facet_digest:
+        raise AssuranceError(
+            "contract decision facet digest is stale",
+            code="DECISION_FACET_STALE",
+            status="FAIL",
+            details={
+                "facet": facet,
+                "expected": ledger["digests"].get(facet),
+                "provided": facet_digest,
+            },
+        )
+
+    request = current_problem.get("decision_request")
+    if isinstance(request, Mapping):
+        requested_facet = request.get("facet")
+        if requested_facet is not None and requested_facet != facet:
+            raise AssuranceError(
+                "replacement facet does not match the recorded decision request",
+                code="DECISION_FACET_MISMATCH",
+                status="FAIL",
+                details={"requested": requested_facet, "provided": facet},
+            )
+
+    replacement = validate_contract(replacement_contract)
+    current_contract = ledger["facets"]
+    for unchanged in {"mission", "authority", "assurance"} - {facet}:
+        if replacement[unchanged] != current_contract[unchanged]:
+            raise AssuranceError(
+                "replacement contract changed an unapproved facet",
+                code="DECISION_REPLACEMENT_DRIFT",
+                status="FAIL",
+                details={"facet": unchanged},
+            )
+
+    authorization_flags: list[str] = []
+    if facet == "mission":
+        expected_supersedes = {
+            "run_id": run_id,
+            "revision": current_contract["mission"]["revision"],
+            "mission_digest": ledger["digests"]["mission"],
+            "candidate_head": current_contract["execution"].get("candidate_head"),
+        }
+        mission = replacement["mission"]
+        if (
+            mission.get("revision") != current_contract["mission"]["revision"] + 1
+            or mission.get("supersedes") != expected_supersedes
+        ):
+            raise AssuranceError(
+                "mission replacement does not bind the current run revision",
+                code="MISSION_REVISION_BINDING_INVALID",
+                status="FAIL",
+                details={"expected_supersedes": expected_supersedes},
+            )
+        transition = replacement["execution"].get("revision_transition")
+        expected_execution = copy.deepcopy(current_contract["execution"])
+        expected_execution["revision_transition"] = copy.deepcopy(transition)
+        if replacement["execution"] != expected_execution:
+            raise AssuranceError(
+                "mission replacement changed execution facts outside revision_transition",
+                code="DECISION_REPLACEMENT_DRIFT",
+                status="FAIL",
+                details={"facet": "execution"},
+            )
+        if not isinstance(transition, dict):
+            raise AssuranceError(
+                "mission replacement requires a revision transition",
+                code="REVISION_TRANSITION_REQUIRED",
+                status="FAIL",
+            )
+        _validate_revision_transition(_derive_lineage(repo, ledger), transition)
+        if transition.get("category") != "mission_change":
+            raise AssuranceError(
+                "same-run mission revision requires mission_change semantics",
+                code="REVISION_TRANSITION_SEMANTICS_MISMATCH",
+                status="FAIL",
+            )
+        if isinstance(request, Mapping):
+            requested = _apply_decision_changes(
+                _mission_semantics(current_contract["mission"]), request.get("changes")
+            )
+            if requested != _mission_semantics(mission):
+                raise AssuranceError(
+                    "replacement mission contains changes outside the approved delta",
+                    code="DECISION_DELTA_MISMATCH",
+                    status="FAIL",
+                )
+        command = "revise-mission"
+    else:
+        if replacement["execution"] != current_contract["execution"]:
+            raise AssuranceError(
+                "replacement contract changed execution facts",
+                code="DECISION_REPLACEMENT_DRIFT",
+                status="FAIL",
+                details={"facet": "execution"},
+            )
+        if isinstance(request, Mapping):
+            requested = _apply_decision_changes(
+                current_contract[facet], request.get("changes")
+            )
+            if requested != replacement[facet]:
+                raise AssuranceError(
+                    "replacement facet contains changes outside the approved delta",
+                    code="DECISION_DELTA_MISMATCH",
+                    status="FAIL",
+                    details={"facet": facet},
+                )
+        if facet == "authority":
+            old = current_contract["authority"]
+            new = replacement["authority"]
+            if new.get("target_branch") != old.get("target_branch"):
+                raise AssuranceError(
+                    "an active run cannot change its target branch",
+                    code="AUTHORITY_TARGET_IMMUTABLE",
+                    status="FAIL",
+                )
+            if new.get("dirty_intake") != old.get("dirty_intake"):
+                raise AssuranceError(
+                    "dirty intake requires a dedicated snapshot transaction",
+                    code="AUTHORITY_DIRTY_INTAKE_IMMUTABLE",
+                    status="FAIL",
+                )
+            for field in ("public_prerequisites", "protected_support_paths"):
+                if new.get(field) != old.get(field):
+                    raise AssuranceError(
+                        "authority replacement requires a dedicated lifecycle transaction",
+                        code="DECISION_AUTHORITY_TRANSACTION_UNSUPPORTED",
+                        status="NEEDS_USER",
+                        details={"field": field},
+                    )
+            if authority_expands(old, new):
+                authorization_flags.append("authorize_expansion")
+        elif assurance_downgrades(
+            current_contract["assurance"], replacement["assurance"]
+        ):
+            authorization_flags.append("authorize_downgrade")
+        command = "update-facet"
+
+    digests = facet_digests(replacement)
+    replacement_ledger = copy.deepcopy(ledger)
+    replacement_ledger["facets"] = replacement
+    replacement_ledger["digests"] = digests
+    invalidated_evidence = sorted(
+        kind
+        for kind in EVIDENCE_KINDS
+        if isinstance(ledger.get("evidence", {}).get(kind), Mapping)
+        and ledger["evidence"][kind].get("dependency_digest")
+        != evidence_dependency(replacement_ledger, kind)
+    )
+    return {
+        "status": "READY",
+        "run_id": run_id,
+        "problem_key": problem_key,
+        "action_id": action_id,
+        "facet": facet,
+        "base_facet_digest": facet_digest,
+        "replacement_facet_digest": digests[facet],
+        "replacement_contract_digest": digest(replacement),
+        "invalidated_evidence": invalidated_evidence,
+        "apply": {
+            "command": command,
+            "authorization_flags": authorization_flags,
+            "resolve_plan_problem_key": problem_key,
+        },
+    }
 
 
 def _external_recovery_context(
@@ -97,30 +598,9 @@ def next_action(repo_value: str | Path, run_value: str) -> dict[str, Any]:
     ledger = read_ledger(repo, run_id)
 
     def decision(status: str, action: str, reason: str, **payload: Any) -> dict[str, Any]:
-        identity = digest(
-            {
-                "run_id": run_id,
-                "updated_at": ledger["updated_at"],
-                "phase": ledger["phase"],
-                "digests": ledger["digests"],
-                "action": action,
-                "reason": reason,
-                "payload": payload,
-            }
+        return _decision_result(
+            ledger, run_id, status, action, reason, **payload
         )
-        return {
-            "driver_protocol_version": 1,
-            "status": status,
-            "run_id": run_id,
-            "action": action,
-            "reason": reason,
-            "action_id": identity,
-            "driver_enforced": bool(ledger["facets"]["execution"].get("driver_enforced")),
-            "driver_runtime_kind": ledger.get("driver_runtime", {}).get("kind")
-            if isinstance(ledger.get("driver_runtime"), dict)
-            else None,
-            **payload,
-        }
 
     def problem_decision(
         problem: Mapping[str, Any], problems: list[dict[str, Any]]
@@ -160,12 +640,17 @@ def next_action(repo_value: str | Path, run_value: str) -> dict[str, Any]:
         if owner in blocking:
             action, reason = blocking[owner]
             related = [item for item in problems if item.get("owner") == owner]
+            if owner == "plan":
+                return contract_problem_decision(ledger, problem, problems)
+            payload: dict[str, Any] = {
+                "problem": problem,
+                "problems": related,
+            }
             return decision(
                 "NEEDS_USER",
                 action,
                 reason,
-                problem=problem,
-                problems=related,
+                **payload,
             )
         return decision(
             "NEEDS_USER",
@@ -206,6 +691,36 @@ def next_action(repo_value: str | Path, run_value: str) -> dict[str, Any]:
         return decision("CONTINUE", "recover_finalize", "persisted_finalize_intent")
     if ledger["phase"] != "active":
         return decision("STOP", "none", ledger["phase"])
+    recomposition = ledger.get("recomposition_intent")
+    if isinstance(recomposition, dict):
+        state = recomposition.get("state")
+        if state == "waiting_builder":
+            return decision(
+                "CONTINUE",
+                "builder_recompose_fix",
+                "recomposition_builder_conflict",
+                recomposition=recomposition,
+                candidate_worktree=recomposition.get("builder_worktree"),
+                agent=ledger["facets"]["execution"]["agents"].get("builder"),
+            )
+        if state == "waiting_tester":
+            return decision(
+                "CONTINUE",
+                "tester_recompose_fix",
+                "recomposition_tester_conflict",
+                recomposition=recomposition,
+                tester_source={
+                    "worktree": recomposition.get("tester_worktree"),
+                    "head": recomposition.get("tester_head"),
+                },
+                agent=ledger["facets"]["execution"]["agents"].get("tester"),
+            )
+        return decision(
+            "CONTINUE",
+            "recompose_candidate",
+            "persisted_recomposition_intent",
+            recomposition=recomposition,
+        )
     source_supersede = ledger.get("supersede_intent")
     if (
         isinstance(source_supersede, dict)
@@ -268,7 +783,7 @@ def next_action(repo_value: str | Path, run_value: str) -> dict[str, Any]:
     ]
     live_target = branch_head(repo, ledger["target_branch"])
     if live_target != ledger["target_start_head"]:
-        return decision("CONTINUE", "rematerialize_target", "target_drift")
+        return decision("CONTINUE", "recompose_candidate", "target_drift")
     execution = ledger["facets"]["execution"]
     candidate_worktree = Path(ledger["candidate_worktree"])
     candidate_ref = f"refs/heads/{ledger['candidate_branch']}"
@@ -338,6 +853,44 @@ def next_action(repo_value: str | Path, run_value: str) -> dict[str, Any]:
     if open_problems:
         latest = blocking_problems[-1] if blocking_problems else open_problems[-1]
         return problem_decision(latest, open_problems)
+    machine_failure = current_machine_failure(ledger)
+    if isinstance(machine_failure, dict):
+        signature = machine_failure.get("failure_signature")
+        repeated_machine = sum(
+            1
+            for event in ledger.get("events", [])
+            if event.get("kind") in {"preflight_verified", "machine_verified"}
+            and isinstance(event.get("details"), Mapping)
+            and event["details"].get("failure_signature") == signature
+        )
+        if isinstance(signature, str) and repeated_machine >= 3:
+            return decision(
+                "NEEDS_USER",
+                "architecture_review",
+                "same_failure_three_times",
+                failures=[
+                    {
+                        "kind": machine_failure.get("stage", "machine"),
+                        "failure_signature": signature,
+                        "count": repeated_machine,
+                    }
+                ],
+            )
+        if machine_failure.get("recovery") == "tester_diagnosis":
+            return decision(
+                "CONTINUE",
+                "tester_machine_diagnose",
+                "machine_failure_requires_diagnosis",
+                machine_failure=machine_failure,
+                agent=execution["agents"].get("tester"),
+                tester_source=execution.get("tester_source"),
+            )
+        return decision(
+            "NEEDS_USER",
+            "machine_failure_decision",
+            "machine_failure_requires_user",
+            machine_failure=machine_failure,
+        )
     proof_failure = current_proof_failure(ledger)
     if isinstance(proof_failure, dict):
         if proof_failure.get("recovery") == "tester_diagnosis":
@@ -394,6 +947,7 @@ def next_action(repo_value: str | Path, run_value: str) -> dict[str, Any]:
         event_kind = event.get("kind")
         if event_kind not in {
             "evidence_recorded",
+            "preflight_verified",
             "machine_verified",
             "proof_failure_recorded",
         }:
@@ -404,6 +958,8 @@ def next_action(repo_value: str | Path, run_value: str) -> dict[str, Any]:
             "kind",
             "machine"
             if event_kind == "machine_verified"
+            else "preflight"
+            if event_kind == "preflight_verified"
             else "proof"
             if event_kind == "proof_failure_recorded"
             else "",
@@ -441,6 +997,44 @@ def next_action(repo_value: str | Path, run_value: str) -> dict[str, Any]:
                 for kind, signature, count in sorted(review_failures)
             ],
         )
+    preflight_commands = [
+        item
+        for item in ledger["facets"]["assurance"]["machine_commands"]
+        if item.get("run_before_full_suite")
+    ]
+    tester_ready = "tester" not in required or states.get("tester") == "pass"
+    if (
+        ledger["facets"]["assurance"].get("preflight_before_proof", False)
+        and preflight_commands
+        and tester_ready
+    ):
+        preflight_state = evidence_state(ledger, "preflight")
+        if preflight_state in {"missing", "stale"}:
+            return decision(
+                "CONTINUE",
+                "verify_preflight",
+                f"preflight_{preflight_state}",
+                candidate_worktree=ledger["candidate_worktree"],
+            )
+    if (
+        ledger["facets"]["assurance"].get("reviewer_preflight", False)
+        and "reviewer" in required
+        and tester_ready
+        and (
+            not preflight_commands
+            or not ledger["facets"]["assurance"].get("preflight_before_proof", False)
+            or evidence_state(ledger, "preflight") == "pass"
+        )
+    ):
+        review_preflight_state = evidence_state(ledger, "reviewer_preflight")
+        if review_preflight_state in {"missing", "stale"}:
+            return decision(
+                "CONTINUE",
+                "reviewer_preflight",
+                f"reviewer_preflight_{review_preflight_state}",
+                candidate_worktree=ledger["candidate_worktree"],
+                agent=execution["agents"].get("reviewer"),
+            )
     for kind in ("tester", "proof", "machine", "blackbox", "reviewer", "doc_review"):
         if kind not in required:
             continue

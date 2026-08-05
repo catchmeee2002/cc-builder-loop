@@ -12,7 +12,7 @@ import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from . import SCHEMA_VERSION
 from .models import (
@@ -589,6 +589,8 @@ def start(
                 "driver_failure": None,
                 "dispatch_intent": None,
                 "proof_failure": None,
+                "machine_failure": None,
+                "recomposition_intent": None,
                 "deployment_transaction": None,
                 "pending_blackbox": None,
                 "environment_lease": None,
@@ -608,6 +610,7 @@ def start(
                 "problem_dispositions": problem_dispositions,
                 "publication": {
                     "required": bool(contract["authority"].get("public_prerequisites")),
+                    "generation": 0,
                     "paths": list(contract["authority"].get("public_prerequisites", [])),
                     "head": None,
                     "tree": None,
@@ -1386,6 +1389,7 @@ def resolve_external_problem(
                 "machine_evidence_digest": machine_record_digest,
             },
         )
+        ledger["machine_failure"] = None
         save_ledger(repo, ledger)
     return status(repo, run_id)
 
@@ -2212,6 +2216,23 @@ def telemetry(ledger: Mapping[str, Any]) -> dict[str, Any]:
     evidence_attempts = {kind: 0 for kind in EVIDENCE_KINDS}
     retry_codes: dict[str, int] = {}
     candidate_changes = 0
+    agent_turn_ms = 0
+    deterministic_gate_ms = 0
+    recomposition_ms = 0
+    recomposition_started: dict[str, int] = {}
+    lifecycle = {
+        "publication_generations": int(
+            (ledger.get("publication") or {}).get("generation", 0)
+            if isinstance(ledger.get("publication"), Mapping)
+            else 0
+        ),
+        "target_drifts": 0,
+        "recomposition_attempts": 0,
+        "recomposition_restarts": 0,
+        "builder_conflict_repairs": 0,
+        "tester_conflict_repairs": 0,
+        "reviewer_preflight_attempts": 0,
+    }
 
     def stage(name: str) -> dict[str, Any]:
         return stage_stats.setdefault(
@@ -2241,7 +2262,9 @@ def telemetry(ledger: Mapping[str, Any]) -> dict[str, Any]:
                 action, started_at = dispatch
                 current = stage(action)
                 current["completed_attempts"] += 1
-                current["total_duration_ms"] += max(0, _timestamp_ms(str(at)) - started_at)
+                duration = max(0, _timestamp_ms(str(at)) - started_at)
+                current["total_duration_ms"] += duration
+                agent_turn_ms += duration
                 if details.get("result") in {
                     "fail",
                     "findings",
@@ -2263,10 +2286,21 @@ def telemetry(ledger: Mapping[str, Any]) -> dict[str, Any]:
             current["attempts"] += 1
             current["completed_attempts"] += 1
             current["total_duration_ms"] += int(details.get("duration_ms", 0))
+            deterministic_gate_ms += int(details.get("duration_ms", 0))
             evidence_attempts["machine"] += 1
             if details.get("status") != "pass":
                 current["failed_attempts"] += 1
                 current["last_failure_code"] = "machine_failed"
+        elif kind == "preflight_verified":
+            current = stage("verify_preflight")
+            current["attempts"] += 1
+            current["completed_attempts"] += 1
+            current["total_duration_ms"] += int(details.get("duration_ms", 0))
+            deterministic_gate_ms += int(details.get("duration_ms", 0))
+            evidence_attempts["preflight"] += 1
+            if details.get("status") != "pass":
+                current["failed_attempts"] += 1
+                current["last_failure_code"] = "preflight_failed"
         elif kind == "evidence_recorded":
             evidence_kind = details.get("kind")
             if evidence_kind in evidence_attempts:
@@ -2277,6 +2311,9 @@ def telemetry(ledger: Mapping[str, Any]) -> dict[str, Any]:
                     current["attempts"] = 1
                     current["completed_attempts"] = 1
                 current["total_duration_ms"] += int(details.get("duration_ms", 0))
+                deterministic_gate_ms += int(details.get("duration_ms", 0))
+            if evidence_kind == "reviewer_preflight":
+                lifecycle["reviewer_preflight_attempts"] += 1
             if details.get("status") == "fail" and isinstance(evidence_kind, str):
                 current = stage(f"evidence_{evidence_kind}")
                 current["failed_attempts"] += 1
@@ -2289,19 +2326,127 @@ def telemetry(ledger: Mapping[str, Any]) -> dict[str, Any]:
                 current["completed_attempts"] = 1
             current["failed_attempts"] += 1
             current["total_duration_ms"] += int(details.get("duration_ms", 0))
+            deterministic_gate_ms += int(details.get("duration_ms", 0))
             current["last_failure_code"] = str(details.get("code", "proof_failed"))
-        if kind in {"builder_checkpointed", "tester_source_integrated", "target_rematerialized"}:
+        elif kind == "recomposition_started":
+            intent_id = details.get("intent_id")
+            if isinstance(intent_id, str):
+                recomposition_started[intent_id] = _timestamp_ms(str(at))
+            lifecycle["recomposition_attempts"] += 1
+            if details.get("kind") == "target_rematerialization":
+                lifecycle["target_drifts"] += 1
+        elif kind == "recomposition_restarted":
+            lifecycle["recomposition_restarts"] += 1
+        elif kind == "recomposition_conflict_resolved":
+            owner = details.get("owner")
+            if owner == "builder":
+                lifecycle["builder_conflict_repairs"] += 1
+            elif owner == "tester":
+                lifecycle["tester_conflict_repairs"] += 1
+        elif kind in {"target_rematerialized", "prerequisites_republished"}:
+            intent_id = details.get("intent_id")
+            started = recomposition_started.get(intent_id) if isinstance(intent_id, str) else None
+            if isinstance(started, int):
+                recomposition_ms += max(0, _timestamp_ms(str(at)) - started)
+        if kind in {
+            "builder_checkpointed",
+            "tester_source_integrated",
+            "target_rematerialized",
+            "prerequisites_republished",
+        }:
             candidate_changes += 1
 
     pending = ledger.get("dispatch_intent")
-    active_stage = pending.get("action") if isinstance(pending, dict) else None
+    recomposition = ledger.get("recomposition_intent")
+    active_stage = (
+        f"recomposition:{recomposition.get('state')}"
+        if isinstance(recomposition, Mapping)
+        else pending.get("action")
+        if isinstance(pending, dict)
+        else None
+    )
     evidence_replays = sum(max(0, count - 1) for count in evidence_attempts.values())
+    stage_values = [stage_stats[name] for name in sorted(stage_stats)]
+    delay_candidates = [
+        {
+            "stage": item["name"],
+            "duration_ms": item["total_duration_ms"],
+            "attempts": item["attempts"],
+            "last_failure_code": item["last_failure_code"],
+        }
+        for item in stage_values
+        if item["total_duration_ms"] > 0
+    ]
+    if recomposition_ms:
+        delay_candidates.append(
+            {
+                "stage": "recomposition",
+                "duration_ms": recomposition_ms,
+                "attempts": lifecycle["recomposition_attempts"],
+                "last_failure_code": None,
+            }
+        )
+    primary_delays = sorted(
+        delay_candidates,
+        key=lambda item: (-item["duration_ms"], item["stage"]),
+    )[:3]
+    implementation_ms = sum(
+        item["total_duration_ms"]
+        for item in stage_values
+        if item["name"] in {"builder_implement", "builder_fix", "builder_recompose_fix"}
+    )
+    verification_ms = sum(
+        item["total_duration_ms"]
+        for item in stage_values
+        if item["name"]
+        in {
+            "verify_preflight",
+            "tester_proof",
+            "verify_machine",
+            "tester_blackbox",
+            "reviewer_preflight",
+            "reviewer_final",
+        }
+    )
+    warnings: list[str] = []
+    if implementation_ms and verification_ms > implementation_ms:
+        warnings.append("verification_exceeds_implementation")
+    if evidence_replays:
+        warnings.append("evidence_replayed")
+    if lifecycle["recomposition_restarts"]:
+        warnings.append("target_recomposition_restarted")
+    if any(item["failed_attempts"] >= 2 for item in stage_values):
+        warnings.append("stage_failed_repeatedly")
+    assurance = ledger["facets"]["assurance"]
+    required = set(assurance["required"])
+    expected_stages = ["builder"]
+    publication = ledger.get("publication")
+    if isinstance(publication, Mapping) and publication.get("required"):
+        expected_stages.append("publication")
+    if "tester" in required:
+        expected_stages.append("tester")
+    if assurance.get("preflight_before_proof") and any(
+        item.get("run_before_full_suite") for item in assurance["machine_commands"]
+    ):
+        expected_stages.append("preflight")
+    if assurance.get("reviewer_preflight") and "reviewer" in required:
+        expected_stages.append("reviewer_preflight")
+    for name in ("proof", "machine"):
+        if name in required:
+            expected_stages.append(name)
+    if isinstance(ledger["facets"]["execution"].get("deployment"), Mapping):
+        expected_stages.append("deployment")
+    for name in ("blackbox", "reviewer", "doc_review"):
+        if name in required:
+            expected_stages.append(name)
+    expected_stages.append("finalize")
+    accounted_ms = agent_turn_ms + deterministic_gate_ms + recomposition_ms
     return validate_telemetry(
         {
             "schema_version": 1,
             "elapsed_ms": elapsed_ms,
             "active_stage": active_stage,
-            "stages": [stage_stats[name] for name in sorted(stage_stats)],
+            "stages": stage_values,
             "candidate_changes": candidate_changes,
             "evidence_attempts": evidence_attempts,
             "evidence_replays": evidence_replays,
@@ -2309,6 +2454,16 @@ def telemetry(ledger: Mapping[str, Any]) -> dict[str, Any]:
                 "total": sum(retry_codes.values()),
                 "by_failure_code": dict(sorted(retry_codes.items())),
             },
+            "time_classes": {
+                "agent_turn_ms": agent_turn_ms,
+                "deterministic_gate_ms": deterministic_gate_ms,
+                "recomposition_ms": recomposition_ms,
+                "idle_or_user_wait_ms": max(0, elapsed_ms - accounted_ms),
+            },
+            "primary_delays": primary_delays,
+            "lifecycle": lifecycle,
+            "expected_stages": expected_stages,
+            "warnings": warnings,
         }
     )
 
@@ -2320,6 +2475,7 @@ def _problem_snapshot_value(ledger: Mapping[str, Any]) -> list[dict[str, Any]]:
             "summary": item["summary"],
             "details": item["details"],
             "owner": item["owner"],
+            "decision_request": copy.deepcopy(item.get("decision_request")),
         }
         for item in ledger.get("problems", [])
         if isinstance(item, dict) and item.get("status") == "open"
@@ -2537,6 +2693,34 @@ def _recorded_transition(
     }
 
 
+def _target_contenders(repo: Path, ledger: Mapping[str, Any]) -> list[dict[str, Any]]:
+    values: list[dict[str, Any]] = []
+    runs_root = state_root(repo) / "runs"
+    if not runs_root.is_dir():
+        return values
+    for path in sorted(runs_root.glob("*/ledger.json")):
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if (
+            raw.get("run_id") == ledger.get("run_id")
+            or raw.get("target_branch") != ledger.get("target_branch")
+            or raw.get("phase") not in {"active", "finalizing"}
+        ):
+            continue
+        execution = raw.get("facets", {}).get("execution", {})
+        values.append(
+            {
+                "run_id": raw.get("run_id"),
+                "phase": raw.get("phase"),
+                "target_start_head": raw.get("target_start_head"),
+                "candidate_head": execution.get("candidate_head"),
+            }
+        )
+    return values
+
+
 def status(repo_value: str | Path, run_value: str) -> dict[str, Any]:
     repo = resolve_repo(repo_value)
     run_id = ensure_run_id(run_value)
@@ -2556,6 +2740,7 @@ def status(repo_value: str | Path, run_value: str) -> dict[str, Any]:
         "repo_root": ledger["repo_root"],
         "target_branch": ledger["target_branch"],
         "target_start_head": ledger["target_start_head"],
+        "target_contenders": _target_contenders(repo, ledger),
         "candidate_branch": ledger["candidate_branch"],
         "candidate_worktree": ledger["candidate_worktree"],
         "digests": ledger["digests"],
@@ -2566,6 +2751,9 @@ def status(repo_value: str | Path, run_value: str) -> dict[str, Any]:
         "dispatch_intent": copy.deepcopy(ledger.get("dispatch_intent")),
         "proof_failure": copy.deepcopy(ledger.get("proof_failure")),
         "proof_failure_state": proof_failure_state(ledger),
+        "machine_failure": copy.deepcopy(ledger.get("machine_failure")),
+        "machine_failure_state": machine_failure_state(ledger),
+        "recomposition_intent": copy.deepcopy(ledger.get("recomposition_intent")),
         "deployment_transaction": copy.deepcopy(ledger.get("deployment_transaction")),
         "pending_blackbox": copy.deepcopy(ledger.get("pending_blackbox")),
         "environment_lease": copy.deepcopy(ledger.get("environment_lease")),
@@ -2590,6 +2778,7 @@ def driver_context(repo_value: str | Path, run_value: str) -> dict[str, Any]:
         "phase": ledger["phase"],
         "repo_root": ledger["repo_root"],
         "target_start_head": ledger["target_start_head"],
+        "target_contenders": _target_contenders(repo, ledger),
         "candidate_worktree": ledger["candidate_worktree"],
         "facets": copy.deepcopy(ledger["facets"]),
         "evidence": copy.deepcopy(ledger.get("evidence", {})),
@@ -2600,6 +2789,9 @@ def driver_context(repo_value: str | Path, run_value: str) -> dict[str, Any]:
         "dispatch_intent": copy.deepcopy(ledger.get("dispatch_intent")),
         "proof_failure": copy.deepcopy(ledger.get("proof_failure")),
         "proof_failure_state": proof_failure_state(ledger),
+        "machine_failure": copy.deepcopy(ledger.get("machine_failure")),
+        "machine_failure_state": machine_failure_state(ledger),
+        "recomposition_intent": copy.deepcopy(ledger.get("recomposition_intent")),
         "deployment_transaction": copy.deepcopy(ledger.get("deployment_transaction")),
         "pending_blackbox": copy.deepcopy(ledger.get("pending_blackbox")),
         "environment_lease": copy.deepcopy(ledger.get("environment_lease")),
@@ -2607,6 +2799,65 @@ def driver_context(repo_value: str | Path, run_value: str) -> dict[str, Any]:
         "abandon_intent": copy.deepcopy(ledger.get("abandon_intent")),
         "lineage": _derive_lineage(repo, ledger),
     }
+
+
+def _assert_plan_decision_mutation_binding(
+    repo: Path,
+    ledger: Mapping[str, Any],
+    *,
+    problem_key: str | None,
+    facet: str,
+    decision_action_id: str | None,
+    expected_facet_digest: str | None,
+    owner_session_id: str | None,
+) -> None:
+    provided = (decision_action_id, expected_facet_digest, owner_session_id)
+    if not any(item is not None for item in provided):
+        return
+    if problem_key is None or not all(isinstance(item, str) and item for item in provided):
+        raise AssuranceError(
+            "decision mutation binding requires action, facet digest, session and problem key",
+            code="DECISION_MUTATION_BINDING_INCOMPLETE",
+            status="FAIL",
+        )
+    if ledger.get("owner_session_id") != owner_session_id:
+        raise AssuranceError(
+            "contract decision belongs to another Codex session",
+            code="DECISION_SESSION_MISMATCH",
+            status="FAIL",
+        )
+    if ledger["digests"].get(facet) != expected_facet_digest:
+        raise AssuranceError(
+            "contract decision facet digest is stale",
+            code="DECISION_FACET_STALE",
+            status="FAIL",
+            details={
+                "facet": facet,
+                "expected": ledger["digests"].get(facet),
+                "provided": expected_facet_digest,
+            },
+        )
+    from .driver import next_action
+
+    current = next_action(repo, str(ledger["run_id"]))
+    problem = current.get("problem")
+    if (
+        current.get("status") != "NEEDS_USER"
+        or current.get("action") != "contract_decision"
+        or current.get("action_id") != decision_action_id
+        or not isinstance(problem, Mapping)
+        or problem.get("key") != problem_key
+    ):
+        raise AssuranceError(
+            "contract decision mutation handoff is stale",
+            code="DECISION_ACTION_STALE",
+            status="FAIL",
+            details={
+                "expected_action": current.get("action"),
+                "expected_action_id": current.get("action_id"),
+                "problem_key": problem_key,
+            },
+        )
 
 
 def update_facet(
@@ -2619,6 +2870,9 @@ def update_facet(
     authorize_expansion: bool = False,
     authorize_downgrade: bool = False,
     resolve_plan_problem_key: str | None = None,
+    decision_action_id: str | None = None,
+    expected_facet_digest: str | None = None,
+    owner_session_id: str | None = None,
 ) -> dict[str, Any]:
     if facet not in {"mission", "authority", "assurance", "execution"}:
         raise AssuranceError("unknown contract facet", code="ASSURANCE_FACET_INVALID")
@@ -2628,6 +2882,15 @@ def update_facet(
         ledger = read_ledger(repo, run_id)
         if ledger["phase"] != "active":
             raise AssuranceError("run is not active", code="ASSURANCE_RUN_NOT_ACTIVE")
+        _assert_plan_decision_mutation_binding(
+            repo,
+            ledger,
+            problem_key=resolve_plan_problem_key,
+            facet=facet,
+            decision_action_id=decision_action_id,
+            expected_facet_digest=expected_facet_digest,
+            owner_session_id=owner_session_id,
+        )
         old = ledger["facets"][facet]
         plan_problem: dict[str, Any] | None = None
         expected_resolution: str | None = None
@@ -2863,6 +3126,11 @@ def revise_mission(
     run_value: str,
     mission_value: Any,
     transition_value: Any,
+    *,
+    resolve_plan_problem_key: str | None = None,
+    decision_action_id: str | None = None,
+    expected_facet_digest: str | None = None,
+    owner_session_id: str | None = None,
 ) -> dict[str, Any]:
     repo = resolve_repo(repo_value)
     run_id = ensure_run_id(run_value)
@@ -2870,7 +3138,58 @@ def revise_mission(
         ledger = read_ledger(repo, run_id)
         if ledger["phase"] != "active":
             raise AssuranceError("run is not active", code="ASSURANCE_RUN_NOT_ACTIVE")
+        _assert_plan_decision_mutation_binding(
+            repo,
+            ledger,
+            problem_key=resolve_plan_problem_key,
+            facet="mission",
+            decision_action_id=decision_action_id,
+            expected_facet_digest=expected_facet_digest,
+            owner_session_id=owner_session_id,
+        )
         old = ledger["facets"]["mission"]
+        old_digest = ledger["digests"]["mission"]
+        plan_problem: dict[str, Any] | None = None
+        if resolve_plan_problem_key is not None:
+            keyed = [
+                item
+                for item in ledger.get("problems", [])
+                if item.get("key") == resolve_plan_problem_key
+            ]
+            open_keyed = [item for item in keyed if item.get("status") == "open"]
+            if len(open_keyed) > 1:
+                raise AssuranceError(
+                    "multiple open problems use the requested key",
+                    code="PLAN_PROBLEM_AMBIGUOUS",
+                    status="FAIL",
+                    details={"key": resolve_plan_problem_key},
+                )
+            matching = [item for item in keyed if item.get("owner") == "plan"]
+            open_matching = [item for item in matching if item.get("status") == "open"]
+            if open_matching:
+                plan_problem = open_matching[0]
+            elif matching:
+                resolved = matching[-1]
+                expected_resolution = f"plan-decision:mission:{old_digest}"
+                if (
+                    mission_value == old
+                    and resolved.get("status") == "resolved"
+                    and resolved.get("resolution") == expected_resolution
+                ):
+                    return status(repo, run_id)
+                raise AssuranceError(
+                    "resolved plan problem conflicts with the requested mission decision",
+                    code="PLAN_PROBLEM_DECISION_CONFLICT",
+                    status="FAIL",
+                    details={"key": resolve_plan_problem_key, "facet": "mission"},
+                )
+            else:
+                raise AssuranceError(
+                    "plan problem key was not found",
+                    code="PLAN_PROBLEM_NOT_FOUND",
+                    status="FAIL",
+                    details={"key": resolve_plan_problem_key},
+                )
         if not isinstance(mission_value, dict):
             raise AssuranceError("mission revision must be an object", code="MISSION_REVISION_INVALID")
         expected_supersedes = {
@@ -2953,6 +3272,22 @@ def revise_mission(
                 "category": transition_value["category"],
             },
         )
+        if plan_problem is not None:
+            new_digest = ledger["digests"]["mission"]
+            plan_problem["status"] = "resolved"
+            plan_problem["resolution"] = f"plan-decision:mission:{new_digest}"
+            plan_problem["resolved_at"] = now()
+            append_event(
+                ledger,
+                "plan_problem_decision_applied",
+                {
+                    "key": resolve_plan_problem_key,
+                    "facet": "mission",
+                    "old_digest": old_digest,
+                    "new_digest": new_digest,
+                    "facet_changed": True,
+                },
+            )
         save_ledger(repo, ledger)
     return status(repo, run_id)
 
@@ -3038,11 +3373,14 @@ def checkpoint_builder(repo_value: str | Path, run_value: str) -> dict[str, Any]
                 path for path, blob in frozen.items() if _blob_at(repo, candidate, path) != blob
             )
             if changed_public:
-                raise AssuranceError(
-                    "published prerequisites are immutable after Tester publication",
-                    code="PUBLISHED_PREREQUISITE_DRIFT",
-                    details={"paths": changed_public},
+                _begin_recomposition(
+                    repo,
+                    ledger,
+                    kind="publication_refresh",
+                    incoming_candidate=candidate,
+                    new_target=ledger["target_start_head"],
                 )
+                return status(repo, run_id)
         previous = execution.get("candidate_head")
         if (
             previous == candidate
@@ -3147,6 +3485,7 @@ def publish_prerequisites(repo_value: str | Path, run_value: str) -> dict[str, A
             paths=paths,
         )
         publication.update(
+            generation=int(publication.get("generation", 0)) + 1,
             head=head,
             tree=tree,
             files=files,
@@ -3234,8 +3573,15 @@ def record_problems(
                 None,
             )
             if isinstance(replay, dict):
-                content = {field: replay.get(field) for field in ("key", "summary", "details", "owner")}
-                if content != problem:
+                content = {
+                    field: replay.get(field)
+                    for field in ("key", "summary", "details", "owner", "decision_request")
+                }
+                replayed_problem = {
+                    field: problem.get(field)
+                    for field in ("key", "summary", "details", "owner", "decision_request")
+                }
+                if content != replayed_problem:
                     raise AssuranceError(
                         "problem replay changed content for the same producer and candidate",
                         code="PROBLEM_REPLAY_MISMATCH",
@@ -3552,7 +3898,7 @@ def record_evidence(
     kind: str,
     report: Any,
 ) -> dict[str, Any]:
-    if kind not in EVIDENCE_KINDS or kind == "machine":
+    if kind not in EVIDENCE_KINDS or kind in {"preflight", "machine"}:
         raise AssuranceError("unknown evidence kind", code="EVIDENCE_KIND_INVALID")
     if kind == "proof":
         raise AssuranceError(
@@ -5193,7 +5539,260 @@ def complete_staged_blackbox(repo_value: str | Path, run_value: str) -> dict[str
     return result
 
 
-def verify_machine(repo_value: str | Path, run_value: str) -> dict[str, Any]:
+def machine_failure_state(ledger: Mapping[str, Any]) -> str:
+    failure = ledger.get("machine_failure")
+    if not isinstance(failure, Mapping):
+        return "missing"
+    stage = str(failure.get("stage"))
+    kind = "preflight" if stage == "preflight" else "machine"
+    if failure.get("dependency_digest") != evidence_dependency(ledger, kind):
+        return "stale"
+    execution = ledger["facets"]["execution"]
+    source = execution.get("tester_source")
+    source_head = source.get("head") if isinstance(source, Mapping) else None
+    if failure.get("candidate_head") != execution.get("candidate_head"):
+        return "stale"
+    if failure.get("tester_source_head") != source_head:
+        return "stale"
+    return "current"
+
+
+def current_machine_failure(ledger: Mapping[str, Any]) -> dict[str, Any] | None:
+    if machine_failure_state(ledger) != "current":
+        return None
+    failure = ledger.get("machine_failure")
+    return copy.deepcopy(failure) if isinstance(failure, dict) else None
+
+
+def _machine_failure_signature(stage: str, results: Sequence[Mapping[str, Any]]) -> str:
+    stable = [
+        {
+            "id": item.get("id"),
+            "argv": item.get("argv"),
+            "returncode": item.get("returncode"),
+            "timed_out": item.get("timed_out"),
+            "executable_identity": item.get("executable_identity"),
+            "stderr": item.get("stderr"),
+        }
+        for item in results
+    ]
+    return digest({"stage": stage, "commands": stable})
+
+
+def _record_machine_failure(
+    ledger: dict[str, Any],
+    *,
+    stage: str,
+    results: list[dict[str, Any]],
+    action_id: str | None,
+) -> None:
+    execution = ledger["facets"]["execution"]
+    source = execution.get("tester_source")
+    recovery = (
+        "tester_diagnosis"
+        if isinstance(source, Mapping) and isinstance(execution.get("agents", {}).get("tester"), Mapping)
+        else "needs_user"
+    )
+    kind = "preflight" if stage == "preflight" else "machine"
+    base = {
+        "action_id": action_id if isinstance(action_id, str) and re.fullmatch(r"[0-9a-f]{64}", action_id) else None,
+        "stage": stage,
+        "candidate_head": execution.get("candidate_head"),
+        "tester_source_head": source.get("head") if isinstance(source, Mapping) else None,
+        "dependency_digest": evidence_dependency(ledger, kind),
+        "commands": copy.deepcopy(results),
+        "recovery": recovery,
+        "failure_signature": _machine_failure_signature(stage, results),
+    }
+    record = {**base, "failure_digest": digest(base), "recorded_at": now()}
+    ledger["machine_failure"] = record
+    append_event(
+        ledger,
+        "machine_failure_recorded",
+        {
+            "stage": stage,
+            "action_id": record["action_id"],
+            "failure_signature": record["failure_signature"],
+            "recovery": recovery,
+        },
+    )
+
+
+def _run_machine_commands(
+    repo: Path,
+    run_id: str,
+    candidate: str,
+    commands: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    raw_temp = tempfile.mkdtemp(prefix=f"assurance-v4-{run_id}-verify-")
+    verify_worktree = Path(raw_temp)
+    added = git(repo, "worktree", "add", "--detach", str(verify_worktree), candidate, check=False)
+    if added.returncode != 0:
+        shutil.rmtree(verify_worktree, ignore_errors=True)
+        raise AssuranceError(
+            added.stderr.strip() or "verification worktree creation failed",
+            code="VERIFY_WORKTREE_CREATE_FAILED",
+        )
+    results: list[dict[str, Any]] = []
+    try:
+        for command in commands:
+            executable, executable_identity = _resolve_machine_executable(
+                repo,
+                verify_worktree,
+                candidate,
+                command["argv"][0],
+            )
+            if executable is None:
+                results.append(
+                    {
+                        "id": command["id"],
+                        "argv": command["argv"],
+                        "returncode": None,
+                        "stdout": "",
+                        "stderr": "executable not found",
+                        "timed_out": False,
+                        "executable": None,
+                        "executable_identity": executable_identity,
+                        "source": "runtime",
+                    }
+                )
+                break
+            argv = [executable, *command["argv"][1:]]
+            try:
+                completed = subprocess.run(
+                    argv,
+                    cwd=verify_worktree,
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    timeout=command["timeout_seconds"],
+                    check=False,
+                    env={
+                        "HOME": os.environ.get("HOME", ""),
+                        "LANG": os.environ.get("LANG", "C.UTF-8"),
+                        "LC_ALL": os.environ.get("LC_ALL", "C.UTF-8"),
+                        "PATH": TRUSTED_SYSTEM_PATH,
+                        "PYTHONDONTWRITEBYTECODE": "1",
+                    },
+                )
+                results.append(
+                    {
+                        "id": command["id"],
+                        "argv": command["argv"],
+                        "executable": executable,
+                        "executable_identity": executable_identity,
+                        "returncode": completed.returncode,
+                        "stdout": completed.stdout[-8000:],
+                        "stderr": completed.stderr[-8000:],
+                        "timed_out": False,
+                        "source": "runtime",
+                    }
+                )
+                if completed.returncode not in command["expected_returncodes"]:
+                    break
+            except subprocess.TimeoutExpired as exc:
+                results.append(
+                    {
+                        "id": command["id"],
+                        "argv": command["argv"],
+                        "executable": executable,
+                        "executable_identity": executable_identity,
+                        "returncode": None,
+                        "stdout": (exc.stdout or "")[-8000:] if isinstance(exc.stdout, str) else "",
+                        "stderr": (exc.stderr or "")[-8000:] if isinstance(exc.stderr, str) else "",
+                        "timed_out": True,
+                        "source": "runtime",
+                    }
+                )
+                break
+    finally:
+        git(repo, "worktree", "remove", "--force", str(verify_worktree), check=False)
+        shutil.rmtree(verify_worktree, ignore_errors=True)
+    return results
+
+
+def _machine_results_pass(
+    commands: Sequence[Mapping[str, Any]], results: Sequence[Mapping[str, Any]]
+) -> bool:
+    declared = {item["id"]: item for item in commands}
+    return len(results) == len(commands) and all(
+        not item["timed_out"]
+        and item["returncode"] in declared[item["id"]]["expected_returncodes"]
+        for item in results
+    )
+
+
+def verify_preflight(
+    repo_value: str | Path,
+    run_value: str,
+    *,
+    action_id: str | None = None,
+) -> dict[str, Any]:
+    repo = resolve_repo(repo_value)
+    run_id = ensure_run_id(run_value)
+    started_at = time.monotonic()
+    with locked(repo):
+        ledger = read_ledger(repo, run_id)
+        if ledger["phase"] != "active":
+            raise AssuranceError("run is not active", code="ASSURANCE_RUN_NOT_ACTIVE")
+        candidate = ledger["facets"]["execution"].get("candidate_head")
+        if not candidate or not commit_exists(repo, candidate):
+            raise AssuranceError("candidate head is unavailable", code="CANDIDATE_HEAD_INVALID")
+        commands = [
+            item
+            for item in ledger["facets"]["assurance"]["machine_commands"]
+            if item.get("run_before_full_suite")
+        ]
+        if not commands:
+            return status(repo, run_id)
+        results = _run_machine_commands(repo, run_id, candidate, commands)
+        passed = _machine_results_pass(commands, results)
+        record = {
+            "kind": "preflight",
+            "status": "pass" if passed else "fail",
+            "dependency_digest": "",
+            "candidate_head": candidate,
+            "producer": {
+                "role": "runtime",
+                "agent_id": "assurance-core-v4",
+                "thread_id": "deterministic-preflight",
+            },
+            "details": {"commands": results},
+            "recorded_at": now(),
+        }
+        ledger["evidence"]["preflight"] = record
+        record["dependency_digest"] = evidence_dependency(ledger, "preflight")
+        if passed:
+            ledger["machine_failure"] = None
+        else:
+            _record_machine_failure(
+                ledger,
+                stage="preflight",
+                results=results,
+                action_id=action_id,
+            )
+        append_event(
+            ledger,
+            "preflight_verified",
+            {
+                "status": record["status"],
+                "commands": len(results),
+                "failure_signature": (
+                    None if passed else ledger["machine_failure"]["failure_signature"]
+                ),
+                "duration_ms": int((time.monotonic() - started_at) * 1000),
+            },
+        )
+        save_ledger(repo, ledger)
+    return status(repo, run_id)
+
+
+def verify_machine(
+    repo_value: str | Path,
+    run_value: str,
+    *,
+    action_id: str | None = None,
+) -> dict[str, Any]:
     repo = resolve_repo(repo_value)
     run_id = ensure_run_id(run_value)
     started_at = time.monotonic()
@@ -5212,101 +5811,18 @@ def verify_machine(repo_value: str | Path, run_value: str) -> dict[str, Any]:
         commands = [item[1] for item in commands]
         if "machine" in ledger["facets"]["assurance"]["required"] and not commands:
             raise AssuranceError("machine evidence requires at least one command", code="MACHINE_COMMAND_REQUIRED")
-        raw_temp = tempfile.mkdtemp(prefix=f"assurance-v4-{run_id}-verify-")
-        verify_worktree = Path(raw_temp)
-        added = git(repo, "worktree", "add", "--detach", str(verify_worktree), candidate, check=False)
-        if added.returncode != 0:
-            shutil.rmtree(verify_worktree, ignore_errors=True)
-            raise AssuranceError(
-                added.stderr.strip() or "verification worktree creation failed",
-                code="VERIFY_WORKTREE_CREATE_FAILED",
-            )
-        results: list[dict[str, Any]] = []
-        try:
-            for command in commands:
-                executable, executable_identity = _resolve_machine_executable(
-                    repo,
-                    verify_worktree,
-                    candidate,
-                    command["argv"][0],
-                )
-                if executable is None:
-                    results.append(
-                        {
-                            "id": command["id"],
-                            "argv": command["argv"],
-                            "returncode": None,
-                            "stdout": "",
-                            "stderr": "executable not found",
-                            "timed_out": False,
-                            "executable": None,
-                            "executable_identity": executable_identity,
-                        }
-                    )
-                    break
-                argv = [executable, *command["argv"][1:]]
-                try:
-                    completed = subprocess.run(
-                        argv,
-                        cwd=verify_worktree,
-                        text=True,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE,
-                        timeout=command["timeout_seconds"],
-                        check=False,
-                        env={
-                            "HOME": os.environ.get("HOME", ""),
-                            "LANG": os.environ.get("LANG", "C.UTF-8"),
-                            "LC_ALL": os.environ.get("LC_ALL", "C.UTF-8"),
-                            "PATH": TRUSTED_SYSTEM_PATH,
-                            "PYTHONDONTWRITEBYTECODE": "1",
-                        },
-                    )
-                    results.append(
-                        {
-                            "id": command["id"],
-                            "argv": command["argv"],
-                            "executable": executable,
-                            "executable_identity": executable_identity,
-                            "returncode": completed.returncode,
-                            "stdout": completed.stdout[-8000:],
-                            "stderr": completed.stderr[-8000:],
-                            "timed_out": False,
-                        }
-                    )
-                    if completed.returncode not in command["expected_returncodes"]:
-                        break
-                except subprocess.TimeoutExpired as exc:
-                    results.append(
-                        {
-                            "id": command["id"],
-                            "argv": command["argv"],
-                            "executable": executable,
-                            "executable_identity": executable_identity,
-                            "returncode": None,
-                            "stdout": (exc.stdout or "")[-8000:] if isinstance(exc.stdout, str) else "",
-                            "stderr": (exc.stderr or "")[-8000:] if isinstance(exc.stderr, str) else "",
-                            "timed_out": True,
-                        }
-                    )
-                    break
-        finally:
-            git(repo, "worktree", "remove", "--force", str(verify_worktree), check=False)
-            shutil.rmtree(verify_worktree, ignore_errors=True)
-        declared = {item["id"]: item for item in commands}
-        passed = len(results) == len(commands) and all(
-            not item["timed_out"]
-            and item["returncode"] in declared[item["id"]]["expected_returncodes"]
-            for item in results
-        )
-        report = {
-            "status": "pass" if passed else "fail",
-            "candidate_head": candidate,
-            "details": {"commands": results},
-        }
+        reused: dict[str, dict[str, Any]] = {}
+        if evidence_state(ledger, "preflight") == "pass":
+            for item in ledger["evidence"]["preflight"]["details"].get("commands", []):
+                reused[str(item["id"])] = {**copy.deepcopy(item), "source": "preflight"}
+        remaining = [item for item in commands if item["id"] not in reused]
+        executed = _run_machine_commands(repo, run_id, candidate, remaining) if remaining else []
+        by_id = {item["id"]: item for item in [*reused.values(), *executed]}
+        results = [by_id[item["id"]] for item in commands if item["id"] in by_id]
+        passed = _machine_results_pass(commands, results)
         record = {
             "kind": "machine",
-            "status": report["status"],
+            "status": "pass" if passed else "fail",
             "dependency_digest": "",
             "candidate_head": candidate,
             "producer": {
@@ -5314,173 +5830,796 @@ def verify_machine(repo_value: str | Path, run_value: str) -> dict[str, Any]:
                 "agent_id": "assurance-core-v4",
                 "thread_id": "deterministic-machine",
             },
-            "details": report["details"],
+            "details": {"commands": results},
             "recorded_at": now(),
         }
         ledger["evidence"]["machine"] = record
         record["dependency_digest"] = evidence_dependency(ledger, "machine", evidence=record)
+        if passed:
+            ledger["machine_failure"] = None
+        else:
+            _record_machine_failure(
+                ledger,
+                stage="machine",
+                results=results,
+                action_id=action_id,
+            )
         append_event(
             ledger,
             "machine_verified",
             {
                 "status": record["status"],
                 "commands": len(results),
-                "failure_signature": digest(record["details"]) if record["status"] == "fail" else None,
+                "failure_signature": (
+                    None if passed else ledger["machine_failure"]["failure_signature"]
+                ),
                 "duration_ms": int((time.monotonic() - started_at) * 1000),
+                "preflight_reused": len(reused),
             },
         )
         save_ledger(repo, ledger)
     return status(repo, run_id)
 
 
-def rematerialize_target(repo_value: str | Path, run_value: str) -> dict[str, Any]:
+def _intent_owned_path(intent: Mapping[str, Any], value: str) -> Path:
+    root = Path(str(intent["staging_root"])).resolve()
+    path = Path(value).resolve()
+    try:
+        path.relative_to(root)
+    except ValueError as exc:
+        raise AssuranceError(
+            "recomposition staging path escaped its persisted root",
+            code="RECOMPOSITION_STAGING_PATH_INVALID",
+            details={"root": str(root), "path": str(path)},
+        ) from exc
+    return path
+
+
+def _cleanup_recomposition_staging(repo: Path, intent: Mapping[str, Any]) -> None:
+    root = Path(str(intent["staging_root"])).resolve()
+    for key in ("tester_worktree", "builder_worktree"):
+        value = intent.get(key)
+        if not isinstance(value, str):
+            continue
+        path = _intent_owned_path(intent, value)
+        if path.exists():
+            git(repo, "worktree", "remove", "--force", str(path), check=False)
+            shutil.rmtree(path, ignore_errors=True)
+    for key in ("tester_branch", "builder_branch"):
+        branch = intent.get(key)
+        if isinstance(branch, str):
+            git(repo, "branch", "-D", branch, check=False)
+    if root.exists():
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def _ensure_recomposition_worktree(
+    repo: Path,
+    *,
+    branch: str,
+    worktree: Path,
+    base_head: str,
+) -> None:
+    if worktree.exists():
+        live_branch = git(worktree, "rev-parse", "--abbrev-ref", "HEAD", check=False)
+        if live_branch.returncode != 0 or live_branch.stdout.strip() != branch:
+            raise AssuranceError(
+                "recomposition worktree identity changed",
+                code="RECOMPOSITION_WORKTREE_IDENTITY_MISMATCH",
+                details={"worktree": str(worktree), "branch": branch},
+            )
+        return
+    worktree.parent.mkdir(parents=True, exist_ok=True)
+    ref_exists = git(repo, "show-ref", "--verify", f"refs/heads/{branch}", check=False).returncode == 0
+    args = ["worktree", "add"]
+    if ref_exists:
+        args.extend([str(worktree), branch])
+    else:
+        args.extend(["-b", branch, str(worktree), base_head])
+    created = git(repo, *args, check=False)
+    if created.returncode != 0:
+        raise AssuranceError(
+            created.stderr.strip() or "recomposition worktree creation failed",
+            code="RECOMPOSITION_WORKTREE_CREATE_FAILED",
+            details={"branch": branch, "worktree": str(worktree)},
+        )
+
+
+def _apply_recomposition_delta(
+    repo: Path,
+    *,
+    worktree: Path,
+    staging_base: str,
+    source_base: str,
+    source_head: str,
+    paths: Sequence[str],
+    patch_path: Path,
+    message: str,
+) -> tuple[str | None, list[str]]:
+    unique_paths = sorted(set(paths))
+    live_head = git(worktree, "rev-parse", "HEAD").stdout.strip()
+    residue = dirty_paths(worktree)
+    if residue:
+        git(worktree, "reset", "--hard", staging_base, check=False)
+        if unique_paths:
+            git(worktree, "clean", "-fd", "--", *unique_paths, check=False)
+        residue = dirty_paths(worktree)
+        if residue:
+            raise AssuranceError(
+                "recomposition staging worktree contains unexplained residue",
+                code="RECOMPOSITION_STAGING_RESIDUE",
+                status="NEEDS_USER",
+                details={"worktree": str(worktree), "paths": residue},
+            )
+        live_head = git(worktree, "rev-parse", "HEAD").stdout.strip()
+    if live_head != staging_base:
+        parent = git(repo, "rev-parse", f"{live_head}^", check=False)
+        observed = changed_files(repo, staging_base, live_head)
+        if (
+            parent.returncode == 0
+            and parent.stdout.strip() == staging_base
+            and set(observed).issubset(set(unique_paths))
+        ):
+            return live_head, []
+        raise AssuranceError(
+            "recomposition staging branch moved outside its persisted operation",
+            code="RECOMPOSITION_STAGING_HEAD_DRIFT",
+            status="NEEDS_USER",
+            details={
+                "worktree": str(worktree),
+                "expected_base": staging_base,
+                "observed_head": live_head,
+                "paths": observed,
+            },
+        )
+    if not unique_paths:
+        return live_head, []
+    diff = git(
+        repo,
+        "diff",
+        "--binary",
+        "--full-index",
+        "--no-renames",
+        source_base,
+        source_head,
+        "--",
+        *unique_paths,
+        check=False,
+    )
+    if diff.returncode != 0:
+        raise AssuranceError(
+            diff.stderr.strip() or "recomposition source diff failed",
+            code="RECOMPOSITION_SOURCE_DIFF_FAILED",
+        )
+    if not diff.stdout:
+        return git(worktree, "rev-parse", "HEAD").stdout.strip(), []
+    patch_path.parent.mkdir(parents=True, exist_ok=True)
+    patch_path.write_text(diff.stdout, encoding="utf-8")
+    applied = subprocess.run(
+        ["git", "-C", str(worktree), "apply", "--3way", "--index", str(patch_path)],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if applied.returncode != 0:
+        conflicts = sorted(
+            line
+            for line in git(
+                worktree, "diff", "--name-only", "--diff-filter=U", check=False
+            ).stdout.splitlines()
+            if line
+        )
+        if conflicts:
+            return None, conflicts
+        raise AssuranceError(
+            applied.stderr.strip() or "recomposition patch application failed",
+            code="RECOMPOSITION_PATCH_FAILED",
+            details={"paths": unique_paths},
+        )
+    if dirty_paths(worktree):
+        committed = git(
+            worktree,
+            "-c",
+            "commit.gpgSign=false",
+            "commit",
+            "-m",
+            message,
+            check=False,
+        )
+        if committed.returncode != 0:
+            raise AssuranceError(
+                committed.stderr.strip() or "recomposition commit failed",
+                code="RECOMPOSITION_COMMIT_FAILED",
+            )
+    return git(worktree, "rev-parse", "HEAD").stdout.strip(), []
+
+
+def _begin_recomposition(
+    repo: Path,
+    ledger: dict[str, Any],
+    *,
+    kind: str,
+    incoming_candidate: str,
+    new_target: str,
+) -> dict[str, Any]:
+    if kind not in {"publication_refresh", "target_rematerialization"}:
+        raise AssuranceError("unknown recomposition kind", code="RECOMPOSITION_KIND_INVALID")
+    if isinstance(ledger.get("recomposition_intent"), dict):
+        return ledger["recomposition_intent"]
+    execution = ledger["facets"]["execution"]
+    old_candidate = execution.get("candidate_head")
+    if not isinstance(old_candidate, str):
+        raise AssuranceError(
+            "candidate identity is required before recomposition",
+            code="RECOMPOSITION_CANDIDATE_REQUIRED",
+        )
+    publication = ledger.get("publication")
+    generation = (
+        int(publication.get("generation", 1 if publication.get("head") else 0))
+        if isinstance(publication, dict)
+        else 0
+    )
+    identity = digest(
+        {
+            "run_id": ledger["run_id"],
+            "kind": kind,
+            "old_target_head": ledger["target_start_head"],
+            "new_target_head": new_target,
+            "old_candidate_head": old_candidate,
+            "incoming_candidate_head": incoming_candidate,
+            "publication_generation": generation,
+            "updated_at": ledger["updated_at"],
+        }
+    )
+    source = execution.get("tester_source")
+    intent: dict[str, Any] = {
+        "intent_id": identity,
+        "kind": kind,
+        "state": "prepared",
+        "old_target_head": ledger["target_start_head"],
+        "new_target_head": new_target,
+        "old_candidate_head": old_candidate,
+        "incoming_candidate_head": incoming_candidate,
+        "source_builder_base": ledger["target_start_head"],
+        "source_builder_head": incoming_candidate,
+        "publication_generation": generation,
+        "staging_root": str(run_dir(repo, ledger["run_id"]) / f"recomposition-{identity[:16]}"),
+        "target_restart_count": 0,
+        "created_at": now(),
+        "updated_at": now(),
+    }
+    if isinstance(source, dict):
+        intent["source_tester_base"] = source.get("base_head") or ledger["target_start_head"]
+        intent["source_tester_head"] = source["head"]
+    ledger["recomposition_intent"] = intent
+    append_event(
+        ledger,
+        "recomposition_started",
+        {
+            "intent_id": identity,
+            "kind": kind,
+            "old_target_head": ledger["target_start_head"],
+            "new_target_head": new_target,
+            "incoming_candidate_head": incoming_candidate,
+        },
+    )
+    save_ledger(repo, ledger)
+    return intent
+
+
+def _clear_recomposition_stage_fields(intent: dict[str, Any]) -> None:
+    for key in (
+        "builder_branch",
+        "builder_worktree",
+        "builder_head",
+        "publication_head",
+        "publication_tree",
+        "publication_files",
+        "tester_branch",
+        "tester_worktree",
+        "tester_head",
+        "candidate_head",
+        "conflict_paths",
+        "conflict_owner",
+    ):
+        intent.pop(key, None)
+
+
+def _restart_recomposition_for_target(
+    repo: Path,
+    ledger: dict[str, Any],
+    intent: dict[str, Any],
+    live_target: str,
+) -> None:
+    if intent["state"] in {"waiting_builder", "waiting_tester"}:
+        worktree_key = "builder_worktree" if intent["state"] == "waiting_builder" else "tester_worktree"
+        worktree = Path(str(intent[worktree_key]))
+        if dirty_paths(worktree):
+            raise AssuranceError(
+                "target advanced while an ownership conflict is unresolved",
+                code="TARGET_MOVED_DURING_RECOMPOSITION_CONFLICT",
+                status="NEEDS_USER",
+                details={"intent_id": intent["intent_id"], "paths": intent.get("conflict_paths", [])},
+            )
+    if int(intent["target_restart_count"]) >= 2:
+        raise AssuranceError(
+            "target advanced three times during the same recomposition",
+            code="RECOMPOSITION_TARGET_MOVED_THREE_TIMES",
+            status="NEEDS_USER",
+            details={"intent_id": intent["intent_id"], "target_head": live_target},
+        )
+    builder_head = intent.get("builder_head")
+    if isinstance(builder_head, str):
+        intent["source_builder_base"] = intent["new_target_head"]
+        intent["source_builder_head"] = builder_head
+    tester_head = intent.get("tester_head")
+    if isinstance(tester_head, str):
+        tester_base = intent.get("publication_head") or intent["new_target_head"]
+        intent["source_tester_base"] = tester_base
+        intent["source_tester_head"] = tester_head
+    _cleanup_recomposition_staging(repo, intent)
+    intent["new_target_head"] = live_target
+    intent["target_restart_count"] = int(intent["target_restart_count"]) + 1
+    intent["state"] = "prepared"
+    intent["updated_at"] = now()
+    _clear_recomposition_stage_fields(intent)
+    append_event(
+        ledger,
+        "recomposition_restarted",
+        {
+            "intent_id": intent["intent_id"],
+            "new_target_head": live_target,
+            "restart_count": intent["target_restart_count"],
+        },
+    )
+    save_ledger(repo, ledger)
+
+
+def _recomposition_builder_paths(repo: Path, ledger: Mapping[str, Any], intent: Mapping[str, Any]) -> list[str]:
+    execution = ledger["facets"]["execution"]
+    source_base = str(intent.get("source_builder_base") or intent["old_target_head"])
+    source_head = str(intent.get("source_builder_head") or intent["incoming_candidate_head"])
+    files = changed_files(repo, source_base, source_head)
+    tester_files = set(execution.get("tester_files", []))
+    source = execution.get("tester_source")
+    if isinstance(source, Mapping):
+        tester_files |= {str(item["path"]) for item in source.get("files", [])}
+        tester_files |= {str(item["path"]) for item in source.get("replaces_files", [])}
+    builder_files = sorted(path for path in files if path not in tester_files)
+    invalid = [
+        path
+        for path in builder_files
+        if not _matches(path, ledger["facets"]["authority"]["builder_write"])
+    ]
+    if invalid:
+        raise AssuranceError(
+            "recomposition source contains files outside Builder authority",
+            code="RECOMPOSITION_BUILDER_AUTHORITY_VIOLATION",
+            details={"paths": invalid},
+        )
+    return builder_files
+
+
+def _recomposition_tester_paths(repo: Path, ledger: Mapping[str, Any], intent: Mapping[str, Any]) -> list[str]:
+    source_base = intent.get("source_tester_base")
+    source_head = intent.get("source_tester_head")
+    if not isinstance(source_base, str) or not isinstance(source_head, str):
+        return []
+    files = changed_files(repo, source_base, source_head)
+    invalid = [
+        path
+        for path in files
+        if not _matches(path, ledger["facets"]["authority"]["tester_write"])
+    ]
+    if invalid:
+        raise AssuranceError(
+            "recomposition source contains files outside Tester authority",
+            code="RECOMPOSITION_TESTER_AUTHORITY_VIOLATION",
+            details={"paths": invalid},
+        )
+    return files
+
+
+def _commit_recomposition(repo: Path, ledger: dict[str, Any], intent: dict[str, Any]) -> None:
+    event_kind = (
+        "prerequisites_republished"
+        if intent["kind"] == "publication_refresh"
+        else "target_rematerialized"
+    )
+    already_committed = any(
+        event.get("kind") == event_kind
+        and isinstance(event.get("details"), dict)
+        and event["details"].get("intent_id") == intent["intent_id"]
+        for event in ledger.get("events", [])
+    )
+    if already_committed:
+        _cleanup_recomposition_staging(repo, intent)
+        ledger["recomposition_intent"] = None
+        save_ledger(repo, ledger)
+        return
+    execution = ledger["facets"]["execution"]
+    candidate_head = str(intent["candidate_head"])
+    candidate_worktree = Path(ledger["candidate_worktree"])
+    live_candidate = git(candidate_worktree, "rev-parse", "HEAD").stdout.strip()
+    if live_candidate not in {intent["incoming_candidate_head"], candidate_head}:
+        raise AssuranceError(
+            "candidate moved outside the persisted recomposition",
+            code="RECOMPOSITION_CANDIDATE_DRIFT",
+            status="NEEDS_USER",
+        )
+    if dirty_paths(candidate_worktree):
+        raise AssuranceError(
+            "candidate became dirty during recomposition",
+            code="RECOMPOSITION_CANDIDATE_DIRTY",
+            status="NEEDS_USER",
+        )
+    if live_candidate != candidate_head:
+        reset = git(candidate_worktree, "reset", "--hard", candidate_head, check=False)
+        if reset.returncode != 0:
+            raise AssuranceError("candidate CAS failed", code="RECOMPOSITION_CANDIDATE_CAS_FAILED")
+
+    old_source = execution.get("tester_source")
+    tester_head = intent.get("tester_head")
+    tester_base = intent.get("publication_head") or intent["new_target_head"]
+    if isinstance(old_source, dict) and isinstance(tester_head, str):
+        tester_worktree = Path(old_source["worktree"])
+        if dirty_paths(tester_worktree):
+            raise AssuranceError(
+                "Tester source became dirty during recomposition",
+                code="RECOMPOSITION_TESTER_DIRTY",
+                status="NEEDS_USER",
+            )
+        live_tester = git(tester_worktree, "rev-parse", "HEAD").stdout.strip()
+        if live_tester not in {old_source["head"], tester_head}:
+            raise AssuranceError(
+                "Tester source moved outside the persisted recomposition",
+                code="RECOMPOSITION_TESTER_DRIFT",
+                status="NEEDS_USER",
+            )
+        if live_tester != tester_head:
+            reset = git(tester_worktree, "reset", "--hard", tester_head, check=False)
+            if reset.returncode != 0:
+                raise AssuranceError("Tester source CAS failed", code="RECOMPOSITION_TESTER_CAS_FAILED")
+        tester_files = _recomposition_tester_paths(repo, ledger, intent)
+        manifest: list[dict[str, str]] = []
+        for path in tester_files:
+            blob = _blob_at(repo, tester_head, path)
+            if blob is None:
+                raise AssuranceError(
+                    "recomposed Tester source lost a file",
+                    code="TESTER_SOURCE_BLOB_MISSING",
+                    details={"path": path},
+                )
+            manifest.append({"path": path, "blob": blob})
+        ledger.setdefault("retired_tester_sources", []).append(copy.deepcopy(old_source))
+        execution["tester_source"] = {
+            **old_source,
+            "base_head": tester_base,
+            "head": tester_head,
+            "files": manifest,
+            "replaces_files": [],
+        }
+        execution["tester_files"] = tester_files
+
+    files = changed_files(repo, intent["new_target_head"], candidate_head)
+    _assert_authorized_files(ledger["facets"], files)
+    tester_files = set(execution.get("tester_files", []))
+    execution["builder_files"] = sorted(path for path in files if path not in tester_files)
+    execution["candidate_head"] = candidate_head
+    execution["version"] += 1
+    ledger["target_start_head"] = intent["new_target_head"]
+    publication = ledger.get("publication")
+    if isinstance(publication, dict) and publication.get("required"):
+        publication.update(
+            generation=int(intent["publication_generation"]) + 1,
+            head=intent.get("publication_head"),
+            tree=intent.get("publication_tree"),
+            files=copy.deepcopy(intent.get("publication_files", [])),
+            manifest_digest=digest(intent.get("publication_files", [])),
+            candidate_head=intent.get("builder_head"),
+        )
+    ledger["builder_checkpointed"] = True
+    ledger["digests"] = facet_digests(ledger["facets"])
+    _close_problems(ledger, "builder", f"recomposition:{candidate_head}")
+    if isinstance(old_source, dict):
+        _close_problems(ledger, "tester", f"recomposition:{tester_head}")
+    append_event(
+        ledger,
+        event_kind,
+        {
+            "intent_id": intent["intent_id"],
+            "old_target_head": intent["old_target_head"],
+            "new_target_head": intent["new_target_head"],
+            "candidate_head": candidate_head,
+            "publication_head": intent.get("publication_head"),
+            "publication_generation": (
+                publication.get("generation") if isinstance(publication, dict) else 0
+            ),
+            "target_restart_count": intent["target_restart_count"],
+        },
+    )
+    save_ledger(repo, ledger)
+    _cleanup_recomposition_staging(repo, intent)
+    ledger["recomposition_intent"] = None
+    save_ledger(repo, ledger)
+
+
+def _advance_recomposition(repo: Path, ledger: dict[str, Any]) -> None:
+    intent = ledger.get("recomposition_intent")
+    if not isinstance(intent, dict):
+        raise AssuranceError("recomposition intent is missing", code="RECOMPOSITION_INTENT_MISSING")
+    while True:
+        live_target = branch_head(repo, ledger["target_branch"])
+        if live_target != intent["new_target_head"]:
+            _restart_recomposition_for_target(repo, ledger, intent, live_target)
+            continue
+        state = intent["state"]
+        root = Path(intent["staging_root"])
+        if state == "prepared":
+            branch = f"assurance-v4/{ledger['run_id']}/recompose-{intent['intent_id'][:12]}-builder"
+            worktree = root / "builder"
+            intent.update(
+                state="builder_staging",
+                builder_branch=branch,
+                builder_worktree=str(worktree),
+                updated_at=now(),
+            )
+            save_ledger(repo, ledger)
+            continue
+        if state == "builder_staging":
+            worktree = Path(intent["builder_worktree"])
+            _ensure_recomposition_worktree(
+                repo,
+                branch=intent["builder_branch"],
+                worktree=worktree,
+                base_head=intent["new_target_head"],
+            )
+            builder_paths = _recomposition_builder_paths(repo, ledger, intent)
+            head, conflicts = _apply_recomposition_delta(
+                repo,
+                worktree=worktree,
+                staging_base=intent["new_target_head"],
+                source_base=str(intent["source_builder_base"]),
+                source_head=str(intent["source_builder_head"]),
+                paths=builder_paths,
+                patch_path=root / "builder.patch",
+                message="fix(assurance): [cr_id_skip] Recompose Builder Candidate",
+            )
+            if conflicts:
+                intent.update(
+                    state="waiting_builder",
+                    conflict_owner="builder",
+                    conflict_paths=conflicts,
+                    updated_at=now(),
+                )
+                append_event(
+                    ledger,
+                    "recomposition_conflict",
+                    {
+                        "intent_id": intent["intent_id"],
+                        "owner": "builder",
+                        "paths": conflicts,
+                    },
+                )
+                save_ledger(repo, ledger)
+                return
+            intent.update(
+                state="publication_staging",
+                builder_head=head,
+                source_builder_base=intent["new_target_head"],
+                source_builder_head=head,
+                updated_at=now(),
+            )
+            save_ledger(repo, ledger)
+            continue
+        if state == "waiting_builder":
+            worktree = Path(intent["builder_worktree"])
+            conflicts = git(worktree, "diff", "--name-only", "--diff-filter=U", check=False)
+            if conflicts.stdout.strip() or dirty_paths(worktree):
+                return
+            head = git(worktree, "rev-parse", "HEAD").stdout.strip()
+            intent.update(
+                state="publication_staging",
+                builder_head=head,
+                source_builder_base=intent["new_target_head"],
+                source_builder_head=head,
+                updated_at=now(),
+            )
+            intent.pop("conflict_owner", None)
+            intent.pop("conflict_paths", None)
+            append_event(
+                ledger,
+                "recomposition_conflict_resolved",
+                {"intent_id": intent["intent_id"], "owner": "builder", "head": head},
+            )
+            save_ledger(repo, ledger)
+            continue
+        if state == "publication_staging":
+            publication = ledger.get("publication")
+            if isinstance(publication, dict) and publication.get("required"):
+                head, tree, files = _materialize_publication(
+                    repo,
+                    ledger["run_id"],
+                    base_head=intent["new_target_head"],
+                    source_head=intent["builder_head"],
+                    paths=list(publication["paths"]),
+                )
+                intent.update(
+                    publication_head=head,
+                    publication_tree=tree,
+                    publication_files=files,
+                )
+            intent.update(state="tester_staging", updated_at=now())
+            save_ledger(repo, ledger)
+            continue
+        if state == "tester_staging":
+            source = ledger["facets"]["execution"].get("tester_source")
+            if not isinstance(source, dict):
+                intent.update(state="candidate_staging", updated_at=now())
+                save_ledger(repo, ledger)
+                continue
+            tester_base = intent.get("publication_head") or intent["new_target_head"]
+            branch = f"assurance-v4/{ledger['run_id']}/recompose-{intent['intent_id'][:12]}-tester"
+            worktree = root / "tester"
+            intent.update(tester_branch=branch, tester_worktree=str(worktree))
+            save_ledger(repo, ledger)
+            _ensure_recomposition_worktree(
+                repo,
+                branch=branch,
+                worktree=worktree,
+                base_head=tester_base,
+            )
+            tester_paths = _recomposition_tester_paths(repo, ledger, intent)
+            head, conflicts = _apply_recomposition_delta(
+                repo,
+                worktree=worktree,
+                staging_base=tester_base,
+                source_base=str(intent["source_tester_base"]),
+                source_head=str(intent["source_tester_head"]),
+                paths=tester_paths,
+                patch_path=root / "tester.patch",
+                message="test(assurance): [cr_id_skip] Recompose Tester Source",
+            )
+            if conflicts:
+                intent.update(
+                    state="waiting_tester",
+                    conflict_owner="tester",
+                    conflict_paths=conflicts,
+                    updated_at=now(),
+                )
+                append_event(
+                    ledger,
+                    "recomposition_conflict",
+                    {
+                        "intent_id": intent["intent_id"],
+                        "owner": "tester",
+                        "paths": conflicts,
+                    },
+                )
+                save_ledger(repo, ledger)
+                return
+            intent.update(
+                state="candidate_staging",
+                tester_head=head,
+                source_tester_base=tester_base,
+                source_tester_head=head,
+                updated_at=now(),
+            )
+            save_ledger(repo, ledger)
+            continue
+        if state == "waiting_tester":
+            worktree = Path(intent["tester_worktree"])
+            conflicts = git(worktree, "diff", "--name-only", "--diff-filter=U", check=False)
+            if conflicts.stdout.strip() or dirty_paths(worktree):
+                return
+            head = git(worktree, "rev-parse", "HEAD").stdout.strip()
+            tester_base = intent.get("publication_head") or intent["new_target_head"]
+            intent.update(
+                state="candidate_staging",
+                tester_head=head,
+                source_tester_base=tester_base,
+                source_tester_head=head,
+                updated_at=now(),
+            )
+            intent.pop("conflict_owner", None)
+            intent.pop("conflict_paths", None)
+            append_event(
+                ledger,
+                "recomposition_conflict_resolved",
+                {"intent_id": intent["intent_id"], "owner": "tester", "head": head},
+            )
+            save_ledger(repo, ledger)
+            continue
+        if state == "candidate_staging":
+            worktree = Path(intent["builder_worktree"])
+            git(worktree, "reset", "--hard", intent["builder_head"])
+            tester_head = intent.get("tester_head")
+            if isinstance(tester_head, str):
+                tester_base = intent.get("publication_head") or intent["new_target_head"]
+                tester_paths = _recomposition_tester_paths(repo, ledger, intent)
+                candidate, conflicts = _apply_recomposition_delta(
+                    repo,
+                    worktree=worktree,
+                    staging_base=intent["builder_head"],
+                    source_base=tester_base,
+                    source_head=tester_head,
+                    paths=tester_paths,
+                    patch_path=root / "integration.patch",
+                    message=f"test(assurance): [cr_id_skip] Integrate Tester Source {tester_head[:12]}",
+                )
+                if conflicts:
+                    raise AssuranceError(
+                        "ownership-separated recomposition produced an integration conflict",
+                        code="RECOMPOSITION_INTEGRATION_CONFLICT",
+                        status="NEEDS_USER",
+                        details={"paths": conflicts},
+                    )
+            else:
+                candidate = intent["builder_head"]
+            intent.update(state="committing", candidate_head=candidate, updated_at=now())
+            save_ledger(repo, ledger)
+            continue
+        if state == "committing":
+            _commit_recomposition(repo, ledger, intent)
+            return
+        raise AssuranceError("unknown recomposition state", code="RECOMPOSITION_STATE_INVALID")
+
+
+def recompose_candidate(
+    repo_value: str | Path,
+    run_value: str,
+    *,
+    kind: str | None = None,
+) -> dict[str, Any]:
     repo = resolve_repo(repo_value)
     run_id = ensure_run_id(run_value)
     with locked(repo):
         ledger = read_ledger(repo, run_id)
         if ledger["phase"] != "active":
             raise AssuranceError("run is not active", code="ASSURANCE_RUN_NOT_ACTIVE")
-        old_base = ledger["target_start_head"]
-        new_base = branch_head(repo, ledger["target_branch"])
-        if new_base == old_base:
-            return status(repo, run_id)
-        worktree = Path(ledger["candidate_worktree"])
-        if dirty_paths(worktree):
-            raise AssuranceError(
-                "candidate worktree must be clean before target rematerialization",
-                code="CANDIDATE_WORKTREE_DIRTY",
-                status="NEEDS_USER",
-            )
-        old_candidate = ledger["facets"]["execution"].get("candidate_head")
-        tester_source = ledger["facets"]["execution"].get("tester_source")
-        if isinstance(tester_source, dict) and dirty_paths(Path(tester_source["worktree"])):
-            raise AssuranceError(
-                "Tester source must be clean before target rematerialization",
-                code="TESTER_WORKTREE_DIRTY",
-                status="NEEDS_USER",
-            )
-        rebased = git(
-            worktree,
-            "rebase",
-            "--onto",
-            new_base,
-            old_base,
-            ledger["candidate_branch"],
-            check=False,
-        )
-        if rebased.returncode != 0:
-            git(worktree, "rebase", "--abort", check=False)
-            raise AssuranceError(
-                "candidate could not be rematerialized on the moved target",
-                code="TARGET_REBASE_CONFLICT",
-                status="NEEDS_USER",
-                details={"stderr": rebased.stderr[-8000:]},
-            )
-        candidate = git(worktree, "rev-parse", "HEAD").stdout.strip()
-        files = changed_files(repo, new_base, candidate)
-        try:
-            _assert_authorized_files(ledger["facets"], files)
-            declared = set(ledger["facets"]["execution"]["builder_files"]) | set(
-                ledger["facets"]["execution"]["tester_files"]
-            )
-            carryover = ledger["facets"]["execution"].get("carryover")
-            if isinstance(carryover, dict):
-                declared |= {item["path"] for item in carryover["files"]}
-            undeclared = sorted(set(files) - declared)
-            if undeclared:
+        intent = ledger.get("recomposition_intent")
+        if not isinstance(intent, dict):
+            live_target = branch_head(repo, ledger["target_branch"])
+            if kind is None and live_target != ledger["target_start_head"]:
+                kind = "target_rematerialization"
+            if kind != "target_rematerialization":
+                raise AssuranceError("recomposition intent is missing", code="RECOMPOSITION_INTENT_MISSING")
+            worktree = Path(ledger["candidate_worktree"])
+            if dirty_paths(worktree):
                 raise AssuranceError(
-                    "rematerialized candidate contains undeclared files",
-                    code="EXECUTION_FILES_INCOMPLETE",
-                    details={"paths": undeclared},
-                )
-        except Exception:
-            if isinstance(old_candidate, str):
-                git(worktree, "reset", "--hard", old_candidate, check=False)
-            raise
-        tester_old_base = old_base
-        tester_new_base = new_base
-        publication = ledger.get("publication")
-        if isinstance(publication, dict) and publication.get("head"):
-            old_publication_head = publication["head"]
-            try:
-                new_publication_head, new_publication_tree, publication_files = _materialize_publication(
-                    repo,
-                    run_id,
-                    base_head=new_base,
-                    source_head=candidate,
-                    paths=list(publication["paths"]),
-                )
-            except Exception:
-                if isinstance(old_candidate, str):
-                    git(worktree, "reset", "--hard", old_candidate, check=False)
-                raise
-            publication.update(
-                head=new_publication_head,
-                tree=new_publication_tree,
-                files=publication_files,
-                manifest_digest=digest(publication_files),
-                candidate_head=candidate,
-            )
-            tester_old_base = old_publication_head
-            tester_new_base = new_publication_head
-        old_tester_head = tester_source.get("head") if isinstance(tester_source, dict) else None
-        if isinstance(tester_source, dict):
-            tester_rebase = git(
-                Path(tester_source["worktree"]),
-                "rebase",
-                "--onto",
-                tester_new_base,
-                tester_old_base,
-                tester_source["branch"],
-                check=False,
-            )
-            if tester_rebase.returncode != 0:
-                git(Path(tester_source["worktree"]), "rebase", "--abort", check=False)
-                if isinstance(old_candidate, str):
-                    git(worktree, "reset", "--hard", old_candidate, check=False)
-                raise AssuranceError(
-                    "Tester source could not be rematerialized on the moved target",
-                    code="TESTER_TARGET_REBASE_CONFLICT",
+                    "candidate worktree must be clean before target rematerialization",
+                    code="CANDIDATE_WORKTREE_DIRTY",
                     status="NEEDS_USER",
-                    details={"stderr": tester_rebase.stderr[-8000:]},
                 )
-            tester_head = git(Path(tester_source["worktree"]), "rev-parse", "HEAD").stdout.strip()
-            tester_source["head"] = tester_head
-            tester_source["base_head"] = tester_new_base
-            refreshed: list[dict[str, str]] = []
-            for item in tester_source["files"]:
-                blob = _blob_at(repo, tester_head, item["path"])
-                if blob is None:
-                    if isinstance(old_candidate, str):
-                        git(worktree, "reset", "--hard", old_candidate, check=False)
-                    if isinstance(old_tester_head, str):
-                        git(Path(tester_source["worktree"]), "reset", "--hard", old_tester_head, check=False)
-                    raise AssuranceError(
-                        "rematerialized Tester source lost a frozen file",
-                        code="TESTER_SOURCE_BLOB_MISSING",
-                        details={"path": item["path"]},
-                    )
-                refreshed.append({"path": item["path"], "blob": blob})
-            tester_source["files"] = refreshed
-        execution = ledger["facets"]["execution"]
-        execution["version"] += 1
-        execution["candidate_head"] = candidate
-        ledger["target_start_head"] = new_base
-        ledger["digests"] = facet_digests(ledger["facets"])
-        if isinstance(tester_source, dict):
-            _close_problems(ledger, "tester", f"tester-source:{tester_source['head']}")
-        append_event(
-            ledger,
-            "target_rematerialized",
-            {
-                "old_target_head": old_base,
-                "new_target_head": new_base,
-                "candidate_head": candidate,
-                "publication_head": publication.get("head") if isinstance(publication, dict) else None,
-            },
-        )
-        save_ledger(repo, ledger)
+            source = ledger["facets"]["execution"].get("tester_source")
+            if isinstance(source, dict) and dirty_paths(Path(source["worktree"])):
+                raise AssuranceError(
+                    "Tester source must be clean before target rematerialization",
+                    code="TESTER_WORKTREE_DIRTY",
+                    status="NEEDS_USER",
+                )
+            incoming = git(worktree, "rev-parse", "HEAD").stdout.strip()
+            if live_target == ledger["target_start_head"]:
+                return status(repo, run_id)
+            _begin_recomposition(
+                repo,
+                ledger,
+                kind="target_rematerialization",
+                incoming_candidate=incoming,
+                new_target=live_target,
+            )
+            ledger = read_ledger(repo, run_id)
+        _advance_recomposition(repo, ledger)
     return status(repo, run_id)
+
+
+def rematerialize_target(repo_value: str | Path, run_value: str) -> dict[str, Any]:
+    return recompose_candidate(
+        repo_value,
+        run_value,
+        kind="target_rematerialization",
+    )
 
 
 def _paths_overlap(left: str, right: str) -> bool:

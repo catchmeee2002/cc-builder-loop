@@ -34,7 +34,36 @@
             "builder_loop",
             "external_platform"
           ]
-        }
+        },
+        "decision_request": {"$ref": "#/$defs/decisionRequest"}
+      }
+    },
+    "decisionRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "facet", "changes", "question"],
+      "properties": {
+        "kind": {"enum": ["facet_change", "product_choice"]},
+        "facet": {
+          "oneOf": [
+            {"type": "null"},
+            {"enum": ["mission", "authority", "assurance", "execution"]}
+          ]
+        },
+        "changes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["pointer", "operation"],
+            "properties": {
+              "pointer": {"type": "string", "pattern": "^/"},
+              "operation": {"enum": ["add", "replace", "remove"]},
+              "value": {}
+            }
+          }
+        },
+        "question": {"type": "string", "minLength": 1, "pattern": "\\S"}
       }
     }
   }

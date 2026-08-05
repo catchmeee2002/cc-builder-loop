@@ -7,7 +7,7 @@
   "required": ["schema_version", "kind", "status", "candidate_head", "producer", "details"],
   "properties": {
     "schema_version": {"const": 1},
-    "kind": {"enum": ["tester", "proof", "blackbox", "reviewer", "doc_review"]},
+    "kind": {"enum": ["tester", "proof", "blackbox", "reviewer_preflight", "reviewer", "doc_review"]},
     "status": {"enum": ["pass", "fail"]},
     "candidate_head": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
     "producer": {
@@ -49,7 +49,7 @@
       }
     },
     {
-      "if": {"properties": {"kind": {"enum": ["reviewer", "doc_review"]}}},
+      "if": {"properties": {"kind": {"enum": ["reviewer_preflight", "reviewer", "doc_review"]}}},
       "then": {"properties": {"producer": {"properties": {"role": {"const": "reviewer"}}}}}
     },
     {
@@ -139,7 +139,7 @@
       }
     },
     {
-      "if": {"properties": {"kind": {"enum": ["reviewer", "doc_review"]}}},
+      "if": {"properties": {"kind": {"enum": ["reviewer_preflight", "reviewer", "doc_review"]}}},
       "then": {
         "properties": {
           "details": {

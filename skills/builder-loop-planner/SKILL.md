@@ -19,6 +19,10 @@ description: 在 Codex Plan mode 中为显式选择的 Builder-loop 实验路线
    普通文件当前内容的 SHA-256；不得 stash、复制、清理或授权目录/glob。
 4. 按可观察行为写人类可读方案，同时生成一份 schema v4 contract。完整读取本 Skill 相对路径
    `../../schema/assurance-v4-contract.schema.json`，不要复制或猜测 schema。
+5. 若当前同 session 的 active Assurance v4 run 正停在 `driver-next.action=contract_decision`，先读取该
+   action、`driver-context` 和结构化 `decision_request`。只有 Mission、Authority 或 Assurance 能由现有
+   `revise-mission` / `update-facet` 安全表达时走同 run 决策路径；execution、publication 路径、dirty
+   intake 或其他专用事务变化仍按真实边界规划 successor，不伪装成 facet update。
 
 ## Contract 约束
 
@@ -66,6 +70,31 @@ description: 在 Codex Plan mode 中为显式选择的 Builder-loop 实验路线
   制品，Core 可跳过重复 deploy，但本 Revision 的 blackbox 仍重新执行。只有用户明确允许 Revision
   期间保留目标状态时才冻结 `revision_retention: lease`，否则使用默认恢复；通用远程部署编排和多仓
   原子事务选择 Codex 原生 Plan。
+
+## 同 run 决策方案
+
+- 人类可读正文只展示当前 run/problem、拟改 delta、原因、保留内容、失效 gate 与目标分支状态；不要把
+  未变化内容重新讲一遍。旧 problem 缺少 `decision_request` 时允许从当前完整 contract 和用户明确选择
+  补出一次精确 delta，但不得靠猜测扩大变化。
+- 从 ledger 当前 `facets` 生成唯一完整 replacement contract。Mission 修订同时填入绑定当前 lineage 的
+  `execution.revision_transition`；Authority/Assurance 之外的 facet 必须逐字节语义不变。
+- 先执行普通 `validate --contract -`，再执行：
+
+  `codex-builder-loop assurance --experimental-v4 validate-decision --repo <repo> --run <run> --session-id <session-id> --problem-key <key> --action-id <action-id> --facet <facet> --facet-digest <digest> --contract -`
+
+- 只有两次都返回 `status=READY` 才在方案正文放入唯一完整 `assurance-v4-contract` marker，并额外放入一个
+  只含交接身份、不是第二份 contract 的 marker：
+
+~~~~markdown
+<!-- assurance-v4-decision -->
+```json
+{"schema_version":1,"run_id":"...","problem_key":"...","action_id":"...","facet":"authority","facet_digest":"..."}
+```
+<!-- /assurance-v4-decision -->
+~~~~
+
+- Planner 不更新 ledger、不 resume run。validation 失败或变化需要 successor 时不得输出该 decision marker。
+  正文中的“失效 gate”使用 `validate-decision.invalidated_evidence`，不靠 facet 名称猜测。
 
 ## 验证与交接
 

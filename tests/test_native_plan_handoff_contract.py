@@ -85,9 +85,15 @@ class ExperimentalEntryContractTest(unittest.TestCase):
         self.assertIn("full-driver-v4-experiment", builder)
         self.assertIn("不得调用公共 legacy `start`", builder)
         self.assertIn("native-driver start", builder)
+        self.assertIn("validate-decision", builder)
+        self.assertIn("native-driver resume", builder)
+        self.assertIn("assurance-v4-decision", builder)
         planner = read("skills/builder-loop-planner/SKILL.md")
         self.assertIn("assurance-v4-contract", planner)
         self.assertIn("--experimental-v4 validate", planner)
+        self.assertIn("validate-decision", planner)
+        self.assertIn("assurance-v4-decision", planner)
+        self.assertIn("人类可读正文只展示", planner)
         self.assertIn("BUILDER_HANDOFF_READY", planner)
 
     def test_managed_agents_restore_experimental_route_choice_and_handoff(self) -> None:

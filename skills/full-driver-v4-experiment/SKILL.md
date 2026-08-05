@@ -38,8 +38,9 @@ Agent spawn、same-thread follow-up、结构化结果解析和持续循环由本
 
 ### Reviewer 初次 spawn
 
-到达 `reviewer_final` 后只允许一次初始 `spawn_agent(agent_type="reviewer", fork_turns="none")`，一个 run 只 spawn 一次 Reviewer。
-最小 brief 包含冻结 contract、candidate、完整 diff、验证证据和文档政策路径；
+到达 `reviewer_preflight` 或 `reviewer_final` 后只允许一次初始
+`spawn_agent(agent_type="reviewer", fork_turns="none")`，一个 run 只 spawn 一次 Reviewer。最小 brief
+包含冻结 contract、candidate、完整 diff、当前阶段可用验证事实和文档政策路径；
 不得夹带父线程讨论、用户倾向或 Builder 辩护。Reviewer 必须看到候选信息；候选与完整 diff 是必需审查输入。
 
 ### 后续 turn
@@ -71,8 +72,9 @@ dispatch。直到 `finalize` 或明确的决策边界。动作面如下，不能
   `phase=author`。Tester 以 spec HEAD 为独立基线。
 - `parallel_ready:false`：先 `publish-prerequisites`，再 spawn Tester 并以真实 identity 调用
   `prepare-tester`；Tester 只能从隔离
-  publication HEAD 读取 exact file/blob manifest。publication 的 manifest 与 blob 是串行 Tester
-  的唯一新增公开输入，发布后不可漂移。
+  publication HEAD 读取 exact file/blob manifest。publication path 集合冻结；每个 generation 的 manifest
+  与 blob 不可变。后续发现 prerequisite 需要修复时只能经 Core 重组事务生成下一 generation，并让 Tester
+  source 与全部受影响 evidence 对新 candidate 重新绑定。
 - `tester_author`：首次 spawn Tester；后续 correction 使用同一 thread 续接。收到
   `TESTER_RESULT` 与 `PROBLEM_REPORT` JSON 后先校验身份和 schema；`tests_ready` 才调用
   `integrate-tester` 并记录 tester evidence。
@@ -86,9 +88,15 @@ dispatch。直到 `finalize` 或明确的决策边界。动作面如下，不能
   `phase=proof_diagnose`。本 turn 只归因、不改文件；必须返回非空 problem，owner 仅为 builder、tester
   或 plan，随后调用 `record-problems --action-id <action_id>`。`proof_failure_decision` 直接停止到用户，
   不把环境、身份或完整性错误猜成角色修复。
+- `verify_preflight`：在 Tester integration 后运行所有 `run_before_full_suite:true` 的 focused machine
+  commands。结果绑定当前 candidate；最终 `verify_machine` 只能复用同 candidate、同 dependency 的真实
+  command result，不能把 preflight 名义升级为整套 machine PASS。
 - `verify_machine`：调用 Core `verify-machine`，保留真实 argv、runner identity、returncode 与
   observed HEAD；`run_before_full_suite:true` 的本地关键测试先执行，实际 returncode 必须命中计划冻结的
   `expected_returncodes`，失败不能被 shell 包装成 PASS。
+- `tester_machine_diagnose`：续接原 Tester thread，只读 current `machine_failure` 归因，不改文件、不重跑
+  machine。问题按 builder、tester、plan、current_project、builder_loop 或 external_platform 拆分后
+  `record-problems`；同 signature 三次才进入 architecture review。
 - `prepare_deployment`：仅当计划冻结了已授权真实环境时调用 Core。Core 从 candidate HEAD 创建隔离部署
   worktree，运行项目提供的查询、构建和部署命令，绑定制品 SHA256 与环境状态；不得切换 target
   checkout。若当前 probe 已证明授权目标承载相同制品，Core 会跳过重复 deploy；这不复用旧 blackbox
@@ -101,9 +109,11 @@ dispatch。直到 `finalize` 或明确的决策边界。动作面如下，不能
   blackbox evidence。跳过 deploy 的事务只重新 probe 并确认环境未漂移，不执行会改变既有环境的恢复
   命令。计划授权 lease 时，`complete_blackbox` 可在当前 probe 与 lease 一致后登记 evidence 并继续
   Reviewer；finalize、abandon 前仍由 Driver 恢复。恢复失败或复用状态漂移只返回用户决定。
-- 已授权且 Core `update-facet` 或 `revise-mission --transition` 能安全表达的 plan decision，必须在同一
-  active run 原子收敛；普通执行信息变化不触发 abandon 或新 run。Mission Revision 绑定上一 revision 和
-  ledger 派生 `pressure_digest`。
+- 已授权且 Core `update-facet` 或 `revise-mission --transition` 能安全表达的 plan decision，必须先用
+  `validate-decision` 绑定同 session、problem、action id、base facet digest 和唯一完整 replacement
+  contract，再把相同 action/session/facet digest binding 传给 mutation，在同一 active run 原子收敛并
+  resume；普通执行信息变化不触发 abandon 或新 run。Mission
+  Revision 绑定上一 revision 和 ledger 派生 `pressure_digest`。
 - 只有现有事务不能保持语义、授权或事务安全时才交给 Planner 形成 Assurance v4 successor。source 在
   successor contract 验证和 `start` 持久化 target 前必须保持 active，Driver 不得先调用 `abandon`；
   `start` 创建 target 后才把 source 封为 superseded。新 run 的 `mission.supersedes` 只携带 candidate
@@ -114,6 +124,9 @@ dispatch。直到 `finalize` 或明确的决策边界。动作面如下，不能
   abandoned、superseded、failed 或 finalized source 都是 terminal，其 continuity 不可恢复，也不重新激活或
   rescue；必须在 target ledger/ref/worktree mutation 前拒绝。`abandon` 只用于用户明确取消且没有
   successor。legacy v2/v3 的 abandoned-source revision 行为不由本 v4 路由改写。
+- `reviewer_preflight`：配置开启时，在 Tester integration 与 focused preflight 后用同一 Reviewer thread
+  做早期只读代码/测试/文档语义审计。PASS 只记录 `reviewer_preflight` evidence，不满足最终 gate；finding
+  回原 owner 修复并让失效事实重取。
 - `reviewer_final`：只有 Tester、proof、machine、blackbox 等全部 reviewer prerequisites 齐全且
   current 后，才用只允许 identity bootstrap 的最小 prompt spawn Reviewer，调用 `prepare-reviewer`
   绑定真实 identity，再 follow-up 同一 thread 开始审查。Reviewer 只使用成熟终态
@@ -125,6 +138,11 @@ dispatch。直到 `finalize` 或明确的决策边界。动作面如下，不能
 - `tester_fix`：结构化问题 owner=tester 时回到 Tester 同一 thread；普通测试修正或 fixture 修正
   不修改 Mission。
 - `builder_fix`：结构化问题 owner=builder 时回到 Builder，在原 candidate 修复并 checkpoint。
+- `recompose_candidate`：恢复或推进已持久化的 target/publication candidate 重组事务。所有 Git 副作用前
+  intent 已落盘；target 再前进时从最新 target 重启，最终以 candidate/Tester source/target CAS 提交。
+- `builder_recompose_fix` / `tester_recompose_fix`：分别续接原 Builder/Tester thread，在各自 staging
+  worktree 和 ownership 内解决冲突并提交，再回 `recompose-candidate`；Reviewer 不参与修复。需要改变
+  Mission、Authority、Tester 判据或产品选择时记录 owner=plan problem。
 - `builder_loop_problem_decision` / `current_project_problem_decision`：对应 owner 的 open problem 保持
   active candidate 并立即停止全部 Agent dispatch，等待用户选择 abandon 或仓库外救援；不得默认派回
   Builder，也不得把 run 伪造为 failed。
@@ -132,7 +150,7 @@ dispatch。直到 `finalize` 或明确的决策边界。动作面如下，不能
   `request_user_input` 取得继续授权；新的外部 probe 成功后调用
   `resolve-external-problem --problem-key <key> --reason <reason>`。不得派 `builder_fix`、重复
   `record-problems`、修改 candidate，或把恢复决定当成 PASS evidence；下一步由 Driver 重跑原 gate。
-- `rematerialize_target`：target drift 无冲突时调用 Core 重物化并重验受影响 evidence，不请求用户。
+- `rematerialize_target`：兼容别名；新 Driver 统一调用 `recompose-candidate`。
 - `recover_finalize`：只重放已经持久化的 finalize intent。
 - `complete_driver_failure`：run 创建后的未处理 FATAL 已由 `record-driver-failure` 冻结 action、dispatch
   与 candidate observation。优先恢复 finalize intent，其次恢复 deployment/lease；只有环境安全后才进入

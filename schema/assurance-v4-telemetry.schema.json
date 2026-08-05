@@ -46,7 +46,7 @@
     "evidence_attempts": {
       "type": "object",
       "propertyNames": {
-        "enum": ["machine", "tester", "proof", "blackbox", "reviewer", "doc_review"]
+        "enum": ["preflight", "machine", "tester", "proof", "blackbox", "reviewer_preflight", "reviewer", "doc_review"]
       },
       "additionalProperties": {"type": "integer", "minimum": 0}
     },
@@ -62,6 +62,62 @@
           "additionalProperties": {"type": "integer", "minimum": 1}
         }
       }
+    },
+    "time_classes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["agent_turn_ms", "deterministic_gate_ms", "recomposition_ms", "idle_or_user_wait_ms"],
+      "properties": {
+        "agent_turn_ms": {"type": "integer", "minimum": 0},
+        "deterministic_gate_ms": {"type": "integer", "minimum": 0},
+        "recomposition_ms": {"type": "integer", "minimum": 0},
+        "idle_or_user_wait_ms": {"type": "integer", "minimum": 0}
+      }
+    },
+    "primary_delays": {
+      "type": "array",
+      "maxItems": 3,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["stage", "duration_ms", "attempts", "last_failure_code"],
+        "properties": {
+          "stage": {"type": "string", "minLength": 1},
+          "duration_ms": {"type": "integer", "minimum": 0},
+          "attempts": {"type": "integer", "minimum": 0},
+          "last_failure_code": {
+            "oneOf": [{"type": "null"}, {"type": "string", "minLength": 1}]
+          }
+        }
+      }
+    },
+    "lifecycle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "publication_generations", "target_drifts", "recomposition_attempts",
+        "recomposition_restarts", "builder_conflict_repairs", "tester_conflict_repairs",
+        "reviewer_preflight_attempts"
+      ],
+      "properties": {
+        "publication_generations": {"type": "integer", "minimum": 0},
+        "target_drifts": {"type": "integer", "minimum": 0},
+        "recomposition_attempts": {"type": "integer", "minimum": 0},
+        "recomposition_restarts": {"type": "integer", "minimum": 0},
+        "builder_conflict_repairs": {"type": "integer", "minimum": 0},
+        "tester_conflict_repairs": {"type": "integer", "minimum": 0},
+        "reviewer_preflight_attempts": {"type": "integer", "minimum": 0}
+      }
+    },
+    "expected_stages": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "warnings": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
     }
   }
 }

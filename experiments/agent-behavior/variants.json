@@ -13,7 +13,7 @@
       "roles": ["builder"],
       "instruction_source": {
         "path": "skills/builder/SKILL.md",
-        "sha256": "d5ee163c3caed9aec711320b5ee1eb4988d5f2a2454d43f651c316efa893e8c5",
+        "sha256": "ab0961d1d8d255a797de6633fc34e5398b49fd110d92f0a29f657bdb851f293c",
         "revision": "WORKTREE"
       }
     },
@@ -33,7 +33,7 @@
       "roles": ["reviewer"],
       "instruction_source": {
         "path": "agents/reviewer.toml",
-        "sha256": "b1c950d12d63aa256c1ed1dfbb6464a8366e5ba4cc8c46928de24a760c6a8bde",
+        "sha256": "78f1cf81176735b222d149616713c3e50794db515053235828cd9c1a465951b2",
         "revision": "WORKTREE"
       }
     },
@@ -43,7 +43,7 @@
       "roles": ["tester"],
       "instruction_source": {
         "path": "agents/tester.toml",
-        "sha256": "4ec229c2fe686838f9029be7f051b4fc864b6af7c2eb2a617b1c2ce389442b03",
+        "sha256": "7f729bf04656a19a24a1fe295f1e893aedbe17db91577b051e6852f876b41e18",
         "revision": "WORKTREE"
       }
     }

@@ -662,6 +662,56 @@ class NativeCoordinatorContractTest(unittest.TestCase):
         self.assertEqual(review["complete_diff"]["argv"][-1], f"{'1' * 40}..{'2' * 40}")
         self.assertTrue(Path(review["documentation_policy_path"]).is_file())
 
+    def test_reviewer_preflight_prompt_is_early_evidence_not_the_final_gate(self) -> None:
+        coordinator = NativeCoordinator(
+            repo=ROOT,
+            run_id="native-review-preflight",
+            core=object(),
+            transport=object(),
+            project_root=ROOT,
+        )
+        context = {
+            "target_start_head": "1" * 40,
+            "candidate_worktree": str(ROOT),
+            "facets": native_contract(ROOT),
+            "evidence": {
+                "tester": {"status": "pass"},
+                "preflight": {"status": "pass"},
+            },
+            "publication": None,
+            "problems": [],
+        }
+        context["facets"]["execution"]["candidate_head"] = "2" * 40
+        context["facets"]["assurance"]["preflight_before_proof"] = True
+        context["facets"]["assurance"]["reviewer_preflight"] = True
+        context["facets"]["assurance"]["machine_commands"][0][
+            "run_before_full_suite"
+        ] = True
+        prompt = coordinator._prompt(
+            {"action": "reviewer_preflight", "action_id": "a" * 64},
+            "reviewer",
+            context,
+        )
+        payload = json.loads(prompt.split("\n", 1)[1])
+        self.assertEqual(payload["phase"], "preflight")
+        review = payload["review_input_contract"]
+        self.assertEqual(review["review_phase"], "preflight")
+        self.assertEqual(review["pre_turn_gates"]["required"], ["tester", "preflight"])
+        self.assertNotIn("machine", review["pre_turn_gates"]["required"])
+        self.assertNotIn("blackbox", review["pre_turn_gates"]["required"])
+
+        final_prompt = coordinator._prompt(
+            {"action": "reviewer_final", "action_id": "b" * 64},
+            "reviewer",
+            context,
+        )
+        final_review = json.loads(final_prompt.split("\n", 1)[1])[
+            "review_input_contract"
+        ]
+        self.assertEqual(final_review["review_phase"], "final")
+        self.assertIn("machine", final_review["pre_turn_gates"]["required"])
+        self.assertIn("blackbox", final_review["pre_turn_gates"]["required"])
+
     def test_tester_prompt_freezes_canonical_test_identity_rules(self) -> None:
         coordinator = NativeCoordinator(
             repo=ROOT,
@@ -734,6 +784,47 @@ class NativeCoordinatorContractTest(unittest.TestCase):
         self.assertEqual(payload["proof_failure"], failure)
         self.assertNotIn("proof_spec_schema", payload)
         self.assertIn("Do not edit files", payload["proof_diagnosis_rule"])
+        self.assertIn(
+            "required_non_empty",
+            payload["result_field_contract"]["problem_report"],
+        )
+
+    def test_machine_failure_prompt_reuses_tester_thread_for_read_only_diagnosis(self) -> None:
+        coordinator = NativeCoordinator(
+            repo=ROOT,
+            run_id="native-machine-diagnosis",
+            core=object(),
+            transport=object(),
+            project_root=ROOT,
+        )
+        context = {
+            "target_start_head": "1" * 40,
+            "candidate_worktree": str(ROOT),
+            "facets": native_contract(ROOT),
+            "evidence": {},
+            "publication": None,
+            "problems": [],
+        }
+        failure = {
+            "stage": "machine",
+            "action_id": "a" * 64,
+            "failure_signature": "b" * 64,
+            "recovery": "tester_diagnosis",
+            "results": [{"id": "fixture-tests", "returncode": 1}],
+        }
+        prompt = coordinator._prompt(
+            {
+                "action": "tester_machine_diagnose",
+                "action_id": "c" * 64,
+                "machine_failure": failure,
+            },
+            "tester",
+            context,
+        )
+        payload = json.loads(prompt.split("\n", 1)[1])
+        self.assertEqual(payload["phase"], "machine_diagnose")
+        self.assertEqual(payload["machine_failure"], failure)
+        self.assertIn("Do not edit files", payload["machine_diagnosis_rule"])
         self.assertIn(
             "required_non_empty",
             payload["result_field_contract"]["problem_report"],
@@ -1161,6 +1252,55 @@ class NativeCoordinatorContractTest(unittest.TestCase):
                 "consume-dispatch",
             ],
         )
+
+    def test_recomposition_fix_advances_persisted_transaction_before_consumption(self) -> None:
+        class FakeCore:
+            def __init__(self) -> None:
+                self.calls: list[str] = []
+
+            def call(self, command: str, *args: str, input_value=None):
+                self.calls.append(command)
+                return {"status": "ACTIVE"}
+
+        for action_name, role in (
+            ("builder_recompose_fix", "builder"),
+            ("tester_recompose_fix", "tester"),
+        ):
+            with self.subTest(action=action_name):
+                core = FakeCore()
+                coordinator = NativeCoordinator(
+                    repo=ROOT,
+                    run_id=f"native-{action_name}",
+                    core=core,
+                    transport=object(),
+                    project_root=ROOT,
+                )
+                context = {
+                    "facets": {
+                        "execution": {
+                            "agents": {
+                                role: {
+                                    "agent_id": f"{role}-agent",
+                                    "thread_id": f"{role}-thread",
+                                }
+                            }
+                        }
+                    }
+                }
+                coordinator._apply_agent_result(
+                    {"action": action_name, "action_id": "a" * 64},
+                    role,
+                    {
+                        "result": "implemented",
+                        "evidence_report": None,
+                        "proof_spec": None,
+                        "problem_report": None,
+                    },
+                    context,
+                )
+                self.assertEqual(
+                    core.calls, ["recompose-candidate", "consume-dispatch"]
+                )
 
     def test_coordinator_executes_deployment_restore_before_blackbox_completion(self) -> None:
         with tempfile.TemporaryDirectory(prefix="native-deployment-actions-") as raw:

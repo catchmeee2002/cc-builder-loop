@@ -469,8 +469,11 @@ class FullDriverV4ContractTest(unittest.TestCase):
         planner = (ROOT / "skills" / "builder-loop-planner" / "SKILL.md").read_text()
         self.assertIn("full-driver-v4-experiment", builder)
         self.assertIn("native-driver start", builder)
+        self.assertIn("native-driver resume", builder)
+        self.assertIn("validate-decision", builder)
         self.assertIn("创建 run 前", builder)
         self.assertIn("assurance-v4-contract", planner)
+        self.assertIn("assurance-v4-decision", planner)
         self.assertIn("BUILDER_HANDOFF_READY", planner)
 
     def test_skill_automatically_loops_over_the_complete_action_surface(self) -> None:
@@ -481,10 +484,16 @@ class FullDriverV4ContractTest(unittest.TestCase):
             "builder_fix",
             "tester_author",
             "tester_fix",
+            "verify_preflight",
             "verify_machine",
+            "tester_machine_diagnose",
             "tester_blackbox",
+            "reviewer_preflight",
             "reviewer_final",
             "rematerialize_target",
+            "recompose_candidate",
+            "builder_recompose_fix",
+            "tester_recompose_fix",
             "recover_finalize",
             "architecture_review",
             "finalize",
@@ -806,7 +815,7 @@ class FullDriverV4ContractTest(unittest.TestCase):
         self.assertEqual(failed["readiness"]["states"]["machine"], "failed")
         rc, repair = self.invoke("driver-next", "--repo", self.repo, "--run", run_id)
         self.assertEqual(rc, 0, repair)
-        self.assertEqual(repair.get("action"), "builder_fix", repair)
+        self.assertEqual(repair.get("action"), "tester_machine_diagnose", repair)
 
         assurance = deepcopy(self.load_ledger(run_path)["facets"]["assurance"])
         assurance["machine_commands"][0]["argv"] = [
@@ -832,6 +841,79 @@ class FullDriverV4ContractTest(unittest.TestCase):
         rc, rerun = self.invoke("driver-next", "--repo", self.repo, "--run", run_id)
         self.assertEqual(rc, 0, rerun)
         self.assertEqual(rerun.get("action"), "verify_machine", rerun)
+
+    def test_focused_preflight_and_reviewer_preflight_run_before_full_machine(self) -> None:
+        run_id = "full-driver-early-gates"
+        contract = contract_for(self.repo)
+        contract["assurance"]["preflight_before_proof"] = True
+        contract["assurance"]["reviewer_preflight"] = True
+        contract["assurance"]["machine_commands"][0]["run_before_full_suite"] = True
+        _data, run_path = self.start(run_id, contract=contract)
+        rc, checkpointed = self.invoke(
+            "checkpoint-builder", "--repo", self.repo, "--run", run_id
+        )
+        self.assertEqual(rc, 0, checkpointed)
+        self.prepare_and_record_tester(run_id, run_path)
+
+        rc, decision = self.invoke("driver-next", "--repo", self.repo, "--run", run_id)
+        self.assertEqual(rc, 0, decision)
+        self.assertEqual(decision.get("action"), "verify_preflight", decision)
+        rc, preflight = self.invoke(
+            "verify-preflight", "--repo", self.repo, "--run", run_id
+        )
+        self.assertEqual(rc, 0, preflight)
+        self.assertEqual(preflight["machine_failure_state"], "missing")
+
+        rc, decision = self.invoke("driver-next", "--repo", self.repo, "--run", run_id)
+        self.assertEqual(rc, 0, decision)
+        self.assertEqual(decision.get("action"), "reviewer_preflight", decision)
+        ledger = self.load_ledger(run_path)
+        reviewer = ledger["facets"]["execution"]["agents"]["reviewer"]
+        candidate_head = ledger["facets"]["execution"]["candidate_head"]
+        report = {
+            "schema_version": 1,
+            "kind": "reviewer_preflight",
+            "status": "pass",
+            "candidate_head": candidate_head,
+            "producer": {"role": "reviewer", **reviewer},
+            "details": {"result": "pass", "reviewed_head": candidate_head},
+        }
+        report_path = self.write_json("reviewer-preflight-report.json", report)
+        rc, recorded = self.invoke(
+            "record-evidence",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--kind",
+            "reviewer_preflight",
+            "--report",
+            report_path,
+        )
+        self.assertEqual(rc, 0, recorded)
+        self.assertEqual(recorded["readiness"]["states"]["reviewer"], "missing")
+
+        rc, decision = self.invoke("driver-next", "--repo", self.repo, "--run", run_id)
+        self.assertEqual(rc, 0, decision)
+        self.assertEqual(decision.get("action"), "verify_machine", decision)
+        rc, machine = self.invoke(
+            "verify-machine", "--repo", self.repo, "--run", run_id
+        )
+        self.assertEqual(rc, 0, machine)
+        ledger = self.load_ledger(run_path)
+        self.assertEqual(
+            ledger["evidence"]["machine"]["details"]["commands"][0]["source"],
+            "preflight",
+        )
+        machine_event = next(
+            event
+            for event in reversed(ledger["events"])
+            if event.get("kind") == "machine_verified"
+        )
+        self.assertEqual(machine_event["details"]["preflight_reused"], 1)
+        rc, next_gate = self.invoke("driver-next", "--repo", self.repo, "--run", run_id)
+        self.assertEqual(rc, 0, next_gate)
+        self.assertEqual(next_gate.get("action"), "tester_blackbox", next_gate)
 
     def test_failed_machine_is_stale_after_candidate_or_tester_source_changes(self) -> None:
         for change in ("candidate", "tester-source"):
@@ -2617,7 +2699,7 @@ class FullDriverV4ContractTest(unittest.TestCase):
             "driver-next", "--repo", self.repo, "--run", run_id
         )
         self.assertEqual(rc, 0, decision)
-        self.assertEqual(decision.get("action"), "rematerialize_target", decision)
+        self.assertEqual(decision.get("action"), "recompose_candidate", decision)
         self.assertNotEqual(decision.get("status"), "NEEDS_USER", decision)
 
     def test_serial_publication_and_tester_source_rematerialize_on_target_drift(self) -> None:
@@ -2690,6 +2772,66 @@ class FullDriverV4ContractTest(unittest.TestCase):
         self.assertEqual(tester_source_after["head"], publication_after["head"])
         self.assertEqual(after["facets"]["mission"], mission_before)
         self.assertEqual(after["digests"]["mission"], mission_digest_before)
+
+    def test_published_prerequisite_change_republishes_in_the_same_run(self) -> None:
+        run_id = "full-driver-publication-refresh"
+        contract = contract_for(self.repo)
+        contract["authority"]["public_prerequisites"] = ["src/calc.py"]
+        data, run_path = self.start(run_id, contract=contract)
+        candidate = Path(data["candidate_worktree"])
+        (candidate / "src" / "calc.py").write_text(
+            "def add(a, b):\n    return a + b\n\nSERIAL_API = 1\n",
+            encoding="utf-8",
+        )
+        commit_all(candidate, "publish serial prerequisite")
+        rc, checkpointed = self.invoke(
+            "checkpoint-builder", "--repo", self.repo, "--run", run_id
+        )
+        self.assertEqual(rc, 0, checkpointed)
+        rc, published = self.invoke(
+            "publish-prerequisites", "--repo", self.repo, "--run", run_id
+        )
+        self.assertEqual(rc, 0, published)
+        before = self.prepare_and_record_tester(run_id, run_path)
+        source_before = deepcopy(before["facets"]["execution"]["tester_source"])
+        publication_before = deepcopy(before["publication"])
+
+        (candidate / "src" / "calc.py").write_text(
+            "def add(a, b):\n    return a + b\n\nSERIAL_API = 2\n",
+            encoding="utf-8",
+        )
+        incoming = commit_all(candidate, "fix published prerequisite")
+        rc, refreshing = self.invoke(
+            "checkpoint-builder", "--repo", self.repo, "--run", run_id
+        )
+        self.assertEqual(rc, 0, refreshing)
+        self.assertEqual(
+            refreshing["recomposition_intent"]["kind"], "publication_refresh"
+        )
+        self.assertEqual(
+            refreshing["recomposition_intent"]["incoming_candidate_head"], incoming
+        )
+
+        rc, refreshed = self.invoke(
+            "recompose-candidate", "--repo", self.repo, "--run", run_id
+        )
+        self.assertEqual(rc, 0, refreshed)
+        self.assertIsNone(refreshed["recomposition_intent"])
+        after = self.load_ledger(run_path)
+        source_after = after["facets"]["execution"]["tester_source"]
+        self.assertEqual(after["publication"]["generation"], 2)
+        self.assertNotEqual(after["publication"]["head"], publication_before["head"])
+        self.assertEqual(source_after["agent"], source_before["agent"])
+        self.assertEqual(source_after["branch"], source_before["branch"])
+        self.assertEqual(source_after["worktree"], source_before["worktree"])
+        self.assertNotEqual(source_after["head"], source_before["head"])
+        self.assertEqual(source_after["base_head"], after["publication"]["head"])
+        self.assertEqual(
+            (candidate / "src" / "calc.py").read_text(encoding="utf-8").splitlines()[-1],
+            "SERIAL_API = 2",
+        )
+        self.assertTrue((candidate / "tests" / "test_full_driver_fixture.py").is_file())
+        self.assertEqual(refreshed["readiness"]["states"]["tester"], "stale")
 
 
 if __name__ == "__main__":

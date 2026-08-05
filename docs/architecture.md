@@ -32,7 +32,8 @@ role turn 前只额外持久化一个 dispatch intent，绑定 action/thread/pro
 它是跨进程副作用的恢复事实，不是调度状态，消费后立即清空。`driver.py` 每轮从 readiness 重新决定
 Builder、Tester、机器、候选部署、黑盒或 Reviewer 动作；
 同一失败签名三次只触发架构复核，不自动创建新 Mission。无冲突 target drift 通过 candidate
-rematerialization 后局部重验，Git 冲突、授权扩大和覆盖风险才停止。
+recomposition 后局部重验；Builder/Tester-owned 冲突分别续接原 thread 在隔离 staging worktree 修复，
+只有语义、授权、Tester 判据、产品选择或无法证明的 Git 状态才停止。
 
 run 创建后的未处理 Driver `FATAL` 先经 `record-driver-failure` 冻结错误、当前 action/dispatch、ledger
 candidate、branch/worktree HEAD 与 dirty observation，再由 `complete-driver-failure` 恢复唯一已持久化
@@ -48,8 +49,9 @@ Assurance Core 的独立契约测试与手工底层诊断默认不启用 Driver 
 
 dirty intake 的自动 snapshot commit 只证明输入已隔离，不证明实现完成；ledger 单独记录
 `builder_checkpointed` 执行事实，Driver 在首次 Builder checkpoint 前不会推进 Tester。串行 Tester 的
-publication 在 target rematerialization 时基于新 target 重新生成，exact prerequisite blob/manifest
-保持不变，Tester source 改以新 publication HEAD 为 base，避免恢复后退回旧 target 基线。
+publication 路径集合冻结，每个 generation 的 HEAD/blob/manifest 不可变。target drift 或已发布文件
+修复通过同一持久化 recomposition intent 生成下一 generation，Tester source 改以新 publication HEAD
+为 base；generation 变化形成新 candidate 身份并使受影响 evidence 重新取得。
 
 proof evidence 不能由 Agent 直接提交摘要。Tester 只提供符合公共 `codex-test-proof` schema 的 spec；
 Core 在隔离 worktree 先证明 candidate tests 通过，再执行 baseline-red 或仅触及 Builder-owned 普通
@@ -67,6 +69,11 @@ Core error 与同 action 的 current failure 精确匹配后才消费 completed 
 problem 记录后中断时重放同一事务，不重复执行 proof 命令或追加 attempt。成功 proof 仍是唯一 PASS
 来源，并清除当前 failure。
 
+focused preflight 和完整 machine failure 同样先写 ledger。`run_before_full_suite` 命令可在 Tester
+integration 后、proof 与完整 suite 前执行；最终 machine gate 只复用同 candidate、同 dependency 的
+真实结果。失败保存结构化 command result 与 signature，并续接原 Tester thread 做只读归因；归属可为
+Builder、Tester、计划、当前项目、builder-loop 或外部平台，三次同 signature 才进入架构复核。
+
 Native Driver 使用 App Server 稳定 stdio thread/turn 接口并在启动前检查当前协议 schema；不启用
 `experimentalApi` 字段，也不新增 API Key。Builder、Tester、Reviewer 的唯一 role policy 仍来自
 `agents/*.toml`，App Server `outputSchema` 把终态收敛为公共 v4 JSON。Core 机械核对 thread identity、
@@ -77,9 +84,11 @@ source HEAD/manifest provenance；同一 source/candidate 的 `integrate-tester`
 proof 使用与 Tester-owned 路径一致的 canonical test id，Native wire 只在唯一可证明映射时补全模块或
 文件前缀，最终 source binding 和真实执行分类仍由 Core 判定。
 
-机器命令的 `run_before_full_suite` 只改变同一 machine gate 内的执行顺序：本地交付关键测试先跑，
-失败后不启动后续昂贵命令。所有命令默认只接受 returncode 0；计划可用 `expected_returncodes` 冻结
+机器命令的 `run_before_full_suite` 把本地关键测试提升为独立 focused preflight；失败后不启动 proof、
+完整 suite 或后续昂贵 gate。所有命令默认只接受 returncode 0；计划可用 `expected_returncodes` 冻结
 其他合法结果，runtime 始终把实际 returncode 当作观察值，而不是让 Tester 在 evidence 中重定义成功。
+可选 `reviewer_preflight` 在 Tester/focused preflight 后续接同一 Reviewer thread 做早期语义审计；其
+evidence 不能满足最终 Reviewer gate，最终审查仍要求当前 machine、proof 和 blackbox 全部齐备。
 
 可选 deployment contract 只支持当前 run 的单个已授权外部目标。Core 从 candidate HEAD 创建独立
 deployment worktree，在其中运行项目提供的 probe/build/deploy/restore wrapper，绑定制品 SHA256、
@@ -427,10 +436,26 @@ replay 返回已存错误且不追加 event；消费后 Driver 才能派生独�
 `full_driver_skill` 或 `operator_recovery`；旧事件缺少该字段时只按保守规则推断，不回写历史 ledger。
 
 用户批准的 plan decision 复用 `update-facet` 的既有校验与授权参数，并以
-`--resolve-plan-problem-key` 绑定唯一 open `owner=plan` problem。在同一 repo lock 与一次 ledger 保存中，
-事务更新 Mission、Authority 或 Assurance facet、精确关闭该 problem，并记录旧/新 digest；facet 已经
-到达目标时只补齐 problem resolution，重复相同决定为 no-op。execution、歧义 key、缺失 key 或已关闭
-problem 的冲突决定均在写入前拒绝，不建立第二份 decision 状态。
+`decision_request` 向用户展示相对 facet 的精确 delta。Planner 的人类正文只重复变化项，但仍生成唯一
+完整 replacement contract；只读 `validate-decision` 同时绑定 active run、同 session、problem key、
+Driver action id、base facet digest，并拒绝未展示的额外 facet 变化。Builder 把同一 binding 传给
+`update-facet` 或 `revise-mission`，在一次 repo lock/ledger save 中更新 Mission、Authority 或 Assurance、
+精确关闭 problem，再 resume 原 run。execution、publication path、dirty intake、歧义/缺失 key、stale
+handoff 或已关闭 problem 的冲突决定均在写入前拒绝；旧 problem 缺 `decision_request` 时只允许显式
+facet fallback，不建立第二份 decision 状态或 delta contract。
+
+Assurance v4 的 target drift 与 publication refresh 共用唯一 `recomposition_intent`。intent 在任何 Git
+副作用前绑定 old/new target、incoming candidate、publication generation、Builder/Tester source 和 staging
+root；Builder staging、publication、Tester staging、candidate integration 与正式 commit 每步持久化。
+自动阶段中断后根据 ledger 与 staging branch/HEAD 幂等续接；正式 event 已落盘但 intent 尚未清理时只做
+cleanup，不重复提升 Execution version 或退休 Tester source。target 在事务中再次前进时清理派生 staging，
+保留已确认 owner delta 并从最新 target 重启；三次连续推进或未知 residue 才交还用户。`status` 与
+`driver-context` 同时列出同 target 的其他 active/finalizing run，提前暴露 finalize contender，但不把
+观察列表升级为 lease 或自动多 Mission merge。
+
+`status.telemetry` 仍只从 ledger event 派生：区分 Agent turn、确定性 gate、recomposition 与 idle/user
+wait，列出 expected stages、publication generation、target drift/restart、owner conflict repair、Reviewer
+preflight 次数、warning 和前三大耗时。它不保存第二份计时状态，也不把 wall time 估算变成交付 gate。
 
 `owner=external_platform` 的 open problem 不进入 `builder_fix`。Driver 返回
 `external_problem_decision`，root Agent 先通过 `request_user_input` 取得继续授权并在 ledger 外完成一次
@@ -634,6 +659,15 @@ checkpoint 与 integration commit 继续跳过 hooks 和 GPG signing。
   reporter 包装成任意恶意 Python 的安全沙箱。
 - 「显式授权，默认隔离」要求未知 dirty 留在原处、精确授权输入冻结成 snapshot；由此只有真实
   覆盖风险才停止，而不是把 target 全局干净当成交付前提。
+- 「可靠闭环同时要求结论可信和任务可完成」与“副作用前先持久化 intent”共同要求普通 target/
+  publication 变化不能只安全报错；由此使用 ownership-separated recomposition transaction，冲突回原
+  Builder/Tester thread，重组后的 candidate 按新身份重验。
+- 「判据按独立性分层」要求早期发现不能冒充最终结论；由此 focused machine 与 Reviewer preflight
+  位于昂贵 gate 前，但最终 machine/Reviewer 仍绑定完整当前 candidate 和全部 prerequisite。
+- 「最小同时约束用户成本」要求用户只确认真实契约变化；由此 plan decision 向人展示 delta，机器仍
+  校验唯一完整 replacement contract，并用 action/session/facet digest 原子绑定同一 active run。
+- 「每个事实只有一个家」要求耗时、重试与重组成本从 ledger event 派生；由此 telemetry 只做只读
+  分类和 warning，不维护第二份计时器或预算状态。
 - 「契约与成熟行为先于实现」要求迁移维护逐项 parity corpus；由此删除旧 fixture 前必须明确
   covered、rescue 或 retired，不能只用新 runtime 测试证明自身自洽。
 - 「改输入条件，不堆输出特判」要求 Python role hygiene 在 AST/token 层区分可执行 skip/xfail/

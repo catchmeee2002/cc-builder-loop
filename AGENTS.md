@@ -45,8 +45,9 @@ python3 experiments/assurance-v4-replay/runner.py
   副作用；环境安全后才进入 `failed`。failed 不 resume、不 supersede、不 abandon，cleanup 只接受与
   冻结 failure observation 一致的 clean worktree。
 - runtime ledger 是执行事实唯一来源；Skills、hooks 和 agents 不直接改 JSON。
-- Assurance v4 的已授权 plan decision 先用现有 `update-facet` 或 `revise-mission` 在同一 active run
-  收敛；普通执行信息变化不得先 abandon 或自动升级为新 run。确需 successor 时，source 必须在新
+- Assurance v4 的已授权 plan decision 先用 `validate-decision` 绑定同 session、problem、action、facet
+  digest 和唯一完整 replacement contract，再以相同 binding 调用 `update-facet` 或 `revise-mission`，
+  原子关闭 problem 并 resume 同一 active run；普通执行信息变化不得先 abandon 或自动升级为新 run。确需 successor 时，source 必须在新
   contract 验证和 `start` 持久化 target 前保持 active，由 `start` 创建 target 后封为 superseded。
   `abandon` 只表示用户取消且没有 successor；abandoned、superseded、failed、finalized source 不恢复 continuity。
   legacy v2/v3 保持既有 abandoned-source revision 契约。
@@ -57,10 +58,10 @@ python3 experiments/assurance-v4-replay/runner.py
 - Tester 与 Reviewer 必须续接原 thread；续接失败时停止并保留现场。
 - Tester author/integration 与 blackbox 是两个独立 gate；blackbox details 必须绑定 candidate
   worktree、命令、returncode 和前后 HEAD。
-- 串行 Tester publication 是独立 gate：精确普通文件经隔离 publication HEAD/manifest 成为
-  Tester baseline，发布路径随后不可变；不得把 Builder HEAD 或 candidate diff 直接交给 Tester。
-- Reviewer turn 必须在所需 Tester integration、机器验证和 blackbox evidence 已绑定 candidate 后
-  启动；过早 review 不能靠事后补证据变成有效审查。
+- 串行 Tester publication 是独立 gate：路径集合冻结，每个 generation 的 HEAD/blob/manifest 不可变；
+  prerequisite 修复只能经 recomposition 生成下一 generation，并让 Tester/evidence 对新 candidate 重绑。
+- `run_before_full_suite` command 可形成 focused preflight；可选 Reviewer preflight 只做早期语义审计，
+  不满足最终 gate。最终 Reviewer 仍须在 Tester/proof/machine/blackbox 已绑定 candidate 后启动。
 - 外部环境只允许 ledger 中一个 run 持有 lease；同 run Revision 或显式 supersedes 转移必须重新 probe，
   不继承旧角色/evidence。finalize、abandon 和 cleanup 前必须释放 lease 并确认恢复。
 - finalize intent 写入后冻结 run mutation；恢复时重新核对全部 gate，再同步 target 和 cleanup。
@@ -73,12 +74,16 @@ python3 experiments/assurance-v4-replay/runner.py
 - Builder 写代码和文档，Tester 写计划允许的测试，Reviewer 只读审查。
 - 修复按 ownership 路由；测试实现问题回到原 Tester，目标、ownership 或验收标准变化按上述版本化
   lifecycle 处理，不用无条件 abandon 覆盖 Assurance v4。
+- target drift 与 publication refresh 共用持久化 recomposition intent；Builder/Tester 冲突回原 thread
+  的隔离 staging worktree，target 再推进则从最新 HEAD 重启。未知 residue、判据/授权变化才停止。
+- machine/preflight failure 先持久化结构化结果与 signature，再续接原 Tester thread 只读归因；不得把
+  Agent 自述或重跑日志直接变成 evidence。
 - open problem owner 必须穷举：builder/tester 回原角色，plan/external_platform/builder_loop/
   current_project 进入各自 NEEDS_USER decision；后四类不得默认回落到 builder_fix。
 - Tester/Reviewer 报出需要修复或决定的问题后，先经 `record-problems` 逐条写入 ledger；Assurance v4
   successor 用 source ledger 的逐条 disposition 连续交接，legacy v2/v3 继续由 abandon 封存问题清单并由
   更高 revision 的 `prior-problems` 逐条处理。旧 ledger 无清单时先显式补录。
-- Git 冲突只安全停止；runtime 不自动仲裁。
+- runtime 不做跨 Mission 智能 merge；只允许上述单 Mission、ownership 受限的冲突修复与重组事务。
 - retrospective 的完整 `required_block` 留作结构化审计，Stop hook 优先校验精简
   `required_user_block`；READY 不绕过 active run，NEEDS_USER 可在精简块已展示后保留 active 现场等用户。
 

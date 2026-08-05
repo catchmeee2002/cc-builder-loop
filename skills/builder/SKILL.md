@@ -25,18 +25,30 @@ description: 执行已接受的 Builder-loop 实验方案，把同 session 紧�
 2. 从已接受方案提取唯一 `assurance-v4-contract` marker；缺失、重复或 JSON 外还有第二份 contract 时停止。
 3. 再次把 contract 原样通过 stdin 交给
    `codex-builder-loop assurance --experimental-v4 validate --contract -`；只有 `status=READY` 才继续。
-4. 从 SessionStart developer context 原样取得 `session_id`，生成唯一小写连字符 run id。把 contract
-   原样通过 stdin 交给：
+4. 从 SessionStart developer context 原样取得 `session_id`。若方案含唯一 `assurance-v4-decision` marker，
+   这是同 run contract decision，不得生成新 run：
+   - marker 必须只含 schema_version/run_id/problem_key/action_id/facet/facet_digest，且当前
+     `driver-next` 仍是同一 `contract_decision`；
+   - 用 marker、当前 session_id 和完整 contract 重跑 `validate-decision`。任何 stale、session mismatch、
+     隐藏 delta 或不受支持事务都停止，不能回退为 `start`；
+   - `apply.command=update-facet` 时，从完整 contract 取对应 Authority/Assurance facet，带返回的精确
+     authorization flags、`--resolve-plan-problem-key`、`--decision-action-id`、
+     `--expected-facet-digest` 与 `--session-id` 原子更新；`apply.command=revise-mission` 时从完整 contract
+     取 Mission 与 `execution.revision_transition`，同样携带全部 decision binding；
+   - 更新成功后执行
+     `codex-builder-loop native-driver resume --repo <repo> --run <run-id>`，并继续等待原 run 终态。
+5. 没有 decision marker 时才生成唯一小写连字符 run id，把 contract 原样通过 stdin交给：
 
    `codex-builder-loop native-driver start --repo <repo> --run <run-id> --session-id <session-id> --contract -`
 
-5. 看到 `event=native_driver_run_started` 后立即输出 `BUILDER_LOOP_RUN_ID:<run-id>`，持续等待 Native
+6. 新 run 看到 `event=native_driver_run_started` 后，或同 run decision 更新成功后，立即输出
+   `BUILDER_LOOP_RUN_ID:<run-id>`，持续等待 Native
    Driver 到 `FINALIZED`、`FAILED` 或 `NEEDS_USER`。普通 revision、修复、Agent follow-up、target rematerialize
    和 finalize recovery 不交还用户。run 创建后若仅遇到 App Server disconnect/overload，用
    `native-driver resume --repo <repo> --run <run-id>` 自动续接；同一 transport signature 连续三次才按
    continuity failure 停止，不能改走另一控制器。未处理 FATAL 必须已由 Native Driver 写成
    `driver_failure` 并完成副作用恢复；若恢复仍需用户，保留 recovering 现场，不用 abandon 覆盖。
-6. 只有 Native Driver 在创建 run 前返回 `NATIVE_DRIVER_CODEX_UNAVAILABLE`、
+7. 只有 Native Driver 在创建 run 前返回 `NATIVE_DRIVER_CODEX_UNAVAILABLE`、
    `NATIVE_DRIVER_PROTOCOL_UNAVAILABLE` 或 `NATIVE_DRIVER_PROTOCOL_INCOMPATIBLE`，才完整读取相邻
    `../full-driver-v4-experiment/SKILL.md` 并由现有 Full Driver 承载同一 contract。run 一旦创建，禁止
    切换承载或让两个控制器同时 mutation。

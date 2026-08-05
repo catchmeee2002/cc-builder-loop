@@ -10,5 +10,9 @@ worktree 与无关 dirty 内容。修改完成后运行与本动作直接相关�
 
 若冻结目标可以继续，最终只返回 output schema 要求的 JSON：result=implemented，其他字段按需为 null。
 若发现问题，problem_report 必须严格使用 prompt 提供的 schema_version=1 + problems 数组；需要改变目标、ownership、验收标准或
-产品取舍时 owner=plan，普通实现问题 owner=builder。不要用自然语言或 Markdown 包裹 JSON。
+产品取舍时 owner=plan，普通实现问题 owner=builder。owner=plan 时必须填写 decision_request：facet_change
+使用相对该 facet 的 JSON Pointer 逐条列出唯一精确 delta；产品选择使用 product_choice，不能把完整替代
+contract 塞进 problem report。旧 problem 没有该字段时由主线程兼容展示，本 turn 不再制造缺字段报告。
+phase=recompose 时只在 prompt 指定的 staging worktree 内解决归属 Builder 的 Git 冲突并提交；不得改目标、
+Tester-owned 文件或绕过重组事务。不要用自然语言或 Markdown 包裹 JSON。
 """

@@ -22,11 +22,15 @@ class NativeDriverError(RuntimeError):
 AGENT_ACTION_ROLES = {
     "builder_implement": "builder",
     "builder_fix": "builder",
+    "builder_recompose_fix": "builder",
     "tester_author": "tester",
     "tester_fix": "tester",
+    "tester_recompose_fix": "tester",
     "tester_proof": "tester",
     "tester_proof_diagnose": "tester",
+    "tester_machine_diagnose": "tester",
     "tester_blackbox": "tester",
+    "reviewer_preflight": "reviewer",
     "reviewer_final": "reviewer",
 }
 
@@ -106,6 +110,8 @@ class NativeCoordinator:
                 self._simple("publish-prerequisites", action)
             elif name == "verify_machine":
                 self._simple("verify-machine", action)
+            elif name == "verify_preflight":
+                self._simple("verify-preflight", action)
             elif name == "prepare_deployment":
                 self._simple("prepare-deployment", action)
             elif name == "restore_deployment":
@@ -116,8 +122,8 @@ class NativeCoordinator:
                 self._simple("complete-supersede-transfer", action)
             elif name == "complete_blackbox":
                 self._simple("complete-blackbox", action)
-            elif name == "rematerialize_target":
-                self._simple("rematerialize-target", action)
+            elif name in {"rematerialize_target", "recompose_candidate"}:
+                self._simple("recompose-candidate", action)
             elif name == "recover_finalize":
                 self._simple("recover-finalize", action)
             elif name == "complete_driver_failure":
@@ -471,6 +477,8 @@ class NativeCoordinator:
         agent = context["facets"]["execution"]["agents"][role]
         if action["action"] == "tester_proof_diagnose":
             self._validate_proof_diagnosis(result)
+        if action["action"] == "tester_machine_diagnose":
+            self._validate_machine_diagnosis(result)
         problem = result.get("problem_report")
         if isinstance(problem, dict):
             self.core.call(
@@ -492,6 +500,18 @@ class NativeCoordinator:
                 "--driver-runtime-kind",
                 "native",
                 input_value=problem,
+            )
+        elif action["action"] in {"builder_recompose_fix", "tester_recompose_fix"}:
+            self.core.call(
+                "recompose-candidate",
+                "--repo",
+                str(self.repo),
+                "--run",
+                self.run_id,
+                "--action-id",
+                action_id,
+                "--driver-runtime-kind",
+                "native",
             )
         elif action["action"] in {"builder_implement", "builder_fix"}:
             self.core.call(
@@ -602,6 +622,18 @@ class NativeCoordinator:
                     return
             else:
                 self._record_evidence("blackbox", evidence, action_id)
+        elif action["action"] == "reviewer_preflight":
+            evidence = result.get("evidence_report")
+            if not isinstance(evidence, dict):
+                raise NativeDriverError(
+                    "Reviewer preflight returned no evidence",
+                    code="NATIVE_REVIEW_PREFLIGHT_EVIDENCE_MISSING",
+                )
+            self._record_evidence(
+                "reviewer_preflight",
+                self._evidence_kind(evidence, "reviewer_preflight"),
+                action_id,
+            )
         elif action["action"] == "reviewer_final":
             evidence = result.get("evidence_report")
             if not isinstance(evidence, dict):
@@ -764,18 +796,23 @@ class NativeCoordinator:
             "action_id": action["action_id"],
             "action": action["action"],
             "phase": {
+                "builder_recompose_fix": "recompose",
                 "tester_author": "author",
                 "tester_fix": "author",
+                "tester_recompose_fix": "recompose",
                 "tester_proof": "proof",
                 "tester_proof_diagnose": "proof_diagnose",
+                "tester_machine_diagnose": "machine_diagnose",
                 "tester_blackbox": "blackbox",
+                "reviewer_preflight": "preflight",
                 "reviewer_final": "final",
             }.get(str(action["action"]), "implement"),
             "role": role,
             "contract": context["facets"],
             "target_start_head": context["target_start_head"],
-            "candidate_worktree": context["candidate_worktree"],
+            "candidate_worktree": action.get("candidate_worktree", context["candidate_worktree"]),
             "publication": context.get("publication"),
+            "recomposition": action.get("recomposition"),
             "evidence": context.get("evidence"),
             "problems": context.get("problems"),
             "problem_report_schema": self.problem_schema,
@@ -798,7 +835,9 @@ class NativeCoordinator:
                 ),
             }
         if role == "reviewer":
-            payload["review_input_contract"] = self._review_input_contract(context)
+            payload["review_input_contract"] = self._review_input_contract(
+                context, phase=str(payload["phase"])
+            )
         if action.get("action") == "tester_proof":
             payload["proof_spec_schema"] = self.proof_schema
             payload["proof_test_id_hints"] = self._proof_test_id_hints(context)
@@ -815,11 +854,23 @@ class NativeCoordinator:
                 "owner=tester for Tester-owned tests or proof input, and owner=plan only when the "
                 "frozen target, authority, or acceptance contract must change."
             )
+        if action.get("action") == "tester_machine_diagnose":
+            payload["machine_failure"] = copy.deepcopy(action.get("machine_failure"))
+            payload["machine_diagnosis_rule"] = (
+                "Do not edit files or rerun the command as a replacement for Core. Classify each "
+                "independent failure from the frozen contract, persisted command result, Tester "
+                "source and bound artifacts. Route implementation defects to builder, Tester-owned "
+                "tests or harness defects to tester, frozen-contract changes to plan, repository "
+                "defects to current_project, Builder-loop defects to builder_loop, and environment "
+                "failures to external_platform."
+            )
         return "CBL_ACTION_ID:" + str(action["action_id"]) + "\n" + json.dumps(
             payload, ensure_ascii=False, sort_keys=True, indent=2
         )
 
-    def _review_input_contract(self, context: dict[str, Any]) -> dict[str, Any]:
+    def _review_input_contract(
+        self, context: dict[str, Any], *, phase: str
+    ) -> dict[str, Any]:
         facets = context["facets"]
         mission = facets["mission"]
         execution = facets["execution"]
@@ -827,6 +878,7 @@ class NativeCoordinator:
         spec_head = str(context["target_start_head"])
         candidate_head = str(execution["candidate_head"])
         return {
+            "review_phase": phase,
             "accepted_plan": {
                 "source": "canonical_assurance_v4_contract",
                 "value": facets,
@@ -866,7 +918,24 @@ class NativeCoordinator:
             ),
             "documentation_policy_path": str(self.project_root / "policies" / "doc-policy.md"),
             "pre_turn_gates": {
-                "required": facets["assurance"].get("required", []),
+                "required": (
+                    [
+                        "tester",
+                        *(
+                            ["preflight"]
+                            if facets["assurance"].get("preflight_before_proof")
+                            and any(
+                                item.get("run_before_full_suite")
+                                for item in facets["assurance"].get(
+                                    "machine_commands", []
+                                )
+                            )
+                            else []
+                        ),
+                    ]
+                    if phase == "preflight"
+                    else facets["assurance"].get("required", [])
+                ),
                 "evidence": context.get("evidence", {}),
                 "publication": context.get("publication"),
             },
@@ -880,23 +949,22 @@ class NativeCoordinator:
 
     @staticmethod
     def _result_field_contract(action: str) -> dict[str, str]:
-        if action in {"builder_implement", "builder_fix"}:
+        if action in {
+            "builder_implement",
+            "builder_fix",
+            "builder_recompose_fix",
+            "tester_recompose_fix",
+        }:
             return {
                 "evidence_report": "must_be_null",
                 "proof_spec": "must_be_null",
                 "problem_report": "object_only_when_blocked_or_target_change_required_else_null",
             }
-        if action == "tester_proof":
-            return {
-                "evidence_report": "must_be_null",
-                "proof_spec": "required_unless_problem_report_is_non_null",
-                "problem_report": "object_only_when_blocked_or_target_change_required_else_null",
-            }
-        if action == "tester_proof_diagnose":
+        if action in {"tester_proof_diagnose", "tester_machine_diagnose"}:
             return {
                 "evidence_report": "must_be_null",
                 "proof_spec": "must_be_null",
-                "problem_report": "required_non_empty_with_builder_tester_or_plan_owner",
+                "problem_report": "required_non_empty_with_supported_problem_owner",
             }
         return {
             "evidence_report": "required_on_pass_else_null",
@@ -911,12 +979,17 @@ class NativeCoordinator:
             value["evidence_report"] = None
             value["proof_spec"] = None
             return value
-        if action in {"builder_implement", "builder_fix"}:
+        if action in {
+            "builder_implement",
+            "builder_fix",
+            "builder_recompose_fix",
+            "tester_recompose_fix",
+        }:
             value["evidence_report"] = None
             value["proof_spec"] = None
         elif action == "tester_proof":
             value["evidence_report"] = None
-        elif action == "tester_proof_diagnose":
+        elif action in {"tester_proof_diagnose", "tester_machine_diagnose"}:
             value["evidence_report"] = None
             value["proof_spec"] = None
         else:
@@ -951,6 +1024,40 @@ class NativeCoordinator:
             )
 
     @staticmethod
+    def _validate_machine_diagnosis(result: dict[str, Any]) -> None:
+        report = result.get("problem_report")
+        problems = report.get("problems") if isinstance(report, dict) else None
+        if result.get("result") not in {"fail", "blocked", "target_change_required"}:
+            raise NativeDriverError(
+                "machine diagnosis returned an invalid terminal result",
+                code="NATIVE_MACHINE_DIAGNOSIS_INVALID",
+            )
+        if not isinstance(problems, list) or not problems:
+            raise NativeDriverError(
+                "machine diagnosis returned no problems",
+                code="NATIVE_MACHINE_DIAGNOSIS_MISSING",
+            )
+        allowed = {
+            "builder",
+            "tester",
+            "plan",
+            "current_project",
+            "builder_loop",
+            "external_platform",
+        }
+        invalid = [
+            item.get("owner")
+            for item in problems
+            if not isinstance(item, dict) or item.get("owner") not in allowed
+        ]
+        if invalid:
+            raise NativeDriverError(
+                "machine diagnosis returned an unsupported owner",
+                code="NATIVE_MACHINE_DIAGNOSIS_OWNER_INVALID",
+                details={"owners": invalid},
+            )
+
+    @staticmethod
     def _proof_failure_matches(
         value: Any,
         state: Any,
@@ -968,7 +1075,17 @@ class NativeCoordinator:
         )
 
     def _turn_cwd(self, action: dict[str, Any], role: str, context: dict[str, Any]) -> str:
-        if role == "builder" or action.get("action") in {"tester_blackbox", "reviewer_final"}:
+        if action.get("action") == "builder_recompose_fix":
+            return str(action["candidate_worktree"])
+        if action.get("action") == "tester_recompose_fix":
+            source = action.get("tester_source")
+            if isinstance(source, dict) and isinstance(source.get("worktree"), str):
+                return str(source["worktree"])
+        if role == "builder" or action.get("action") in {
+            "tester_blackbox",
+            "reviewer_preflight",
+            "reviewer_final",
+        }:
             return str(context["candidate_worktree"])
         source = context["facets"]["execution"].get("tester_source")
         if role == "tester" and isinstance(source, dict):
