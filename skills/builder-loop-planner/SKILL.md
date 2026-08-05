@@ -52,7 +52,8 @@ description: 在 Codex Plan mode 中为显式选择的 Builder-loop 实验路线
 - `authority` 冻结 target branch、Builder/Tester 精确写边界、dirty intake、串行公开前置产物和受保护
   support path。权限扩大必须重新交给用户决定。
 - 代码任务的 `assurance.required` 默认精确包含 `tester`、`proof`、`machine`、`blackbox`、`reviewer`；
-  纯 Markdown L1 只要求 `reviewer`，不得伪造 Tester、machine 或 blackbox。
+  同时默认 `reviewer_preflight:true`。纯 Markdown L1 只要求 `reviewer` 且保持 preflight false，不得伪造
+  Tester、machine 或 blackbox。
 - Tester 可信来源由独立 thread、提交的普通测试文件、source manifest 与 Reviewer 审查共同绑定；这不
   宣称操作系统级恶意代码 sandbox。
 - `execution` 初始固定为 `version: 1`、`driver_enforced: true`、`candidate_head: null`、空的
@@ -64,7 +65,8 @@ description: 在 Codex Plan mode 中为显式选择的 Builder-loop 实验路线
   transcript 重建 continuation，也不得让 preparation supersede 业务 run；事实不足时停止规划交接。
 - `assurance.machine_commands` 冻结机器命令；`execution.commands` 冻结独立 blackbox 命令。argv 必须是
   字符串数组，`expected_returncodes` 冻结什么实际返回码算通过。交付必跑且本地无副作用的关键测试用
-  `run_before_full_suite:true` 标记在 machine commands 中；不得靠分析 argv 猜顺序。
+  `run_before_full_suite:true` 标记在 machine commands 中，并同时设置 `preflight_before_proof:true`；不得靠
+  分析 argv 猜顺序。
 - 需要真实环境时，只允许计划冻结一个 `authority.external_targets` 目标和项目提供的
   `execution.deployment` probe/build/deploy/restore wrapper。若当前 probe 证明同一目标已经承载同一候选
   制品，Core 可跳过重复 deploy，但本 Revision 的 blackbox 仍重新执行。只有用户明确允许 Revision

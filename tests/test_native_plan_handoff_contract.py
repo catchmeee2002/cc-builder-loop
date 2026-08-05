@@ -94,6 +94,8 @@ class ExperimentalEntryContractTest(unittest.TestCase):
         self.assertIn("validate-decision", planner)
         self.assertIn("assurance-v4-decision", planner)
         self.assertIn("人类可读正文只展示", planner)
+        self.assertIn("`reviewer_preflight:true`", planner)
+        self.assertIn("`preflight_before_proof:true`", planner)
         self.assertIn("BUILDER_HANDOFF_READY", planner)
 
     def test_managed_agents_restore_experimental_route_choice_and_handoff(self) -> None:

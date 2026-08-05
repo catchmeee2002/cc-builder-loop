@@ -21,7 +21,7 @@ Agent spawn、same-thread follow-up、结构化结果解析和持续循环由本
 3. `mission.delivery_kind=documentation` 是 L1：只保留 Reviewer/doc-review，不创建 Tester、machine
    或 blackbox 假证据。
    其他代码交付默认冻结 `tester`、`proof`、`machine`、`blackbox`、`reviewer` 五个独立 gate；只有
-   用户明确改变 assurance 强度时才可增减。
+   用户明确改变 assurance 强度时才可增减，并默认设置 `reviewer_preflight:true`。纯 L1 保持 false。
 4. Authority 中已授权 dirty intake 由 Core 校验 state digest，并复制到隔离 candidate 的
    `dirty_snapshot`；目标 worktree 保持原样。已授权 dirty 不暂停用户。
 5. `mission.delivery_kind=preparation` 可修改 exact `protected_support_paths`，经 Reviewer 与 finalize

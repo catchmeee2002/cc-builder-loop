@@ -474,6 +474,8 @@ class FullDriverV4ContractTest(unittest.TestCase):
         self.assertIn("创建 run 前", builder)
         self.assertIn("assurance-v4-contract", planner)
         self.assertIn("assurance-v4-decision", planner)
+        self.assertIn("reviewer_preflight:true", planner)
+        self.assertIn("reviewer_preflight:true", self.skill_text())
         self.assertIn("BUILDER_HANDOFF_READY", planner)
 
     def test_skill_automatically_loops_over_the_complete_action_surface(self) -> None:
