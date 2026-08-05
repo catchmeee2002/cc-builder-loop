@@ -103,13 +103,17 @@ class FullDriverV4ContractTest(unittest.TestCase):
         return path
 
     def invoke(
-        self, command: str, *args: str | Path, experimental: bool = True
+        self,
+        command: str,
+        *args: str | Path,
+        experimental: bool = True,
+        env: dict[str, str] | None = None,
     ) -> tuple[int, dict[str, Any]]:
         argv: list[str | Path] = [sys.executable, CLI, "assurance"]
         if experimental:
             argv.append("--experimental-v4")
         argv.extend([command, *args])
-        completed = run_process(argv)
+        completed = run_process(argv, env=env)
         lines = [line.strip() for line in completed.stdout.splitlines() if line.strip()]
         self.assertTrue(lines, (completed.returncode, completed.stdout, completed.stderr))
         data = json.loads(lines[-1])
@@ -158,6 +162,15 @@ class FullDriverV4ContractTest(unittest.TestCase):
             self.assertEqual(failure["action_id"], action_id)
         self.assertEqual(ledger["proof_failure"], failure)
         return failure
+
+    def assert_proof_transaction_clean(self, run_id: str, temp_root: Path) -> None:
+        self.assertEqual(
+            list(temp_root.glob(f"assurance-v4-{run_id}-proof-*")),
+            [],
+        )
+        registered = git(self.repo, "worktree", "list", "--porcelain")
+        self.assertNotIn(str(temp_root), registered)
+        self.assertNotIn(f"assurance-v4-{run_id}-proof-", registered)
 
     def prepare_and_record_tester(self, run_id: str, run_path: Path) -> dict[str, Any]:
         ledger = self.load_ledger(run_path)
@@ -1211,6 +1224,98 @@ class FullDriverV4ContractTest(unittest.TestCase):
         )
         self.assertEqual(
             proof["details"]["spec"]["groups"][0]["argv"][0], str(launcher)
+        )
+
+    def test_successful_proof_removes_transaction_root_and_registered_worktrees(self) -> None:
+        run_id = "proof-cleanup-success"
+        marker = self.artifacts / "proof-cleanup-success-invoked"
+        launcher = self.make_uv_launcher(run_id, invocation_marker=marker)
+        run_path, tester, action = self.prepare_uv_proof_run(
+            run_id,
+            baseline_source="def add(a, b):\n    return a + b - 1\n",
+            candidate_source="def add(a, b):\n    return a + b\n",
+            test_source=(
+                "from src.calc import add\n\n"
+                "def test_observation():\n"
+                "    assert add(1, 2) == 3\n"
+            ),
+        )
+        temp_root = self.artifacts / "proof-cleanup-success-tmp"
+        temp_root.mkdir()
+        spec_path = self.write_json(
+            "proof-cleanup-success.json", self.uv_baseline_spec(launcher)
+        )
+
+        rc, proved = self.invoke(
+            "prove-tests",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--spec",
+            spec_path,
+            "--agent-id",
+            tester["agent_id"],
+            "--thread-id",
+            tester["thread_id"],
+            "--action-id",
+            action["action_id"],
+            env={"TMPDIR": str(temp_root)},
+        )
+
+        self.assertEqual(rc, 0, proved)
+        self.assertEqual(marker.read_text(encoding="utf-8").splitlines(), ["invoked", "invoked"])
+        self.assert_proof_transaction_clean(run_id, temp_root)
+        ledger = self.load_ledger(run_path)
+        self.assertIsNone(ledger["proof_failure"])
+        self.assertEqual(ledger["evidence"]["proof"]["status"], "pass")
+
+    def test_failed_proof_removes_transaction_root_and_preserves_failure(self) -> None:
+        run_id = "proof-cleanup-failure"
+        marker = self.artifacts / "proof-cleanup-failure-invoked"
+        launcher = self.make_uv_launcher(run_id, invocation_marker=marker)
+        run_path, tester, action = self.prepare_uv_proof_run(
+            run_id,
+            baseline_source="def add(a, b):\n    return a + b - 1\n",
+            candidate_source="def add(a, b):\n    return a + b\n",
+            test_source=(
+                "from src.calc import add\n\n"
+                "def test_observation():\n"
+                "    assert add(1, 2) == 99\n"
+            ),
+        )
+        temp_root = self.artifacts / "proof-cleanup-failure-tmp"
+        temp_root.mkdir()
+        spec_path = self.write_json(
+            "proof-cleanup-failure.json", self.uv_baseline_spec(launcher)
+        )
+
+        rc, rejected = self.invoke(
+            "prove-tests",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--spec",
+            spec_path,
+            "--agent-id",
+            tester["agent_id"],
+            "--thread-id",
+            tester["thread_id"],
+            "--action-id",
+            action["action_id"],
+            env={"TMPDIR": str(temp_root)},
+        )
+
+        self.assertNotEqual(rc, 0, rejected)
+        self.assertEqual(rejected.get("code"), "TEST_PROOF_CANDIDATE_FAILED")
+        self.assertEqual(marker.read_text(encoding="utf-8").splitlines(), ["invoked"])
+        self.assert_proof_transaction_clean(run_id, temp_root)
+        self.assert_proof_failure(
+            run_path,
+            code="TEST_PROOF_CANDIDATE_FAILED",
+            recovery="tester_diagnosis",
+            action_id=action["action_id"],
         )
 
     def test_proof_success_and_failure_replay_do_not_rerun_commands(self) -> None:
