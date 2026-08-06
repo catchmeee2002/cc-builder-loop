@@ -72,6 +72,21 @@
       ]
     },
     {
+      "id": "planner-reexport-authority-closure",
+      "role": "planner",
+      "prompt": "任务在 service/ws_command.py 新增公开的文件回传选择器。仓库现有 service/vehicle_ws.py 统一 re-export WS 公共入口，scripts/check_reexport.py 会校验该聚合入口。请在实现前冻结精确写边界和验证关系。",
+      "trigger_type": "trigger",
+      "mechanical_checks": {
+        "contains": ["service/ws_command.py", "service/vehicle_ws.py", "scripts/check_reexport.py", "Builder 写边界", "只读验证"],
+        "not_contains": ["service/**", "等 checkpoint 失败后扩权", "让 Tester 修改 re-export"]
+      },
+      "semantic_criteria": [
+        "从仓库已有公开聚合与 checker 识别 source 必须同步的 re-export 文件",
+        "在实现前把两个精确实现路径纳入 Builder ownership，同时保持 checker 为只读验证输入",
+        "不建立项目私有依赖副本，也不扩大为目录级通配权限"
+      ]
+    },
+    {
       "id": "planner-plain-language-choice",
       "role": "planner",
       "prompt": "需要用户选择老一轮发现的问题如何进入新一轮。请给出 request_user_input 的问题和选项，不要求用户先理解内部运行时术语。",

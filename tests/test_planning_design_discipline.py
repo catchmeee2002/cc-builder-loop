@@ -714,6 +714,26 @@ class PlanningDesignDisciplineTest(unittest.TestCase):
         self.assertTrue(
             has_terms(
                 planner,
+                ("re-export", "聚合"),
+                ("checker", "校验"),
+                ("精确",),
+                ("Builder写边界",),
+                ("只读",),
+            ),
+            "Planner must close repository-declared re-export authority before implementation",
+        )
+        self.assertTrue(
+            has_terms(
+                planner,
+                ("目录", "glob", "通配"),
+                ("不得", "不"),
+                ("扩大", "授权"),
+            ),
+            "Planner must not replace exact authority closure with broad path grants",
+        )
+        self.assertTrue(
+            has_terms(
+                planner,
                 ("request_user_input",),
                 ("用户能观察",),
                 ("行为",),

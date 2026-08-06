@@ -72,7 +72,7 @@ class AgentBehaviorLabTest(unittest.TestCase):
             source["sha256"], hashlib.sha256(PLANNER_SKILL.read_bytes()).hexdigest()
         )
 
-    def test_planner_contract_scenarios_cover_manifest_closure_and_plain_language(
+    def test_planner_contract_scenarios_cover_authority_closure_and_plain_language(
         self,
     ) -> None:
         scenarios = json.loads(
@@ -86,6 +86,16 @@ class AgentBehaviorLabTest(unittest.TestCase):
             "experiments/agent-behavior/variants.json",
             manifest["mechanical_checks"]["contains"],
         )
+        reexport = by_id["planner-reexport-authority-closure"]
+        self.assertEqual(reexport["role"], "planner")
+        self.assertTrue(
+            {
+                "service/ws_command.py",
+                "service/vehicle_ws.py",
+                "scripts/check_reexport.py",
+            }.issubset(set(reexport["mechanical_checks"]["contains"]))
+        )
+        self.assertIn("service/**", reexport["mechanical_checks"]["not_contains"])
         plain = by_id["planner-plain-language-choice"]
         self.assertEqual(plain["role"], "planner")
         self.assertTrue(

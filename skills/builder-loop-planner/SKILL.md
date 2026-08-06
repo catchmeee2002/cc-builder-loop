@@ -19,9 +19,11 @@ description: 在 Codex Plan mode 中为显式选择的 Builder-loop 实验路线
    方案。只有一条可信路径时说明其他方向被什么约束排除；不存在真实分叉时不做方案比较。
 3. target dirty 默认不进入任务。任务确实依赖 dirty 时，先用选项卡取得 exact-path 授权，再计算每个
    普通文件当前内容的 SHA-256；不得 stash、复制、清理或授权目录/glob。
-4. 冻结 Authority 前，枚举本任务会修改的版本化角色或 instruction source，并检查仓库已有成熟验证输入
-   对这些路径、blob 或 digest 的直接引用。必须随 source 更新的版本化 manifest 一并纳入 Builder 写边界；
-   以仓库声明的引用关系为事实源，不硬编码任意项目私有依赖，也不等实现后靠 fixture 失败补权限。
+4. 冻结 Authority 前，枚举本任务会修改的版本化实现、角色或 instruction source，并检查仓库已有成熟
+   验证输入对这些路径、公共符号、blob 或 digest 的直接引用。必须随 source 更新的版本化 manifest、
+   re-export/公开聚合、registry/index 等精确普通文件一并纳入 Builder 写边界；声明关系的 checker/校验
+   脚本保持只读验证输入，除非任务本身修改它。以仓库声明的引用关系为事实源，不硬编码任意项目私有
+   依赖，也不得用目录 glob/通配授权、猜测式传递依赖或实现后的 fixture 失败代替实现前的精确闭包。
 5. 按可观察行为写人类可读方案，同时生成一份 schema v4 contract。完整读取本 Skill 相对路径
    `../../schema/assurance-v4-contract.schema.json`，不要复制或猜测 schema。
 6. 若当前同 session 的 active Assurance v4 run 正停在 `driver-next.action=contract_decision`，先读取该
