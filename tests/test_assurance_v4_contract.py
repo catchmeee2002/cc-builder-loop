@@ -438,6 +438,183 @@ class AssuranceV4ContractTest(unittest.TestCase):
         self.assertEqual(rejected.get("code"), "TESTER_SOURCE_ENTRY_UNSUPPORTED")
         self.assertEqual(head(Path(ledger["candidate_worktree"])), candidate_before)
 
+    def test_tester_manifest_shrink_restores_prior_path_to_source_base(self) -> None:
+        run_id = "tester-manifest-shrink-restores-base"
+        _started, run_path = self.start(run_id)
+        ledger = self.load_ledger(run_path)
+        execution = ledger["facets"]["execution"]
+        rc, prepared, _stdout, _stderr = self.invoke(
+            "prepare-tester",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--agent-id",
+            execution["agents"]["tester"]["agent_id"],
+            "--thread-id",
+            execution["agents"]["tester"]["thread_id"],
+        )
+        self.assertEqual(rc, 0, prepared)
+        source = self.load_ledger(run_path)["facets"]["execution"]["tester_source"]
+        tester = Path(source["worktree"])
+        candidate = Path(ledger["candidate_worktree"])
+        base_head = source["base_head"]
+        existing_path = "tests/test_calc.py"
+        retained_path = "tests/test_assurance_fixture.py"
+        base_blob = git(self.repo, "rev-parse", f"{base_head}:{existing_path}")
+
+        (tester / existing_path).write_text(
+            "from src.calc import add\n\n"
+            "def test_add():\n    assert add(2, 3) == 6\n",
+            encoding="utf-8",
+        )
+        (tester / retained_path).write_text(
+            "from src.calc import add\n\n"
+            "def test_assurance_fixture():\n    assert add(2, 3) == 5\n",
+            encoding="utf-8",
+        )
+        initial_source_head = commit_all(tester, "add initial tester manifest")
+        rc, integrated, _stdout, _stderr = self.invoke(
+            "integrate-tester", "--repo", self.repo, "--run", run_id
+        )
+        self.assertEqual(rc, 0, integrated)
+        first = self.load_ledger(run_path)["facets"]["execution"]
+        self.assertEqual(
+            [item["path"] for item in first["tester_source"]["files"]],
+            [retained_path, existing_path],
+        )
+        self.assertNotEqual(
+            git(self.repo, "rev-parse", f"{first['candidate_head']}:{existing_path}"),
+            base_blob,
+        )
+
+        git(tester, "checkout", base_head, "--", existing_path)
+        (tester / retained_path).write_text(
+            "from src.calc import add\n\n"
+            "def test_assurance_fixture():\n    assert add(3, 4) == 7\n",
+            encoding="utf-8",
+        )
+        corrected_source_head = commit_all(tester, "shrink tester manifest to current source")
+        self.assertEqual(
+            sorted(
+                git(
+                    self.repo,
+                    "diff",
+                    "--name-only",
+                    initial_source_head,
+                    corrected_source_head,
+                ).splitlines()
+            ),
+            [retained_path, existing_path],
+        )
+
+        rc, corrected, _stdout, _stderr = self.invoke(
+            "integrate-tester", "--repo", self.repo, "--run", run_id
+        )
+        self.assertEqual(rc, 0, corrected)
+        after = self.load_ledger(run_path)["facets"]["execution"]
+        self.assertEqual(after["tester_files"], [retained_path])
+        self.assertEqual(
+            [item["path"] for item in after["tester_source"]["files"]],
+            [retained_path],
+        )
+        self.assertEqual(
+            git(self.repo, "rev-parse", f"{corrected_source_head}:{existing_path}"),
+            base_blob,
+        )
+        self.assertEqual(
+            git(self.repo, "rev-parse", f"{after['candidate_head']}:{existing_path}"),
+            base_blob,
+        )
+        self.assertNotIn(
+            existing_path,
+            git(
+                self.repo,
+                "diff",
+                "--name-only",
+                ledger["target_start_head"],
+                after["candidate_head"],
+            ).splitlines(),
+        )
+        self.record_role_evidence(run_id, run_path, "tester")
+        self.assertEqual(head(candidate), after["candidate_head"])
+
+    def test_tester_manifest_shrink_removes_prior_path_absent_from_source_base(self) -> None:
+        run_id = "tester-manifest-shrink-removes-path"
+        _started, run_path = self.start(run_id)
+        ledger = self.load_ledger(run_path)
+        execution = ledger["facets"]["execution"]
+        rc, prepared, _stdout, _stderr = self.invoke(
+            "prepare-tester",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--agent-id",
+            execution["agents"]["tester"]["agent_id"],
+            "--thread-id",
+            execution["agents"]["tester"]["thread_id"],
+        )
+        self.assertEqual(rc, 0, prepared)
+        source = self.load_ledger(run_path)["facets"]["execution"]["tester_source"]
+        tester = Path(source["worktree"])
+        candidate = Path(ledger["candidate_worktree"])
+        retained_path = "tests/test_assurance_fixture.py"
+        removed_path = "tests/test_transient_fixture.py"
+
+        (tester / retained_path).write_text(
+            "from src.calc import add\n\n"
+            "def test_assurance_fixture():\n    assert add(2, 3) == 5\n",
+            encoding="utf-8",
+        )
+        (tester / removed_path).write_text(
+            "def test_transient_fixture():\n    assert True\n",
+            encoding="utf-8",
+        )
+        commit_all(tester, "add transient tester source")
+        rc, integrated, _stdout, _stderr = self.invoke(
+            "integrate-tester", "--repo", self.repo, "--run", run_id
+        )
+        self.assertEqual(rc, 0, integrated)
+        first = self.load_ledger(run_path)["facets"]["execution"]
+        self.assertEqual(
+            [item["path"] for item in first["tester_source"]["files"]],
+            [retained_path, removed_path],
+        )
+        self.assertTrue((candidate / removed_path).is_file())
+
+        (tester / retained_path).write_text(
+            "from src.calc import add\n\n"
+            "def test_assurance_fixture():\n    assert add(3, 4) == 7\n",
+            encoding="utf-8",
+        )
+        (tester / removed_path).unlink()
+        commit_all(tester, "remove transient tester source from current manifest")
+
+        rc, corrected, _stdout, _stderr = self.invoke(
+            "integrate-tester", "--repo", self.repo, "--run", run_id
+        )
+        self.assertEqual(rc, 0, corrected)
+        after = self.load_ledger(run_path)["facets"]["execution"]
+        self.assertEqual(after["tester_files"], [retained_path])
+        self.assertEqual(
+            [item["path"] for item in after["tester_source"]["files"]],
+            [retained_path],
+        )
+        self.assertFalse((candidate / removed_path).exists())
+        self.assertNotIn(
+            removed_path,
+            git(
+                self.repo,
+                "diff",
+                "--name-only",
+                ledger["target_start_head"],
+                after["candidate_head"],
+            ).splitlines(),
+        )
+        self.record_role_evidence(run_id, run_path, "tester")
+        self.assertEqual(head(candidate), after["candidate_head"])
+
     def test_tester_integration_rejects_generator_style_nested_proof_wrapper(self) -> None:
         run_id = "tester-proof-wrapper-rejected"
         _started, run_path = self.start(run_id)
@@ -2934,6 +3111,89 @@ class AssuranceV4ContractTest(unittest.TestCase):
         )
         self.assertNotEqual(rc, 0, rejected)
         self.assertNotIn("tester", self.load_ledger(run_path)["evidence"])
+
+    def test_replacement_tester_restores_retired_path_from_frozen_base(self) -> None:
+        run_id = "replacement-tester-restores-base"
+        _started, run_path = self.start(run_id)
+        ledger = self.load_ledger(run_path)
+        execution = ledger["facets"]["execution"]
+        rc, prepared, _stdout, _stderr = self.invoke(
+            "prepare-tester",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--agent-id",
+            execution["agents"]["tester"]["agent_id"],
+            "--thread-id",
+            execution["agents"]["tester"]["thread_id"],
+        )
+        self.assertEqual(rc, 0, prepared)
+        source = self.load_ledger(run_path)["facets"]["execution"]["tester_source"]
+        original_tester = Path(source["worktree"])
+        existing_path = "tests/test_calc.py"
+        base_blob = git(self.repo, "rev-parse", f"{source['base_head']}:{existing_path}")
+        (original_tester / existing_path).write_text(
+            "from src.calc import add\n\n"
+            "def test_add():\n    assert add(2, 3) == 6\n",
+            encoding="utf-8",
+        )
+        commit_all(original_tester, "change existing test in original source")
+        rc, integrated, _stdout, _stderr = self.invoke(
+            "integrate-tester", "--repo", self.repo, "--run", run_id
+        )
+        self.assertEqual(rc, 0, integrated)
+
+        rc, replaced, _stdout, _stderr = self.invoke(
+            "prepare-tester",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--agent-id",
+            "replacement-tester",
+            "--thread-id",
+            "replacement-thread",
+            "--replace",
+        )
+        self.assertEqual(rc, 0, replaced)
+        replacement_source = self.load_ledger(run_path)["facets"]["execution"][
+            "tester_source"
+        ]
+        replacement_tester = Path(replacement_source["worktree"])
+        replacement_path = "tests/test_replacement_fixture.py"
+        (replacement_tester / replacement_path).write_text(
+            "from src.calc import add\n\n"
+            "def test_replacement_fixture():\n    assert add(4, 5) == 9\n",
+            encoding="utf-8",
+        )
+        commit_all(replacement_tester, "author replacement tester source")
+        rc, reintegrated, _stdout, _stderr = self.invoke(
+            "integrate-tester", "--repo", self.repo, "--run", run_id
+        )
+        self.assertEqual(rc, 0, reintegrated)
+
+        after = self.load_ledger(run_path)["facets"]["execution"]
+        self.assertEqual(after["tester_files"], [replacement_path])
+        self.assertEqual(
+            [item["path"] for item in after["tester_source"]["files"]],
+            [replacement_path],
+        )
+        self.assertEqual(
+            git(self.repo, "rev-parse", f"{after['candidate_head']}:{existing_path}"),
+            base_blob,
+        )
+        self.assertNotIn(
+            existing_path,
+            git(
+                self.repo,
+                "diff",
+                "--name-only",
+                ledger["target_start_head"],
+                after["candidate_head"],
+            ).splitlines(),
+        )
+        self.record_role_evidence(run_id, run_path, "tester")
 
     def test_prepare_tester_identity_replacement_preserves_continuity_and_old_incidents(self) -> None:
         run_id = "tester-identity-replace"

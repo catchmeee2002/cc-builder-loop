@@ -3951,15 +3951,47 @@ def integrate_tester(repo_value: str | Path, run_value: str) -> dict[str, Any]:
             return status(repo, run_id)
         try:
             new_paths = set(tester_files)
-            for item in source.get("replaces_files", []):
-                if item["path"] in new_paths:
+            retired_paths = sorted(
+                {
+                    item["path"]
+                    for item in [
+                        *source.get("files", []),
+                        *source.get("replaces_files", []),
+                    ]
+                }
+                - new_paths
+            )
+            for path in retired_paths:
+                if _blob_at(repo, source_head, path) is None:
+                    removed = git(
+                        candidate_worktree,
+                        "rm",
+                        "-r",
+                        "--ignore-unmatch",
+                        "--",
+                        path,
+                        check=False,
+                    )
+                    if removed.returncode != 0:
+                        raise AssuranceError(
+                            "retired Tester source could not remove an old file",
+                            code="TESTER_REPLACEMENT_REMOVE_FAILED",
+                            details={"path": path, "stderr": removed.stderr[-8000:]},
+                        )
                     continue
-                removed = git(candidate_worktree, "rm", "--ignore-unmatch", "--", item["path"], check=False)
-                if removed.returncode != 0:
+                restored = git(
+                    candidate_worktree,
+                    "checkout",
+                    source_head,
+                    "--",
+                    path,
+                    check=False,
+                )
+                if restored.returncode != 0:
                     raise AssuranceError(
-                        "replaced Tester source could not remove an old file",
-                        code="TESTER_REPLACEMENT_REMOVE_FAILED",
-                        details={"path": item["path"], "stderr": removed.stderr[-8000:]},
+                        "Tester source could not restore a retired path",
+                        code="TESTER_INTEGRATION_CHECKOUT_FAILED",
+                        details={"path": path, "stderr": restored.stderr[-8000:]},
                     )
             for path in tester_files:
                 checked_out = git(candidate_worktree, "checkout", source_head, "--", path, check=False)
