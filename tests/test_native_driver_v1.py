@@ -1039,6 +1039,124 @@ class NativeCoordinatorContractTest(unittest.TestCase):
         self.assertEqual(bound["details"]["source_head"], "1" * 40)
         self.assertEqual(source["candidate_head"], "1" * 40)
 
+    def test_partial_tester_manifest_is_bound_before_evidence_recording(self) -> None:
+        action_id = "a" * 64
+        candidate_head = "2" * 40
+        source_head = "3" * 40
+        canonical_files = [
+            {"path": "tests/test_native_driver_v1.py", "blob": "4" * 40},
+            {"path": "tests/test_assurance_v4_contract.py", "blob": "5" * 40},
+        ]
+        integrated_context = {
+            "facets": {
+                "execution": {
+                    "candidate_head": candidate_head,
+                    "tester_source": {
+                        "head": source_head,
+                        "files": canonical_files,
+                    },
+                }
+            },
+            "driver_failure": None,
+        }
+
+        class FakeCore:
+            def __init__(self) -> None:
+                self.calls: list[str] = []
+                self.recorded_report: dict | None = None
+
+            def call(self, command: str, *args: str, input_value=None):
+                self.calls.append(command)
+                if command == "driver-context":
+                    return integrated_context
+                if command == "record-evidence":
+                    self.recorded_report = input_value
+                return {"status": "ACTIVE"}
+
+        raw_evidence = {
+            "schema_version": 1,
+            "kind": "tester",
+            "status": "pass",
+            "candidate_head": "6" * 40,
+            "producer": {
+                "role": "tester",
+                "agent_id": "tester-agent",
+                "thread_id": "tester-thread",
+            },
+            "details": {
+                "result": "tests_ready",
+                "source_head": "7" * 40,
+                "files": [
+                    *canonical_files,
+                    {"path": "tests/test_driver_failure_contract.py", "blob": "8" * 40},
+                ],
+            },
+        }
+        raw_before = json.loads(json.dumps(raw_evidence))
+        core = FakeCore()
+        coordinator = NativeCoordinator(
+            repo=ROOT,
+            run_id="native-partial-tester-manifest",
+            core=core,
+            transport=object(),
+            project_root=ROOT,
+        )
+        context = {
+            "facets": {
+                "execution": {
+                    "agents": {
+                        "tester": {
+                            "agent_id": "tester-agent",
+                            "thread_id": "tester-thread",
+                        }
+                    }
+                }
+            }
+        }
+
+        coordinator._apply_agent_result(
+            {"action": "tester_fix", "action_id": action_id},
+            "tester",
+            {
+                "result": "tests_ready",
+                "evidence_report": raw_evidence,
+                "proof_spec": None,
+                "problem_report": None,
+            },
+            context,
+        )
+
+        self.assertEqual(
+            core.calls,
+            [
+                "integrate-tester",
+                "driver-context",
+                "record-evidence",
+                "consume-dispatch",
+            ],
+        )
+        self.assertNotIn("record-driver-failure", core.calls)
+        self.assertEqual(
+            core.recorded_report,
+            {
+                "schema_version": 1,
+                "kind": "tester",
+                "status": "pass",
+                "candidate_head": candidate_head,
+                "producer": {
+                    "role": "tester",
+                    "agent_id": "tester-agent",
+                    "thread_id": "tester-thread",
+                },
+                "details": {
+                    "result": "tests_ready",
+                    "source_head": source_head,
+                    "files": canonical_files,
+                },
+            },
+        )
+        self.assertEqual(raw_evidence, raw_before)
+
     def test_existing_role_thread_is_resumed_before_a_new_action(self) -> None:
         class FakeTransport:
             def __init__(self) -> None:

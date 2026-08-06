@@ -2692,6 +2692,74 @@ class AssuranceV4ContractTest(unittest.TestCase):
         self.assertEqual(rejected.get("status"), "NEEDS_USER", rejected)
         self.assertNotIn("reviewer", self.load_ledger(run_path)["evidence"])
 
+    def test_tester_evidence_manifest_mismatch_is_rejected(self) -> None:
+        run_id = "tester-evidence-manifest-mismatch"
+        _data, run_path = self.start(run_id)
+        self.prepare_tester_source(run_id, run_path)
+        before = self.load_ledger(run_path)
+        execution_before = deepcopy(before["facets"]["execution"])
+        source = execution_before["tester_source"]
+        candidate = Path(before["candidate_worktree"])
+        candidate_head_before = head(candidate)
+        target_head_before = head(self.repo)
+        target_start_head_before = before["target_start_head"]
+        evidence_before = deepcopy(before["evidence"])
+
+        extra_path = "tests/test_calc.py"
+        self.assertNotIn(extra_path, {item["path"] for item in source["files"]})
+        extra_blob = git(self.repo, "rev-parse", f"{source['head']}:{extra_path}")
+        self.assertEqual(
+            extra_blob,
+            git(
+                self.repo,
+                "rev-parse",
+                f"{execution_before['candidate_head']}:{extra_path}",
+            ),
+        )
+        report = {
+            "schema_version": 1,
+            "kind": "tester",
+            "status": "pass",
+            "candidate_head": execution_before["candidate_head"],
+            "producer": {
+                "role": "tester",
+                **execution_before["agents"]["tester"],
+            },
+            "details": {
+                "result": "tests_ready",
+                "source_head": source["head"],
+                "files": [
+                    *source["files"],
+                    {"path": extra_path, "blob": extra_blob},
+                ],
+            },
+        }
+        report_path = self.write_json("tester-extra-manifest-path.json", report)
+
+        rc, rejected, _stdout, _stderr = self.invoke(
+            "record-evidence",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--kind",
+            "tester",
+            "--report",
+            report_path,
+        )
+
+        self.assertNotEqual(rc, 0, rejected)
+        self.assertEqual(
+            rejected.get("code"), "TESTER_SOURCE_MANIFEST_MISMATCH", rejected
+        )
+        after = self.load_ledger(run_path)
+        self.assertNotIn("tester", after["evidence"])
+        self.assertEqual(after["evidence"], evidence_before)
+        self.assertEqual(after["facets"]["execution"], execution_before)
+        self.assertEqual(after["target_start_head"], target_start_head_before)
+        self.assertEqual(head(candidate), candidate_head_before)
+        self.assertEqual(head(self.repo), target_head_before)
+
     def test_evidence_kind_role_and_manifest_identity_are_enforced(self) -> None:
         run_id = "evidence-identity"
         _data, run_path = self.start(run_id)

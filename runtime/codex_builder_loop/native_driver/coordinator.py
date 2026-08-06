@@ -544,15 +544,26 @@ class NativeCoordinator:
             if not isinstance(evidence, dict):
                 raise NativeDriverError("Tester returned no evidence", code="NATIVE_TESTER_EVIDENCE_MISSING")
             integrated = self._context()
-            integrated_head = integrated["facets"]["execution"].get("candidate_head")
+            integrated_execution = integrated["facets"]["execution"]
+            integrated_head = integrated_execution.get("candidate_head")
             if not isinstance(integrated_head, str):
                 raise NativeDriverError(
                     "Tester integration produced no candidate HEAD",
                     code="NATIVE_TESTER_INTEGRATION_HEAD_MISSING",
                 )
+            tester_source = integrated_execution.get("tester_source")
+            if not isinstance(tester_source, dict):
+                raise NativeDriverError(
+                    "Tester integration produced no source identity",
+                    code="NATIVE_TESTER_SOURCE_IDENTITY_MISSING",
+                )
             self._record_evidence(
                 "tester",
-                self._bind_evidence_candidate(evidence, integrated_head),
+                self._bind_tester_evidence_identity(
+                    evidence,
+                    candidate_head=integrated_head,
+                    tester_source=tester_source,
+                ),
                 action_id,
             )
         elif action["action"] == "tester_proof":
@@ -686,6 +697,21 @@ class NativeCoordinator:
     def _bind_evidence_candidate(evidence: dict[str, Any], candidate_head: str) -> dict[str, Any]:
         value = copy.deepcopy(evidence)
         value["candidate_head"] = candidate_head
+        return value
+
+    @staticmethod
+    def _bind_tester_evidence_identity(
+        evidence: dict[str, Any],
+        *,
+        candidate_head: str,
+        tester_source: dict[str, Any],
+    ) -> dict[str, Any]:
+        value = copy.deepcopy(evidence)
+        value["candidate_head"] = candidate_head
+        details = value.get("details")
+        if isinstance(details, dict):
+            details["source_head"] = tester_source.get("head")
+            details["files"] = copy.deepcopy(tester_source.get("files"))
         return value
 
     @staticmethod
