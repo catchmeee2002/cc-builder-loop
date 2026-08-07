@@ -33,7 +33,7 @@
       "roles": ["reviewer"],
       "instruction_source": {
         "path": "agents/reviewer.toml",
-        "sha256": "6bc67ad07804897b08837392bcbd16853825d8a80cd5a233212baa105c1d0a22",
+        "sha256": "4cb24a877b3d1abe31d3b1a6fdad6aacec64c5e43e48ff0f368150628fc3fbe0",
         "revision": "WORKTREE"
       }
     },
@@ -43,7 +43,7 @@
       "roles": ["tester"],
       "instruction_source": {
         "path": "agents/tester.toml",
-        "sha256": "2cb5c68d00024adedc110a3dc80224375953869d503d0457b1f72ed6a6c97d5c",
+        "sha256": "11b286927472025bbe81f33078fea1dc2b324fb413d73f48f28bbda70bce78aa",
         "revision": "WORKTREE"
       }
     }
