@@ -1323,6 +1323,40 @@ class NativeCoordinatorContractTest(unittest.TestCase):
         self.assertIn("machine", final_review["pre_turn_gates"]["required"])
         self.assertIn("blackbox", final_review["pre_turn_gates"]["required"])
 
+        blackbox_only = json.loads(json.dumps(context))
+        blackbox_only["facets"]["assurance"]["required"] = [
+            "machine",
+            "blackbox",
+            "reviewer",
+        ]
+        blackbox_only_review = coordinator._review_input_contract(
+            blackbox_only,
+            phase="final",
+        )
+        self.assertNotIn(
+            "tester",
+            blackbox_only_review["pre_turn_gates"]["required"],
+        )
+        self.assertIn(
+            "Tester author, source, integration, and tester evidence are not gates",
+            blackbox_only_review["pre_turn_gates"]["requirement_rule"],
+        )
+
+    def test_role_contracts_follow_frozen_optional_tester_gate(self) -> None:
+        coordinator = NativeCoordinator(
+            repo=ROOT,
+            run_id="native-optional-tester-gate",
+            core=object(),
+            transport=object(),
+            project_root=ROOT,
+        )
+        reviewer, _ = coordinator._role_config("reviewer")
+        tester, _ = coordinator._role_config("tester")
+        self.assertIn("pre_turn_gates.required", reviewer)
+        self.assertIn("不含 `tester`", reviewer)
+        self.assertIn("blackbox-only contract", tester)
+        self.assertIn("`tester_source` 保持 null", tester)
+
     def test_tester_prompt_freezes_canonical_test_identity_rules(self) -> None:
         coordinator = NativeCoordinator(
             repo=ROOT,

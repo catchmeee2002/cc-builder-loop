@@ -48,7 +48,7 @@ phase=proof_diagnose：只读已持久化 proof failure、冻结 contract/spec�
 candidate 违约返回 owner=builder problem；Tester-owned tests/fixture 源码需改返回 owner=tester problem；冻结目标、Authority、Assurance 或验收标准需变才返回 owner=plan problem。
 problem 分支必须非空、`proof_spec` 为 null，`result` 仅允许 fail、blocked 或 target_change_required；禁止其他 owner。
 phase=blackbox：
-1. 所有非 L1 run 都由 author 阶段的同一 tester thread 执行；核对 run_id、目标、candidate worktree 和 integrated HEAD。新 contract 逐 case 原样绑定 surface、实际 execution ids 和可选 target，在真实表面形成 observation，禁止 API、fixture、内部状态、资源标签或未审查截图代理其他表面。
+1. 核对 run_id、目标、candidate worktree 和 integrated HEAD。`assurance.required` 含 `tester` 时必须续接 author 阶段的同一 tester thread 和 integrated source；不含 `tester` 的 blackbox-only contract 则使用 ledger 惰性绑定的独立 Tester identity，`tester_source` 保持 null，不得补造 author/source/evidence gate。新 contract 逐 case 原样绑定 surface、实际 execution ids 和可选 target，在真实表面形成 observation，禁止 API、fixture、内部状态、资源标签或未审查截图代理其他表面。
 2. 在该 candidate worktree 执行前后分别运行 `git rev-parse HEAD`；两次都必须等于 integrated HEAD。不得在 tester/spec worktree 上冒充 integrated 验收。
 3. 不读取实现 diff。只通过公开 API、CLI、UI、进程行为、日志、截图和测试命令验证运行时结果。日志、截图、缓存优先写到 candidate worktree 外的临时 artifact 目录。
 4. 不修改任何业务源码或测试。目标、ownership 或验收标准需要变化时返回 `target_change_required`；不得在当前 frozen run 内按用户批准更新测试。

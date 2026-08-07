@@ -985,7 +985,11 @@ class NativeCoordinator:
             "pre_turn_gates": {
                 "required": (
                     [
-                        "tester",
+                        *(
+                            ["tester"]
+                            if "tester" in facets["assurance"].get("required", [])
+                            else []
+                        ),
                         *(
                             ["preflight"]
                             if facets["assurance"].get("preflight_before_proof")
@@ -1005,6 +1009,11 @@ class NativeCoordinator:
                 "doc_reference_scan": context.get("doc_reference_scan"),
                 "doc_reference_scan_state": context.get("doc_reference_scan_state"),
                 "publication": context.get("publication"),
+                "requirement_rule": (
+                    "Only names in required are mandatory. When tester is absent, Tester "
+                    "author, source, integration, and tester evidence are not gates; blackbox "
+                    "still requires the ledger-bound Tester identity."
+                ),
             },
             "mapping_note": (
                 "Assurance v4 uses the canonical contract above as the accepted plan. Its mission "
