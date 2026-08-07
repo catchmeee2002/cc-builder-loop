@@ -4576,6 +4576,245 @@ class AssuranceV4ContractTest(unittest.TestCase):
         for kind in ("tester", "machine", "blackbox", "reviewer"):
             self.assertEqual(rematerialized["readiness"]["states"][kind], "stale")
 
+    def test_superseding_recomposition_preserves_carryover_tester_ownership(self) -> None:
+        source_run = "carryover-tester-source"
+        source_contract = contract_for(self.repo)
+        source_started, source_path = self.start(source_run, contract=source_contract)
+        source_candidate = Path(source_started["candidate_worktree"])
+        (source_candidate / "src" / "calc.py").write_text(
+            "def add(a, b):\n    return a + b\n\nCARRYOVER = 1\n",
+            encoding="utf-8",
+        )
+        commit_all(source_candidate, "add carryover implementation")
+        rc, checkpointed, _stdout, _stderr = self.invoke(
+            "checkpoint-builder", "--repo", self.repo, "--run", source_run
+        )
+        self.assertEqual(rc, 0, checkpointed)
+
+        source_execution = self.load_ledger(source_path)["facets"]["execution"]
+        rc, prepared, _stdout, _stderr = self.invoke(
+            "prepare-tester",
+            "--repo",
+            self.repo,
+            "--run",
+            source_run,
+            "--agent-id",
+            source_execution["agents"]["tester"]["agent_id"],
+            "--thread-id",
+            source_execution["agents"]["tester"]["thread_id"],
+        )
+        self.assertEqual(rc, 0, prepared)
+        source_identity = self.load_ledger(source_path)["facets"]["execution"][
+            "tester_source"
+        ]
+        source_tester = Path(source_identity["worktree"])
+        for name in ("one", "two"):
+            (source_tester / "tests" / f"test_carryover_{name}.py").write_text(
+                f"def test_carryover_{name}():\n    assert True\n",
+                encoding="utf-8",
+            )
+        commit_all(source_tester, "add carryover tester files")
+        rc, integrated, _stdout, _stderr = self.invoke(
+            "integrate-tester", "--repo", self.repo, "--run", source_run
+        )
+        self.assertEqual(rc, 0, integrated)
+        source = self.load_ledger(source_path)
+
+        successor_contract = contract_for(self.repo)
+        successor_contract["mission"]["revision"] = 2
+        successor_contract["mission"]["objective"] = (
+            "Deliver a successor while preserving trusted Tester carryover."
+        )
+        successor_contract["mission"]["supersedes"] = {
+            "run_id": source_run,
+            "revision": source["facets"]["mission"]["revision"],
+            "mission_digest": source["digests"]["mission"],
+            "candidate_head": source["facets"]["execution"]["candidate_head"],
+        }
+        successor_contract["execution"]["agents"]["tester"] = {
+            "agent_id": "successor-tester",
+            "thread_id": "successor-tester-thread",
+        }
+        successor_run = "carryover-tester-successor"
+        successor_started, successor_path = self.start(
+            successor_run, contract=successor_contract
+        )
+        successor_candidate = Path(successor_started["candidate_worktree"])
+        rc, successor_checkpoint, _stdout, _stderr = self.invoke(
+            "checkpoint-builder", "--repo", self.repo, "--run", successor_run
+        )
+        self.assertEqual(rc, 0, successor_checkpoint)
+
+        successor_execution = self.load_ledger(successor_path)["facets"]["execution"]
+        rc, successor_prepared, _stdout, _stderr = self.invoke(
+            "prepare-tester",
+            "--repo",
+            self.repo,
+            "--run",
+            successor_run,
+            "--agent-id",
+            successor_execution["agents"]["tester"]["agent_id"],
+            "--thread-id",
+            successor_execution["agents"]["tester"]["thread_id"],
+        )
+        self.assertEqual(rc, 0, successor_prepared)
+        successor_source = self.load_ledger(successor_path)["facets"]["execution"][
+            "tester_source"
+        ]
+        successor_tester = Path(successor_source["worktree"])
+        (successor_tester / "tests" / "test_successor.py").write_text(
+            "def test_successor():\n    assert True\n", encoding="utf-8"
+        )
+        commit_all(successor_tester, "add successor tester file")
+        rc, successor_integrated, _stdout, _stderr = self.invoke(
+            "integrate-tester", "--repo", self.repo, "--run", successor_run
+        )
+        self.assertEqual(rc, 0, successor_integrated)
+        before = self.load_ledger(successor_path)
+        carryover_paths = {
+            item["path"]
+            for item in before["facets"]["execution"]["carryover"]["files"]
+        }
+        self.assertIn("tests/test_carryover_one.py", carryover_paths)
+        self.assertIn("tests/test_carryover_two.py", carryover_paths)
+        self.assertNotIn("tests/test_successor.py", carryover_paths)
+
+        (self.repo / "README.md").write_text(
+            "fixture\nunrelated target advance\n", encoding="utf-8"
+        )
+        target_advanced = commit_all(self.repo, "advance target independently")
+        rc, recomposed, _stdout, _stderr = self.invoke(
+            "recompose-candidate", "--repo", self.repo, "--run", successor_run
+        )
+        self.assertEqual(rc, 0, recomposed)
+        self.assertIsNone(recomposed.get("recomposition_intent"))
+
+        after = self.load_ledger(successor_path)
+        self.assertEqual(after["target_start_head"], target_advanced)
+        expected_tester_paths = {
+            "tests/test_carryover_one.py",
+            "tests/test_carryover_two.py",
+            "tests/test_successor.py",
+        }
+        self.assertEqual(
+            set(after["facets"]["execution"]["tester_files"]),
+            expected_tester_paths,
+        )
+        self.assertTrue(
+            expected_tester_paths.isdisjoint(
+                after["facets"]["execution"]["builder_files"]
+            )
+        )
+        self.assertTrue(
+            expected_tester_paths.isdisjoint(
+                {
+                    item["path"]
+                    for item in after["facets"]["execution"]["carryover"]["files"]
+                }
+            )
+        )
+        for path in expected_tester_paths:
+            self.assertTrue((successor_candidate / path).is_file(), path)
+
+    def test_superseding_recomposition_replays_tester_carryover_before_new_source(self) -> None:
+        source_run = "carryover-only-source"
+        source_started, source_path = self.start(source_run)
+        rc, checkpointed, _stdout, _stderr = self.invoke(
+            "checkpoint-builder", "--repo", self.repo, "--run", source_run
+        )
+        self.assertEqual(rc, 0, checkpointed)
+        source_execution = self.load_ledger(source_path)["facets"]["execution"]
+        rc, prepared, _stdout, _stderr = self.invoke(
+            "prepare-tester",
+            "--repo",
+            self.repo,
+            "--run",
+            source_run,
+            "--agent-id",
+            source_execution["agents"]["tester"]["agent_id"],
+            "--thread-id",
+            source_execution["agents"]["tester"]["thread_id"],
+        )
+        self.assertEqual(rc, 0, prepared)
+        source_identity = self.load_ledger(source_path)["facets"]["execution"][
+            "tester_source"
+        ]
+        source_tester = Path(source_identity["worktree"])
+        carryover_path = "tests/test_carryover_only.py"
+        (source_tester / carryover_path).write_text(
+            "def test_carryover_only():\n    assert True\n", encoding="utf-8"
+        )
+        commit_all(source_tester, "add carryover-only tester file")
+        rc, integrated, _stdout, _stderr = self.invoke(
+            "integrate-tester", "--repo", self.repo, "--run", source_run
+        )
+        self.assertEqual(rc, 0, integrated)
+        source = self.load_ledger(source_path)
+
+        successor_contract = contract_for(self.repo)
+        successor_contract["mission"]["revision"] = 2
+        successor_contract["mission"]["objective"] = (
+            "Rematerialize carryover before authoring successor tests."
+        )
+        successor_contract["mission"]["supersedes"] = {
+            "run_id": source_run,
+            "revision": 1,
+            "mission_digest": source["digests"]["mission"],
+            "candidate_head": source["facets"]["execution"]["candidate_head"],
+        }
+        successor_run = "carryover-only-successor"
+        successor_started, successor_path = self.start(
+            successor_run, contract=successor_contract
+        )
+        successor_candidate = Path(successor_started["candidate_worktree"])
+        rc, successor_checkpoint, _stdout, _stderr = self.invoke(
+            "checkpoint-builder", "--repo", self.repo, "--run", successor_run
+        )
+        self.assertEqual(rc, 0, successor_checkpoint)
+        self.assertIsNone(
+            self.load_ledger(successor_path)["facets"]["execution"]["tester_source"]
+        )
+
+        (self.repo / "README.md").write_text(
+            "fixture\ncarryover-only target advance\n", encoding="utf-8"
+        )
+        target_advanced = commit_all(self.repo, "advance carryover-only target")
+        rc, recomposed, _stdout, _stderr = self.invoke(
+            "recompose-candidate", "--repo", self.repo, "--run", successor_run
+        )
+        self.assertEqual(rc, 0, recomposed)
+        after = self.load_ledger(successor_path)
+        self.assertEqual(after["target_start_head"], target_advanced)
+        self.assertEqual(after["facets"]["execution"]["tester_files"], [])
+        self.assertNotIn(
+            carryover_path, after["facets"]["execution"]["builder_files"]
+        )
+        self.assertIn(
+            carryover_path,
+            {
+                item["path"]
+                for item in after["facets"]["execution"]["carryover"]["files"]
+            },
+        )
+        self.assertTrue((successor_candidate / carryover_path).is_file())
+
+        (successor_candidate / carryover_path).write_text(
+            "def test_carryover_only():\n    assert False\n", encoding="utf-8"
+        )
+        commit_all(successor_candidate, "tamper with frozen carryover tester input")
+        (self.repo / "README.md").write_text(
+            "fixture\nsecond carryover target advance\n", encoding="utf-8"
+        )
+        commit_all(self.repo, "advance target after carryover tamper")
+        rc, rejected, _stdout, _stderr = self.invoke(
+            "recompose-candidate", "--repo", self.repo, "--run", successor_run
+        )
+        self.assertEqual(rc, 2, rejected)
+        self.assertEqual(
+            rejected.get("code"), "RECOMPOSITION_TESTER_INPUT_UNBOUND"
+        )
+        self.assertEqual(rejected.get("paths"), [carryover_path])
+
     def test_conflicting_target_drift_routes_to_builder_without_moving_canonical_heads(self) -> None:
         run_id = "rematerialize-conflict"
         data, run_path = self.start(run_id)

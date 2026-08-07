@@ -6415,7 +6415,6 @@ def _begin_recomposition(
             "updated_at": ledger["updated_at"],
         }
     )
-    source = execution.get("tester_source")
     intent: dict[str, Any] = {
         "intent_id": identity,
         "kind": kind,
@@ -6432,8 +6431,19 @@ def _begin_recomposition(
         "created_at": now(),
         "updated_at": now(),
     }
-    if isinstance(source, dict):
-        intent["source_tester_base"] = source.get("base_head") or ledger["target_start_head"]
+    source = execution.get("tester_source")
+    tester_paths = sorted(
+        path
+        for path in changed_files(repo, ledger["target_start_head"], incoming_candidate)
+        if _matches(path, ledger["facets"]["authority"]["tester_write"])
+    )
+    if tester_paths:
+        intent["source_tester_base"] = ledger["target_start_head"]
+        intent["source_tester_head"] = incoming_candidate
+    elif isinstance(source, dict):
+        intent["source_tester_base"] = (
+            source.get("base_head") or ledger["target_start_head"]
+        )
         intent["source_tester_head"] = source["head"]
     ledger["recomposition_intent"] = intent
     append_event(
@@ -6520,20 +6530,18 @@ def _restart_recomposition_for_target(
 
 
 def _recomposition_builder_paths(repo: Path, ledger: Mapping[str, Any], intent: Mapping[str, Any]) -> list[str]:
-    execution = ledger["facets"]["execution"]
     source_base = str(intent.get("source_builder_base") or intent["old_target_head"])
     source_head = str(intent.get("source_builder_head") or intent["incoming_candidate_head"])
     files = changed_files(repo, source_base, source_head)
-    tester_files = set(execution.get("tester_files", []))
-    source = execution.get("tester_source")
-    if isinstance(source, Mapping):
-        tester_files |= {str(item["path"]) for item in source.get("files", [])}
-        tester_files |= {str(item["path"]) for item in source.get("replaces_files", [])}
-    builder_files = sorted(path for path in files if path not in tester_files)
+    authority = ledger["facets"]["authority"]
+    builder_files = sorted(
+        path for path in files if _matches(path, authority["builder_write"])
+    )
     invalid = [
         path
-        for path in builder_files
-        if not _matches(path, ledger["facets"]["authority"]["builder_write"])
+        for path in files
+        if not _matches(path, authority["builder_write"])
+        and not _matches(path, authority["tester_write"])
     ]
     if invalid:
         raise AssuranceError(
@@ -6544,16 +6552,75 @@ def _recomposition_builder_paths(repo: Path, ledger: Mapping[str, Any], intent: 
     return builder_files
 
 
+def _validate_recomposition_tester_inputs(
+    repo: Path,
+    ledger: Mapping[str, Any],
+    intent: Mapping[str, Any],
+    paths: Sequence[str],
+) -> None:
+    execution = ledger["facets"]["execution"]
+    source = execution.get("tester_source")
+    source_manifest = (
+        {
+            str(item["path"]): str(item["blob"])
+            for item in source.get("files", [])
+        }
+        if isinstance(source, Mapping)
+        else {}
+    )
+    carryover = execution.get("carryover")
+    carryover_manifest = (
+        {
+            str(item["path"]): str(item["blob"])
+            for item in carryover.get("files", [])
+        }
+        if isinstance(carryover, Mapping)
+        else {}
+    )
+    source_head = str(intent["source_tester_head"])
+    unsupported: list[str] = []
+    unbound: list[str] = []
+    for path in paths:
+        blob = _blob_at(repo, source_head, path)
+        if blob is None:
+            unsupported.append(path)
+            continue
+        expected = {
+            value
+            for value in (source_manifest.get(path), carryover_manifest.get(path))
+            if isinstance(value, str)
+        }
+        if blob not in expected:
+            unbound.append(path)
+    if unsupported:
+        raise AssuranceError(
+            "recomposition Tester input contains a deletion or non-file entry",
+            code="RECOMPOSITION_TESTER_ENTRY_UNSUPPORTED",
+            details={"paths": unsupported},
+        )
+    if unbound:
+        raise AssuranceError(
+            "recomposition Tester input is not bound by the current source or carryover manifest",
+            code="RECOMPOSITION_TESTER_INPUT_UNBOUND",
+            details={"paths": unbound},
+        )
+
+
 def _recomposition_tester_paths(repo: Path, ledger: Mapping[str, Any], intent: Mapping[str, Any]) -> list[str]:
     source_base = intent.get("source_tester_base")
     source_head = intent.get("source_tester_head")
     if not isinstance(source_base, str) or not isinstance(source_head, str):
         return []
-    files = changed_files(repo, source_base, source_head)
+    source_files = changed_files(repo, source_base, source_head)
+    authority = ledger["facets"]["authority"]
+    files = sorted(
+        path for path in source_files if _matches(path, authority["tester_write"])
+    )
     invalid = [
         path
-        for path in files
-        if not _matches(path, ledger["facets"]["authority"]["tester_write"])
+        for path in source_files
+        if not _matches(path, authority["builder_write"])
+        and not _matches(path, authority["tester_write"])
     ]
     if invalid:
         raise AssuranceError(
@@ -6561,6 +6628,8 @@ def _recomposition_tester_paths(repo: Path, ledger: Mapping[str, Any], intent: M
             code="RECOMPOSITION_TESTER_AUTHORITY_VIOLATION",
             details={"paths": invalid},
         )
+    if source_head == intent.get("incoming_candidate_head"):
+        _validate_recomposition_tester_inputs(repo, ledger, intent, files)
     return files
 
 
@@ -6644,11 +6713,19 @@ def _commit_recomposition(repo: Path, ledger: dict[str, Any], intent: dict[str, 
             "replaces_files": [],
         }
         execution["tester_files"] = tester_files
+        carryover = execution.get("carryover")
+        if isinstance(carryover, dict):
+            carryover["files"] = [
+                item for item in carryover["files"] if item["path"] not in set(tester_files)
+            ]
 
     files = changed_files(repo, intent["new_target_head"], candidate_head)
     _assert_authorized_files(ledger["facets"], files)
-    tester_files = set(execution.get("tester_files", []))
-    execution["builder_files"] = sorted(path for path in files if path not in tester_files)
+    execution["builder_files"] = sorted(
+        path
+        for path in files
+        if _matches(path, ledger["facets"]["authority"]["builder_write"])
+    )
     execution["candidate_head"] = candidate_head
     execution["version"] += 1
     ledger["target_start_head"] = intent["new_target_head"]
@@ -6797,9 +6874,20 @@ def _advance_recomposition(repo: Path, ledger: dict[str, Any]) -> None:
             save_ledger(repo, ledger)
             continue
         if state == "tester_staging":
-            source = ledger["facets"]["execution"].get("tester_source")
-            if not isinstance(source, dict):
-                intent.update(state="candidate_staging", updated_at=now())
+            tester_paths = _recomposition_tester_paths(repo, ledger, intent)
+            if not tester_paths:
+                source = ledger["facets"]["execution"].get("tester_source")
+                if isinstance(source, dict):
+                    tester_base = intent.get("publication_head") or intent["new_target_head"]
+                    intent.update(
+                        state="candidate_staging",
+                        tester_head=tester_base,
+                        source_tester_base=tester_base,
+                        source_tester_head=tester_base,
+                        updated_at=now(),
+                    )
+                else:
+                    intent.update(state="candidate_staging", updated_at=now())
                 save_ledger(repo, ledger)
                 continue
             tester_base = intent.get("publication_head") or intent["new_target_head"]
@@ -6813,7 +6901,6 @@ def _advance_recomposition(repo: Path, ledger: dict[str, Any]) -> None:
                 worktree=worktree,
                 base_head=tester_base,
             )
-            tester_paths = _recomposition_tester_paths(repo, ledger, intent)
             head, conflicts = _apply_recomposition_delta(
                 repo,
                 worktree=worktree,
