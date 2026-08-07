@@ -4812,6 +4812,7 @@ def prove_tests(
                     )
                 method = group["method"]
                 counterexample: dict[str, Any] | None = None
+                mutation_evidence: dict[str, Any] | None = None
                 if method == "baseline-red":
                     baseline_worktree = proof_root / f"baseline-{index}"
                     added = git(repo, "worktree", "add", "--detach", str(baseline_worktree), tester_source["head"], check=False)
@@ -4862,7 +4863,7 @@ def prove_tests(
                                 details={"stderr": applied.stderr[-8000:]},
                             )
                         )
-                    mutation_paths = dirty_paths(mutation_worktree)
+                    mutation_paths = sorted(dirty_paths(mutation_worktree))
                     invalid_paths = [
                         path
                         for path in mutation_paths
@@ -4881,6 +4882,19 @@ def prove_tests(
                                 details={"paths": invalid_paths or mutation_paths},
                             )
                         )
+                    mutation_diff = git(
+                        mutation_worktree,
+                        "diff",
+                        "--no-ext-diff",
+                        "--no-textconv",
+                        "--binary",
+                        "--full-index",
+                        candidate,
+                        "--",
+                    ).stdout
+                    mutation_diff_sha256 = hashlib.sha256(
+                        mutation_diff.encode()
+                    ).hexdigest()
                     counterexample = capture(
                         lambda: _proof_run(
                             repo,
@@ -4892,6 +4906,53 @@ def prove_tests(
                             launcher_identities[index],
                         )
                     )
+                    mutation_after_paths = sorted(dirty_paths(mutation_worktree))
+                    mutation_after_diff = git(
+                        mutation_worktree,
+                        "diff",
+                        "--no-ext-diff",
+                        "--no-textconv",
+                        "--binary",
+                        "--full-index",
+                        candidate,
+                        "--",
+                    ).stdout
+                    mutation_head_after = git(
+                        mutation_worktree, "rev-parse", "HEAD"
+                    ).stdout.strip()
+                    if (
+                        mutation_after_paths != mutation_paths
+                        or mutation_after_diff != mutation_diff
+                        or mutation_head_after != candidate
+                    ):
+                        fail(
+                            AssuranceError(
+                                "test proof mutation changed during execution",
+                                code="TEST_PROOF_MUTATION_INVALID",
+                                status="FAIL",
+                                details={
+                                    "paths_before": mutation_paths,
+                                    "paths_after": mutation_after_paths,
+                                    "diff_sha256_before": mutation_diff_sha256,
+                                    "diff_sha256_after": hashlib.sha256(
+                                        mutation_after_diff.encode()
+                                    ).hexdigest(),
+                                    "head_before": candidate,
+                                    "head_after": mutation_head_after,
+                                },
+                            )
+                        )
+                    mutation_evidence = {
+                        **counterexample,
+                        "patch_sha256": hashlib.sha256(
+                            str(group["patch"]).encode()
+                        ).hexdigest(),
+                        "applied_diff": mutation_diff,
+                        "applied_diff_sha256": mutation_diff_sha256,
+                        "changed_paths": mutation_paths,
+                        "head_before": candidate,
+                        "head_after": mutation_head_after,
+                    }
                 if counterexample is not None and counterexample["test_result"].get("classification") != "assertion-failure":
                     fail(
                         AssuranceError(
@@ -4901,14 +4962,17 @@ def prove_tests(
                             details={"group": index, "result": counterexample},
                         )
                     )
-                results.append(
-                    {
-                        "behavior_ids": list(group["behavior_ids"]),
-                        "method": method,
-                        "candidate": candidate_result,
-                        "counterexample": counterexample,
-                    }
-                )
+                group_result = {
+                    "behavior_ids": list(group["behavior_ids"]),
+                    "method": method,
+                    "candidate": candidate_result,
+                }
+                if method == "mutation":
+                    assert mutation_evidence is not None
+                    group_result["mutation"] = mutation_evidence
+                else:
+                    group_result["counterexample"] = counterexample
+                results.append(group_result)
         finally:
             for worktree in reversed(created_worktrees):
                 git(repo, "worktree", "remove", "--force", str(worktree), check=False)

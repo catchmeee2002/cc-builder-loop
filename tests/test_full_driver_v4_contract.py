@@ -1167,6 +1167,25 @@ class FullDriverV4ContractTest(unittest.TestCase):
 
     def test_proof_is_a_distinct_gate_after_tester_and_before_blackbox(self) -> None:
         run_id = "full-driver-proof"
+        converter = self.artifacts / "v4-proof-textconv.py"
+        converter.write_text(
+            "from pathlib import Path\n"
+            "import sys\n\n"
+            "source = Path(sys.argv[-1]).read_text(encoding='utf-8')\n"
+            "label = 'mutated' if 'a + b + 1' in source else 'candidate'\n"
+            "print(f'textconv-view={label}')\n",
+            encoding="utf-8",
+        )
+        (self.repo / ".gitattributes").write_text(
+            "src/calc.py diff=v4-proof-textconv\n", encoding="utf-8"
+        )
+        commit_all(self.repo, "configure v4 proof textconv")
+        git(
+            self.repo,
+            "config",
+            "diff.v4-proof-textconv.textconv",
+            f"{sys.executable} {converter}",
+        )
         contract = contract_for(self.repo)
         contract["assurance"]["required"].insert(2, "proof")
         _data, run_path = self.start(run_id, contract=contract)
@@ -1263,6 +1282,62 @@ class FullDriverV4ContractTest(unittest.TestCase):
         self.assertEqual(proof["status"], "pass")
         self.assertNotEqual(proof["details"]["report_digest"], "a" * 64)
         self.assertRegex(proof["details"]["report_digest"], r"^[0-9a-f]{64}$")
+        group = proof["details"]["results"][0]
+        self.assertNotIn("counterexample", group)
+        mutation = group["mutation"]
+        applied_diff = mutation["applied_diff"]
+        self.assertNotIn("textconv-view=", applied_diff)
+        self.assertRegex(
+            applied_diff,
+            r"(?m)^diff --git a/src/calc\.py b/src/calc\.py$",
+        )
+        self.assertRegex(
+            applied_diff,
+            r"(?m)^index [0-9a-f]{40}\.\.[0-9a-f]{40} 100644$",
+        )
+        self.assertEqual(
+            hashlib.sha256(spec["groups"][0]["patch"].encode()).hexdigest(),
+            mutation["patch_sha256"],
+        )
+        self.assertEqual(
+            hashlib.sha256(applied_diff.encode()).hexdigest(),
+            mutation["applied_diff_sha256"],
+        )
+        self.assertEqual(mutation["changed_paths"], ["src/calc.py"])
+        self.assertEqual(mutation["head_before"], execution["candidate_head"])
+        self.assertEqual(mutation["head_after"], execution["candidate_head"])
+        self.assertEqual(
+            mutation["test_result"]["classification"], "assertion-failure"
+        )
+
+        with tempfile.TemporaryDirectory(prefix="v4-proof-replay-") as temp_dir:
+            replay = Path(temp_dir) / "candidate"
+            cloned = run_process(["git", "clone", "-q", "--shared", self.repo, replay])
+            self.assertEqual(cloned.returncode, 0, cloned.stderr)
+            checked_out = run_process(
+                [
+                    "git",
+                    "-C",
+                    replay,
+                    "checkout",
+                    "-q",
+                    "--detach",
+                    execution["candidate_head"],
+                ]
+            )
+            self.assertEqual(checked_out.returncode, 0, checked_out.stderr)
+            applied = run_process(
+                ["git", "-C", replay, "apply", "--index", "--binary", "-"],
+                input_text=applied_diff,
+            )
+            self.assertEqual(applied.returncode, 0, applied.stderr)
+            self.assertEqual(
+                git(replay, "diff", "--cached", "--name-only"), "src/calc.py"
+            )
+            replayed = run_process(spec["groups"][0]["argv"], cwd=replay)
+            self.assertNotEqual(
+                replayed.returncode, 0, replayed.stdout + replayed.stderr
+            )
 
         rc, advanced = self.invoke(
             "driver-next", "--repo", self.repo, "--run", run_id
@@ -1313,6 +1388,84 @@ class FullDriverV4ContractTest(unittest.TestCase):
         )
         self.assertEqual(
             proof["details"]["spec"]["groups"][0]["argv"][0], str(launcher)
+        )
+
+    def test_v4_mutation_proof_rejects_diff_drift_during_test_execution(self) -> None:
+        run_id = "v4-mutation-diff-drift"
+        contract = contract_for(self.repo)
+        contract["assurance"]["required"].insert(2, "proof")
+        _data, run_path = self.start(run_id, contract=contract)
+        rc, checkpointed = self.invoke(
+            "checkpoint-builder", "--repo", self.repo, "--run", run_id
+        )
+        self.assertEqual(rc, 0, checkpointed)
+        ledger = self.prepare_and_record_tester(run_id, run_path)
+        execution = ledger["facets"]["execution"]
+        tester = execution["agents"]["tester"]
+        spec = {
+            "schema_version": 1,
+            "groups": [
+                {
+                    "behavior_ids": ["driver-flow"],
+                    "method": "mutation",
+                    "argv": [
+                        sys.executable,
+                        "-m",
+                        "unittest",
+                        "tests.test_full_driver_fixture.FullDriverFixtureTest.test_add",
+                    ],
+                    "test_ids": [
+                        "tests.test_full_driver_fixture.FullDriverFixtureTest.test_add"
+                    ],
+                    "timeout_seconds": 30,
+                    "patch": (
+                        "diff --git a/src/calc.py b/src/calc.py\n"
+                        "--- a/src/calc.py\n"
+                        "+++ b/src/calc.py\n"
+                        "@@ -1,2 +1,2 @@\n"
+                        " def add(a, b):\n"
+                        "-    return a + b\n"
+                        "+    return a + b + 1\n"
+                    ),
+                }
+            ],
+        }
+        original_proof_run = core._proof_run
+
+        def mutate_after_execution(*args, **kwargs):
+            result = original_proof_run(*args, **kwargs)
+            worktree = Path(args[1])
+            if worktree.name.startswith("mutation-"):
+                (worktree / "src" / "calc.py").write_text(
+                    "def add(a, b):\n    return a + b + 2\n",
+                    encoding="utf-8",
+                )
+            return result
+
+        with patch.object(core, "_proof_run", side_effect=mutate_after_execution):
+            with self.assertRaises(core.AssuranceError) as raised:
+                core.prove_tests(
+                    self.repo,
+                    run_id,
+                    spec,
+                    agent_id=tester["agent_id"],
+                    thread_id=tester["thread_id"],
+                )
+
+        self.assertEqual(raised.exception.code, "TEST_PROOF_MUTATION_INVALID")
+        after = self.load_ledger(run_path)
+        self.assertNotIn("proof", after["evidence"])
+        self.assertEqual(
+            after["proof_failure"]["failure"]["code"],
+            "TEST_PROOF_MUTATION_INVALID",
+        )
+        self.assertEqual(
+            after["proof_failure"]["failure"]["details"]["paths_before"],
+            ["src/calc.py"],
+        )
+        self.assertEqual(
+            after["proof_failure"]["failure"]["details"]["paths_after"],
+            ["src/calc.py"],
         )
 
     def test_successful_proof_removes_transaction_root_and_registered_worktrees(self) -> None:
