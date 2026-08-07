@@ -65,8 +65,10 @@ Full Driver Skill；run 创建后禁止更换控制器。
 - Native Driver 从 App Server 生命周期事件绑定 Builder、Tester、Reviewer 的真实 thread/turn；后续
   iteration 续接原 thread，不重新创建、清空角色历史或以同名新 agent 冒充原上下文。发起外部 turn
   前先把单一 dispatch intent 写入 Core ledger，进程恢复时重连同一 turn，不保存“下一步做什么”。
-- 所有非 L1 run 都必须持久化 Tester author `tests_ready` 及其 integration，再由同一 thread 在
-  candidate worktree 对集成 HEAD 完成 blackbox `pass`。新 run 使用 schema v2 report 保存每条真实
+- 要求 `tester` gate 的非 L1 run 必须持久化 Tester author `tests_ready` 及其 integration，再由同一
+  thread 在 candidate worktree 对集成 HEAD 完成 blackbox `pass`。只要求 blackbox 的 contract 仍惰性
+  建立独立 Tester thread identity，但不创建 Tester source worktree，也不伪造 author 或 tester evidence
+  gate。新 run 使用 schema v2 report 保存每条真实
   execution、存在冻结 case 时的逐例结果、逐维度 observation 与执行前后 HEAD；Tester 另行证明零 residue。即使没有
   冻结 case，也必须至少有一条 `method=command` 的 accepted execution。其他 method 的执行错误保留
   reason，但不计入结论或 dependency scope；全部

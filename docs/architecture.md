@@ -82,6 +82,9 @@ Native Driver 使用 App Server 稳定 stdio thread/turn 接口并在启动前�
 `agents/*.toml`，App Server `outputSchema` 把终态收敛为公共 v4 JSON。Core 机械核对 thread identity、
 Tester source HEAD/blob manifest、blackbox worktree/HEAD/逐命令结果和 Reviewer candidate。Native
 Driver 能直接观察并恢复真实 thread/turn 生命周期，但不把协调器观察宣称为密码学或平台级防伪。
+Driver action 的 role 与 preparation capability 只有一份 Core-side 契约，Assurance CLI guard 和 Native
+coordinator 共同引用。blackbox-only contract 可只登记 Tester thread identity；它不创建 Tester source
+worktree，不增加 author/tester evidence gate，也不使已绑定同 candidate 的 machine evidence 失效。
 Tester author evidence 在 source 集成后由 Driver 绑定 Core 产生的 integrated candidate HEAD，同时保留
 source HEAD/manifest provenance；同一 source/candidate 的 `integrate-tester` replay 是幂等 no-op。
 proof 使用与 Tester-owned 路径一致的 canonical test id，Native wire 只在唯一可证明映射时补全模块或
@@ -143,8 +146,11 @@ problem，只保留内容和 owner；旧 producer、Tester/Reviewer identity、t
 因此满足“每个事实只有一个家”和“独立判据重新绑定真实输入”，同时把三次同类恢复压力在 mutation 前
 落实为架构复审门禁。
 
-可恢复的 App Server transport failure 在同一 role thread 和 dispatch 上最多尝试三次，attempt 与 turn id
-持久化进 ledger；第三次失败后 Core 返回 `NEEDS_USER`，Driver 不重置上限或另建 thread 绕过连续性。
+结构化 turn failure 与 raw App Server stdio disconnect 先在唯一 transport classifier 中归一；只有分类为
+可恢复且精确匹配 ledger 当前 role thread、action 和 dispatch 的事故才能进入 retry。可恢复 transport
+failure 在同一 role thread 和 dispatch 上最多尝试三次，attempt 与 turn id 持久化进 ledger；第三次失败后
+Core 返回 `NEEDS_USER`，Driver 不重置上限或另建 thread 绕过连续性。无匹配 dispatch、协议错误或未知
+failure 继续按未处理 FATAL 事务 fail closed。
 App Server turn 使用 host-level `danger-full-access`，因为部分本地环境无法创建 bwrap namespace；这不
 扩大产品信任声明，角色只读/写范围仍由独立 worktree、Git manifest、ownership 和 Core mutation gate
 机械执行，与既有“不提供 filesystem ACL”的边界一致。
