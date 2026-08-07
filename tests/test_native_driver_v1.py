@@ -15,12 +15,15 @@ from harness import CLI, ROOT, cleanup_repo, commit_all, init_repo, run_process
 
 sys.path.insert(0, str(ROOT / "runtime"))
 
+from codex_builder_loop.assurance_v4 import core as assurance_core
 from codex_builder_loop.native_driver.app_server import (
+    AppServerError,
     AppServerTransport,
     TurnResult,
     probe_app_server,
 )
 from codex_builder_loop.assurance_v4.models import digest
+from codex_builder_loop.assurance_v4.driver_contract import AGENT_ACTION_CAPABILITIES
 from codex_builder_loop.native_driver import cli as native_cli
 from codex_builder_loop.native_driver.coordinator import NativeCoordinator, NativeDriverError
 from codex_builder_loop.native_driver.core_port import CorePort, CorePortError
@@ -108,8 +111,11 @@ class NativeDriverCoreContractTest(unittest.TestCase):
         self.assertEqual(completed.returncode, 0, value)
         return value
 
-    def start(self) -> tuple[str, Path]:
-        run_id = "native-driver-core"
+    def start_with_contract(
+        self,
+        run_id: str,
+        contract: dict,
+    ) -> tuple[dict, Path]:
         result = self.invoke(
             "start",
             "--repo",
@@ -128,9 +134,164 @@ class NativeDriverCoreContractTest(unittest.TestCase):
             "codex-test",
             "--driver-protocol-schema-digest",
             "a" * 64,
-            stdin=native_contract(self.repo),
+            stdin=contract,
         )
-        return run_id, Path(result["candidate_worktree"]).parent
+        return result, Path(result["candidate_worktree"]).parent
+
+    def start(self) -> tuple[str, Path]:
+        run_id = "native-driver-core"
+        _result, run_path = self.start_with_contract(
+            run_id,
+            native_contract(self.repo),
+        )
+        return run_id, run_path
+
+    def test_blackbox_only_prepares_tester_identity_without_source_gate(self) -> None:
+        run_id = "native-blackbox-only"
+        contract = native_contract(self.repo)
+        contract["authority"]["tester_write"] = []
+        contract["assurance"]["required"] = ["machine", "blackbox", "reviewer"]
+        started, run_path = self.start_with_contract(run_id, contract)
+        candidate = Path(started["candidate_worktree"])
+
+        builder = self.invoke("driver-next", "--repo", self.repo, "--run", run_id)
+        self.invoke(
+            "prepare-builder",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--agent-id",
+            "native-builder",
+            "--thread-id",
+            "thread-builder",
+            "--action-id",
+            builder["action_id"],
+            "--driver-runtime-kind",
+            "native",
+        )
+        (candidate / "src" / "native.py").write_text("VALUE = 1\n", encoding="utf-8")
+        commit_all(candidate, "native blackbox-only candidate")
+        checkpoint = self.invoke("driver-next", "--repo", self.repo, "--run", run_id)
+        self.assertEqual(checkpoint["action"], "checkpoint_builder")
+        self.invoke(
+            "checkpoint-builder",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--action-id",
+            checkpoint["action_id"],
+            "--driver-runtime-kind",
+            "native",
+        )
+        machine = self.invoke("driver-next", "--repo", self.repo, "--run", run_id)
+        if machine["action"] == "scan_doc_references":
+            self.invoke(
+                "scan-doc-references",
+                "--repo",
+                self.repo,
+                "--run",
+                run_id,
+                "--action-id",
+                machine["action_id"],
+                "--driver-runtime-kind",
+                "native",
+            )
+            machine = self.invoke("driver-next", "--repo", self.repo, "--run", run_id)
+        self.assertEqual(machine["action"], "verify_machine")
+        self.invoke(
+            "verify-machine",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--action-id",
+            machine["action_id"],
+            "--driver-runtime-kind",
+            "native",
+        )
+        blackbox = self.invoke("driver-next", "--repo", self.repo, "--run", run_id)
+        self.assertEqual(blackbox["action"], "tester_blackbox")
+        self.assertIsNone(blackbox["agent"])
+
+        prepared = self.invoke(
+            "prepare-tester",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--agent-id",
+            "native-blackbox-tester",
+            "--thread-id",
+            "thread-blackbox",
+            "--identity-only",
+            "--action-id",
+            blackbox["action_id"],
+            "--driver-runtime-kind",
+            "native",
+        )
+        self.assertEqual(prepared["readiness"]["states"]["machine"], "pass")
+        ledger = json.loads((run_path / "ledger.json").read_text())
+        self.assertEqual(
+            ledger["facets"]["execution"]["agents"]["tester"],
+            {
+                "agent_id": "native-blackbox-tester",
+                "thread_id": "thread-blackbox",
+            },
+        )
+        self.assertIsNone(ledger["facets"]["execution"]["tester_source"])
+        self.assertNotIn("tester", ledger["evidence"])
+        self.assertFalse(any(run_path.glob("tester-*")))
+        event = next(
+            item
+            for item in reversed(ledger["events"])
+            if item["kind"] == "tester_identity_prepared"
+        )
+        self.assertEqual(event["details"]["agent"]["thread_id"], "thread-blackbox")
+        resumed = self.invoke("driver-next", "--repo", self.repo, "--run", run_id)
+        self.assertEqual(resumed["action"], "tester_blackbox")
+        self.assertEqual(resumed["agent"]["thread_id"], "thread-blackbox")
+
+        wrong_mode = run_process(
+            [
+                sys.executable,
+                CLI,
+                "assurance",
+                "--experimental-v4",
+                "prepare-tester",
+                "--repo",
+                self.repo,
+                "--run",
+                run_id,
+                "--agent-id",
+                "native-blackbox-tester",
+                "--thread-id",
+                "thread-blackbox",
+                "--action-id",
+                resumed["action_id"],
+                "--driver-runtime-kind",
+                "native",
+            ]
+        )
+        self.assertNotEqual(wrong_mode.returncode, 0)
+        self.assertEqual(json.loads(wrong_mode.stdout)["code"], "DRIVER_ACTION_STALE")
+
+        upgraded = assurance_core.prepare_tester(
+            self.repo,
+            run_id,
+            "native-blackbox-tester",
+            "thread-blackbox",
+        )
+        self.assertEqual(upgraded["readiness"]["states"]["machine"], "stale")
+        upgraded_ledger = json.loads((run_path / "ledger.json").read_text())
+        source = upgraded_ledger["facets"]["execution"]["tester_source"]
+        self.assertEqual(source["agent"]["thread_id"], "thread-blackbox")
+        self.assertEqual(
+            upgraded_ledger["facets"]["execution"]["agents"]["tester"],
+            source["agent"],
+        )
+        self.assertTrue(Path(source["worktree"]).is_dir())
 
     def test_driver_port_binds_builder_and_recovers_one_dispatch(self) -> None:
         run_id, run_path = self.start()
@@ -391,6 +552,104 @@ class NativeDriverCoreContractTest(unittest.TestCase):
         self.assertEqual(payload["status"], "FATAL")
         self.assertEqual(payload["phase"], "failed")
 
+    def test_native_resume_retries_disconnect_during_app_server_startup(self) -> None:
+        action = {
+            "driver_protocol_version": 1,
+            "status": "CONTINUE",
+            "action": "reviewer_preflight",
+            "action_id": "a" * 64,
+            "reason": "reviewer_preflight_missing",
+        }
+
+        class FakeCore:
+            def __init__(self) -> None:
+                self.calls: list[str] = []
+
+            def call(self, command: str, *args: str, input_value=None):
+                self.calls.append(command)
+                if command == "driver-context":
+                    return {
+                        "driver_runtime": {"kind": "native", "protocol_version": 1},
+                        "facets": {
+                            "execution": {
+                                "agents": {
+                                    "reviewer": {
+                                        "agent_id": "reviewer-agent",
+                                        "thread_id": "reviewer-thread",
+                                    }
+                                }
+                            }
+                        },
+                        "dispatch_intent": {
+                            "action": "reviewer_preflight",
+                            "action_id": "a" * 64,
+                            "attempt": 1,
+                            "role": "reviewer",
+                            "state": "in_flight",
+                            "thread_id": "reviewer-thread",
+                            "turn_id": "reviewer-turn",
+                        },
+                    }
+                if command == "driver-next":
+                    return action
+                if command == "retry-dispatch":
+                    return {
+                        "status": "ACTIVE",
+                        "run_id": "native-resume-startup-disconnect",
+                        "phase": "active",
+                        "dispatch_intent": {"attempt": 2, "state": "prepared"},
+                    }
+                raise AssertionError(command)
+
+        class StartupDisconnectTransport:
+            def __enter__(self):
+                raise AppServerError(
+                    "Codex App Server closed its output",
+                    code="NATIVE_APP_SERVER_DISCONNECTED",
+                )
+
+            def __exit__(self, *_args):
+                return False
+
+        fake_core = FakeCore()
+        output = StringIO()
+        with (
+            patch.object(native_cli, "CorePort", return_value=fake_core),
+            patch.object(
+                native_cli,
+                "probe_app_server",
+                return_value=SimpleNamespace(
+                    runtime_version="codex-test",
+                    protocol_schema_digest="b" * 64,
+                ),
+            ),
+            patch.object(
+                native_cli,
+                "AppServerTransport",
+                return_value=StartupDisconnectTransport(),
+            ),
+            redirect_stdout(output),
+        ):
+            rc = native_cli.main(
+                [
+                    "resume",
+                    "--repo",
+                    str(self.repo),
+                    "--run",
+                    "native-resume-startup-disconnect",
+                ]
+            )
+
+        self.assertEqual(rc, 1)
+        self.assertNotIn("record-driver-failure", fake_core.calls)
+        self.assertEqual(
+            fake_core.calls,
+            ["driver-context", "driver-next", "driver-context", "retry-dispatch"],
+        )
+        payload = json.loads(output.getvalue().splitlines()[-1])
+        self.assertEqual(payload["status"], "ACTIVE")
+        self.assertEqual(payload["dispatch_intent"]["attempt"], 2)
+
     def test_native_cli_reports_finalized_when_fatal_finalize_recovery_succeeds(
         self,
     ) -> None:
@@ -495,8 +754,199 @@ for line in sys.stdin:
         self.assertEqual(turn.status, "completed")
         self.assertEqual(json.loads(turn.text)["result"], "implemented")
 
+    def test_process_disconnect_schedules_retry_and_resumes_same_thread(self) -> None:
+        state = self.root / "disconnect-state"
+        codex = self.root / "codex-disconnect"
+        codex.write_text(
+            f"""#!/usr/bin/env python3
+import json, os, sys
+state = {str(state)!r}
+if sys.argv[1:] == ['--version']:
+    print('codex-cli fake-disconnect')
+    raise SystemExit(0)
+if sys.argv[1:3] == ['app-server', 'generate-json-schema']:
+    out = sys.argv[sys.argv.index('--out') + 1]
+    os.makedirs(out, exist_ok=True)
+    tokens = ['thread/start','thread/resume','thread/read','turn/start','turn/interrupt','developerInstructions','outputSchema','clientUserMessageId']
+    open(os.path.join(out, 'codex_app_server_protocol.schemas.json'), 'w').write(json.dumps(tokens))
+    raise SystemExit(0)
+if sys.argv[1:3] != ['app-server', '--stdio']:
+    raise SystemExit(2)
+for line in sys.stdin:
+    msg = json.loads(line)
+    method = msg.get('method')
+    if method == 'initialize':
+        print(json.dumps({{'id': msg['id'], 'result': {{'userAgent': 'fake'}}}}), flush=True)
+    elif method == 'initialized':
+        pass
+    elif method == 'thread/start':
+        print(json.dumps({{'id': msg['id'], 'result': {{'thread': {{'id': 'thr-disconnect'}}}}}}), flush=True)
+    elif method == 'thread/resume':
+        print(json.dumps({{'id': msg['id'], 'result': {{'thread': {{'id': msg['params']['threadId']}}}}}}), flush=True)
+    elif method == 'thread/read':
+        print(json.dumps({{'id': msg['id'], 'result': {{'thread': {{'id': msg['params']['threadId'], 'turns': []}}}}}}), flush=True)
+    elif method == 'turn/start':
+        if not os.path.exists(state):
+            open(state, 'w').write('disconnected')
+            print(json.dumps({{'id': msg['id'], 'result': {{'turn': {{'id': 'turn-disconnect'}}}}}}), flush=True)
+            raise SystemExit(0)
+        result = {{'result':'pass','evidence_report':None,'proof_spec':None,'problem_report':None}}
+        print(json.dumps({{'id': msg['id'], 'result': {{'turn': {{'id': 'turn-resumed'}}}}}}), flush=True)
+        print(json.dumps({{'method':'item/completed','params':{{'threadId':'thr-disconnect','item':{{'id':'item-1','type':'agentMessage','text':json.dumps(result)}}}}}}), flush=True)
+        print(json.dumps({{'method':'turn/completed','params':{{'threadId':'thr-disconnect','turn':{{'id':'turn-resumed','status':'completed','items':[]}}}}}}), flush=True)
+""",
+            encoding="utf-8",
+        )
+        codex.chmod(0o755)
+        action = {
+            "action": "reviewer_preflight",
+            "action_id": "a" * 64,
+            "reason": "reviewer_preflight_missing",
+        }
+
+        class FakeCore:
+            def __init__(self) -> None:
+                self.intent = {
+                    "action": "reviewer_preflight",
+                    "action_id": "a" * 64,
+                    "attempt": 1,
+                    "role": "reviewer",
+                    "state": "prepared",
+                    "thread_id": "thr-disconnect",
+                }
+
+            def call(self, command: str, *args: str, input_value=None):
+                if command == "bind-dispatch-turn":
+                    self.intent["state"] = "in_flight"
+                    self.intent["turn_id"] = args[args.index("--turn-id") + 1]
+                    return {"status": "ACTIVE"}
+                if command == "driver-context":
+                    return {
+                        "facets": {
+                            "execution": {
+                                "agents": {
+                                    "reviewer": {
+                                        "agent_id": "reviewer-agent",
+                                        "thread_id": "thr-disconnect",
+                                    }
+                                }
+                            }
+                        },
+                        "dispatch_intent": dict(self.intent),
+                    }
+                if command == "retry-dispatch":
+                    self.intent["attempt"] = 2
+                    self.intent["state"] = "prepared"
+                    self.intent.pop("turn_id", None)
+                    return {
+                        "status": "ACTIVE",
+                        "run_id": "process-disconnect",
+                        "phase": "active",
+                        "dispatch_intent": dict(self.intent),
+                    }
+                raise AssertionError(command)
+
+        core = FakeCore()
+        with self.assertRaises(AppServerError) as raised:
+            with AppServerTransport(codex_bin=str(codex)) as transport:
+                thread_id = transport.start_thread(
+                    cwd=str(self.root),
+                    developer_instructions="reviewer",
+                    sandbox="danger-full-access",
+                )
+                coordinator = NativeCoordinator(
+                    repo=ROOT,
+                    run_id="process-disconnect",
+                    core=core,
+                    transport=transport,
+                    project_root=ROOT,
+                )
+                coordinator.current_action = action
+                transport.run_turn(
+                    thread_id=thread_id,
+                    prompt="review",
+                    output_schema={"type": "object"},
+                    action_id=f"{action['action_id']}:1",
+                    on_started=lambda turn_id: core.call(
+                        "bind-dispatch-turn",
+                        "--turn-id",
+                        turn_id,
+                    ),
+                )
+        self.assertEqual(raised.exception.code, "NATIVE_APP_SERVER_DISCONNECTED")
+        retry = coordinator.retry_transport_failure(raised.exception)
+        self.assertEqual(retry["status"], "ACTIVE")
+        self.assertEqual(retry["dispatch_intent"]["attempt"], 2)
+        self.assertNotIn("turn_id", retry["dispatch_intent"])
+
+        with AppServerTransport(codex_bin=str(codex)) as transport:
+            transport.resume_thread(
+                thread_id="thr-disconnect",
+                cwd=str(self.root),
+                developer_instructions="reviewer",
+                sandbox="danger-full-access",
+            )
+            turn = transport.run_turn(
+                thread_id="thr-disconnect",
+                prompt="review",
+                output_schema={"type": "object"},
+                action_id=f"{action['action_id']}:2",
+            )
+        self.assertEqual(turn.status, "completed")
+        self.assertEqual(json.loads(turn.text)["result"], "pass")
+
 
 class NativeCoordinatorContractTest(unittest.TestCase):
+    def test_blackbox_only_missing_tester_uses_identity_only_preparation(self) -> None:
+        action = {
+            "action": "tester_blackbox",
+            "action_id": "a" * 64,
+            "reason": "blackbox_missing",
+        }
+
+        class FakeCore:
+            def __init__(self) -> None:
+                self.calls: list[tuple[str, tuple[str, ...]]] = []
+
+            def call(self, command: str, *args: str, input_value=None):
+                self.calls.append((command, args))
+                if command == "driver-context":
+                    return {
+                        "repo_root": str(ROOT),
+                        "candidate_worktree": str(ROOT),
+                        "facets": {
+                            "execution": {
+                                "agents": {},
+                                "tester_source": None,
+                            }
+                        },
+                        "dispatch_intent": None,
+                    }
+                if command == "prepare-tester":
+                    return {"status": "ACTIVE"}
+                raise AssertionError(command)
+
+        class FakeTransport:
+            def start_thread(self, **_kwargs):
+                return "thread-blackbox"
+
+        core = FakeCore()
+        coordinator = NativeCoordinator(
+            repo=ROOT,
+            run_id="native-blackbox-identity",
+            core=core,
+            transport=FakeTransport(),
+            project_root=ROOT,
+        )
+        coordinator._run_agent_action(
+            action,
+            AGENT_ACTION_CAPABILITIES["tester_blackbox"],
+        )
+        command, args = core.calls[-1]
+        self.assertEqual(command, "prepare-tester")
+        self.assertIn("--identity-only", args)
+        self.assertIn("thread-blackbox", args)
+
     def test_driver_next_failure_does_not_reuse_a_stale_action_identity(self) -> None:
         class FailingCore:
             def call(self, command: str, *args: str, input_value=None):
@@ -573,6 +1023,143 @@ class NativeCoordinatorContractTest(unittest.TestCase):
         self.assertTrue(retried)
         self.assertEqual(core.calls[0][0], "retry-dispatch")
         self.assertIn("serverOverloaded", core.calls[0][1])
+
+    def test_known_other_stream_disconnect_schedules_same_dispatch(self) -> None:
+        class FakeCore:
+            def __init__(self) -> None:
+                self.calls = []
+
+            def call(self, command: str, *args: str, input_value=None):
+                self.calls.append((command, args))
+                return {"status": "ACTIVE"}
+
+        core = FakeCore()
+        coordinator = NativeCoordinator(
+            repo=ROOT,
+            run_id="native-other-disconnect",
+            core=core,
+            transport=object(),
+            project_root=ROOT,
+        )
+        retried = coordinator._retry_turn_failure(
+            TurnResult(
+                turn_id="turn-disconnected",
+                status="failed",
+                text="",
+                error={
+                    "codexErrorInfo": "other",
+                    "message": (
+                        "stream disconnected before completion: stream closed before "
+                        "response.completed"
+                    ),
+                },
+            ),
+            "a" * 64,
+        )
+        self.assertTrue(retried)
+        self.assertEqual(core.calls[0][0], "retry-dispatch")
+        self.assertIn("responseStreamDisconnected", core.calls[0][1])
+
+    def test_unknown_turn_failure_remains_non_retryable(self) -> None:
+        turn = TurnResult(
+            turn_id="turn-unknown",
+            status="failed",
+            text="",
+            error={"codexErrorInfo": "other", "message": "unrelated model failure"},
+        )
+        self.assertEqual(NativeCoordinator._turn_result_failure_code(turn), "other")
+        with self.assertRaises(NativeDriverError) as raised:
+            NativeCoordinator._parse_turn(turn)
+        self.assertEqual(raised.exception.code, "NATIVE_ROLE_TURN_FAILED")
+
+    def test_raw_disconnect_retries_only_matching_active_dispatch(self) -> None:
+        action = {
+            "action": "reviewer_preflight",
+            "action_id": "a" * 64,
+            "reason": "reviewer_preflight_missing",
+        }
+
+        class FakeCore:
+            def __init__(self, *, matching: bool = True, exhausted: bool = False) -> None:
+                self.matching = matching
+                self.exhausted = exhausted
+                self.calls: list[str] = []
+
+            def call(self, command: str, *args: str, input_value=None):
+                self.calls.append(command)
+                if command == "driver-context":
+                    return {
+                        "facets": {
+                            "execution": {
+                                "agents": {
+                                    "reviewer": {
+                                        "agent_id": "reviewer-agent",
+                                        "thread_id": "reviewer-thread",
+                                    }
+                                }
+                            }
+                        },
+                        "dispatch_intent": {
+                            "action": "reviewer_preflight",
+                            "action_id": ("a" if self.matching else "b") * 64,
+                            "attempt": 1,
+                            "role": "reviewer",
+                            "state": "in_flight",
+                            "thread_id": "reviewer-thread",
+                            "turn_id": "reviewer-turn",
+                        },
+                    }
+                if command == "retry-dispatch":
+                    if self.exhausted:
+                        raise CorePortError(
+                            "Native role transport failed three times",
+                            payload={
+                                "status": "NEEDS_USER",
+                                "code": "NATIVE_DISPATCH_RETRY_EXHAUSTED",
+                                "details": {"attempt": 3},
+                            },
+                            returncode=1,
+                        )
+                    return {
+                        "status": "ACTIVE",
+                        "run_id": "raw-disconnect",
+                        "dispatch_intent": {"attempt": 2, "state": "prepared"},
+                    }
+                raise AssertionError(command)
+
+        error = AppServerError(
+            "Codex App Server closed its output",
+            code="NATIVE_APP_SERVER_DISCONNECTED",
+        )
+        core = FakeCore()
+        coordinator = NativeCoordinator(
+            repo=ROOT,
+            run_id="raw-disconnect",
+            core=core,
+            transport=object(),
+            project_root=ROOT,
+        )
+        coordinator.current_action = action
+        retried = coordinator.retry_transport_failure(error)
+        self.assertEqual(retried["status"], "ACTIVE")
+        self.assertEqual(retried["dispatch_intent"]["attempt"], 2)
+        self.assertEqual(
+            retried["transport_retry"]["failure_code"],
+            "responseStreamDisconnected",
+        )
+        self.assertEqual(core.calls, ["driver-context", "retry-dispatch"])
+
+        mismatched = FakeCore(matching=False)
+        coordinator.core = mismatched
+        self.assertIsNone(coordinator.retry_transport_failure(error))
+        self.assertEqual(mismatched.calls, ["driver-context"])
+
+        exhausted = FakeCore(exhausted=True)
+        coordinator.core = exhausted
+        stopped = coordinator.retry_transport_failure(error)
+        self.assertEqual(stopped["status"], "NEEDS_USER")
+        self.assertEqual(stopped["code"], "NATIVE_DISPATCH_RETRY_EXHAUSTED")
+        self.assertEqual(stopped["run_id"], "raw-disconnect")
 
     def test_external_problem_needs_user_stops_without_agent_dispatch(self) -> None:
         class FakeCore:

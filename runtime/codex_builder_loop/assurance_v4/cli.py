@@ -8,6 +8,7 @@ from typing import Any, Sequence
 
 from . import core
 from . import driver
+from .driver_contract import actions_for_preparation
 from .models import ContractError, digest, load_json_source
 from .store import StoreError
 
@@ -161,6 +162,7 @@ def parser() -> argparse.ArgumentParser:
     prepare_tester.add_argument("--agent-id", required=True)
     prepare_tester.add_argument("--thread-id", required=True)
     prepare_tester.add_argument("--replace", action="store_true")
+    prepare_tester.add_argument("--identity-only", action="store_true")
     dispatch_guard(prepare_tester)
 
     prepare_builder = commands.add_parser("prepare-builder")
@@ -498,19 +500,21 @@ def main(argv: Sequence[str] | None = None) -> int:
             _guard_dispatch(args, accepted)
             payload = core.record_evidence(args.repo, args.run, args.kind, _json(args.report))
         elif args.command == "prepare-tester":
-            _guard_dispatch(args, {"tester_author", "tester_fix", "tester_recompose_fix"})
+            preparation = "tester_identity" if args.identity_only else "tester_source"
+            _guard_dispatch(args, actions_for_preparation("tester", preparation))
             payload = core.prepare_tester(
                 args.repo,
                 args.run,
                 args.agent_id,
                 args.thread_id,
                 replace=args.replace,
+                identity_only=args.identity_only,
             )
         elif args.command == "prepare-builder":
-            _guard_dispatch(args, {"builder_implement", "builder_fix", "builder_recompose_fix"})
+            _guard_dispatch(args, actions_for_preparation("builder", "role_identity"))
             payload = core.prepare_builder(args.repo, args.run, args.agent_id, args.thread_id)
         elif args.command == "prepare-reviewer":
-            _guard_dispatch(args, {"reviewer_preflight", "reviewer_final"})
+            _guard_dispatch(args, actions_for_preparation("reviewer", "role_identity"))
             payload = core.prepare_reviewer(
                 args.repo,
                 args.run,

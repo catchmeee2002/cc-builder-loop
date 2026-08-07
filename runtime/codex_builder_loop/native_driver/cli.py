@@ -146,7 +146,31 @@ def main(argv: Sequence[str] | None = None) -> int:
                 core.call("driver-context", "--repo", str(repo), "--run", args.run), 0
             )
         capability = probe_app_server(args.codex_bin)
-        with AppServerTransport(codex_bin=args.codex_bin) as transport:
+        transport = AppServerTransport(codex_bin=args.codex_bin)
+        if args.command == "resume":
+            context = core.call(
+                "driver-context", "--repo", str(repo), "--run", args.run
+            )
+            runtime = context.get("driver_runtime")
+            if not isinstance(runtime, dict) or runtime.get("kind") != "native":
+                raise NativeDriverError(
+                    "run is not owned by Native Driver",
+                    code="NATIVE_DRIVER_NOT_OWNER",
+                    status="NEEDS_USER",
+                )
+            if runtime.get("protocol_version") != 1:
+                raise NativeDriverError(
+                    "run uses an unsupported DriverPort version",
+                    code="NATIVE_DRIVER_PORT_INCOMPATIBLE",
+                    status="NEEDS_USER",
+                )
+            coordinator = NativeCoordinator(
+                repo=repo,
+                run_id=args.run,
+                core=core,
+                transport=transport,
+            )
+        with transport:
             if args.command == "start":
                 raw = sys.stdin.read() if args.contract == "-" else None
                 contract = load_json_source(args.contract, stdin_text=raw)
@@ -171,29 +195,17 @@ def main(argv: Sequence[str] | None = None) -> int:
                     ),
                     flush=True,
                 )
-            else:
-                context = core.call(
-                    "driver-context", "--repo", str(repo), "--run", args.run
+                coordinator = NativeCoordinator(
+                    repo=repo,
+                    run_id=args.run,
+                    core=core,
+                    transport=transport,
                 )
-                runtime = context.get("driver_runtime")
-                if not isinstance(runtime, dict) or runtime.get("kind") != "native":
-                    raise NativeDriverError(
-                        "run is not owned by Native Driver",
-                        code="NATIVE_DRIVER_NOT_OWNER",
-                        status="NEEDS_USER",
-                    )
-                if runtime.get("protocol_version") != 1:
-                    raise NativeDriverError(
-                        "run uses an unsupported DriverPort version",
-                        code="NATIVE_DRIVER_PORT_INCOMPATIBLE",
-                        status="NEEDS_USER",
-                    )
-            coordinator = NativeCoordinator(
-                repo=repo,
-                run_id=args.run,
-                core=core,
-                transport=transport,
-            )
+            if coordinator is None:
+                raise NativeDriverError(
+                    "Native Driver coordinator was not initialized",
+                    code="NATIVE_DRIVER_COORDINATOR_MISSING",
+                )
             result = coordinator.run()
             result_status = result.get("status")
             return emit(
@@ -201,6 +213,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 0 if result_status == "FINALIZED" else 2 if result_status == "FAILED" else 1,
             )
     except (CorePortError, NativeDriverError, AppServerError) as exc:
+        if isinstance(exc, AppServerError) and coordinator is not None and run_may_exist:
+            try:
+                retry = coordinator.retry_transport_failure(exc)
+            except (CorePortError, NativeDriverError) as retry_error:
+                exc = retry_error
+            else:
+                if retry is not None:
+                    return emit(retry, 1)
         status = str(getattr(exc, "status", "FATAL"))
         if status == "FATAL" and run_may_exist:
             payload, returncode = _persist_fatal(

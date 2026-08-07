@@ -6,9 +6,18 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
+from ..assurance_v4.driver_contract import (
+    AGENT_ACTION_CAPABILITIES,
+    AgentActionCapability,
+)
 from ..assurance_v4.models import digest
 from .app_server import AppServerError, AppServerTransport, TurnResult
 from .core_port import CorePort, CorePortError
+from .transport_failures import (
+    classify_app_server_failure,
+    classify_turn_failure,
+    is_retryable_transport_failure,
+)
 
 
 class NativeDriverError(RuntimeError):
@@ -17,30 +26,6 @@ class NativeDriverError(RuntimeError):
         self.code = code
         self.status = status
         self.details = details
-
-
-AGENT_ACTION_ROLES = {
-    "builder_implement": "builder",
-    "builder_fix": "builder",
-    "builder_recompose_fix": "builder",
-    "tester_author": "tester",
-    "tester_fix": "tester",
-    "tester_recompose_fix": "tester",
-    "tester_proof": "tester",
-    "tester_proof_diagnose": "tester",
-    "tester_machine_diagnose": "tester",
-    "tester_blackbox": "tester",
-    "reviewer_preflight": "reviewer",
-    "reviewer_final": "reviewer",
-}
-
-RETRYABLE_TURN_FAILURES = {
-    "serverOverloaded",
-    "responseStreamConnectionFailed",
-    "responseStreamDisconnected",
-    "responseTooManyFailedAttempts",
-    "httpConnectionFailed",
-}
 
 
 class NativeCoordinator:
@@ -102,8 +87,9 @@ class NativeCoordinator:
                     "decision": action,
                 }
             name = str(action.get("action"))
-            if name in AGENT_ACTION_ROLES:
-                self._run_agent_action(action, AGENT_ACTION_ROLES[name])
+            capability = AGENT_ACTION_CAPABILITIES.get(name)
+            if capability is not None:
+                self._run_agent_action(action, capability)
                 continue
             if name == "checkpoint_builder":
                 self._simple("checkpoint-builder", action)
@@ -175,11 +161,29 @@ class NativeCoordinator:
             "native",
         )
 
-    def _run_agent_action(self, action: dict[str, Any], role: str) -> None:
+    def _run_agent_action(
+        self,
+        action: dict[str, Any],
+        capability: AgentActionCapability,
+    ) -> None:
         context = self._context()
+        role = capability.role
         agent = context["facets"]["execution"]["agents"].get(role)
-        if not isinstance(agent, dict):
-            self._prepare_role(action, role, context)
+        tester_source = context["facets"]["execution"].get("tester_source")
+        if role == "tester" and capability.preparation == "existing_tester_source":
+            if not isinstance(agent, dict) or not isinstance(tester_source, dict):
+                raise NativeDriverError(
+                    "Tester source continuity is missing for this action",
+                    code="NATIVE_TESTER_SOURCE_MISSING",
+                    status="NEEDS_USER",
+                    details={"action": action.get("action")},
+                )
+        elif not isinstance(agent, dict) or (
+            role == "tester"
+            and capability.preparation == "tester_source"
+            and not isinstance(tester_source, dict)
+        ):
+            self._prepare_role(action, capability, context)
             return
         pending = context.get("dispatch_intent")
         if isinstance(pending, dict):
@@ -268,31 +272,45 @@ class NativeCoordinator:
         )
         self._apply_agent_result(action, role, result, self._context())
 
-    def _prepare_role(self, action: dict[str, Any], role: str, context: dict[str, Any]) -> None:
-        instructions, sandbox = self._role_config(role)
-        cwd = context["candidate_worktree"] if role == "builder" else context["repo_root"]
-        thread_id = self.transport.start_thread(
-            cwd=cwd,
-            developer_instructions=instructions,
-            sandbox="danger-full-access",
-        )
-        self._active_threads.add(thread_id)
+    def _prepare_role(
+        self,
+        action: dict[str, Any],
+        capability: AgentActionCapability,
+        context: dict[str, Any],
+    ) -> None:
+        role = capability.role
+        existing_agent = context["facets"]["execution"]["agents"].get(role)
+        if isinstance(existing_agent, dict):
+            thread_id = str(existing_agent["thread_id"])
+            agent_id = str(existing_agent["agent_id"])
+        else:
+            instructions, _sandbox = self._role_config(role)
+            cwd = context["candidate_worktree"] if role == "builder" else context["repo_root"]
+            thread_id = self.transport.start_thread(
+                cwd=cwd,
+                developer_instructions=instructions,
+                sandbox="danger-full-access",
+            )
+            agent_id = f"codex-app-server:{thread_id}"
+            self._active_threads.add(thread_id)
         command = f"prepare-{role}"
-        self.core.call(
-            command,
+        args = [
             "--repo",
             str(self.repo),
             "--run",
             self.run_id,
             "--agent-id",
-            f"codex-app-server:{thread_id}",
+            agent_id,
             "--thread-id",
             thread_id,
             "--action-id",
             str(action["action_id"]),
             "--driver-runtime-kind",
             "native",
-        )
+        ]
+        if role == "tester" and capability.preparation == "tester_identity":
+            args.append("--identity-only")
+        self.core.call(command, *args)
 
     def _recover_dispatch(
         self, pending: dict[str, Any], role: str, context: dict[str, Any]
@@ -371,7 +389,7 @@ class NativeCoordinator:
             return result
         if len(matches) == 1 and matches[0].get("status") == "failed":
             failure_code = self._turn_failure_code(matches[0])
-            if failure_code in RETRYABLE_TURN_FAILURES:
+            if is_retryable_transport_failure(failure_code):
                 self.core.call(
                     "retry-dispatch",
                     "--repo",
@@ -1198,27 +1216,17 @@ class NativeCoordinator:
 
     @staticmethod
     def _turn_failure_code(turn: dict[str, Any]) -> str:
-        value: Any = turn.get("error", {}).get("codexErrorInfo")
-        if isinstance(value, str):
-            return value
-        if isinstance(value, dict) and value:
-            return str(next(iter(value)))
-        return "other"
+        return classify_turn_failure(turn.get("error"))
 
     @staticmethod
     def _turn_result_failure_code(turn: TurnResult) -> str:
-        value: Any = turn.error.get("codexErrorInfo") if isinstance(turn.error, dict) else None
-        if isinstance(value, str):
-            return value
-        if isinstance(value, dict) and value:
-            return str(next(iter(value)))
-        return "other"
+        return classify_turn_failure(turn.error)
 
     def _retry_turn_failure(self, turn: TurnResult, action_id: str) -> bool:
         if turn.status == "completed":
             return False
         failure_code = self._turn_result_failure_code(turn)
-        if failure_code not in RETRYABLE_TURN_FAILURES:
+        if not is_retryable_transport_failure(failure_code):
             context = self._context()
             deployment = context.get("deployment_transaction")
             if isinstance(deployment, dict) and deployment.get("state") == "deployed":
@@ -1249,6 +1257,57 @@ class NativeCoordinator:
             failure_code,
         )
         return True
+
+    def retry_transport_failure(self, error: AppServerError) -> dict[str, Any] | None:
+        failure_code = classify_app_server_failure(error)
+        if failure_code is None or not is_retryable_transport_failure(failure_code):
+            return None
+        action = self.current_action
+        if not isinstance(action, dict):
+            action = self.core.call(
+                "driver-next", "--repo", str(self.repo), "--run", self.run_id
+            )
+            self.current_action = action
+        action_id = action.get("action_id")
+        action_name = action.get("action")
+        capability = AGENT_ACTION_CAPABILITIES.get(str(action_name))
+        if not isinstance(action_id, str) or capability is None:
+            return None
+        context = self._context()
+        intent = context.get("dispatch_intent")
+        agent = context["facets"]["execution"]["agents"].get(capability.role)
+        if not (
+            isinstance(intent, dict)
+            and intent.get("action_id") == action_id
+            and intent.get("action") == action_name
+            and intent.get("role") == capability.role
+            and intent.get("state") in {"prepared", "in_flight"}
+            and isinstance(agent, dict)
+            and intent.get("thread_id") == agent.get("thread_id")
+        ):
+            return None
+        try:
+            payload = self.core.call(
+                "retry-dispatch",
+                "--repo",
+                str(self.repo),
+                "--run",
+                self.run_id,
+                "--action-id",
+                action_id,
+                "--failure-code",
+                failure_code,
+            )
+        except CorePortError as retry_error:
+            if retry_error.status not in {"FAIL", "NEEDS_USER"}:
+                raise
+            payload = dict(retry_error.payload)
+            payload.setdefault("run_id", self.run_id)
+        payload["transport_retry"] = {
+            "source_code": error.code,
+            "failure_code": failure_code,
+        }
+        return payload
 
     @staticmethod
     def _turn_agent_text(turn: dict[str, Any]) -> str | None:

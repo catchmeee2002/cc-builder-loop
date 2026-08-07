@@ -3741,6 +3741,7 @@ def prepare_tester(
     thread_id: str,
     *,
     replace: bool = False,
+    identity_only: bool = False,
 ) -> dict[str, Any]:
     repo = resolve_repo(repo_value)
     run_id = ensure_run_id(run_value)
@@ -3751,9 +3752,44 @@ def prepare_tester(
         if ledger["phase"] != "active":
             raise AssuranceError("run is not active", code="ASSURANCE_RUN_NOT_ACTIVE")
         execution = ledger["facets"]["execution"]
+        agent = {"agent_id": agent_id.strip(), "thread_id": thread_id.strip()}
+        existing_agent = execution["agents"].get("tester")
         existing = execution.get("tester_source")
+        if identity_only:
+            if replace:
+                raise AssuranceError(
+                    "Tester identity-only preparation cannot replace source continuity",
+                    code="TESTER_IDENTITY_ONLY_REPLACEMENT_INVALID",
+                    status="NEEDS_USER",
+                )
+            if isinstance(existing, dict):
+                if existing["agent"] == agent:
+                    return status(repo, run_id)
+                raise AssuranceError(
+                    "Tester continuity replacement must preserve its source transaction",
+                    code="TESTER_CONTINUITY_REPLACEMENT_REQUIRED",
+                    status="NEEDS_USER",
+                )
+            if isinstance(existing_agent, dict):
+                if existing_agent == agent:
+                    return status(repo, run_id)
+                raise AssuranceError(
+                    "Tester continuity replacement must be explicit",
+                    code="TESTER_CONTINUITY_REPLACEMENT_REQUIRED",
+                    status="NEEDS_USER",
+                )
+            execution["version"] += 1
+            execution["agents"]["tester"] = agent
+            ledger["digests"] = facet_digests(ledger["facets"])
+            append_event(
+                ledger,
+                "tester_identity_prepared",
+                {"agent": agent},
+            )
+            save_ledger(repo, ledger)
+            return status(repo, run_id)
         if isinstance(existing, dict):
-            if existing["agent"] == {"agent_id": agent_id, "thread_id": thread_id}:
+            if existing["agent"] == agent:
                 return status(repo, run_id)
             if not replace:
                 raise AssuranceError(
@@ -3775,6 +3811,12 @@ def prepare_tester(
                     code="TESTER_REPLACEMENT_BRANCH_DRIFT",
                     status="NEEDS_USER",
                 )
+        elif isinstance(existing_agent, dict) and existing_agent != agent:
+            raise AssuranceError(
+                "Tester continuity replacement must be explicit",
+                code="TESTER_CONTINUITY_REPLACEMENT_REQUIRED",
+                status="NEEDS_USER",
+            )
         publication = ledger.get("publication")
         if isinstance(publication, dict) and publication.get("required") and not publication.get("head"):
             raise AssuranceError(
@@ -3806,7 +3848,6 @@ def prepare_tester(
                 created.stderr.strip() or "Tester worktree creation failed",
                 code="TESTER_WORKTREE_CREATE_FAILED",
             )
-        agent = {"agent_id": agent_id.strip(), "thread_id": thread_id.strip()}
         replacement = {
             "head": tester_base,
             "base_head": tester_base,
