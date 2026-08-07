@@ -258,6 +258,14 @@ class TesterSourceTrustContractTest(unittest.TestCase):
         self.assertTrue("重新提交" in value or "recommit" in value)
         self.assertTrue("不得" in value and ("放宽断言" in value or "relax" in value))
 
+    def test_proof_input_correction_does_not_require_tester_source_commit(self) -> None:
+        tester = compact((ROOT / "agents" / "tester.toml").read_text())
+        self.assertIn("phase=proof_diagnose", tester)
+        self.assertRegex(tester, r"replacement.{0,20}proof_spec")
+        self.assertIn("result=tests_ready", tester)
+        self.assertRegex(tester, r"不改文件.{0,120}不自行重跑")
+        self.assertRegex(tester, r"testersource.{0,180}(?:problem|问题)")
+
 
 if __name__ == "__main__":
     unittest.main()

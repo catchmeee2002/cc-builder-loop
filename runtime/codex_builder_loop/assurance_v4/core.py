@@ -1658,7 +1658,7 @@ def _derive_retrospective_snapshot(
             if kind == "dispatch_prepared" and isinstance(action_id, str):
                 prepared_counts[action_id] = prepared_counts.get(action_id, 0) + 1
                 action = str(details.get("action", ""))
-                if action in {"tester_fix", "builder_fix"}:
+                if action in {"tester_fix", "builder_fix", "tester_proof_diagnose"}:
                     correction_counts[action] = correction_counts.get(action, 0) + 1
             elif kind == "tester_continuity_replaced":
                 action = "tester_continuity_replaced"

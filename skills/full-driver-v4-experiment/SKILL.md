@@ -92,9 +92,12 @@ dispatch。直到 `finalize` 或明确的决策边界。动作面如下，不能
   `status.proof_failure`：只有它仍为 current、绑定同一 action/code 时，才把本次 Core failure 视为已
   持久化并继续调用 `driver-next`；否则保持原错误并停止。
 - `tester_proof_diagnose`：续接原 Tester thread，只把 Driver 返回的 current `proof_failure` 交给
-  `phase=proof_diagnose`。本 turn 只归因、不改文件；必须返回非空 problem，owner 仅为 builder、tester
-  或 plan，随后调用 `record-problems --action-id <action_id>`。`proof_failure_decision` 直接停止到用户，
-  不把环境、身份或完整性错误猜成角色修复。
+  `phase=proof_diagnose`。本 turn 只归因、不改文件、不自行重跑：仅 proof execution input 需修正时，
+  返回 `result=tests_ready` 和 digest 已变化的 replacement `proof_spec`，主线程以同一 diagnosis
+  `action_id` 调用 `prove-tests`，不得调用 `integrate-tester` 或新增 problem；candidate、Tester source 或
+  contract 需要变化时才返回非空 problem，owner 仅为 builder、tester 或 plan，并调用
+  `record-problems --action-id <action_id>`。`proof_failure_decision` 直接停止到用户，不把环境、身份或
+  完整性错误猜成角色修复。
 - `verify_preflight`：在 Tester integration 后运行所有 `run_before_full_suite:true` 的 focused machine
   commands。结果绑定当前 candidate；最终 `verify_machine` 只能复用同 candidate、同 dependency 的真实
   command result，不能把 preflight 名义升级为整套 machine PASS。

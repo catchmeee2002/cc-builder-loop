@@ -479,7 +479,16 @@ class NativeCoordinator:
         action_id = str(action["action_id"])
         agent = context["facets"]["execution"]["agents"][role]
         if action["action"] == "tester_proof_diagnose":
-            self._validate_proof_diagnosis(result)
+            spec = result.get("proof_spec")
+            if isinstance(spec, dict):
+                result = {
+                    **result,
+                    "proof_spec": self._bind_proof_test_ids(spec, context),
+                }
+            self._validate_proof_diagnosis(
+                result,
+                proof_failure=action.get("proof_failure"),
+            )
         if action["action"] == "tester_machine_diagnose":
             self._validate_machine_diagnosis(result)
         problem = result.get("problem_report")
@@ -566,11 +575,12 @@ class NativeCoordinator:
                 ),
                 action_id,
             )
-        elif action["action"] == "tester_proof":
+        elif action["action"] in {"tester_proof", "tester_proof_diagnose"}:
             spec = result.get("proof_spec")
             if not isinstance(spec, dict):
                 raise NativeDriverError("Tester returned no proof spec", code="NATIVE_PROOF_SPEC_MISSING")
-            spec = self._bind_proof_test_ids(spec, context)
+            if action["action"] == "tester_proof":
+                spec = self._bind_proof_test_ids(spec, context)
             try:
                 self.core.call(
                     "prove-tests",
@@ -870,21 +880,24 @@ class NativeCoordinator:
             payload["review_input_contract"] = self._review_input_contract(
                 context, phase=str(payload["phase"])
             )
-        if action.get("action") == "tester_proof":
+        if action.get("action") in {"tester_proof", "tester_proof_diagnose"}:
             payload["proof_spec_schema"] = self.proof_schema
             payload["proof_test_id_hints"] = self._proof_test_id_hints(context)
-            payload["proof_execution_rule"] = (
-                "Choose argv that executes exactly the declared canonical test_ids. Do not reuse "
-                "unittest discover -s with ids that include the omitted start-directory prefix."
-            )
+            if action.get("action") == "tester_proof":
+                payload["proof_execution_rule"] = (
+                    "Choose argv that executes exactly the declared canonical test_ids. Do not reuse "
+                    "unittest discover -s with ids that include the omitted start-directory prefix."
+                )
         if action.get("action") == "tester_proof_diagnose":
             payload["proof_failure"] = copy.deepcopy(action.get("proof_failure"))
             payload["proof_diagnosis_rule"] = (
                 "Do not edit files or rerun the proof as a replacement for Core. Classify each "
                 "independent cause from the frozen contract, persisted spec, structured result, "
-                "and bound artifacts. Use owner=builder for a candidate implementation defect, "
-                "owner=tester for Tester-owned tests or proof input, and owner=plan only when the "
-                "frozen target, authority, or acceptance contract must change."
+                "and bound artifacts. When only proof execution input is wrong, return result="
+                "tests_ready with one changed replacement proof_spec and no problem_report; Core "
+                "alone reruns it. Use owner=builder for a candidate implementation defect, "
+                "owner=tester for Tester-owned source or fixture changes, and owner=plan only when "
+                "the frozen target, authority, or acceptance contract must change."
             )
         if action.get("action") == "tester_machine_diagnose":
             payload["machine_failure"] = copy.deepcopy(action.get("machine_failure"))
@@ -996,7 +1009,13 @@ class NativeCoordinator:
                 "proof_spec": "must_be_null",
                 "problem_report": "object_only_when_blocked_or_target_change_required_else_null",
             }
-        if action in {"tester_proof_diagnose", "tester_machine_diagnose"}:
+        if action == "tester_proof_diagnose":
+            return {
+                "evidence_report": "must_be_null",
+                "proof_spec": "changed_replacement_object_for_spec_only_correction_else_null",
+                "problem_report": "required_non_empty_for_source_or_contract_problem_else_null",
+            }
+        if action == "tester_machine_diagnose":
             return {
                 "evidence_report": "must_be_null",
                 "proof_spec": "must_be_null",
@@ -1011,7 +1030,7 @@ class NativeCoordinator:
     @staticmethod
     def _normalize_action_result(action: str, result: dict[str, Any]) -> dict[str, Any]:
         value = copy.deepcopy(result)
-        if isinstance(value.get("problem_report"), dict):
+        if isinstance(value.get("problem_report"), dict) and action != "tester_proof_diagnose":
             value["evidence_report"] = None
             value["proof_spec"] = None
             return value
@@ -1025,7 +1044,9 @@ class NativeCoordinator:
             value["proof_spec"] = None
         elif action == "tester_proof":
             value["evidence_report"] = None
-        elif action in {"tester_proof_diagnose", "tester_machine_diagnose"}:
+        elif action == "tester_proof_diagnose":
+            value["evidence_report"] = None
+        elif action == "tester_machine_diagnose":
             value["evidence_report"] = None
             value["proof_spec"] = None
         else:
@@ -1033,9 +1054,41 @@ class NativeCoordinator:
         return value
 
     @staticmethod
-    def _validate_proof_diagnosis(result: dict[str, Any]) -> None:
+    def _validate_proof_diagnosis(
+        result: dict[str, Any],
+        *,
+        proof_failure: Any = None,
+    ) -> None:
+        spec = result.get("proof_spec")
         report = result.get("problem_report")
         problems = report.get("problems") if isinstance(report, dict) else None
+        if isinstance(spec, dict):
+            if isinstance(report, dict):
+                raise NativeDriverError(
+                    "proof diagnosis returned both a replacement spec and a problem",
+                    code="NATIVE_PROOF_DIAGNOSIS_AMBIGUOUS",
+                )
+            if result.get("result") != "tests_ready":
+                raise NativeDriverError(
+                    "proof diagnosis returned an invalid replacement result",
+                    code="NATIVE_PROOF_DIAGNOSIS_INVALID",
+                )
+            prior_digest = (
+                proof_failure.get("spec_digest")
+                if isinstance(proof_failure, dict)
+                else None
+            )
+            if not isinstance(prior_digest, str):
+                raise NativeDriverError(
+                    "proof diagnosis has no persisted source spec",
+                    code="NATIVE_PROOF_DIAGNOSIS_FAILURE_MISSING",
+                )
+            if digest(spec) == prior_digest:
+                raise NativeDriverError(
+                    "proof diagnosis replacement spec did not change",
+                    code="NATIVE_PROOF_DIAGNOSIS_NO_PROGRESS",
+                )
+            return
         if result.get("result") not in {"fail", "blocked", "target_change_required"}:
             raise NativeDriverError(
                 "proof diagnosis returned an invalid terminal result",

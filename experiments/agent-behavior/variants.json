@@ -43,7 +43,7 @@
       "roles": ["tester"],
       "instruction_source": {
         "path": "agents/tester.toml",
-        "sha256": "76cb7823cd040579a47455b751d2b4f15b005340989cca2e68d2373a02c3180e",
+        "sha256": "2cb5c68d00024adedc110a3dc80224375953869d503d0457b1f72ed6a6c97d5c",
         "revision": "WORKTREE"
       }
     }

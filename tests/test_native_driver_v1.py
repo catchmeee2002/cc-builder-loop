@@ -20,6 +20,7 @@ from codex_builder_loop.native_driver.app_server import (
     TurnResult,
     probe_app_server,
 )
+from codex_builder_loop.assurance_v4.models import digest
 from codex_builder_loop.native_driver import cli as native_cli
 from codex_builder_loop.native_driver.coordinator import NativeCoordinator, NativeDriverError
 from codex_builder_loop.native_driver.core_port import CorePort, CorePortError
@@ -806,11 +807,11 @@ class NativeCoordinatorContractTest(unittest.TestCase):
         payload = json.loads(prompt.split("\n", 1)[1])
         self.assertEqual(payload["phase"], "proof_diagnose")
         self.assertEqual(payload["proof_failure"], failure)
-        self.assertNotIn("proof_spec_schema", payload)
+        self.assertIn("proof_spec_schema", payload)
         self.assertIn("Do not edit files", payload["proof_diagnosis_rule"])
         self.assertIn(
-            "required_non_empty",
-            payload["result_field_contract"]["problem_report"],
+            "replacement",
+            payload["result_field_contract"]["proof_spec"],
         )
 
     def test_machine_failure_prompt_reuses_tester_thread_for_read_only_diagnosis(self) -> None:
@@ -1006,6 +1007,118 @@ class NativeCoordinatorContractTest(unittest.TestCase):
                     },
                 }
             )
+
+    def test_proof_diagnosis_can_retry_a_replacement_spec_without_source_integration(self) -> None:
+        original_spec = {"schema_version": 1, "groups": [{"original": True}]}
+        replacement_spec = {"schema_version": 1, "groups": []}
+
+        class FakeCore:
+            def __init__(self) -> None:
+                self.calls: list[str] = []
+
+            def call(self, command: str, *args: str, input_value=None):
+                self.calls.append(command)
+                return {"status": "ACTIVE"}
+
+        core = FakeCore()
+        coordinator = NativeCoordinator(
+            repo=ROOT,
+            run_id="native-proof-spec-correction",
+            core=core,
+            transport=object(),
+            project_root=ROOT,
+        )
+        action = {
+            "action": "tester_proof_diagnose",
+            "action_id": "c" * 64,
+            "proof_failure": {
+                "action_id": "a" * 64,
+                "candidate_head": "1" * 40,
+                "tester_source_head": "2" * 40,
+                "dependency_digest": "d" * 64,
+                "producer": {
+                    "role": "tester",
+                    "agent_id": "tester-agent",
+                    "thread_id": "tester-thread",
+                },
+                "spec": original_spec,
+                "spec_digest": digest(original_spec),
+                "failure_digest": "f" * 64,
+                "failure": {
+                    "status": "FAIL",
+                    "code": "TEST_PROOF_CANDIDATE_FAILED",
+                },
+            },
+        }
+        context = {
+            "facets": {
+                "authority": {"tester_write": []},
+                "execution": {
+                    "candidate_head": "1" * 40,
+                    "tester_source": {
+                        "head": "2" * 40,
+                        "files": [],
+                    },
+                    "agents": {
+                        "tester": {
+                            "agent_id": "tester-agent",
+                            "thread_id": "tester-thread",
+                        }
+                    },
+                },
+            }
+        }
+        coordinator._apply_agent_result(
+            action,
+            "tester",
+            {
+                "result": "tests_ready",
+                "evidence_report": None,
+                "proof_spec": replacement_spec,
+                "problem_report": None,
+            },
+            context,
+        )
+        self.assertEqual(core.calls, ["prove-tests", "consume-dispatch"])
+        self.assertNotIn("integrate-tester", core.calls)
+        self.assertNotIn("record-problems", core.calls)
+
+        with self.assertRaisesRegex(NativeDriverError, "did not change"):
+            coordinator._validate_proof_diagnosis(
+                {
+                    "result": "tests_ready",
+                    "evidence_report": None,
+                    "proof_spec": original_spec,
+                    "problem_report": None,
+                },
+                proof_failure=action["proof_failure"],
+            )
+
+        class CanonicalizingCoordinator(NativeCoordinator):
+            def _bind_proof_test_ids(self, spec, context):
+                return original_spec
+
+        canonicalizing = CanonicalizingCoordinator(
+            repo=ROOT,
+            run_id="native-proof-spec-canonical-no-progress",
+            core=core,
+            transport=object(),
+            project_root=ROOT,
+        )
+        calls_before = list(core.calls)
+        with self.assertRaisesRegex(NativeDriverError, "did not change"):
+            canonicalizing._apply_agent_result(
+                action,
+                "tester",
+                {
+                    "result": "tests_ready",
+                    "evidence_report": None,
+                    "proof_spec": replacement_spec,
+                    "problem_report": None,
+                },
+                context,
+            )
+        self.assertEqual(core.calls, calls_before)
 
     def test_builder_wire_drops_unowned_evidence_fields(self) -> None:
         result = NativeCoordinator._normalize_action_result(

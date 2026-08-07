@@ -661,6 +661,15 @@ class FullDriverV4ContractTest(unittest.TestCase):
         self.assertEqual(order, sorted(order), order)
         self.assertRegex(text, r"reviewer.{0,160}(?:前置|prerequisite).{0,100}(?:齐全|current|完整)")
 
+    def test_skill_routes_spec_only_proof_correction_without_source_integration(self) -> None:
+        text = compact(self.skill_text())
+        start = text.index("tester_proof_diagnose")
+        section = text[start : start + 900]
+        self.assertRegex(section, r"replacement.{0,20}proof_spec")
+        self.assertIn("prove-tests", section)
+        self.assertRegex(section, r"(?:不得|不).{0,60}integrate-tester")
+        self.assertRegex(section, r"(?:candidate|testersource).{0,160}(?:problem|问题)")
+
     def test_needs_user_is_limited_to_frozen_decision_boundaries(self) -> None:
         text = compact(self.skill_text())
         marker = text.index("full_driver_v4_result:needs_user")
@@ -1730,6 +1739,85 @@ class FullDriverV4ContractTest(unittest.TestCase):
         ledger = self.load_ledger(run_path)
         self.assertIsNone(ledger["proof_failure"])
         self.assertEqual(ledger["evidence"]["proof"]["status"], "pass")
+
+    def test_proof_diagnosis_action_can_apply_a_corrected_spec(self) -> None:
+        run_id = "proof-diagnosis-corrected-spec"
+        launcher = self.make_uv_launcher(run_id)
+        run_path, tester, proof_action = self.prepare_uv_proof_run(
+            run_id,
+            baseline_source="def add(a, b):\n    return a + b - 1\n",
+            candidate_source="def add(a, b):\n    return a + b\n",
+            test_source=(
+                "from src.calc import add\n\n"
+                "def test_observation():\n"
+                "    assert add(1, 2) == 3\n"
+            ),
+        )
+        invalid_spec = self.uv_baseline_spec(launcher)
+        invalid_spec["groups"][0]["argv"] = [
+            "echo",
+            "tests/test_uv_proof.py::test_observation",
+        ]
+        invalid_path = self.write_json(
+            "proof-diagnosis-invalid-spec.json", invalid_spec
+        )
+        rc, rejected = self.invoke(
+            "prove-tests",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--spec",
+            invalid_path,
+            "--agent-id",
+            tester["agent_id"],
+            "--thread-id",
+            tester["thread_id"],
+            "--action-id",
+            proof_action["action_id"],
+        )
+        self.assertNotEqual(rc, 0, rejected)
+        self.assertEqual(rejected.get("code"), "TEST_PROOF_COMMAND_UNSUPPORTED")
+
+        rc, diagnosis = self.invoke(
+            "driver-next", "--repo", self.repo, "--run", run_id
+        )
+        self.assertEqual(rc, 0, diagnosis)
+        self.assertEqual(diagnosis.get("action"), "tester_proof_diagnose")
+        corrected_path = self.write_json(
+            "proof-diagnosis-corrected-spec.json", self.uv_baseline_spec(launcher)
+        )
+        candidate_before = self.load_ledger(run_path)["facets"]["execution"][
+            "candidate_head"
+        ]
+        tester_before = self.load_ledger(run_path)["facets"]["execution"][
+            "tester_source"
+        ]["head"]
+        rc, proved = self.invoke(
+            "prove-tests",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--spec",
+            corrected_path,
+            "--agent-id",
+            tester["agent_id"],
+            "--thread-id",
+            tester["thread_id"],
+            "--action-id",
+            diagnosis["action_id"],
+        )
+        self.assertEqual(rc, 0, proved)
+        ledger = self.load_ledger(run_path)
+        self.assertIsNone(ledger["proof_failure"])
+        self.assertEqual(ledger["evidence"]["proof"]["status"], "pass")
+        self.assertEqual(
+            ledger["facets"]["execution"]["candidate_head"], candidate_before
+        )
+        self.assertEqual(
+            ledger["facets"]["execution"]["tester_source"]["head"], tester_before
+        )
 
     def test_native_completed_proof_dispatch_replays_failure_without_rerun(self) -> None:
         run_id = "native-proof-failure-replay"

@@ -345,6 +345,44 @@ class RetrospectiveCompletionGateTest(unittest.TestCase):
             self.retrospective_status(session_id).get("status"), "REQUIRED"
         )
 
+    def test_repeated_proof_spec_diagnosis_is_a_mandatory_correction_signal(self) -> None:
+        session_id = "retrospective-proof-diagnosis-session"
+        run_path = self.start_run("retrospective-proof-diagnosis-run", session_id)
+        self.abandon_run("retrospective-proof-diagnosis-run")
+        ledger_path = run_path / "ledger.json"
+        ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+        terminal_index = next(
+            index
+            for index, event in enumerate(ledger["events"])
+            if event.get("kind") == "run_abandoned"
+        )
+        anchor_at = ledger["events"][terminal_index - 1]["at"]
+        ledger["events"][terminal_index:terminal_index] = [
+            {
+                "at": anchor_at,
+                "kind": "dispatch_prepared",
+                "details": {
+                    "action_id": action_id * 64,
+                    "action": "tester_proof_diagnose",
+                },
+            }
+            for action_id in ("a", "b")
+        ]
+        ledger_path.write_text(
+            json.dumps(ledger, ensure_ascii=False, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+
+        snapshot = self.retrospective_status(session_id)["snapshot"]
+        signal = next(
+            item
+            for item in snapshot["signals"]
+            if item["kind"] == "repeated-role-correction"
+            and item["facts"].get("action") == "tester_proof_diagnose"
+        )
+        self.assertEqual(signal["severity"], "mandatory")
+        self.assertEqual(signal["facts"]["count"], 2)
+
     def test_report_coverage_visibility_replay_and_staleness_are_fail_closed(self) -> None:
         run_paths = self.install_false_negative_fixture()
         session_id = FALSE_NEGATIVE_FIXTURE["owner_session_id"]

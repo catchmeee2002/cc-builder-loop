@@ -63,11 +63,14 @@ Core 在隔离 worktree 先证明 candidate tests 通过，再执行 baseline-re
 `proof_failure`，绑定 candidate、Tester source、原 spec、结构化错误、artifact 和 dependency digest；它
 是当前失败尝试的恢复事实，不是 proof evidence，不能满足 readiness 或 Reviewer prerequisite。candidate、
 counterexample、coverage、test-id、command 和 mutation 输入类失败由 Driver 续接原 Tester thread 执行
-只读 `tester_proof_diagnose`，再按其非空 problem owner 路由 Builder、Tester 或 plan；环境、身份完整性
-及未知错误返回 `proof_failure_decision / NEEDS_USER`，runtime 不猜修复者。Native Coordinator 只有在
-Core error 与同 action 的 current failure 精确匹配后才消费 completed dispatch；进程在 failure 落盘或
-problem 记录后中断时重放同一事务，不重复执行 proof 命令或追加 attempt。成功 proof 仍是唯一 PASS
-来源，并清除当前 failure。
+只读 `tester_proof_diagnose`。若 candidate、Tester source 和冻结语义均未变化，Tester 可返回 digest 已
+变化的 replacement proof spec，Coordinator 以 diagnosis action 直接重进 Core proof transaction，不走
+Tester source integration，也不新增第二份 problem；需要修改 candidate、Tester source 或 contract 时才
+按非空 problem owner 路由 Builder、Tester 或 plan。环境、身份完整性及未知错误返回
+`proof_failure_decision / NEEDS_USER`，runtime 不猜修复者。Native Coordinator 只有在 Core error 与同
+action 的 current failure 精确匹配后才消费 completed dispatch；进程在 failure 落盘、replacement proof
+或 problem 记录后中断时重放同一事务，不重复执行已经持久化的 proof 结果或追加 attempt。成功 proof
+仍是唯一 PASS 来源，并清除当前 failure。
 
 focused preflight 和完整 machine failure 同样先写 ledger。`run_before_full_suite` 命令可在 Tester
 integration 后、proof 与完整 suite 前执行；最终 machine gate 只复用同 candidate、同 dependency 的

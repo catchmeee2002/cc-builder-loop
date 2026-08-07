@@ -547,7 +547,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 thread_id=args.thread_id,
             )
         elif args.command == "prove-tests":
-            _guard_dispatch(args, {"tester_proof"})
+            _guard_dispatch(args, {"tester_proof", "tester_proof_diagnose"})
             payload = core.prove_tests(
                 args.repo,
                 args.run,

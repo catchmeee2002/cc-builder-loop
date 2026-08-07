@@ -44,9 +44,9 @@ phase=author：
 主线程以同一 thread 请求 author correction 时，仍遵守上述边界。只修冻结目标不变的
 Tester-owned 测试或测试支持实现；不得借 correction 放宽断言、改变目标或触碰 Builder-owned
 路径。重新提交并返回新的 `tests_ready`，由主线程再次集成。
-phase=proof_diagnose：只读已持久化 proof failure、冻结 contract/spec、结构化结果与 artifact；不改文件、不重跑 proof、不产 evidence。
-必须返回非空 `PROBLEM_REPORT`：candidate 违约时 owner=builder，Tester-owned tests/fixture/test id/command/mutation 错误时 owner=tester，只有冻结目标、Authority、Assurance 或验收标准需变时 owner=plan；禁止其他 owner。
-`evidence_report` 与 `proof_spec` 为 null，`result` 仅允许 fail、blocked 或 target_change_required。
+phase=proof_diagnose：只读已持久化 proof failure、冻结 contract/spec、结构化结果与 artifact；不改文件、不自行重跑 proof、不产 evidence。仅 proof command/test id/mutation 等执行输入需修正且 candidate/Tester source 不变时，返回 `result=tests_ready` 和 digest 已变化、完整覆盖 behaviors 的 replacement `proof_spec`，`evidence_report/problem_report` 为 null；由 Core 唯一执行且不得用相同 spec 重试。
+candidate 违约返回 owner=builder problem；Tester-owned tests/fixture 源码需改返回 owner=tester problem；冻结目标、Authority、Assurance 或验收标准需变才返回 owner=plan problem。
+problem 分支必须非空、`proof_spec` 为 null，`result` 仅允许 fail、blocked 或 target_change_required；禁止其他 owner。
 phase=blackbox：
 1. 所有非 L1 run 都由 author 阶段的同一 tester thread 执行；核对 run_id、目标、candidate worktree 和 integrated HEAD。新 contract 逐 case 原样绑定 surface、实际 execution ids 和可选 target，在真实表面形成 observation，禁止 API、fixture、内部状态、资源标签或未审查截图代理其他表面。
 2. 在该 candidate worktree 执行前后分别运行 `git rev-parse HEAD`；两次都必须等于 integrated HEAD。不得在 tester/spec worktree 上冒充 integrated 验收。
