@@ -345,8 +345,9 @@ Builder 与 Tester 使用冻结基线协作：
   只要含 `reviewed-boundaries`，仍先完成机器验证，再执行边界和不变量映射并由 Reviewer 审核理由。
   证明不会写回测试目标，也不经 shell 执行命令；无论顺序如何，机器验证仍是独立必需门禁。
 - Tester commit 集成后，Builder 可以读取测试并修复实现，但 ownership gate 阻止其修改测试。
-- 所有非 L1 run 都必须由原 Tester thread 在 candidate worktree 对集成 HEAD 完成 blackbox
-  `pass`。candidate worktree 必须没有 tracked、untracked 或 ignored residue；v2 evidence 同时记录
+- 所有要求 blackbox 的非 L1 run 都必须由 ledger-bound Tester thread 在 candidate worktree 对当前 HEAD
+  完成 `pass`；contract 同时要求 `tester` 时该 identity 必须是原 author thread，否则可使用不带 source
+  gate 的惰性 Tester identity。candidate worktree 必须没有 tracked、untracked 或 ignored residue；v2 evidence 同时记录
   worktree、全部真实 execution、case observations 和执行前后 HEAD。仅看到 agent 文本、Builder
   HEAD 或合成命令不构成
   blackbox 证据。日志、截图和缓存应写到 candidate 外的临时 artifact 目录；若工具仍在 candidate
@@ -354,10 +355,11 @@ Builder 与 Tester 使用冻结基线协作：
 - 测试实现错误在目标不变时由原 Tester thread 修正。测试目标、ownership 或验收标准需要变化
   时，不在 frozen run 内批准：先 abandon 保留现场，再通过 `/plan` 生成更高 revision 的新方案；
   验证通过后使用原生“实施计划”动作交接，或由 `$builder` 启动新 run。
-- Reviewer 在机器验证和黑盒验收后启动；非 L1 v3 还必须先完成测试鉴别证明。runtime 会在 Reviewer turn
-  开始和完成时分别冻结 prerequisite snapshot；非 L1 只有 Tester integration、publication attestation
-  （串行时）、`verified_head`、`e2e_verified_head`，以及 v3 适用时的 `test_effectiveness_head` 均绑定当前 candidate
-  才接受 review evidence。finding 按 ownership 路由：已授权路径内的实现/文档
+- Reviewer 在冻结 contract 要求的前置 gate 完成后启动；需要 machine/blackbox 时先完成对应验收，v3
+  需要 test-effectiveness 时还必须先完成测试鉴别证明。runtime 会在 Reviewer turn 开始和完成时分别冻结
+  prerequisite snapshot；只有 `assurance.required` 明列的 Tester integration、machine、proof、blackbox，
+  以及适用的 publication/test-effectiveness 均绑定当前 candidate 才接受 review evidence。finding 按 ownership
+  路由：已授权路径内的实现/文档
   由 Builder 修，测试实现由原 Tester author correction 修；需要新增写路径时进入 contract
   修订。目标不变的修复必须重新验证并 follow-up 同一
   Reviewer；Reviewer 因可补齐的前置缺口 blocked 时也保持该 thread。需要修改冻结契约时转入新 run，
