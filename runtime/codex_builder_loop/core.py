@@ -10312,6 +10312,7 @@ def classify_structured_proof_test_result(
     returncode: int,
     test_ids: Sequence[str],
     fallback: dict[str, Any],
+    observation_out: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     if len(payloads) != 1:
         return without_textual_positive(fallback)
@@ -10406,6 +10407,26 @@ def classify_structured_proof_test_result(
 
     if set(records) != set(declared):
         return without_textual_positive(fallback)
+    if observation_out is not None:
+        observation_out.append(
+            {
+                "schema_version": 1,
+                "framework": payload_framework,
+                "exitstatus": payload_exitstatus,
+                "tests": [
+                    {
+                        "id": declared[normalized],
+                        "outcome": records[normalized]["outcome"],
+                        "failure_kind": records[normalized]["failure_kind"],
+                        "counts": {
+                            key: records[normalized]["counts"][key]
+                            for key in sorted(records[normalized]["counts"])
+                        },
+                    }
+                    for normalized in declared
+                ],
+            }
+        )
     outcomes = [item["outcome"] for item in records.values()]
     if returncode == 0:
         non_pass_count = sum(
@@ -10459,6 +10480,7 @@ def classify_proof_test_result(
     test_ids: Sequence[str],
     structured_payloads: Sequence[Mapping[str, Any]],
     launch_error: bool = False,
+    observation_out: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     fallback = classify_text_proof_test_result(
         output,
@@ -10476,6 +10498,7 @@ def classify_proof_test_result(
         returncode=returncode,
         test_ids=test_ids,
         fallback=fallback,
+        observation_out=observation_out,
     )
 
 
@@ -10488,6 +10511,7 @@ def run_proof_argv(
     timeout: int,
     log_path: Path,
     cache_path: Path,
+    include_supervisor_observation: bool = False,
 ) -> dict[str, Any]:
     started = time.monotonic()
     timed_out = False
@@ -10542,6 +10566,7 @@ def run_proof_argv(
         f"[returncode={completed.returncode} timeout={str(timed_out).lower()}]\n"
         f"{completed.stdout}{completed.stderr}"
     )
+    supervisor_observations: list[dict[str, Any]] = []
     test_result = classify_proof_test_result(
         f"{completed.stdout}{completed.stderr}",
         framework=framework,
@@ -10550,10 +10575,11 @@ def run_proof_argv(
         test_ids=test_ids,
         structured_payloads=parse_structured_proof_payloads(structured_raw),
         launch_error=launch_error,
+        observation_out=supervisor_observations,
     )
     log_path.parent.mkdir(parents=True, exist_ok=True)
     log_path.write_text(output, encoding="utf-8")
-    return {
+    result = {
         "argv": requested_argv,
         "returncode": int(completed.returncode),
         "timed_out": timed_out,
@@ -10563,6 +10589,9 @@ def run_proof_argv(
         "log_sha256": sha256_text(output),
         "log_tail": tail_text(output),
     }
+    if include_supervisor_observation and len(supervisor_observations) == 1:
+        result["supervisor_observation"] = supervisor_observations[0]
+    return result
 
 
 def proof_worktree_residue(

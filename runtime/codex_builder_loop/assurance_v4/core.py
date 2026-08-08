@@ -3122,6 +3122,49 @@ def _proof_pass_counts_bound(value: Any, test_ids: Any) -> bool:
     )
 
 
+def _proof_supervisor_observation_bound(
+    value: Any,
+    *,
+    framework: Any,
+    returncode: Any,
+    test_ids: Any,
+    test_result: Any,
+) -> bool:
+    tests = value.get("tests") if isinstance(value, Mapping) else None
+    if (
+        not isinstance(value, Mapping)
+        or set(value) != {"schema_version", "framework", "exitstatus", "tests"}
+        or value.get("schema_version") != 1
+        or value.get("framework") != framework
+        or value.get("exitstatus") != returncode
+        or not isinstance(tests, list)
+        or not isinstance(test_ids, list)
+        or [item.get("id") if isinstance(item, Mapping) else None for item in tests]
+        != test_ids
+        or any(
+            not isinstance(item, Mapping)
+            or set(item) != {"id", "outcome", "failure_kind", "counts"}
+            for item in tests
+        )
+        or not isinstance(test_result, Mapping)
+    ):
+        return False
+    from ..core import classify_structured_proof_test_result
+
+    classified = classify_structured_proof_test_result(
+        [value],
+        framework=str(framework),
+        returncode=returncode,
+        test_ids=test_ids,
+        fallback={
+            "framework": str(framework),
+            "classification": "unclassified-failure",
+            "counts": {},
+        },
+    )
+    return classified == test_result
+
+
 def _proof_tester_sources_bound(
     repo: Path,
     *,
@@ -3473,7 +3516,12 @@ def _proof_test_run_bound(
         or public_run is None
         or any(
             field not in value
-            for field in ("requested_argv", "executable_identity", "project_identity")
+            for field in (
+                "requested_argv",
+                "executable_identity",
+                "project_identity",
+                "supervisor_observation",
+            )
         )
     ):
         return False
@@ -3495,6 +3543,13 @@ def _proof_test_run_bound(
         and isinstance(test_result, Mapping)
         and test_result.get("framework") == framework
         and test_result.get("classification") == classification
+        and _proof_supervisor_observation_bound(
+            value.get("supervisor_observation"),
+            framework=framework,
+            returncode=value.get("returncode"),
+            test_ids=test_ids,
+            test_result=test_result,
+        )
         and (
             classification != "pass"
             or _proof_pass_counts_bound(test_result.get("counts"), test_ids)
@@ -5585,6 +5640,7 @@ def _proof_run(
         timeout=int(group["timeout_seconds"]),
         log_path=artifact_root / f"{label}.log",
         cache_path=artifact_root / f"{label}-cache",
+        include_supervisor_observation=True,
     )
     return {
         **result,
