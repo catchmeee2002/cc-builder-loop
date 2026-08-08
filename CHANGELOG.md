@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Native Driver 将结构化 turn failure 与 raw App Server stdio disconnect 归一为唯一 transport
+  classification，只对精确匹配当前 role、thread、action 和 dispatch 的事故执行同事务有界重试，避免
+  同一次断流形成相互冲突的 terminal failure。Driver action preparation 同时收敛到 Core-side 单一
+  capability 契约；blackbox-only contract 只惰性登记 Tester identity，保持 Tester source/worktree 与
+  author/tester evidence gate 缺省，Tester 和 Reviewer 均以冻结的 assurance required gates 为准
+  （#178、#179）。
+
 - Planner 现在在冻结 Authority 前从仓库已有版本化 manifest 的直接 path/blob/digest 引用检查角色契约
   依赖闭包，避免 instruction source 已授权但 behavior-lab manifest 遗漏；原生选择卡同时先描述用户可观察
   的行为、成本与退路，内部 revision/agent 术语只作为白话后的补充（#132、#148）。
