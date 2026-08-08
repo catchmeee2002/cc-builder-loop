@@ -206,6 +206,35 @@ def _blob_at(repo: Path, head: str, path: str) -> str | None:
     return parts[2]
 
 
+def _regular_blob_at(repo: Path, head: str, path: str) -> str | None:
+    result = git(
+        repo,
+        "ls-tree",
+        "-z",
+        head,
+        "--",
+        f":(literal){path}",
+        check=False,
+    )
+    if (
+        result.returncode != 0
+        or not result.stdout.endswith("\0")
+        or result.stdout.count("\0") != 1
+    ):
+        return None
+    metadata, separator, listed_path = result.stdout[:-1].partition("\t")
+    parts = metadata.split()
+    if (
+        separator != "\t"
+        or listed_path != path
+        or len(parts) != 3
+        or parts[0] not in {"100644", "100755"}
+        or parts[1] != "blob"
+    ):
+        return None
+    return parts[2]
+
+
 def _candidate_manifest(repo: Path, base: str, candidate: str) -> list[dict[str, str]]:
     manifest: list[dict[str, str]] = []
     for path in changed_files(repo, base, candidate):
@@ -2193,6 +2222,17 @@ def evidence_state(ledger: Mapping[str, Any], kind: str) -> str:
         execution = ledger.get("facets", {}).get("execution", {})
         source = execution.get("tester_source") if isinstance(execution, Mapping) else None
         source_files = source.get("files") if isinstance(source, Mapping) else None
+        authority = ledger.get("facets", {}).get("authority", {})
+        builder_patterns = (
+            authority.get("builder_write", [])
+            if isinstance(authority, Mapping)
+            else []
+        )
+        tester_patterns = (
+            authority.get("tester_write", [])
+            if isinstance(authority, Mapping)
+            else []
+        )
         tester_paths = (
             [
                 {"path": item.get("path"), "blob": item.get("blob")}
@@ -2208,6 +2248,9 @@ def evidence_state(ledger: Mapping[str, Any], kind: str) -> str:
             expected_behaviors=expected_behaviors,
             expected_source_head=expected_source_head,
             tester_paths=tester_paths,
+            repo=Path(ledger["repo_root"]),
+            builder_patterns=builder_patterns,
+            tester_patterns=tester_patterns,
         ):
             return "stale"
     return "pass" if record.get("status") == "pass" else "failed"
@@ -3094,6 +3137,7 @@ def _proof_test_run_bound(
     framework: Any,
     executable_identity: Any,
     project_identity: Any,
+    test_ids: Any,
     classification: str,
 ) -> bool:
     public_run = _proof_test_run_view(value)
@@ -3107,6 +3151,11 @@ def _proof_test_run_bound(
     ):
         return False
     test_result = value.get("test_result")
+    matched_test_ids = (
+        test_result.get("matched_test_ids")
+        if isinstance(test_result, Mapping)
+        else None
+    )
     return bool(
         value.get("requested_argv") == requested_argv
         and value.get("argv") == execution_argv
@@ -3119,6 +3168,16 @@ def _proof_test_run_bound(
         and isinstance(test_result, Mapping)
         and test_result.get("framework") == framework
         and test_result.get("classification") == classification
+        and (
+            classification != "assertion-failure"
+            or (
+                isinstance(test_ids, list)
+                and isinstance(matched_test_ids, list)
+                and bool(matched_test_ids)
+                and all(isinstance(test_id, str) for test_id in matched_test_ids)
+                and set(matched_test_ids).issubset(set(test_ids))
+            )
+        )
         and _proof_evidence_validator(
             "passTestRun"
             if classification == "pass"
@@ -3133,6 +3192,9 @@ def _proof_group_replayable(
     *,
     candidate_head: str,
     tester_paths: Sequence[Mapping[str, str]],
+    repo: Path | None,
+    builder_patterns: Sequence[str],
+    tester_patterns: Sequence[str],
 ) -> bool:
     if not isinstance(spec, Mapping) or not isinstance(result, Mapping):
         return False
@@ -3163,6 +3225,7 @@ def _proof_group_replayable(
         framework=expected_framework,
         executable_identity=identity,
         project_identity=project_identity,
+        test_ids=spec.get("test_ids"),
         classification="pass",
     ):
         return False
@@ -3177,6 +3240,7 @@ def _proof_group_replayable(
                 framework=expected_framework,
                 executable_identity=identity,
                 project_identity=project_identity,
+                test_ids=spec.get("test_ids"),
                 classification="assertion-failure",
             )
         )
@@ -3189,18 +3253,27 @@ def _proof_group_replayable(
             framework=expected_framework,
             executable_identity=identity,
             project_identity=project_identity,
+            test_ids=spec.get("test_ids"),
             classification="assertion-failure",
         ) or not isinstance(mutation, Mapping):
             return False
         applied_diff = mutation.get("applied_diff")
+        changed_paths = _proof_applied_diff_paths(applied_diff)
         matches = bool(
             mutation.get("patch_sha256")
             == hashlib.sha256(str(spec.get("patch", "")).encode()).hexdigest()
             and isinstance(applied_diff, str)
             and mutation.get("applied_diff_sha256")
             == hashlib.sha256(applied_diff.encode()).hexdigest()
-            and mutation.get("changed_paths")
-            == _proof_applied_diff_paths(applied_diff)
+            and mutation.get("changed_paths") == changed_paths
+            and isinstance(repo, Path)
+            and isinstance(changed_paths, list)
+            and all(
+                _matches(path, list(builder_patterns))
+                and not _matches(path, list(tester_patterns))
+                and _regular_blob_at(repo, candidate_head, path) is not None
+                for path in changed_paths
+            )
             and mutation.get("head_before") == candidate_head
             and mutation.get("head_after") == candidate_head
         )
@@ -3227,6 +3300,9 @@ def _proof_record_replayable(
     expected_behaviors: Sequence[str] | None = None,
     expected_source_head: str | None = None,
     tester_paths: Sequence[Mapping[str, str]] = (),
+    repo: Path | None = None,
+    builder_patterns: Sequence[str] = (),
+    tester_patterns: Sequence[str] = (),
 ) -> bool:
     if (
         not isinstance(record, Mapping)
@@ -3289,6 +3365,9 @@ def _proof_record_replayable(
             result,
             candidate_head=candidate_head,
             tester_paths=tester_paths,
+            repo=repo,
+            builder_patterns=builder_patterns,
+            tester_patterns=tester_patterns,
         )
         for group, result in zip(groups, results)
     )
