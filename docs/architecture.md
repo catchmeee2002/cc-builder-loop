@@ -558,6 +558,8 @@ skip、xfail、xpass、未执行或额外测试不能借其他通过测试形成
 所有可执行 group 的 candidate 命令先按 spec 顺序完整运行；只要存在 candidate failure，就不启动任何
 baseline-red 或 mutation。`TEST_PROOF_CANDIDATE_FAILED` 保留首个 group/result 作为兼容字段，多失败时
 另附同顺序 `failures` 列表。单组失败、全部通过后的反例判断、schema version 1 和既有结果码保持不变。
+ledger 仍只保存一份反例事实；DriverPort 对 baseline-red 的公开 evidence view 将内部 generic
+`counterexample` 派生为 schema 的 `baseline` 字段，不在持久化记录中增加兼容副本。
 
 runtime 消费 active v3 evidence 时重新核对上述原子 coverage；mutation 还必须含有摘要匹配的
 canonical `applied_diff`。升级前留下的歧义或不可回放 evidence 不再满足当前 gate，只能在冻结目标

@@ -2818,6 +2818,24 @@ def status(repo_value: str | Path, run_value: str) -> dict[str, Any]:
     }
 
 
+def _driver_evidence_view(ledger: Mapping[str, Any]) -> dict[str, Any]:
+    evidence = copy.deepcopy(ledger.get("evidence", {}))
+    proof = evidence.get("proof")
+    details = proof.get("details") if isinstance(proof, dict) else None
+    results = details.get("results") if isinstance(details, dict) else None
+    if not isinstance(results, list):
+        return evidence
+    for group in results:
+        if (
+            isinstance(group, dict)
+            and group.get("method") == "baseline-red"
+            and "baseline" not in group
+            and isinstance(group.get("counterexample"), dict)
+        ):
+            group["baseline"] = group.pop("counterexample")
+    return evidence
+
+
 def driver_context(repo_value: str | Path, run_value: str) -> dict[str, Any]:
     repo = resolve_repo(repo_value)
     run_id = ensure_run_id(run_value)
@@ -2832,7 +2850,7 @@ def driver_context(repo_value: str | Path, run_value: str) -> dict[str, Any]:
         "target_contenders": _target_contenders(repo, ledger),
         "candidate_worktree": ledger["candidate_worktree"],
         "facets": copy.deepcopy(ledger["facets"]),
-        "evidence": copy.deepcopy(ledger.get("evidence", {})),
+        "evidence": _driver_evidence_view(ledger),
         "publication": copy.deepcopy(ledger.get("publication")),
         "problems": copy.deepcopy(ledger.get("problems", [])),
         "driver_runtime": copy.deepcopy(ledger.get("driver_runtime")),

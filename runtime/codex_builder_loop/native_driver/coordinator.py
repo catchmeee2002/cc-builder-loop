@@ -496,17 +496,41 @@ class NativeCoordinator:
     ) -> None:
         action_id = str(action["action_id"])
         agent = context["facets"]["execution"]["agents"][role]
-        if action["action"] == "tester_proof_diagnose":
-            spec = result.get("proof_spec")
-            if isinstance(spec, dict):
-                result = {
-                    **result,
-                    "proof_spec": self._bind_proof_test_ids(spec, context),
-                }
-            self._validate_proof_diagnosis(
-                result,
-                proof_failure=action.get("proof_failure"),
+        proof_spec: dict[str, Any] | None = None
+        proof_failure_already_persisted = False
+        if action["action"] == "tester_proof":
+            value = result.get("proof_spec")
+            if not isinstance(value, dict):
+                raise NativeDriverError(
+                    "Tester returned no proof spec", code="NATIVE_PROOF_SPEC_MISSING"
+                )
+            proof_spec = self._bind_proof_test_ids(value, context)
+            result = {**result, "proof_spec": proof_spec}
+        elif action["action"] == "tester_proof_diagnose" and isinstance(
+            result.get("proof_spec"), dict
+        ):
+            proof_spec = self._bind_proof_test_ids(result["proof_spec"], context)
+            result = {**result, "proof_spec": proof_spec}
+        if proof_spec is not None:
+            proof_failure_already_persisted = self._persisted_proof_failure_matches(
+                context.get("proof_failure"),
+                context.get("proof_failure_state"),
+                action_id,
+                proof_spec,
+                agent,
             )
+        if action["action"] == "tester_proof_diagnose":
+            source_failure = action.get("proof_failure")
+            if (
+                not isinstance(source_failure, dict)
+                and context.get("proof_failure_state") == "current"
+            ):
+                source_failure = context.get("proof_failure")
+            if not proof_failure_already_persisted:
+                self._validate_proof_diagnosis(
+                    result,
+                    proof_failure=source_failure,
+                )
         if action["action"] == "tester_machine_diagnose":
             self._validate_machine_diagnosis(result)
         problem = result.get("problem_report")
@@ -594,18 +618,8 @@ class NativeCoordinator:
                 action_id,
             )
         elif action["action"] in {"tester_proof", "tester_proof_diagnose"}:
-            spec = result.get("proof_spec")
-            if not isinstance(spec, dict):
-                raise NativeDriverError("Tester returned no proof spec", code="NATIVE_PROOF_SPEC_MISSING")
-            if action["action"] == "tester_proof":
-                spec = self._bind_proof_test_ids(spec, context)
-            if not self._persisted_proof_failure_matches(
-                context.get("proof_failure"),
-                context.get("proof_failure_state"),
-                action_id,
-                spec,
-                agent,
-            ):
+            assert proof_spec is not None
+            if not proof_failure_already_persisted:
                 try:
                     self.core.call(
                         "prove-tests",
@@ -623,7 +637,7 @@ class NativeCoordinator:
                         action_id,
                         "--driver-runtime-kind",
                         "native",
-                        input_value=spec,
+                        input_value=proof_spec,
                     )
                 except CorePortError as exc:
                     failed = self._context()
