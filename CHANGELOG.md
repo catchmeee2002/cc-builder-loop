@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Legacy 与 Assurance v4 `prove-tests` 现在先完成全部 candidate group readiness，再决定是否执行
+  baseline-red/mutation；多组失败保留首个 group/result 兼容字段并附有序 `failures`，单组与成功反例
+  语义不变。Tester/Reviewer 角色契约同步要求 bound-call-site patch、公开异常语义、独立 proof 模块
+  自包含和完整聚合归因；Native Driver 恢复 completed proof dispatch 时直接消费精确匹配的已持久化
+  failure，不重入 proof gate 或重复记录失败。
+
 - Native Driver 将结构化 turn failure 与 raw App Server stdio disconnect 归一为唯一 transport
   classification，只对精确匹配当前 role、thread、action 和 dispatch 的事故执行同事务有界重试，避免
   同一次断流形成相互冲突的 terminal failure。Driver action preparation 同时收敛到 Core-side 单一

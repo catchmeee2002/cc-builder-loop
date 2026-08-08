@@ -457,8 +457,9 @@ open problem 的 owner 采用穷举路由：`builder`/`tester` 分别回原角�
 Agent dispatch；clean committed candidate 仍先执行确定性 checkpoint，使失败现场与最新 Git 身份一致。
 Native `tester_proof` 的 completed dispatch 同样先应用 Core gate：成功 evidence 或 current
 `proof_failure` 二者必须恰有一个与该 action 对应，Coordinator 才能消费。failure 的相同 action/spec
-replay 返回已存错误且不追加 event；消费后 Driver 才能派生独立的诊断 turn，因此 dispatch intent 不缓存
-后续 correction loop 或第二份 evidence。
+replay 返回已存错误且不追加 event；进程恢复若已看到同 action/spec/Tester 的 current failure，则直接消费
+completed dispatch，不再次进入 proof gate。消费后 Driver 才能派生独立的诊断 turn，因此 dispatch intent
+不缓存后续 correction loop 或第二份 evidence。
 `dispatch_consumed.details.consumer_source` 是消费事实的唯一来源，值为 `native_driver`、
 `full_driver_skill` 或 `operator_recovery`；旧事件缺少该字段时只按保守规则推断，不回写历史 ledger。
 
@@ -554,6 +555,9 @@ proof 子进程不继承调用方 PATH，而使用 runtime Python 所在目录
 skip、xfail、xpass、未执行或额外测试不能借其他通过测试形成 strong proof。失败类型取框架提供的真实
 异常类型；同一 id 的 setup/call/teardown 和 subTest 事件保留累计计数，skip 或非断言错误支配普通
 通过与断言失败。captured stdout、结束摘要或 atexit 追加文本都不参与分类。
+所有可执行 group 的 candidate 命令先按 spec 顺序完整运行；只要存在 candidate failure，就不启动任何
+baseline-red 或 mutation。`TEST_PROOF_CANDIDATE_FAILED` 保留首个 group/result 作为兼容字段，多失败时
+另附同顺序 `failures` 列表。单组失败、全部通过后的反例判断、schema version 1 和既有结果码保持不变。
 
 runtime 消费 active v3 evidence 时重新核对上述原子 coverage；mutation 还必须含有摘要匹配的
 canonical `applied_diff`。升级前留下的歧义或不可回放 evidence 不再满足当前 gate，只能在冻结目标

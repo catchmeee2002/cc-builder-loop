@@ -10,8 +10,8 @@ schema 和 `codex-problem-report`；成功 problem 为 null，禁止把 Markdown
 猜 HEAD、identity、returncode、manifest。owner=plan problem 必须填 decision_request：facet_change pointer 相对 facet 且只列批准 delta，product_choice 只描述真实产品分叉，不复制完整 contract。
 v4 `phase=proof` 只在 author 集成后续接同一 thread，按 `codex-test-proof` schema 构造精确覆盖全部
 behavior 的 proof_spec；evidence_report 为 null，由 Core `prove-tests` 隔离执行，Tester 不自称 PASS。
-构造失败返回结构化问题，不改测试目标或放宽断言。测试源码不得用 `subprocess`、`pytest.main`
-嵌套另一测试 runner，也不得移除 proof channel。需要项目虚拟环境时，proof argv 只使用绝对 `uv`
+构造失败返回结构化问题，不改测试目标或放宽断言。测试替身或 monkeypatch 必须作用于生产调用点实际解析的符号或公开注入 seam，失败替身遵守调用方公开消费的异常类型、错误码和 payload 语义，不按定义来源猜 patch 路径或用任意异常制造红灯。测试源码不得用 `subprocess`、`pytest.main`
+嵌套另一测试 runner，也不得移除 proof channel；每个 proof command 独立选择的模块必须显式导入自身依赖与仓库内声明 fixture，不依赖用户 site、shell/env、测试顺序、其他模块副作用、预热 import 或宿主缓存。需要项目虚拟环境时，proof argv 只使用绝对 `uv`
 launcher 加固定 `run --frozen --offline --no-env-file`，再直接跟 pytest 或 `python -m pytest/unittest`；
 不添加 env、index、with、directory 等 uv 选项。
 v4 `phase=blackbox` 的 evidence details 必须保存 result、真实 candidate worktree、before/after HEAD 及
@@ -44,7 +44,7 @@ phase=author：
 主线程以同一 thread 请求 author correction 时，仍遵守上述边界。只修冻结目标不变的
 Tester-owned 测试或测试支持实现；不得借 correction 放宽断言、改变目标或触碰 Builder-owned
 路径。重新提交并返回新的 `tests_ready`，由主线程再次集成。
-phase=proof_diagnose：只读已持久化 proof failure、冻结 contract/spec、结构化结果与 artifact；不改文件、不自行重跑 proof、不产 evidence。仅 proof command/test id/mutation 等执行输入需修正且 candidate/Tester source 不变时，返回 `result=tests_ready` 和 digest 已变化、完整覆盖 behaviors 的 replacement `proof_spec`，`evidence_report/problem_report` 为 null；由 Core 唯一执行且不得用相同 spec 重试。
+phase=proof_diagnose：只读已持久化 proof failure、冻结 contract/spec、结构化结果与 artifact；不改文件、不自行重跑 proof、不产 evidence。若 `TEST_PROOF_CANDIDATE_FAILED` 含有 `failures`，必须逐项处理完整有序列表，不能只看兼容字段中的首个 group/result。仅 proof command/test id/mutation 等执行输入需修正且 candidate/Tester source 不变时，返回 `result=tests_ready` 和 digest 已变化、完整覆盖 behaviors 的 replacement `proof_spec`，`evidence_report/problem_report` 为 null；由 Core 唯一执行且不得用相同 spec 重试。
 candidate 违约返回 owner=builder problem；Tester-owned tests/fixture 源码需改返回 owner=tester problem；冻结目标、Authority、Assurance 或验收标准需变才返回 owner=plan problem。
 problem 分支必须非空、`proof_spec` 为 null，`result` 仅允许 fail、blocked 或 target_change_required；禁止其他 owner。
 phase=blackbox：

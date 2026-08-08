@@ -4819,6 +4819,8 @@ def prove_tests(
         proof_root = Path(tempfile.mkdtemp(prefix=f"assurance-v4-{run_id}-proof-"))
         created_worktrees: list[Path] = []
         results: list[dict[str, Any]] = []
+        candidate_results: dict[int, dict[str, Any]] = {}
+        candidate_failures: list[dict[str, Any]] = []
         try:
             for index, group in enumerate(spec["groups"]):
                 candidate_worktree = proof_root / f"candidate-{index}"
@@ -4842,15 +4844,27 @@ def prove_tests(
                         launcher_identities[index],
                     )
                 )
+                candidate_results[index] = candidate_result
                 if candidate_result["test_result"].get("classification") != "pass":
-                    fail(
-                        AssuranceError(
-                            "candidate tests did not pass before effectiveness proof",
-                            code="TEST_PROOF_CANDIDATE_FAILED",
-                            status="FAIL",
-                            details={"group": index, "result": candidate_result},
-                        )
+                    candidate_failures.append(
+                        {"group": index, "result": candidate_result}
                     )
+
+            if candidate_failures:
+                failure_details = copy.deepcopy(candidate_failures[0])
+                if len(candidate_failures) > 1:
+                    failure_details["failures"] = copy.deepcopy(candidate_failures)
+                fail(
+                    AssuranceError(
+                        "candidate tests did not pass before effectiveness proof",
+                        code="TEST_PROOF_CANDIDATE_FAILED",
+                        status="FAIL",
+                        details=failure_details,
+                    )
+                )
+
+            for index, group in enumerate(spec["groups"]):
+                candidate_result = candidate_results[index]
                 method = group["method"]
                 counterexample: dict[str, Any] | None = None
                 mutation_evidence: dict[str, Any] | None = None

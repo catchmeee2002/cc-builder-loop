@@ -87,10 +87,12 @@ dispatch。直到 `finalize` 或明确的决策边界。动作面如下，不能
   `integrate-tester` 并记录 tester evidence。
 - `prove-tests` / `tester_proof`：由同一 Tester thread 对冻结 behaviors 产出 proof spec；主线程把
   spec 和真实 Tester identity 交给实验 namespace 的 `prove-tests --action-id <action_id>`。Core 按
-  公共 `schema/codex-test-proof.schema.json` 隔离运行 candidate 与 baseline-red/mutation，只有每个
-  behavior 恰好一次且反例为真实 assertion failure 时才记录 proof evidence。命令非零后先读回
+  公共 `schema/codex-test-proof.schema.json` 先运行全部 candidate group；任一失败时在首个
+  group/result 兼容字段外附有序 `failures`，且不运行 baseline-red/mutation。全部 candidate 通过后才
+  执行既有反例语义，只有每个 behavior 恰好一次且反例为真实 assertion failure 时才记录 proof evidence。命令非零后先读回
   `status.proof_failure`：只有它仍为 current、绑定同一 action/code 时，才把本次 Core failure 视为已
-  持久化并继续调用 `driver-next`；否则保持原错误并停止。
+  持久化并继续调用 `driver-next`；否则保持原错误并停止。Native completed dispatch 在恢复时若已精确绑定
+  同一 action/spec/Tester 的 current failure，直接消费该持久化事务，不再次进入 proof gate 或追加 event。
 - `tester_proof_diagnose`：续接原 Tester thread，只把 Driver 返回的 current `proof_failure` 交给
   `phase=proof_diagnose`。本 turn 只归因、不改文件、不自行重跑：仅 proof execution input 需修正时，
   返回 `result=tests_ready` 和 digest 已变化的 replacement `proof_spec`，主线程以同一 diagnosis

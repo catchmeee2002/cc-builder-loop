@@ -10781,8 +10781,84 @@ def cmd_prove_tests(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         )
         created: list[Path] = []
         group_results: list[dict[str, Any]] = []
+        candidate_results: dict[int, dict[str, Any]] = {}
+        candidate_problems: list[RuntimeProblem] = []
         failure: RuntimeProblem | None = None
         try:
+            for index, group in enumerate(spec["groups"]):
+                method = str(group["method"])
+                if method == "reviewed-boundaries":
+                    continue
+
+                candidate_path = proof_root / f"{index + 1:02d}-candidate"
+                add_detached_worktree(repo, candidate_path, candidate)
+                created.append(candidate_path)
+                candidate_project = validate_uv_proof_execution(
+                    repo, candidate, candidate_path, group
+                )
+                candidate_run = run_proof_argv(
+                    group["execution_argv"],
+                    framework=str(group["framework"]),
+                    test_ids=group["test_ids"],
+                    worktree=candidate_path,
+                    timeout=int(group["timeout_seconds"]),
+                    log_path=evidence_dir / f"{index + 1:02d}-{method}-candidate.log",
+                    cache_path=evidence_dir / "pycache" / f"{index + 1:02d}-candidate",
+                )
+                if candidate_project is not None:
+                    candidate_run["project_identity"] = candidate_project
+                candidate_run["worktree_residue"] = proof_worktree_residue(
+                    candidate_path
+                )
+                candidate_results[index] = candidate_run
+                if (
+                    candidate_run["timed_out"]
+                    or candidate_run["returncode"] != 0
+                    or candidate_run["test_result"].get("classification") != "pass"
+                    or full_head(candidate_path) != candidate
+                    or candidate_run["worktree_residue"]
+                ):
+                    uv_observation_invalid = (
+                        group.get("executable_identity", {}).get("kind")
+                        == "absolute-uv-launcher"
+                        and candidate_run["returncode"] == 0
+                        and candidate_run["test_result"].get("classification") != "pass"
+                    )
+                    candidate_problems.append(
+                        RuntimeProblem(
+                            "test proof candidate command did not pass cleanly",
+                            result="FAIL",
+                            code=(
+                                "TEST_PROOF_OBSERVATION_INVALID"
+                                if uv_observation_invalid
+                                else "TEST_PROOF_CANDIDATE_FAILED"
+                            ),
+                            details=proof_failure_details(
+                                index, group, candidate_run
+                            ),
+                            exit_code=EXIT_FAIL,
+                        )
+                    )
+
+            if candidate_problems:
+                first_problem = candidate_problems[0]
+                if all(
+                    item.code == "TEST_PROOF_CANDIDATE_FAILED"
+                    for item in candidate_problems
+                ):
+                    failures = [item.details for item in candidate_problems]
+                    details = dict(first_problem.details)
+                    if len(failures) > 1:
+                        details["failures"] = failures
+                    raise RuntimeProblem(
+                        str(first_problem),
+                        result=first_problem.result,
+                        code=first_problem.code,
+                        details=details,
+                        exit_code=first_problem.exit_code,
+                    )
+                raise first_problem
+
             for index, group in enumerate(spec["groups"]):
                 method = str(group["method"])
                 result: dict[str, Any] = {
@@ -10806,52 +10882,7 @@ def cmd_prove_tests(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                     group_results.append(result)
                     continue
 
-                candidate_path = proof_root / f"{index + 1:02d}-candidate"
-                add_detached_worktree(repo, candidate_path, candidate)
-                created.append(candidate_path)
-                candidate_project = validate_uv_proof_execution(
-                    repo, candidate, candidate_path, group
-                )
-                candidate_run = run_proof_argv(
-                    group["execution_argv"],
-                    framework=str(group["framework"]),
-                    test_ids=group["test_ids"],
-                    worktree=candidate_path,
-                    timeout=int(group["timeout_seconds"]),
-                    log_path=evidence_dir / f"{index + 1:02d}-{method}-candidate.log",
-                    cache_path=evidence_dir / "pycache" / f"{index + 1:02d}-candidate",
-                )
-                if candidate_project is not None:
-                    candidate_run["project_identity"] = candidate_project
-                candidate_run["worktree_residue"] = proof_worktree_residue(
-                    candidate_path
-                )
-                if (
-                    candidate_run["timed_out"]
-                    or candidate_run["returncode"] != 0
-                    or candidate_run["test_result"].get("classification") != "pass"
-                    or full_head(candidate_path) != candidate
-                    or candidate_run["worktree_residue"]
-                ):
-                    uv_observation_invalid = (
-                        group.get("executable_identity", {}).get("kind")
-                        == "absolute-uv-launcher"
-                        and candidate_run["returncode"] == 0
-                        and candidate_run["test_result"].get("classification") != "pass"
-                    )
-                    raise RuntimeProblem(
-                        "test proof candidate command did not pass cleanly",
-                        result="FAIL",
-                        code=(
-                            "TEST_PROOF_OBSERVATION_INVALID"
-                            if uv_observation_invalid
-                            else "TEST_PROOF_CANDIDATE_FAILED"
-                        ),
-                        details=proof_failure_details(
-                            index, group, candidate_run
-                        ),
-                        exit_code=EXIT_FAIL,
-                    )
+                candidate_run = candidate_results[index]
                 result["candidate"] = candidate_run
 
                 if method == "baseline-red":

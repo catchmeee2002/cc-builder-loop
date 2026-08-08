@@ -599,34 +599,41 @@ class NativeCoordinator:
                 raise NativeDriverError("Tester returned no proof spec", code="NATIVE_PROOF_SPEC_MISSING")
             if action["action"] == "tester_proof":
                 spec = self._bind_proof_test_ids(spec, context)
-            try:
-                self.core.call(
-                    "prove-tests",
-                    "--repo",
-                    str(self.repo),
-                    "--run",
-                    self.run_id,
-                    "--spec",
-                    "-",
-                    "--agent-id",
-                    str(agent["agent_id"]),
-                    "--thread-id",
-                    str(agent["thread_id"]),
-                    "--action-id",
-                    action_id,
-                    "--driver-runtime-kind",
-                    "native",
-                    input_value=spec,
-                )
-            except CorePortError as exc:
-                failed = self._context()
-                if not self._proof_failure_matches(
-                    failed.get("proof_failure"),
-                    failed.get("proof_failure_state"),
-                    action_id,
-                    exc,
-                ):
-                    raise
+            if not self._persisted_proof_failure_matches(
+                context.get("proof_failure"),
+                context.get("proof_failure_state"),
+                action_id,
+                spec,
+                agent,
+            ):
+                try:
+                    self.core.call(
+                        "prove-tests",
+                        "--repo",
+                        str(self.repo),
+                        "--run",
+                        self.run_id,
+                        "--spec",
+                        "-",
+                        "--agent-id",
+                        str(agent["agent_id"]),
+                        "--thread-id",
+                        str(agent["thread_id"]),
+                        "--action-id",
+                        action_id,
+                        "--driver-runtime-kind",
+                        "native",
+                        input_value=spec,
+                    )
+                except CorePortError as exc:
+                    failed = self._context()
+                    if not self._proof_failure_matches(
+                        failed.get("proof_failure"),
+                        failed.get("proof_failure_state"),
+                        action_id,
+                        exc,
+                    ):
+                        raise
         elif action["action"] == "tester_blackbox":
             evidence = result.get("evidence_report")
             if not isinstance(evidence, dict):
@@ -1188,6 +1195,30 @@ class NativeCoordinator:
             and isinstance(failure, dict)
             and failure.get("code") == error.code
             and failure.get("status") == error.status
+        )
+
+    @staticmethod
+    def _persisted_proof_failure_matches(
+        value: Any,
+        state: Any,
+        action_id: str,
+        spec: dict[str, Any],
+        agent: dict[str, Any],
+    ) -> bool:
+        producer = value.get("producer") if isinstance(value, dict) else None
+        return bool(
+            isinstance(value, dict)
+            and state == "current"
+            and value.get("action_id") == action_id
+            and value.get("spec") == spec
+            and value.get("spec_digest") == digest(spec)
+            and isinstance(value.get("failure_digest"), str)
+            and producer
+            == {
+                "role": "tester",
+                "agent_id": agent.get("agent_id"),
+                "thread_id": agent.get("thread_id"),
+            }
         )
 
     def _turn_cwd(self, action: dict[str, Any], role: str, context: dict[str, Any]) -> str:
