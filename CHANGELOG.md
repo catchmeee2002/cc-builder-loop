@@ -8,7 +8,8 @@
   自包含和完整聚合归因；Native Driver 恢复 completed proof dispatch 时直接消费精确匹配的已持久化
   failure，不重入 proof gate 或重复记录失败。恢复中的 proof diagnosis 从 current failure 续接原 spec，
   初始 proof 的合法 problem 分支无需伪造 spec 即可进入 ownership 路由；DriverPort 从唯一持久化 spec
-  与执行事实派生完整 schema-compatible group evidence，不新增第二份 proof 状态。
+  与严格绑定的执行事实派生 schema-compatible group evidence。缺失 residue、group 身份漂移或 UV project
+  binding 冲突会使 proof 失效重跑；reviewed-boundaries 仅在 current machine evidence 存在后公开。
 
 - Native Driver 将结构化 turn failure 与 raw App Server stdio disconnect 归一为唯一 transport
   classification，只对精确匹配当前 role、thread、action 和 dispatch 的事故执行同事务有界重试，避免

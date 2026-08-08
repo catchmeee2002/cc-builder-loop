@@ -559,9 +559,12 @@ skip、xfail、xpass、未执行或额外测试不能借其他通过测试形成
 所有可执行 group 的 candidate 命令先按 spec 顺序完整运行；只要存在 candidate failure，就不启动任何
 baseline-red 或 mutation。`TEST_PROOF_CANDIDATE_FAILED` 保留首个 group/result 作为兼容字段，多失败时
 另附同顺序 `failures` 列表。单组失败、全部通过后的反例判断、schema version 1 和既有结果码保持不变。
-ledger 仍只保存规范化 spec 与逐组执行事实。DriverPort 将两者按 group 顺序连接，派生公共
-`proofGroupEvidence` 所需的完整执行绑定和 method-specific 字段；baseline-red 的内部 generic
-`counterexample` 仅在该 view 中映射为 `baseline`，mutation 与 reviewed-boundaries 同样不增加持久化副本。
+ledger 仍只保存规范化 spec 与逐组执行事实。每组结果同时绑定 behavior、method、requested/execution
+argv、test ids、framework、launcher、project identity 和真实空 residue；任一字段缺失、顺序或身份不符时
+proof 视为 stale 并重新执行，DriverPort 不补造兼容字段。绑定完整时才派生公共 `proofGroupEvidence`：
+baseline-red 的内部 generic `counterexample` 仅在 view 中映射为 `baseline`，UV launcher 的 repository
+paths 来自各 worktree 实际冻结且一致的 `pyproject.toml`/`uv.lock`。reviewed-boundaries 还必须等到同
+candidate 的 current machine evidence，`machine_evidence_head` 取该真实记录，不用 candidate identity 代填。
 
 runtime 消费 active v3 evidence 时重新核对上述原子 coverage；mutation 还必须含有摘要匹配的
 canonical `applied_diff`。升级前留下的歧义或不可回放 evidence 不再满足当前 gate，只能在冻结目标
