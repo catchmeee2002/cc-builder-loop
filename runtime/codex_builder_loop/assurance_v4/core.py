@@ -235,6 +235,21 @@ def _regular_blob_at(repo: Path, head: str, path: str) -> str | None:
     return parts[2]
 
 
+def _regular_blob_sha256_at(repo: Path, head: str, path: str) -> tuple[str, str] | None:
+    blob = _regular_blob_at(repo, head, path)
+    if blob is None:
+        return None
+    result = subprocess.run(
+        ["git", "-C", str(repo), "cat-file", "blob", blob],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if result.returncode != 0:
+        return None
+    return blob, hashlib.sha256(result.stdout).hexdigest()
+
+
 def _candidate_manifest(repo: Path, base: str, candidate: str) -> list[dict[str, str]]:
     manifest: list[dict[str, str]] = []
     for path in changed_files(repo, base, candidate):
@@ -2243,9 +2258,29 @@ def evidence_state(ledger: Mapping[str, Any], kind: str) -> str:
             else []
         )
         expected_source_head = source.get("head") if isinstance(source, Mapping) else None
+        candidate_head = (
+            execution.get("candidate_head") if isinstance(execution, Mapping) else None
+        )
+        tester_agent = (
+            execution.get("agents", {}).get("tester")
+            if isinstance(execution, Mapping)
+            and isinstance(execution.get("agents"), Mapping)
+            else None
+        )
+        expected_producer = (
+            {
+                "role": "tester",
+                "agent_id": tester_agent.get("agent_id"),
+                "thread_id": tester_agent.get("thread_id"),
+            }
+            if isinstance(tester_agent, Mapping)
+            else None
+        )
         if not _proof_record_replayable(
             record,
             expected_behaviors=expected_behaviors,
+            expected_candidate_head=candidate_head,
+            expected_producer=expected_producer,
             expected_source_head=expected_source_head,
             tester_paths=tester_paths,
             repo=Path(ledger["repo_root"]),
@@ -3035,6 +3070,298 @@ def _proof_applied_diff_paths(value: Any) -> list[str] | None:
     return paths
 
 
+def _proof_reviewed_boundary_ids(value: Any) -> set[str] | None:
+    boundaries = value.get("reviewed_boundaries") if isinstance(value, Mapping) else None
+    categories = {
+        "positive_test_ids",
+        "negative_test_ids",
+        "boundary_test_ids",
+        "invariant_test_ids",
+    }
+    if not isinstance(boundaries, Mapping) or set(boundaries) != categories:
+        return None
+    observed: set[str] = set()
+    for category in categories:
+        test_ids = boundaries.get(category)
+        if (
+            not isinstance(test_ids, list)
+            or not test_ids
+            or any(not isinstance(test_id, str) or not test_id.strip() for test_id in test_ids)
+            or len(test_ids) != len(set(test_ids))
+        ):
+            return None
+        observed.update(test_ids)
+    return observed
+
+
+def _proof_pass_counts_bound(value: Any, test_ids: Any) -> bool:
+    allowed = {
+        "passed",
+        "failed",
+        "failures",
+        "errors",
+        "skipped",
+        "xfailed",
+        "xpassed",
+    }
+    if (
+        not isinstance(value, Mapping)
+        or not isinstance(test_ids, list)
+        or not test_ids
+        or any(
+            key not in allowed
+            or isinstance(count, bool)
+            or not isinstance(count, int)
+            or count < 0
+            for key, count in value.items()
+        )
+    ):
+        return False
+    return value.get("passed") == len(test_ids) and all(
+        count == 0 for key, count in value.items() if key != "passed"
+    )
+
+
+def _proof_tester_sources_bound(
+    repo: Path,
+    *,
+    source_head: str,
+    candidate_head: str,
+    framework: str,
+    test_ids: Any,
+    tester_patterns: Sequence[str],
+    tester_paths: Sequence[Mapping[str, str]],
+) -> bool:
+    if (
+        not re.fullmatch(r"[0-9a-f]{40}", source_head)
+        or not re.fullmatch(r"[0-9a-f]{40}", candidate_head)
+        or framework not in {"unittest", "pytest"}
+        or not isinstance(test_ids, list)
+        or not test_ids
+    ):
+        return False
+    manifest: dict[str, str] = {}
+    for item in tester_paths:
+        path = item.get("path") if isinstance(item, Mapping) else None
+        blob = item.get("blob") if isinstance(item, Mapping) else None
+        if (
+            not isinstance(path, str)
+            or not isinstance(blob, str)
+            or not re.fullmatch(r"[0-9a-f]{40}", blob)
+            or path in manifest
+        ):
+            return False
+        manifest[path] = blob
+    try:
+        from ..core import proof_test_source_path
+
+        for test_id in test_ids:
+            if not isinstance(test_id, str) or not test_id.strip():
+                return False
+            path = proof_test_source_path(
+                repo,
+                source_head,
+                framework,
+                test_id,
+                tester_patterns,
+            )
+            blob = manifest.get(path) if path is not None else None
+            if (
+                path is None
+                or blob is None
+                or _regular_blob_at(repo, source_head, path) != blob
+                or _regular_blob_at(repo, candidate_head, path) != blob
+            ):
+                return False
+    except Exception:
+        return False
+    return True
+
+
+def _proof_repository_inputs_bound(
+    repo: Path,
+    *,
+    requested_argv: Any,
+    executable_identity: Any,
+    project_identity: Any,
+    heads: Sequence[str],
+) -> set[str] | None:
+    if (
+        not isinstance(requested_argv, list)
+        or not requested_argv
+        or not isinstance(requested_argv[0], str)
+        or not isinstance(executable_identity, Mapping)
+        or executable_identity.get("requested") != requested_argv[0]
+        or not heads
+        or any(not re.fullmatch(r"[0-9a-f]{40}", head) for head in heads)
+    ):
+        return None
+    protected: set[str] = set()
+    kind = executable_identity.get("kind")
+    if kind == "repository":
+        path = executable_identity.get("path")
+        blob = executable_identity.get("blob")
+        try:
+            normalized = validate_repo_path(path) if isinstance(path, str) else None
+        except ContractError:
+            return None
+        if (
+            project_identity is not None
+            or normalized != path
+            or executable_identity.get("requested") != path
+            or not isinstance(blob, str)
+            or not re.fullmatch(r"[0-9a-f]{40}", blob)
+            or any(_regular_blob_at(repo, head, path) != blob for head in heads)
+        ):
+            return None
+        protected.add(path)
+        return protected
+    if kind != "system":
+        return None
+    if Path(requested_argv[0]).name.lower() != "uv":
+        return protected if project_identity is None else None
+    files = project_identity.get("files") if isinstance(project_identity, Mapping) else None
+    expected_paths = ["pyproject.toml", "uv.lock"]
+    if (
+        not isinstance(project_identity, Mapping)
+        or set(project_identity) != {"files"}
+        or not isinstance(files, list)
+        or len(files) != len(expected_paths)
+        or [item.get("path") if isinstance(item, Mapping) else None for item in files]
+        != expected_paths
+    ):
+        return None
+    for item, path in zip(files, expected_paths):
+        if not isinstance(item, Mapping) or set(item) != {"path", "blob", "sha256"}:
+            return None
+        blob = item.get("blob")
+        sha256 = item.get("sha256")
+        if (
+            not isinstance(blob, str)
+            or not re.fullmatch(r"[0-9a-f]{40}", blob)
+            or not isinstance(sha256, str)
+            or not re.fullmatch(r"[0-9a-f]{64}", sha256)
+        ):
+            return None
+        for head in heads:
+            observed = _regular_blob_sha256_at(repo, head, path)
+            if observed != (blob, sha256):
+                return None
+        protected.add(path)
+    return protected
+
+
+def _proof_canonical_mutation(
+    repo: Path,
+    candidate_head: str,
+    patch: Any,
+) -> tuple[str, list[str]] | None:
+    if (
+        not re.fullmatch(r"[0-9a-f]{40}", candidate_head)
+        or not isinstance(patch, str)
+        or not patch.strip()
+    ):
+        return None
+    common = git(repo, "rev-parse", "--git-common-dir", check=False)
+    if common.returncode != 0 or not common.stdout.strip():
+        return None
+    common_path = Path(common.stdout.strip())
+    if not common_path.is_absolute():
+        common_path = (repo / common_path).resolve()
+    source_objects = common_path / "objects"
+    if not source_objects.is_dir():
+        return None
+    with tempfile.TemporaryDirectory(prefix="assurance-v4-proof-replay-") as raw:
+        root = Path(raw)
+        object_directory = root / "objects"
+        object_directory.mkdir()
+        env = os.environ.copy()
+        for key in (
+            "GIT_COMMON_DIR",
+            "GIT_DIR",
+            "GIT_INDEX_FILE",
+            "GIT_OBJECT_DIRECTORY",
+            "GIT_QUARANTINE_PATH",
+            "GIT_WORK_TREE",
+        ):
+            env.pop(key, None)
+        alternates = [str(source_objects)]
+        inherited_alternates = env.get("GIT_ALTERNATE_OBJECT_DIRECTORIES")
+        if inherited_alternates:
+            alternates.append(inherited_alternates)
+        env.update(
+            {
+                "GIT_ALTERNATE_OBJECT_DIRECTORIES": os.pathsep.join(alternates),
+                "GIT_INDEX_FILE": str(root / "index"),
+                "GIT_OBJECT_DIRECTORY": str(object_directory),
+                "GIT_OPTIONAL_LOCKS": "0",
+            }
+        )
+
+        def run(*args: str, input_text: str | None = None) -> subprocess.CompletedProcess[str]:
+            return subprocess.run(
+                ["git", "-C", str(repo), *args],
+                input=input_text,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+                env=env,
+            )
+
+        if run("read-tree", candidate_head).returncode != 0:
+            return None
+        if (
+            run(
+                "apply",
+                "--cached",
+                "--binary",
+                "--whitespace=nowarn",
+                "-",
+                input_text=patch,
+            ).returncode
+            != 0
+        ):
+            return None
+        names = run("diff", "--cached", "--name-only", "-z", candidate_head, "--")
+        if names.returncode != 0 or not names.stdout.endswith("\0"):
+            return None
+        paths = names.stdout[:-1].split("\0")
+        if not paths or paths != sorted(set(paths)):
+            return None
+        for path in paths:
+            staged = run("ls-files", "--stage", "-z", "--", f":(literal){path}")
+            if (
+                staged.returncode != 0
+                or not staged.stdout.endswith("\0")
+                or staged.stdout.count("\0") != 1
+            ):
+                return None
+            metadata, separator, listed_path = staged.stdout[:-1].partition("\t")
+            fields = metadata.split()
+            if (
+                separator != "\t"
+                or listed_path != path
+                or len(fields) != 3
+                or fields[0] not in {"100644", "100755"}
+                or fields[2] != "0"
+            ):
+                return None
+        diff = run(
+            "diff",
+            "--cached",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--binary",
+            "--full-index",
+            candidate_head,
+            "--",
+        )
+        if diff.returncode != 0 or not diff.stdout:
+            return None
+        return diff.stdout, paths
+
+
 def _proof_project_paths(value: Any) -> list[dict[str, str]] | None:
     files = value.get("files") if isinstance(value, Mapping) else None
     if not isinstance(files, list) or not files:
@@ -3169,6 +3496,10 @@ def _proof_test_run_bound(
         and test_result.get("framework") == framework
         and test_result.get("classification") == classification
         and (
+            classification != "pass"
+            or _proof_pass_counts_bound(test_result.get("counts"), test_ids)
+        )
+        and (
             classification != "assertion-failure"
             or (
                 isinstance(test_ids, list)
@@ -3191,6 +3522,7 @@ def _proof_group_replayable(
     result: Any,
     *,
     candidate_head: str,
+    source_head: str,
     tester_paths: Sequence[Mapping[str, str]],
     repo: Path | None,
     builder_patterns: Sequence[str],
@@ -3218,6 +3550,29 @@ def _proof_group_replayable(
     candidate = result.get("candidate")
     identity = result.get("executable_identity")
     project_identity = result.get("project_identity")
+    method = spec.get("method")
+    input_heads = [candidate_head]
+    if method == "baseline-red":
+        input_heads.append(source_head)
+    if not isinstance(repo, Path) or not _proof_tester_sources_bound(
+        repo,
+        source_head=source_head,
+        candidate_head=candidate_head,
+        framework=expected_framework,
+        test_ids=spec.get("test_ids"),
+        tester_patterns=tester_patterns,
+        tester_paths=tester_paths,
+    ):
+        return False
+    protected_inputs = _proof_repository_inputs_bound(
+        repo,
+        requested_argv=spec.get("argv"),
+        executable_identity=identity,
+        project_identity=project_identity,
+        heads=input_heads,
+    )
+    if protected_inputs is None:
+        return False
     if not _proof_test_run_bound(
         candidate,
         requested_argv=spec.get("argv"),
@@ -3229,7 +3584,6 @@ def _proof_group_replayable(
         classification="pass",
     ):
         return False
-    method = spec.get("method")
     if method == "baseline-red":
         matches = bool(
             result.get("claimed_failure_kind") == spec.get("claimed_failure_kind")
@@ -3259,6 +3613,11 @@ def _proof_group_replayable(
             return False
         applied_diff = mutation.get("applied_diff")
         changed_paths = _proof_applied_diff_paths(applied_diff)
+        canonical_mutation = _proof_canonical_mutation(
+            repo,
+            candidate_head,
+            spec.get("patch"),
+        )
         matches = bool(
             mutation.get("patch_sha256")
             == hashlib.sha256(str(spec.get("patch", "")).encode()).hexdigest()
@@ -3266,8 +3625,9 @@ def _proof_group_replayable(
             and mutation.get("applied_diff_sha256")
             == hashlib.sha256(applied_diff.encode()).hexdigest()
             and mutation.get("changed_paths") == changed_paths
-            and isinstance(repo, Path)
             and isinstance(changed_paths, list)
+            and canonical_mutation == (applied_diff, changed_paths)
+            and not protected_inputs.intersection(changed_paths)
             and all(
                 _matches(path, list(builder_patterns))
                 and not _matches(path, list(tester_patterns))
@@ -3282,6 +3642,7 @@ def _proof_group_replayable(
             method == "reviewed-boundaries"
             and result.get("reason") == spec.get("reason")
             and result.get("reviewed_boundaries") == spec.get("reviewed_boundaries")
+            and _proof_reviewed_boundary_ids(spec) == set(spec.get("test_ids", []))
             and result.get("counterexample") is None
         )
     if not matches:
@@ -3298,6 +3659,8 @@ def _proof_record_replayable(
     record: Any,
     *,
     expected_behaviors: Sequence[str] | None = None,
+    expected_candidate_head: Any = None,
+    expected_producer: Any = None,
     expected_source_head: str | None = None,
     tester_paths: Sequence[Mapping[str, str]] = (),
     repo: Path | None = None,
@@ -3328,6 +3691,8 @@ def _proof_record_replayable(
     if (
         not isinstance(candidate_head, str)
         or not re.fullmatch(r"[0-9a-f]{40}", candidate_head)
+        or candidate_head != expected_candidate_head
+        or record.get("producer") != expected_producer
         or not isinstance(details, Mapping)
         or details.get("result") != "pass"
         or not isinstance(details.get("source_head"), str)
@@ -3364,6 +3729,7 @@ def _proof_record_replayable(
             group,
             result,
             candidate_head=candidate_head,
+            source_head=details["source_head"],
             tester_paths=tester_paths,
             repo=repo,
             builder_patterns=builder_patterns,
@@ -5470,11 +5836,7 @@ def prove_tests(
         for group in spec["groups"]:
             framework = capture(lambda: _proof_framework(list(group["argv"])))
             if group["method"] == "reviewed-boundaries":
-                boundary_ids = {
-                    test_id
-                    for values in group["reviewed_boundaries"].values()
-                    for test_id in values
-                }
+                boundary_ids = _proof_reviewed_boundary_ids(group)
                 if boundary_ids != set(group["test_ids"]):
                     fail(
                         AssuranceError(
@@ -5483,7 +5845,7 @@ def prove_tests(
                             status="FAIL",
                             details={
                                 "declared_test_ids": sorted(group["test_ids"]),
-                                "reviewed_boundary_ids": sorted(boundary_ids),
+                                "reviewed_boundary_ids": sorted(boundary_ids or []),
                             },
                         )
                     )
