@@ -2818,21 +2818,217 @@ def status(repo_value: str | Path, run_value: str) -> dict[str, Any]:
     }
 
 
+def _proof_test_run_view(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, Mapping):
+        return None
+    fields = (
+        "argv",
+        "returncode",
+        "timed_out",
+        "test_result",
+        "duration_ms",
+        "log_path",
+        "log_sha256",
+        "log_tail",
+    )
+    if any(field not in value for field in fields):
+        return None
+    return {
+        **{field: copy.deepcopy(value[field]) for field in fields},
+        "worktree_residue": copy.deepcopy(value.get("worktree_residue", [])),
+    }
+
+
+def _proof_executable_size(
+    identity: Mapping[str, Any], cache: dict[tuple[str, str], int | None]
+) -> int | None:
+    size = identity.get("size")
+    if isinstance(size, int) and not isinstance(size, bool) and size >= 0:
+        return size
+    path = identity.get("path")
+    sha256 = identity.get("sha256")
+    if not isinstance(path, str) or not isinstance(sha256, str):
+        return None
+    key = (path, sha256)
+    if key not in cache:
+        executable = Path(path)
+        try:
+            cache[key] = (
+                int(executable.stat().st_size)
+                if executable.is_file() and _sha256_file(executable) == sha256
+                else None
+            )
+        except OSError:
+            cache[key] = None
+    return cache[key]
+
+
+def _proof_executable_identity_view(
+    value: Any,
+    *,
+    repository_paths: list[dict[str, str]],
+    size_cache: dict[tuple[str, str], int | None],
+) -> dict[str, Any] | None:
+    if not isinstance(value, Mapping):
+        return None
+    kind = value.get("kind")
+    requested = value.get("requested")
+    if kind == "repository":
+        path = value.get("path")
+        blob = value.get("blob")
+        if all(isinstance(item, str) for item in (requested, path, blob)):
+            return {
+                "kind": "frozen-repository-entry",
+                "requested": requested,
+                "repository_paths": [{"path": path, "blob": blob}],
+            }
+        return None
+    if kind != "system":
+        return copy.deepcopy(dict(value))
+    path = value.get("path")
+    sha256 = value.get("sha256")
+    size = _proof_executable_size(value, size_cache)
+    if not all(isinstance(item, str) for item in (requested, path, sha256)) or size is None:
+        return None
+    executable_name = Path(str(requested)).name.lower()
+    resolved_name = Path(str(path)).name.lower()
+    python_pattern = r"(?:python|pypy)(?:\d+(?:\.\d+)*)?(?:\.exe)?"
+    if re.fullmatch(python_pattern, executable_name) or re.fullmatch(
+        python_pattern, resolved_name
+    ):
+        return {
+            "kind": "trusted-python",
+            "requested": requested,
+            "path": path,
+            "sha256": sha256,
+            "size": size,
+        }
+    if not repository_paths:
+        return None
+    return {
+        "kind": (
+            "absolute-launcher"
+            if value.get("resolution") == "explicit_absolute"
+            else "trusted-system-launcher"
+        ),
+        "requested": requested,
+        "path": path,
+        "sha256": sha256,
+        "size": size,
+        "repository_paths": copy.deepcopy(repository_paths),
+    }
+
+
+def _proof_group_evidence_view(
+    spec: Any,
+    result: Any,
+    *,
+    candidate_head: Any,
+    repository_paths: list[dict[str, str]],
+    size_cache: dict[tuple[str, str], int | None],
+) -> dict[str, Any] | None:
+    if not isinstance(spec, Mapping) or not isinstance(result, Mapping):
+        return None
+    candidate = result.get("candidate")
+    candidate_run = _proof_test_run_view(candidate)
+    test_result = candidate.get("test_result") if isinstance(candidate, Mapping) else None
+    framework = test_result.get("framework") if isinstance(test_result, Mapping) else None
+    execution_argv = candidate.get("argv") if isinstance(candidate, Mapping) else None
+    identity = _proof_executable_identity_view(
+        candidate.get("executable_identity") if isinstance(candidate, Mapping) else None,
+        repository_paths=repository_paths,
+        size_cache=size_cache,
+    )
+    if (
+        candidate_run is None
+        or framework not in {"unittest", "pytest", "auto"}
+        or not isinstance(execution_argv, list)
+        or identity is None
+    ):
+        return None
+    method = spec.get("method")
+    group = {
+        "behavior_ids": copy.deepcopy(spec.get("behavior_ids")),
+        "method": method,
+        "argv": copy.deepcopy(spec.get("argv")),
+        "execution_argv": copy.deepcopy(execution_argv),
+        "framework": framework,
+        "executable_identity": identity,
+        "test_ids": copy.deepcopy(spec.get("test_ids")),
+        "timeout_seconds": spec.get("timeout_seconds"),
+    }
+    if method == "baseline-red":
+        baseline = _proof_test_run_view(
+            result.get("baseline", result.get("counterexample"))
+        )
+        if baseline is None:
+            return None
+        return {
+            **group,
+            "claimed_failure_kind": spec.get("claimed_failure_kind"),
+            "candidate": candidate_run,
+            "baseline": baseline,
+        }
+    if method == "mutation":
+        mutation = _proof_test_run_view(result.get("mutation"))
+        raw_mutation = result.get("mutation")
+        if mutation is None or not isinstance(raw_mutation, Mapping):
+            return None
+        for field in (
+            "patch_sha256",
+            "applied_diff",
+            "applied_diff_sha256",
+            "changed_paths",
+            "head_before",
+            "head_after",
+        ):
+            if field not in raw_mutation:
+                return None
+            mutation[field] = copy.deepcopy(raw_mutation[field])
+        return {**group, "candidate": candidate_run, "mutation": mutation}
+    if method == "reviewed-boundaries" and isinstance(candidate_head, str):
+        return {
+            **group,
+            "reason": copy.deepcopy(spec.get("reason")),
+            "reviewed_boundaries": copy.deepcopy(spec.get("reviewed_boundaries")),
+            "machine_evidence_head": candidate_head,
+        }
+    return None
+
+
 def _driver_evidence_view(ledger: Mapping[str, Any]) -> dict[str, Any]:
     evidence = copy.deepcopy(ledger.get("evidence", {}))
     proof = evidence.get("proof")
     details = proof.get("details") if isinstance(proof, dict) else None
     results = details.get("results") if isinstance(details, dict) else None
-    if not isinstance(results, list):
+    spec = details.get("spec") if isinstance(details, dict) else None
+    groups = spec.get("groups") if isinstance(spec, dict) else None
+    if not isinstance(results, list) or not isinstance(groups, list):
         return evidence
-    for group in results:
-        if (
-            isinstance(group, dict)
-            and group.get("method") == "baseline-red"
-            and "baseline" not in group
-            and isinstance(group.get("counterexample"), dict)
-        ):
-            group["baseline"] = group.pop("counterexample")
+    source = ledger.get("facets", {}).get("execution", {}).get("tester_source")
+    repository_paths: list[dict[str, str]] = []
+    if isinstance(source, Mapping):
+        repository_paths = [
+            {"path": item["path"], "blob": item["blob"]}
+            for item in source.get("files", [])
+            if isinstance(item, Mapping)
+            and isinstance(item.get("path"), str)
+            and isinstance(item.get("blob"), str)
+        ]
+    size_cache: dict[tuple[str, str], int | None] = {}
+    for index, result in enumerate(results):
+        if index >= len(groups):
+            break
+        view = _proof_group_evidence_view(
+            groups[index],
+            result,
+            candidate_head=proof.get("candidate_head") if isinstance(proof, dict) else None,
+            repository_paths=repository_paths,
+            size_cache=size_cache,
+        )
+        if view is not None:
+            results[index] = view
+    details["report_digest"] = digest({"spec": spec, "results": results})
     return evidence
 
 
@@ -4508,7 +4704,12 @@ def _proof_run(
     label: str,
     expected_launcher_identity: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    from ..core import run_proof_argv
+    from ..core import (
+        parse_canonical_uv_proof_command,
+        proof_pytest_args,
+        proof_unittest_args,
+        run_proof_argv,
+    )
 
     requested = list(group["argv"])
     framework = _proof_framework(requested)
@@ -4528,7 +4729,34 @@ def _proof_run(
             details={"expected": expected_launcher_identity, "actual": identity},
         )
     project_identity = _proof_uv_project_identity(repo, worktree, head, requested)
-    execution_argv = [resolved, *requested[1:]]
+    executable = Path(requested[0]).name.lower()
+    if executable == "uv":
+        parsed = parse_canonical_uv_proof_command(requested)
+        assert parsed is not None
+        execution_argv = [
+            resolved,
+            *parsed["prefix"],
+            *parsed["execution_tail"],
+        ]
+    elif executable in {"pytest", "py.test"}:
+        execution_argv = [resolved, *proof_pytest_args(requested[1:])]
+    elif framework == "pytest":
+        execution_argv = [
+            resolved,
+            "-m",
+            "pytest",
+            *proof_pytest_args(requested[3:]),
+        ]
+    else:
+        execution_argv = [
+            resolved,
+            "-m",
+            "unittest",
+            *proof_unittest_args(requested[3:]),
+        ]
+    proof_identity = copy.deepcopy(identity)
+    if proof_identity.get("kind") == "system":
+        proof_identity["size"] = int(Path(resolved).stat().st_size)
     result = run_proof_argv(
         execution_argv,
         framework=framework,
@@ -4541,9 +4769,28 @@ def _proof_run(
     return {
         **result,
         "requested_argv": requested,
-        "executable_identity": identity,
+        "executable_identity": proof_identity,
         "project_identity": project_identity,
     }
+
+
+def _proof_worktree_residue(
+    worktree: Path, *, allowed_paths: Sequence[str] = ()
+) -> list[str]:
+    ignored = git(
+        worktree,
+        "ls-files",
+        "--others",
+        "--ignored",
+        "--exclude-standard",
+        "-z",
+    ).stdout.split("\0")
+    allowed = set(allowed_paths)
+    return sorted(
+        path
+        for path in set(dirty_paths(worktree)) | {item for item in ignored if item}
+        if path not in allowed
+    )
 
 
 def _proof_failure_action_id(value: str | None) -> str | None:
@@ -4862,8 +5109,14 @@ def prove_tests(
                         launcher_identities[index],
                     )
                 )
+                candidate_result["worktree_residue"] = _proof_worktree_residue(
+                    candidate_worktree
+                )
                 candidate_results[index] = candidate_result
-                if candidate_result["test_result"].get("classification") != "pass":
+                if (
+                    candidate_result["test_result"].get("classification") != "pass"
+                    or candidate_result["worktree_residue"]
+                ):
                     candidate_failures.append(
                         {"group": index, "result": candidate_result}
                     )
@@ -4907,6 +5160,9 @@ def prove_tests(
                             f"group-{index}-baseline",
                             launcher_identities[index],
                         )
+                    )
+                    counterexample["worktree_residue"] = _proof_worktree_residue(
+                        baseline_worktree
                     )
                 elif method == "mutation":
                     mutation_worktree = proof_root / f"mutation-{index}"
@@ -4979,6 +5235,10 @@ def prove_tests(
                             launcher_identities[index],
                         )
                     )
+                    counterexample["worktree_residue"] = _proof_worktree_residue(
+                        mutation_worktree,
+                        allowed_paths=mutation_paths,
+                    )
                     mutation_after_paths = sorted(dirty_paths(mutation_worktree))
                     mutation_after_diff = git(
                         mutation_worktree,
@@ -5026,7 +5286,11 @@ def prove_tests(
                         "head_before": candidate,
                         "head_after": mutation_head_after,
                     }
-                if counterexample is not None and counterexample["test_result"].get("classification") != "assertion-failure":
+                if counterexample is not None and (
+                    counterexample["test_result"].get("classification")
+                    != "assertion-failure"
+                    or counterexample["worktree_residue"]
+                ):
                     fail(
                         AssuranceError(
                             "test proof counterexample was not an assertion failure",

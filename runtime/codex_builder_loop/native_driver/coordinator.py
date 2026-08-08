@@ -496,9 +496,10 @@ class NativeCoordinator:
     ) -> None:
         action_id = str(action["action_id"])
         agent = context["facets"]["execution"]["agents"][role]
+        problem = result.get("problem_report")
         proof_spec: dict[str, Any] | None = None
         proof_failure_already_persisted = False
-        if action["action"] == "tester_proof":
+        if action["action"] == "tester_proof" and not isinstance(problem, dict):
             value = result.get("proof_spec")
             if not isinstance(value, dict):
                 raise NativeDriverError(
@@ -533,7 +534,6 @@ class NativeCoordinator:
                 )
         if action["action"] == "tester_machine_diagnose":
             self._validate_machine_diagnosis(result)
-        problem = result.get("problem_report")
         if isinstance(problem, dict):
             self.core.call(
                 "record-problems",

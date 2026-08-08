@@ -455,7 +455,8 @@ Builder turn 的 completed dispatch 先 checkpoint clean commit、关闭 Builder
 open problem 的 owner 采用穷举路由：`builder`/`tester` 分别回原角色，`plan`、`external_platform`、
 `builder_loop`、`current_project` 分别进入专属 `NEEDS_USER` decision。后四类任一仍 open 时禁止新的
 Agent dispatch；clean committed candidate 仍先执行确定性 checkpoint，使失败现场与最新 Git 身份一致。
-Native `tester_proof` 的 completed dispatch 同样先应用 Core gate：成功 evidence 或 current
+Native `tester_proof` 的 completed dispatch 先区分结果分支：合法非空 `problem_report` 直接记录并进入
+ownership 路由，不要求同时伪造 `proof_spec`；无 problem 时才应用 Core gate，成功 evidence 或 current
 `proof_failure` 二者必须恰有一个与该 action 对应，Coordinator 才能消费。failure 的相同 action/spec
 replay 返回已存错误且不追加 event；进程恢复若已看到同 action/spec/Tester 的 current failure，则直接消费
 completed dispatch，不再次进入 proof gate。消费后 Driver 才能派生独立的诊断 turn，因此 dispatch intent
@@ -558,8 +559,9 @@ skip、xfail、xpass、未执行或额外测试不能借其他通过测试形成
 所有可执行 group 的 candidate 命令先按 spec 顺序完整运行；只要存在 candidate failure，就不启动任何
 baseline-red 或 mutation。`TEST_PROOF_CANDIDATE_FAILED` 保留首个 group/result 作为兼容字段，多失败时
 另附同顺序 `failures` 列表。单组失败、全部通过后的反例判断、schema version 1 和既有结果码保持不变。
-ledger 仍只保存一份反例事实；DriverPort 对 baseline-red 的公开 evidence view 将内部 generic
-`counterexample` 派生为 schema 的 `baseline` 字段，不在持久化记录中增加兼容副本。
+ledger 仍只保存规范化 spec 与逐组执行事实。DriverPort 将两者按 group 顺序连接，派生公共
+`proofGroupEvidence` 所需的完整执行绑定和 method-specific 字段；baseline-red 的内部 generic
+`counterexample` 仅在该 view 中映射为 `baseline`，mutation 与 reviewed-boundaries 同样不增加持久化副本。
 
 runtime 消费 active v3 evidence 时重新核对上述原子 coverage；mutation 还必须含有摘要匹配的
 canonical `applied_diff`。升级前留下的歧义或不可回放 evidence 不再满足当前 gate，只能在冻结目标
