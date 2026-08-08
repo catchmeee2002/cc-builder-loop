@@ -11,8 +11,11 @@ import subprocess
 import tempfile
 import time
 from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Mapping, Sequence
+
+import jsonschema
 
 from . import SCHEMA_VERSION
 from .doc_references import (
@@ -44,6 +47,7 @@ from .models import (
     validate_telemetry,
     validate_test_proof_spec,
     validate_ledger,
+    schema_root,
 )
 from .store import (
     StoreError,
@@ -2177,12 +2181,35 @@ def evidence_state(ledger: Mapping[str, Any], kind: str) -> str:
             for item in files
         ):
             return "stale"
-    if (
-        record.get("status") == "pass"
-        and kind == "proof"
-        and not _proof_record_replayable(record)
-    ):
-        return "stale"
+    if record.get("status") == "pass" and kind == "proof":
+        mission = ledger.get("facets", {}).get("mission", {})
+        behaviors = mission.get("behaviors") if isinstance(mission, Mapping) else None
+        expected_behaviors = (
+            [item.get("id") for item in behaviors]
+            if isinstance(behaviors, list)
+            and all(isinstance(item, Mapping) for item in behaviors)
+            else None
+        )
+        execution = ledger.get("facets", {}).get("execution", {})
+        source = execution.get("tester_source") if isinstance(execution, Mapping) else None
+        source_files = source.get("files") if isinstance(source, Mapping) else None
+        tester_paths = (
+            [
+                {"path": item.get("path"), "blob": item.get("blob")}
+                for item in source_files
+            ]
+            if isinstance(source_files, list)
+            and all(isinstance(item, Mapping) for item in source_files)
+            else []
+        )
+        expected_source_head = source.get("head") if isinstance(source, Mapping) else None
+        if not _proof_record_replayable(
+            record,
+            expected_behaviors=expected_behaviors,
+            expected_source_head=expected_source_head,
+            tester_paths=tester_paths,
+        ):
+            return "stale"
     return "pass" if record.get("status") == "pass" else "failed"
 
 
@@ -2843,6 +2870,128 @@ def _proof_test_run_view(value: Any) -> dict[str, Any] | None:
     return {field: copy.deepcopy(value[field]) for field in fields}
 
 
+@lru_cache(maxsize=1)
+def _proof_evidence_schema() -> dict[str, Any]:
+    return json.loads((schema_root() / "codex-test-proof.schema.json").read_text())
+
+
+@lru_cache(maxsize=None)
+def _proof_evidence_validator(definition: str) -> jsonschema.Draft202012Validator:
+    schema = _proof_evidence_schema()
+    return jsonschema.Draft202012Validator(
+        {
+            "$schema": schema["$schema"],
+            "$defs": schema["$defs"],
+            "$ref": f"#/$defs/{definition}",
+        }
+    )
+
+
+def _proof_group_evidence_valid(value: Any) -> bool:
+    return _proof_evidence_validator("proofGroupEvidence").is_valid(value)
+
+
+def _proof_git_quoted_path(value: str, start: int) -> tuple[str, int] | None:
+    if start >= len(value) or value[start] != '"':
+        return None
+    decoded = bytearray()
+    index = start + 1
+    escapes = {
+        "a": 7,
+        "b": 8,
+        "t": 9,
+        "n": 10,
+        "v": 11,
+        "f": 12,
+        "r": 13,
+        '"': 34,
+        "\\": 92,
+    }
+    while index < len(value):
+        character = value[index]
+        if character == '"':
+            try:
+                path = decoded.decode("utf-8")
+            except UnicodeDecodeError:
+                return None
+            return (path, index + 1) if "\0" not in path else None
+        if character != "\\":
+            decoded.extend(character.encode("utf-8"))
+            index += 1
+            continue
+        index += 1
+        if index >= len(value):
+            return None
+        escaped = value[index]
+        if escaped in escapes:
+            decoded.append(escapes[escaped])
+            index += 1
+            continue
+        octal = value[index : index + 3]
+        if len(octal) != 3 or any(item not in "01234567" for item in octal):
+            return None
+        byte = int(octal, 8)
+        if byte > 255:
+            return None
+        decoded.append(byte)
+        index += 3
+    return None
+
+
+def _proof_diff_header_path(line: str) -> str | None:
+    prefix = "diff --git "
+    if not line.startswith(prefix):
+        return None
+    value = line[len(prefix) :]
+    if value.startswith('"'):
+        parsed_left = _proof_git_quoted_path(value, 0)
+        if parsed_left is None:
+            return None
+        left, index = parsed_left
+        if value[index : index + 1] != " ":
+            return None
+        parsed_right = _proof_git_quoted_path(value, index + 1)
+        if parsed_right is None or parsed_right[1] != len(value):
+            return None
+        right = parsed_right[0]
+    else:
+        if len(value) < 6 or len(value) % 2 == 0:
+            return None
+        middle = len(value) // 2
+        if value[middle] != " ":
+            return None
+        left = value[:middle]
+        right = value[middle + 1 :]
+    if (
+        not left.startswith("a/")
+        or not right.startswith("b/")
+        or left[2:] != right[2:]
+    ):
+        return None
+    path = left[2:]
+    try:
+        normalized = validate_repo_path(path)
+    except ContractError:
+        return None
+    return path if normalized == path else None
+
+
+def _proof_applied_diff_paths(value: Any) -> list[str] | None:
+    if not isinstance(value, str) or not value.startswith("diff --git "):
+        return None
+    paths: list[str] = []
+    for line in value.splitlines():
+        if not line.startswith("diff --git "):
+            continue
+        path = _proof_diff_header_path(line)
+        if path is None:
+            return None
+        paths.append(path)
+    if not paths or len(paths) != len(set(paths)) or paths != sorted(paths):
+        return None
+    return paths
+
+
 def _proof_project_paths(value: Any) -> list[dict[str, str]] | None:
     files = value.get("files") if isinstance(value, Mapping) else None
     if not isinstance(files, list) or not files:
@@ -2947,9 +3096,10 @@ def _proof_test_run_bound(
     project_identity: Any,
     classification: str,
 ) -> bool:
+    public_run = _proof_test_run_view(value)
     if (
         not isinstance(value, Mapping)
-        or _proof_test_run_view(value) is None
+        or public_run is None
         or any(
             field not in value
             for field in ("requested_argv", "executable_identity", "project_identity")
@@ -2969,11 +3119,20 @@ def _proof_test_run_bound(
         and isinstance(test_result, Mapping)
         and test_result.get("framework") == framework
         and test_result.get("classification") == classification
+        and _proof_evidence_validator(
+            "passTestRun"
+            if classification == "pass"
+            else "assertionFailureTestRun"
+        ).is_valid(public_run)
     )
 
 
 def _proof_group_replayable(
-    spec: Any, result: Any, *, candidate_head: str
+    spec: Any,
+    result: Any,
+    *,
+    candidate_head: str,
+    tester_paths: Sequence[Mapping[str, str]],
 ) -> bool:
     if not isinstance(spec, Mapping) or not isinstance(result, Mapping):
         return False
@@ -3009,7 +3168,7 @@ def _proof_group_replayable(
         return False
     method = spec.get("method")
     if method == "baseline-red":
-        return bool(
+        matches = bool(
             result.get("claimed_failure_kind") == spec.get("claimed_failure_kind")
             and _proof_test_run_bound(
                 result.get("counterexample"),
@@ -3021,7 +3180,7 @@ def _proof_group_replayable(
                 classification="assertion-failure",
             )
         )
-    if method == "mutation":
+    elif method == "mutation":
         mutation = result.get("mutation")
         if not _proof_test_run_bound(
             mutation,
@@ -3034,27 +3193,46 @@ def _proof_group_replayable(
         ) or not isinstance(mutation, Mapping):
             return False
         applied_diff = mutation.get("applied_diff")
-        return bool(
+        matches = bool(
             mutation.get("patch_sha256")
             == hashlib.sha256(str(spec.get("patch", "")).encode()).hexdigest()
             and isinstance(applied_diff, str)
             and mutation.get("applied_diff_sha256")
             == hashlib.sha256(applied_diff.encode()).hexdigest()
-            and isinstance(mutation.get("changed_paths"), list)
             and mutation.get("changed_paths")
+            == _proof_applied_diff_paths(applied_diff)
             and mutation.get("head_before") == candidate_head
             and mutation.get("head_after") == candidate_head
         )
-    return bool(
-        method == "reviewed-boundaries"
-        and result.get("reason") == spec.get("reason")
-        and result.get("reviewed_boundaries") == spec.get("reviewed_boundaries")
-        and result.get("counterexample") is None
+    else:
+        matches = bool(
+            method == "reviewed-boundaries"
+            and result.get("reason") == spec.get("reason")
+            and result.get("reviewed_boundaries") == spec.get("reviewed_boundaries")
+            and result.get("counterexample") is None
+        )
+    if not matches:
+        return False
+    view = _proof_group_evidence_view(
+        result,
+        machine_head=candidate_head if method == "reviewed-boundaries" else None,
+        tester_paths=[dict(item) for item in tester_paths],
     )
+    return view is not None and _proof_group_evidence_valid(view)
 
 
-def _proof_record_replayable(record: Any) -> bool:
-    if not isinstance(record, Mapping) or record.get("status") != "pass":
+def _proof_record_replayable(
+    record: Any,
+    *,
+    expected_behaviors: Sequence[str] | None = None,
+    expected_source_head: str | None = None,
+    tester_paths: Sequence[Mapping[str, str]] = (),
+) -> bool:
+    if (
+        not isinstance(record, Mapping)
+        or record.get("kind") != "proof"
+        or record.get("status") != "pass"
+    ):
         return False
     candidate_head = record.get("candidate_head")
     details = record.get("details")
@@ -3065,19 +3243,53 @@ def _proof_record_replayable(record: Any) -> bool:
         normalized_spec = validate_test_proof_spec(spec)
     except ContractError:
         return False
+    recorded_behaviors = details.get("behaviors") if isinstance(details, Mapping) else None
+    observed_behaviors = (
+        [behavior for group in groups for behavior in group.get("behavior_ids", [])]
+        if isinstance(groups, list) and all(isinstance(group, Mapping) for group in groups)
+        else []
+    )
     if (
         not isinstance(candidate_head, str)
+        or not re.fullmatch(r"[0-9a-f]{40}", candidate_head)
+        or not isinstance(details, Mapping)
+        or details.get("result") != "pass"
+        or not isinstance(details.get("source_head"), str)
+        or not re.fullmatch(r"[0-9a-f]{40}", details["source_head"])
+        or (
+            expected_source_head is not None
+            and details.get("source_head") != expected_source_head
+        )
+        or not isinstance(details.get("artifact_root"), str)
+        or not details["artifact_root"].strip()
         or normalized_spec != spec
         or not isinstance(groups, list)
         or not isinstance(results, list)
         or not groups
         or len(groups) != len(results)
+        or not isinstance(recorded_behaviors, list)
+        or any(
+            not isinstance(behavior, str) or not behavior.strip()
+            for behavior in recorded_behaviors
+        )
+        or len(recorded_behaviors) != len(set(recorded_behaviors))
+        or len(observed_behaviors) != len(set(observed_behaviors))
+        or sorted(recorded_behaviors) != sorted(observed_behaviors)
+        or (
+            expected_behaviors is not None
+            and list(recorded_behaviors) != list(expected_behaviors)
+        )
         or details.get("report_digest")
         != digest({"spec": spec, "results": results})
     ):
         return False
     return all(
-        _proof_group_replayable(group, result, candidate_head=candidate_head)
+        _proof_group_replayable(
+            group,
+            result,
+            candidate_head=candidate_head,
+            tester_paths=tester_paths,
+        )
         for group, result in zip(groups, results)
     )
 
@@ -3187,7 +3399,7 @@ def _driver_evidence_view(ledger: Mapping[str, Any]) -> dict[str, Any]:
             machine_head=machine_head,
             tester_paths=tester_paths,
         )
-        if view is None:
+        if view is None or not _proof_group_evidence_valid(view):
             return evidence
         views.append(view)
     details["results"] = views
