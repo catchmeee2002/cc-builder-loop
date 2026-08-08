@@ -268,7 +268,15 @@ class TesterSourceTrustContractTest(unittest.TestCase):
         )
         self.assertRegex(tester, r"(?:公开|public)")
         self.assertRegex(tester, r"(?:异常|exception|失败语义|failuresemantics)")
-        self.assertRegex(tester, r"(?:自包含|self-contained|selfcontained)")
+        self.assertRegex(
+            tester,
+            r"(?:每个|each|every).{0,80}(?:proofcommand|proofmodule|proof模块|模块)",
+        )
+        self.assertRegex(tester, r"(?:独立|independent)")
+        self.assertRegex(
+            tester,
+            r"(?:显式导入|explicit(?:ly)?import).{0,80}(?:依赖|dependency|fixture)",
+        )
         self.assertRegex(tester, r"(?:user-site|usersite|ambient|用户站点|用户site)")
 
         self.assertRegex(reviewer, r"(?:patch|替换|注入)")
@@ -277,7 +285,18 @@ class TesterSourceTrustContractTest(unittest.TestCase):
         )
         self.assertRegex(reviewer, r"(?:公开|public)")
         self.assertRegex(reviewer, r"(?:异常|exception|失败语义|failuresemantics)")
-        self.assertRegex(reviewer, r"(?:自包含|self-contained|selfcontained)")
+        self.assertRegex(
+            reviewer,
+            r"(?:每个|逐个|逐项|each|every|all).{0,100}(?:proofcommand|proofmodule|proof模块|模块)",
+        )
+        self.assertRegex(reviewer, r"(?:独立|independent)")
+        self.assertRegex(
+            reviewer,
+            r"(?:显式导入|自身依赖|owndependencies|self-contained|selfcontained)",
+        )
+        self.assertRegex(
+            reviewer, r"(?:user-site|usersite|ambient|用户站点|用户site)"
+        )
         self.assertRegex(reviewer, r"(?:failures|失败列表|聚合失败)")
         self.assertRegex(
             reviewer,
