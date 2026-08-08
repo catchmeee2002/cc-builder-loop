@@ -368,7 +368,9 @@ class FullDriverV4ContractTest(unittest.TestCase):
         *,
         baseline_source: str,
         candidate_source: str,
-        test_source: str,
+        test_source: str | None = None,
+        test_files: Mapping[str, str] | None = None,
+        behavior_ids: list[str] | None = None,
         project_modes: dict[str, str] | None = None,
         driver_enforced: bool = True,
     ) -> tuple[Path, dict[str, Any], dict[str, Any]]:
@@ -399,6 +401,14 @@ class FullDriverV4ContractTest(unittest.TestCase):
         contract = contract_for(self.repo)
         contract["assurance"]["required"].insert(2, "proof")
         contract["execution"]["driver_enforced"] = driver_enforced
+        if behavior_ids is not None:
+            contract["mission"]["behaviors"] = [
+                {
+                    "id": behavior_id,
+                    "description": f"{behavior_id} remains independently observable.",
+                }
+                for behavior_id in behavior_ids
+            ]
         data, run_path = self.start(run_id, contract=contract)
         candidate = Path(data["candidate_worktree"])
         (candidate / "src" / "calc.py").write_text(
@@ -426,9 +436,18 @@ class FullDriverV4ContractTest(unittest.TestCase):
         source = self.load_ledger(run_path)["facets"]["execution"]["tester_source"]
         worktree = Path(source["worktree"])
         (worktree / "tests" / "__init__.py").write_text("", encoding="utf-8")
-        (worktree / "tests" / "test_uv_proof.py").write_text(
-            test_source, encoding="utf-8"
-        )
+        if test_files is None:
+            if test_source is None:
+                raise AssertionError("test_source or test_files is required")
+            authored = {"tests/test_uv_proof.py": test_source}
+        else:
+            if test_source is not None:
+                raise AssertionError("test_source and test_files are mutually exclusive")
+            authored = dict(test_files)
+        for relative, content in authored.items():
+            path = worktree / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content, encoding="utf-8")
         commit_all(worktree, f"author uv proof tests {run_id}")
         rc, integrated = self.invoke(
             "integrate-tester", "--repo", self.repo, "--run", run_id
@@ -1560,6 +1579,15 @@ class FullDriverV4ContractTest(unittest.TestCase):
 
         self.assertNotEqual(rc, 0, rejected)
         self.assertEqual(rejected.get("code"), "TEST_PROOF_CANDIDATE_FAILED")
+        details = rejected.get("details", rejected)
+        self.assertIsInstance(details, dict, rejected)
+        self.assertEqual(details.get("group"), 0)
+        self.assertIsInstance(details.get("result"), dict)
+        failures = details.get("failures")
+        if failures is not None:
+            self.assertEqual(len(failures), 1)
+            self.assertEqual(failures[0]["group"], 0)
+            self.assertEqual(failures[0]["result"], details["result"])
         self.assertEqual(marker.read_text(encoding="utf-8").splitlines(), ["invoked"])
         self.assert_proof_transaction_clean(run_id, temp_root)
         self.assert_proof_failure(
@@ -1568,6 +1596,106 @@ class FullDriverV4ContractTest(unittest.TestCase):
             recovery="tester_diagnosis",
             action_id=action["action_id"],
         )
+
+    def test_v4_candidate_readiness_aggregates_all_groups_before_counterexamples(
+        self,
+    ) -> None:
+        run_id = "v4-aggregate-candidate-readiness"
+        marker = self.artifacts / "v4-aggregate-candidate-readiness-invoked"
+        launcher = self.make_uv_launcher(run_id, invocation_marker=marker)
+        first_id = "tests.test_first_proof.FirstProofTest.test_value"
+        second_id = "tests.test_second_proof.SecondProofTest.test_value"
+        run_path, tester, action = self.prepare_uv_proof_run(
+            run_id,
+            baseline_source="def add(a, b):\n    return a + b - 1\n",
+            candidate_source="def add(a, b):\n    return a + b\n",
+            behavior_ids=["first-proof-group", "second-proof-group"],
+            test_files={
+                "tests/test_first_proof.py": (
+                    "import unittest\n"
+                    "from src.calc import add\n\n"
+                    "class FirstProofTest(unittest.TestCase):\n"
+                    "    def test_value(self):\n"
+                    "        self.assertEqual(add(1, 2), 99)\n"
+                ),
+                "tests/test_second_proof.py": (
+                    "import unittest\n"
+                    "from src.calc import add\n\n"
+                    "class SecondProofTest(unittest.TestCase):\n"
+                    "    def test_value(self):\n"
+                    "        self.assertEqual(add(2, 3), 99)\n"
+                ),
+            },
+        )
+        groups = []
+        for behavior_id, test_id in (
+            ("first-proof-group", first_id),
+            ("second-proof-group", second_id),
+        ):
+            groups.append(
+                {
+                    "behavior_ids": [behavior_id],
+                    "method": "baseline-red",
+                    "argv": [
+                        str(launcher),
+                        "run",
+                        "--frozen",
+                        "--offline",
+                        "--no-env-file",
+                        "python",
+                        "-m",
+                        "unittest",
+                        test_id,
+                    ],
+                    "test_ids": [test_id],
+                    "timeout_seconds": 30,
+                    "claimed_failure_kind": "assertion-failure",
+                }
+            )
+        spec_path = self.write_json(
+            "v4-aggregate-candidate-readiness.json",
+            {"schema_version": 1, "groups": groups},
+        )
+
+        rc, rejected = self.invoke(
+            "prove-tests",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--spec",
+            spec_path,
+            "--agent-id",
+            tester["agent_id"],
+            "--thread-id",
+            tester["thread_id"],
+            "--action-id",
+            action["action_id"],
+        )
+
+        self.assertNotEqual(rc, 0, rejected)
+        self.assertEqual(rejected.get("code"), "TEST_PROOF_CANDIDATE_FAILED")
+        details = rejected.get("details", rejected)
+        self.assertIsInstance(details, dict, rejected)
+        self.assertEqual(details.get("group"), 0)
+        failures = details.get("failures")
+        self.assertIsInstance(failures, list, details)
+        self.assertEqual([item["group"] for item in failures], [0, 1])
+        self.assertEqual(details.get("result"), failures[0]["result"])
+        self.assertEqual(
+            [
+                item["result"]["test_result"]["classification"]
+                for item in failures
+            ],
+            ["assertion-failure", "assertion-failure"],
+        )
+        self.assertEqual(
+            marker.read_text(encoding="utf-8").splitlines(),
+            ["invoked", "invoked"],
+        )
+        persisted = self.load_ledger(run_path)["proof_failure"]["failure"]["details"]
+        self.assertEqual(persisted["group"], 0)
+        self.assertEqual([item["group"] for item in persisted["failures"]], [0, 1])
 
     def test_proof_success_and_failure_replay_do_not_rerun_commands(self) -> None:
         failure_run = "proof-failure-replay"

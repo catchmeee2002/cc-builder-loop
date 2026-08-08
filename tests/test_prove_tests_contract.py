@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import sys
 import tempfile
 import unittest
@@ -28,6 +29,7 @@ from proof_harness import (
     create_proof_fixture,
     mutation_group,
     prove,
+    prove_groups,
     pytest_source,
     unittest_source,
 )
@@ -120,6 +122,223 @@ class ProveTestsContractTest(unittest.TestCase):
         top = top_result.stdout + top_result.stderr
         self.assertIn("prove-tests", top)
         self.assertNotIn("supervisor", top.lower())
+
+    def test_candidate_readiness_reports_every_group_before_counterexamples(self) -> None:
+        first_id = "tests.test_first_group.FirstGroupTest.test_value"
+        second_id = "tests.test_second_group.SecondGroupTest.test_value"
+        machine_id = "tests.test_machine_gate.MachineGateTest.test_candidate"
+        with tempfile.TemporaryDirectory(prefix="legacy-proof-readiness-") as tmp:
+            marker = Path(tmp) / "proof-invocations"
+            wrapper = (
+                "#!/usr/bin/env bash\n"
+                "set -euo pipefail\n"
+                f"printf 'invoked\\n' >> {shlex.quote(str(marker))}\n"
+                'exec "$@"\n'
+            )
+            fixture = self.fixture(
+                test_files={
+                    "tests/test_first_group.py": (
+                        "import unittest\n"
+                        "from src.calc import add\n\n"
+                        "class FirstGroupTest(unittest.TestCase):\n"
+                        "    def test_value(self):\n"
+                        "        self.assertEqual(add(1, 2), 99)\n"
+                    ),
+                    "tests/test_second_group.py": (
+                        "import unittest\n"
+                        "from src.calc import add\n\n"
+                        "class SecondGroupTest(unittest.TestCase):\n"
+                        "    def test_value(self):\n"
+                        "        self.assertEqual(add(2, 3), 99)\n"
+                    ),
+                    "tests/test_machine_gate.py": (
+                        "import unittest\n"
+                        "from src.calc import add\n\n"
+                        "class MachineGateTest(unittest.TestCase):\n"
+                        "    def test_candidate(self):\n"
+                        "        self.assertEqual(add(1, 2), 3)\n"
+                    ),
+                },
+                initial_files={"verify.sh": wrapper},
+                runner=f"bash verify.sh python3 -m unittest {machine_id}",
+                requirement_minima={
+                    "first-proof-group": "strong",
+                    "second-proof-group": "strong",
+                },
+            )
+            marker.unlink()
+            result = prove_groups(
+                fixture,
+                [
+                    baseline_group(
+                        argv=[
+                            "bash",
+                            "verify.sh",
+                            "python3",
+                            "-m",
+                            "unittest",
+                            first_id,
+                        ],
+                        test_ids=[first_id],
+                        behavior_id="first-proof-group",
+                    ),
+                    baseline_group(
+                        argv=[
+                            "bash",
+                            "verify.sh",
+                            "python3",
+                            "-m",
+                            "unittest",
+                            second_id,
+                        ],
+                        test_ids=[second_id],
+                        behavior_id="second-proof-group",
+                    ),
+                ],
+            )
+
+            self.assertEqual(result.returncode, 1, result.data)
+            self.assertEqual(result.data.get("status"), "FAIL", result.data)
+            self.assertEqual(
+                result.data.get("code"), "TEST_PROOF_CANDIDATE_FAILED"
+            )
+            self.assertEqual(result.data.get("group"), 0, result.data)
+            failures = result.data.get("failures")
+            self.assertIsInstance(failures, list, result.data)
+            self.assertEqual([item["group"] for item in failures], [0, 1])
+            self.assertEqual(result.data.get("result"), failures[0]["result"])
+            self.assertEqual(
+                [
+                    item["result"]["test_result"]["classification"]
+                    for item in failures
+                ],
+                ["assertion-failure", "assertion-failure"],
+            )
+            self.assertEqual(marker.read_text().splitlines(), ["invoked", "invoked"])
+
+    def test_single_candidate_failure_keeps_first_group_compatibility_fields(self) -> None:
+        machine_id = "tests.test_machine_gate.MachineGateTest.test_candidate"
+        fixture = self.fixture(
+            test_files={
+                "tests/test_proof_target.py": unittest_source(
+                    "self.assertEqual(add(1, 2), 99)"
+                ),
+                "tests/test_machine_gate.py": (
+                    "import unittest\n"
+                    "from src.calc import add\n\n"
+                    "class MachineGateTest(unittest.TestCase):\n"
+                    "    def test_candidate(self):\n"
+                    "        self.assertEqual(add(1, 2), 3)\n"
+                ),
+            },
+            initial_files={"verify.sh": "#!/usr/bin/env bash\nexec \"$@\"\n"},
+            runner=f"bash verify.sh python3 -m unittest {machine_id}",
+        )
+        result = prove(fixture, baseline_group())
+        self.assertEqual(result.returncode, 1, result.data)
+        self.assertEqual(result.data.get("code"), "TEST_PROOF_CANDIDATE_FAILED")
+        self.assertEqual(result.data.get("group"), 0)
+        self.assertIsInstance(result.data.get("result"), dict)
+        failures = result.data.get("failures")
+        if failures is not None:
+            self.assertEqual(len(failures), 1)
+            self.assertEqual(failures[0]["group"], 0)
+            self.assertEqual(failures[0]["result"], result.data["result"])
+
+    def test_all_green_candidate_groups_keep_baseline_and_mutation_evidence(self) -> None:
+        baseline_id = "tests.test_baseline_group.BaselineGroupTest.test_value"
+        mutation_id = "tests.test_mutation_group.MutationGroupTest.test_value"
+        machine_id = "tests.test_machine_gate.MachineGateTest.test_candidate"
+        with tempfile.TemporaryDirectory(prefix="legacy-proof-success-") as tmp:
+            marker = Path(tmp) / "proof-invocations"
+            wrapper = (
+                "#!/usr/bin/env bash\n"
+                "set -euo pipefail\n"
+                f"printf 'invoked\\n' >> {shlex.quote(str(marker))}\n"
+                'exec "$@"\n'
+            )
+            source = (
+                "import unittest\n"
+                "from src.calc import add\n\n"
+                "class {class_name}(unittest.TestCase):\n"
+                "    def test_value(self):\n"
+                "        self.assertEqual(add(1, 2), 3)\n"
+            )
+            fixture = self.fixture(
+                test_files={
+                    "tests/test_baseline_group.py": source.format(
+                        class_name="BaselineGroupTest"
+                    ),
+                    "tests/test_mutation_group.py": source.format(
+                        class_name="MutationGroupTest"
+                    ),
+                    "tests/test_machine_gate.py": source.format(
+                        class_name="MachineGateTest"
+                    ).replace("def test_value", "def test_candidate"),
+                },
+                initial_files={"verify.sh": wrapper},
+                runner=f"bash verify.sh python3 -m unittest {machine_id}",
+                requirement_minima={
+                    "baseline-proof-group": "strong",
+                    "mutation-proof-group": "strong",
+                },
+            )
+            marker.unlink()
+            result = prove_groups(
+                fixture,
+                [
+                    baseline_group(
+                        argv=[
+                            "bash",
+                            "verify.sh",
+                            "python3",
+                            "-m",
+                            "unittest",
+                            baseline_id,
+                        ],
+                        test_ids=[baseline_id],
+                        behavior_id="baseline-proof-group",
+                    ),
+                    mutation_group(
+                        (
+                            "diff --git a/src/calc.py b/src/calc.py\n"
+                            "--- a/src/calc.py\n"
+                            "+++ b/src/calc.py\n"
+                            "@@ -1,2 +1,2 @@\n"
+                            " def add(a, b):\n"
+                            "-    return a + b\n"
+                            "+    return a + b + 1\n"
+                        ),
+                        argv=[
+                            "bash",
+                            "verify.sh",
+                            "python3",
+                            "-m",
+                            "unittest",
+                            mutation_id,
+                        ],
+                        test_ids=[mutation_id],
+                        behavior_id="mutation-proof-group",
+                    ),
+                ],
+            )
+
+            self.assertEqual(result.returncode, 0, result.data)
+            self.assertEqual(result.data.get("status"), "READY", result.data)
+            self.assertEqual(len(result.data["groups"]), 2)
+            self.assertEqual(
+                result.data["groups"][0]["baseline"]["test_result"][
+                    "classification"
+                ],
+                "assertion-failure",
+            )
+            self.assertEqual(
+                result.data["groups"][1]["mutation"]["test_result"][
+                    "classification"
+                ],
+                "assertion-failure",
+            )
+            self.assertEqual(marker.read_text().splitlines(), ["invoked"] * 4)
 
     def test_unittest_baseline_red_binds_full_id_and_tester_source(self) -> None:
         fixture = self.fixture(explicit_run_id="A.b_C-1")

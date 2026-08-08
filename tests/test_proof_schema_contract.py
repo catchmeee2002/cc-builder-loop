@@ -104,12 +104,27 @@ def valid_evidence() -> dict:
     }
 
 
+def classified_failure(test_id: str) -> dict:
+    return {
+        "argv": ["python3", "-m", "unittest", test_id],
+        "returncode": 1,
+        "timed_out": False,
+        "test_result": {
+            "framework": "unittest",
+            "classification": "assertion-failure",
+            "counts": {"tests": 1, "failures": 1},
+            "matched_test_ids": [test_id],
+        },
+    }
+
+
 class ProofSchemaContractTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         Draft202012Validator.check_schema(SCHEMA)
         cls.input_validator = Draft202012Validator(SCHEMA)
         cls.evidence_validator = definition_validator("proofEvidence")
+        cls.failure_validator = definition_validator("proofFailure")
 
     def test_published_schema_uses_draft_2020_12_and_examples_validate(self) -> None:
         self.assertEqual(
@@ -166,6 +181,42 @@ class ProofSchemaContractTest(unittest.TestCase):
                 evidence["evidence"]["provenance"]["groups"][0][field] = invalid
             with self.subTest(field=field, value=invalid):
                 self.assertTrue(list(self.evidence_validator.iter_errors(evidence)))
+
+    def test_candidate_failure_schema_keeps_single_shape_and_constrains_aggregate(self) -> None:
+        first_id = "tests.test_contract.FirstTest.test_value"
+        second_id = "tests.test_contract.SecondTest.test_value"
+        first = classified_failure(first_id)
+        second = classified_failure(second_id)
+        single = {
+            "status": "FAIL",
+            "code": "TEST_PROOF_CANDIDATE_FAILED",
+            "message": "candidate proof tests failed",
+            "group": 0,
+            "result": first,
+        }
+        self.failure_validator.validate(single)
+
+        aggregate = copy.deepcopy(single)
+        aggregate["failures"] = [
+            {"group": 0, "result": first},
+            {"group": 1, "result": second},
+        ]
+        self.failure_validator.validate(aggregate)
+
+        invalid_values = (
+            [],
+            [{"group": 0}],
+            [{"group": -1, "result": first}],
+            [{"group": 0, "result": {"returncode": True}}],
+        )
+        for failures in invalid_values:
+            invalid = copy.deepcopy(single)
+            invalid["failures"] = failures
+            with self.subTest(failures=failures):
+                self.assertTrue(
+                    list(self.failure_validator.iter_errors(invalid)),
+                    f"invalid aggregate candidate failures accepted: {failures!r}",
+                )
 
 
 if __name__ == "__main__":

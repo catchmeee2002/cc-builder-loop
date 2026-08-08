@@ -211,9 +211,10 @@ def mutation_group(
     *,
     argv: list[str] | None = None,
     test_ids: list[str] | None = None,
+    behavior_id: str = "add-positive",
 ) -> dict:
     return {
-        "behavior_ids": ["add-positive"],
+        "behavior_ids": [behavior_id],
         "method": "mutation",
         "argv": argv
         or ["python3", "-m", "unittest", UNITTEST_ID],
@@ -229,6 +230,15 @@ def prove(
     *,
     env: Mapping[str, str] | None = None,
 ) -> ProcessResult:
+    return prove_groups(fixture, [group], env=env)
+
+
+def prove_groups(
+    fixture: ProofFixture,
+    groups: list[dict],
+    *,
+    env: Mapping[str, str] | None = None,
+) -> ProcessResult:
     return run_cli(
         "prove-tests",
         "--repo",
@@ -237,6 +247,6 @@ def prove(
         fixture.run_path,
         "--spec",
         "-",
-        input_text=json.dumps({"schema_version": 1, "groups": [group]}),
+        input_text=json.dumps({"schema_version": 1, "groups": groups}),
         env=env,
     )

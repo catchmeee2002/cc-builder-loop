@@ -2373,5 +2373,38 @@ class NativeCoordinatorContractTest(unittest.TestCase):
             self.assertIn("restore-superseded-environment", core.calls)
 
 
+class NativeProofRecoveryBlackboxContractTest(unittest.TestCase):
+    def test_real_recovery_canary_uses_public_transactions_and_installed_app_server(
+        self,
+    ) -> None:
+        path = ROOT / "tests" / "helpers" / "native_proof_recovery_blackbox.py"
+        source = path.read_text(encoding="utf-8")
+        compact = "".join(source.split()).lower()
+
+        self.assertIn('"native-driver"', source)
+        self.assertIn('"--codex-bin"', source)
+        self.assertIn('"resume"', source)
+        self.assertIn("probe_app_server", source)
+        self.assertIn("signal.SIGKILL", source)
+        for command in (
+            "begin-dispatch",
+            "complete-dispatch",
+            "prove-tests",
+            "consume-dispatch",
+            "driver-next",
+            "status",
+        ):
+            with self.subTest(command=command):
+                self.assertIn(command, source)
+        self.assertIn("architecture_review", source)
+        self.assertIn("proof_attempts(final_status)==3", compact)
+        self.assertNotIn("subprocess", compact)
+        self.assertNotIn("pytest.main", compact)
+        self.assertNotRegex(
+            compact,
+            r"ledger(?:\.json)?[^\n]{0,80}(?:write_text|write_bytes|json\.dump)",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

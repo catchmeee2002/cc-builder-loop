@@ -258,6 +258,48 @@ class TesterSourceTrustContractTest(unittest.TestCase):
         self.assertTrue("重新提交" in value or "recommit" in value)
         self.assertTrue("不得" in value and ("放宽断言" in value or "relax" in value))
 
+    def test_role_contracts_cover_real_patch_targets_and_aggregate_failures(self) -> None:
+        tester = compact((ROOT / "agents" / "tester.toml").read_text())
+        reviewer = compact((ROOT / "agents" / "reviewer.toml").read_text())
+
+        self.assertRegex(tester, r"(?:patch|替换|注入)")
+        self.assertRegex(
+            tester, r"(?:调用点|调用处|callsite|resolvedsymbol|实际解析)"
+        )
+        self.assertRegex(tester, r"(?:公开|public)")
+        self.assertRegex(tester, r"(?:异常|exception|失败语义|failuresemantics)")
+        self.assertRegex(tester, r"(?:自包含|self-contained|selfcontained)")
+        self.assertRegex(tester, r"(?:user-site|usersite|ambient|用户站点|用户site)")
+
+        self.assertRegex(reviewer, r"(?:patch|替换|注入)")
+        self.assertRegex(
+            reviewer, r"(?:调用点|调用处|callsite|resolvedsymbol|实际解析)"
+        )
+        self.assertRegex(reviewer, r"(?:公开|public)")
+        self.assertRegex(reviewer, r"(?:异常|exception|失败语义|failuresemantics)")
+        self.assertRegex(reviewer, r"(?:自包含|self-contained|selfcontained)")
+        self.assertRegex(reviewer, r"(?:failures|失败列表|聚合失败)")
+        self.assertRegex(
+            reviewer,
+            r"(?:每个|全部|所有|every|all).{0,100}(?:failure|失败|group|组)",
+        )
+
+    def test_blackbox_helpers_do_not_embed_a_nested_test_runner(self) -> None:
+        for relative in (
+            "tests/helpers/proof_readiness_blackbox.py",
+            "tests/helpers/native_proof_recovery_blackbox.py",
+        ):
+            source = (ROOT / relative).read_text(encoding="utf-8")
+            compact_source = compact(source)
+            with self.subTest(path=relative):
+                self.assertNotIn("importsubprocess", compact_source)
+                self.assertNotIn("pytest.main", compact_source)
+                self.assertNotIn("unittest.main", compact_source)
+                self.assertNotRegex(
+                    compact_source,
+                    r"ledger(?:\.json)?.{0,80}(?:write_text|write_bytes|json\.dump)",
+                )
+
     def test_proof_input_correction_does_not_require_tester_source_commit(self) -> None:
         tester = compact((ROOT / "agents" / "tester.toml").read_text())
         self.assertIn("phase=proof_diagnose", tester)

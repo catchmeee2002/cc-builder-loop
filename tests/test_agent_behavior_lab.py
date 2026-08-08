@@ -104,6 +104,37 @@ class AgentBehaviorLabTest(unittest.TestCase):
             )
         )
 
+    def test_proof_role_scenarios_cover_real_inputs_and_every_failure(self) -> None:
+        scenarios = json.loads(
+            (ROOT / "experiments" / "agent-behavior" / "scenarios.json").read_text()
+        )
+        by_id = {item["id"]: item for item in scenarios["scenarios"]}
+
+        tester = by_id["tester-proof-source-real-inputs"]
+        self.assertEqual(tester["role"], "tester")
+        self.assertTrue(
+            {"实际调用点", "PublicFailure", "自包含", "tests_ready"}.issubset(
+                set(tester["mechanical_checks"]["contains"])
+            )
+        )
+        self.assertIn(
+            "依赖用户 site-packages",
+            tester["mechanical_checks"]["not_contains"],
+        )
+
+        reviewer = by_id["reviewer-aggregate-proof-failures"]
+        self.assertEqual(reviewer["role"], "reviewer")
+        self.assertTrue(
+            {"failures", "第 0 组", "第 2 组", "分别"}.issubset(
+                set(reviewer["mechanical_checks"]["contains"])
+            )
+        )
+        self.assertTrue(
+            {"只处理 group/result", "其余失败忽略", "只修第一组"}.issubset(
+                set(reviewer["mechanical_checks"]["not_contains"])
+            )
+        )
+
     def test_prepare_and_score_are_deterministic_offline_and_ephemeral(self) -> None:
         self.assertTrue(RUNNER.is_file(), RUNNER)
         before_status = git(ROOT, "status", "--porcelain", "--untracked-files=all")
