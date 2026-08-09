@@ -638,10 +638,16 @@ class FullDriverV4ContractTest(unittest.TestCase):
 
     def test_skill_supports_protected_preparation_and_single_use_continuation(self) -> None:
         text = compact(self.skill_text())
+        self.assertIn("validate--repo<repo>", text)
         self.assertNotRegex(text, r"protectedpreparation.{0,40}unsupported")
         self.assertRegex(text, r"protected.{0,160}(?:prepare|preparation|准备)")
         self.assertRegex(text, r"continuation.{0,160}(?:single|一次|单次|消费)")
         self.assertRegex(text, r"(?:token|continuation).{0,160}(?:replay|重复|二次).{0,80}(?:拒绝|reject)")
+        self.assertRegex(text, r"runtime_support.{0,80}affected")
+        self.assertRegex(
+            text,
+            r"不得resume当前run.{0,80}热切换evidencewriter.{0,80}补造旧proofobservation",
+        )
 
     def test_skill_preserves_role_threads_and_explicit_replacement(self) -> None:
         text = compact(self.skill_text())

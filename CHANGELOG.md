@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Assurance v4 新增由冻结 runtime HEAD 绑定的 self-hosted support manifest。`validate --repo`、`start`
+  和 Builder checkpoint 会在普通 run 修改自身 proof writer 前 fail closed，并要求 exact protected
+  preparation 排除被修改 gate、保留独立 machine/blackbox/Reviewer；candidate 无法通过改写 manifest
+  热切换 writer 或回填旧 observation。后续 business run 继续单次消费 finalized continuation，并在新
+  runtime 上重建角色与 evidence（#180）。
+
 - Legacy 与 Assurance v4 `prove-tests` 现在先完成全部 candidate group readiness，再决定是否执行
   baseline-red/mutation；多组失败保留首个 group/result 兼容字段并附有序 `failures`，单组与成功反例
   语义不变。Tester/Reviewer 角色契约同步要求 bound-call-site patch、公开异常语义、独立 proof 模块

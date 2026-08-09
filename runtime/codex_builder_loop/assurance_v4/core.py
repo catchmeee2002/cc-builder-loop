@@ -42,6 +42,7 @@ from .models import (
     validate_problem_report,
     validate_repo_path,
     validate_retrospective_report,
+    validate_runtime_support_manifest,
     validate_retrospective_snapshot,
     validate_stored_retrospective_report,
     validate_telemetry,
@@ -72,6 +73,9 @@ from .store import (
 
 TRUSTED_SYSTEM_PATH = "/usr/local/bin:/usr/bin:/bin"
 TRUSTED_SYSTEM_ROOTS = tuple(Path(item).resolve() for item in TRUSTED_SYSTEM_PATH.split(":"))
+RUNTIME_SUPPORT_MANIFEST_PATH = (
+    "runtime/codex_builder_loop/assurance_v4/runtime-support.json"
+)
 
 
 RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
@@ -259,9 +263,284 @@ def _candidate_manifest(repo: Path, base: str, candidate: str) -> list[dict[str,
     return manifest
 
 
-def validate(contract: Any) -> dict[str, Any]:
+def _runtime_source_root() -> Path:
+    return Path(__file__).resolve().parents[3]
+
+
+def _git_common_dir(repo: Path) -> Path | None:
+    result = git(repo, "rev-parse", "--git-common-dir", check=False)
+    if result.returncode != 0 or not result.stdout.strip():
+        return None
+    value = Path(result.stdout.strip())
+    if not value.is_absolute():
+        value = (repo / value).resolve()
+    return value.resolve()
+
+
+def _load_runtime_support_manifest(
+    source_root: Path,
+    *,
+    runtime_head: str | None = None,
+    expected_blob: str | None = None,
+    expected_digest: str | None = None,
+) -> tuple[dict[str, Any], str | None, str | None, str]:
+    explicit_head = runtime_head is not None
+    head = runtime_head
+    if head is None:
+        resolved = git(source_root, "rev-parse", "--verify", "HEAD^{commit}", check=False)
+        if resolved.returncode == 0 and re.fullmatch(r"[0-9a-f]{40}", resolved.stdout.strip()):
+            head = resolved.stdout.strip()
+    raw: str
+    blob: str | None = None
+    if head is not None:
+        shown = git(
+            source_root,
+            "show",
+            f"{head}:{RUNTIME_SUPPORT_MANIFEST_PATH}",
+            check=False,
+        )
+        resolved_blob = git(
+            source_root,
+            "rev-parse",
+            f"{head}:{RUNTIME_SUPPORT_MANIFEST_PATH}",
+            check=False,
+        )
+        if shown.returncode == 0 and resolved_blob.returncode == 0:
+            raw = shown.stdout
+            blob = resolved_blob.stdout.strip()
+        elif explicit_head:
+            raise AssuranceError(
+                "runtime support manifest is unavailable at the frozen runtime HEAD",
+                code="RUNTIME_SUPPORT_MANIFEST_INVALID",
+                status="FAIL",
+                details={"runtime_head": head},
+            )
+        else:
+            path = source_root / RUNTIME_SUPPORT_MANIFEST_PATH
+            try:
+                raw = path.read_text(encoding="utf-8")
+            except OSError as exc:
+                raise AssuranceError(
+                    "runtime support manifest is unavailable",
+                    code="RUNTIME_SUPPORT_MANIFEST_INVALID",
+                    status="FAIL",
+                    details={"path": str(path)},
+                ) from exc
+            hashed = git(source_root, "hash-object", "--", str(path), check=False)
+            blob = hashed.stdout.strip() if hashed.returncode == 0 else None
+            head = None
+    else:
+        path = source_root / RUNTIME_SUPPORT_MANIFEST_PATH
+        try:
+            raw = path.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise AssuranceError(
+                "runtime support manifest is unavailable",
+                code="RUNTIME_SUPPORT_MANIFEST_INVALID",
+                status="FAIL",
+                details={"path": str(path)},
+            ) from exc
+    try:
+        manifest = validate_runtime_support_manifest(json.loads(raw))
+    except (json.JSONDecodeError, ContractError) as exc:
+        raise AssuranceError(
+            str(exc),
+            code=getattr(exc, "code", "RUNTIME_SUPPORT_MANIFEST_INVALID"),
+            status="FAIL",
+            details=getattr(exc, "details", {}),
+        ) from exc
+    manifest_digest = digest(manifest)
+    if expected_blob is not None and blob != expected_blob:
+        raise AssuranceError(
+            "runtime support manifest blob does not match the frozen ledger fact",
+            code="RUNTIME_SUPPORT_MANIFEST_DRIFT",
+            status="NEEDS_USER",
+            details={"expected_blob": expected_blob, "actual_blob": blob},
+        )
+    if expected_digest is not None and manifest_digest != expected_digest:
+        raise AssuranceError(
+            "runtime support manifest digest does not match the frozen ledger fact",
+            code="RUNTIME_SUPPORT_MANIFEST_DRIFT",
+            status="NEEDS_USER",
+            details={
+                "expected_manifest_digest": expected_digest,
+                "actual_manifest_digest": manifest_digest,
+            },
+        )
+    return manifest, head, blob, manifest_digest
+
+
+def _runtime_support_selection(
+    manifest: Mapping[str, Any],
+    paths: Sequence[str],
+) -> tuple[list[str], list[str], list[str]]:
+    affected_paths: set[str] = set()
+    affected_gates: set[str] = set()
+    required_independent: set[str] = set()
+    for support in manifest["support_sets"]:
+        matched = {
+            path
+            for path in paths
+            if _matches(path, list(support["path_patterns"]))
+        }
+        if not matched:
+            continue
+        affected_paths.update(matched)
+        affected_gates.update(support["affected_gates"])
+        required_independent.update(support["required_independent_gates"])
+    return (
+        sorted(affected_paths),
+        sorted(affected_gates),
+        sorted(required_independent),
+    )
+
+
+def _runtime_support_snapshot(
+    repo: Path,
+    contract: Mapping[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
+    source_root = _runtime_source_root()
+    manifest, runtime_head, manifest_blob, manifest_digest = (
+        _load_runtime_support_manifest(source_root)
+    )
+    source_common = _git_common_dir(source_root)
+    target_common = _git_common_dir(repo)
+    self_hosted = source_common is not None and source_common == target_common
+    candidate_paths: list[str] = []
+    required_independent: list[str] = []
+    affected_paths: list[str] = []
+    affected_gates: list[str] = []
+    if self_hosted:
+        if runtime_head is None:
+            raise AssuranceError(
+                "self-hosted runtime support requires a frozen runtime Git identity",
+                code="RUNTIME_SUPPORT_UNAVAILABLE",
+                status="NEEDS_USER",
+            )
+        listed = git(
+            source_root,
+            "ls-tree",
+            "-r",
+            "--name-only",
+            runtime_head,
+            check=False,
+        )
+        if listed.returncode != 0:
+            raise AssuranceError(
+                "self-hosted runtime support manifest could not resolve its tracked inputs",
+                code="RUNTIME_SUPPORT_UNAVAILABLE",
+                status="NEEDS_USER",
+            )
+        authority_patterns = [
+            *contract["authority"]["builder_write"],
+            *contract["authority"]["tester_write"],
+        ]
+        candidate_paths = [
+            path
+            for path in listed.stdout.splitlines()
+            if path and _matches(path, authority_patterns)
+        ]
+        affected_paths, affected_gates, required_independent = (
+            _runtime_support_selection(manifest, candidate_paths)
+        )
+    snapshot = {
+        "schema_version": 1,
+        "mode": "self_hosted" if self_hosted else "external",
+        "runtime_head": runtime_head,
+        "manifest_blob": manifest_blob,
+        "manifest_digest": manifest_digest,
+        "affected_gates": affected_gates,
+        "affected_paths": affected_paths,
+    }
+    return snapshot, manifest, required_independent
+
+
+def _assert_runtime_support_contract(
+    contract: Mapping[str, Any],
+    snapshot: Mapping[str, Any],
+    required_independent: Sequence[str],
+) -> None:
+    if snapshot.get("mode") != "self_hosted" or not snapshot.get("affected_paths"):
+        return
+    details = {
+        "runtime_support": copy.deepcopy(snapshot),
+        "required_independent_gates": sorted(set(required_independent)),
+    }
+    if contract["mission"].get("delivery_kind", "code") != "preparation":
+        raise AssuranceError(
+            "self-hosted assurance runtime changes require a protected preparation",
+            code="RUNTIME_PREPARATION_REQUIRED",
+            status="NEEDS_USER",
+            details=details,
+        )
+    declared = sorted(contract["authority"].get("protected_support_paths", []))
+    expected = sorted(snapshot["affected_paths"])
+    if declared != expected:
+        raise AssuranceError(
+            "protected preparation paths do not exactly match the affected runtime support",
+            code="RUNTIME_PREPARATION_PATH_MISMATCH",
+            status="NEEDS_USER",
+            details={**details, "expected_paths": expected, "declared_paths": declared},
+        )
+    required = set(contract["assurance"]["required"])
+    cycle = sorted(required & set(snapshot["affected_gates"]))
+    if cycle:
+        raise AssuranceError(
+            "protected preparation cannot require the assurance gate that it changes",
+            code="RUNTIME_PREPARATION_GATE_CYCLE",
+            status="NEEDS_USER",
+            details={**details, "cyclic_gates": cycle},
+        )
+    missing = sorted(set(required_independent) - required)
+    if missing:
+        raise AssuranceError(
+            "protected preparation is missing independent assurance gates",
+            code="RUNTIME_PREPARATION_ASSURANCE_INCOMPLETE",
+            status="NEEDS_USER",
+            details={**details, "missing_gates": missing},
+        )
+
+
+def _runtime_support_for_changed_paths(
+    repo: Path,
+    ledger: Mapping[str, Any],
+    paths: Sequence[str],
+) -> tuple[dict[str, Any], list[str]]:
+    frozen = ledger.get("runtime_support")
+    if not isinstance(frozen, Mapping) or frozen.get("mode") != "self_hosted":
+        return copy.deepcopy(frozen), []
+    manifest, _head, _blob, _manifest_digest = _load_runtime_support_manifest(
+        repo,
+        runtime_head=frozen.get("runtime_head"),
+        expected_blob=frozen.get("manifest_blob"),
+        expected_digest=frozen.get("manifest_digest"),
+    )
+    affected_paths, affected_gates, required_independent = (
+        _runtime_support_selection(manifest, paths)
+    )
+    snapshot = {
+        **copy.deepcopy(frozen),
+        "affected_gates": affected_gates,
+        "affected_paths": affected_paths,
+    }
+    return snapshot, required_independent
+
+
+def validate(contract: Any, repo_value: str | Path | None = None) -> dict[str, Any]:
     value = validate_new_contract(contract)
-    return {"status": "READY", "schema_version": SCHEMA_VERSION, "digests": facet_digests(value)}
+    result = {
+        "status": "READY",
+        "schema_version": SCHEMA_VERSION,
+        "digests": facet_digests(value),
+    }
+    if repo_value is not None:
+        repo = resolve_repo(repo_value)
+        runtime_support, _manifest, required_independent = (
+            _runtime_support_snapshot(repo, value)
+        )
+        _assert_runtime_support_contract(value, runtime_support, required_independent)
+        result["runtime_support"] = runtime_support
+    return result
 
 
 def _reject_acceptance_observation_downgrade(
@@ -291,6 +570,14 @@ def start(
     if not session_id.strip():
         raise AssuranceError("session id is required", code="SESSION_ID_REQUIRED")
     repo = resolve_repo(repo_value)
+    runtime_support, _runtime_manifest, required_independent = (
+        _runtime_support_snapshot(repo, contract)
+    )
+    _assert_runtime_support_contract(
+        contract,
+        runtime_support,
+        required_independent,
+    )
     target_branch = contract["authority"]["target_branch"]
     with locked(repo):
         if ledger_path(repo, run_id).exists():
@@ -641,6 +928,7 @@ def start(
             ledger = {
                 "schema_version": SCHEMA_VERSION,
                 "runtime_identity": capture_runtime_identity(),
+                "runtime_support": runtime_support,
                 "run_id": run_id,
                 "owner_session_id": session_id.strip(),
                 "phase": "active",
@@ -700,7 +988,12 @@ def start(
             append_event(
                 ledger,
                 "run_started",
-                {"target_head": target_head, "candidate_head": candidate_head, "dirty_intake": captured},
+                {
+                    "target_head": target_head,
+                    "candidate_head": candidate_head,
+                    "dirty_intake": captured,
+                    "runtime_support": copy.deepcopy(runtime_support),
+                },
             )
             save_ledger(repo, ledger)
             business_persisted = True
@@ -2895,6 +3188,7 @@ def status(repo_value: str | Path, run_value: str) -> dict[str, Any]:
         "status": public_status,
         "run_id": run_id,
         "runtime_identity": copy.deepcopy(ledger["runtime_identity"]),
+        "runtime_support": copy.deepcopy(ledger["runtime_support"]),
         "phase": ledger["phase"],
         "repo_root": ledger["repo_root"],
         "target_branch": ledger["target_branch"],
@@ -3915,6 +4209,7 @@ def driver_context(repo_value: str | Path, run_value: str) -> dict[str, Any]:
         "status": "FATAL" if ledger["phase"] == "failed" else "READY",
         "run_id": run_id,
         "runtime_identity": copy.deepcopy(ledger["runtime_identity"]),
+        "runtime_support": copy.deepcopy(ledger["runtime_support"]),
         "phase": ledger["phase"],
         "repo_root": ledger["repo_root"],
         "target_start_head": ledger["target_start_head"],
@@ -4446,6 +4741,53 @@ def _close_problems(ledger: dict[str, Any], owner: str, resolution: str) -> None
             item["resolved_at"] = now()
 
 
+def _record_runtime_preparation_problem(
+    ledger: dict[str, Any],
+    *,
+    candidate_head: str,
+    error: AssuranceError,
+) -> None:
+    key = "runtime-preparation-required"
+    if any(
+        item.get("key") == key and item.get("status") == "open"
+        for item in ledger.get("problems", [])
+        if isinstance(item, Mapping)
+    ):
+        return
+    builder = ledger["facets"]["execution"].get("agents", {}).get("builder")
+    producer = (
+        {"role": "builder", **copy.deepcopy(builder)}
+        if isinstance(builder, Mapping)
+        else None
+    )
+    ledger.setdefault("problems", []).append(
+        {
+            "key": key,
+            "summary": "Candidate changes require a protected runtime preparation",
+            "details": json.dumps(
+                {
+                    "code": error.code,
+                    "message": str(error),
+                    **copy.deepcopy(error.details),
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+            "owner": "builder_loop",
+            "status": "open",
+            "producer": producer,
+            "candidate_head": candidate_head,
+            "recorded_at": now(),
+        }
+    )
+    append_event(
+        ledger,
+        "problems_recorded",
+        {"role": "builder", "keys": [key]},
+    )
+
+
 def checkpoint_builder(repo_value: str | Path, run_value: str) -> dict[str, Any]:
     repo = resolve_repo(repo_value)
     run_id = ensure_run_id(run_value)
@@ -4465,6 +4807,29 @@ def checkpoint_builder(repo_value: str | Path, run_value: str) -> dict[str, Any]
             raise AssuranceError("candidate branch and worktree diverged", code="CANDIDATE_IDENTITY_MISMATCH")
         execution = ledger["facets"]["execution"]
         files = changed_files(repo, ledger["target_start_head"], candidate)
+        actual_runtime_support, required_independent = (
+            _runtime_support_for_changed_paths(repo, ledger, files)
+        )
+        try:
+            _assert_runtime_support_contract(
+                ledger["facets"],
+                actual_runtime_support,
+                required_independent,
+            )
+        except AssuranceError as exc:
+            if exc.code in {
+                "RUNTIME_PREPARATION_REQUIRED",
+                "RUNTIME_PREPARATION_PATH_MISMATCH",
+                "RUNTIME_PREPARATION_GATE_CYCLE",
+                "RUNTIME_PREPARATION_ASSURANCE_INCOMPLETE",
+            }:
+                _record_runtime_preparation_problem(
+                    ledger,
+                    candidate_head=candidate,
+                    error=exc,
+                )
+                save_ledger(repo, ledger)
+            raise
         tester_manifest = {
             item["path"]: item["blob"]
             for item in (execution.get("tester_source") or {}).get("files", [])

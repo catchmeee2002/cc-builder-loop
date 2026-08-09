@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "support_sets": [
+    {
+      "id": "proof-runtime",
+      "affected_gates": [
+        "proof"
+      ],
+      "required_independent_gates": [
+        "machine",
+        "blackbox",
+        "reviewer"
+      ],
+      "path_patterns": [
+        "scripts/codex-builder-loop.py",
+        "runtime/codex_builder_loop/core.py",
+        "runtime/codex_builder_loop/assurance_v4/*.py",
+        "runtime/codex_builder_loop/assurance_v4/runtime-support.json",
+        "runtime/codex_builder_loop/native_driver/*.py",
+        "schema/assurance-v4-contract.schema.json",
+        "schema/assurance-v4-evidence.schema.json",
+        "schema/assurance-v4-ledger.schema.json",
+        "schema/assurance-v4-runtime-support.schema.json",
+        "schema/codex-test-proof.schema.json"
+      ]
+    }
+  ]
+}

@@ -746,6 +746,36 @@ class PlanningDesignDisciplineTest(unittest.TestCase):
             self.assertIn(internal_term, planner)
         self.assertTrue(has_terms(planner, ("内部词",), ("不能单独",)))
 
+    def test_planner_routes_self_hosted_runtime_changes_through_protected_preparation(self) -> None:
+        planner = read(PLANNER_PATH)
+
+        self.assertIn("validate --repo <repo>", planner)
+        self.assertTrue(
+            has_terms(
+                planner,
+                ("self-hosted",),
+                ("runtime_support",),
+                ("preparation",),
+                ("affected_gates",),
+                ("required_independent_gates",),
+            ),
+            "self-hosted runtime changes must route through an independent preparation",
+        )
+        self.assertTrue(
+            has_terms(
+                planner,
+                ("runtime_support",),
+                ("affected_paths",),
+                ("唯一来源",),
+                ("同一 run", "同一run"),
+                ("热切换",),
+                ("writer",),
+                ("补写", "补造"),
+                ("observation",),
+            ),
+            "the frozen runtime support snapshot must prevent same-run writer replacement and backfill",
+        )
+
     def test_v4_supersession_guidance_is_active_first_and_version_scoped(self) -> None:
         self.assertTrue(
             affirmative_abandon_before_start(
@@ -1001,6 +1031,7 @@ class PlanningDesignDisciplineTest(unittest.TestCase):
             PHILOSOPHY_PATH.as_posix(),
             ARCHITECTURE_PATH.as_posix(),
             "schema/codex-loop-ledger.schema.json",
+            "schema/assurance-v4-runtime-support.schema.json",
             "schema/codex-test-proof.schema.json",
         }
         allowed_prefixes = (

@@ -95,6 +95,53 @@ def _schema_registry(*names: str) -> Registry:
     return registry
 
 
+def legacy_runtime_support() -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "mode": "legacy-unavailable",
+        "runtime_head": None,
+        "manifest_blob": None,
+        "manifest_digest": None,
+        "affected_gates": [],
+        "affected_paths": [],
+    }
+
+
+def validate_runtime_support_manifest(value: Any) -> dict[str, Any]:
+    try:
+        jsonschema.Draft202012Validator(
+            _schema("assurance-v4-runtime-support.schema.json")
+        ).validate(value)
+    except jsonschema.ValidationError as exc:
+        path = "/".join(str(part) for part in exc.absolute_path)
+        raise ContractError(
+            exc.message,
+            code="RUNTIME_SUPPORT_MANIFEST_INVALID",
+            details={"path": path},
+        ) from exc
+    assert isinstance(value, dict)
+    manifest = copy.deepcopy(value)
+    support_ids = [item["id"] for item in manifest["support_sets"]]
+    if len(support_ids) != len(set(support_ids)):
+        raise ContractError(
+            "runtime support manifest contains duplicate support-set ids",
+            code="RUNTIME_SUPPORT_MANIFEST_INVALID",
+            details={"ids": support_ids},
+        )
+    for support in manifest["support_sets"]:
+        overlap = sorted(
+            set(support["affected_gates"])
+            & set(support["required_independent_gates"])
+        )
+        if overlap:
+            raise ContractError(
+                "runtime support gates cannot also be independent preparation gates",
+                code="RUNTIME_SUPPORT_MANIFEST_INVALID",
+                details={"support_id": support["id"], "gates": overlap},
+            )
+    return manifest
+
+
 def validate_lineage(value: Any) -> dict[str, Any]:
     try:
         jsonschema.Draft202012Validator(
@@ -563,6 +610,7 @@ def validate_ledger(value: Any) -> dict[str, Any]:
             "adapter_dirty": None,
             "capture_status": "unavailable",
         }
+    normalized.setdefault("runtime_support", legacy_runtime_support())
     normalized.setdefault("machine_failure", None)
     normalized.setdefault("recomposition_intent", None)
     publication = normalized.get("publication")
@@ -572,6 +620,7 @@ def validate_ledger(value: Any) -> dict[str, Any]:
     registry = _schema_registry(
         "assurance-v4-contract.schema.json",
         "assurance-v4-lineage.schema.json",
+        "assurance-v4-runtime-support.schema.json",
         "assurance-v4-telemetry.schema.json",
         "codex-problem-report.schema.json",
         "codex-test-proof.schema.json",

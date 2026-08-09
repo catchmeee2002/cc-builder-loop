@@ -59,8 +59,9 @@ description: 在 Codex Plan mode 中为显式选择的 Builder-loop 实验路线
 - `authority` 冻结 target branch、Builder/Tester 精确写边界、dirty intake、串行公开前置产物和受保护
   support path。权限扩大必须重新交给用户决定。
 - 代码任务的 `assurance.required` 默认精确包含 `tester`、`proof`、`machine`、`blackbox`、`reviewer`；
-  同时默认 `reviewer_preflight:true`。纯 Markdown L1 只要求 `reviewer` 且保持 preflight false，不得伪造
-  Tester、machine 或 blackbox。
+  同时默认 `reviewer_preflight:true`。但 `validate --repo <repo>` 返回 self-hosted `runtime_support` 冲突时，
+  必须改为 protected preparation，移除 `affected_gates` 并加入全部 `required_independent_gates`。纯
+  Markdown L1 只要求 `reviewer` 且保持 preflight false，不得伪造 Tester、machine 或 blackbox。
 - Tester 可信来源由独立 thread、提交的普通测试文件、source manifest 与 Reviewer 审查共同绑定；这不
   宣称操作系统级恶意代码 sandbox。
 - `execution` 初始固定为 `version: 1`、`driver_enforced: true`、`candidate_head: null`、空的
@@ -70,6 +71,8 @@ description: 在 Codex Plan mode 中为显式选择的 Builder-loop 实验路线
 - protected preparation 使用 `mission.delivery_kind=preparation` 与 exact `protected_support_paths`；后续
   business contract 只通过 `execution.continuation` 消费 Core 已验证的 finalized run 事实。不得解析
   transcript 重建 continuation，也不得让 preparation supersede 业务 run；事实不足时停止规划交接。
+  `runtime_support.affected_paths` 是自托管 runtime 写边界的唯一来源；不得让同一 run 热切换 evidence
+  writer、补写旧 observation，或用 candidate 改写 manifest 后继续当前 proof gate。
 - `assurance.machine_commands` 冻结机器命令；`execution.commands` 冻结独立 blackbox 命令。argv 必须是
   字符串数组，`expected_returncodes` 冻结什么实际返回码算通过。交付必跑且本地无副作用的关键测试用
   `run_before_full_suite:true` 标记在 machine commands 中，并同时设置 `preflight_before_proof:true`；不得靠
@@ -93,7 +96,7 @@ description: 在 Codex Plan mode 中为显式选择的 Builder-loop 实验路线
   补出一次精确 delta，但不得靠猜测扩大变化。
 - 从 ledger 当前 `facets` 生成唯一完整 replacement contract。Mission 修订同时填入绑定当前 lineage 的
   `execution.revision_transition`；Authority/Assurance 之外的 facet 必须逐字节语义不变。
-- 先执行普通 `validate --contract -`，再执行：
+- 先执行普通 `validate --repo <repo> --contract -`，再执行：
 
   `codex-builder-loop assurance --experimental-v4 validate-decision --repo <repo> --run <run> --session-id <session-id> --problem-key <key> --action-id <action-id> --facet <facet> --facet-digest <digest> --contract -`
 
@@ -115,7 +118,7 @@ description: 在 Codex Plan mode 中为显式选择的 Builder-loop 实验路线
 
 1. 把 contract 的规范 JSON 通过 stdin 交给：
 
-   `codex-builder-loop assurance --experimental-v4 validate --contract -`
+   `codex-builder-loop assurance --experimental-v4 validate --repo <repo> --contract -`
 
 2. 只有返回 `status=READY` 才输出最终方案。最终方案必须包含唯一、完整且与已验证字节语义相同的：
 

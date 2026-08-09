@@ -171,6 +171,13 @@ preparation ledger 持久化 intent，business ledger 落盘后再提交 consume
 同一 start 只收敛该 intent，不创建第二份状态。当前用户入口明确标为实验；只有完成历史回放和跨项目
 真实验收后才移除实验标识并视为受支持的公共 Full Driver。
 
+自托管仓库不能让一个 run 修改并重新解释自己的 evidence writer。runtime 从冻结 adapter HEAD 的
+版本化 support manifest 展开 exact path/blob；`validate --repo`、`start` 与 Builder checkpoint 使用同一
+判定。普通 contract 触及这些路径时在创建 run 前停止；preparation 必须精确声明 affected paths、排除
+被修改 gate，并保留 manifest 要求的独立 machine/blackbox/Reviewer。candidate 新增路径或改写 manifest
+不能改变当前分类。交付 preparation 后，后续 business run 通过既有单次 continuation 在新 runtime 上
+重新取得角色和 evidence；同 run writer 热切换、旧 observation backfill 和旁路 evidence 均不存在。
+
 ## Legacy v3 系统边界
 
 Codex 原生 Plan mode 负责探索和追问；全局托管规则先让用户选择继续使用原生 Plan，或加载
@@ -608,6 +615,10 @@ adapter commit、checkout dirty 状态和捕获状态。事故记录只能引用
 事实；旧 ledger 没有该字段时明确标为 `legacy-unavailable`，不得用任务结束时的当前 checkout
 反推历史版本。Assurance v4 与 legacy Full Driver 共用该结构；旧 v4 missing/null 只在内存规范化为
 `legacy-unavailable`/`unavailable`，不回写或改造历史 ledger 的其他事实。
+
+新 run 同时记录 `runtime_support`：manifest digest/blob、runtime HEAD、self-hosted/external 模式及本
+contract 触及的 gates/paths。旧 ledger 缺失该事实时只规范化为 `legacy-unavailable`，不据当前 checkout
+反推历史 support；status、driver-context 与 retrospective 继续引用 ledger，而不是另建缓存。
 
 ## 离线 Issue 分流实验
 

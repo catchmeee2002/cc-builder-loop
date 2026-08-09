@@ -49,6 +49,7 @@ def parser() -> argparse.ArgumentParser:
         )
 
     validate = commands.add_parser("validate")
+    validate.add_argument("--repo", default=".")
     validate.add_argument("--contract", required=True)
 
     validate_decision = commands.add_parser("validate-decision")
@@ -369,7 +370,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 code="ASSURANCE_V4_EXPERIMENTAL_REQUIRED",
             )
         if args.command == "validate":
-            payload = core.validate(_json(args.contract))
+            payload = core.validate(_json(args.contract), args.repo)
         elif args.command == "validate-decision":
             payload = driver.validate_decision(
                 args.repo,

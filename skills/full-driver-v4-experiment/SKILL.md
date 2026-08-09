@@ -14,7 +14,7 @@ Agent spawn、same-thread follow-up、结构化结果解析和持续循环由本
 1. 仅处理单一、本地 Git 交付；远程部署、外部设备和多仓原子事务不在本实验范围。
 2. 读取项目 `AGENTS.md`、文档政策和设计哲学。直接显式调用时生成四事实面 contract；由 `$builder`
    handoff 加载时只接受 Planner 已验证并由 Builder 重验的唯一 contract，不重新解释或扩写。随后运行
-   `codex-builder-loop assurance --experimental-v4 validate/start`。
+   `codex-builder-loop assurance --experimental-v4 validate --repo <repo>` 与 `start`。
    初始 `execution.agents` 保持为空；只有原生 spawn 返回真实 identity 后，才通过
    `prepare-tester` / `prepare-reviewer` 写入，不能预填或猜测 agent/thread id。Full Driver contract
    必须设置 `execution.driver_enforced=true`，使缺失 `action_id` 也无法绕过当前 Driver action。
@@ -27,6 +27,8 @@ Agent spawn、same-thread follow-up、结构化结果解析和持续循环由本
 5. `mission.delivery_kind=preparation` 可修改 exact `protected_support_paths`，经 Reviewer 与 finalize
    形成 protected preparation。后续 business contract 使用 `execution.continuation` 单次消费；同一
    continuation token 的重复或二次 replay 必须由 Core 拒绝，不能复制旧 evidence 或 transcript。
+   self-hosted `runtime_support` 冲突时只接受 Core 返回的 exact affected paths，移除 affected gate 并保留
+   independent gates；不得 resume 当前 run、热切换 evidence writer 或补造旧 proof observation。
 
 ## 角色隔离与连续性
 

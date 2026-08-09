@@ -5,7 +5,7 @@
   "type": "object",
   "additionalProperties": false,
   "required": [
-    "schema_version", "runtime_identity", "run_id", "owner_session_id", "phase", "repo_root",
+    "schema_version", "runtime_identity", "runtime_support", "run_id", "owner_session_id", "phase", "repo_root",
     "target_branch", "target_start_head", "candidate_branch", "candidate_worktree",
     "facets", "digests", "evidence", "retired_tester_sources", "finalize_intent", "final_head",
     "created_at", "updated_at", "events"
@@ -13,6 +13,9 @@
   "properties": {
     "schema_version": {"const": 4},
     "runtime_identity": {"$ref": "#/$defs/runtimeIdentity"},
+    "runtime_support": {
+      "$ref": "assurance-v4-runtime-support.schema.json#/$defs/snapshot"
+    },
     "run_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"},
     "owner_session_id": {"type": "string", "minLength": 1},
     "phase": {"enum": ["active", "finalizing", "finalized", "failed", "abandoned", "superseded"]},
