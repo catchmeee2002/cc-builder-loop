@@ -46,7 +46,10 @@ description: 执行已接受的 Builder-loop 实验方案，把同 session 紧�
    Driver 到 `FINALIZED`、`FAILED` 或 `NEEDS_USER`。普通 revision、修复、Agent follow-up、target rematerialize
    和 finalize recovery 不交还用户。run 创建后若仅遇到 App Server disconnect/overload，用
    `native-driver resume --repo <repo> --run <run-id>` 自动续接；同一 transport signature 连续三次才按
-   continuity failure 停止，不能改走另一控制器。未处理 FATAL 必须已由 Native Driver 写成
+   continuity failure 停止，不能改走另一控制器。用户随后显式授权继续同一 dispatch 时，只能使用
+   `native-driver resume --repo <repo> --run <run-id> --reason <用户决定>` 建立新 generation；Core 必须
+   证明 runtime identity、role/thread、action 与 prompt digest 未漂移，旧 generation 的 attempt 不得
+   重置。runtime 已变化时停止并重新规划 successor run。未处理 FATAL 必须已由 Native Driver 写成
    `driver_failure` 并完成副作用恢复；若恢复仍需用户，保留 recovering 现场，不用 abandon 覆盖。
 7. 只有 Native Driver 在创建 run 前返回 `NATIVE_DRIVER_CODEX_UNAVAILABLE`、
    `NATIVE_DRIVER_PROTOCOL_UNAVAILABLE` 或 `NATIVE_DRIVER_PROTOCOL_INCOMPATIBLE`，才完整读取相邻

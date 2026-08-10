@@ -220,8 +220,9 @@
             "action": {"type": "string", "minLength": 1},
             "role": {"enum": ["builder", "tester", "reviewer"]},
             "thread_id": {"type": "string", "minLength": 1},
-            "state": {"enum": ["prepared", "in_flight", "completed"]},
+            "state": {"enum": ["prepared", "in_flight", "completed", "exhausted"]},
             "attempt": {"type": "integer", "minimum": 1, "maximum": 3},
+            "generation": {"type": "integer", "minimum": 1},
             "turn_id": {"type": "string", "minLength": 1}
           }
         }
@@ -291,9 +292,14 @@
         "thread_id": {"type": "string", "minLength": 1},
         "prompt_digest": {"$ref": "#/$defs/sha256"},
         "output_schema_digest": {"$ref": "#/$defs/sha256"},
-        "state": {"enum": ["prepared", "in_flight", "completed"]},
+        "state": {"enum": ["prepared", "in_flight", "completed", "exhausted"]},
         "attempt": {"type": "integer", "minimum": 1, "maximum": 3},
+        "generation": {"type": "integer", "minimum": 1},
         "turn_id": {"type": "string", "minLength": 1},
+        "failure_code": {"type": "string", "minLength": 1},
+        "exhausted_at": {"type": "string", "minLength": 1},
+        "renewed_from_digest": {"$ref": "#/$defs/sha256"},
+        "renewal_reason": {"type": "string", "minLength": 1},
         "result_path": {"type": "string", "minLength": 1},
         "result_digest": {"$ref": "#/$defs/sha256"},
         "created_at": {"type": "string", "minLength": 1},

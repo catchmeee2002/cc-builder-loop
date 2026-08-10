@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import os
 import sys
@@ -452,6 +453,215 @@ class NativeDriverCoreContractTest(unittest.TestCase):
             consumed.get("details", {}).get("consumer_source"), "native_driver"
         )
 
+    def test_exhausted_dispatch_requires_authorized_new_generation(self) -> None:
+        run_id, run_path = self.start()
+        first = self.invoke("driver-next", "--repo", self.repo, "--run", run_id)
+        self.invoke(
+            "prepare-builder",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--agent-id",
+            "native-builder",
+            "--thread-id",
+            "thread-builder",
+            "--action-id",
+            first["action_id"],
+            "--driver-runtime-kind",
+            "native",
+        )
+        action = self.invoke("driver-next", "--repo", self.repo, "--run", run_id)
+        self.invoke(
+            "begin-dispatch",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--action-id",
+            action["action_id"],
+            "--action",
+            action["action"],
+            "--role",
+            "builder",
+            "--thread-id",
+            "thread-builder",
+            "--prompt-digest",
+            "b" * 64,
+            "--output-schema-digest",
+            "c" * 64,
+        )
+        for attempt in (1, 2):
+            self.invoke(
+                "bind-dispatch-turn",
+                "--repo",
+                self.repo,
+                "--run",
+                run_id,
+                "--action-id",
+                action["action_id"],
+                "--turn-id",
+                f"turn-{attempt}",
+            )
+            self.invoke(
+                "retry-dispatch",
+                "--repo",
+                self.repo,
+                "--run",
+                run_id,
+                "--action-id",
+                action["action_id"],
+                "--failure-code",
+                "serverOverloaded",
+            )
+        self.invoke(
+            "bind-dispatch-turn",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--action-id",
+            action["action_id"],
+            "--turn-id",
+            "turn-3",
+        )
+        exhausted = run_process(
+            [
+                sys.executable,
+                CLI,
+                "assurance",
+                "--experimental-v4",
+                "retry-dispatch",
+                "--repo",
+                self.repo,
+                "--run",
+                run_id,
+                "--action-id",
+                action["action_id"],
+                "--failure-code",
+                "serverOverloaded",
+            ]
+        )
+        self.assertNotEqual(exhausted.returncode, 0)
+        self.assertEqual(
+            json.loads(exhausted.stdout)["code"],
+            "NATIVE_DISPATCH_RETRY_EXHAUSTED",
+        )
+        ledger_path = run_path / "ledger.json"
+        exhausted_ledger = json.loads(ledger_path.read_text())
+        exhausted_intent = exhausted_ledger["dispatch_intent"]
+        self.assertEqual(exhausted_intent["state"], "exhausted")
+        self.assertEqual(exhausted_intent["attempt"], 3)
+        self.assertEqual(exhausted_intent["generation"], 1)
+        self.assertEqual(exhausted_intent["failure_code"], "serverOverloaded")
+        self.assertEqual(exhausted_intent["turn_id"], "turn-3")
+        self.assertEqual(
+            [
+                event["kind"]
+                for event in exhausted_ledger["events"]
+                if event["kind"] == "dispatch_retry_exhausted"
+            ],
+            ["dispatch_retry_exhausted"],
+        )
+
+        wrong_runtime = copy.deepcopy(exhausted_ledger)
+        wrong_runtime["runtime_identity"]["adapter_commit"] = "f" * 40
+        ledger_path.write_text(
+            json.dumps(wrong_runtime, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        rejected = run_process(
+            [
+                sys.executable,
+                CLI,
+                "assurance",
+                "--experimental-v4",
+                "renew-dispatch",
+                "--repo",
+                self.repo,
+                "--run",
+                run_id,
+                "--action-id",
+                action["action_id"],
+                "--reason",
+                "user authorized a new transport generation",
+                "--driver-runtime-kind",
+                "native",
+            ]
+        )
+        self.assertNotEqual(rejected.returncode, 0)
+        self.assertEqual(
+            json.loads(rejected.stdout)["code"],
+            "DISPATCH_RUNTIME_IDENTITY_MISMATCH",
+        )
+        ledger_path.write_text(
+            json.dumps(exhausted_ledger, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+        empty_reason = run_process(
+            [
+                sys.executable,
+                CLI,
+                "assurance",
+                "--experimental-v4",
+                "renew-dispatch",
+                "--repo",
+                self.repo,
+                "--run",
+                run_id,
+                "--action-id",
+                action["action_id"],
+                "--reason",
+                "",
+                "--driver-runtime-kind",
+                "native",
+            ]
+        )
+        self.assertNotEqual(empty_reason.returncode, 0)
+        self.assertEqual(
+            json.loads(empty_reason.stdout)["code"],
+            "DISPATCH_RENEWAL_REASON_REQUIRED",
+        )
+
+        self.invoke(
+            "renew-dispatch",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--action-id",
+            action["action_id"],
+            "--reason",
+            "user authorized a new transport generation",
+            "--driver-runtime-kind",
+            "native",
+        )
+        renewed_ledger = json.loads(ledger_path.read_text())
+        renewed_intent = renewed_ledger["dispatch_intent"]
+        self.assertEqual(renewed_intent["state"], "prepared")
+        self.assertEqual(renewed_intent["attempt"], 1)
+        self.assertEqual(renewed_intent["generation"], 2)
+        self.assertEqual(renewed_intent["thread_id"], "thread-builder")
+        self.assertEqual(
+            renewed_intent["renewal_reason"],
+            "user authorized a new transport generation",
+        )
+        self.assertNotIn("turn_id", renewed_intent)
+        renewal = next(
+            event
+            for event in reversed(renewed_ledger["events"])
+            if event["kind"] == "dispatch_renewed"
+        )
+        self.assertEqual(renewal["details"]["previous_generation"], 1)
+        self.assertEqual(renewal["details"]["generation"], 2)
+        self.assertEqual(renewal["details"]["previous_turn_id"], "turn-3")
+        telemetry = self.invoke("status", "--repo", self.repo, "--run", run_id)[
+            "telemetry"
+        ]
+        self.assertEqual(telemetry["lifecycle"]["dispatch_renewals"], 1)
+        self.assertIn("dispatch_renewed", telemetry["warnings"])
+
     def test_native_cli_persists_unhandled_fatal_after_run_creation(self) -> None:
         class FakeCore:
             def __init__(self) -> None:
@@ -649,6 +859,74 @@ class NativeDriverCoreContractTest(unittest.TestCase):
         payload = json.loads(output.getvalue().splitlines()[-1])
         self.assertEqual(payload["status"], "ACTIVE")
         self.assertEqual(payload["dispatch_intent"]["attempt"], 2)
+
+    def test_native_resume_passes_user_reason_only_for_exhausted_dispatch(self) -> None:
+        captured: dict[str, object] = {}
+
+        class FakeCore:
+            def call(self, command: str, *args: str, input_value=None):
+                self.command = command
+                return {
+                    "driver_runtime": {"kind": "native", "protocol_version": 1},
+                    "dispatch_intent": {
+                        "action": "builder_implement",
+                        "action_id": "a" * 64,
+                        "attempt": 3,
+                        "generation": 1,
+                        "role": "builder",
+                        "state": "exhausted",
+                        "thread_id": "builder-thread",
+                    },
+                }
+
+        class FakeTransport:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+        class FakeCoordinator:
+            current_action = None
+
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+            def run(self):
+                return {"status": "NEEDS_USER", "run_id": "renewed-run"}
+
+        output = StringIO()
+        with (
+            patch.object(native_cli, "CorePort", return_value=FakeCore()),
+            patch.object(
+                native_cli,
+                "probe_app_server",
+                return_value=SimpleNamespace(
+                    runtime_version="codex-test",
+                    protocol_schema_digest="b" * 64,
+                ),
+            ),
+            patch.object(native_cli, "AppServerTransport", return_value=FakeTransport()),
+            patch.object(native_cli, "NativeCoordinator", FakeCoordinator),
+            redirect_stdout(output),
+        ):
+            rc = native_cli.main(
+                [
+                    "resume",
+                    "--repo",
+                    str(self.repo),
+                    "--run",
+                    "renewed-run",
+                    "--reason",
+                    "user approved a new dispatch generation",
+                ]
+            )
+
+        self.assertEqual(rc, 1)
+        self.assertEqual(
+            captured["dispatch_renewal_reason"],
+            "user approved a new dispatch generation",
+        )
 
     def test_native_cli_reports_finalized_when_fatal_finalize_recovery_succeeds(
         self,
@@ -1160,6 +1438,91 @@ class NativeCoordinatorContractTest(unittest.TestCase):
         self.assertEqual(stopped["status"], "NEEDS_USER")
         self.assertEqual(stopped["code"], "NATIVE_DISPATCH_RETRY_EXHAUSTED")
         self.assertEqual(stopped["run_id"], "raw-disconnect")
+
+    def test_user_reason_creates_new_dispatch_generation_on_same_thread(self) -> None:
+        action_id = "a" * 64
+
+        class FakeCore:
+            def __init__(self) -> None:
+                self.calls: list[tuple[str, tuple[str, ...]]] = []
+                self.intent = {
+                    "action": "builder_implement",
+                    "action_id": action_id,
+                    "attempt": 3,
+                    "generation": 1,
+                    "role": "builder",
+                    "state": "exhausted",
+                    "thread_id": "builder-thread",
+                    "turn_id": "builder-turn-3",
+                    "failure_code": "serverOverloaded",
+                }
+
+            def call(self, command: str, *args: str, input_value=None):
+                self.calls.append((command, args))
+                if command == "retry-dispatch":
+                    raise CorePortError(
+                        "Native role transport failed three times",
+                        payload={
+                            "status": "NEEDS_USER",
+                            "code": "NATIVE_DISPATCH_RETRY_EXHAUSTED",
+                            "details": {"attempt": 3, "generation": 1},
+                        },
+                        returncode=1,
+                    )
+                if command == "driver-context":
+                    return {
+                        "facets": {
+                            "execution": {
+                                "agents": {
+                                    "builder": {
+                                        "agent_id": "builder-agent",
+                                        "thread_id": "builder-thread",
+                                    }
+                                }
+                            }
+                        },
+                        "dispatch_intent": dict(self.intent),
+                    }
+                if command == "renew-dispatch":
+                    self.intent = {
+                        **self.intent,
+                        "attempt": 1,
+                        "generation": 2,
+                        "state": "prepared",
+                    }
+                    self.intent.pop("turn_id", None)
+                    self.intent.pop("failure_code", None)
+                    return {
+                        "status": "ACTIVE",
+                        "dispatch_intent": dict(self.intent),
+                    }
+                raise AssertionError(command)
+
+        core = FakeCore()
+        coordinator = NativeCoordinator(
+            repo=ROOT,
+            run_id="renewed-dispatch",
+            core=core,
+            transport=object(),
+            project_root=ROOT,
+            dispatch_renewal_reason="user approved a new dispatch generation",
+        )
+        renewed = coordinator._schedule_dispatch_retry(
+            action_id, "serverOverloaded"
+        )
+        self.assertEqual(renewed["dispatch_intent"]["generation"], 2)
+        self.assertEqual(renewed["dispatch_intent"]["attempt"], 1)
+        self.assertEqual(renewed["dispatch_intent"]["thread_id"], "builder-thread")
+        self.assertEqual(
+            [command for command, _args in core.calls],
+            ["retry-dispatch", "driver-context", "renew-dispatch"],
+        )
+        renew_args = core.calls[-1][1]
+        self.assertIn("user approved a new dispatch generation", renew_args)
+        self.assertEqual(
+            NativeCoordinator._dispatch_client_id(renewed["dispatch_intent"]),
+            f"{action_id}:g2:1",
+        )
 
     def test_external_problem_needs_user_stops_without_agent_dispatch(self) -> None:
         class FakeCore:

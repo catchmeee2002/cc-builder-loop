@@ -317,6 +317,17 @@ def parser() -> argparse.ArgumentParser:
     retry_dispatch.add_argument("--action-id", required=True)
     retry_dispatch.add_argument("--failure-code", required=True)
 
+    renew_dispatch = commands.add_parser("renew-dispatch")
+    renew_dispatch.add_argument("--repo", default=".")
+    renew_dispatch.add_argument("--run", required=True)
+    renew_dispatch.add_argument("--action-id", required=True)
+    renew_dispatch.add_argument("--reason", required=True)
+    renew_dispatch.add_argument(
+        "--driver-runtime-kind",
+        choices=["native", "full_driver_skill"],
+        required=True,
+    )
+
     abandon = commands.add_parser("abandon")
     abandon.add_argument("--repo", default=".")
     abandon.add_argument("--run", required=True)
@@ -648,6 +659,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.run,
                 action_id=args.action_id,
                 failure_code=args.failure_code,
+            )
+        elif args.command == "renew-dispatch":
+            payload = core.renew_dispatch(
+                args.repo,
+                args.run,
+                action_id=args.action_id,
+                reason=args.reason,
+                driver_runtime_kind=args.driver_runtime_kind,
             )
         elif args.command == "abandon":
             payload = core.abandon(args.repo, args.run, args.reason)

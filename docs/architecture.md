@@ -149,8 +149,12 @@ problem，只保留内容和 owner；旧 producer、Tester/Reviewer identity、t
 结构化 turn failure 与 raw App Server stdio disconnect 先在唯一 transport classifier 中归一；只有分类为
 可恢复且精确匹配 ledger 当前 role thread、action 和 dispatch 的事故才能进入 retry。可恢复 transport
 failure 在同一 role thread 和 dispatch 上最多尝试三次，attempt 与 turn id 持久化进 ledger；第三次失败后
-Core 返回 `NEEDS_USER`，Driver 不重置上限或另建 thread 绕过连续性。无匹配 dispatch、协议错误或未知
-failure 继续按未处理 FATAL 事务 fail closed。
+Core 将该 generation 持久化为 `exhausted` 并返回 `NEEDS_USER`，Driver 不重置旧 generation 的上限或
+另建 thread 绕过连续性。用户显式提供 `native-driver resume --reason` 后，只有实际 runtime identity、
+role/thread、action 和 prompt/output digest 全部未变，Core 才归档旧 generation 并在同一 role thread
+建立新的 dispatch generation；新的 attempt 从 1 开始，旧 attempt、turn 和 failure 仍保留在 ledger
+event 中。runtime identity 漂移、缺少用户理由、无匹配 dispatch、协议错误或未知 failure 均继续
+fail closed；runtime 已升级时必须由新 run 重新绑定执行身份和 evidence。
 App Server turn 使用 host-level `danger-full-access`，因为部分本地环境无法创建 bwrap namespace；这不
 扩大产品信任声明，角色只读/写范围仍由独立 worktree、Git manifest、ownership 和 Core mutation gate
 机械执行，与既有“不提供 filesystem ACL”的边界一致。

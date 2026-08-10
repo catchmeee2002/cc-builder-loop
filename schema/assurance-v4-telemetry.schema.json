@@ -106,7 +106,8 @@
         "recomposition_restarts": {"type": "integer", "minimum": 0},
         "builder_conflict_repairs": {"type": "integer", "minimum": 0},
         "tester_conflict_repairs": {"type": "integer", "minimum": 0},
-        "reviewer_preflight_attempts": {"type": "integer", "minimum": 0}
+        "reviewer_preflight_attempts": {"type": "integer", "minimum": 0},
+        "dispatch_renewals": {"type": "integer", "minimum": 0}
       }
     },
     "expected_stages": {

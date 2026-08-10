@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Native Driver 将三次 transport retry 耗尽持久化为不可改写的 `exhausted` dispatch generation。用户
+  显式提供 `native-driver resume --reason` 后，Core 仅在 runtime identity、role/thread、action 与 prompt
+  digest 均未漂移时建立同线程的新 generation；旧 attempt/turn/failure 保留，runtime 升级必须改走
+  successor run，不允许在 active run 内热切换执行版本。
+
 - Assurance v4 新增由冻结 runtime HEAD 绑定的 self-hosted support manifest。`validate --repo`、`start`
   和 Builder checkpoint 会在普通 run 修改自身 proof writer 前 fail closed，并要求 exact protected
   preparation 排除被修改 gate、保留独立 machine/blackbox/Reviewer；candidate 无法通过改写 manifest

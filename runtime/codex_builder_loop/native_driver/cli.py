@@ -24,6 +24,7 @@ def parser() -> argparse.ArgumentParser:
     resume = commands.add_parser("resume")
     resume.add_argument("--repo", default=".")
     resume.add_argument("--run", required=True)
+    resume.add_argument("--reason")
     status = commands.add_parser("status")
     status.add_argument("--repo", default=".")
     status.add_argument("--run", required=True)
@@ -164,11 +165,30 @@ def main(argv: Sequence[str] | None = None) -> int:
                     code="NATIVE_DRIVER_PORT_INCOMPATIBLE",
                     status="NEEDS_USER",
                 )
+            if args.reason is not None:
+                if not args.reason.strip():
+                    raise NativeDriverError(
+                        "dispatch renewal requires a non-empty reason",
+                        code="NATIVE_DISPATCH_RENEWAL_REASON_REQUIRED",
+                        status="NEEDS_USER",
+                    )
+                dispatch = context.get("dispatch_intent")
+                if not (
+                    isinstance(dispatch, dict)
+                    and int(dispatch.get("attempt", 1)) >= 3
+                    and dispatch.get("state") in {"prepared", "in_flight", "exhausted"}
+                ):
+                    raise NativeDriverError(
+                        "dispatch renewal is not available for the current run state",
+                        code="NATIVE_DISPATCH_RENEWAL_NOT_AVAILABLE",
+                        status="NEEDS_USER",
+                    )
             coordinator = NativeCoordinator(
                 repo=repo,
                 run_id=args.run,
                 core=core,
                 transport=transport,
+                dispatch_renewal_reason=args.reason,
             )
         with transport:
             if args.command == "start":

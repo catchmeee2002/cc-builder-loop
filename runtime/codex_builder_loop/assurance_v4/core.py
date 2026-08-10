@@ -1124,6 +1124,7 @@ def begin_dispatch(
             "output_schema_digest": output_schema_digest,
             "state": "prepared",
             "attempt": 1,
+            "generation": 1,
             "created_at": now(),
         }
         append_event(ledger, "dispatch_prepared", copy.deepcopy(ledger["dispatch_intent"]))
@@ -1194,6 +1195,13 @@ def retry_dispatch(
 ) -> dict[str, Any]:
     repo = resolve_repo(repo_value)
     run_id = ensure_run_id(run_value)
+    normalized_failure_code = failure_code.strip()
+    if not normalized_failure_code:
+        raise AssuranceError(
+            "dispatch retry failure code is required",
+            code="DISPATCH_RETRY_FAILURE_CODE_REQUIRED",
+            status="FAIL",
+        )
     with locked(repo):
         ledger = read_ledger(repo, run_id)
         intent = ledger.get("dispatch_intent")
@@ -1202,6 +1210,7 @@ def retry_dispatch(
         if intent.get("state") == "completed":
             raise AssuranceError("completed dispatch cannot be retried", code="DISPATCH_ALREADY_COMPLETE")
         attempt = int(intent.get("attempt", 1))
+        generation = int(intent.get("generation", 1))
         if attempt >= 3:
             deployment = ledger.get("deployment_transaction")
             if isinstance(deployment, dict) and deployment.get("state") == "deployed":
@@ -1210,16 +1219,40 @@ def retry_dispatch(
                 append_event(
                     ledger,
                     "dispatch_retry_exhausted_restore_required",
-                    {"failure_code": failure_code, "attempt": attempt},
+                    {
+                        "failure_code": normalized_failure_code,
+                        "attempt": attempt,
+                        "generation": generation,
+                    },
                 )
                 ledger["dispatch_intent"] = None
                 save_ledger(repo, ledger)
                 return status(repo, run_id)
+            if intent.get("state") != "exhausted":
+                intent["state"] = "exhausted"
+                intent["failure_code"] = normalized_failure_code
+                intent["exhausted_at"] = now()
+                append_event(
+                    ledger,
+                    "dispatch_retry_exhausted",
+                    {
+                        "action_id": action_id,
+                        "attempt": attempt,
+                        "generation": generation,
+                        "turn_id": intent.get("turn_id"),
+                        "failure_code": normalized_failure_code,
+                    },
+                )
+                save_ledger(repo, ledger)
             raise AssuranceError(
                 "Native role transport failed three times",
                 code="NATIVE_DISPATCH_RETRY_EXHAUSTED",
                 status="NEEDS_USER",
-                details={"failure_code": failure_code, "attempt": attempt},
+                details={
+                    "failure_code": intent.get("failure_code", normalized_failure_code),
+                    "attempt": attempt,
+                    "generation": generation,
+                },
             )
         append_event(
             ledger,
@@ -1227,13 +1260,108 @@ def retry_dispatch(
             {
                 "action_id": action_id,
                 "attempt": attempt,
+                "generation": generation,
                 "turn_id": intent.get("turn_id"),
-                "failure_code": failure_code,
+                "failure_code": normalized_failure_code,
             },
         )
         intent["attempt"] = attempt + 1
         intent["state"] = "prepared"
         intent.pop("turn_id", None)
+        save_ledger(repo, ledger)
+    return status(repo, run_id)
+
+
+def renew_dispatch(
+    repo_value: str | Path,
+    run_value: str,
+    *,
+    action_id: str,
+    reason: str,
+    driver_runtime_kind: str,
+) -> dict[str, Any]:
+    repo = resolve_repo(repo_value)
+    run_id = ensure_run_id(run_value)
+    normalized_reason = reason.strip()
+    if not normalized_reason:
+        raise AssuranceError(
+            "dispatch renewal requires a non-empty reason",
+            code="DISPATCH_RENEWAL_REASON_REQUIRED",
+            status="NEEDS_USER",
+        )
+    with locked(repo):
+        ledger = read_ledger(repo, run_id)
+        _require_driver_runtime_owner(ledger, driver_runtime_kind)
+        if ledger["phase"] != "active":
+            raise AssuranceError(
+                "dispatch renewal requires an active run",
+                code="ASSURANCE_RUN_NOT_ACTIVE",
+                status="NEEDS_USER",
+            )
+        intent = ledger.get("dispatch_intent")
+        if not isinstance(intent, dict) or intent.get("action_id") != action_id:
+            raise AssuranceError("dispatch action is stale", code="DRIVER_ACTION_STALE", status="FAIL")
+        if intent.get("state") != "exhausted" or int(intent.get("attempt", 1)) < 3:
+            raise AssuranceError(
+                "only an exhausted dispatch can start a new generation",
+                code="DISPATCH_RENEWAL_NOT_AVAILABLE",
+                status="NEEDS_USER",
+            )
+        from ..core import capture_runtime_identity
+
+        current_runtime_identity = capture_runtime_identity()
+        if current_runtime_identity != ledger["runtime_identity"]:
+            raise AssuranceError(
+                "dispatch renewal cannot change the frozen runtime identity",
+                code="DISPATCH_RUNTIME_IDENTITY_MISMATCH",
+                status="NEEDS_USER",
+                details={
+                    "expected_runtime_identity": copy.deepcopy(ledger["runtime_identity"]),
+                    "actual_runtime_identity": current_runtime_identity,
+                },
+            )
+        agent = ledger["facets"]["execution"]["agents"].get(intent["role"])
+        if not isinstance(agent, dict) or agent.get("thread_id") != intent.get("thread_id"):
+            raise AssuranceError(
+                "dispatch renewal lost role thread continuity",
+                code="DISPATCH_RENEWAL_IDENTITY_MISMATCH",
+                status="NEEDS_USER",
+            )
+        previous_intent = copy.deepcopy(intent)
+        previous_digest = digest(previous_intent)
+        previous_generation = int(previous_intent.get("generation", 1))
+        renewed_intent = {
+            "action_id": previous_intent["action_id"],
+            "action": previous_intent["action"],
+            "role": previous_intent["role"],
+            "thread_id": previous_intent["thread_id"],
+            "prompt_digest": previous_intent["prompt_digest"],
+            "output_schema_digest": previous_intent["output_schema_digest"],
+            "state": "prepared",
+            "attempt": 1,
+            "generation": previous_generation + 1,
+            "renewed_from_digest": previous_digest,
+            "renewal_reason": normalized_reason,
+            "created_at": now(),
+        }
+        ledger["dispatch_intent"] = renewed_intent
+        append_event(
+            ledger,
+            "dispatch_renewed",
+            {
+                "action_id": action_id,
+                "role": previous_intent["role"],
+                "thread_id": previous_intent["thread_id"],
+                "previous_generation": previous_generation,
+                "generation": renewed_intent["generation"],
+                "previous_attempt": int(previous_intent.get("attempt", 1)),
+                "previous_turn_id": previous_intent.get("turn_id"),
+                "failure_code": previous_intent.get("failure_code"),
+                "previous_digest": previous_digest,
+                "reason": normalized_reason,
+            },
+        )
+        append_event(ledger, "dispatch_prepared", copy.deepcopy(renewed_intent))
         save_ledger(repo, ledger)
     return status(repo, run_id)
 
@@ -1384,6 +1512,7 @@ def _driver_failure_dispatch(ledger: Mapping[str, Any]) -> dict[str, Any] | None
         "thread_id": intent["thread_id"],
         "state": intent["state"],
         "attempt": int(intent.get("attempt", 1)),
+        "generation": int(intent.get("generation", 1)),
     }
     if isinstance(intent.get("turn_id"), str):
         value["turn_id"] = intent["turn_id"]
@@ -2017,6 +2146,15 @@ def _derive_retrospective_snapshot(
                             "consumer_source": source or "legacy-inferred",
                         }
                     )
+            elif kind == "dispatch_renewed" and isinstance(action_id, str):
+                manual_recoveries.append(
+                    {
+                        "action_id": action_id,
+                        "consumer_source": "user_authorized_generation",
+                        "generation": details.get("generation"),
+                        "failure_code": details.get("failure_code"),
+                    }
+                )
             elif kind == "evidence_recorded":
                 evidence_kind = str(details.get("kind", "unknown"))
                 evidence_attempts[evidence_kind] = evidence_attempts.get(evidence_kind, 0) + 1
@@ -2682,6 +2820,7 @@ def telemetry(ledger: Mapping[str, Any]) -> dict[str, Any]:
         "builder_conflict_repairs": 0,
         "tester_conflict_repairs": 0,
         "reviewer_preflight_attempts": 0,
+        "dispatch_renewals": 0,
     }
 
     def stage(name: str) -> dict[str, Any]:
@@ -2731,6 +2870,8 @@ def telemetry(ledger: Mapping[str, Any]) -> dict[str, Any]:
             failure_code = str(details.get("failure_code", "unknown"))
             current["last_failure_code"] = failure_code
             retry_codes[failure_code] = retry_codes.get(failure_code, 0) + 1
+        elif kind == "dispatch_renewed":
+            lifecycle["dispatch_renewals"] += 1
         elif kind == "machine_verified":
             current = stage("verify_machine")
             current["attempts"] += 1
@@ -2865,6 +3006,8 @@ def telemetry(ledger: Mapping[str, Any]) -> dict[str, Any]:
         warnings.append("evidence_replayed")
     if lifecycle["recomposition_restarts"]:
         warnings.append("target_recomposition_restarted")
+    if lifecycle["dispatch_renewals"]:
+        warnings.append("dispatch_renewed")
     if any(item["failed_attempts"] >= 2 for item in stage_values):
         warnings.append("stage_failed_repeatedly")
     assurance = ledger["facets"]["assurance"]

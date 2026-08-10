@@ -37,6 +37,7 @@ class NativeCoordinator:
         core: CorePort,
         transport: AppServerTransport,
         project_root: Path | None = None,
+        dispatch_renewal_reason: str | None = None,
     ):
         self.repo = repo.resolve()
         self.run_id = run_id
@@ -57,6 +58,11 @@ class NativeCoordinator:
         self.proof_schema = self._load_schema("codex-test-proof.schema.json")
         self._active_threads: set[str] = set()
         self.current_action: dict[str, Any] | None = None
+        self._dispatch_renewal_reason = (
+            dispatch_renewal_reason.strip()
+            if isinstance(dispatch_renewal_reason, str) and dispatch_renewal_reason.strip()
+            else None
+        )
 
     def run(self) -> dict[str, Any]:
         while True:
@@ -335,7 +341,7 @@ class NativeCoordinator:
         )
         thread = self.transport.read_thread(thread_id)
         attempt = int(pending.get("attempt", 1))
-        client_id = f"{pending['action_id']}:{attempt}"
+        client_id = self._dispatch_client_id(pending)
         matches = [
             turn
             for turn in thread.get("turns", [])
@@ -390,33 +396,15 @@ class NativeCoordinator:
         if len(matches) == 1 and matches[0].get("status") == "failed":
             failure_code = self._turn_failure_code(matches[0])
             if is_retryable_transport_failure(failure_code):
-                self.core.call(
-                    "retry-dispatch",
-                    "--repo",
-                    str(self.repo),
-                    "--run",
-                    self.run_id,
-                    "--action-id",
-                    str(pending["action_id"]),
-                    "--failure-code",
-                    failure_code,
-                )
+                self._schedule_dispatch_retry(str(pending["action_id"]), failure_code)
                 return None
         if (
             len(matches) == 1
             and matches[0].get("status") == "completed"
             and self._turn_agent_text(matches[0]) is None
         ):
-            self.core.call(
-                "retry-dispatch",
-                "--repo",
-                str(self.repo),
-                "--run",
-                self.run_id,
-                "--action-id",
-                str(pending["action_id"]),
-                "--failure-code",
-                "missingAgentResult",
+            self._schedule_dispatch_retry(
+                str(pending["action_id"]), "missingAgentResult"
             )
             return None
         if len(matches) == 1 and matches[0].get("status") in {"inProgress", "in_progress"}:
@@ -1269,6 +1257,15 @@ class NativeCoordinator:
         return None
 
     @staticmethod
+    def _dispatch_client_id(pending: dict[str, Any]) -> str:
+        action_id = str(pending["action_id"])
+        attempt = int(pending.get("attempt", 1))
+        generation = int(pending.get("generation", 1))
+        if generation == 1:
+            return f"{action_id}:{attempt}"
+        return f"{action_id}:g{generation}:{attempt}"
+
+    @staticmethod
     def _turn_failure_code(turn: dict[str, Any]) -> str:
         return classify_turn_failure(turn.get("error"))
 
@@ -1299,18 +1296,54 @@ class NativeCoordinator:
                 )
                 return True
             return False
-        self.core.call(
-            "retry-dispatch",
-            "--repo",
-            str(self.repo),
-            "--run",
-            self.run_id,
-            "--action-id",
-            action_id,
-            "--failure-code",
-            failure_code,
-        )
+        self._schedule_dispatch_retry(action_id, failure_code)
         return True
+
+    def _schedule_dispatch_retry(
+        self, action_id: str, failure_code: str
+    ) -> dict[str, Any]:
+        try:
+            return self.core.call(
+                "retry-dispatch",
+                "--repo",
+                str(self.repo),
+                "--run",
+                self.run_id,
+                "--action-id",
+                action_id,
+                "--failure-code",
+                failure_code,
+            )
+        except CorePortError as error:
+            if (
+                error.code != "NATIVE_DISPATCH_RETRY_EXHAUSTED"
+                or self._dispatch_renewal_reason is None
+            ):
+                raise
+            context = self._context()
+            intent = context.get("dispatch_intent")
+            if not (
+                isinstance(intent, dict)
+                and intent.get("action_id") == action_id
+                and intent.get("state") == "exhausted"
+            ):
+                raise
+            reason = self._dispatch_renewal_reason
+            renewed = self.core.call(
+                "renew-dispatch",
+                "--repo",
+                str(self.repo),
+                "--run",
+                self.run_id,
+                "--action-id",
+                action_id,
+                "--reason",
+                reason,
+                "--driver-runtime-kind",
+                "native",
+            )
+            self._dispatch_renewal_reason = None
+            return renewed
 
     def retry_transport_failure(self, error: AppServerError) -> dict[str, Any] | None:
         failure_code = classify_app_server_failure(error)
@@ -1341,17 +1374,7 @@ class NativeCoordinator:
         ):
             return None
         try:
-            payload = self.core.call(
-                "retry-dispatch",
-                "--repo",
-                str(self.repo),
-                "--run",
-                self.run_id,
-                "--action-id",
-                action_id,
-                "--failure-code",
-                failure_code,
-            )
+            payload = self._schedule_dispatch_retry(action_id, failure_code)
         except CorePortError as retry_error:
             if retry_error.status not in {"FAIL", "NEEDS_USER"}:
                 raise
