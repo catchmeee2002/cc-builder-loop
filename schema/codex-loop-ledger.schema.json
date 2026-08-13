@@ -543,6 +543,12 @@
     "problemRecord": {
       "type": "object",
       "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {"required": ["producer_continuity"]},
+          "then": {"properties": {"owner": {"const": "tester"}}}
+        }
+      ],
       "required": [
         "problem_id",
         "key",
@@ -568,6 +574,7 @@
             "external_platform"
           ]
         },
+        "producer_continuity": {"const": "invalid"},
         "origin_run_id": {
           "type": "string",
           "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"

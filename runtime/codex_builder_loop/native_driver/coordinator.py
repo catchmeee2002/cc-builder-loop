@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import copy
 import json
+import time
 import tomllib
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from ..assurance_v4.driver_contract import (
     AGENT_ACTION_CAPABILITIES,
@@ -16,6 +18,7 @@ from .core_port import CorePort, CorePortError
 from .transport_failures import (
     classify_app_server_failure,
     classify_turn_failure,
+    is_missing_rollout_failure,
     is_retryable_transport_failure,
 )
 
@@ -38,6 +41,9 @@ class NativeCoordinator:
         transport: AppServerTransport,
         project_root: Path | None = None,
         dispatch_renewal_reason: str | None = None,
+        event_sink: Callable[[dict[str, Any]], None] | None = None,
+        now_fn: Callable[[], datetime] | None = None,
+        sleep_fn: Callable[[float], None] | None = None,
     ):
         self.repo = repo.resolve()
         self.run_id = run_id
@@ -58,6 +64,9 @@ class NativeCoordinator:
         self.proof_schema = self._load_schema("codex-test-proof.schema.json")
         self._active_threads: set[str] = set()
         self.current_action: dict[str, Any] | None = None
+        self._event_sink = event_sink
+        self._now_fn = now_fn or (lambda: datetime.now(timezone.utc))
+        self._sleep_fn = sleep_fn or time.sleep
         self._dispatch_renewal_reason = (
             dispatch_renewal_reason.strip()
             if isinstance(dispatch_renewal_reason, str) and dispatch_renewal_reason.strip()
@@ -99,6 +108,8 @@ class NativeCoordinator:
                 continue
             if name == "checkpoint_builder":
                 self._simple("checkpoint-builder", action)
+            elif name == "replace_tester":
+                self._replace_tester(action)
             elif name == "publish_prerequisites":
                 self._simple("publish-prerequisites", action)
             elif name == "verify_machine":
@@ -167,6 +178,151 @@ class NativeCoordinator:
             "native",
         )
 
+    def _replace_tester(self, action: dict[str, Any]) -> None:
+        context = self._context()
+        replacement = context.get("tester_replacement_intent")
+        problem = action.get("problem")
+        problem_key = (
+            replacement.get("problem_key")
+            if isinstance(replacement, dict)
+            else problem.get("key")
+            if isinstance(problem, dict)
+            else action.get("problem_key")
+        )
+        if not isinstance(problem_key, str) or not problem_key:
+            raise NativeDriverError(
+                "Tester replacement action has no problem binding",
+                code="NATIVE_TESTER_REPLACEMENT_PROBLEM_MISSING",
+                status="NEEDS_USER",
+            )
+        action_id = str(
+            replacement["action_id"]
+            if isinstance(replacement, dict)
+            else action["action_id"]
+        )
+        if not isinstance(replacement, dict):
+            self.core.call(
+                "begin-tester-replacement",
+                "--repo",
+                str(self.repo),
+                "--run",
+                self.run_id,
+                "--action-id",
+                action_id,
+                "--problem-key",
+                problem_key,
+                "--driver-runtime-kind",
+                "native",
+            )
+            replacement = self._context().get("tester_replacement_intent")
+        if not isinstance(replacement, dict):
+            raise NativeDriverError(
+                "Tester replacement intent was not persisted",
+                code="NATIVE_TESTER_REPLACEMENT_INTENT_MISSING",
+            )
+        new_agent = replacement.get("new_agent")
+        if not isinstance(new_agent, dict):
+            instructions, _sandbox = self._role_config("tester")
+            thread_id = self.transport.start_thread(
+                cwd=str(replacement["worktree"]),
+                developer_instructions=instructions,
+                sandbox="danger-full-access",
+            )
+            new_agent = {
+                "agent_id": f"codex-app-server:{thread_id}",
+                "thread_id": thread_id,
+            }
+            self.core.call(
+                "bind-tester-replacement",
+                "--repo",
+                str(self.repo),
+                "--run",
+                self.run_id,
+                "--action-id",
+                action_id,
+                "--agent-id",
+                new_agent["agent_id"],
+                "--thread-id",
+                thread_id,
+                "--driver-runtime-kind",
+                "native",
+            )
+            self._active_threads.add(thread_id)
+        self.core.call(
+            "complete-tester-replacement",
+            "--repo",
+            str(self.repo),
+            "--run",
+            self.run_id,
+            "--action-id",
+            action_id,
+            "--driver-runtime-kind",
+            "native",
+        )
+
+    def _renew_tester_bootstrap_after_missing_rollout(
+        self,
+        action: dict[str, Any],
+        context: dict[str, Any],
+        error: AppServerError,
+    ) -> bool:
+        if action.get("action") != "tester_author" or not is_missing_rollout_failure(error):
+            return False
+        replacement = context.get("tester_replacement_intent")
+        source = context["facets"]["execution"].get("tester_source")
+        if (
+            not isinstance(replacement, dict)
+            or replacement.get("stage") != "awaiting_first_turn"
+            or not isinstance(source, dict)
+            or source.get("agent") != replacement.get("new_agent")
+            or source.get("head") != source.get("base_head")
+            or source.get("files") != []
+            or context.get("dispatch_intent") is not None
+        ):
+            return False
+        replacement_action_id = str(replacement["action_id"])
+        problem_key = str(replacement["problem_key"])
+        self.core.call(
+            "begin-tester-replacement",
+            "--repo",
+            str(self.repo),
+            "--run",
+            self.run_id,
+            "--action-id",
+            replacement_action_id,
+            "--problem-key",
+            problem_key,
+            "--renew-bootstrap",
+            "--driver-runtime-kind",
+            "native",
+        )
+        renewed = self._context().get("tester_replacement_intent")
+        if not isinstance(renewed, dict) or renewed.get("new_agent") is not None:
+            return True
+        instructions, _sandbox = self._role_config("tester")
+        thread_id = self.transport.start_thread(
+            cwd=str(source["worktree"]),
+            developer_instructions=instructions,
+            sandbox="danger-full-access",
+        )
+        self.core.call(
+            "bind-tester-replacement",
+            "--repo",
+            str(self.repo),
+            "--run",
+            self.run_id,
+            "--action-id",
+            replacement_action_id,
+            "--agent-id",
+            f"codex-app-server:{thread_id}",
+            "--thread-id",
+            thread_id,
+            "--driver-runtime-kind",
+            "native",
+        )
+        self._active_threads.add(thread_id)
+        return True
+
     def _run_agent_action(
         self,
         action: dict[str, Any],
@@ -214,13 +370,18 @@ class NativeCoordinator:
                     "native_driver",
                 )
                 return
-            result = self._recover_dispatch(pending, role, context)
+            result = self._recover_dispatch(pending, role, context, action)
             if result is None:
                 return
             self._apply_agent_result(action, role, result, context)
             return
         prompt = self._prompt(action, role, context)
-        self._activate_role_thread(action, role, context, str(agent["thread_id"]))
+        try:
+            self._activate_role_thread(action, role, context, str(agent["thread_id"]))
+        except AppServerError as exc:
+            if self._renew_tester_bootstrap_after_missing_rollout(action, context, exc):
+                return
+            raise
         self.core.call(
             "begin-dispatch",
             "--repo",
@@ -319,7 +480,11 @@ class NativeCoordinator:
         self.core.call(command, *args)
 
     def _recover_dispatch(
-        self, pending: dict[str, Any], role: str, context: dict[str, Any]
+        self,
+        pending: dict[str, Any],
+        role: str,
+        context: dict[str, Any],
+        action: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
         if pending.get("state") == "completed":
             path = Path(str(pending["result_path"]))
@@ -331,11 +496,52 @@ class NativeCoordinator:
                     status="NEEDS_USER",
                 )
             return result
+        current = action or self.current_action
+        if not isinstance(current, dict):
+            raise NativeDriverError(
+                "current Core action is missing for dispatch recovery",
+                code="NATIVE_DISPATCH_ACTION_DRIFT",
+                status="NEEDS_USER",
+            )
+        if (
+            current.get("action_id") != pending.get("action_id")
+            or current.get("action") != pending.get("action")
+        ):
+            raise NativeDriverError(
+                "prepared dispatch action identity changed",
+                code="NATIVE_DISPATCH_ACTION_DRIFT",
+                status="NEEDS_USER",
+            )
+        agent = context["facets"]["execution"]["agents"].get(role)
+        if (
+            not isinstance(agent, dict)
+            or pending.get("role") != role
+            or pending.get("thread_id") != agent.get("thread_id")
+        ):
+            raise NativeDriverError(
+                "prepared dispatch role or thread identity changed",
+                code="NATIVE_DISPATCH_IDENTITY_DRIFT",
+                status="NEEDS_USER",
+            )
+        if pending.get("output_schema_digest") != self.output_schema_digest:
+            raise NativeDriverError(
+                "prepared dispatch output schema changed",
+                code="NATIVE_DISPATCH_OUTPUT_SCHEMA_DRIFT",
+                status="NEEDS_USER",
+            )
+        prompt = self._prompt(current, role, context)
+        if digest(prompt) != pending.get("prompt_digest"):
+            raise NativeDriverError(
+                "prepared dispatch prompt cannot be reconstructed",
+                code="NATIVE_DISPATCH_PROMPT_DRIFT",
+                status="NEEDS_USER",
+            )
+        self._wait_for_retry(pending)
         thread_id = str(pending["thread_id"])
         instructions, sandbox = self._role_config(role)
         self.transport.resume_thread(
             thread_id=thread_id,
-            cwd=self._turn_cwd(pending, role, context),
+            cwd=self._turn_cwd(current, role, context),
             developer_instructions=instructions,
             sandbox="danger-full-access",
         )
@@ -349,20 +555,13 @@ class NativeCoordinator:
             or self._turn_client_id(turn) == client_id
         ]
         if not matches and pending.get("state") == "prepared" and not pending.get("turn_id"):
-            prompt = self._prompt(pending, role, context)
-            if digest(prompt) != pending.get("prompt_digest"):
-                raise NativeDriverError(
-                    "prepared dispatch prompt cannot be reconstructed",
-                    code="NATIVE_DISPATCH_PROMPT_DRIFT",
-                    status="NEEDS_USER",
-                )
             turn = self.transport.run_turn(
                 thread_id=thread_id,
                 prompt=prompt,
                 output_schema=self.output_schema,
                 action_id=client_id,
-                cwd=self._turn_cwd(pending, role, context),
-                sandbox_policy=self._sandbox_policy(pending, role, context),
+                cwd=self._turn_cwd(current, role, context),
+                sandbox_policy=self._sandbox_policy(current, role, context),
                 on_started=lambda turn_id: self.core.call(
                     "bind-dispatch-turn",
                     "--repo",
@@ -1245,6 +1444,42 @@ class NativeCoordinator:
         self, action: dict[str, Any], role: str, context: dict[str, Any]
     ) -> dict[str, Any]:
         return {"type": "dangerFullAccess"}
+
+    def _emit_event(self, value: dict[str, Any]) -> None:
+        if self._event_sink is not None:
+            self._event_sink(copy.deepcopy(value))
+
+    def _wait_for_retry(self, pending: dict[str, Any]) -> None:
+        value = pending.get("retry_not_before")
+        if not isinstance(value, str):
+            return
+        try:
+            deadline = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise NativeDriverError(
+                "dispatch retry deadline is invalid",
+                code="NATIVE_DISPATCH_RETRY_DEADLINE_INVALID",
+                status="NEEDS_USER",
+            ) from exc
+        if deadline.tzinfo is None:
+            deadline = deadline.replace(tzinfo=timezone.utc)
+        while True:
+            remaining = max(0.0, (deadline - self._now_fn()).total_seconds())
+            self._emit_event(
+                {
+                    "event": "native_driver_retry_waiting",
+                    "run_id": self.run_id,
+                    "action_id": pending.get("action_id"),
+                    "action": pending.get("action"),
+                    "attempt": pending.get("attempt"),
+                    "failure_code": pending.get("failure_code"),
+                    "retry_not_before": value,
+                    "remaining_seconds": int(remaining + 0.999),
+                }
+            )
+            if remaining <= 0:
+                return
+            self._sleep_fn(min(10.0, remaining))
 
     def _load_schema(self, name: str) -> dict[str, Any]:
         return json.loads((self.project_root / "schema" / name).read_text())

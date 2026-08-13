@@ -10,7 +10,7 @@ import shutil
 import subprocess
 import tempfile
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -947,6 +947,7 @@ def start(
                 "driver_runtime": copy.deepcopy(driver_runtime),
                 "driver_failure": None,
                 "dispatch_intent": None,
+                "tester_replacement_intent": None,
                 "proof_failure": None,
                 "machine_failure": None,
                 "recomposition_intent": None,
@@ -1148,6 +1149,74 @@ def bind_dispatch_turn(
             raise AssuranceError("dispatch turn identity changed", code="DISPATCH_TURN_MISMATCH")
         intent["turn_id"] = turn_id.strip()
         intent["state"] = "in_flight"
+        replacement = ledger.get("tester_replacement_intent")
+        if (
+            intent.get("action") == "tester_author"
+            and intent.get("role") == "tester"
+            and isinstance(replacement, dict)
+            and replacement.get("stage") == "awaiting_first_turn"
+            and intent.get("thread_id")
+            == replacement.get("new_agent", {}).get("thread_id")
+        ):
+            candidate = _assert_tester_replacement_candidate(repo, ledger)
+            snapshot_digest = _tester_replacement_problem_snapshot(ledger)
+            if snapshot_digest != replacement.get("problem_snapshot_digest"):
+                raise AssuranceError(
+                    "Tester replacement problem snapshot drifted before the first turn",
+                    code="TESTER_REPLACEMENT_PROBLEM_DRIFT",
+                    status="FAIL",
+                )
+            execution = ledger["facets"]["execution"]
+            source = execution.get("tester_source")
+            if (
+                candidate != replacement.get("candidate_head")
+                or ledger.get("target_start_head")
+                != replacement.get("target_start_head")
+                or execution.get("agents", {}).get("tester")
+                != replacement.get("new_agent")
+                or not isinstance(source, dict)
+                or source.get("agent") != replacement.get("new_agent")
+                or source.get("head") != replacement.get("source_base_head")
+                or source.get("base_head") != replacement.get("source_base_head")
+                or source.get("branch") != replacement.get("branch")
+                or source.get("worktree") != replacement.get("worktree")
+                or source.get("files") != []
+            ):
+                raise AssuranceError(
+                    "Tester replacement source drifted before the first turn",
+                    code="TESTER_REPLACEMENT_EXECUTION_DRIFT",
+                    status="FAIL",
+                )
+            _assert_tester_source_exact(repo, source)
+            problem = _tester_replacement_problem(
+                ledger, str(replacement["problem_key"])
+            )
+            if problem.get("producer") != {
+                "role": "tester",
+                **dict(replacement["old_agent"]),
+            }:
+                raise AssuranceError(
+                    "Tester replacement problem producer changed",
+                    code="TESTER_REPLACEMENT_PRODUCER_MISMATCH",
+                    status="FAIL",
+                )
+            problem["status"] = "resolved"
+            problem["resolution"] = (
+                f"tester-replacement:{replacement['new_agent']['thread_id']}"
+            )
+            problem["resolved_at"] = now()
+            append_event(
+                ledger,
+                "tester_replacement_first_turn_bound",
+                {
+                    "action_id": replacement["action_id"],
+                    "dispatch_action_id": action_id,
+                    "problem_key": replacement["problem_key"],
+                    "agent": copy.deepcopy(replacement["new_agent"]),
+                    "turn_id": turn_id.strip(),
+                },
+            )
+            ledger["tester_replacement_intent"] = None
         append_event(ledger, "dispatch_turn_bound", {"action_id": action_id, "turn_id": turn_id.strip()})
         save_ledger(repo, ledger)
     return status(repo, run_id)
@@ -1254,19 +1323,40 @@ def retry_dispatch(
                     "generation": generation,
                 },
             )
+        scheduled_at = now()
+        next_attempt = attempt + 1
+        retry_delay = (
+            {2: 30, 3: 120}.get(next_attempt, 0)
+            if normalized_failure_code == "authUnavailable"
+            else 0
+        )
+        retry_not_before = None
+        if retry_delay:
+            retry_not_before = (
+                datetime.fromisoformat(scheduled_at) + timedelta(seconds=retry_delay)
+            ).isoformat()
         append_event(
             ledger,
             "dispatch_retry_scheduled",
             {
                 "action_id": action_id,
                 "attempt": attempt,
+                "next_attempt": next_attempt,
                 "generation": generation,
                 "turn_id": intent.get("turn_id"),
                 "failure_code": normalized_failure_code,
+                "retry_scheduled_at": scheduled_at,
+                "retry_not_before": retry_not_before,
             },
         )
-        intent["attempt"] = attempt + 1
+        intent["attempt"] = next_attempt
         intent["state"] = "prepared"
+        intent["failure_code"] = normalized_failure_code
+        intent["retry_scheduled_at"] = scheduled_at
+        if retry_not_before is None:
+            intent.pop("retry_not_before", None)
+        else:
+            intent["retry_not_before"] = retry_not_before
         intent.pop("turn_id", None)
         save_ledger(repo, ledger)
     return status(repo, run_id)
@@ -3072,6 +3162,8 @@ def _problem_snapshot_value(ledger: Mapping[str, Any]) -> list[dict[str, Any]]:
             "details": item["details"],
             "owner": item["owner"],
         }
+        if item.get("producer_continuity") == "invalid":
+            problem["producer_continuity"] = "invalid"
         if isinstance(item.get("decision_request"), Mapping):
             problem["decision_request"] = copy.deepcopy(item["decision_request"])
         problems.append(problem)
@@ -3345,6 +3437,9 @@ def status(repo_value: str | Path, run_value: str) -> dict[str, Any]:
         "driver_runtime": copy.deepcopy(ledger.get("driver_runtime")),
         "driver_failure": copy.deepcopy(ledger.get("driver_failure")),
         "dispatch_intent": copy.deepcopy(ledger.get("dispatch_intent")),
+        "tester_replacement_intent": copy.deepcopy(
+            ledger.get("tester_replacement_intent")
+        ),
         "proof_failure": copy.deepcopy(ledger.get("proof_failure")),
         "proof_failure_state": proof_failure_state(ledger),
         "machine_failure": copy.deepcopy(ledger.get("machine_failure")),
@@ -4365,6 +4460,9 @@ def driver_context(repo_value: str | Path, run_value: str) -> dict[str, Any]:
         "driver_runtime": copy.deepcopy(ledger.get("driver_runtime")),
         "driver_failure": copy.deepcopy(ledger.get("driver_failure")),
         "dispatch_intent": copy.deepcopy(ledger.get("dispatch_intent")),
+        "tester_replacement_intent": copy.deepcopy(
+            ledger.get("tester_replacement_intent")
+        ),
         "proof_failure": copy.deepcopy(ledger.get("proof_failure")),
         "proof_failure_state": proof_failure_state(ledger),
         "machine_failure": copy.deepcopy(ledger.get("machine_failure")),
@@ -5284,6 +5382,15 @@ def record_problems(
         producer = {"role": role, "agent_id": agent_id, "thread_id": thread_id}
         added: list[str] = []
         for problem in report["problems"]:
+            if problem.get("producer_continuity") == "invalid" and (
+                role != "tester" or problem.get("owner") != "tester"
+            ):
+                raise AssuranceError(
+                    "producer continuity invalidation is only valid for a Tester-owned problem",
+                    code="PROBLEM_PRODUCER_CONTINUITY_INVALID",
+                    status="FAIL",
+                    details={"key": problem["key"], "role": role},
+                )
             replay = next(
                 (
                     item
@@ -5297,11 +5404,17 @@ def record_problems(
             if isinstance(replay, dict):
                 content = {
                     field: replay.get(field)
-                    for field in ("key", "summary", "details", "owner", "decision_request")
+                    for field in (
+                        "key", "summary", "details", "owner",
+                        "producer_continuity", "decision_request",
+                    )
                 }
                 replayed_problem = {
                     field: problem.get(field)
-                    for field in ("key", "summary", "details", "owner", "decision_request")
+                    for field in (
+                        "key", "summary", "details", "owner",
+                        "producer_continuity", "decision_request",
+                    )
                 }
                 if content != replayed_problem:
                     raise AssuranceError(
@@ -5326,6 +5439,712 @@ def record_problems(
             ledger,
             "problems_recorded",
             {"role": role, "keys": added},
+        )
+        save_ledger(repo, ledger)
+    return status(repo, run_id)
+
+
+def _tester_replacement_problem(
+    ledger: Mapping[str, Any], problem_key: str
+) -> dict[str, Any]:
+    matches = [
+        item
+        for item in ledger.get("problems", [])
+        if isinstance(item, dict)
+        and item.get("status") == "open"
+        and item.get("key") == problem_key
+    ]
+    if len(matches) != 1:
+        raise AssuranceError(
+            "Tester replacement requires one exact open problem",
+            code="TESTER_REPLACEMENT_PROBLEM_MISMATCH",
+            status="FAIL",
+            details={"problem_key": problem_key, "match_count": len(matches)},
+        )
+    problem = matches[0]
+    if problem.get("owner") != "tester" or problem.get("producer_continuity") != "invalid":
+        raise AssuranceError(
+            "Tester replacement requires a continuity-invalid Tester problem",
+            code="TESTER_REPLACEMENT_PROBLEM_INVALID",
+            status="FAIL",
+            details={"problem_key": problem_key},
+        )
+    return problem
+
+
+def _tester_replacement_problem_snapshot(ledger: Mapping[str, Any]) -> str:
+    problems = [
+        item
+        for item in ledger.get("problems", [])
+        if isinstance(item, Mapping)
+        and item.get("status") == "open"
+        and item.get("owner") == "tester"
+        and item.get("producer_continuity") == "invalid"
+    ]
+    problems.sort(
+        key=lambda item: (
+            str(item.get("key", "")),
+            str(item.get("candidate_head", "")),
+            str(item.get("producer", {}).get("agent_id", "")),
+            str(item.get("producer", {}).get("thread_id", "")),
+        )
+    )
+    return digest(problems)
+
+
+def _assert_tester_source_exact(repo: Path, source: Mapping[str, Any]) -> None:
+    worktree = Path(str(source.get("worktree", "")))
+    branch = str(source.get("branch", ""))
+    expected_head = source.get("head")
+    branch_result = git(
+        repo, "rev-parse", "--verify", f"refs/heads/{branch}", check=False
+    )
+    worktree_head = (
+        git(worktree, "rev-parse", "HEAD", check=False)
+        if worktree.is_dir()
+        else None
+    )
+    worktree_branch = (
+        git(worktree, "symbolic-ref", "-q", "--short", "HEAD", check=False)
+        if worktree.is_dir()
+        else None
+    )
+    residue = dirty_paths(worktree) if worktree.is_dir() else ["<missing>"]
+    if (
+        branch_result.returncode != 0
+        or branch_result.stdout.strip() != expected_head
+        or worktree_head is None
+        or worktree_head.returncode != 0
+        or worktree_head.stdout.strip() != expected_head
+        or worktree_branch is None
+        or worktree_branch.returncode != 0
+        or worktree_branch.stdout.strip() != branch
+        or residue
+    ):
+        raise AssuranceError(
+            "Tester source drifted and was preserved",
+            code="TESTER_REPLACEMENT_SOURCE_DRIFT",
+            status="FAIL",
+            details={
+                "branch": branch,
+                "expected_head": expected_head,
+                "branch_head": branch_result.stdout.strip() or None,
+                "worktree_head": (
+                    worktree_head.stdout.strip()
+                    if worktree_head is not None and worktree_head.returncode == 0
+                    else None
+                ),
+                "dirty_paths": residue,
+            },
+        )
+
+
+def _assert_tester_replacement_candidate(
+    repo: Path, ledger: Mapping[str, Any]
+) -> str:
+    candidate = ledger["facets"]["execution"].get("candidate_head")
+    candidate_worktree = Path(ledger["candidate_worktree"])
+    candidate_ref = git(
+        repo,
+        "rev-parse",
+        "--verify",
+        f"refs/heads/{ledger['candidate_branch']}",
+        check=False,
+    )
+    worktree_head = (
+        git(candidate_worktree, "rev-parse", "HEAD", check=False)
+        if candidate_worktree.is_dir()
+        else None
+    )
+    residue = dirty_paths(candidate_worktree) if candidate_worktree.is_dir() else ["<missing>"]
+    if (
+        not isinstance(candidate, str)
+        or candidate_ref.returncode != 0
+        or candidate_ref.stdout.strip() != candidate
+        or worktree_head is None
+        or worktree_head.returncode != 0
+        or worktree_head.stdout.strip() != candidate
+        or residue
+        or branch_head(repo, ledger["target_branch"]) != ledger["target_start_head"]
+    ):
+        raise AssuranceError(
+            "candidate or target drifted before Tester replacement",
+            code="TESTER_REPLACEMENT_CANDIDATE_DRIFT",
+            status="FAIL",
+            details={"candidate_head": candidate, "dirty_paths": residue},
+        )
+    return candidate
+
+
+def _registered_worktree(
+    repo: Path, worktree: Path
+) -> dict[str, str] | None:
+    listed = git(repo, "worktree", "list", "--porcelain", check=False)
+    if listed.returncode != 0:
+        raise AssuranceError(
+            listed.stderr.strip() or "Git worktree registry cannot be read",
+            code="TESTER_REPLACEMENT_SOURCE_CONFLICT",
+            status="FAIL",
+        )
+    expected = str(worktree.resolve())
+    for block in listed.stdout.split("\n\n"):
+        fields: dict[str, str] = {}
+        for line in block.splitlines():
+            key, _, value = line.partition(" ")
+            if key in {"worktree", "HEAD", "branch"} and value:
+                fields[key] = value
+        if fields.get("worktree") == expected:
+            return fields
+    return None
+
+
+def _assert_tester_replacement_available(ledger: Mapping[str, Any]) -> None:
+    if ledger["phase"] != "active":
+        raise AssuranceError(
+            "Tester replacement requires an active run",
+            code="ASSURANCE_RUN_NOT_ACTIVE",
+            status="FAIL",
+        )
+    conflicts = {
+        "dispatch_intent": ledger.get("dispatch_intent"),
+        "recomposition_intent": ledger.get("recomposition_intent"),
+        "finalize_intent": ledger.get("finalize_intent"),
+        "deployment_transaction": ledger.get("deployment_transaction"),
+        "environment_lease": ledger.get("environment_lease"),
+        "supersede_intent": ledger.get("supersede_intent"),
+        "abandon_intent": ledger.get("abandon_intent"),
+    }
+    active = sorted(name for name, value in conflicts.items() if value is not None)
+    if active:
+        raise AssuranceError(
+            "Tester replacement cannot overlap another transaction",
+            code="TESTER_REPLACEMENT_TRANSACTION_CONFLICT",
+            status="FAIL",
+            details={"transactions": active},
+        )
+
+
+def _ensure_tester_replacement_worktree(
+    repo: Path, intent: Mapping[str, Any]
+) -> None:
+    worktree = Path(str(intent["worktree"]))
+    branch = str(intent["branch"])
+    base = str(intent["source_base_head"])
+    branch_result = git(
+        repo, "rev-parse", "--verify", f"refs/heads/{branch}", check=False
+    )
+    if not worktree.exists():
+        worktree.parent.mkdir(parents=True, exist_ok=True)
+        if branch_result.returncode == 0 and branch_result.stdout.strip() != base:
+            raise AssuranceError(
+                "replacement Tester branch replay drifted",
+                code="TESTER_REPLACEMENT_SOURCE_CONFLICT",
+                status="FAIL",
+            )
+        registered = _registered_worktree(repo, worktree)
+        expected_registered = {
+            "worktree": str(worktree.resolve()),
+            "HEAD": base,
+            "branch": f"refs/heads/{branch}",
+        }
+        if registered is not None and registered != expected_registered:
+            raise AssuranceError(
+                "replacement Tester worktree registry drifted",
+                code="TESTER_REPLACEMENT_SOURCE_CONFLICT",
+                status="FAIL",
+            )
+        args = ["worktree", "add"]
+        if registered is not None:
+            args.append("--force")
+        if branch_result.returncode == 0:
+            args.extend([str(worktree), branch])
+        else:
+            args.extend(["-b", branch, str(worktree), base])
+        created = git(
+            repo,
+            *args,
+            check=False,
+        )
+        if created.returncode != 0:
+            raise AssuranceError(
+                created.stderr.strip() or "Tester replacement worktree creation failed",
+                code="TESTER_REPLACEMENT_WORKTREE_CREATE_FAILED",
+            )
+        branch_result = git(
+            repo, "rev-parse", "--verify", f"refs/heads/{branch}", check=False
+        )
+    if branch_result.returncode != 0 or not worktree.is_dir():
+        raise AssuranceError(
+            "replacement Tester branch and worktree are incomplete",
+            code="TESTER_REPLACEMENT_SOURCE_CONFLICT",
+            status="FAIL",
+        )
+    worktree_head = git(worktree, "rev-parse", "HEAD", check=False)
+    worktree_branch = git(
+        worktree, "symbolic-ref", "-q", "--short", "HEAD", check=False
+    )
+    if (
+        branch_result.stdout.strip() != base
+        or worktree_head.returncode != 0
+        or worktree_head.stdout.strip() != base
+        or worktree_branch.returncode != 0
+        or worktree_branch.stdout.strip() != branch
+        or dirty_paths(worktree)
+    ):
+        raise AssuranceError(
+            "replacement Tester worktree replay drifted",
+            code="TESTER_REPLACEMENT_SOURCE_CONFLICT",
+            status="FAIL",
+        )
+
+
+def begin_tester_replacement(
+    repo_value: str | Path,
+    run_value: str,
+    *,
+    action_id: str,
+    problem_key: str,
+    driver_runtime_kind: str,
+    renew_bootstrap: bool = False,
+) -> dict[str, Any]:
+    repo = resolve_repo(repo_value)
+    run_id = ensure_run_id(run_value)
+    with locked(repo):
+        ledger = read_ledger(repo, run_id)
+        _require_driver_runtime_owner(ledger, driver_runtime_kind)
+        existing = ledger.get("tester_replacement_intent")
+        if renew_bootstrap:
+            if not isinstance(existing, dict) or existing.get("action_id") != action_id:
+                raise AssuranceError(
+                    "Tester replacement bootstrap renewal is stale",
+                    code="TESTER_REPLACEMENT_ACTION_STALE",
+                    status="FAIL",
+                )
+            if existing.get("problem_key") != problem_key:
+                raise AssuranceError(
+                    "Tester replacement bootstrap problem changed",
+                    code="TESTER_REPLACEMENT_PROBLEM_MISMATCH",
+                    status="FAIL",
+                )
+            if ledger.get("dispatch_intent") is not None:
+                raise AssuranceError(
+                    "Tester bootstrap renewal cannot overlap a dispatch",
+                    code="TESTER_REPLACEMENT_TRANSACTION_CONFLICT",
+                    status="FAIL",
+                )
+            candidate = _assert_tester_replacement_candidate(repo, ledger)
+            source = ledger["facets"]["execution"].get("tester_source")
+            if (
+                candidate != existing.get("candidate_head")
+                or existing.get("stage") not in {"source_switched", "awaiting_first_turn"}
+                or not isinstance(source, Mapping)
+                or source.get("agent") != existing.get("new_agent")
+                or source.get("head") != source.get("base_head")
+                or source.get("files") != []
+            ):
+                raise AssuranceError(
+                    "replacement Tester bootstrap has already been used or drifted",
+                    code="TESTER_REPLACEMENT_BOOTSTRAP_ALREADY_USED",
+                    status="FAIL",
+                )
+            _assert_tester_source_exact(repo, source)
+            attempt = int(existing.get("bootstrap_attempt", 1))
+            append_event(
+                ledger,
+                "tester_replacement_bootstrap_lost",
+                {
+                    "action_id": action_id,
+                    "problem_key": problem_key,
+                    "bootstrap_attempt": attempt,
+                    "agent": copy.deepcopy(existing.get("new_agent")),
+                    "exhausted": attempt >= 3,
+                },
+            )
+            if attempt >= 3:
+                save_ledger(repo, ledger)
+                raise AssuranceError(
+                    "Tester bootstrap identity failed three times",
+                    code="TESTER_REPLACEMENT_ARCHITECTURE_REVIEW_REQUIRED",
+                    status="NEEDS_USER",
+                )
+            existing["bootstrap_attempt"] = attempt + 1
+            existing["new_agent"] = None
+            existing["stage"] = str(existing["stage"])
+            existing["updated_at"] = now()
+            save_ledger(repo, ledger)
+            return status(repo, run_id)
+        if existing is not None:
+            if (
+                isinstance(existing, dict)
+                and existing.get("action_id") == action_id
+                and existing.get("problem_key") == problem_key
+            ):
+                _ensure_tester_replacement_worktree(repo, existing)
+                return status(repo, run_id)
+            raise AssuranceError(
+                "another Tester replacement is already active",
+                code="TESTER_REPLACEMENT_ALREADY_ACTIVE",
+                status="FAIL",
+            )
+        _assert_tester_replacement_available(ledger)
+        from .driver import next_action
+
+        current = next_action(repo, run_id)
+        if current.get("action") != "replace_tester" or current.get("action_id") != action_id:
+            raise AssuranceError(
+                "Tester replacement action is stale",
+                code="TESTER_REPLACEMENT_ACTION_STALE",
+                status="FAIL",
+            )
+        problem = _tester_replacement_problem(ledger, problem_key)
+        execution = ledger["facets"]["execution"]
+        old_agent = execution["agents"].get("tester")
+        old_source = execution.get("tester_source")
+        if (
+            not isinstance(old_agent, dict)
+            or not isinstance(old_source, dict)
+            or old_source.get("agent") != old_agent
+            or problem.get("producer")
+            != {"role": "tester", **old_agent}
+        ):
+            raise AssuranceError(
+                "Tester replacement producer does not match the current source",
+                code="TESTER_REPLACEMENT_PRODUCER_MISMATCH",
+                status="FAIL",
+            )
+        occurrences = sum(
+            1
+            for item in ledger.get("problems", [])
+            if isinstance(item, Mapping)
+            and item.get("producer_continuity") == "invalid"
+        )
+        if occurrences >= 3:
+            raise AssuranceError(
+                "Tester continuity failed three times on one candidate",
+                code="TESTER_REPLACEMENT_ARCHITECTURE_REVIEW_REQUIRED",
+                status="NEEDS_USER",
+            )
+        candidate = _assert_tester_replacement_candidate(repo, ledger)
+        _assert_tester_source_exact(repo, old_source)
+        publication = ledger.get("publication")
+        source_base_head = (
+            publication["head"]
+            if isinstance(publication, dict)
+            and publication.get("required")
+            and publication.get("head")
+            else ledger["target_start_head"]
+        )
+        snapshot_digest = _tester_replacement_problem_snapshot(ledger)
+        sequence = 1 + sum(
+            1
+            for event in ledger.get("events", [])
+            if isinstance(event, Mapping)
+            and event.get("kind") == "tester_replacement_started"
+        )
+        branch = f"assurance-v4/{run_id}/tester-replacement-{sequence}"
+        worktree = run_dir(repo, run_id) / f"tester-replacement-{sequence}"
+        if (
+            git(repo, "show-ref", "--verify", f"refs/heads/{branch}", check=False).returncode == 0
+            or worktree.exists()
+        ):
+            raise AssuranceError(
+                "deterministic Tester replacement source already exists",
+                code="TESTER_REPLACEMENT_SOURCE_CONFLICT",
+                status="FAIL",
+            )
+        created_at = now()
+        ledger["tester_replacement_intent"] = {
+            "action_id": action_id,
+            "problem_key": problem_key,
+            "problem_snapshot_digest": snapshot_digest,
+            "candidate_head": candidate,
+            "target_start_head": ledger["target_start_head"],
+            "source_base_head": source_base_head,
+            "expected_execution_digest": ledger["digests"]["execution"],
+            "expected_source_digest": digest(old_source),
+            "branch": branch,
+            "worktree": str(worktree),
+            "stage": "prepared",
+            "bootstrap_attempt": 1,
+            "new_agent": None,
+            "old_agent": copy.deepcopy(old_agent),
+            "old_source": copy.deepcopy(old_source),
+            "created_at": created_at,
+            "updated_at": created_at,
+        }
+        append_event(
+            ledger,
+            "tester_replacement_started",
+            {
+                "action_id": action_id,
+                "problem_key": problem_key,
+                "candidate_head": candidate,
+                "branch": branch,
+                "worktree": str(worktree),
+            },
+        )
+        save_ledger(repo, ledger)
+        _ensure_tester_replacement_worktree(
+            repo, ledger["tester_replacement_intent"]
+        )
+    return status(repo, run_id)
+
+
+def bind_tester_replacement(
+    repo_value: str | Path,
+    run_value: str,
+    *,
+    action_id: str,
+    agent_id: str,
+    thread_id: str,
+    driver_runtime_kind: str,
+) -> dict[str, Any]:
+    repo = resolve_repo(repo_value)
+    run_id = ensure_run_id(run_value)
+    agent = {"agent_id": agent_id.strip(), "thread_id": thread_id.strip()}
+    if not all(agent.values()):
+        raise AssuranceError(
+            "Tester replacement identity is required",
+            code="TESTER_IDENTITY_REQUIRED",
+            status="FAIL",
+        )
+    with locked(repo):
+        ledger = read_ledger(repo, run_id)
+        _require_driver_runtime_owner(ledger, driver_runtime_kind)
+        intent = ledger.get("tester_replacement_intent")
+        if not isinstance(intent, dict) or intent.get("action_id") != action_id:
+            raise AssuranceError(
+                "Tester replacement identity bind is stale",
+                code="TESTER_REPLACEMENT_ACTION_STALE",
+                status="FAIL",
+            )
+        if ledger.get("dispatch_intent") is not None:
+            raise AssuranceError(
+                "Tester replacement identity cannot overlap a dispatch",
+                code="TESTER_REPLACEMENT_TRANSACTION_CONFLICT",
+                status="FAIL",
+            )
+        stage = str(intent.get("stage"))
+        snapshot_digest = _tester_replacement_problem_snapshot(ledger)
+        if snapshot_digest != intent.get("problem_snapshot_digest"):
+            raise AssuranceError(
+                "Tester replacement problem snapshot drifted",
+                code="TESTER_REPLACEMENT_PROBLEM_DRIFT",
+                status="FAIL",
+            )
+        if stage == "prepared" and intent.get("new_agent") is None:
+            _assert_tester_replacement_candidate(repo, ledger)
+            _ensure_tester_replacement_worktree(repo, intent)
+            intent["new_agent"] = agent
+            intent["stage"] = "identity_bound"
+        elif stage in {"source_switched", "awaiting_first_turn"} and intent.get("new_agent") is None:
+            _assert_tester_replacement_candidate(repo, ledger)
+            source = ledger["facets"]["execution"].get("tester_source")
+            if (
+                not isinstance(source, dict)
+                or str(source.get("branch")) != str(intent.get("branch"))
+                or str(source.get("worktree")) != str(intent.get("worktree"))
+                or source.get("head") != source.get("base_head")
+                or source.get("files") != []
+            ):
+                raise AssuranceError(
+                    "replacement Tester bootstrap has already been used or drifted",
+                    code="TESTER_REPLACEMENT_BOOTSTRAP_ALREADY_USED",
+                    status="FAIL",
+                )
+            _ensure_tester_replacement_worktree(repo, intent)
+            _assert_tester_source_exact(repo, source)
+            execution = ledger["facets"]["execution"]
+            execution["agents"]["tester"] = agent
+            source["agent"] = agent
+            execution["version"] += 1
+            ledger["digests"] = facet_digests(ledger["facets"])
+            intent["new_agent"] = agent
+            intent["stage"] = stage
+        else:
+            if intent.get("new_agent") == agent:
+                return status(repo, run_id)
+            raise AssuranceError(
+                "Tester replacement identity cannot be overwritten",
+                code="TESTER_REPLACEMENT_IDENTITY_CONFLICT",
+                status="FAIL",
+            )
+        intent["updated_at"] = now()
+        append_event(
+            ledger,
+            "tester_replacement_identity_bound",
+            {
+                "action_id": action_id,
+                "bootstrap_attempt": intent["bootstrap_attempt"],
+                "agent": agent,
+            },
+        )
+        save_ledger(repo, ledger)
+    return status(repo, run_id)
+
+
+def complete_tester_replacement(
+    repo_value: str | Path,
+    run_value: str,
+    *,
+    action_id: str,
+    driver_runtime_kind: str,
+) -> dict[str, Any]:
+    repo = resolve_repo(repo_value)
+    run_id = ensure_run_id(run_value)
+    with locked(repo):
+        ledger = read_ledger(repo, run_id)
+        _require_driver_runtime_owner(ledger, driver_runtime_kind)
+        intent = ledger.get("tester_replacement_intent")
+        if not isinstance(intent, dict) or intent.get("action_id") != action_id:
+            raise AssuranceError(
+                "Tester replacement completion is stale",
+                code="TESTER_REPLACEMENT_ACTION_STALE",
+                status="FAIL",
+            )
+        if intent.get("stage") == "awaiting_first_turn":
+            return status(repo, run_id)
+        if intent.get("stage") not in {"identity_bound", "source_switched"} or not isinstance(intent.get("new_agent"), dict):
+            raise AssuranceError(
+                "Tester replacement identity is not bound",
+                code="TESTER_REPLACEMENT_IDENTITY_MISSING",
+                status="FAIL",
+            )
+        candidate = _assert_tester_replacement_candidate(repo, ledger)
+        snapshot_digest = _tester_replacement_problem_snapshot(ledger)
+        if snapshot_digest != intent.get("problem_snapshot_digest"):
+            raise AssuranceError(
+                "Tester replacement problem snapshot drifted",
+                code="TESTER_REPLACEMENT_PROBLEM_DRIFT",
+                status="FAIL",
+            )
+        execution = ledger["facets"]["execution"]
+        old_source = intent["old_source"]
+        old_agent = intent["old_agent"]
+        if intent.get("stage") == "identity_bound" and (
+            candidate != intent["candidate_head"]
+            or ledger["target_start_head"] != intent["target_start_head"]
+            or execution.get("agents", {}).get("tester") != old_agent
+            or execution.get("tester_source") != old_source
+            or ledger["digests"]["execution"] != intent["expected_execution_digest"]
+            or digest(old_source) != intent["expected_source_digest"]
+        ):
+            raise AssuranceError(
+                "Tester replacement binding drifted",
+                code="TESTER_REPLACEMENT_EXECUTION_DRIFT",
+                status="FAIL",
+            )
+        if intent.get("stage") == "identity_bound":
+            _assert_tester_replacement_available(ledger)
+            _assert_tester_source_exact(repo, old_source)
+            tester_base = str(intent["source_base_head"])
+            _ensure_tester_replacement_worktree(repo, intent)
+            replacement = {
+                "head": tester_base,
+                "base_head": tester_base,
+                "branch": intent["branch"],
+                "worktree": intent["worktree"],
+                "files": [],
+                "replaces_files": copy.deepcopy(old_source.get("files", [])),
+                "agent": copy.deepcopy(intent["new_agent"]),
+            }
+            execution["version"] += 1
+            execution["agents"]["tester"] = copy.deepcopy(intent["new_agent"])
+            execution["tester_source"] = replacement
+            execution["tester_files"] = []
+            ledger["retired_tester_sources"].append(copy.deepcopy(old_source))
+            ledger["digests"] = facet_digests(ledger["facets"])
+            intent["stage"] = "source_switched"
+            intent["updated_at"] = now()
+            append_event(
+                ledger,
+                "tester_replacement_source_switched",
+                {
+                    "action_id": action_id,
+                    "old_agent": old_agent,
+                    "new_agent": intent["new_agent"],
+                    "branch": intent["branch"],
+                    "worktree": intent["worktree"],
+                },
+            )
+            save_ledger(repo, ledger)
+        replacement_source = execution.get("tester_source")
+        if (
+            execution.get("agents", {}).get("tester") != intent.get("new_agent")
+            or not isinstance(replacement_source, Mapping)
+            or replacement_source.get("agent") != intent.get("new_agent")
+            or replacement_source.get("head") != intent.get("source_base_head")
+            or replacement_source.get("base_head") != intent.get("source_base_head")
+            or replacement_source.get("branch") != intent.get("branch")
+            or replacement_source.get("worktree") != intent.get("worktree")
+            or replacement_source.get("files") != []
+            or execution.get("tester_files") != []
+        ):
+            raise AssuranceError(
+                "Tester replacement source switch drifted",
+                code="TESTER_REPLACEMENT_EXECUTION_DRIFT",
+                status="FAIL",
+            )
+        _ensure_tester_replacement_worktree(repo, intent)
+        _assert_tester_source_exact(repo, replacement_source)
+        old_worktree = Path(old_source["worktree"])
+        worktree_error = ""
+        if old_worktree.exists():
+            removed_worktree = git(
+                repo, "worktree", "remove", str(old_worktree), check=False
+            )
+            worktree_error = removed_worktree.stderr[-8000:]
+            worktree_ok = removed_worktree.returncode == 0
+        else:
+            worktree_ok = True
+        old_ref = git(
+            repo,
+            "rev-parse",
+            "--verify",
+            f"refs/heads/{old_source['branch']}",
+            check=False,
+        )
+        branch_error = ""
+        if not worktree_ok:
+            branch_ok = False
+            branch_error = "branch removal was not attempted after worktree removal failed"
+        elif old_ref.returncode == 0:
+            if old_ref.stdout.strip() != old_source["head"]:
+                raise AssuranceError(
+                    "retired Tester branch drifted and was preserved",
+                    code="TESTER_REPLACEMENT_SOURCE_DRIFT",
+                    status="FAIL",
+                )
+            removed_branch = git(
+                repo, "branch", "-D", old_source["branch"], check=False
+            )
+            branch_error = removed_branch.stderr[-8000:]
+            branch_ok = removed_branch.returncode == 0
+        else:
+            branch_ok = True
+        if not worktree_ok or not branch_ok:
+            raise AssuranceError(
+                "Tester replacement was persisted but retired source cleanup is pending",
+                code="TESTER_RETIRED_CLEANUP_PENDING",
+                status="NEEDS_USER",
+                details={
+                    "branch": old_source["branch"],
+                    "worktree": str(old_worktree),
+                    "worktree_remove_stderr": worktree_error,
+                    "branch_remove_stderr": branch_error,
+                },
+            )
+        ledger["retired_tester_sources"] = [
+            item
+            for item in ledger["retired_tester_sources"]
+            if item.get("branch") != old_source["branch"]
+        ]
+        intent["stage"] = "awaiting_first_turn"
+        intent["updated_at"] = now()
+        append_event(
+            ledger,
+            "retired_tester_source_cleaned",
+            {"branch": old_source["branch"]},
         )
         save_ledger(repo, ledger)
     return status(repo, run_id)
@@ -7676,6 +8495,7 @@ def _machine_failure_signature(stage: str, results: Sequence[Mapping[str, Any]])
             "returncode": item.get("returncode"),
             "timed_out": item.get("timed_out"),
             "executable_identity": item.get("executable_identity"),
+            "stdout": item.get("stdout"),
             "stderr": item.get("stderr"),
         }
         for item in results

@@ -21,6 +21,8 @@
         "schema/assurance-v4-evidence.schema.json",
         "schema/assurance-v4-ledger.schema.json",
         "schema/assurance-v4-runtime-support.schema.json",
+        "schema/codex-loop-ledger.schema.json",
+        "schema/codex-problem-report.schema.json",
         "schema/codex-test-proof.schema.json"
       ]
     }

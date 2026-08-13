@@ -591,12 +591,94 @@ def _external_recovery_context(
     return None
 
 
-def next_action(repo_value: str | Path, run_value: str) -> dict[str, Any]:
+def _dispatch_action(
+    ledger: Mapping[str, Any], run_id: str, pending: Mapping[str, Any]
+) -> dict[str, Any]:
+    action = str(pending.get("action"))
+    execution = ledger["facets"]["execution"]
+    payload: dict[str, Any] = {}
+    if action in {
+        "builder_implement",
+        "builder_fix",
+        "tester_author",
+        "tester_fix",
+        "tester_proof",
+        "tester_blackbox",
+        "reviewer_preflight",
+        "reviewer_final",
+    }:
+        payload["candidate_worktree"] = ledger["candidate_worktree"]
+    if action.startswith("builder_"):
+        payload["agent"] = execution["agents"].get("builder")
+    if action.startswith("tester_"):
+        payload["agent"] = execution["agents"].get("tester")
+        payload["tester_source"] = execution.get("tester_source")
+    if action.startswith("reviewer_"):
+        payload["agent"] = execution["agents"].get("reviewer")
+    if action in {"builder_recompose_fix", "tester_recompose_fix"}:
+        recomposition = ledger.get("recomposition_intent")
+        if not isinstance(recomposition, Mapping) and pending.get("state") != "completed":
+            raise AssuranceError(
+                "prepared recomposition dispatch lost its current intent",
+                code="DISPATCH_ACTION_PAYLOAD_MISSING",
+                status="NEEDS_USER",
+                details={"action": action},
+            )
+        payload["recomposition"] = copy.deepcopy(recomposition)
+        if action == "builder_recompose_fix" and isinstance(recomposition, Mapping):
+            payload["candidate_worktree"] = recomposition.get("builder_worktree")
+        if action == "tester_recompose_fix" and isinstance(recomposition, Mapping):
+            payload["tester_source"] = {
+                "worktree": recomposition.get("tester_worktree"),
+                "head": recomposition.get("tester_head"),
+            }
+    if action == "tester_proof_diagnose":
+        failure = current_proof_failure(ledger)
+        if not isinstance(failure, Mapping) and pending.get("state") != "completed":
+            raise AssuranceError(
+                "prepared proof diagnosis lost its current failure",
+                code="DISPATCH_ACTION_PAYLOAD_MISSING",
+                status="NEEDS_USER",
+                details={"action": action},
+            )
+        payload["proof_failure"] = copy.deepcopy(failure)
+    if action == "tester_machine_diagnose":
+        failure = current_machine_failure(ledger)
+        if not isinstance(failure, Mapping) and pending.get("state") != "completed":
+            raise AssuranceError(
+                "prepared machine diagnosis lost its current failure",
+                code="DISPATCH_ACTION_PAYLOAD_MISSING",
+                status="NEEDS_USER",
+                details={"action": action},
+            )
+        payload["machine_failure"] = copy.deepcopy(failure)
+    return {
+        "driver_protocol_version": 1,
+        "status": "CONTINUE",
+        "run_id": run_id,
+        "action": action,
+        "reason": f"dispatch_{pending.get('state')}",
+        "action_id": pending["action_id"],
+        "driver_enforced": True,
+        "driver_runtime_kind": ledger.get("driver_runtime", {}).get("kind")
+        if isinstance(ledger.get("driver_runtime"), dict)
+        else None,
+        "dispatch": copy.deepcopy(pending),
+        **payload,
+    }
+
+
+def next_action(
+    repo_value: str | Path,
+    run_value: str,
+    *,
+    _ledger: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Derive orchestration advice without mutating Core delivery facts."""
 
     repo = resolve_repo(repo_value)
     run_id = ensure_run_id(run_value)
-    ledger = read_ledger(repo, run_id)
+    ledger = read_ledger(repo, run_id) if _ledger is None else _ledger
 
     def decision(status: str, action: str, reason: str, **payload: Any) -> dict[str, Any]:
         return _decision_result(
@@ -616,6 +698,60 @@ def next_action(repo_value: str | Path, run_value: str) -> dict[str, Any]:
                 agent=ledger["facets"]["execution"]["agents"].get("builder"),
             )
         if owner == "tester":
+            if problem.get("producer_continuity") == "invalid":
+                execution = ledger["facets"]["execution"]
+                current_agent = execution["agents"].get("tester")
+                current_source = execution.get("tester_source")
+                producer = problem.get("producer")
+                if (
+                    not isinstance(current_agent, Mapping)
+                    or not isinstance(current_source, Mapping)
+                    or current_source.get("agent") != current_agent
+                    or producer
+                    != {
+                        "role": "tester",
+                        "agent_id": current_agent.get("agent_id"),
+                        "thread_id": current_agent.get("thread_id"),
+                    }
+                ):
+                    return decision(
+                        "NEEDS_USER",
+                        "continuity_decision",
+                        "tester_replacement_producer_mismatch",
+                        problem=problem,
+                    )
+                occurrences = sum(
+                    1
+                    for item in ledger.get("problems", [])
+                    if isinstance(item, Mapping)
+                    and item.get("producer_continuity") == "invalid"
+                )
+                if occurrences >= 3:
+                    return decision(
+                        "NEEDS_USER",
+                        "architecture_review",
+                        "tester_continuity_invalid_three_times",
+                        failures=[
+                            {
+                                "kind": "tester_identity",
+                                "failure_signature": digest(
+                                    {
+                                        "candidate_head": execution.get("candidate_head"),
+                                        "producer_continuity": "invalid",
+                                    }
+                                ),
+                                "count": occurrences,
+                            }
+                        ],
+                    )
+                return decision(
+                    "CONTINUE",
+                    "replace_tester",
+                    "tester_producer_continuity_invalid",
+                    problem=problem,
+                    agent=current_agent,
+                    tester_source=current_source,
+                )
             return decision(
                 "CONTINUE",
                 "tester_fix",
@@ -675,19 +811,50 @@ def next_action(repo_value: str | Path, run_value: str) -> dict[str, Any]:
         return decision("STOP", "none", "failed", driver_failure=driver_failure)
     pending_dispatch = ledger.get("dispatch_intent")
     if isinstance(pending_dispatch, dict):
-        return {
-            "driver_protocol_version": 1,
-            "status": "CONTINUE",
-            "run_id": run_id,
-            "action": pending_dispatch["action"],
-            "reason": f"dispatch_{pending_dispatch['state']}",
-            "action_id": pending_dispatch["action_id"],
-            "driver_enforced": True,
-            "driver_runtime_kind": ledger.get("driver_runtime", {}).get("kind")
-            if isinstance(ledger.get("driver_runtime"), dict)
-            else None,
-            "dispatch": pending_dispatch,
-        }
+        return _dispatch_action(ledger, run_id, pending_dispatch)
+    replacement = ledger.get("tester_replacement_intent")
+    if isinstance(replacement, dict):
+        bootstrap_losses = sum(
+            1
+            for event in ledger.get("events", [])
+            if isinstance(event, Mapping)
+            and event.get("kind") == "tester_replacement_bootstrap_lost"
+            and isinstance(event.get("details"), Mapping)
+            and event["details"].get("action_id") == replacement.get("action_id")
+        )
+        if bootstrap_losses >= 3:
+            return decision(
+                "NEEDS_USER",
+                "architecture_review",
+                "tester_replacement_bootstrap_lost_three_times",
+                failures=[
+                    {
+                        "kind": "tester_bootstrap_identity",
+                        "failure_signature": digest(
+                            {
+                                "candidate_head": replacement.get("candidate_head"),
+                                "problem_key": replacement.get("problem_key"),
+                            }
+                        ),
+                        "count": bootstrap_losses,
+                    }
+                ],
+                replacement=replacement,
+            )
+        if (
+            replacement.get("stage") != "awaiting_first_turn"
+            or not isinstance(replacement.get("new_agent"), Mapping)
+        ):
+            replacement_action = decision(
+                "CONTINUE",
+                "replace_tester",
+                f"tester_replacement_{replacement.get('stage')}",
+                problem_key=replacement.get("problem_key"),
+                replacement=replacement,
+                agent=replacement.get("new_agent"),
+            )
+            replacement_action["action_id"] = replacement["action_id"]
+            return replacement_action
     if ledger["phase"] == "finalizing":
         return decision("CONTINUE", "recover_finalize", "persisted_finalize_intent")
     if ledger["phase"] != "active":
@@ -773,8 +940,17 @@ def next_action(repo_value: str | Path, run_value: str) -> dict[str, Any]:
                 "deployment_failed_after_restore",
                 deployment=deployment_transaction,
             )
+    replacement_problem_key = (
+        replacement.get("problem_key")
+        if isinstance(replacement, Mapping)
+        and replacement.get("stage") == "awaiting_first_turn"
+        else None
+    )
     open_problems = [
-        item for item in ledger.get("problems", []) if item.get("status") == "open"
+        item
+        for item in ledger.get("problems", [])
+        if item.get("status") == "open"
+        and item.get("key") != replacement_problem_key
     ]
     blocking_problems = [
         item

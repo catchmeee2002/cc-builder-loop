@@ -71,6 +71,12 @@
         {"$ref": "#/$defs/dispatchIntent"}
       ]
     },
+    "tester_replacement_intent": {
+      "oneOf": [
+        {"type": "null"},
+        {"$ref": "#/$defs/testerReplacementIntent"}
+      ]
+    },
     "proof_failure": {
       "oneOf": [
         {"type": "null"},
@@ -297,6 +303,8 @@
         "generation": {"type": "integer", "minimum": 1},
         "turn_id": {"type": "string", "minLength": 1},
         "failure_code": {"type": "string", "minLength": 1},
+        "retry_scheduled_at": {"type": "string", "format": "date-time"},
+        "retry_not_before": {"type": "string", "format": "date-time"},
         "exhausted_at": {"type": "string", "minLength": 1},
         "renewed_from_digest": {"$ref": "#/$defs/sha256"},
         "renewal_reason": {"type": "string", "minLength": 1},
@@ -304,6 +312,42 @@
         "result_digest": {"$ref": "#/$defs/sha256"},
         "created_at": {"type": "string", "minLength": 1},
         "completed_at": {"type": "string", "minLength": 1}
+      }
+    },
+    "testerReplacementIntent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "action_id", "problem_key", "problem_snapshot_digest", "candidate_head",
+        "target_start_head", "source_base_head", "expected_execution_digest", "expected_source_digest",
+        "branch", "worktree", "stage", "bootstrap_attempt", "new_agent",
+        "old_agent", "old_source", "created_at", "updated_at"
+      ],
+      "properties": {
+        "action_id": {"$ref": "#/$defs/sha256"},
+        "problem_key": {"type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"},
+        "problem_snapshot_digest": {"$ref": "#/$defs/sha256"},
+        "candidate_head": {"$ref": "#/$defs/commit"},
+        "target_start_head": {"$ref": "#/$defs/commit"},
+        "source_base_head": {"$ref": "#/$defs/commit"},
+        "expected_execution_digest": {"$ref": "#/$defs/sha256"},
+        "expected_source_digest": {"$ref": "#/$defs/sha256"},
+        "branch": {"type": "string", "minLength": 1},
+        "worktree": {"type": "string", "minLength": 1},
+        "stage": {
+          "enum": ["prepared", "identity_bound", "source_switched", "awaiting_first_turn"]
+        },
+        "bootstrap_attempt": {"type": "integer", "minimum": 1, "maximum": 3},
+        "new_agent": {
+          "oneOf": [
+            {"type": "null"},
+            {"$ref": "assurance-v4-contract.schema.json#/$defs/agent"}
+          ]
+        },
+        "old_agent": {"$ref": "assurance-v4-contract.schema.json#/$defs/agent"},
+        "old_source": {"$ref": "assurance-v4-contract.schema.json#/$defs/testerSource"},
+        "created_at": {"type": "string", "format": "date-time"},
+        "updated_at": {"type": "string", "format": "date-time"}
       }
     },
     "proofFailure": {
@@ -535,12 +579,19 @@
     "problem": {
       "type": "object",
       "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {"required": ["producer_continuity"]},
+          "then": {"properties": {"owner": {"const": "tester"}}}
+        }
+      ],
       "required": ["key", "summary", "details", "owner", "status", "producer", "candidate_head", "recorded_at"],
       "properties": {
         "key": {"type": "string", "minLength": 1},
         "summary": {"type": "string", "minLength": 1},
         "details": {"type": "string", "minLength": 1},
         "owner": {"enum": ["builder", "tester", "plan", "current_project", "builder_loop", "external_platform"]},
+        "producer_continuity": {"const": "invalid"},
         "decision_request": {
           "$ref": "https://openai.local/codex-builder-loop/problem-report-v1.schema.json#/$defs/decisionRequest"
         },

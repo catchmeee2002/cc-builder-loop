@@ -190,6 +190,40 @@ def parser() -> argparse.ArgumentParser:
     problems.add_argument("--thread-id", required=True)
     dispatch_guard(problems)
 
+    begin_tester_replacement = commands.add_parser("begin-tester-replacement")
+    begin_tester_replacement.add_argument("--repo", default=".")
+    begin_tester_replacement.add_argument("--run", required=True)
+    begin_tester_replacement.add_argument("--action-id", required=True)
+    begin_tester_replacement.add_argument("--problem-key", required=True)
+    begin_tester_replacement.add_argument("--renew-bootstrap", action="store_true")
+    begin_tester_replacement.add_argument(
+        "--driver-runtime-kind",
+        choices=["native", "full_driver_skill"],
+        required=True,
+    )
+
+    bind_tester_replacement = commands.add_parser("bind-tester-replacement")
+    bind_tester_replacement.add_argument("--repo", default=".")
+    bind_tester_replacement.add_argument("--run", required=True)
+    bind_tester_replacement.add_argument("--action-id", required=True)
+    bind_tester_replacement.add_argument("--agent-id", required=True)
+    bind_tester_replacement.add_argument("--thread-id", required=True)
+    bind_tester_replacement.add_argument(
+        "--driver-runtime-kind",
+        choices=["native", "full_driver_skill"],
+        required=True,
+    )
+
+    complete_tester_replacement = commands.add_parser("complete-tester-replacement")
+    complete_tester_replacement.add_argument("--repo", default=".")
+    complete_tester_replacement.add_argument("--run", required=True)
+    complete_tester_replacement.add_argument("--action-id", required=True)
+    complete_tester_replacement.add_argument(
+        "--driver-runtime-kind",
+        choices=["native", "full_driver_skill"],
+        required=True,
+    )
+
     prove = commands.add_parser("prove-tests")
     prove.add_argument("--repo", default=".")
     prove.add_argument("--run", required=True)
@@ -561,6 +595,31 @@ def main(argv: Sequence[str] | None = None) -> int:
                 role=args.role,
                 agent_id=args.agent_id,
                 thread_id=args.thread_id,
+            )
+        elif args.command == "begin-tester-replacement":
+            payload = core.begin_tester_replacement(
+                args.repo,
+                args.run,
+                action_id=args.action_id,
+                problem_key=args.problem_key,
+                driver_runtime_kind=args.driver_runtime_kind,
+                renew_bootstrap=args.renew_bootstrap,
+            )
+        elif args.command == "bind-tester-replacement":
+            payload = core.bind_tester_replacement(
+                args.repo,
+                args.run,
+                action_id=args.action_id,
+                agent_id=args.agent_id,
+                thread_id=args.thread_id,
+                driver_runtime_kind=args.driver_runtime_kind,
+            )
+        elif args.command == "complete-tester-replacement":
+            payload = core.complete_tester_replacement(
+                args.repo,
+                args.run,
+                action_id=args.action_id,
+                driver_runtime_kind=args.driver_runtime_kind,
             )
         elif args.command == "prove-tests":
             _guard_dispatch(args, {"tester_proof", "tester_proof_diagnose"})

@@ -8079,13 +8079,17 @@ def read_problem_manifest(path_value: str, *, allow_empty: bool) -> dict[str, An
             errors.append(f"{field} must be an object")
             continue
         expected = {"key", "summary", "details", "owner"}
-        if set(item) != expected:
-            errors.append(f"{field} must contain only key, summary, details, owner")
+        optional = {"producer_continuity"}
+        if not expected.issubset(item) or set(item) - expected - optional:
+            errors.append(
+                f"{field} must contain key, summary, details, owner and optional producer_continuity"
+            )
             continue
         key = item.get("key")
         summary = item.get("summary")
         details = item.get("details")
         owner = item.get("owner")
+        producer_continuity = item.get("producer_continuity")
         if not isinstance(key, str) or not re.fullmatch(
             r"[a-z0-9]+(?:-[a-z0-9]+)*", key
         ):
@@ -8101,6 +8105,12 @@ def read_problem_manifest(path_value: str, *, allow_empty: bool) -> dict[str, An
             errors.append(f"{field}.details must be non-empty")
         if owner not in PROBLEM_OWNERS:
             errors.append(f"{field}.owner is invalid")
+        if producer_continuity not in {None, "invalid"}:
+            errors.append(f"{field}.producer_continuity must be invalid when present")
+        if producer_continuity == "invalid" and owner != "tester":
+            errors.append(
+                f"{field}.producer_continuity is only valid for owner=tester"
+            )
         if (
             isinstance(summary, str)
             and summary.strip()
@@ -8108,14 +8118,15 @@ def read_problem_manifest(path_value: str, *, allow_empty: bool) -> dict[str, An
             and details.strip()
             and owner in PROBLEM_OWNERS
         ):
-            normalized.append(
-                {
-                    "key": key,
-                    "summary": summary.strip(),
-                    "details": details.strip(),
-                    "owner": str(owner),
-                }
-            )
+            record = {
+                "key": key,
+                "summary": summary.strip(),
+                "details": details.strip(),
+                "owner": str(owner),
+            }
+            if producer_continuity == "invalid":
+                record["producer_continuity"] = "invalid"
+            normalized.append(record)
     if errors:
         raise RuntimeProblem(
             "problem report does not match codex-problem-report-v1",
@@ -8298,6 +8309,11 @@ def problem_records_for_manifest(
                 "origin_run_id": str(ledger.get("run_id")),
                 "source": source,
                 "source_id": source_id,
+                **(
+                    {"producer_continuity": "invalid"}
+                    if item.get("producer_continuity") == "invalid"
+                    else {}
+                ),
             }
         )
     return records

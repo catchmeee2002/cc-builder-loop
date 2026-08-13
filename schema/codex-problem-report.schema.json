@@ -18,6 +18,12 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["key", "summary", "details", "owner"],
+      "allOf": [
+        {
+          "if": {"required": ["producer_continuity"]},
+          "then": {"properties": {"owner": {"const": "tester"}}}
+        }
+      ],
       "properties": {
         "key": {
           "type": "string",
@@ -35,6 +41,7 @@
             "external_platform"
           ]
         },
+        "producer_continuity": {"const": "invalid"},
         "decision_request": {"$ref": "#/$defs/decisionRequest"}
       }
     },

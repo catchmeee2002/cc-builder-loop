@@ -36,6 +36,10 @@ def emit(value: dict[str, Any], returncode: int) -> int:
     return returncode
 
 
+def emit_event(value: dict[str, Any]) -> None:
+    print(json.dumps(value, ensure_ascii=False, sort_keys=True), flush=True)
+
+
 def _exception_payload(exc: CorePortError | NativeDriverError | AppServerError) -> dict[str, Any]:
     if isinstance(exc, CorePortError):
         payload = dict(exc.payload)
@@ -189,6 +193,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 core=core,
                 transport=transport,
                 dispatch_renewal_reason=args.reason,
+                event_sink=emit_event,
             )
         with transport:
             if args.command == "start":
@@ -220,6 +225,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     run_id=args.run,
                     core=core,
                     transport=transport,
+                    event_sink=emit_event,
                 )
             if coordinator is None:
                 raise NativeDriverError(
