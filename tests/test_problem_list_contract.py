@@ -963,6 +963,35 @@ class ProblemListContractTest(unittest.TestCase):
         Draft202012Validator.check_schema(schema)
         validator = Draft202012Validator(schema)
         validator.validate(problem_report(issue("valid-public-report")))
+        validator.validate(
+            {
+                "schema_version": 1,
+                "problems": [
+                    {
+                        "key": "tester-identity-invalid",
+                        "summary": "Tester identity is invalid",
+                        "details": "The current Tester lost independent author status.",
+                        "owner": "tester",
+                        "producer_continuity": "invalid",
+                    }
+                ],
+            }
+        )
+        with self.assertRaises(Exception):
+            validator.validate(
+                {
+                    "schema_version": 1,
+                    "problems": [
+                        {
+                            "key": "builder-identity-invalid",
+                            "summary": "Builder identity is invalid",
+                            "details": "Only Tester may invalidate producer continuity.",
+                            "owner": "builder",
+                            "producer_continuity": "invalid",
+                        }
+                    ],
+                }
+            )
         with self.assertRaises(Exception):
             validator.validate(
                 {
@@ -977,6 +1006,56 @@ class ProblemListContractTest(unittest.TestCase):
                 }
             )
         self.assertEqual(schema.get("additionalProperties"), False)
+
+    def test_legacy_problem_inventory_preserves_continuity_without_v4_replacement(
+        self,
+    ) -> None:
+        repo = self.repo()
+        plan = write_plan(repo, plan_markdown(head(repo)))
+        _started, run_path = self.start_named(
+            repo, plan, "legacy-continuity-metadata"
+        )
+        agent_id, turn_id = self.complete_problem_turn(
+            run_path,
+            role="tester",
+            result="fail",
+            agent_id="legacy-continuity-tester",
+        )
+        recorded = record_problems(
+            run_path,
+            source="tester",
+            source_id=turn_id,
+            manifest={
+                "schema_version": 1,
+                "problems": [
+                    {
+                        "key": "legacy-tester-continuity",
+                        "summary": "Legacy Tester continuity is invalid",
+                        "details": (
+                            "Legacy v2/v3 records the field but does not run the "
+                            "Assurance v4 replacement transaction."
+                        ),
+                        "owner": "tester",
+                        "producer_continuity": "invalid",
+                    }
+                ],
+            },
+        )
+        assert_status(recorded, "READY", rc=0)
+        ledger = load_ledger(run_path)
+        problem = next(
+            item
+            for item in ledger["problem_inventory"]["items"]
+            if item["key"] == "legacy-tester-continuity"
+        )
+        self.assertEqual(problem["producer_continuity"], "invalid")
+        self.assertNotIn("tester_replacement_intent", ledger)
+        status = run_cli("status", "--run", run_path)
+        self.assertNotIn(
+            "replace_tester",
+            json.dumps(status.data, ensure_ascii=False),
+        )
+        self.assertEqual(ledger["agents"]["tester"]["agent_id"], agent_id)
 
     def test_active_pre_feature_v2_revision_rehydrates_without_new_plan_marker(self) -> None:
         repo = self.repo()

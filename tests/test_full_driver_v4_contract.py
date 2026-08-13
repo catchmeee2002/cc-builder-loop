@@ -664,6 +664,10 @@ class FullDriverV4ContractTest(unittest.TestCase):
         self.assertRegex(text, r"tester.{0,120}(?:tester_fix|回到tester)")
         self.assertRegex(text, r"builder.{0,120}(?:builder_fix|回到builder)")
         self.assertRegex(text, r"(?:普通测试修正|testfix|fixture).{0,100}(?:不修改mission|mission不变)")
+        self.assertIn("producer_continuity=invalid", text)
+        self.assertIn("replace_tester", text)
+        self.assertRegex(text, r"replace_tester.{0,240}begin-tester-replacement")
+        self.assertRegex(text, r"norolloutfound.{0,240}renew-bootstrap")
 
     def test_skill_orders_proof_blackbox_and_reviewer_prerequisites(self) -> None:
         text = compact(self.skill_text())

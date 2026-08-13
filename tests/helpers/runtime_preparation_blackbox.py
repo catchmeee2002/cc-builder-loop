@@ -78,6 +78,8 @@ def clone_current_snapshot(destination: Path) -> str:
     hooks_dir = destination / ".git" / "blackbox-hooks"
     hooks_dir.mkdir(parents=True)
     git(destination, "config", "core.hooksPath", str(hooks_dir))
+    git(destination, "config", "gc.auto", "0")
+    git(destination, "config", "maintenance.auto", "false")
 
     patch = git(ROOT, "diff", "--binary", "HEAD")
     if patch:

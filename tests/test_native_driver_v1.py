@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+from datetime import datetime, timedelta, timezone
 import json
 import os
 import sys
@@ -17,17 +18,19 @@ from harness import CLI, ROOT, cleanup_repo, commit_all, init_repo, run_process
 sys.path.insert(0, str(ROOT / "runtime"))
 
 from codex_builder_loop.assurance_v4 import core as assurance_core
+from codex_builder_loop.assurance_v4 import driver as assurance_core_driver
 from codex_builder_loop.native_driver.app_server import (
     AppServerError,
     AppServerTransport,
     TurnResult,
     probe_app_server,
 )
-from codex_builder_loop.assurance_v4.models import digest
+from codex_builder_loop.assurance_v4.models import digest, evidence_dependency, facet_digests
 from codex_builder_loop.assurance_v4.driver_contract import AGENT_ACTION_CAPABILITIES
 from codex_builder_loop.native_driver import cli as native_cli
 from codex_builder_loop.native_driver.coordinator import NativeCoordinator, NativeDriverError
 from codex_builder_loop.native_driver.core_port import CorePort, CorePortError
+from codex_builder_loop.native_driver.transport_failures import classify_turn_failure
 
 
 def native_contract(repo: Path) -> dict:
@@ -146,6 +149,103 @@ class NativeDriverCoreContractTest(unittest.TestCase):
             native_contract(self.repo),
         )
         return run_id, run_path
+
+    def prepare_replacement_fixture(
+        self, run_id: str
+    ) -> tuple[Path, dict, dict]:
+        started, run_path = self.start_with_contract(
+            run_id, native_contract(self.repo)
+        )
+        candidate = Path(started["candidate_worktree"])
+        builder = self.invoke("driver-next", "--repo", self.repo, "--run", run_id)
+        self.invoke(
+            "prepare-builder",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--agent-id",
+            "builder-agent",
+            "--thread-id",
+            "builder-thread",
+            "--action-id",
+            builder["action_id"],
+            "--driver-runtime-kind",
+            "native",
+        )
+        (candidate / "src" / "native.py").write_text("VALUE = 1\n", encoding="utf-8")
+        commit_all(candidate, "native replacement candidate")
+        checkpoint = self.invoke("driver-next", "--repo", self.repo, "--run", run_id)
+        self.invoke(
+            "checkpoint-builder",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--action-id",
+            checkpoint["action_id"],
+            "--driver-runtime-kind",
+            "native",
+        )
+        tester_action = self.invoke("driver-next", "--repo", self.repo, "--run", run_id)
+        if tester_action["action"] == "scan_doc_references":
+            self.invoke(
+                "scan-doc-references",
+                "--repo",
+                self.repo,
+                "--run",
+                run_id,
+                "--action-id",
+                tester_action["action_id"],
+                "--driver-runtime-kind",
+                "native",
+            )
+            tester_action = self.invoke(
+                "driver-next", "--repo", self.repo, "--run", run_id
+            )
+        self.assertEqual(tester_action["action"], "tester_author")
+        self.invoke(
+            "prepare-tester",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--agent-id",
+            "tester-old",
+            "--thread-id",
+            "tester-old-thread",
+            "--action-id",
+            tester_action["action_id"],
+            "--driver-runtime-kind",
+            "native",
+        )
+        ledger = json.loads((run_path / "ledger.json").read_text())
+        old_source = ledger["facets"]["execution"]["tester_source"]
+        old_worktree = Path(old_source["worktree"])
+        (old_worktree / "tests" / "test_native.py").write_text(
+            "import unittest\n\nclass NativeTest(unittest.TestCase):\n"
+            "    def test_value(self):\n        self.assertEqual(1, 1)\n",
+            encoding="utf-8",
+        )
+        commit_all(old_worktree, "tester old source")
+        assurance_core.integrate_tester(self.repo, run_id)
+        next_action = self.invoke(
+            "driver-next", "--repo", self.repo, "--run", run_id
+        )
+        if next_action["action"] == "scan_doc_references":
+            self.invoke(
+                "scan-doc-references",
+                "--repo",
+                self.repo,
+                "--run",
+                run_id,
+                "--action-id",
+                next_action["action_id"],
+                "--driver-runtime-kind",
+                "native",
+            )
+        ledger = json.loads((run_path / "ledger.json").read_text())
+        return run_path, ledger["facets"]["execution"]["tester_source"], tester_action
 
     def test_blackbox_only_prepares_tester_identity_without_source_gate(self) -> None:
         run_id = "native-blackbox-only"
@@ -662,6 +762,1201 @@ class NativeDriverCoreContractTest(unittest.TestCase):
         self.assertEqual(telemetry["lifecycle"]["dispatch_renewals"], 1)
         self.assertIn("dispatch_renewed", telemetry["warnings"])
 
+    def test_auth_unavailable_retry_persists_30_and_120_second_deadlines(self) -> None:
+        run_id, run_path = self.start()
+        first = self.invoke("driver-next", "--repo", self.repo, "--run", run_id)
+        self.invoke(
+            "prepare-builder",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--agent-id",
+            "native-builder",
+            "--thread-id",
+            "thread-builder",
+            "--action-id",
+            first["action_id"],
+            "--driver-runtime-kind",
+            "native",
+        )
+        action = self.invoke("driver-next", "--repo", self.repo, "--run", run_id)
+        self.invoke(
+            "begin-dispatch",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--action-id",
+            action["action_id"],
+            "--action",
+            action["action"],
+            "--role",
+            "builder",
+            "--thread-id",
+            "thread-builder",
+            "--prompt-digest",
+            "b" * 64,
+            "--output-schema-digest",
+            "c" * 64,
+        )
+        for attempt, expected_delay in ((1, 30), (2, 120)):
+            self.invoke(
+                "bind-dispatch-turn",
+                "--repo",
+                self.repo,
+                "--run",
+                run_id,
+                "--action-id",
+                action["action_id"],
+                "--turn-id",
+                f"auth-turn-{attempt}",
+            )
+            self.invoke(
+                "retry-dispatch",
+                "--repo",
+                self.repo,
+                "--run",
+                run_id,
+                "--action-id",
+                action["action_id"],
+                "--failure-code",
+                "authUnavailable",
+            )
+            intent = json.loads((run_path / "ledger.json").read_text())[
+                "dispatch_intent"
+            ]
+            scheduled = datetime.fromisoformat(intent["retry_scheduled_at"])
+            deadline = datetime.fromisoformat(intent["retry_not_before"])
+            self.assertEqual(int((deadline - scheduled).total_seconds()), expected_delay)
+            self.assertEqual(intent["attempt"], attempt + 1)
+            self.assertEqual(intent["failure_code"], "authUnavailable")
+
+    def test_dispatch_retry_reconstructs_machine_failure_from_ledger(self) -> None:
+        context = {
+            "facets": {
+                "mission": {},
+                "authority": {},
+                "assurance": {},
+                "execution": {
+                    "agents": {
+                        "tester": {
+                            "agent_id": "tester-agent",
+                            "thread_id": "tester-thread",
+                        }
+                    },
+                    "tester_source": None,
+                },
+            },
+            "target_start_head": "0" * 40,
+            "candidate_worktree": "/candidate",
+            "publication": None,
+            "evidence": {},
+            "problems": [],
+            "machine_failure": {"failure_digest": "d" * 64},
+        }
+        action = {
+            "action": "tester_machine_diagnose",
+            "action_id": "a" * 64,
+            "machine_failure": copy.deepcopy(context["machine_failure"]),
+            "agent": context["facets"]["execution"]["agents"]["tester"],
+        }
+        coordinator = NativeCoordinator(
+            repo=ROOT,
+            run_id="machine-prompt-recovery",
+            core=object(),
+            transport=object(),
+            project_root=ROOT,
+        )
+        prompt = coordinator._prompt(action, "tester", context)
+        intent_only = {
+            "action": action["action"],
+            "action_id": action["action_id"],
+            "role": "tester",
+            "thread_id": "tester-thread",
+        }
+        self.assertNotEqual(
+            digest(coordinator._prompt(intent_only, "tester", context)), digest(prompt)
+        )
+        rebuilt = {
+            **intent_only,
+            "machine_failure": copy.deepcopy(context["machine_failure"]),
+        }
+        self.assertEqual(digest(coordinator._prompt(rebuilt, "tester", context)), digest(prompt))
+
+    def test_dispatch_retry_reconstructs_every_action_prompt_payload(self) -> None:
+        coordinator = NativeCoordinator(
+            repo=ROOT,
+            run_id="all-action-prompt-recovery",
+            core=object(),
+            transport=object(),
+            project_root=ROOT,
+        )
+        context = {
+            "facets": native_contract(ROOT),
+            "target_start_head": "0" * 40,
+            "candidate_worktree": "/candidate",
+            "repo_root": str(ROOT),
+            "publication": {"required": False},
+            "evidence": {},
+            "problems": [],
+            "recomposition_intent": {
+                "state": "waiting_builder",
+                "builder_worktree": "/builder-recompose",
+                "tester_worktree": "/tester-recompose",
+                "tester_head": "5" * 40,
+            },
+            "proof_failure": {},
+            "machine_failure": {},
+        }
+        context["facets"]["execution"].update(
+            {
+                "candidate_head": "1" * 40,
+                "agents": {
+                    "builder": {
+                        "agent_id": "builder-agent",
+                        "thread_id": "builder-thread",
+                    },
+                    "tester": {
+                        "agent_id": "tester-agent",
+                        "thread_id": "tester-thread",
+                    },
+                    "reviewer": {
+                        "agent_id": "reviewer-agent",
+                        "thread_id": "reviewer-thread",
+                    },
+                },
+                "tester_source": {
+                    "head": "2" * 40,
+                    "base_head": "3" * 40,
+                    "branch": "tester/source",
+                    "worktree": "/tester-source",
+                    "files": [],
+                    "agent": {
+                        "agent_id": "tester-agent",
+                        "thread_id": "tester-thread",
+                    },
+                },
+            }
+        )
+        failure_ledger = {
+            "facets": context["facets"],
+            "digests": facet_digests(context["facets"]),
+            "target_start_head": context["target_start_head"],
+            "publication": context["publication"],
+        }
+        tester_agent = context["facets"]["execution"]["agents"]["tester"]
+        tester_source = context["facets"]["execution"]["tester_source"]
+        context["proof_failure"] = {
+            "failure_digest": "6" * 64,
+            "dependency_digest": evidence_dependency(failure_ledger, "proof"),
+            "candidate_head": context["facets"]["execution"]["candidate_head"],
+            "tester_source_head": tester_source["head"],
+            "producer": {"role": "tester", **tester_agent},
+        }
+        context["machine_failure"] = {
+            "stage": "machine",
+            "failure_signature": "7" * 64,
+            "dependency_digest": evidence_dependency(failure_ledger, "machine"),
+            "candidate_head": context["facets"]["execution"]["candidate_head"],
+            "tester_source_head": tester_source["head"],
+        }
+        actions = {
+            "builder_implement": ("builder", {}),
+            "builder_fix": ("builder", {}),
+            "tester_author": ("tester", {}),
+            "tester_fix": ("tester", {}),
+            "tester_proof": ("tester", {}),
+            "tester_blackbox": ("tester", {}),
+            "reviewer_preflight": ("reviewer", {}),
+            "reviewer_final": ("reviewer", {}),
+            "builder_recompose_fix": (
+                "builder",
+                {
+                    "recomposition": context["recomposition_intent"],
+                    "candidate_worktree": "/builder-recompose",
+                },
+            ),
+            "tester_recompose_fix": (
+                "tester",
+                {
+                    "recomposition": context["recomposition_intent"],
+                    "tester_source": {
+                        "worktree": "/tester-recompose",
+                        "head": "5" * 40,
+                    },
+                },
+            ),
+            "tester_proof_diagnose": (
+                "tester",
+                {"proof_failure": context["proof_failure"]},
+            ),
+            "tester_machine_diagnose": (
+                "tester",
+                {"machine_failure": context["machine_failure"]},
+            ),
+        }
+        for index, (action_name, (role, payload)) in enumerate(actions.items(), 1):
+            with self.subTest(action=action_name):
+                action = {
+                    "action": action_name,
+                    "action_id": f"{index:064x}",
+                    "agent": copy.deepcopy(
+                        context["facets"]["execution"]["agents"][role]
+                    ),
+                    **copy.deepcopy(payload),
+                }
+                if action_name.startswith("tester_"):
+                    action.setdefault(
+                        "tester_source",
+                        copy.deepcopy(
+                            context["facets"]["execution"]["tester_source"]
+                        ),
+                    )
+                prompt = coordinator._prompt(action, role, context)
+                pending = {
+                    "action": action_name,
+                    "action_id": action["action_id"],
+                    "role": role,
+                    "thread_id": action["agent"]["thread_id"],
+                    "prompt_digest": digest(prompt),
+                    "output_schema_digest": coordinator.output_schema_digest,
+                    "state": "prepared",
+                    "attempt": 2,
+                    "generation": 1,
+                }
+                ledger = {
+                    "candidate_worktree": context["candidate_worktree"],
+                    "facets": copy.deepcopy(context["facets"]),
+                    "digests": facet_digests(context["facets"]),
+                    "target_start_head": context["target_start_head"],
+                    "publication": copy.deepcopy(context["publication"]),
+                    "recomposition_intent": copy.deepcopy(
+                        context["recomposition_intent"]
+                    ),
+                    "proof_failure": copy.deepcopy(context["proof_failure"]),
+                    "machine_failure": copy.deepcopy(context["machine_failure"]),
+                }
+                rebuilt = assurance_core_driver._dispatch_action(
+                    ledger, coordinator.run_id, pending
+                )
+                self.assertEqual(
+                    digest(coordinator._prompt(rebuilt, role, context)),
+                    pending["prompt_digest"],
+                )
+
+    def test_dispatch_recovery_resumes_recomposition_in_rebuilt_worktree(self) -> None:
+        context = {
+            "facets": native_contract(ROOT),
+            "target_start_head": "0" * 40,
+            "candidate_worktree": "/candidate",
+            "repo_root": str(ROOT),
+            "publication": None,
+            "evidence": {},
+            "problems": [],
+        }
+        context["facets"]["execution"]["agents"] = {
+            "builder": {
+                "agent_id": "builder-agent",
+                "thread_id": "builder-thread",
+            }
+        }
+        action = {
+            "action": "builder_recompose_fix",
+            "action_id": "a" * 64,
+            "candidate_worktree": "/rebuilt-builder-worktree",
+            "recomposition": {"state": "waiting_builder"},
+            "agent": context["facets"]["execution"]["agents"]["builder"],
+        }
+
+        class FakeTransport:
+            def __init__(self) -> None:
+                self.resume_cwd: str | None = None
+
+            def resume_thread(self, **kwargs):
+                self.resume_cwd = kwargs["cwd"]
+
+            def read_thread(self, _thread_id):
+                return {"turns": []}
+
+            def run_turn(self, **_kwargs):
+                return TurnResult(
+                    turn_id="recompose-turn",
+                    status="failed",
+                    text="",
+                    error={"codexErrorInfo": "serverOverloaded"},
+                )
+
+        class FakeCore:
+            def __init__(self) -> None:
+                self.calls: list[str] = []
+
+            def call(self, command: str, *_args: str, input_value=None):
+                self.calls.append(command)
+                return {"status": "ACTIVE"}
+
+        transport = FakeTransport()
+        coordinator = NativeCoordinator(
+            repo=ROOT,
+            run_id="recomposition-cwd-recovery",
+            core=FakeCore(),
+            transport=transport,
+            project_root=ROOT,
+        )
+        prompt = coordinator._prompt(action, "builder", context)
+        pending = {
+            "action": action["action"],
+            "action_id": action["action_id"],
+            "role": "builder",
+            "thread_id": "builder-thread",
+            "prompt_digest": digest(prompt),
+            "output_schema_digest": coordinator.output_schema_digest,
+            "state": "prepared",
+            "attempt": 2,
+            "generation": 1,
+        }
+        self.assertIsNone(
+            coordinator._recover_dispatch(pending, "builder", context, action)
+        )
+        self.assertEqual(transport.resume_cwd, "/rebuilt-builder-worktree")
+
+    def test_machine_failure_signature_binds_stdout_and_stderr(self) -> None:
+        result = {
+            "id": "fixture",
+            "argv": ["python3", "verify.py"],
+            "returncode": 1,
+            "timed_out": False,
+            "executable_identity": {"path": "/usr/bin/python3"},
+            "stdout": "first observed output",
+            "stderr": "same error",
+        }
+        original = assurance_core._machine_failure_signature("machine", [result])
+        changed_stdout = assurance_core._machine_failure_signature(
+            "machine", [{**result, "stdout": "different observed output"}]
+        )
+        changed_stderr = assurance_core._machine_failure_signature(
+            "machine", [{**result, "stderr": "different error"}]
+        )
+        self.assertNotEqual(original, changed_stdout)
+        self.assertNotEqual(original, changed_stderr)
+
+    def test_tester_replacement_replays_and_resolves_on_first_new_turn(self) -> None:
+        run_id = "native-tester-replacement"
+        run_path, old_source, _ = self.prepare_replacement_fixture(run_id)
+        ledger = json.loads((run_path / "ledger.json").read_text())
+        candidate_head = ledger["facets"]["execution"]["candidate_head"]
+        assurance_core.record_evidence(
+            self.repo,
+            run_id,
+            "tester",
+            {
+                "schema_version": 1,
+                "kind": "tester",
+                "status": "pass",
+                "candidate_head": candidate_head,
+                "producer": {"role": "tester", **old_source["agent"]},
+                "details": {
+                    "result": "tests_ready",
+                    "source_head": old_source["head"],
+                    "files": old_source["files"],
+                },
+            },
+        )
+        assurance_core.record_problems(
+            self.repo,
+            run_id,
+            {
+                "schema_version": 1,
+                "problems": [
+                    {
+                        "key": "tester-read-boundary-violated",
+                        "summary": "Tester identity lost independence",
+                        "details": "The current Tester read unpublished implementation.",
+                        "owner": "tester",
+                        "producer_continuity": "invalid",
+                    }
+                ],
+            },
+            role="tester",
+            agent_id="tester-old",
+            thread_id="tester-old-thread",
+        )
+        replace = self.invoke("driver-next", "--repo", self.repo, "--run", run_id)
+        self.assertEqual(replace["action"], "replace_tester")
+        self.invoke(
+            "begin-tester-replacement",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--action-id",
+            replace["action_id"],
+            "--problem-key",
+            "tester-read-boundary-violated",
+            "--driver-runtime-kind",
+            "native",
+        )
+        prepared = json.loads((run_path / "ledger.json").read_text())[
+            "tester_replacement_intent"
+        ]
+        self.assertEqual(prepared["stage"], "prepared")
+        self.assertTrue(Path(prepared["worktree"]).is_dir())
+        self.invoke(
+            "begin-tester-replacement",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--action-id",
+            replace["action_id"],
+            "--problem-key",
+            "tester-read-boundary-violated",
+            "--driver-runtime-kind",
+            "native",
+        )
+        self.invoke(
+            "bind-tester-replacement",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--action-id",
+            replace["action_id"],
+            "--agent-id",
+            "tester-new",
+            "--thread-id",
+            "tester-new-thread",
+            "--driver-runtime-kind",
+            "native",
+        )
+        self.invoke(
+            "complete-tester-replacement",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--action-id",
+            replace["action_id"],
+            "--driver-runtime-kind",
+            "native",
+        )
+        self.invoke(
+            "complete-tester-replacement",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--action-id",
+            replace["action_id"],
+            "--driver-runtime-kind",
+            "native",
+        )
+        switched = json.loads((run_path / "ledger.json").read_text())
+        self.assertEqual(
+            switched["tester_replacement_intent"]["stage"],
+            "awaiting_first_turn",
+        )
+        self.assertFalse(Path(old_source["worktree"]).exists())
+        self.assertEqual(
+            assurance_core.evidence_state(switched, "tester"), "stale"
+        )
+        problem = next(
+            item
+            for item in switched["problems"]
+            if item["key"] == "tester-read-boundary-violated"
+        )
+        self.assertEqual(problem["status"], "open")
+        author = self.invoke("driver-next", "--repo", self.repo, "--run", run_id)
+        self.assertEqual(author["action"], "tester_author")
+        self.invoke(
+            "begin-dispatch",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--action-id",
+            author["action_id"],
+            "--action",
+            author["action"],
+            "--role",
+            "tester",
+            "--thread-id",
+            "tester-new-thread",
+            "--prompt-digest",
+            "b" * 64,
+            "--output-schema-digest",
+            "c" * 64,
+        )
+        self.invoke(
+            "bind-dispatch-turn",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--action-id",
+            author["action_id"],
+            "--turn-id",
+            "tester-new-first-turn",
+        )
+        bound = json.loads((run_path / "ledger.json").read_text())
+        self.assertIsNone(bound["tester_replacement_intent"])
+        problem = next(
+            item
+            for item in bound["problems"]
+            if item["key"] == "tester-read-boundary-violated"
+        )
+        self.assertEqual(problem["status"], "resolved")
+
+    def test_tester_replacement_recreates_missing_worktree_from_persisted_branch(
+        self,
+    ) -> None:
+        run_id = "native-tester-replacement-worktree-replay"
+        run_path, _old_source, _ = self.prepare_replacement_fixture(run_id)
+        assurance_core.record_problems(
+            self.repo,
+            run_id,
+            {
+                "schema_version": 1,
+                "problems": [
+                    {
+                        "key": "tester-replacement-worktree-replay",
+                        "summary": "Tester identity lost independence",
+                        "details": "The replacement source must replay after interrupted creation.",
+                        "owner": "tester",
+                        "producer_continuity": "invalid",
+                    }
+                ],
+            },
+            role="tester",
+            agent_id="tester-old",
+            thread_id="tester-old-thread",
+        )
+        replace = self.invoke("driver-next", "--repo", self.repo, "--run", run_id)
+        self.invoke(
+            "begin-tester-replacement",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--action-id",
+            replace["action_id"],
+            "--problem-key",
+            "tester-replacement-worktree-replay",
+            "--driver-runtime-kind",
+            "native",
+        )
+        intent = json.loads((run_path / "ledger.json").read_text())[
+            "tester_replacement_intent"
+        ]
+        replacement_worktree = Path(intent["worktree"])
+        branch_head = run_process(
+            ["git", "-C", str(self.repo), "rev-parse", intent["branch"]]
+        ).stdout.strip()
+        self.assertEqual(branch_head, intent["source_base_head"])
+        removed = run_process(
+            ["git", "-C", str(self.repo), "worktree", "remove", str(replacement_worktree)]
+        )
+        self.assertEqual(removed.returncode, 0, removed.stderr)
+        self.assertFalse(replacement_worktree.exists())
+
+        self.invoke(
+            "begin-tester-replacement",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--action-id",
+            replace["action_id"],
+            "--problem-key",
+            "tester-replacement-worktree-replay",
+            "--driver-runtime-kind",
+            "native",
+        )
+
+        self.assertTrue(replacement_worktree.is_dir())
+        replayed_head = run_process(
+            ["git", "-C", str(replacement_worktree), "rev-parse", "HEAD"]
+        ).stdout.strip()
+        self.assertEqual(replayed_head, intent["source_base_head"])
+
+    def test_tester_replacement_recreates_exact_registered_missing_worktree(
+        self,
+    ) -> None:
+        run_id = "native-tester-replacement-registered-worktree-replay"
+        run_path, _old_source, _ = self.prepare_replacement_fixture(run_id)
+        assurance_core.record_problems(
+            self.repo,
+            run_id,
+            {
+                "schema_version": 1,
+                "problems": [
+                    {
+                        "key": "tester-replacement-registered-replay",
+                        "summary": "Tester identity lost independence",
+                        "details": "The exact registered replacement worktree must be replayable.",
+                        "owner": "tester",
+                        "producer_continuity": "invalid",
+                    }
+                ],
+            },
+            role="tester",
+            agent_id="tester-old",
+            thread_id="tester-old-thread",
+        )
+        replace = self.invoke("driver-next", "--repo", self.repo, "--run", run_id)
+        self.invoke(
+            "begin-tester-replacement",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--action-id",
+            replace["action_id"],
+            "--problem-key",
+            "tester-replacement-registered-replay",
+            "--driver-runtime-kind",
+            "native",
+        )
+        intent = json.loads((run_path / "ledger.json").read_text())[
+            "tester_replacement_intent"
+        ]
+        replacement_worktree = Path(intent["worktree"])
+        moved = replacement_worktree.with_name(replacement_worktree.name + "-missing")
+        replacement_worktree.rename(moved)
+        self.assertFalse(replacement_worktree.exists())
+
+        self.invoke(
+            "begin-tester-replacement",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--action-id",
+            replace["action_id"],
+            "--problem-key",
+            "tester-replacement-registered-replay",
+            "--driver-runtime-kind",
+            "native",
+        )
+
+        self.assertTrue(replacement_worktree.is_dir())
+        replayed_head = run_process(
+            ["git", "-C", str(replacement_worktree), "rev-parse", "HEAD"]
+        ).stdout.strip()
+        self.assertEqual(replayed_head, intent["source_base_head"])
+
+    def test_tester_replacement_replays_source_switch_before_retired_cleanup(
+        self,
+    ) -> None:
+        run_id = "native-tester-replacement-source-switch-replay"
+        run_path, old_source, _ = self.prepare_replacement_fixture(run_id)
+        assurance_core.record_problems(
+            self.repo,
+            run_id,
+            {
+                "schema_version": 1,
+                "problems": [
+                    {
+                        "key": "tester-replacement-source-switch-replay",
+                        "summary": "Tester identity lost independence",
+                        "details": "Source cleanup must replay only after the new source is exact.",
+                        "owner": "tester",
+                        "producer_continuity": "invalid",
+                    }
+                ],
+            },
+            role="tester",
+            agent_id="tester-old",
+            thread_id="tester-old-thread",
+        )
+        replace = self.invoke("driver-next", "--repo", self.repo, "--run", run_id)
+        self.invoke(
+            "begin-tester-replacement",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--action-id",
+            replace["action_id"],
+            "--problem-key",
+            "tester-replacement-source-switch-replay",
+            "--driver-runtime-kind",
+            "native",
+        )
+        self.invoke(
+            "bind-tester-replacement",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--action-id",
+            replace["action_id"],
+            "--agent-id",
+            "tester-source-switch",
+            "--thread-id",
+            "tester-source-switch-thread",
+            "--driver-runtime-kind",
+            "native",
+        )
+        original_remove = assurance_core.git
+
+        def interrupt_old_source_remove(repo, *args, **kwargs):
+            if args[:3] == ("worktree", "remove", old_source["worktree"]):
+                return SimpleNamespace(
+                    returncode=1,
+                    stdout="",
+                    stderr="simulated interruption",
+                )
+            return original_remove(repo, *args, **kwargs)
+
+        with patch.object(assurance_core, "git", side_effect=interrupt_old_source_remove):
+            with self.assertRaises(assurance_core.AssuranceError) as interrupted:
+                assurance_core.complete_tester_replacement(
+                    self.repo,
+                    run_id,
+                    action_id=replace["action_id"],
+                    driver_runtime_kind="native",
+                )
+        self.assertEqual(
+            interrupted.exception.code,
+            "TESTER_RETIRED_CLEANUP_PENDING",
+        )
+        preserved_branch = run_process(
+            ["git", "-C", str(self.repo), "rev-parse", old_source["branch"]]
+        )
+        self.assertEqual(preserved_branch.returncode, 0, preserved_branch.stderr)
+        self.assertEqual(preserved_branch.stdout.strip(), old_source["head"])
+        switched = json.loads((run_path / "ledger.json").read_text())
+        switched["problems"].append(
+            {
+                "key": "independent-builder-problem",
+                "summary": "An independent Builder issue remains open",
+                "details": "Tester replacement must not own unrelated problem lifecycle.",
+                "owner": "builder",
+                "status": "open",
+                "producer": {
+                    "role": "builder",
+                    "agent_id": "builder-agent",
+                    "thread_id": "builder-thread",
+                },
+                "candidate_head": switched["facets"]["execution"]["candidate_head"],
+                "recorded_at": datetime.now(timezone.utc).isoformat(),
+            }
+        )
+        (run_path / "ledger.json").write_text(
+            json.dumps(switched, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        intent = switched["tester_replacement_intent"]
+        self.assertEqual(intent["stage"], "source_switched")
+        replacement_worktree = Path(intent["worktree"])
+        removed = run_process(
+            ["git", "-C", str(self.repo), "worktree", "remove", str(replacement_worktree)]
+        )
+        self.assertEqual(removed.returncode, 0, removed.stderr)
+        self.assertTrue(Path(old_source["worktree"]).is_dir())
+
+        self.invoke(
+            "complete-tester-replacement",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--action-id",
+            replace["action_id"],
+            "--driver-runtime-kind",
+            "native",
+        )
+
+        replayed = json.loads((run_path / "ledger.json").read_text())
+        self.assertEqual(
+            replayed["tester_replacement_intent"]["stage"],
+            "awaiting_first_turn",
+        )
+        self.assertTrue(replacement_worktree.is_dir())
+        self.assertFalse(Path(old_source["worktree"]).exists())
+
+    def test_tester_replacement_bootstrap_stops_after_third_loss(self) -> None:
+        run_id = "native-tester-bootstrap-loss"
+        run_path, _old_source, _ = self.prepare_replacement_fixture(run_id)
+        assurance_core.record_problems(
+            self.repo,
+            run_id,
+            {
+                "schema_version": 1,
+                "problems": [
+                    {
+                        "key": "tester-bootstrap-invalid",
+                        "summary": "Tester identity lost independence",
+                        "details": "The current Tester cannot remain the author.",
+                        "owner": "tester",
+                        "producer_continuity": "invalid",
+                    }
+                ],
+            },
+            role="tester",
+            agent_id="tester-old",
+            thread_id="tester-old-thread",
+        )
+        replace = self.invoke("driver-next", "--repo", self.repo, "--run", run_id)
+        for command in ("begin-tester-replacement",):
+            self.invoke(
+                command,
+                "--repo",
+                self.repo,
+                "--run",
+                run_id,
+                "--action-id",
+                replace["action_id"],
+                "--problem-key",
+                "tester-bootstrap-invalid",
+                "--driver-runtime-kind",
+                "native",
+            )
+        self.invoke(
+            "bind-tester-replacement",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--action-id",
+            replace["action_id"],
+            "--agent-id",
+            "tester-bootstrap-1",
+            "--thread-id",
+            "tester-bootstrap-thread-1",
+            "--driver-runtime-kind",
+            "native",
+        )
+        self.invoke(
+            "complete-tester-replacement",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--action-id",
+            replace["action_id"],
+            "--driver-runtime-kind",
+            "native",
+        )
+        for loss, identity in ((1, 2), (2, 3)):
+            self.invoke(
+                "begin-tester-replacement",
+                "--repo",
+                self.repo,
+                "--run",
+                run_id,
+                "--action-id",
+                replace["action_id"],
+                "--problem-key",
+                "tester-bootstrap-invalid",
+                "--renew-bootstrap",
+                "--driver-runtime-kind",
+                "native",
+            )
+            pending_bind = self.invoke(
+                "driver-next", "--repo", self.repo, "--run", run_id
+            )
+            self.assertEqual(pending_bind["action"], "replace_tester")
+            self.assertEqual(pending_bind["action_id"], replace["action_id"])
+            self.assertIsNone(pending_bind["replacement"]["new_agent"])
+            self.invoke(
+                "bind-tester-replacement",
+                "--repo",
+                self.repo,
+                "--run",
+                run_id,
+                "--action-id",
+                replace["action_id"],
+                "--agent-id",
+                f"tester-bootstrap-{identity}",
+                "--thread-id",
+                f"tester-bootstrap-thread-{identity}",
+                "--driver-runtime-kind",
+                "native",
+            )
+            ledger = json.loads((run_path / "ledger.json").read_text())
+            self.assertEqual(
+                ledger["tester_replacement_intent"]["bootstrap_attempt"],
+                loss + 1,
+            )
+        exhausted = run_process(
+            [
+                sys.executable,
+                CLI,
+                "assurance",
+                "--experimental-v4",
+                "begin-tester-replacement",
+                "--repo",
+                self.repo,
+                "--run",
+                run_id,
+                "--action-id",
+                replace["action_id"],
+                "--problem-key",
+                "tester-bootstrap-invalid",
+                "--renew-bootstrap",
+                "--driver-runtime-kind",
+                "native",
+            ]
+        )
+        self.assertNotEqual(exhausted.returncode, 0)
+        self.assertEqual(
+            json.loads(exhausted.stdout)["code"],
+            "TESTER_REPLACEMENT_ARCHITECTURE_REVIEW_REQUIRED",
+        )
+        ledger = json.loads((run_path / "ledger.json").read_text())
+        self.assertEqual(
+            ledger["tester_replacement_intent"]["new_agent"]["thread_id"],
+            "tester-bootstrap-thread-3",
+        )
+        decision = self.invoke("driver-next", "--repo", self.repo, "--run", run_id)
+        self.assertEqual(decision["action"], "architecture_review")
+
+    def test_tester_replacement_rejects_bootstrap_renewal_after_first_turn(self) -> None:
+        run_id = "native-tester-bootstrap-after-turn"
+        run_path, _old_source, _ = self.prepare_replacement_fixture(run_id)
+        assurance_core.record_problems(
+            self.repo,
+            run_id,
+            {
+                "schema_version": 1,
+                "problems": [
+                    {
+                        "key": "tester-bootstrap-after-turn",
+                        "summary": "Tester identity lost independence",
+                        "details": "Replacement must stop renewing after its first turn.",
+                        "owner": "tester",
+                        "producer_continuity": "invalid",
+                    }
+                ],
+            },
+            role="tester",
+            agent_id="tester-old",
+            thread_id="tester-old-thread",
+        )
+        replace = self.invoke("driver-next", "--repo", self.repo, "--run", run_id)
+        self.invoke(
+            "begin-tester-replacement",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--action-id",
+            replace["action_id"],
+            "--problem-key",
+            "tester-bootstrap-after-turn",
+            "--driver-runtime-kind",
+            "native",
+        )
+        self.invoke(
+            "bind-tester-replacement",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--action-id",
+            replace["action_id"],
+            "--agent-id",
+            "tester-after-turn",
+            "--thread-id",
+            "tester-after-turn-thread",
+            "--driver-runtime-kind",
+            "native",
+        )
+        self.invoke(
+            "complete-tester-replacement",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--action-id",
+            replace["action_id"],
+            "--driver-runtime-kind",
+            "native",
+        )
+        author = self.invoke("driver-next", "--repo", self.repo, "--run", run_id)
+        self.invoke(
+            "begin-dispatch",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--action-id",
+            author["action_id"],
+            "--action",
+            author["action"],
+            "--role",
+            "tester",
+            "--thread-id",
+            "tester-after-turn-thread",
+            "--prompt-digest",
+            "b" * 64,
+            "--output-schema-digest",
+            "c" * 64,
+        )
+        self.invoke(
+            "bind-dispatch-turn",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--action-id",
+            author["action_id"],
+            "--turn-id",
+            "tester-after-turn-first",
+        )
+        ledger = json.loads((run_path / "ledger.json").read_text())
+        self.assertIsNone(ledger["tester_replacement_intent"])
+        renewed = run_process(
+            [
+                sys.executable,
+                CLI,
+                "assurance",
+                "--experimental-v4",
+                "begin-tester-replacement",
+                "--repo",
+                self.repo,
+                "--run",
+                run_id,
+                "--action-id",
+                replace["action_id"],
+                "--problem-key",
+                "tester-bootstrap-after-turn",
+                "--renew-bootstrap",
+                "--driver-runtime-kind",
+                "native",
+            ]
+        )
+        self.assertNotEqual(renewed.returncode, 0)
+        self.assertEqual(
+            json.loads(renewed.stdout)["code"],
+            "TESTER_REPLACEMENT_ACTION_STALE",
+        )
+
+    def test_tester_replacement_first_turn_fails_closed_on_problem_drift(self) -> None:
+        run_id = "native-tester-first-turn-drift"
+        run_path, _old_source, _ = self.prepare_replacement_fixture(run_id)
+        assurance_core.record_problems(
+            self.repo,
+            run_id,
+            {
+                "schema_version": 1,
+                "problems": [
+                    {
+                        "key": "tester-first-turn-drift",
+                        "summary": "Tester identity lost independence",
+                        "details": "First turn must retain the frozen problem snapshot.",
+                        "owner": "tester",
+                        "producer_continuity": "invalid",
+                    }
+                ],
+            },
+            role="tester",
+            agent_id="tester-old",
+            thread_id="tester-old-thread",
+        )
+        replace = self.invoke("driver-next", "--repo", self.repo, "--run", run_id)
+        self.invoke(
+            "begin-tester-replacement",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--action-id",
+            replace["action_id"],
+            "--problem-key",
+            "tester-first-turn-drift",
+            "--driver-runtime-kind",
+            "native",
+        )
+        self.invoke(
+            "bind-tester-replacement",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--action-id",
+            replace["action_id"],
+            "--agent-id",
+            "tester-drift",
+            "--thread-id",
+            "tester-drift-thread",
+            "--driver-runtime-kind",
+            "native",
+        )
+        self.invoke(
+            "complete-tester-replacement",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--action-id",
+            replace["action_id"],
+            "--driver-runtime-kind",
+            "native",
+        )
+        author = self.invoke("driver-next", "--repo", self.repo, "--run", run_id)
+        self.invoke(
+            "begin-dispatch",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--action-id",
+            author["action_id"],
+            "--action",
+            author["action"],
+            "--role",
+            "tester",
+            "--thread-id",
+            "tester-drift-thread",
+            "--prompt-digest",
+            "b" * 64,
+            "--output-schema-digest",
+            "c" * 64,
+        )
+        ledger_path = run_path / "ledger.json"
+        drifted = json.loads(ledger_path.read_text())
+        replacement_problem = next(
+            item
+            for item in drifted["problems"]
+            if item["key"] == "tester-first-turn-drift"
+        )
+        replacement_problem["details"] = (
+            "The continuity-invalid Tester problem changed after replacement began."
+        )
+        ledger_path.write_text(
+            json.dumps(drifted, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        bound = run_process(
+            [
+                sys.executable,
+                CLI,
+                "assurance",
+                "--experimental-v4",
+                "bind-dispatch-turn",
+                "--repo",
+                self.repo,
+                "--run",
+                run_id,
+                "--action-id",
+                author["action_id"],
+                "--turn-id",
+                "tester-drift-first",
+            ]
+        )
+        self.assertNotEqual(bound.returncode, 0)
+        self.assertEqual(
+            json.loads(bound.stdout)["code"],
+            "TESTER_REPLACEMENT_PROBLEM_DRIFT",
+        )
+        preserved = json.loads(ledger_path.read_text())
+        self.assertEqual(preserved["dispatch_intent"]["state"], "prepared")
+        self.assertNotIn("turn_id", preserved["dispatch_intent"])
+        self.assertIsNotNone(preserved["tester_replacement_intent"])
+
     def test_native_cli_persists_unhandled_fatal_after_run_creation(self) -> None:
         class FakeCore:
             def __init__(self) -> None:
@@ -1173,6 +2468,165 @@ for line in sys.stdin:
         self.assertEqual(turn.status, "completed")
         self.assertEqual(json.loads(turn.text)["result"], "pass")
 
+    def test_process_auth_503_recovers_twice_then_succeeds_same_action_and_thread(
+        self,
+        ) -> None:
+        repo = init_repo()
+        self.addCleanup(cleanup_repo, repo)
+        state = self.root / "auth-state"
+        trace = self.root / "auth-trace.jsonl"
+        codex = self.root / "codex-auth"
+        codex.write_text(
+            f"""#!/usr/bin/env python3
+import json, os, sys
+state = {str(state)!r}
+trace = {str(trace)!r}
+if sys.argv[1:] == ['--version']:
+    print('codex-cli fake-auth')
+    raise SystemExit(0)
+if sys.argv[1:3] == ['app-server', 'generate-json-schema']:
+    out = sys.argv[sys.argv.index('--out') + 1]
+    os.makedirs(out, exist_ok=True)
+    tokens = ['thread/start','thread/resume','thread/read','turn/start','turn/interrupt','developerInstructions','outputSchema','clientUserMessageId']
+    open(os.path.join(out, 'codex_app_server_protocol.schemas.json'), 'w').write(json.dumps(tokens))
+    raise SystemExit(0)
+if sys.argv[1:3] != ['app-server', '--stdio']:
+    raise SystemExit(2)
+attempt = int(open(state).read()) if os.path.exists(state) else 0
+for line in sys.stdin:
+    msg = json.loads(line)
+    method = msg.get('method')
+    if method == 'initialize':
+        print(json.dumps({{'id': msg['id'], 'result': {{'userAgent': 'fake'}}}}), flush=True)
+    elif method == 'initialized':
+        pass
+    elif method == 'thread/start':
+        print(json.dumps({{'id': msg['id'], 'result': {{'thread': {{'id': 'thr-auth'}}}}}}), flush=True)
+    elif method == 'thread/resume':
+        print(json.dumps({{'id': msg['id'], 'result': {{'thread': {{'id': msg['params']['threadId']}}}}}}), flush=True)
+    elif method == 'thread/read':
+        print(json.dumps({{'id': msg['id'], 'result': {{'thread': {{'id': msg['params']['threadId'], 'turns': []}}}}}}), flush=True)
+    elif method == 'turn/start':
+        attempt += 1
+        open(state, 'w').write(str(attempt))
+        with open(trace, 'a') as output:
+            output.write(json.dumps({{'thread_id': msg['params']['threadId'], 'client_id': msg['params']['clientUserMessageId']}}) + '\\n')
+        turn_id = 'turn-auth-' + str(attempt)
+        print(json.dumps({{'id': msg['id'], 'result': {{'turn': {{'id': turn_id}}}}}}), flush=True)
+        if attempt <= 2:
+            error = {{'codexErrorInfo':'other','message':'HTTP 503 auth_unavailable: no auth available (providers=codex, model=gpt-test)'}}
+            print(json.dumps({{'method':'turn/completed','params':{{'threadId':'thr-auth','turn':{{'id':turn_id,'status':'failed','error':error,'items':[]}}}}}}), flush=True)
+        else:
+            result = {{'result':'implemented','evidence_report':None,'proof_spec':None,'problem_report':None}}
+            print(json.dumps({{'method':'item/completed','params':{{'threadId':'thr-auth','item':{{'id':'item-auth','type':'agentMessage','text':json.dumps(result)}}}}}}), flush=True)
+            print(json.dumps({{'method':'turn/completed','params':{{'threadId':'thr-auth','turn':{{'id':turn_id,'status':'completed','items':[]}}}}}}), flush=True)
+""",
+            encoding="utf-8",
+        )
+        codex.chmod(0o755)
+        run_id = "process-auth-retry"
+        core = CorePort()
+        started = core.start(
+            repo=repo,
+            run_id=run_id,
+            session_id="process-auth-session",
+            contract=native_contract(repo),
+            runtime_version="codex-cli fake-auth",
+            protocol_schema_digest="a" * 64,
+        )
+        candidate = Path(started["candidate_worktree"])
+
+        with AppServerTransport(codex_bin=str(codex)) as transport:
+            thread_id = transport.start_thread(
+                cwd=str(candidate),
+                developer_instructions="builder",
+                sandbox="danger-full-access",
+            )
+        first = core.call("driver-next", "--repo", str(repo), "--run", run_id)
+        core.call(
+            "prepare-builder",
+            "--repo",
+            str(repo),
+            "--run",
+            run_id,
+            "--agent-id",
+            f"codex-app-server:{thread_id}",
+            "--thread-id",
+            thread_id,
+            "--action-id",
+            first["action_id"],
+            "--driver-runtime-kind",
+            "native",
+        )
+        action = core.call("driver-next", "--repo", str(repo), "--run", run_id)
+        sleeps: list[float] = []
+        clock = [datetime.now(timezone.utc)]
+
+        def sleep(seconds: float) -> None:
+            sleeps.append(seconds)
+            clock[0] += timedelta(seconds=seconds)
+
+        for expected_attempt in (2, 3):
+            with AppServerTransport(codex_bin=str(codex)) as transport:
+                coordinator = NativeCoordinator(
+                    repo=repo,
+                    run_id=run_id,
+                    core=core,
+                    transport=transport,
+                    project_root=ROOT,
+                    now_fn=lambda: clock[0],
+                    sleep_fn=sleep,
+                )
+                coordinator.current_action = action
+                coordinator._run_agent_action(
+                    action, AGENT_ACTION_CAPABILITIES[action["action"]]
+                )
+            pending = core.call(
+                "driver-context", "--repo", str(repo), "--run", run_id
+            )["dispatch_intent"]
+            self.assertEqual(pending["attempt"], expected_attempt)
+            self.assertEqual(pending["failure_code"], "authUnavailable")
+            clock[0] = datetime.fromisoformat(pending["retry_scheduled_at"])
+
+        with AppServerTransport(codex_bin=str(codex)) as transport:
+            coordinator = NativeCoordinator(
+                repo=repo,
+                run_id=run_id,
+                core=core,
+                transport=transport,
+                project_root=ROOT,
+                now_fn=lambda: clock[0],
+                sleep_fn=sleep,
+            )
+            coordinator.current_action = action
+            coordinator._run_agent_action(
+                action, AGENT_ACTION_CAPABILITIES[action["action"]]
+            )
+
+        status = core.call(
+            "status", "--repo", str(repo), "--run", run_id
+        )
+        context = core.call(
+            "driver-context", "--repo", str(repo), "--run", run_id
+        )
+        self.assertTrue(status["builder_checkpointed"])
+        self.assertIsNone(context["dispatch_intent"])
+        observations = [
+            json.loads(line) for line in trace.read_text().splitlines() if line.strip()
+        ]
+        self.assertEqual(
+            [item["thread_id"] for item in observations], [thread_id] * 3
+        )
+        self.assertEqual(
+            [item["client_id"] for item in observations],
+            [
+                f"{action['action_id']}:1",
+                f"{action['action_id']}:2",
+                f"{action['action_id']}:3",
+            ],
+        )
+        self.assertEqual(sum(sleeps), 150.0)
+
 
 class NativeCoordinatorContractTest(unittest.TestCase):
     def test_blackbox_only_missing_tester_uses_identity_only_preparation(self) -> None:
@@ -1337,6 +2791,75 @@ class NativeCoordinatorContractTest(unittest.TestCase):
         self.assertTrue(retried)
         self.assertEqual(core.calls[0][0], "retry-dispatch")
         self.assertIn("responseStreamDisconnected", core.calls[0][1])
+
+    def test_auth_unavailable_requires_exact_observed_503_markers(self) -> None:
+        exact = {
+            "codexErrorInfo": "other",
+            "message": (
+                "HTTP 503 auth_unavailable: no auth available "
+                "(providers=codex, model=gpt-test)"
+            ),
+        }
+        self.assertEqual(classify_turn_failure(exact), "authUnavailable")
+        for message in (
+            "HTTP 503 auth_unavailable",
+            "auth_unavailable: no auth available",
+            "HTTP 503 no auth available",
+            "HTTP 401 auth_unavailable: no auth available",
+        ):
+            with self.subTest(message=message):
+                self.assertEqual(
+                    classify_turn_failure(
+                        {"codexErrorInfo": "other", "message": message}
+                    ),
+                    "other",
+                )
+        self.assertEqual(
+            classify_turn_failure(
+                {
+                    "codexErrorInfo": "cyberPolicy",
+                    "message": exact["message"],
+                }
+            ),
+            "cyberPolicy",
+        )
+
+    def test_auth_retry_wait_is_visible_and_resumes_from_remaining_time(self) -> None:
+        deadline = datetime(2026, 8, 13, 12, 0, 30, tzinfo=timezone.utc)
+        clock = [deadline - timedelta(seconds=17)]
+        sleeps: list[float] = []
+        events: list[dict] = []
+
+        def sleep(seconds: float) -> None:
+            sleeps.append(seconds)
+            clock[0] += timedelta(seconds=seconds)
+
+        coordinator = NativeCoordinator(
+            repo=ROOT,
+            run_id="auth-retry-wait",
+            core=object(),
+            transport=object(),
+            project_root=ROOT,
+            event_sink=events.append,
+            now_fn=lambda: clock[0],
+            sleep_fn=sleep,
+        )
+        coordinator._wait_for_retry(
+            {
+                "action_id": "a" * 64,
+                "action": "builder_implement",
+                "attempt": 2,
+                "failure_code": "authUnavailable",
+                "retry_not_before": deadline.isoformat(),
+            }
+        )
+        self.assertEqual(sleeps, [10.0, 7.0])
+        self.assertEqual(
+            [event["remaining_seconds"] for event in events], [17, 7, 0]
+        )
+        self.assertTrue(
+            all(event["event"] == "native_driver_retry_waiting" for event in events)
+        )
 
     def test_unknown_turn_failure_remains_non_retryable(self) -> None:
         turn = TurnResult(
@@ -1523,6 +3046,105 @@ class NativeCoordinatorContractTest(unittest.TestCase):
             NativeCoordinator._dispatch_client_id(renewed["dispatch_intent"]),
             f"{action_id}:g2:1",
         )
+
+    def test_missing_replacement_rollout_renews_and_binds_new_bootstrap(self) -> None:
+        replacement_action_id = "a" * 64
+        action = {
+            "action": "tester_author",
+            "action_id": "b" * 64,
+            "reason": "tester_evidence_missing",
+        }
+        source = {
+            "head": "1" * 40,
+            "base_head": "1" * 40,
+            "branch": "replacement-tester",
+            "worktree": "/replacement-tester",
+            "files": [],
+            "replaces_files": [],
+            "agent": {
+                "agent_id": "codex-app-server:missing-thread",
+                "thread_id": "missing-thread",
+            },
+        }
+        replacement = {
+            "action_id": replacement_action_id,
+            "problem_key": "tester-bootstrap-missing",
+            "stage": "awaiting_first_turn",
+            "new_agent": copy.deepcopy(source["agent"]),
+            "worktree": source["worktree"],
+        }
+
+        class FakeCore:
+            def __init__(self) -> None:
+                self.calls: list[tuple[str, tuple[str, ...]]] = []
+                self.replacement = copy.deepcopy(replacement)
+
+            def call(self, command: str, *args: str, input_value=None):
+                self.calls.append((command, args))
+                if command == "begin-tester-replacement":
+                    self.replacement["new_agent"] = None
+                    return {"status": "ACTIVE"}
+                if command == "driver-context":
+                    return {"tester_replacement_intent": copy.deepcopy(self.replacement)}
+                if command == "bind-tester-replacement":
+                    thread_id = args[args.index("--thread-id") + 1]
+                    self.replacement["new_agent"] = {
+                        "agent_id": f"codex-app-server:{thread_id}",
+                        "thread_id": thread_id,
+                    }
+                    return {"status": "ACTIVE"}
+                raise AssertionError(command)
+
+        class FakeTransport:
+            def start_thread(self, **kwargs):
+                self.cwd = kwargs["cwd"]
+                return "replacement-thread-2"
+
+        context = {
+            "facets": {"execution": {"tester_source": source}},
+            "tester_replacement_intent": replacement,
+            "dispatch_intent": None,
+        }
+        error = AppServerError(
+            "no rollout found for thread id missing-thread",
+            code="NATIVE_APP_SERVER_REQUEST_FAILED",
+            details={
+                "method": "thread/resume",
+                "error": {
+                    "code": -32600,
+                    "message": "no rollout found for thread id missing-thread",
+                },
+            },
+        )
+        core = FakeCore()
+        transport = FakeTransport()
+        coordinator = NativeCoordinator(
+            repo=ROOT,
+            run_id="replacement-missing-rollout",
+            core=core,
+            transport=transport,
+            project_root=ROOT,
+        )
+
+        renewed = coordinator._renew_tester_bootstrap_after_missing_rollout(
+            action, context, error
+        )
+
+        self.assertTrue(renewed)
+        self.assertEqual(transport.cwd, source["worktree"])
+        self.assertEqual(
+            [command for command, _args in core.calls],
+            [
+                "begin-tester-replacement",
+                "driver-context",
+                "bind-tester-replacement",
+            ],
+        )
+        self.assertEqual(
+            core.replacement["new_agent"]["thread_id"],
+            "replacement-thread-2",
+        )
+        self.assertIn("replacement-thread-2", coordinator._active_threads)
 
     def test_external_problem_needs_user_stops_without_agent_dispatch(self) -> None:
         class FakeCore:

@@ -129,6 +129,21 @@
       ]
     },
     {
+      "id": "tester-producer-continuity-invalid",
+      "role": "tester",
+      "prompt": "你在独立 author 阶段误读了未发布的 Builder implementation，已无法证明测试仍是独立设计。请返回结构化问题，不继续修测试。",
+      "trigger_type": "trigger",
+      "mechanical_checks": {
+        "contains": ["producer_continuity", "invalid", "owner", "tester"],
+        "not_contains": ["tests_ready", "继续 author", "修改业务源码"]
+      },
+      "semantic_criteria": [
+        "明确声明当前 Tester producer 已失去独立 author 资格，而不是把它伪装成普通 fixture correction",
+        "问题归属 tester 且只携带 producer_continuity=invalid，不自行创建 replacement identity",
+        "停止当前 author/correction，保留 candidate 和现场供 runtime 建立持久 replacement 事务"
+      ]
+    },
+    {
       "id": "tester-proof-source-real-inputs",
       "role": "tester",
       "prompt": "为 proof 模块补测试：生产代码在 consumer.py 中通过已导入别名调用依赖，依赖公开失败契约是抛出 PublicFailure；当前草稿 patch 定义模块原符号、让 fake 返回内部 dict，并依赖用户 site-packages 才能单独导入。请给出 Tester 修正结论。",
