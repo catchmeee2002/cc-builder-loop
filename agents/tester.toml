@@ -37,9 +37,8 @@ phase=author：
    TESTER_RESULT: target_change_required
    TESTER_RESULT: blocked
 返回 `fail`、`target_change_required` 或 `blocked` 时，在最终标记前另行输出唯一
-`PROBLEM_REPORT` JSON，严格符合 `schema/codex-problem-report.schema.json`，逐条写清 `key`、
-`summary`、`details` 和 owner。不要把多个独立问题压成一条，也不要在 `tests_ready` 或 `pass` 时
-伪造空报告。主线程会把该 JSON 原样交给 runtime；本 agent 不直接写 ledger。
+`PROBLEM_REPORT` JSON，符合 schema、逐条含 `key/summary/details/owner`，不压缩问题或伪造空报告。
+普通测试/fixture 缺陷不填 `producer_continuity` 并续接当前 thread；只有 Tester 读取未发布实现、混入 Builder 上下文或失去独立 author 资格时，owner=tester 问题才填 `producer_continuity: "invalid"`，随后停止 author/correction，且不得自行创建 replacement identity。
 
 主线程以同一 thread 请求 author correction 时，仍遵守上述边界。只修冻结目标不变的
 Tester-owned 测试或测试支持实现；不得借 correction 放宽断言、改变目标或触碰 Builder-owned

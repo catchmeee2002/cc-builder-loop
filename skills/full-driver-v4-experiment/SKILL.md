@@ -152,8 +152,15 @@ dispatch。直到 `finalize` 或明确的决策边界。动作面如下，不能
   不修改 Reviewer 公共协议。finding 修复后必须 same-thread 续接；不得用
   fresh Reviewer 把旧 finding 洗掉。需要 replacement 时先调用 `prepare-reviewer --replace`，保留旧
   identity 并使 review evidence stale。
-- `tester_fix`：结构化问题 owner=tester 时回到 Tester 同一 thread；普通测试修正或 fixture 修正
-  不修改 Mission。
+- `tester_fix`：结构化问题 owner=tester 且未声明 `producer_continuity=invalid` 时回到 Tester 同一
+  thread；普通测试修正或 fixture 修正不修改 Mission。
+- `replace_tester`：只有当前 Tester producer 自己报告 owner=tester 且
+  `producer_continuity=invalid` 时启用。先调用 `begin-tester-replacement` 持久化唯一 intent，再建立并
+  `bind-tester-replacement` 新 identity，最后 `complete-tester-replacement` 切换 source；新 Tester
+  首个 `tester_author` turn 由 `bind-dispatch-turn` 原子解决对应问题。首 turn 前 App Server 返回
+  `no rollout found` 时，以同一 intent 调 `begin-tester-replacement --renew-bootstrap`，最多三次；已
+  有 turn/source/evidence 后不得续换。candidate、target、旧 source、pending dispatch 或其他 intent
+  漂移时零副作用停止。
 - `builder_fix`：结构化问题 owner=builder 时回到 Builder，在原 candidate 修复并 checkpoint。
 - `recompose_candidate`：恢复或推进已持久化的 target/publication candidate 重组事务。所有 Git 副作用前
   intent 已落盘；target 再前进时从最新 target 重启，最终以 candidate/Tester source/target CAS 提交。
@@ -177,13 +184,15 @@ dispatch。直到 `finalize` 或明确的决策边界。动作面如下，不能
 
 每个 Tester/Reviewer 的非通过结果都必须携带唯一、非空、符合
 `schema/codex-problem-report.schema.json` 的 `PROBLEM_REPORT`。主线程调用 `record-problems` 原样登记，
-按 owner 穷举路由：`tester` → `tester_fix`，`builder` → `builder_fix`，`plan` → 产品/契约决定，
+按 owner 穷举路由：普通 `tester` → `tester_fix`，当前 Tester producer 明确
+`producer_continuity=invalid` → `replace_tester`，`builder` → `builder_fix`，`plan` → 产品/契约决定，
 `external_platform` → 上述授权恢复流程，`builder_loop` / `current_project` → 专属 NEEDS_USER decision。
 交付后事故归属只允许 `current_project` 或 `builder_loop`（外部平台另行记录），不能混成一个问题。
 
-Tester continuity 或 Reviewer continuity 丢失时，优先 same-thread 续接。Tester 只有旧 source clean、
-branch/worktree 未漂移时才允许 `prepare-tester --replace`；dirty 或漂移则保留现场并停止。不可恢复的
-Agent 连续性不自动改变 Mission。
+Tester continuity 或 Reviewer continuity 丢失时，优先 same-thread 续接。Tester transport identity
+丢失但 producer 仍可信时沿用既有 `prepare-tester --replace` 边界；Tester 已失去独立 author 资格时只走
+上述 `replace_tester` 持久事务。dirty 或漂移则保留现场并停止。不可恢复的 Agent 连续性不自动改变
+Mission。
 
 ## 终态事故与记忆
 

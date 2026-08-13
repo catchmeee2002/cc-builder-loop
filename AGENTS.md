@@ -58,7 +58,9 @@ python3 experiments/assurance-v4-replay/runner.py
   Reviewer 与 doc-review 对任何 candidate 变化都失效。
 - target dirty 默认隔离；只有用户显式授权的 exact path/state digest 才能经 workspace snapshot 进入
   Builder。不得手工 stash、复制或清理 target 来绕过 intake contract。
-- Tester 与 Reviewer 必须续接原 thread；续接失败时停止并保留现场。
+- Tester 与 Reviewer 必须续接原 thread；普通连续性失败停止并保留现场。只有当前 Tester producer 以
+  owner=tester 问题明确声明 `producer_continuity=invalid` 时，Assurance v4 才能通过持久化 replacement
+  intent 建立新 Tester，首个 author turn 前的 bootstrap identity 最多续换三次。
 - Tester author/integration 与 blackbox 是两个独立 gate；blackbox details 必须绑定 candidate
   worktree、命令、returncode 和前后 HEAD。
 - 串行 Tester publication 是独立 gate：路径集合冻结，每个 generation 的 HEAD/blob/manifest 不可变；

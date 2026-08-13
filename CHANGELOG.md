@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Native Driver 将精确的 HTTP 503 `auth_unavailable: no auth available` 归一为同 dispatch 可恢复失败，
+  以 ledger 持久化的 30 秒、120 秒退避继续同一 role/thread/action；CLI 在等待期间输出剩余时间，跨进程
+  恢复从 Core 当前 machine/proof failure、recomposition 与 open problem 等唯一事实重建完整 action，
+  prompt 或 identity 摘要漂移继续 fail closed（#181、#188）。
+
+- Assurance v4 的 Tester problem 可由当前 producer 明确声明 `producer_continuity=invalid`。普通测试
+  修正仍回原 thread；身份失效则通过持久化 replacement intent 建立新 Tester source，首个 author turn
+  才解决绑定问题。首 turn 前 no-rollout 可在同一事务内续换 bootstrap identity，第三次停止到架构审查，
+  candidate/target/source/问题 snapshot 或竞争事务漂移均零副作用拒绝（#187、#189）。
+
 - Native Driver 将三次 transport retry 耗尽持久化为不可改写的 `exhausted` dispatch generation。用户
   显式提供 `native-driver resume --reason` 后，Core 仅在 runtime identity、role/thread、action 与 prompt
   digest 均未漂移时建立同线程的新 generation；旧 attempt/turn/failure 保留，runtime 升级必须改走

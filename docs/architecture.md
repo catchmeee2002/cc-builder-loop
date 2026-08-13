@@ -148,7 +148,10 @@ problem，只保留内容和 owner；旧 producer、Tester/Reviewer identity、t
 
 结构化 turn failure 与 raw App Server stdio disconnect 先在唯一 transport classifier 中归一；只有分类为
 可恢复且精确匹配 ledger 当前 role thread、action 和 dispatch 的事故才能进入 retry。可恢复 transport
-failure 在同一 role thread 和 dispatch 上最多尝试三次，attempt 与 turn id 持久化进 ledger；第三次失败后
+failure 在同一 role thread 和 dispatch 上最多尝试三次，attempt 与 turn id 持久化进 ledger；认证服务将
+临时 HTTP 503 编码成 `codexErrorInfo=other` 时，只有消息同时保留 503、`auth_unavailable` 与
+`no auth available` 三个事实才归一为可重试认证不可用。第二、三次 attempt 分别持久化 30 秒与 120 秒
+的 `retry_not_before`，Native CLI 按剩余时间输出等待事件，进程重启不重新计时。第三次失败后
 Core 将该 generation 持久化为 `exhausted` 并返回 `NEEDS_USER`，Driver 不重置旧 generation 的上限或
 另建 thread 绕过连续性。用户显式提供 `native-driver resume --reason` 后，只有实际 runtime identity、
 role/thread、action 和 prompt/output digest 全部未变，Core 才归档旧 generation 并在同一 role thread
@@ -391,6 +394,13 @@ agent/turn 身份、候选、workspace snapshot、逐条问题与跨 revision �
 Git 结果和事件，不保存模型推理或复制测试目标。问题内容由
 `schema/codex-problem-report.schema.json` 定义，计划处理由
 `schema/codex-prior-problems.schema.json` 定义，不另建 Issue 缓存或 transcript 索引。
+
+Tester-owned 普通问题继续由原 thread 修正；`producer_continuity=invalid` 只表示当前 Tester producer 已
+失去独立 author 资格，不是通用重试标签。Core 先持久化唯一 replacement intent，再创建确定性 Tester
+worktree、绑定新 App Server identity、切换 source 并清理未漂移的旧 source。绑定新 Tester 的首个
+`tester_author` turn 时才原子解决对应问题并清除 intent；在此之前进程可按 stage 重放。首 turn 前
+`thread/resume` 返回 no-rollout 且新 source 仍为空时可以在同一事务内续换 bootstrap identity，第三次
+失败进入 architecture review；首 turn、commit、dispatch 或 evidence 已出现后禁止换身份。
 
 稳定 Python 入口在导入 runtime package 前设置当前解释器及子进程的 no-bytecode 条件，普通 CLI
 调用因此不会向调用方 worktree 写入 runtime `__pycache__`。显式 `py_compile` 与绕过稳定入口的
