@@ -112,6 +112,12 @@ python3 experiments/assurance-v4-replay/runner.py
 # Collaboration
 
 - 保留用户已有 dirty worktree；所有开发在任务分支/worktree 完成。
+- 原生 Codex 的人工开发 worktree 统一放在仓库内的 `.git/codex-native-worktrees/`；不得再在父目录创建
+  `cc-builder-loop-*` sibling worktree。交付验收后立即移除已合并且 clean 的非 ledger worktree；dirty、
+  未知或 ledger-owned 现场继续按诊断与授权规则保留。
+- 本项目发布完成必须同时满足：提交已 push、安装 checkout 已同步到发布 commit、`./install.sh` 成功、
+  实际安装的 CLI/Skills 路径与版本已核对并完成 smoke。只 push 不算发布完成；需要新 session 才能
+  重新发现的内容必须明确提示，并以新 session 验收。
 - 自动提交前运行全部 fixtures 和 Skill validator。
 - Markdown 只记录稳定契约、架构和用户说明；运行快照写结构化 evidence。
 
