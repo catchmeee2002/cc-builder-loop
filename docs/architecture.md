@@ -149,9 +149,10 @@ problem，只保留内容和 owner；旧 producer、Tester/Reviewer identity、t
 结构化 turn failure 与 raw App Server stdio disconnect 先在唯一 transport classifier 中归一；只有分类为
 可恢复且精确匹配 ledger 当前 role thread、action 和 dispatch 的事故才能进入 retry。可恢复 transport
 failure 在同一 role thread 和 dispatch 上最多尝试三次，attempt 与 turn id 持久化进 ledger；认证服务将
-临时 HTTP 503 编码成 `codexErrorInfo=other` 时，只有消息同时保留 503、`auth_unavailable` 与
-`no auth available` 三个事实才归一为可重试认证不可用。第二、三次 attempt 分别持久化 30 秒与 120 秒
-的 `retry_not_before`，Native CLI 按剩余时间输出等待事件，进程重启不重新计时。第三次失败后
+临时 HTTP 503 编码成 `codexErrorInfo=other` 时，只有消息同时保留独立状态码 503、
+`auth_unavailable` 与 `no auth available` 三个事实才归一为可重试认证不可用；具体 HTTP/status 文案
+不参与身份判断。第二、三次 attempt 分别按 30 秒、60 秒的确定性指数退避持久化
+`retry_not_before`，Native CLI 按剩余时间输出等待事件，进程重启不重新计时。第三次失败后
 Core 将该 generation 持久化为 `exhausted` 并返回 `NEEDS_USER`，Driver 不重置旧 generation 的上限或
 另建 thread 绕过连续性。用户显式提供 `native-driver resume --reason` 后，只有实际 runtime identity、
 role/thread、action 和 prompt/output digest 全部未变，Core 才归档旧 generation 并在同一 role thread

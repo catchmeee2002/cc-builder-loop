@@ -74,6 +74,8 @@ from .store import (
 
 TRUSTED_SYSTEM_PATH = "/usr/local/bin:/usr/bin:/bin"
 TRUSTED_SYSTEM_ROOTS = tuple(Path(item).resolve() for item in TRUSTED_SYSTEM_PATH.split(":"))
+AUTH_UNAVAILABLE_RETRY_BASE_SECONDS = 30
+AUTH_UNAVAILABLE_RETRY_MAX_SECONDS = 120
 RUNTIME_SUPPORT_MANIFEST_PATH = (
     "runtime/codex_builder_loop/assurance_v4/runtime-support.json"
 )
@@ -1516,11 +1518,12 @@ def retry_dispatch(
             )
         scheduled_at = now()
         next_attempt = attempt + 1
-        retry_delay = (
-            {2: 30, 3: 120}.get(next_attempt, 0)
-            if normalized_failure_code == "authUnavailable"
-            else 0
-        )
+        retry_delay = 0
+        if normalized_failure_code == "authUnavailable":
+            retry_delay = min(
+                AUTH_UNAVAILABLE_RETRY_BASE_SECONDS * (2 ** (next_attempt - 2)),
+                AUTH_UNAVAILABLE_RETRY_MAX_SECONDS,
+            )
         retry_not_before = None
         if retry_delay:
             retry_not_before = (

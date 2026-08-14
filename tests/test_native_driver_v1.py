@@ -762,7 +762,7 @@ class NativeDriverCoreContractTest(unittest.TestCase):
         self.assertEqual(telemetry["lifecycle"]["dispatch_renewals"], 1)
         self.assertIn("dispatch_renewed", telemetry["warnings"])
 
-    def test_auth_unavailable_retry_persists_30_and_120_second_deadlines(self) -> None:
+    def test_auth_unavailable_retry_persists_exponential_deadlines(self) -> None:
         run_id, run_path = self.start()
         first = self.invoke("driver-next", "--repo", self.repo, "--run", run_id)
         self.invoke(
@@ -800,7 +800,7 @@ class NativeDriverCoreContractTest(unittest.TestCase):
             "--output-schema-digest",
             "c" * 64,
         )
-        for attempt, expected_delay in ((1, 30), (2, 120)):
+        for attempt, expected_delay in ((1, 30), (2, 60)):
             self.invoke(
                 "bind-dispatch-turn",
                 "--repo",
@@ -2607,7 +2607,7 @@ for line in sys.stdin:
         turn_id = 'turn-auth-' + str(attempt)
         print(json.dumps({{'id': msg['id'], 'result': {{'turn': {{'id': turn_id}}}}}}), flush=True)
         if attempt <= 2:
-            error = {{'codexErrorInfo':'other','message':'HTTP 503 auth_unavailable: no auth available (providers=codex, model=gpt-test)'}}
+            error = {{'codexErrorInfo':'other','message':'unexpected status 503 Service Unavailable: auth_unavailable: no auth available (providers=codex, model=gpt-test)'}}
             print(json.dumps({{'method':'turn/completed','params':{{'threadId':'thr-auth','turn':{{'id':turn_id,'status':'failed','error':error,'items':[]}}}}}}), flush=True)
         else:
             result = {{'result':'implemented','evidence_report':None,'proof_spec':None,'problem_report':None}}
@@ -2718,7 +2718,7 @@ for line in sys.stdin:
                 f"{action['action_id']}:3",
             ],
         )
-        self.assertEqual(sum(sleeps), 150.0)
+        self.assertEqual(sum(sleeps), 90.0)
 
 
 class NativeCoordinatorContractTest(unittest.TestCase):
@@ -2885,20 +2885,32 @@ class NativeCoordinatorContractTest(unittest.TestCase):
         self.assertEqual(core.calls[0][0], "retry-dispatch")
         self.assertIn("responseStreamDisconnected", core.calls[0][1])
 
-    def test_auth_unavailable_requires_exact_observed_503_markers(self) -> None:
-        exact = {
-            "codexErrorInfo": "other",
-            "message": (
-                "HTTP 503 auth_unavailable: no auth available "
-                "(providers=codex, model=gpt-test)"
-            ),
-        }
-        self.assertEqual(classify_turn_failure(exact), "authUnavailable")
+    def test_auth_unavailable_requires_503_and_exact_auth_markers(self) -> None:
+        for message in (
+            "HTTP 503 auth_unavailable: no auth available "
+            "(providers=codex, model=gpt-test)",
+            "HTTP status 503 auth_unavailable: no auth available "
+            "(providers=codex, model=gpt-test)",
+            "unexpected status 503 Service Unavailable: auth_unavailable: "
+            "no auth available (providers=codex, model=gpt-test)",
+            "503 Service Unavailable: auth_unavailable: no auth available "
+            "(providers=codex, model=gpt-test)",
+            "HTTP/1.1 503 Service Unavailable: auth_unavailable: "
+            "no auth available (providers=codex, model=gpt-test)",
+        ):
+            with self.subTest(message=message):
+                self.assertEqual(
+                    classify_turn_failure(
+                        {"codexErrorInfo": "other", "message": message}
+                    ),
+                    "authUnavailable",
+                )
         for message in (
             "HTTP 503 auth_unavailable",
             "auth_unavailable: no auth available",
             "HTTP 503 no auth available",
             "HTTP 401 auth_unavailable: no auth available",
+            "unexpected status 503 Service Unavailable: no auth available",
         ):
             with self.subTest(message=message):
                 self.assertEqual(
@@ -2907,11 +2919,15 @@ class NativeCoordinatorContractTest(unittest.TestCase):
                     ),
                     "other",
                 )
+        exact_message = (
+            "unexpected status 503 Service Unavailable: auth_unavailable: "
+            "no auth available (providers=codex, model=gpt-test)"
+        )
         self.assertEqual(
             classify_turn_failure(
                 {
                     "codexErrorInfo": "cyberPolicy",
-                    "message": exact["message"],
+                    "message": exact_message,
                 }
             ),
             "cyberPolicy",

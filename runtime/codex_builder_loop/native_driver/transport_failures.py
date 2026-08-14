@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any, Mapping
 
 from .app_server import AppServerError
@@ -15,6 +16,8 @@ RETRYABLE_TRANSPORT_FAILURES = frozenset(
         "authUnavailable",
     }
 )
+
+AUTH_UNAVAILABLE_503_RE = re.compile(r"\b503\b")
 
 
 def _codex_error_info(error: Any) -> str:
@@ -48,9 +51,8 @@ def _known_auth_unavailable(error: Any) -> bool:
     if not isinstance(message, str):
         return False
     normalized = " ".join(message.lower().split())
-    return all(
-        marker in normalized
-        for marker in ("http 503", "auth_unavailable", "no auth available")
+    return bool(AUTH_UNAVAILABLE_503_RE.search(normalized)) and all(
+        marker in normalized for marker in ("auth_unavailable", "no auth available")
     )
 
 

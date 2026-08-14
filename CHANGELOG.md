@@ -13,9 +13,10 @@
   source diff 仅记为 exact carryover，新 revision 的 Builder/Tester manifest 从空集合开始，公开前置文件
   只有当前 Builder 产出或未漂移 carryover 才能 checkpoint、publication 和进入 Tester（#186、#191）。
 
-- Native Driver 将精确的 HTTP 503 `auth_unavailable: no auth available` 归一为同 dispatch 可恢复失败，
-  以 ledger 持久化的 30 秒、120 秒退避继续同一 role/thread/action；CLI 在等待期间输出剩余时间，跨进程
-  恢复从 Core 当前 machine/proof failure、recomposition 与 open problem 等唯一事实重建完整 action，
+- Native Driver 将保留独立状态码 503、`auth_unavailable` 与 `no auth available` 的等价错误表达归一为
+  同 dispatch 可恢复失败，不再绑定具体 HTTP/status 文案；以 ledger 持久化的 30 秒、60 秒指数退避
+  继续同一 role/thread/action；CLI 在等待期间输出剩余时间，跨进程恢复从 Core 当前 machine/proof
+  failure、recomposition 与 open problem 等唯一事实重建完整 action，
   prompt 或 identity 摘要漂移继续 fail closed（#181、#188）。
 
 - Assurance v4 的 Tester problem 可由当前 producer 明确声明 `producer_continuity=invalid`。普通测试
