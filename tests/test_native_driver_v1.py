@@ -2057,6 +2057,99 @@ class NativeDriverCoreContractTest(unittest.TestCase):
         self.assertEqual(payload["status"], "FATAL")
         self.assertEqual(payload["phase"], "failed")
 
+    def test_native_cli_admission_blocker_creates_no_agent_thread_or_turn(self) -> None:
+        class BlockedCore:
+            def __init__(self) -> None:
+                self.calls: list[str] = []
+
+            def start(self, **_kwargs):
+                raise CorePortError(
+                    "host executable is unavailable",
+                    payload={
+                        "status": "FAIL",
+                        "code": "ASSURANCE_ADMISSION_BLOCKED",
+                        "message": "host executable is unavailable",
+                        "admission": {
+                            "schema_version": 1,
+                            "status": "BLOCKED",
+                            "trusted_system_path": "/usr/local/bin:/usr/bin:/bin",
+                            "commands": [],
+                            "public_prerequisites": [],
+                        },
+                    },
+                    returncode=1,
+                )
+
+            def call(self, command: str, *_args: str, input_value=None):
+                self.calls.append(command)
+                raise AssertionError(command)
+
+        class TrackingTransport:
+            def __init__(self) -> None:
+                self.agent_calls: list[str] = []
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def start_thread(self, **_kwargs):
+                self.agent_calls.append("start_thread")
+                raise AssertionError("admission blocker must precede Agent thread creation")
+
+            def run_turn(self, **_kwargs):
+                self.agent_calls.append("run_turn")
+                raise AssertionError("admission blocker must precede Agent turn dispatch")
+
+        blocked_core = BlockedCore()
+        transport = TrackingTransport()
+        coordinator_created = []
+        contract_path = self.artifacts / "native-cli-admission-blocked.json"
+        contract_path.write_text(
+            json.dumps(native_contract(self.repo)), encoding="utf-8"
+        )
+        output = StringIO()
+        with (
+            patch.object(native_cli, "CorePort", return_value=blocked_core),
+            patch.object(
+                native_cli,
+                "probe_app_server",
+                return_value=SimpleNamespace(
+                    runtime_version="codex-test",
+                    protocol_schema_digest="b" * 64,
+                ),
+            ),
+            patch.object(native_cli, "AppServerTransport", return_value=transport),
+            patch.object(
+                native_cli,
+                "NativeCoordinator",
+                side_effect=lambda **_kwargs: coordinator_created.append(True),
+            ),
+            redirect_stdout(output),
+        ):
+            rc = native_cli.main(
+                [
+                    "start",
+                    "--repo",
+                    str(self.repo),
+                    "--run",
+                    "native-cli-admission-blocked",
+                    "--session-id",
+                    "native-cli-admission-blocked-session",
+                    "--contract",
+                    str(contract_path),
+                ]
+            )
+
+        self.assertEqual(rc, 1)
+        self.assertEqual(blocked_core.calls, [])
+        self.assertEqual(transport.agent_calls, [])
+        self.assertEqual(coordinator_created, [])
+        payload = json.loads(output.getvalue().splitlines()[-1])
+        self.assertEqual(payload["status"], "FAIL")
+        self.assertEqual(payload["code"], "ASSURANCE_ADMISSION_BLOCKED")
+
     def test_native_resume_retries_disconnect_during_app_server_startup(self) -> None:
         action = {
             "driver_protocol_version": 1,

@@ -36,6 +36,7 @@ from .models import (
     validate_contract,
     validate_new_contract,
     validate_agent_result,
+    validate_admission,
     validate_environment_probe,
     validate_evidence_report,
     validate_lineage,
@@ -526,6 +527,194 @@ def _runtime_support_for_changed_paths(
     return snapshot, required_independent
 
 
+def _contract_command_surfaces(
+    contract: Mapping[str, Any],
+) -> list[tuple[str, str, Mapping[str, Any]]]:
+    commands = [
+        ("assurance.machine_commands", "verify_machine", command)
+        for command in contract["assurance"]["machine_commands"]
+    ]
+    commands.extend(
+        ("execution.commands", "complete_blackbox", command)
+        for command in contract["execution"]["commands"]
+    )
+    deployment = contract["execution"].get("deployment")
+    if isinstance(deployment, Mapping):
+        for field, latest_check_stage in (
+            ("build_command", "prepare_deployment"),
+            ("deploy_command", "deploy"),
+            ("probe_command", "probe"),
+            ("restore_command", "restore"),
+        ):
+            commands.append(
+                (f"execution.deployment.{field}", latest_check_stage, deployment[field])
+            )
+    return commands
+
+
+def _public_prerequisite_classification(
+    repo: Path,
+    execution: Mapping[str, Any],
+    paths: Sequence[str],
+    *,
+    candidate: str | None,
+) -> list[dict[str, str]]:
+    builder_files = set(execution.get("builder_files", []))
+    carryover = execution.get("carryover")
+    carryover_manifest = (
+        {item["path"]: item["blob"] for item in carryover.get("files", [])}
+        if isinstance(carryover, Mapping)
+        else {}
+    )
+    candidate_available = (
+        isinstance(candidate, str) and commit_exists(repo, candidate)
+    )
+    result: list[dict[str, str]] = []
+    for path in paths:
+        blob = _blob_at(repo, candidate, path) if candidate_available else None
+        if path in builder_files and blob is not None:
+            result.append({"path": path, "status": "ready", "source": "builder"})
+        elif carryover_manifest.get(path) is not None and blob == carryover_manifest[path]:
+            result.append({"path": path, "status": "ready", "source": "carryover"})
+        else:
+            result.append({"path": path, "status": "deferred", "source": "builder"})
+    return result
+
+
+def _prospective_admission_execution(
+    repo: Path, contract: Mapping[str, Any]
+) -> tuple[dict[str, Any], str | None]:
+    execution = copy.deepcopy(contract["execution"])
+    candidate = execution.get("candidate_head")
+    if not isinstance(candidate, str) or not commit_exists(repo, candidate):
+        candidate = None
+    supersedes = contract["mission"].get("supersedes")
+    if not isinstance(supersedes, Mapping):
+        return execution, candidate
+    requested_candidate = supersedes.get("candidate_head")
+    if not isinstance(requested_candidate, str) or not commit_exists(
+        repo, requested_candidate
+    ):
+        return execution, candidate
+    candidate = requested_candidate
+    if isinstance(execution.get("carryover"), Mapping):
+        return execution, candidate
+    try:
+        source = read_ledger(repo, str(supersedes["run_id"]))
+    except (KeyError, StoreError):
+        return execution, candidate
+    source_candidate = source["facets"]["execution"].get("candidate_head")
+    if (
+        source_candidate != requested_candidate
+        or source["facets"]["mission"].get("revision") != supersedes.get("revision")
+        or source["digests"].get("mission") != supersedes.get("mission_digest")
+    ):
+        return execution, candidate
+    execution["carryover"] = {
+        "source_run_id": source["run_id"],
+        "source_candidate_head": requested_candidate,
+        "files": _candidate_manifest(
+            repo,
+            source["target_start_head"],
+            requested_candidate,
+        ),
+    }
+    return execution, candidate
+
+
+def _admission_report(
+    repo: Path,
+    contract: Mapping[str, Any],
+) -> dict[str, Any]:
+    command_admission: list[dict[str, Any]] = []
+    for surface, latest_check_stage, command in _contract_command_surfaces(contract):
+        requested = command["argv"][0]
+        requested_path = Path(requested)
+        if not requested_path.is_absolute() and "/" in requested:
+            command_admission.append(
+                {
+                    "surface": surface,
+                    "command_id": command["id"],
+                    "requested_executable": requested,
+                    "status": "deferred",
+                    "identity": {
+                        "kind": "repository",
+                        "requested": requested,
+                        "path": requested,
+                    },
+                    "reason": "candidate_bound",
+                    "latest_check_stage": latest_check_stage,
+                }
+            )
+            continue
+        try:
+            _executable, identity = _resolve_host_machine_executable(requested)
+        except AssuranceError as exc:
+            identity = {
+                "kind": "system",
+                "requested": requested,
+                "reason": exc.code,
+            }
+            resolved = exc.details.get("resolved")
+            if isinstance(resolved, str) and resolved:
+                identity["path"] = resolved
+            command_admission.append(
+                {
+                    "surface": surface,
+                    "command_id": command["id"],
+                    "requested_executable": requested,
+                    "status": "blocked",
+                    "identity": identity,
+                    "reason": exc.code,
+                    "latest_check_stage": latest_check_stage,
+                }
+            )
+            continue
+        status_value = "ready" if _executable is not None else "blocked"
+        command_admission.append(
+            {
+                "surface": surface,
+                "command_id": command["id"],
+                "requested_executable": requested,
+                "status": status_value,
+                "identity": identity,
+                "reason": None if status_value == "ready" else identity.get("reason"),
+                "latest_check_stage": latest_check_stage,
+            }
+        )
+    execution, candidate = _prospective_admission_execution(repo, contract)
+    public_prerequisites = _public_prerequisite_classification(
+        repo,
+        execution,
+        contract["authority"].get("public_prerequisites", []),
+        candidate=candidate,
+    )
+    report = {
+        "schema_version": 1,
+        "status": (
+            "BLOCKED"
+            if any(item["status"] == "blocked" for item in command_admission)
+            else "READY"
+        ),
+        "trusted_system_path": TRUSTED_SYSTEM_PATH,
+        "commands": command_admission,
+        "public_prerequisites": public_prerequisites,
+    }
+    return validate_admission(report)
+
+
+def _require_admission(repo: Path, contract: Mapping[str, Any]) -> dict[str, Any]:
+    admission = _admission_report(repo, contract)
+    if admission["status"] == "BLOCKED":
+        raise AssuranceError(
+            "one or more host executables are unavailable from the trusted execution boundary",
+            code="ASSURANCE_ADMISSION_BLOCKED",
+            status="FAIL",
+            details={"admission": admission},
+        )
+    return admission
+
+
 def validate(contract: Any, repo_value: str | Path | None = None) -> dict[str, Any]:
     value = validate_new_contract(contract)
     result = {
@@ -540,6 +729,7 @@ def validate(contract: Any, repo_value: str | Path | None = None) -> dict[str, A
         )
         _assert_runtime_support_contract(value, runtime_support, required_independent)
         result["runtime_support"] = runtime_support
+        result["admission"] = _require_admission(repo, value)
     return result
 
 
@@ -578,6 +768,7 @@ def start(
         runtime_support,
         required_independent,
     )
+    _require_admission(repo, contract)
     target_branch = contract["authority"]["target_branch"]
     with locked(repo):
         if ledger_path(repo, run_id).exists():
@@ -908,7 +1099,7 @@ def start(
             retired_tester_sources: list[dict[str, Any]] = []
             if source_ledger is not None:
                 source_execution = source_ledger["facets"]["execution"]
-                execution["builder_files"] = copy.deepcopy(source_execution["builder_files"])
+                execution["builder_files"] = []
                 execution["tester_files"] = []
                 execution["tester_source"] = None
                 execution["carryover"] = {
@@ -918,7 +1109,7 @@ def start(
                 }
                 if isinstance(source_execution.get("tester_source"), dict):
                     retired_tester_sources.append(copy.deepcopy(source_execution["tester_source"]))
-            if snapshots:
+            if snapshots and source_ledger is None:
                 execution["version"] += 1
                 execution["builder_files"] = sorted(set(execution["builder_files"]) | set(captured))
             contract["execution"] = execution
@@ -5029,6 +5220,82 @@ def _record_runtime_preparation_problem(
     )
 
 
+def _validated_builder_files(
+    repo: Path,
+    ledger: Mapping[str, Any],
+    *,
+    candidate: str,
+    files: Sequence[str],
+) -> list[str]:
+    execution = ledger["facets"]["execution"]
+    authority = ledger["facets"]["authority"]
+    ownership_files = set(files)
+    checkpointed_candidate = execution.get("candidate_head")
+    if (
+        isinstance(checkpointed_candidate, str)
+        and checkpointed_candidate != candidate
+        and commit_exists(repo, checkpointed_candidate)
+    ):
+        ownership_files.update(
+            changed_files(repo, checkpointed_candidate, candidate)
+        )
+    candidate_blobs = {
+        path: _blob_at(repo, candidate, path)
+        for path in ownership_files
+    }
+    tester_manifest = {
+        item["path"]: item["blob"]
+        for item in (execution.get("tester_source") or {}).get("files", [])
+    }
+    tester_files = set(execution.get("tester_files", []))
+    carryover_manifest = {
+        item["path"]: item["blob"]
+        for item in (execution.get("carryover") or {}).get("files", [])
+    }
+    tester_violations = sorted(
+        path
+        for path in ownership_files
+        if _matches(path, authority["tester_write"])
+        and not (
+            path in tester_files
+            and path in tester_manifest
+            and candidate_blobs[path] == tester_manifest[path]
+        )
+        and not (
+            path in carryover_manifest
+            and candidate_blobs[path] == carryover_manifest[path]
+        )
+    )
+    if tester_violations:
+        raise AssuranceError(
+            "Builder checkpoint changed Tester-owned files",
+            code="BUILDER_TESTER_OWNERSHIP_VIOLATION",
+            details={"paths": tester_violations},
+        )
+    builder_files = sorted(
+        path
+        for path in files
+        if path not in tester_files
+        and not (
+            path in carryover_manifest
+            and candidate_blobs[path] == carryover_manifest[path]
+        )
+        and not _matches(path, authority["tester_write"])
+    )
+    invalid = [
+        path
+        for path in builder_files
+        if not _matches(path, authority["builder_write"])
+    ]
+    if invalid:
+        raise AssuranceError(
+            "Builder checkpoint changed files outside authority",
+            code="BUILDER_AUTHORITY_VIOLATION",
+            details={"paths": invalid},
+        )
+    return builder_files
+
+
 def checkpoint_builder(repo_value: str | Path, run_value: str) -> dict[str, Any]:
     repo = resolve_repo(repo_value)
     run_id = ensure_run_id(run_value)
@@ -5071,53 +5338,45 @@ def checkpoint_builder(repo_value: str | Path, run_value: str) -> dict[str, Any]
                 )
                 save_ledger(repo, ledger)
             raise
-        tester_manifest = {
-            item["path"]: item["blob"]
-            for item in (execution.get("tester_source") or {}).get("files", [])
-        }
-        tester_files = set(execution.get("tester_files", []))
-        carryover_manifest = {
-            item["path"]: item["blob"]
-            for item in (execution.get("carryover") or {}).get("files", [])
-        }
-        tester_violations = sorted(
-            path
-            for path in files
-            if _matches(path, ledger["facets"]["authority"]["tester_write"])
-            and (
-                (
-                    path not in tester_files
-                    or _blob_at(repo, candidate, path) != tester_manifest.get(path)
-                )
-                and _blob_at(repo, candidate, path) != carryover_manifest.get(path)
-            )
+        builder_files = _validated_builder_files(
+            repo,
+            ledger,
+            candidate=candidate,
+            files=files,
         )
-        if tester_violations:
-            raise AssuranceError(
-                "Builder checkpoint changed Tester-owned files",
-                code="BUILDER_TESTER_OWNERSHIP_VIOLATION",
-                details={"paths": tester_violations},
-            )
-        builder_files = sorted(
-            path
-            for path in files
-            if path not in tester_files
-            and not (
-                _matches(path, ledger["facets"]["authority"]["tester_write"])
-                and _blob_at(repo, candidate, path) == carryover_manifest.get(path)
-            )
+        projected_execution = copy.deepcopy(execution)
+        projected_execution["builder_files"] = builder_files
+        public_classification = _public_prerequisite_classification(
+            repo,
+            projected_execution,
+            ledger["facets"]["authority"].get("public_prerequisites", []),
+            candidate=candidate,
         )
-        invalid = [
-            path
-            for path in builder_files
-            if not _matches(path, ledger["facets"]["authority"]["builder_write"])
+        unready_public = [
+            item["path"]
+            for item in public_classification
+            if item["status"] != "ready"
         ]
-        if invalid:
-            raise AssuranceError(
-                "Builder checkpoint changed files outside authority",
-                code="BUILDER_AUTHORITY_VIOLATION",
-                details={"paths": invalid},
+        if unready_public:
+            previous = execution.get("candidate_head")
+            if previous != candidate or execution.get("builder_files") != builder_files:
+                execution["version"] += 1
+            execution["candidate_head"] = candidate
+            execution["builder_files"] = builder_files
+            ledger["builder_checkpointed"] = False
+            ledger["digests"] = facet_digests(ledger["facets"])
+            append_event(
+                ledger,
+                "builder_checkpoint_blocked",
+                {
+                    "code": "PUBLIC_PREREQUISITE_CLASSIFICATION_INVALID",
+                    "old_head": previous,
+                    "candidate_head": candidate,
+                    "paths": unready_public,
+                },
             )
+            save_ledger(repo, ledger)
+            return status(repo, run_id)
         publication = ledger.get("publication")
         if isinstance(publication, dict) and publication.get("head"):
             frozen = {item["path"]: item["blob"] for item in publication.get("files", [])}
@@ -5229,6 +5488,31 @@ def publish_prerequisites(repo_value: str | Path, run_value: str) -> dict[str, A
                 code="BUILDER_CHECKPOINT_REQUIRED",
             )
         paths = list(publication["paths"])
+        execution = ledger["facets"]["execution"]
+        public_classification = _public_prerequisite_classification(
+            repo,
+            execution,
+            paths,
+            candidate=candidate,
+        )
+        unready_public = [
+            item["path"]
+            for item in public_classification
+            if item["status"] != "ready"
+        ]
+        if unready_public:
+            ledger["builder_checkpointed"] = False
+            append_event(
+                ledger,
+                "prerequisite_publication_blocked",
+                {
+                    "code": "PUBLIC_PREREQUISITE_CLASSIFICATION_INVALID",
+                    "candidate_head": candidate,
+                    "paths": unready_public,
+                },
+            )
+            save_ledger(repo, ledger)
+            return status(repo, run_id)
         head, tree, files = _materialize_publication(
             repo,
             run_id,
@@ -7600,6 +7884,52 @@ def _sha256_file(path: Path) -> str:
     return value.hexdigest()
 
 
+def _resolve_host_machine_executable(
+    value: str,
+) -> tuple[str | None, dict[str, Any]]:
+    requested = Path(value)
+    if requested.is_absolute():
+        executable = requested
+        resolution = "explicit_absolute"
+        if not executable.exists():
+            return None, {"kind": "system", "requested": value, "reason": "not_found"}
+    else:
+        found = shutil.which(value, path=TRUSTED_SYSTEM_PATH)
+        if found is None:
+            return None, {"kind": "system", "requested": value, "reason": "not_found"}
+        executable = Path(found)
+        resolution = "trusted_path"
+    try:
+        resolved = executable.resolve(strict=True)
+    except OSError:
+        return None, {"kind": "system", "requested": value, "reason": "not_found"}
+    if resolution == "trusted_path" and not any(
+        resolved.is_relative_to(root) for root in TRUSTED_SYSTEM_ROOTS
+    ):
+        raise AssuranceError(
+            "system machine executable is outside the trusted system path",
+            code="MACHINE_EXECUTABLE_UNTRUSTED",
+            details={"requested": value, "resolved": str(resolved)},
+        )
+    if not resolved.is_file() or not os.access(resolved, os.X_OK):
+        raise AssuranceError(
+            "system machine executable must be a regular executable file",
+            code="MACHINE_EXECUTABLE_INVALID",
+            details={"requested": value, "resolved": str(resolved)},
+        )
+    try:
+        executable_sha256 = _sha256_file(resolved)
+    except OSError:
+        return None, {"kind": "system", "requested": value, "reason": "not_found"}
+    return str(resolved), {
+        "kind": "system",
+        "requested": value,
+        "resolution": resolution,
+        "path": str(resolved),
+        "sha256": executable_sha256,
+    }
+
+
 def _resolve_machine_executable(
     repo: Path,
     worktree: Path,
@@ -7656,42 +7986,7 @@ def _resolve_machine_executable(
             "blob": blob,
         }
 
-    if requested.is_absolute():
-        executable = requested
-        resolution = "explicit_absolute"
-        if not executable.exists():
-            return None, {"kind": "system", "requested": value, "reason": "not_found"}
-    else:
-        found = shutil.which(value, path=TRUSTED_SYSTEM_PATH)
-        if found is None:
-            return None, {"kind": "system", "requested": value, "reason": "not_found"}
-        executable = Path(found)
-        resolution = "trusted_path"
-    try:
-        resolved = executable.resolve(strict=True)
-    except OSError:
-        return None, {"kind": "system", "requested": value, "reason": "not_found"}
-    if resolution == "trusted_path" and not any(
-        resolved.is_relative_to(root) for root in TRUSTED_SYSTEM_ROOTS
-    ):
-        raise AssuranceError(
-            "system machine executable is outside the trusted system path",
-            code="MACHINE_EXECUTABLE_UNTRUSTED",
-            details={"requested": value, "resolved": str(resolved)},
-        )
-    if not resolved.is_file() or not os.access(resolved, os.X_OK):
-        raise AssuranceError(
-            "system machine executable must be a regular executable file",
-            code="MACHINE_EXECUTABLE_INVALID",
-            details={"requested": value, "resolved": str(resolved)},
-        )
-    return str(resolved), {
-        "kind": "system",
-        "requested": value,
-        "resolution": resolution,
-        "path": str(resolved),
-        "sha256": _sha256_file(resolved),
-    }
+    return _resolve_host_machine_executable(value)
 
 
 def _run_frozen_command(
@@ -9302,10 +9597,11 @@ def _commit_recomposition(repo: Path, ledger: dict[str, Any], intent: dict[str, 
 
     files = changed_files(repo, intent["new_target_head"], candidate_head)
     _assert_authorized_files(ledger["facets"], files)
-    execution["builder_files"] = sorted(
-        path
-        for path in files
-        if _matches(path, ledger["facets"]["authority"]["builder_write"])
+    execution["builder_files"] = _validated_builder_files(
+        repo,
+        ledger,
+        candidate=candidate_head,
+        files=files,
     )
     execution["candidate_head"] = candidate_head
     execution["version"] += 1
@@ -9320,9 +9616,18 @@ def _commit_recomposition(repo: Path, ledger: dict[str, Any], intent: dict[str, 
             manifest_digest=digest(intent.get("publication_files", [])),
             candidate_head=intent.get("builder_head"),
         )
-    ledger["builder_checkpointed"] = True
+    public_classification = _public_prerequisite_classification(
+        repo,
+        execution,
+        ledger["facets"]["authority"].get("public_prerequisites", []),
+        candidate=candidate_head,
+    )
+    ledger["builder_checkpointed"] = all(
+        item["status"] == "ready" for item in public_classification
+    )
     ledger["digests"] = facet_digests(ledger["facets"])
-    _close_problems(ledger, "builder", f"recomposition:{candidate_head}")
+    if ledger["builder_checkpointed"]:
+        _close_problems(ledger, "builder", f"recomposition:{candidate_head}")
     if isinstance(old_source, dict):
         _close_problems(ledger, "tester", f"recomposition:{tester_head}")
     append_event(

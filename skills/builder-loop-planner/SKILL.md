@@ -68,6 +68,9 @@ description: 在 Codex Plan mode 中为显式选择的 Builder-loop 实验路线
   `builder_files/tester_files/dirty_snapshot/agents`、`tester_source: null`、`deployment: null`，Authority 的
   `external_targets` 默认空。Agent identity 只能在真实 spawn
   后由专用事务写入，Planner 不预填。
+- successor 的 `execution.carryover` 只记录 source candidate 相对 target 的 exact path/blob；当前 revision 的
+  `builder_files` 与 `tester_files` 仍从空集合开始。公开前置文件只有在当前 Builder 实际创建或修改并
+  checkpoint 后，或 candidate blob 与 carryover 完全一致时才算 ready，不能把旧角色产出复制成本轮产出。
 - protected preparation 使用 `mission.delivery_kind=preparation` 与 exact `protected_support_paths`；后续
   business contract 只通过 `execution.continuation` 消费 Core 已验证的 finalized run 事实。不得解析
   transcript 重建 continuation，也不得让 preparation supersede 业务 run；事实不足时停止规划交接。
@@ -77,6 +80,10 @@ description: 在 Codex Plan mode 中为显式选择的 Builder-loop 实验路线
   字符串数组，`expected_returncodes` 冻结什么实际返回码算通过。交付必跑且本地无副作用的关键测试用
   `run_before_full_suite:true` 标记在 machine commands 中，并同时设置 `preflight_before_proof:true`；不得靠
   分析 argv 猜顺序。
+- `validate --repo` 的派生 `admission` 必须同时为 `READY`。裸 executable 只从 Core 的 trusted system PATH
+  解析；若工具只存在于 ambient PATH，应改成经用户环境确认的显式绝对路径，让 runtime 绑定 SHA-256，
+  不得假定 Agent shell 能找到就可执行。仓库相对 executable 在规划时保持 candidate-bound deferred，最终
+  machine/blackbox/deployment 执行仍重新绑定 candidate blob。
 - 需要 blackbox 的新 contract 必须把每条 `mission.acceptance_cases` 写成单一可观察声明，并冻结
   `observation.surface_id/surface_description/execution_ids/required_dimensions`；观察外部目标时再绑定已授权
   `target_id`。同一声明跨多个观察面时拆成多个 case。surface id 只在本计划内命名，不建立强 E2E
@@ -120,7 +127,9 @@ description: 在 Codex Plan mode 中为显式选择的 Builder-loop 实验路线
 
    `codex-builder-loop assurance --experimental-v4 validate --repo <repo> --contract -`
 
-2. 只有返回 `status=READY` 才输出最终方案。最终方案必须包含唯一、完整且与已验证字节语义相同的：
+2. 只有返回 `status=READY` 且 `admission.status=READY` 才输出最终方案。若 admission 聚合报告任何
+   `blocked` command，先修正 contract 中的 executable 表达；`deferred` 只允许仓库相对 executable 或尚待
+   当前 Builder/carryover 形成的公开前置文件。最终方案必须包含唯一、完整且与已验证字节语义相同的：
 
 ~~~~markdown
 <!-- assurance-v4-contract -->

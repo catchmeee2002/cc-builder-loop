@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import tempfile
 import unittest
@@ -7,6 +8,17 @@ from pathlib import Path
 from typing import Any
 
 from harness import CLI, cleanup_repo, commit_all, git, init_repo, run_process
+
+
+def canonical_digest(value: Any) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
 
 
 def base_contract() -> dict[str, Any]:
@@ -304,6 +316,7 @@ class V4SupersessionLifecycleContractTest(unittest.TestCase):
         }
         self.assertIn("src/calc.py", carryover_paths)
         self.assertEqual(target_execution["agents"], {})
+        self.assertEqual(target_execution["builder_files"], [])
         self.assertIsNone(target_execution["tester_source"])
         self.assertEqual(target_execution["tester_files"], [])
         self.assertEqual(target_context["evidence"], {})
@@ -331,6 +344,196 @@ class V4SupersessionLifecycleContractTest(unittest.TestCase):
                 for item in target_ledger["problem_dispositions"]
             },
             {item["key"]: item["disposition"] for item in dispositions},
+        )
+
+    def test_successor_public_prerequisites_use_current_builder_or_exact_carryover(
+        self,
+    ) -> None:
+        carryover_path = "src/public_carryover.py"
+        new_path = "src/public_successor.py"
+        carryover_content = "PUBLIC_CARRYOVER = 1\n"
+        source_run = "public-prerequisite-source"
+        source = self.start(source_run, base_contract())
+        source_candidate = Path(source["candidate_worktree"])
+        (source_candidate / carryover_path).write_text(
+            carryover_content, encoding="utf-8"
+        )
+        source_head = commit_all(source_candidate, "add public carryover")
+        rc, checkpointed = self.invoke(
+            "checkpoint-builder", "--repo", self.repo, "--run", source_run
+        )
+        self.assertEqual(rc, 0, checkpointed)
+        source = self.status(source_run)
+
+        successor_contract = self.next_contract(source)
+        successor_contract["authority"]["public_prerequisites"] = [
+            carryover_path,
+            new_path,
+        ]
+        successor_contract["assurance"]["required"] = ["machine", "tester"]
+        contract_path = self.write_json(
+            "public-prerequisite-successor.json", successor_contract
+        )
+        rc, validated = self.invoke(
+            "validate", "--repo", self.repo, "--contract", contract_path
+        )
+        self.assertEqual(rc, 0, validated)
+        self.assertEqual(validated["status"], "READY")
+        self.assertEqual(
+            validated["admission"]["public_prerequisites"],
+            [
+                {"path": carryover_path, "status": "ready", "source": "carryover"},
+                {"path": new_path, "status": "deferred", "source": "builder"},
+            ],
+        )
+
+        successor_run = "public-prerequisite-successor"
+        successor = self.start(successor_run, successor_contract)
+        successor_candidate = Path(successor["candidate_worktree"])
+        ledger_path = successor_candidate.parent / "ledger.json"
+        ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+        execution = ledger["facets"]["execution"]
+        self.assertEqual(execution["builder_files"], [])
+        self.assertEqual(execution["tester_files"], [])
+        self.assertEqual(execution["candidate_head"], source_head)
+        self.assertIn(
+            carryover_path,
+            {item["path"] for item in execution["carryover"]["files"]},
+        )
+
+        # A historical successor may have copied source Builder paths. It remains
+        # readable, but Driver derives the missing new prerequisite and cannot
+        # dispatch Tester from the stale checkpoint bit.
+        execution["builder_files"] = [carryover_path]
+        execution["version"] += 1
+        ledger["builder_checkpointed"] = True
+        ledger["digests"]["execution"] = canonical_digest(execution)
+        ledger_path.write_text(
+            json.dumps(ledger, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        readable = self.status(successor_run)
+        self.assertTrue(readable["builder_checkpointed"])
+        rc, decision = self.invoke(
+            "driver-next", "--repo", self.repo, "--run", successor_run
+        )
+        self.assertEqual(rc, 0, decision)
+        self.assertEqual(decision["action"], "builder_implement")
+        self.assertEqual(decision["reason"], "public_prerequisites_unready")
+
+        rc, blocked_checkpoint = self.invoke(
+            "checkpoint-builder", "--repo", self.repo, "--run", successor_run
+        )
+        self.assertEqual(rc, 0, blocked_checkpoint)
+        self.assertFalse(blocked_checkpoint["builder_checkpointed"])
+        blocked_execution = json.loads(ledger_path.read_text(encoding="utf-8"))[
+            "facets"
+        ]["execution"]
+        self.assertEqual(blocked_execution["builder_files"], [])
+
+        (successor_candidate / new_path).write_text(
+            "PUBLIC_SUCCESSOR = 1\n", encoding="utf-8"
+        )
+        successor_head = commit_all(successor_candidate, "add successor prerequisite")
+        rc, accepted_checkpoint = self.invoke(
+            "checkpoint-builder", "--repo", self.repo, "--run", successor_run
+        )
+        self.assertEqual(rc, 0, accepted_checkpoint)
+        self.assertTrue(accepted_checkpoint["builder_checkpointed"])
+        accepted_execution = json.loads(ledger_path.read_text(encoding="utf-8"))[
+            "facets"
+        ]["execution"]
+        self.assertEqual(accepted_execution["candidate_head"], successor_head)
+        self.assertEqual(accepted_execution["builder_files"], [new_path])
+
+        rc, published = self.invoke(
+            "publish-prerequisites", "--repo", self.repo, "--run", successor_run
+        )
+        self.assertEqual(rc, 0, published)
+        self.assertEqual(
+            [item["path"] for item in published["publication"]["files"]],
+            [carryover_path, new_path],
+        )
+
+        (successor_candidate / carryover_path).unlink()
+        commit_all(successor_candidate, "remove frozen public carryover")
+        rc, drifted = self.invoke(
+            "checkpoint-builder", "--repo", self.repo, "--run", successor_run
+        )
+        self.assertEqual(rc, 0, drifted)
+        self.assertFalse(drifted["builder_checkpointed"])
+        rc, drift_decision = self.invoke(
+            "driver-next", "--repo", self.repo, "--run", successor_run
+        )
+        self.assertEqual(rc, 0, drift_decision)
+        self.assertEqual(drift_decision["action"], "builder_implement")
+        self.assertEqual(drift_decision["reason"], "public_prerequisites_unready")
+
+        (successor_candidate / carryover_path).write_text(
+            carryover_content, encoding="utf-8"
+        )
+        commit_all(successor_candidate, "restore frozen public carryover")
+        rc, restored = self.invoke(
+            "checkpoint-builder", "--repo", self.repo, "--run", successor_run
+        )
+        self.assertEqual(rc, 0, restored)
+        self.assertTrue(restored["builder_checkpointed"])
+
+        (self.repo / "README.md").write_text(
+            "fixture\ntarget advanced after publication\n", encoding="utf-8"
+        )
+        target_head = commit_all(self.repo, "advance target after publication")
+        rc, recomposed = self.invoke(
+            "recompose-candidate", "--repo", self.repo, "--run", successor_run
+        )
+        self.assertEqual(rc, 0, recomposed)
+        recomposed_ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+        self.assertEqual(recomposed_ledger["target_start_head"], target_head)
+        self.assertEqual(
+            recomposed_ledger["facets"]["execution"]["builder_files"],
+            [new_path],
+        )
+        self.assertTrue(recomposed_ledger["builder_checkpointed"])
+
+    def test_partial_root_public_prerequisites_remain_builder_recoverable(self) -> None:
+        contract = base_contract()
+        first = "src/public_first.py"
+        second = "src/public_second.py"
+        contract["authority"]["public_prerequisites"] = [first, second]
+        contract["assurance"]["required"] = ["machine", "tester"]
+        run_id = "partial-root-prerequisites"
+        started = self.start(run_id, contract)
+        candidate = Path(started["candidate_worktree"])
+
+        (candidate / first).write_text("FIRST = 1\n", encoding="utf-8")
+        commit_all(candidate, "add first public prerequisite")
+        rc, partial = self.invoke(
+            "checkpoint-builder", "--repo", self.repo, "--run", run_id
+        )
+        self.assertEqual(rc, 0, partial)
+        self.assertFalse(partial["builder_checkpointed"])
+        ledger = json.loads(
+            (candidate.parent / "ledger.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(ledger["facets"]["execution"]["builder_files"], [first])
+        rc, decision = self.invoke(
+            "driver-next", "--repo", self.repo, "--run", run_id
+        )
+        self.assertEqual(rc, 0, decision)
+        self.assertEqual(decision["reason"], "public_prerequisites_unready")
+
+        (candidate / second).write_text("SECOND = 1\n", encoding="utf-8")
+        commit_all(candidate, "add second public prerequisite")
+        rc, complete = self.invoke(
+            "checkpoint-builder", "--repo", self.repo, "--run", run_id
+        )
+        self.assertEqual(rc, 0, complete)
+        self.assertTrue(complete["builder_checkpointed"])
+        ledger = json.loads(
+            (candidate.parent / "ledger.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(
+            ledger["facets"]["execution"]["builder_files"], [first, second]
         )
 
     def test_abandoned_source_is_rejected_before_target_or_source_mutation(self) -> None:

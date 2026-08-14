@@ -185,6 +185,20 @@ preparation ledger 持久化 intent，business ledger 落盘后再提交 consume
 不能改变当前分类。交付 preparation 后，后续 business run 通过既有单次 continuation 在新 runtime 上
 重新取得角色和 evidence；同 run writer 热切换、旧 observation backfill 和旁路 evidence 均不存在。
 
+宿主 executable 准入同样在最早可知阶段派生，但不进入 contract digest 或 ledger。`validate --repo` 与
+`start` 从同一冻结 contract 枚举 machine、blackbox 和 deployment command：裸名称只在固定 trusted
+system PATH 中解析，显式绝对路径绑定 resolved path 与 SHA-256，仓库相对路径因为最终身份属于 candidate
+而保持 deferred。所有宿主 blocker 一次聚合为 `ASSURANCE_ADMISSION_BLOCKED`；start 在任何 run/worktree
+副作用前重查，实际 machine、blackbox、probe/build/deploy/restore 执行再使用同一 resolver 绑定最终身份。
+`admission` 因此只是 contract、Git 和当前宿主事实的兼容投影，不成为第二状态源。
+
+successor continuity 把 source candidate 相对原 target 的 exact path/blob 全部归入 carryover，并把新
+revision 的 Builder/Tester manifest 重置为空。Builder checkpoint 从当前 candidate 重新派生本 revision
+产出；与 carryover blob 相同的路径仍属于 carryover，新增或改变的 Builder-owned 路径才属于
+`builder_files`。公开前置文件必须由当前 Builder manifest 或未漂移 carryover 满足；checkpoint、Driver
+下一动作、publication 和 recomposition 都复核这条分类。缺失时只让当前 Builder 阶段失效，不把旧产出
+冒充新产出，也不把可修复执行事实升级成新的产品决策。
+
 ## Legacy v3 系统边界
 
 Codex 原生 Plan mode 负责探索和追问；全局托管规则先让用户选择继续使用原生 Plan，或加载

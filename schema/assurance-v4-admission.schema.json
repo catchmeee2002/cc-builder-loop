@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openai.local/codex-builder-loop/assurance-v4-admission.schema.json",
+  "title": "Assurance v4 derived admission report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "status",
+    "trusted_system_path",
+    "commands",
+    "public_prerequisites"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "status": {"enum": ["READY", "BLOCKED"]},
+    "trusted_system_path": {"const": "/usr/local/bin:/usr/bin:/bin"},
+    "commands": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/commandAdmission"}
+    },
+    "public_prerequisites": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/publicPrerequisiteAdmission"}
+    }
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "blob": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "path": {"type": "string", "minLength": 1, "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"},
+    "identity": {
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "requested"],
+          "properties": {
+            "kind": {"enum": ["system", "repository"]},
+            "requested": {"type": "string", "minLength": 1},
+            "resolution": {"enum": ["trusted_path", "explicit_absolute"]},
+            "path": {"type": "string", "minLength": 1},
+            "sha256": {"$ref": "#/$defs/sha256"},
+            "blob": {"$ref": "#/$defs/blob"},
+            "reason": {"type": "string", "minLength": 1}
+          }
+        }
+      ]
+    },
+    "commandAdmission": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "surface",
+        "command_id",
+        "requested_executable",
+        "status",
+        "identity",
+        "reason",
+        "latest_check_stage"
+      ],
+      "properties": {
+        "surface": {
+          "enum": [
+            "assurance.machine_commands",
+            "execution.commands",
+            "execution.deployment.build_command",
+            "execution.deployment.deploy_command",
+            "execution.deployment.probe_command",
+            "execution.deployment.restore_command"
+          ]
+        },
+        "command_id": {"type": "string", "minLength": 1},
+        "requested_executable": {"type": "string", "minLength": 1},
+        "status": {"enum": ["ready", "deferred", "blocked"]},
+        "identity": {"$ref": "#/$defs/identity"},
+        "reason": {
+          "oneOf": [
+            {"type": "null"},
+            {"type": "string", "minLength": 1}
+          ]
+        },
+        "latest_check_stage": {
+          "enum": [
+            "verify_machine",
+            "complete_blackbox",
+            "prepare_deployment",
+            "deploy",
+            "probe",
+            "restore"
+          ]
+        }
+      }
+    },
+    "publicPrerequisiteAdmission": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "status", "source"],
+      "properties": {
+        "path": {"$ref": "#/$defs/path"},
+        "status": {"enum": ["ready", "deferred"]},
+        "source": {"enum": ["builder", "carryover"]}
+      }
+    }
+  }
+}

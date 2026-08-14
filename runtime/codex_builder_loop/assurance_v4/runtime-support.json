@@ -17,6 +17,7 @@
         "runtime/codex_builder_loop/assurance_v4/*.py",
         "runtime/codex_builder_loop/assurance_v4/runtime-support.json",
         "runtime/codex_builder_loop/native_driver/*.py",
+        "schema/assurance-v4-admission.schema.json",
         "schema/assurance-v4-contract.schema.json",
         "schema/assurance-v4-evidence.schema.json",
         "schema/assurance-v4-ledger.schema.json",

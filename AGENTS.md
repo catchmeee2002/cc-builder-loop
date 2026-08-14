@@ -50,6 +50,8 @@ python3 experiments/assurance-v4-replay/runner.py
   副作用；环境安全后才进入 `failed`。failed 不 resume、不 supersede、不 abandon，cleanup 只接受与
   冻结 failure observation 一致的 clean worktree。
 - runtime ledger 是执行事实唯一来源；Skills、hooks 和 agents 不直接改 JSON。
+- Assurance v4 只有在 `validate --repo` 同时返回顶层 READY 与 `admission.status=READY` 时才能启动；宿主
+  executable blocker 必须先改为 trusted PATH 可解析或显式绝对路径，不能靠 ambient PATH 或自动安装绕过。
 - Assurance v4 的已授权 plan decision 先用 `validate-decision` 绑定同 session、problem、action、facet
   digest 和唯一完整 replacement contract，再以相同 binding 调用 `update-facet` 或 `revise-mission`，
   原子关闭 problem 并 resume 同一 active run；普通执行信息变化不得先 abandon 或自动升级为新 run。确需 successor 时，source 必须在新

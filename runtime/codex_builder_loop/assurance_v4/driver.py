@@ -8,6 +8,7 @@ from typing import Any, Mapping
 from .core import (
     AssuranceError,
     _derive_lineage,
+    _public_prerequisite_classification,
     _validate_revision_transition,
     current_machine_failure,
     current_proof_failure,
@@ -1084,6 +1085,26 @@ def next_action(
             "proof_failure_decision",
             "proof_failure_requires_user",
             proof_failure=proof_failure,
+        )
+    public_classification = _public_prerequisite_classification(
+        repo,
+        execution,
+        ledger["facets"]["authority"].get("public_prerequisites", []),
+        candidate=live_candidate,
+    )
+    unready_public = [
+        item["path"]
+        for item in public_classification
+        if item["status"] != "ready"
+    ]
+    if unready_public:
+        return decision(
+            "CONTINUE",
+            "builder_implement",
+            "public_prerequisites_unready",
+            candidate_worktree=ledger["candidate_worktree"],
+            public_prerequisites=public_classification,
+            agent=execution["agents"].get("builder"),
         )
     if not ledger.get("builder_checkpointed", False):
         return decision(

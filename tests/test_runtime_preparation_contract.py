@@ -29,6 +29,7 @@ class RuntimePreparationContractTest(unittest.TestCase):
             "runtime/codex_builder_loop/core.py": "VALUE = 1\n",
             PROOF_CORE: "VALUE = 1\n",
             "runtime/codex_builder_loop/native_driver/coordinator.py": "VALUE = 1\n",
+            "schema/assurance-v4-admission.schema.json": "{}\n",
             "schema/assurance-v4-contract.schema.json": "{}\n",
             "schema/assurance-v4-evidence.schema.json": "{}\n",
             "schema/assurance-v4-ledger.schema.json": "{}\n",

@@ -175,6 +175,22 @@ def validate_environment_probe(value: Any) -> dict[str, Any]:
     return copy.deepcopy(value)
 
 
+def validate_admission(value: Any) -> dict[str, Any]:
+    try:
+        jsonschema.Draft202012Validator(
+            _schema("assurance-v4-admission.schema.json")
+        ).validate(value)
+    except jsonschema.ValidationError as exc:
+        path = "/".join(str(part) for part in exc.absolute_path)
+        raise ContractError(
+            exc.message,
+            code="ASSURANCE_ADMISSION_INVALID",
+            details={"path": path},
+        ) from exc
+    assert isinstance(value, dict)
+    return copy.deepcopy(value)
+
+
 def validate_contract(value: Any) -> dict[str, Any]:
     try:
         jsonschema.Draft202012Validator(
@@ -302,13 +318,6 @@ def validate_contract(value: Any) -> dict[str, Any]:
                     code="AUTHORITY_PATH_NOT_EXACT",
                     details={"field": field, "path": item},
                 )
-    public = set(contract["authority"]["public_prerequisites"])
-    if not public.issubset(set(contract["execution"]["builder_files"])) and contract["execution"]["builder_files"]:
-        raise ContractError(
-            "public prerequisites must be classified as Builder files",
-            code="PUBLIC_PREREQUISITE_CLASSIFICATION_INVALID",
-            details={"paths": sorted(public - set(contract["execution"]["builder_files"]))},
-        )
     continuation = contract["execution"].get("continuation")
     if isinstance(continuation, dict):
         for item in continuation["support_paths"]:

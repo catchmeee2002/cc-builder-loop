@@ -175,6 +175,18 @@ max_iterations: 5
 `test_context.runner`；若不存在，则计划必须提供它。`plan-validate --repo <repo>` 与 `start` 共享
 同一套只读 preflight，并在 READY JSON 的 `effective_verification_source` 中返回实际来源。
 
+Assurance v4 的 `validate --repo <repo>` 还会返回派生的 `admission`。它一次列出 machine、blackbox 和
+deployment 命令的 executable 准入结果，以及串行公开前置文件当前来自 Builder 还是 successor
+carryover。裸命令只从固定的 `/usr/local/bin:/usr/bin:/bin` 解析，不继承调用方 `PATH`；显式绝对路径
+会绑定真实路径和 SHA-256；仓库相对 executable 在候选形成前标为 `deferred`，并在最终执行时绑定
+candidate blob。任何宿主命令为 `blocked` 时，顶层返回 `status=FAIL`、
+`code=ASSURANCE_ADMISSION_BLOCKED` 和退出码 1，且不创建 run、ledger 或 Agent thread。
+
+successor 启动时，source candidate 相对目标分支的 exact path/blob 只进入 `execution.carryover`；新 run 的
+`builder_files/tester_files` 从空集合开始。公开前置文件只有被当前 Builder 实际提交并 checkpoint，或其
+candidate blob 与 carryover 完全一致时才能 publication；缺失或漂移会继续留在 Builder 阶段，不启动
+Tester。
+
 现有 `pass_cmd` 只有满足 Codex runner 安全契约时才能直接复用：至少一个真实 stage；不得恒真、
 反转退出码、覆盖 PATH 或包含无法静态解释的内联控制流。repository wrapper 必须在规划时
 `spec_head` 已存在，是仓库内普通文件而非 symlink，并写入 `test_context.support_paths`；引用

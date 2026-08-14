@@ -1031,6 +1031,7 @@ class PlanningDesignDisciplineTest(unittest.TestCase):
             PHILOSOPHY_PATH.as_posix(),
             ARCHITECTURE_PATH.as_posix(),
             "schema/codex-loop-ledger.schema.json",
+            "schema/assurance-v4-admission.schema.json",
             "schema/assurance-v4-runtime-support.schema.json",
             "schema/codex-test-proof.schema.json",
         }

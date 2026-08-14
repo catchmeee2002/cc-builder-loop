@@ -2581,7 +2581,8 @@
           "replacement": "detached clean verification worktree",
           "rationale": "Machine commands execute against the committed candidate.",
           "test_ids": [
-            "tests.test_verify_contract.VerifyContractTest.test_pass_records_verified_head"
+            "tests.test_verify_contract.VerifyContractTest.test_pass_records_verified_head",
+            "tests.test_assurance_v4_admission_contract.AssuranceV4AdmissionContractTest.test_repository_executable_is_candidate_bound_and_deferred"
           ]
         },
         {
@@ -3004,7 +3005,8 @@
           "replacement": "frozen pass_cmd stage contract",
           "rationale": "Commands, timeouts and working directory are validated before execution.",
           "test_ids": [
-            "tests.test_verify_contract.VerifyContractTest.test_pass_records_verified_head"
+            "tests.test_verify_contract.VerifyContractTest.test_pass_records_verified_head",
+            "tests.test_assurance_v4_admission_contract.AssuranceV4AdmissionContractTest.test_machine_execution_rechecks_executable_after_start"
           ]
         },
         {

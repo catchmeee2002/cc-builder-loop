@@ -52,6 +52,80 @@ DOC_REFERENCE_TEST_IDS = {
     "failure": "tests.test_doc_reference_scan.DocReferenceScanTest.test_scan_failure_is_fail_closed",
 }
 
+ADMISSION_TEST_IDS = {
+    "candidate": "tests.test_assurance_v4_admission_contract.AssuranceV4AdmissionContractTest.test_repository_executable_is_candidate_bound_and_deferred",
+    "execution": "tests.test_assurance_v4_admission_contract.AssuranceV4AdmissionContractTest.test_machine_execution_rechecks_executable_after_start",
+}
+
+ORPHAN_WORKTREE_CASE_OVERRIDES = {
+    "A1:": {
+        "status": "rescue",
+        "replacement": "native development-worktree inventory and intent recovery",
+        "rationale": "Unknown worktrees are diagnosed without mutation, while only exact persisted create or finish intents are recoverable.",
+        "test_ids": [
+            "tests.test_dev_worktree_lifecycle.DevWorktreeLifecycleTest.test_status_classifies_unknown_missing_unregistered_and_branch_only",
+            "tests.test_dev_worktree_lifecycle.DevWorktreeLifecycleTest.test_state_schema_and_doctor_recovery_signal",
+        ],
+    },
+    "A2:": {
+        "status": "rescue",
+        "replacement": "identity-bound create-intent recovery",
+        "rationale": "Path-only adoption is retired; a worktree is resumed only when its repository, path, branch and HEAD match a persisted create intent.",
+        "test_ids": [
+            "tests.test_dev_worktree_lifecycle.DevWorktreeLifecycleTest.test_create_intent_recovers_before_and_after_git_add",
+        ],
+    },
+    "A3:": {
+        "status": "rescue",
+        "replacement": "localized collision checks",
+        "rationale": "Unrelated unknown worktrees remain visible but no longer require a global ignore flag before a collision-free managed create.",
+        "test_ids": [
+            "tests.test_dev_worktree_lifecycle.DevWorktreeLifecycleTest.test_status_classifies_unknown_missing_unregistered_and_branch_only",
+        ],
+    },
+    "A4:": {
+        "status": "rescue",
+        "replacement": "absolute managed-root and state identity validation",
+        "rationale": "Invalid, repository-internal or symlinked roots are rejected before any worktree intent is written.",
+        "test_ids": [
+            "tests.test_dev_worktree_lifecycle.DevWorktreeLifecycleTest.test_root_rejects_repository_internal_and_symlink_paths",
+        ],
+    },
+    "A5:": {
+        "status": "rescue",
+        "replacement": "preserved unknown-residue inventory",
+        "rationale": "Unknown worktree changes are reported with residue facts but never imported into a new delivery branch.",
+        "test_ids": [
+            "tests.test_dev_worktree_lifecycle.DevWorktreeLifecycleTest.test_status_classifies_unknown_missing_unregistered_and_branch_only",
+            "tests.test_dev_worktree_lifecycle.DevWorktreeLifecycleTest.test_status_does_not_mutate_unknown_worktrees",
+        ],
+    },
+    "A6:": {
+        "status": "rescue",
+        "replacement": "complete read-only native worktree inventory",
+        "rationale": "All managed-root, registered, unregistered and branch-only findings are returned in one read-only report.",
+        "test_ids": [
+            "tests.test_dev_worktree_lifecycle.DevWorktreeLifecycleTest.test_status_classifies_unknown_missing_unregistered_and_branch_only",
+        ],
+    },
+    "A7:": {
+        "status": "rescue",
+        "replacement": "absolute managed-root validation",
+        "rationale": "Relative roots are rejected rather than interpreted against the caller's current directory.",
+        "test_ids": [
+            "tests.test_dev_worktree_lifecycle.DevWorktreeLifecycleTest.test_root_rejects_repository_internal_and_symlink_paths",
+        ],
+    },
+    "A8:": {
+        "status": "retired",
+        "replacement": "single managed worktree create surface",
+        "rationale": "Bare mode and path-only reuse flags are absent, so their legacy mutual-exclusion branch has no current behavior to preserve.",
+        "test_ids": [
+            "tests.test_dev_worktree_lifecycle.DevWorktreeLifecycleTest.test_create_uses_neutral_managed_root_and_excludes_target_dirty",
+        ],
+    },
+}
+
 
 def git(*args: str) -> str:
     return subprocess.check_output(["git", "-C", str(ROOT), *args], text=True)
@@ -99,6 +173,23 @@ def reference_override(fixture: str, title: str) -> tuple[str, str] | None:
     return None
 
 
+def admission_test_id(fixture: str, title: str) -> str | None:
+    if fixture == "test-pass-cmd-runs-worktree.sh" and title.startswith("Step 4:"):
+        return ADMISSION_TEST_IDS["candidate"]
+    if fixture == "test-run-pass-cmd-args.sh" and title.startswith("Case 5:"):
+        return ADMISSION_TEST_IDS["execution"]
+    return None
+
+
+def case_override(fixture: str, title: str) -> dict[str, Any] | None:
+    if fixture != "test-orphan-worktree-reuse.sh":
+        return None
+    for prefix, value in ORPHAN_WORKTREE_CASE_OVERRIDES.items():
+        if title.startswith(prefix):
+            return value
+    return None
+
+
 def fixture_blob(path: str) -> str:
     line = git("ls-tree", SOURCE_COMMIT, "--", path).strip()
     parts = line.split()
@@ -132,13 +223,26 @@ def cases_for(fixture: str, text: str, disposition: dict[str, Any]) -> tuple[int
         if not method_exists(test_id):
             raise RuntimeError(f"replacement test id is missing: {test_id}")
     for case in sections:
+        explicit = case_override(fixture, case["title"])
+        if explicit is not None:
+            for test_id in explicit["test_ids"]:
+                if not method_exists(test_id):
+                    raise RuntimeError(f"case override test id is missing: {test_id}")
+            case.update(explicit)
+            continue
         override = reference_override(fixture, case["title"])
         if override is None:
+            test_ids = list(replacement_ids)
+            admission_id = admission_test_id(fixture, case["title"])
+            if admission_id is not None:
+                if not method_exists(admission_id):
+                    raise RuntimeError(f"admission replacement test id is missing: {admission_id}")
+                test_ids.append(admission_id)
             case.update(
                 status=disposition["status"],
                 replacement=disposition["replacement"],
                 rationale=disposition["rationale"],
-                test_ids=replacement_ids,
+                test_ids=test_ids,
             )
             continue
         kind, replacement = override
