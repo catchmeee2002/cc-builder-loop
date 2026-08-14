@@ -109,7 +109,7 @@ class LegacyParityContractTest(unittest.TestCase):
                     )
         self.assertEqual(len(case_keys), 252)
         self.assertEqual(assertion_count, 824)
-        self.assertEqual(status_counts, {"covered": 138, "rescue": 43, "retired": 71})
+        self.assertEqual(status_counts, {"covered": 138, "rescue": 42, "retired": 72})
 
     def test_issue_82_cases_are_rescued_by_the_v4_reference_scan(self) -> None:
         corpus = load_corpus()

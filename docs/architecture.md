@@ -228,6 +228,25 @@ captured/final 可证明状态时，runtime 才允许覆盖；任何第三种内
 CAS 或 checkout 中断后，snapshot、final commit 和 intent 足以识别 expected、captured、partial
 和 final 状态并幂等完成。无关 untracked/ignored residue 继续保留。
 
+## Codex-native 开发 worktree
+
+本仓原生开发 worktree 使用独立的轻量生命周期，不进入 Builder-loop run ledger。默认根为主仓父目录下
+单一 `codex-worktrees/<repo-slug>-<repo-id>/`，避免父目录散落任务 sibling，也避免 `.git`、`.claude`
+成为候选绝对路径祖先。Git common dir 中的 v1 manifest 只保存 active lifecycle 与单一 create/finish
+intent；Git 仍是 worktree 注册、branch 和 HEAD 的事实源，成功收尾后 manifest 删除，不维护第二份历史。
+
+`dev-worktree create` 在 `git worktree add` 前持久化精确 repo/path/branch/base binding；目标 checkout 的
+dirty、ignored、凭据和运行态不复制。`finish` 只接受已被目标分支包含、无 tracked/untracked/ignored
+residue、未锁定且无人占用的 managed worktree，先写 intent，再精确移除 worktree，并用 expected-old
+删除任务 ref；它不 merge、push、stash、安装、调用全局 prune 或使用 force。`recover` 只重放上述
+persisted intent，`preserve` 将有意保留与 orphan 区分开。
+
+`dev-worktree status` 对 Git registry、manifest、文件系统和 `codex-native/*` branch 做只读对账，区分
+recoverable intent、owned missing/drift、unknown registered、unregistered directory、branch-only、
+runtime-owned 和 external worktree。未知事实不 adopt、不删除，也不因与新建资源无关而全局阻断。
+候选外的只读宿主依赖不由该生命周期复制或封装；共享运行态继续复用 Assurance v4 的 deployment
+probe/build/deploy/restore/lease 事务。
+
 ## 计划和并行门槛
 
 新计划契约只接受 `schema_version: 3`。计划保留 `plan-checklist`，并在非 L1 使用
@@ -612,7 +631,7 @@ scope digest：相同才推进 `accepted_head` 并保留原 `observed_head`，�
 
 ## Diagnostics 与恢复
 
-`doctor` 是只读事实汇总：列出 ledger/schema、owned/missing/orphan worktree、branch/head/residue、
+`doctor` 是只读事实汇总：列出 ledger/schema、owned/missing/orphan worktree、原生开发 manifest、branch/head/residue、
 workspace intake、evidence provenance、progress stop、finalize 与 cleanup 状态。它不修复、不 adopt
 也不删除。`recover` 只重放已经持久化的 final/cleanup 事务；`cleanup` 只处理 terminal run 中
 ledger-owned、clean 且 HEAD 未漂移的 worktree。未知 orphan 只报告人工检查入口。

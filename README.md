@@ -101,6 +101,9 @@ Full Driver Skill；run 创建后禁止更换控制器。
 - `doctor` 只读报告 ledger、worktree、intake、evidence、progress 和 finalize 状态；`recover` 只重放
   已持久化事务，`cleanup` 只删除 terminal run 中 clean 且未漂移的 ledger-owned worktree。未知
   orphan 永不自动 adopt 或删除。
+- 本仓 Codex-native 开发使用 `dev-worktree create/status/finish/preserve/recover`。任务 checkout 统一进入
+  主仓父目录的单一 `codex-worktrees/<repo-id>/` 根；只有精确 create/finish intent 可恢复，未知 worktree
+  只报告。该命令管理 Git 生命周期，不复制宿主 dirty、凭据或共享运行态，也不替代部署事务。
 - start 冻结实际运行的 adapter 类型、commit 和 dirty 状态。高信号交付完成后，Builder 将业务项目、
   builder-loop 与外部平台事故按单一 owner 分流；跨边界因果链拆成两个原子事故，经用户授权才写
   项目问题文档或 GitHub issue。工程问题处理后，剩余隐含知识委托 `$memory-review`，不再执行旧版
@@ -208,6 +211,7 @@ blackbox accepted execution 的全部 command 依赖始终强制属于 affects�
 ```bash
 python3 -m pip install -r requirements-dev.txt
 python3 scripts/codex-builder-loop.py --help
+python3 scripts/codex-builder-loop.py dev-worktree --help
 bash scripts/verify-all.sh
 ```
 

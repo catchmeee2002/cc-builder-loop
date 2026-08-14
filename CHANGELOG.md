@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- 新增轻量 `dev-worktree` 生命周期：Codex-native 本仓开发统一进入父目录单一托管根，create/finish
+  副作用由 Git common-dir manifest 与精确 intent 绑定；status/doctor 只读分类 orphan、missing、drift、
+  residue 和占用状态，recover 只续接既有 intent。未知 worktree 不 adopt/delete，finish 不 force、prune、
+  merge 或 push；worktree 只约束候选写入，宿主只读依赖与共享运行态分别保留身份和既有部署事务边界（#190）。
+
 - Native Driver 将精确的 HTTP 503 `auth_unavailable: no auth available` 归一为同 dispatch 可恢复失败，
   以 ledger 持久化的 30 秒、120 秒退避继续同一 role/thread/action；CLI 在等待期间输出剩余时间，跨进程
   恢复从 Core 当前 machine/proof failure、recomposition 与 open problem 等唯一事实重建完整 action，

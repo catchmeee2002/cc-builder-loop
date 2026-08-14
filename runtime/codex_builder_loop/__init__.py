@@ -19,6 +19,10 @@ def main(*args, **kwargs):
         from .native_driver.cli import main as native_driver_main
 
         return native_driver_main(effective[1:])
+    if effective[:1] == ["dev-worktree"]:
+        from .dev_worktree import main as dev_worktree_main
+
+        return dev_worktree_main(effective[1:])
     from .core import main as runtime_main
 
     return runtime_main(effective, *args, **kwargs)

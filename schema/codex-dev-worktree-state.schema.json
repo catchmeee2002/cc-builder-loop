@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openai.local/codex-builder-loop/dev-worktree-state-v1.schema.json",
+  "title": "Codex-native development worktree state v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "id",
+    "task",
+    "owner_kind",
+    "repo_identity",
+    "git_common_dir",
+    "managed_root",
+    "path",
+    "branch",
+    "target_branch",
+    "base_head",
+    "phase",
+    "intent",
+    "created_at",
+    "updated_at",
+    "preserve_reason"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "id": {"$ref": "#/$defs/id"},
+    "task": {"type": "string", "minLength": 1},
+    "owner_kind": {"const": "codex_native_dev"},
+    "repo_identity": {"$ref": "#/$defs/sha256"},
+    "git_common_dir": {"$ref": "#/$defs/absolutePath"},
+    "managed_root": {"$ref": "#/$defs/absolutePath"},
+    "path": {"$ref": "#/$defs/absolutePath"},
+    "branch": {"type": "string", "pattern": "^codex-native/[a-z0-9]+(?:-[a-z0-9]+)*$"},
+    "target_branch": {"type": "string", "minLength": 1},
+    "base_head": {"$ref": "#/$defs/sha1"},
+    "phase": {"enum": ["creating", "active", "preserved", "finishing"]},
+    "intent": {
+      "oneOf": [
+        {"type": "null"},
+        {"$ref": "#/$defs/createIntent"},
+        {"$ref": "#/$defs/finishIntent"}
+      ]
+    },
+    "created_at": {"type": "string", "format": "date-time"},
+    "updated_at": {"type": "string", "format": "date-time"},
+    "preserve_reason": {"type": ["string", "null"]}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"phase": {"const": "creating"}}},
+      "then": {"properties": {"intent": {"$ref": "#/$defs/createIntent"}}}
+    },
+    {
+      "if": {"properties": {"phase": {"const": "finishing"}}},
+      "then": {"properties": {"intent": {"$ref": "#/$defs/finishIntent"}}}
+    },
+    {
+      "if": {"properties": {"phase": {"enum": ["active", "preserved"]}}},
+      "then": {"properties": {"intent": {"type": "null"}}}
+    }
+  ],
+  "$defs": {
+    "id": {"type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"},
+    "sha1": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "absolutePath": {"type": "string", "pattern": "^/"},
+    "createIntent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "head", "target_head", "created_at"],
+      "properties": {
+        "kind": {"const": "create"},
+        "head": {"$ref": "#/$defs/sha1"},
+        "target_head": {"type": "null"},
+        "created_at": {"type": "string", "format": "date-time"}
+      }
+    },
+    "finishIntent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "head", "target_head", "created_at"],
+      "properties": {
+        "kind": {"const": "finish"},
+        "head": {"$ref": "#/$defs/sha1"},
+        "target_head": {"$ref": "#/$defs/sha1"},
+        "created_at": {"type": "string", "format": "date-time"}
+      }
+    }
+  }
+}

@@ -5,7 +5,8 @@
 - `agents/`：Native Driver 共用的 Builder、Tester 与 Reviewer role 配置。
 - `runtime/`：legacy v2/v3 的确定性计划、workspace snapshot、Git 收尾、验证、ownership、evidence
   和诊断实现；`runtime/codex_builder_loop/assurance_v4/` 是 v4 Core 与 Driver 派生层，
-  `runtime/codex_builder_loop/native_driver/` 是 App Server transport 和 Full Driver 原生协调器。
+  `runtime/codex_builder_loop/native_driver/` 是 App Server transport 和 Full Driver 原生协调器；
+  `dev_worktree.py` 只治理本仓原生开发 worktree，不进入 run ledger。
 - `scripts/codex-builder-loop.py`：runtime 的稳定 CLI 入口；`codex-builder-loop-config.py` 负责
   安装/卸载时跨 hooks 与 AGENTS 的事务更新。
 - `hooks/`：只记录 agent 身份并做完成门禁，不承担循环编排。
@@ -14,7 +15,7 @@
 - `experiments/issue-triage/`：按需或由本地 cron 运行的只读 GitHub Issue 分流实验；不进入 runtime、
   ledger 或交付门禁。
 - `experiments/assurance-v4-replay/`：历史高频恢复场景的离线分类回放；不读取或迁移旧 ledger。
-- `schema/`：runtime ledger 的唯一结构定义。
+- `schema/`：runtime ledger 与确定性 lifecycle state 的唯一结构定义。
 - `tests/`：不依赖真实模型的契约 fixtures。
 - `docs/`：设计哲学、架构和已知环境问题。
 
@@ -24,6 +25,7 @@
 python3 -m pip install -r requirements-dev.txt
 python3 scripts/codex-builder-loop.py --help
 python3 scripts/codex-builder-loop.py native-driver --help
+python3 scripts/codex-builder-loop.py dev-worktree --help
 bash scripts/verify-all.sh
 python3 "${CODEX_HOME:-$HOME/.codex}/skills/.system/skill-creator/scripts/quick_validate.py" skills/builder-loop-planner
 python3 "${CODEX_HOME:-$HOME/.codex}/skills/.system/skill-creator/scripts/quick_validate.py" skills/builder
@@ -58,6 +60,9 @@ python3 experiments/assurance-v4-replay/runner.py
   Reviewer 与 doc-review 对任何 candidate 变化都失效。
 - target dirty 默认隔离；只有用户显式授权的 exact path/state digest 才能经 workspace snapshot 进入
   Builder。不得手工 stash、复制或清理 target 来绕过 intake contract。
+- worktree 只隔离 Git 候选写入，不是通用文件系统沙箱。交付代码、测试和 tracked 文档在候选内修改；
+  宿主工具或依赖只能只读借用且不能冒充未绑定身份的验收证据；共享运行态继续走已授权的
+  probe/build/deploy/restore 事务，不复制到 worktree。
 - Tester 与 Reviewer 必须续接原 thread；普通连续性失败停止并保留现场。只有当前 Tester producer 以
   owner=tester 问题明确声明 `producer_continuity=invalid` 时，Assurance v4 才能通过持久化 replacement
   intent 建立新 Tester，首个 author turn 前的 bootstrap identity 最多续换三次。
@@ -112,9 +117,9 @@ python3 experiments/assurance-v4-replay/runner.py
 # Collaboration
 
 - 保留用户已有 dirty worktree；所有开发在任务分支/worktree 完成。
-- 原生 Codex 的人工开发 worktree 统一放在仓库内的 `.git/codex-native-worktrees/`；不得再在父目录创建
-  `cc-builder-loop-*` sibling worktree。交付验收后立即移除已合并且 clean 的非 ledger worktree；dirty、
-  未知或 ledger-owned 现场继续按诊断与授权规则保留。
+- 原生 Codex 开发必须通过 `codex-builder-loop dev-worktree create/finish` 进入和退出任务 worktree；
+  默认只使用主仓父目录下单一 `codex-worktrees/<repo-id>/` 托管根，不得裸建散落 sibling。未知、dirty、
+  preserved 或 ledger-owned 现场只诊断不回收；中断后仅用 `dev-worktree recover` 续接已持久化 intent。
 - 本项目发布完成必须同时满足：提交已 push、安装 checkout 已同步到发布 commit、`./install.sh` 成功、
   实际安装的 CLI/Skills 路径与版本已核对并完成 smoke。只 push 不算发布完成；需要新 session 才能
   重新发现的内容必须明确提示，并以新 session 验收。

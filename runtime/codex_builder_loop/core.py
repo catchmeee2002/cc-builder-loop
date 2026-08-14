@@ -14749,6 +14749,30 @@ def cmd_doctor(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
     else:
         repo = resolve_repo(args.repo)
     reports, issues = _doctor_ledgers(repo)
+    from . import dev_worktree
+
+    try:
+        dev_worktrees = dev_worktree.doctor_snapshot(repo)
+    except dev_worktree.DevWorktreeError as exc:
+        dev_worktrees = {
+            "read_only": True,
+            "blocking": [
+                {
+                    "code": exc.code,
+                    "message": str(exc),
+                    "details": exc.details or {},
+                }
+            ],
+            "findings": [],
+        }
+    for blocker in dev_worktrees.get("blocking", []):
+        issues.append(
+            {
+                "code": "DEV_WORKTREE_RECOVERY_REQUIRED",
+                "dev_worktree": blocker,
+                "action": "inspect with dev-worktree status and replay only a persisted create or finish intent",
+            }
+        )
     if selected_run_id is not None:
         reports = [
             item for item in reports if item.get("run_id") == selected_run_id
@@ -14787,6 +14811,7 @@ def cmd_doctor(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         "repo": str(repo),
         "runs": reports,
         "issues": issues,
+        "dev_worktrees": dev_worktrees,
         "lifecycle_delivery": selected_lifecycle,
         "read_only": True,
         **selected_contract,

@@ -2365,10 +2365,11 @@
           "source_line": 72,
           "assertion_count": 10,
           "status": "rescue",
-          "replacement": "doctor, recover and safe cleanup",
-          "rationale": "Unknown worktrees are diagnosed but never silently adopted or deleted.",
+          "replacement": "native development-worktree inventory and intent recovery",
+          "rationale": "Unknown worktrees are diagnosed without mutation, while only exact persisted create or finish intents are recoverable.",
           "test_ids": [
-            "tests.test_diagnostics_progress.DiagnosticsAndProgressContractTest.test_doctor_is_read_only_and_reports_orphan_loop_worktree"
+            "tests.test_dev_worktree_lifecycle.DevWorktreeLifecycleTest.test_status_classifies_unknown_missing_unregistered_and_branch_only",
+            "tests.test_dev_worktree_lifecycle.DevWorktreeLifecycleTest.test_state_schema_and_doctor_recovery_signal"
           ]
         },
         {
@@ -2377,10 +2378,10 @@
           "source_line": 95,
           "assertion_count": 6,
           "status": "rescue",
-          "replacement": "doctor, recover and safe cleanup",
-          "rationale": "Unknown worktrees are diagnosed but never silently adopted or deleted.",
+          "replacement": "identity-bound create-intent recovery",
+          "rationale": "Path-only adoption is retired; a worktree is resumed only when its repository, path, branch and HEAD match a persisted create intent.",
           "test_ids": [
-            "tests.test_diagnostics_progress.DiagnosticsAndProgressContractTest.test_doctor_is_read_only_and_reports_orphan_loop_worktree"
+            "tests.test_dev_worktree_lifecycle.DevWorktreeLifecycleTest.test_create_intent_recovers_before_and_after_git_add"
           ]
         },
         {
@@ -2389,10 +2390,10 @@
           "source_line": 111,
           "assertion_count": 5,
           "status": "rescue",
-          "replacement": "doctor, recover and safe cleanup",
-          "rationale": "Unknown worktrees are diagnosed but never silently adopted or deleted.",
+          "replacement": "localized collision checks",
+          "rationale": "Unrelated unknown worktrees remain visible but no longer require a global ignore flag before a collision-free managed create.",
           "test_ids": [
-            "tests.test_diagnostics_progress.DiagnosticsAndProgressContractTest.test_doctor_is_read_only_and_reports_orphan_loop_worktree"
+            "tests.test_dev_worktree_lifecycle.DevWorktreeLifecycleTest.test_status_classifies_unknown_missing_unregistered_and_branch_only"
           ]
         },
         {
@@ -2401,10 +2402,10 @@
           "source_line": 129,
           "assertion_count": 2,
           "status": "rescue",
-          "replacement": "doctor, recover and safe cleanup",
-          "rationale": "Unknown worktrees are diagnosed but never silently adopted or deleted.",
+          "replacement": "absolute managed-root and state identity validation",
+          "rationale": "Invalid, repository-internal or symlinked roots are rejected before any worktree intent is written.",
           "test_ids": [
-            "tests.test_diagnostics_progress.DiagnosticsAndProgressContractTest.test_doctor_is_read_only_and_reports_orphan_loop_worktree"
+            "tests.test_dev_worktree_lifecycle.DevWorktreeLifecycleTest.test_root_rejects_repository_internal_and_symlink_paths"
           ]
         },
         {
@@ -2413,10 +2414,11 @@
           "source_line": 137,
           "assertion_count": 5,
           "status": "rescue",
-          "replacement": "doctor, recover and safe cleanup",
-          "rationale": "Unknown worktrees are diagnosed but never silently adopted or deleted.",
+          "replacement": "preserved unknown-residue inventory",
+          "rationale": "Unknown worktree changes are reported with residue facts but never imported into a new delivery branch.",
           "test_ids": [
-            "tests.test_diagnostics_progress.DiagnosticsAndProgressContractTest.test_doctor_is_read_only_and_reports_orphan_loop_worktree"
+            "tests.test_dev_worktree_lifecycle.DevWorktreeLifecycleTest.test_status_classifies_unknown_missing_unregistered_and_branch_only",
+            "tests.test_dev_worktree_lifecycle.DevWorktreeLifecycleTest.test_status_does_not_mutate_unknown_worktrees"
           ]
         },
         {
@@ -2425,10 +2427,10 @@
           "source_line": 155,
           "assertion_count": 6,
           "status": "rescue",
-          "replacement": "doctor, recover and safe cleanup",
-          "rationale": "Unknown worktrees are diagnosed but never silently adopted or deleted.",
+          "replacement": "complete read-only native worktree inventory",
+          "rationale": "All managed-root, registered, unregistered and branch-only findings are returned in one read-only report.",
           "test_ids": [
-            "tests.test_diagnostics_progress.DiagnosticsAndProgressContractTest.test_doctor_is_read_only_and_reports_orphan_loop_worktree"
+            "tests.test_dev_worktree_lifecycle.DevWorktreeLifecycleTest.test_status_classifies_unknown_missing_unregistered_and_branch_only"
           ]
         },
         {
@@ -2437,10 +2439,10 @@
           "source_line": 177,
           "assertion_count": 2,
           "status": "rescue",
-          "replacement": "doctor, recover and safe cleanup",
-          "rationale": "Unknown worktrees are diagnosed but never silently adopted or deleted.",
+          "replacement": "absolute managed-root validation",
+          "rationale": "Relative roots are rejected rather than interpreted against the caller's current directory.",
           "test_ids": [
-            "tests.test_diagnostics_progress.DiagnosticsAndProgressContractTest.test_doctor_is_read_only_and_reports_orphan_loop_worktree"
+            "tests.test_dev_worktree_lifecycle.DevWorktreeLifecycleTest.test_root_rejects_repository_internal_and_symlink_paths"
           ]
         },
         {
@@ -2448,11 +2450,11 @@
           "title": "A8: --reuse-worktree + --no-worktree 互斥 → exit 2",
           "source_line": 185,
           "assertion_count": 2,
-          "status": "rescue",
-          "replacement": "doctor, recover and safe cleanup",
-          "rationale": "Unknown worktrees are diagnosed but never silently adopted or deleted.",
+          "status": "retired",
+          "replacement": "single managed worktree create surface",
+          "rationale": "Bare mode and path-only reuse flags are absent, so their legacy mutual-exclusion branch has no current behavior to preserve.",
           "test_ids": [
-            "tests.test_diagnostics_progress.DiagnosticsAndProgressContractTest.test_doctor_is_read_only_and_reports_orphan_loop_worktree"
+            "tests.test_dev_worktree_lifecycle.DevWorktreeLifecycleTest.test_create_uses_neutral_managed_root_and_excludes_target_dirty"
           ]
         }
       ]
