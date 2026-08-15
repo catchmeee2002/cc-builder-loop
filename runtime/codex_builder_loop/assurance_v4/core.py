@@ -9033,14 +9033,7 @@ def verify_machine(
         commands = [item[1] for item in commands]
         if "machine" in ledger["facets"]["assurance"]["required"] and not commands:
             raise AssuranceError("machine evidence requires at least one command", code="MACHINE_COMMAND_REQUIRED")
-        reused: dict[str, dict[str, Any]] = {}
-        if evidence_state(ledger, "preflight") == "pass":
-            for item in ledger["evidence"]["preflight"]["details"].get("commands", []):
-                reused[str(item["id"])] = {**copy.deepcopy(item), "source": "preflight"}
-        remaining = [item for item in commands if item["id"] not in reused]
-        executed = _run_machine_commands(repo, run_id, candidate, remaining) if remaining else []
-        by_id = {item["id"]: item for item in [*reused.values(), *executed]}
-        results = [by_id[item["id"]] for item in commands if item["id"] in by_id]
+        results = _run_machine_commands(repo, run_id, candidate, commands) if commands else []
         passed = _machine_results_pass(commands, results)
         record = {
             "kind": "machine",
@@ -9076,7 +9069,7 @@ def verify_machine(
                     None if passed else ledger["machine_failure"]["failure_signature"]
                 ),
                 "duration_ms": int((time.monotonic() - started_at) * 1000),
-                "preflight_reused": len(reused),
+                "preflight_reused": 0,
             },
         )
         save_ledger(repo, ledger)

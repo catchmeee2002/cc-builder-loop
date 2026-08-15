@@ -29,6 +29,63 @@ from .models import (
 from .store import branch_head, dirty_paths, git, read_ledger, resolve_repo
 
 
+TESTER_CORRECTION_LIMIT = 3
+
+
+def _tester_correction_progress(ledger: Mapping[str, Any]) -> dict[str, Any]:
+    events = [item for item in ledger.get("events", []) if isinstance(item, Mapping)]
+    prepared: dict[str, dict[str, Any]] = {}
+    last_machine_pass_index = -1
+    last_machine_pass_at: Any = None
+    for index, event in enumerate(events):
+        details = event.get("details")
+        details = details if isinstance(details, Mapping) else {}
+        if event.get("kind") == "dispatch_prepared":
+            action_id = details.get("action_id")
+            if details.get("action") == "tester_fix" and isinstance(action_id, str):
+                prepared[action_id] = {
+                    "action_id": action_id,
+                    "prepared_at": event.get("at"),
+                }
+        elif (
+            event.get("kind") == "machine_verified"
+            and details.get("status") == "pass"
+        ):
+            last_machine_pass_index = index
+            last_machine_pass_at = event.get("at")
+
+    completed: list[dict[str, Any]] = []
+    consumed: set[str] = set()
+    for index, event in enumerate(events):
+        if index <= last_machine_pass_index or event.get("kind") != "dispatch_consumed":
+            continue
+        details = event.get("details")
+        details = details if isinstance(details, Mapping) else {}
+        action_id = details.get("action_id")
+        if (
+            isinstance(action_id, str)
+            and action_id in prepared
+            and action_id not in consumed
+        ):
+            consumed.add(action_id)
+            completed.append(
+                {
+                    **prepared[action_id],
+                    "consumed_at": event.get("at"),
+                }
+            )
+    return {
+        "limit": TESTER_CORRECTION_LIMIT,
+        "completed": len(completed),
+        "next_tester_fix_blocked": len(completed) >= TESTER_CORRECTION_LIMIT,
+        "window_start": {
+            "kind": "machine_pass" if last_machine_pass_index >= 0 else "run_start",
+            "at": last_machine_pass_at,
+        },
+        "corrections": completed,
+    }
+
+
 def _contract_decision_user_block(
     ledger: Mapping[str, Any], problem: Mapping[str, Any]
 ) -> str:
@@ -686,6 +743,25 @@ def next_action(
             ledger, run_id, status, action, reason, **payload
         )
 
+    def tester_fix_decision(reason: str, **payload: Any) -> dict[str, Any]:
+        progress = _tester_correction_progress(ledger)
+        if progress["next_tester_fix_blocked"]:
+            return decision(
+                "NEEDS_USER",
+                "architecture_review",
+                "tester_correction_limit_reached",
+                failures=[
+                    {
+                        "kind": "tester_correction",
+                        "count": progress["completed"],
+                        "limit": progress["limit"],
+                    }
+                ],
+                tester_correction_progress=progress,
+                **payload,
+            )
+        return decision("CONTINUE", "tester_fix", reason, **payload)
+
     def problem_decision(
         problem: Mapping[str, Any], problems: list[dict[str, Any]]
     ) -> dict[str, Any]:
@@ -753,9 +829,7 @@ def next_action(
                     agent=current_agent,
                     tester_source=current_source,
                 )
-            return decision(
-                "CONTINUE",
-                "tester_fix",
+            return tester_fix_decision(
                 "open_tester_problem",
                 problem=problem,
                 agent=ledger["facets"]["execution"]["agents"].get("tester"),
@@ -1279,8 +1353,15 @@ def next_action(
             action = "tester_blackbox"
         elif kind in {"reviewer", "doc_review"} and state in {"missing", "stale"}:
             action = "reviewer_final"
+        elif state == "failed" and kind == "tester":
+            return tester_fix_decision(
+                f"{kind}_{state}",
+                candidate_worktree=ledger["candidate_worktree"],
+                agent=execution["agents"].get("tester"),
+                tester_source=execution.get("tester_source"),
+            )
         elif state == "failed":
-            action = "tester_fix" if kind == "tester" else "builder_fix"
+            action = "builder_fix"
         else:
             continue
         payload: dict[str, Any] = {"candidate_worktree": ledger["candidate_worktree"]}

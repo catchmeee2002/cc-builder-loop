@@ -1057,17 +1057,162 @@ class FullDriverV4ContractTest(unittest.TestCase):
         ledger = self.load_ledger(run_path)
         self.assertEqual(
             ledger["evidence"]["machine"]["details"]["commands"][0]["source"],
-            "preflight",
+            "runtime",
         )
         machine_event = next(
             event
             for event in reversed(ledger["events"])
             if event.get("kind") == "machine_verified"
         )
-        self.assertEqual(machine_event["details"]["preflight_reused"], 1)
+        self.assertEqual(machine_event["details"]["preflight_reused"], 0)
         rc, next_gate = self.invoke("driver-next", "--repo", self.repo, "--run", run_id)
         self.assertEqual(rc, 0, next_gate)
         self.assertEqual(next_gate.get("action"), "tester_blackbox", next_gate)
+
+    def test_full_machine_replays_stateful_preflight_in_the_same_worktree(self) -> None:
+        run_id = "full-driver-stateful-preflight"
+        contract = contract_for(self.repo)
+        contract["assurance"]["preflight_before_proof"] = True
+        contract["assurance"]["machine_commands"] = [
+            {
+                "id": "materialize-prerequisite",
+                "argv": [
+                    sys.executable,
+                    "-c",
+                    (
+                        "from pathlib import Path; "
+                        "Path('.machine-prerequisite').write_text('ready')"
+                    ),
+                ],
+                "timeout_seconds": 30,
+                "run_before_full_suite": True,
+            },
+            {
+                "id": "consume-prerequisite",
+                "argv": [
+                    sys.executable,
+                    "-c",
+                    (
+                        "from pathlib import Path; "
+                        "raise SystemExit(0 if Path('.machine-prerequisite').read_text() "
+                        "== 'ready' else 7)"
+                    ),
+                ],
+                "timeout_seconds": 30,
+            },
+        ]
+        _data, run_path = self.start(run_id, contract=contract)
+        rc, checkpointed = self.invoke(
+            "checkpoint-builder", "--repo", self.repo, "--run", run_id
+        )
+        self.assertEqual(rc, 0, checkpointed)
+        self.prepare_and_record_tester(run_id, run_path)
+
+        rc, preflight = self.invoke(
+            "verify-preflight", "--repo", self.repo, "--run", run_id
+        )
+        self.assertEqual(rc, 0, preflight)
+        self.assertEqual(
+            self.load_ledger(run_path)["evidence"]["preflight"]["status"], "pass"
+        )
+        rc, machine = self.invoke(
+            "verify-machine", "--repo", self.repo, "--run", run_id
+        )
+        self.assertEqual(rc, 0, machine)
+        self.assertEqual(machine["readiness"]["states"]["machine"], "pass")
+        ledger = self.load_ledger(run_path)
+        results = ledger["evidence"]["machine"]["details"]["commands"]
+        self.assertEqual(
+            [(item["id"], item["source"], item["returncode"]) for item in results],
+            [
+                ("materialize-prerequisite", "runtime", 0),
+                ("consume-prerequisite", "runtime", 0),
+            ],
+        )
+
+    def test_three_consumed_tester_fixes_require_architecture_review_until_machine_pass(
+        self,
+    ) -> None:
+        run_id = "tester-correction-limit"
+        contract = contract_for(self.repo)
+        contract["execution"]["driver_enforced"] = False
+        _data, run_path = self.start(run_id, contract=contract)
+        rc, checkpointed = self.invoke(
+            "checkpoint-builder", "--repo", self.repo, "--run", run_id
+        )
+        self.assertEqual(rc, 0, checkpointed)
+        report_path = self.write_json(
+            "tester-correction-limit-problem.json",
+            {
+                "schema_version": 1,
+                "problems": [
+                    {
+                        "key": "tester-correction-needed",
+                        "summary": "Tester correction is required again.",
+                        "details": "The fourth correction must stop for architecture review.",
+                        "owner": "tester",
+                    }
+                ],
+            },
+        )
+        rc, recorded = self.invoke(
+            "record-problems",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--report",
+            report_path,
+            "--role",
+            "tester",
+            "--agent-id",
+            "full-driver-tester",
+            "--thread-id",
+            "full-driver-tester-thread",
+        )
+        self.assertEqual(rc, 0, recorded)
+        ledger = self.load_ledger(run_path)
+        for index in range(3):
+            action_id = f"{index + 1:064x}"
+            ledger["events"].extend(
+                [
+                    {
+                        "at": f"2026-08-15T00:00:0{index * 2}+00:00",
+                        "kind": "dispatch_prepared",
+                        "details": {
+                            "action": "tester_fix",
+                            "action_id": action_id,
+                        },
+                    },
+                    {
+                        "at": f"2026-08-15T00:00:0{index * 2 + 1}+00:00",
+                        "kind": "dispatch_consumed",
+                        "details": {
+                            "action_id": action_id,
+                            "consumer_source": "native_driver",
+                        },
+                    },
+                ]
+            )
+
+        blocked = driver.next_action(self.repo, run_id, _ledger=ledger)
+        self.assertEqual(blocked["status"], "NEEDS_USER")
+        self.assertEqual(blocked["action"], "architecture_review")
+        self.assertEqual(blocked["reason"], "tester_correction_limit_reached")
+        self.assertEqual(
+            blocked["tester_correction_progress"]["completed"], 3
+        )
+
+        ledger["events"].append(
+            {
+                "at": "2026-08-15T00:01:00+00:00",
+                "kind": "machine_verified",
+                "details": {"status": "pass"},
+            }
+        )
+        reset = driver.next_action(self.repo, run_id, _ledger=ledger)
+        self.assertEqual(reset["status"], "CONTINUE")
+        self.assertEqual(reset["action"], "tester_fix")
 
     def test_failed_machine_is_stale_after_candidate_or_tester_source_changes(self) -> None:
         for change in ("candidate", "tester-source"):
