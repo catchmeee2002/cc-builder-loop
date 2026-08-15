@@ -8679,6 +8679,9 @@ def parse_canonical_uv_proof_command(
             exit_code=EXIT_FAIL,
         )
     nested = list(argv[5:])
+    if nested[:1] == ["--all-packages"]:
+        prefix.append("--all-packages")
+        nested = nested[1:]
     if nested[:1] == ["pytest"]:
         args = proof_pytest_args(nested[1:])
         execution_tail = ["pytest", *args]
@@ -9780,6 +9783,7 @@ def classify_text_proof_test_result(
 PROOF_FINAL_FD_ENV = "CODEX_BUILDER_PROOF_FINAL_FD"
 PROOF_RAW_FD_ENV = "CODEX_BUILDER_PROOF_RAW_FD"
 PROOF_SUPERVISOR_ENV = "CODEX_BUILDER_INTERNAL_PROOF_SUPERVISOR"
+UV_PROJECT_ENVIRONMENT_ENV = "UV_PROJECT_ENVIRONMENT"
 
 TRUSTED_PROOF_INHERITED_ENV = (
     "HOME",
@@ -10192,9 +10196,9 @@ def cmd_internal_proof_supervisor(
         else proof_supervised_child_argv(requested_argv, str(args.framework))
     )
     child_env = trusted_proof_environment()
-    cache_prefix = os.environ.get("PYTHONPYCACHEPREFIX")
-    if cache_prefix:
-        child_env["PYTHONPYCACHEPREFIX"] = cache_prefix
+    for name in ("PYTHONPYCACHEPREFIX", UV_PROJECT_ENVIRONMENT_ENV):
+        if value := os.environ.get(name):
+            child_env[name] = value
 
     completed: subprocess.CompletedProcess[str]
     structured_raw = ""
@@ -10536,46 +10540,73 @@ def run_proof_argv(
     actual_argv = proof_supervisor_argv(requested_argv, framework)
     proof_env = trusted_proof_environment()
     structured_raw = ""
-    with tempfile.TemporaryFile(mode="w+b") as result_channel:
-        proof_env.update(
-            {
-                PROOF_FINAL_FD_ENV: str(result_channel.fileno()),
-                PROOF_SUPERVISOR_ENV: "1",
-                "PYTHONPYCACHEPREFIX": str(cache_path),
-                "PYTHONPATH": str(Path(__file__).resolve().parents[1]),
-            }
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cache_root = cache_path.parent.resolve()
+    worktree_root = worktree.resolve()
+    try:
+        cache_root.relative_to(worktree_root)
+    except ValueError:
+        pass
+    else:
+        raise RuntimeProblem(
+            "proof runtime cache must remain outside the proof worktree",
+            result="FAIL",
+            code="TEST_PROOF_RUNTIME_INVALID",
+            details={"cache_root": str(cache_root), "worktree": str(worktree_root)},
+            exit_code=EXIT_FAIL,
         )
-        try:
-            completed = subprocess.run(
-                actual_argv,
-                cwd=worktree,
-                shell=False,
-                text=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                timeout=timeout,
-                env=proof_env,
-                pass_fds=(result_channel.fileno(),),
-                check=False,
+    with contextlib.ExitStack() as runtime_stack:
+        if Path(requested_argv[0]).name.lower() == "uv":
+            environment_root = Path(
+                runtime_stack.enter_context(
+                    tempfile.TemporaryDirectory(
+                        prefix=f"{cache_path.name}-uv-", dir=cache_root
+                    )
+                )
             )
-        except OSError as exc:
-            completed = subprocess.CompletedProcess(
-                actual_argv,
-                126,
-                stdout="",
-                stderr=f"{type(exc).__name__}: {exc}",
+            proof_env[UV_PROJECT_ENVIRONMENT_ENV] = str(
+                environment_root / "project-environment"
             )
-            launch_error = True
-        except subprocess.TimeoutExpired as exc:
-            completed = subprocess.CompletedProcess(
-                actual_argv,
-                124,
-                stdout=exc.stdout or "",
-                stderr=exc.stderr or "",
+        with tempfile.TemporaryFile(mode="w+b") as result_channel:
+            proof_env.update(
+                {
+                    PROOF_FINAL_FD_ENV: str(result_channel.fileno()),
+                    PROOF_SUPERVISOR_ENV: "1",
+                    "PYTHONPYCACHEPREFIX": str(cache_path),
+                    "PYTHONPATH": str(Path(__file__).resolve().parents[1]),
+                }
             )
-            timed_out = True
-        result_channel.seek(0)
-        structured_raw = result_channel.read().decode("utf-8", errors="replace")
+            try:
+                completed = subprocess.run(
+                    actual_argv,
+                    cwd=worktree,
+                    shell=False,
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    timeout=timeout,
+                    env=proof_env,
+                    pass_fds=(result_channel.fileno(),),
+                    check=False,
+                )
+            except OSError as exc:
+                completed = subprocess.CompletedProcess(
+                    actual_argv,
+                    126,
+                    stdout="",
+                    stderr=f"{type(exc).__name__}: {exc}",
+                )
+                launch_error = True
+            except subprocess.TimeoutExpired as exc:
+                completed = subprocess.CompletedProcess(
+                    actual_argv,
+                    124,
+                    stdout=exc.stdout or "",
+                    stderr=exc.stderr or "",
+                )
+                timed_out = True
+            result_channel.seek(0)
+            structured_raw = result_channel.read().decode("utf-8", errors="replace")
     duration_ms = int((time.monotonic() - started) * 1000)
     output = (
         f"$ {shlex.join(requested_argv)}\n"

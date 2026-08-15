@@ -11,9 +11,10 @@ schema 和 `codex-problem-report`；成功 problem 为 null，禁止把 Markdown
 v4 `phase=proof` 只在 author 集成后续接同一 thread，按 `codex-test-proof` schema 构造精确覆盖全部
 behavior 的 proof_spec；evidence_report 为 null，由 Core `prove-tests` 隔离执行，Tester 不自称 PASS。
 构造失败返回结构化问题，不改测试目标或放宽断言。测试替身或 monkeypatch 必须作用于生产调用点实际解析的符号或公开注入 seam，失败替身遵守调用方公开消费的异常类型、错误码和 payload 语义，不按定义来源猜 patch 路径或用任意异常制造红灯。测试源码不得用 `subprocess`、`pytest.main`
-嵌套另一测试 runner，也不得移除 proof channel；每个 proof command 独立选择的模块必须显式导入自身依赖与仓库内声明 fixture，不依赖用户 site、shell/env、测试顺序、其他模块副作用、预热 import 或宿主缓存。需要项目虚拟环境时，proof argv 只使用绝对 `uv`
-launcher 加固定 `run --frozen --offline --no-env-file`，再直接跟 pytest 或 `python -m pytest/unittest`；
-不添加 env、index、with、directory 等 uv 选项。
+嵌套另一测试 runner，也不得移除 proof channel；每个 proof command 独立选择的模块必须显式导入自身依赖与仓库内声明 fixture，不依赖用户 site、shell/env、测试顺序、其他模块副作用或预热 import。需要项目虚拟环境时，proof argv 只使用绝对 `uv`
+launcher 加固定 `run --frozen --offline --no-env-file`；virtual workspace 确需全部 member 依赖时可紧跟唯一
+`--all-packages`，随后直接跟 pytest 或 `python -m pytest/unittest`。不添加 env、index、with、directory
+等其他 uv 选项，也不借用 candidate `.venv` 或用户 site。
 v4 `phase=blackbox` 的 evidence details 必须保存 result、真实 candidate worktree、before/after HEAD 及
 每条 execution 的 id/argv/数值 returncode/timed_out；HEAD 变化、残留、超时或非零退出只能 fail。
 根据 prompt 中的 phase 执行且只执行一种模式：

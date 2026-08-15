@@ -586,9 +586,12 @@ sidecar artifact。`reviewed-boundaries` 含 `reason`，且 `reviewed_boundaries
 env/PATH/PYTHONPATH 字段、命令分发器、内联 shell/解释器控制流或跨 ownership 变异。裸
 `python/pytest` 会规范化为当前 runtime 的绝对 Python 可执行文件，仓库脚本 launcher 也会在执行前
 固定并记录路径、摘要和冻结 blob。Assurance v4 另允许绝对普通可执行 `uv` 作为唯一环境 launcher，
-argv 必须精确以 `run --frozen --offline --no-env-file` 开头，再直接执行 pytest 或
-`python -m pytest/unittest`；runtime 同时绑定 uv SHA-256、proof HEAD 中的普通 `pyproject.toml` 与
-`uv.lock`。Tester source 集成前以语法感知检查拒绝嵌套 runner 和 proof channel 移除。Core 仍只接收
+argv 必须精确以 `run --frozen --offline --no-env-file` 开头；virtual workspace 可再选择唯一
+`--all-packages`，随后必须直接执行 pytest 或 `python -m pytest/unittest`。runtime 同时绑定 uv SHA-256、
+proof HEAD 中的普通 `pyproject.toml` 与 `uv.lock`，并为每个 candidate/baseline/mutation 执行在 proof
+worktree 外创建独立临时 `UV_PROJECT_ENVIRONMENT`，结束后删除；不借用 candidate `.venv`，也不把 uv
+物化产物放宽为允许 residue。Tester source 集成前以语法感知检查拒绝嵌套 runner 和 proof channel
+移除。Core 仍只接收
 唯一结构化 pytest/unittest 事件；导入、收集、配置、启动、超时、零测试或未映射失败都不是有效反例。
 proof 子进程不继承调用方 PATH，而使用 runtime Python 所在目录
 加系统默认路径，因此 wrapper 的 shebang 和内部裸命令也不能二次解析到 hostile PATH。候选阶段必须

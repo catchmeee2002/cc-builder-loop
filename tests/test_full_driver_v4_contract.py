@@ -326,12 +326,14 @@ class FullDriverV4ContractTest(unittest.TestCase):
         *,
         execute_child: bool = True,
         invocation_marker: Path | None = None,
+        environment_marker: Path | None = None,
     ) -> Path:
         root = self.artifacts / name
         root.mkdir(parents=True, exist_ok=True)
         launcher = root / "uv"
         child = (
-            "command = sys.argv[5:]\n"
+            "command_index = 6 if sys.argv[5:6] == ['--all-packages'] else 5\n"
+            "command = sys.argv[command_index:]\n"
             "if not command:\n"
             "    raise SystemExit(93)\n"
             "if command[0] == 'python':\n"
@@ -347,6 +349,7 @@ class FullDriverV4ContractTest(unittest.TestCase):
         launcher.write_text(
             "#!/usr/bin/env python3\n"
             "import os\n"
+            "import pathlib\n"
             "import sys\n\n"
             + (
                 f"open({str(invocation_marker)!r}, 'a', encoding='utf-8').write('invoked\\n')\n"
@@ -356,6 +359,16 @@ class FullDriverV4ContractTest(unittest.TestCase):
             +
             "if sys.argv[1:5] != ['run', '--frozen', '--offline', '--no-env-file']:\n"
             "    raise SystemExit(92)\n"
+            "project_environment = os.environ.get('UV_PROJECT_ENVIRONMENT')\n"
+            "if not project_environment:\n"
+            "    raise SystemExit(94)\n"
+            "pathlib.Path(project_environment).mkdir(parents=True, exist_ok=True)\n"
+            "pathlib.Path(project_environment, 'materialized').write_text('ok', encoding='utf-8')\n"
+            + (
+                f"open({str(environment_marker)!r}, 'a', encoding='utf-8').write(project_environment + '\\n')\n"
+                if environment_marker is not None
+                else ""
+            )
             + child,
             encoding="utf-8",
         )
@@ -1428,6 +1441,76 @@ class FullDriverV4ContractTest(unittest.TestCase):
             proof["details"]["spec"]["groups"][0]["argv"][0], str(launcher)
         )
 
+    def test_uv_all_packages_uses_ephemeral_external_project_environments(self) -> None:
+        run_id = "uv-proof-all-packages"
+        environment_marker = self.artifacts / f"{run_id}-environments"
+        launcher = self.make_uv_launcher(
+            run_id, environment_marker=environment_marker
+        )
+        run_path, tester, action = self.prepare_uv_proof_run(
+            run_id,
+            baseline_source="def add(a, b):\n    return a + b - 1\n",
+            candidate_source="def add(a, b):\n    return a + b\n",
+            test_source=(
+                "from src.calc import add\n\n"
+                "def test_observation():\n"
+                "    assert add(1, 2) == 3\n"
+            ),
+        )
+        test_id = "tests/test_uv_proof.py::test_observation"
+        spec_path = self.write_json(
+            f"{run_id}-spec.json",
+            self.uv_baseline_spec(
+                launcher,
+                argv=[
+                    str(launcher),
+                    "run",
+                    "--frozen",
+                    "--offline",
+                    "--no-env-file",
+                    "--all-packages",
+                    "python",
+                    "-m",
+                    "pytest",
+                    test_id,
+                ],
+            ),
+        )
+
+        rc, proved = self.invoke(
+            "prove-tests",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--spec",
+            spec_path,
+            "--agent-id",
+            tester["agent_id"],
+            "--thread-id",
+            tester["thread_id"],
+            "--action-id",
+            action["action_id"],
+        )
+
+        self.assertEqual(rc, 0, proved)
+        proof = self.load_ledger(run_path)["evidence"]["proof"]
+        result = proof["details"]["results"][0]
+        self.assertIn("--all-packages", result["execution_argv"])
+        self.assertEqual(result["candidate"]["worktree_residue"], [])
+        self.assertEqual(result["counterexample"]["worktree_residue"], [])
+        environments = [
+            Path(line)
+            for line in environment_marker.read_text(encoding="utf-8").splitlines()
+            if line
+        ]
+        self.assertEqual(len(environments), 2)
+        self.assertEqual(len(set(environments)), 2)
+        for environment in environments:
+            self.assertTrue(environment.is_absolute())
+            self.assertIn("proof-artifacts", environment.parts)
+            self.assertFalse(environment.exists())
+
     def test_v4_mutation_proof_rejects_diff_drift_during_test_execution(self) -> None:
         run_id = "v4-mutation-diff-drift"
         contract = contract_for(self.repo)
@@ -2366,6 +2449,10 @@ class FullDriverV4ContractTest(unittest.TestCase):
             "extra-directory": lambda launcher: [
                 str(launcher), "run", "--frozen", "--offline", "--no-env-file",
                 "--directory", ".", *suffix
+            ],
+            "duplicate-all-packages": lambda launcher: [
+                str(launcher), "run", "--frozen", "--offline", "--no-env-file",
+                "--all-packages", "--all-packages", *suffix
             ],
         }
         for label, make_argv in variants.items():
