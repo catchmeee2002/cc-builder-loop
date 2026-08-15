@@ -169,6 +169,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     code="NATIVE_DRIVER_PORT_INCOMPATIBLE",
                     status="NEEDS_USER",
                 )
+            dispatch_renewal_reason = None
             if args.reason is not None:
                 if not args.reason.strip():
                     raise NativeDriverError(
@@ -177,22 +178,51 @@ def main(argv: Sequence[str] | None = None) -> int:
                         status="NEEDS_USER",
                     )
                 dispatch = context.get("dispatch_intent")
-                if not (
+                if (
                     isinstance(dispatch, dict)
                     and int(dispatch.get("attempt", 1)) >= 3
                     and dispatch.get("state") in {"prepared", "in_flight", "exhausted"}
                 ):
-                    raise NativeDriverError(
-                        "dispatch renewal is not available for the current run state",
-                        code="NATIVE_DISPATCH_RENEWAL_NOT_AVAILABLE",
-                        status="NEEDS_USER",
+                    dispatch_renewal_reason = args.reason
+                else:
+                    decision = core.call(
+                        "driver-next", "--repo", str(repo), "--run", args.run
+                    )
+                    if not (
+                        decision.get("status") == "NEEDS_USER"
+                        and decision.get("action") == "architecture_review"
+                        and decision.get("reason") == "tester_correction_limit_reached"
+                        and isinstance(
+                            decision.get("tester_correction_review_binding"), str
+                        )
+                    ):
+                        raise NativeDriverError(
+                            "dispatch renewal is not available for the current run state",
+                            code="NATIVE_DISPATCH_RENEWAL_NOT_AVAILABLE",
+                            status="NEEDS_USER",
+                        )
+                    core.call(
+                        "authorize-tester-correction",
+                        "--repo",
+                        str(repo),
+                        "--run",
+                        args.run,
+                        "--action-id",
+                        str(decision["action_id"]),
+                        "--review-binding",
+                        str(decision["tester_correction_review_binding"]),
+                        "--reason",
+                        args.reason,
+                        "--driver-runtime-kind",
+                        "native",
+                        "--allow-runtime-transition",
                     )
             coordinator = NativeCoordinator(
                 repo=repo,
                 run_id=args.run,
                 core=core,
                 transport=transport,
-                dispatch_renewal_reason=args.reason,
+                dispatch_renewal_reason=dispatch_renewal_reason,
                 event_sink=emit_event,
             )
         with transport:

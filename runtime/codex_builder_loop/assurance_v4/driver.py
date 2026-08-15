@@ -74,7 +74,7 @@ def _tester_correction_progress(ledger: Mapping[str, Any]) -> dict[str, Any]:
                     "consumed_at": event.get("at"),
                 }
             )
-    return {
+    progress = {
         "limit": TESTER_CORRECTION_LIMIT,
         "completed": len(completed),
         "next_tester_fix_blocked": len(completed) >= TESTER_CORRECTION_LIMIT,
@@ -84,6 +84,65 @@ def _tester_correction_progress(ledger: Mapping[str, Any]) -> dict[str, Any]:
         },
         "corrections": completed,
     }
+    return {**progress, "progress_digest": digest(progress)}
+
+
+def _tester_correction_review_binding(
+    ledger: Mapping[str, Any],
+    progress: Mapping[str, Any],
+    reason: str,
+    payload: Mapping[str, Any],
+) -> str:
+    problem = payload.get("problem")
+    problem_identity = None
+    if isinstance(problem, Mapping):
+        problem_identity = {
+            "key": problem.get("key"),
+            "owner": problem.get("owner"),
+            "candidate_head": problem.get("candidate_head"),
+        }
+    tester_source = ledger["facets"]["execution"].get("tester_source")
+    return digest(
+        {
+            "run_id": ledger["run_id"],
+            "reason": reason,
+            "candidate_head": ledger["facets"]["execution"].get("candidate_head"),
+            "tester_source_head": (
+                tester_source.get("head")
+                if isinstance(tester_source, Mapping)
+                else None
+            ),
+            "progress_digest": progress["progress_digest"],
+            "problem": problem_identity,
+        }
+    )
+
+
+def _tester_correction_authorization(
+    ledger: Mapping[str, Any], review_binding: str
+) -> dict[str, Any] | None:
+    consumed = {
+        str(details.get("authorization_id"))
+        for event in ledger.get("events", [])
+        if isinstance(event, Mapping)
+        and event.get("kind") == "tester_correction_authorization_consumed"
+        and isinstance((details := event.get("details")), Mapping)
+        and isinstance(details.get("authorization_id"), str)
+    }
+    for event in reversed(ledger.get("events", [])):
+        if not isinstance(event, Mapping) or event.get("kind") != "tester_correction_authorized":
+            continue
+        details = event.get("details")
+        if not isinstance(details, Mapping):
+            continue
+        authorization_id = details.get("authorization_id")
+        if (
+            details.get("review_binding") == review_binding
+            and isinstance(authorization_id, str)
+            and authorization_id not in consumed
+        ):
+            return copy.deepcopy(dict(details))
+    return None
 
 
 def _contract_decision_user_block(
@@ -746,6 +805,22 @@ def next_action(
     def tester_fix_decision(reason: str, **payload: Any) -> dict[str, Any]:
         progress = _tester_correction_progress(ledger)
         if progress["next_tester_fix_blocked"]:
+            review_binding = _tester_correction_review_binding(
+                ledger, progress, reason, payload
+            )
+            authorization = _tester_correction_authorization(
+                ledger, review_binding
+            )
+            if authorization is not None:
+                return decision(
+                    "CONTINUE",
+                    "tester_fix",
+                    "tester_correction_authorized",
+                    tester_correction_progress=progress,
+                    tester_correction_review_binding=review_binding,
+                    tester_correction_authorization=authorization,
+                    **payload,
+                )
             return decision(
                 "NEEDS_USER",
                 "architecture_review",
@@ -758,6 +833,7 @@ def next_action(
                     }
                 ],
                 tester_correction_progress=progress,
+                tester_correction_review_binding=review_binding,
                 **payload,
             )
         return decision("CONTINUE", "tester_fix", reason, **payload)

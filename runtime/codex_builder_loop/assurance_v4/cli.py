@@ -112,6 +112,20 @@ def parser() -> argparse.ArgumentParser:
     resolve_external_problem.add_argument("--run", required=True)
     resolve_external_problem.add_argument("--problem-key", required=True)
     resolve_external_problem.add_argument("--reason", required=True)
+    authorize_tester_correction = commands.add_parser("authorize-tester-correction")
+    authorize_tester_correction.add_argument("--repo", default=".")
+    authorize_tester_correction.add_argument("--run", required=True)
+    authorize_tester_correction.add_argument("--action-id", required=True)
+    authorize_tester_correction.add_argument("--review-binding", required=True)
+    authorize_tester_correction.add_argument("--reason", required=True)
+    authorize_tester_correction.add_argument(
+        "--driver-runtime-kind",
+        choices=["native", "full_driver_skill"],
+        required=True,
+    )
+    authorize_tester_correction.add_argument(
+        "--allow-runtime-transition", action="store_true"
+    )
 
     context = commands.add_parser("driver-context")
     context.add_argument("--repo", default=".")
@@ -500,6 +514,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.run,
                 problem_key=args.problem_key,
                 reason=args.reason,
+            )
+        elif args.command == "authorize-tester-correction":
+            payload = core.authorize_tester_correction(
+                args.repo,
+                args.run,
+                action_id=args.action_id,
+                review_binding=args.review_binding,
+                reason=args.reason,
+                driver_runtime_kind=args.driver_runtime_kind,
+                allow_runtime_transition=args.allow_runtime_transition,
             )
         elif args.command == "driver-context":
             payload = core.driver_context(args.repo, args.run)

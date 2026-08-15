@@ -1309,6 +1309,45 @@ def begin_dispatch(
         agent = ledger["facets"]["execution"]["agents"].get(role)
         if not isinstance(agent, dict) or agent.get("thread_id") != thread_id:
             raise AssuranceError("dispatch thread identity mismatch", code="DISPATCH_IDENTITY_MISMATCH")
+        authorization = current.get("tester_correction_authorization")
+        if action == "tester_fix" and current.get("reason") == "tester_correction_authorized":
+            if not isinstance(authorization, Mapping):
+                raise AssuranceError(
+                    "authorized Tester correction lost its decision binding",
+                    code="TESTER_CORRECTION_AUTHORIZATION_MISSING",
+                    status="FAIL",
+                )
+            expected_runtime_identity = authorization.get("runtime_identity")
+            from ..core import capture_runtime_identity
+
+            current_runtime_identity = capture_runtime_identity()
+            if (
+                expected_runtime_identity != ledger.get("runtime_identity")
+                or current_runtime_identity != expected_runtime_identity
+            ):
+                raise AssuranceError(
+                    "authorized Tester correction runtime identity changed before dispatch",
+                    code="TESTER_CORRECTION_AUTHORIZATION_RUNTIME_MISMATCH",
+                    status="NEEDS_USER",
+                    details={
+                        "authorized_runtime_identity": copy.deepcopy(
+                            expected_runtime_identity
+                        ),
+                        "ledger_runtime_identity": copy.deepcopy(
+                            ledger.get("runtime_identity")
+                        ),
+                        "actual_runtime_identity": current_runtime_identity,
+                    },
+                )
+            append_event(
+                ledger,
+                "tester_correction_authorization_consumed",
+                {
+                    "authorization_id": authorization["authorization_id"],
+                    "review_binding": authorization["review_binding"],
+                    "tester_fix_action_id": action_id,
+                },
+            )
         ledger["dispatch_intent"] = {
             "action_id": action_id,
             "action": action,
@@ -1322,6 +1361,161 @@ def begin_dispatch(
             "created_at": now(),
         }
         append_event(ledger, "dispatch_prepared", copy.deepcopy(ledger["dispatch_intent"]))
+        save_ledger(repo, ledger)
+    return status(repo, run_id)
+
+
+def authorize_tester_correction(
+    repo_value: str | Path,
+    run_value: str,
+    *,
+    action_id: str,
+    review_binding: str,
+    reason: str,
+    driver_runtime_kind: str,
+    allow_runtime_transition: bool = False,
+) -> dict[str, Any]:
+    repo = resolve_repo(repo_value)
+    run_id = ensure_run_id(run_value)
+    normalized_reason = reason.strip()
+    if not normalized_reason:
+        raise AssuranceError(
+            "Tester correction authorization requires a non-empty reason",
+            code="TESTER_CORRECTION_AUTHORIZATION_REASON_REQUIRED",
+            status="NEEDS_USER",
+        )
+    with locked(repo):
+        ledger = read_ledger(repo, run_id)
+        _require_driver_runtime_owner(ledger, driver_runtime_kind)
+        if ledger["phase"] != "active":
+            raise AssuranceError(
+                "Tester correction authorization requires an active run",
+                code="ASSURANCE_RUN_NOT_ACTIVE",
+                status="NEEDS_USER",
+            )
+        matching = [
+            event.get("details")
+            for event in ledger.get("events", [])
+            if isinstance(event, Mapping)
+            and event.get("kind") == "tester_correction_authorized"
+            and isinstance(event.get("details"), Mapping)
+            and event["details"].get("architecture_action_id") == action_id
+            and event["details"].get("review_binding") == review_binding
+        ]
+        if matching:
+            if len(matching) != 1 or matching[0].get("reason") != normalized_reason:
+                raise AssuranceError(
+                    "Tester correction authorization replay conflicts with the recorded decision",
+                    code="TESTER_CORRECTION_AUTHORIZATION_CONFLICT",
+                    status="NEEDS_USER",
+                )
+            return status(repo, run_id)
+
+        from .driver import next_action
+
+        current = next_action(repo, run_id, _ledger=ledger)
+        if (
+            current.get("status") != "NEEDS_USER"
+            or current.get("action") != "architecture_review"
+            or current.get("reason") != "tester_correction_limit_reached"
+            or current.get("action_id") != action_id
+            or current.get("tester_correction_review_binding") != review_binding
+        ):
+            raise AssuranceError(
+                "Tester correction architecture review decision is stale",
+                code="TESTER_CORRECTION_REVIEW_STALE",
+                status="NEEDS_USER",
+                details={"current": current},
+            )
+
+        from ..core import capture_runtime_identity
+
+        current_runtime_identity = capture_runtime_identity()
+        previous_runtime_identity = copy.deepcopy(ledger["runtime_identity"])
+        if current_runtime_identity != previous_runtime_identity:
+            if not allow_runtime_transition:
+                raise AssuranceError(
+                    "Tester correction authorization cannot change the frozen runtime identity",
+                    code="TESTER_CORRECTION_RUNTIME_IDENTITY_MISMATCH",
+                    status="NEEDS_USER",
+                    details={
+                        "expected_runtime_identity": previous_runtime_identity,
+                        "actual_runtime_identity": current_runtime_identity,
+                    },
+                )
+            if (
+                current_runtime_identity.get("capture_status") != "captured"
+                or current_runtime_identity.get("adapter_dirty") is not False
+            ):
+                raise AssuranceError(
+                    "Tester correction runtime transition requires a captured clean runtime",
+                    code="TESTER_CORRECTION_RUNTIME_TRANSITION_UNSAFE",
+                    status="NEEDS_USER",
+                    details={"actual_runtime_identity": current_runtime_identity},
+                )
+            current_runtime_support, _manifest, required_independent = (
+                _runtime_support_snapshot(repo, copy.deepcopy(ledger["facets"]))
+            )
+            _assert_runtime_support_contract(
+                ledger["facets"], current_runtime_support, required_independent
+            )
+            previous_support = copy.deepcopy(ledger["runtime_support"])
+            comparable_previous = {
+                key: value
+                for key, value in previous_support.items()
+                if key != "runtime_head"
+            }
+            comparable_current = {
+                key: value
+                for key, value in current_runtime_support.items()
+                if key != "runtime_head"
+            }
+            if comparable_current != comparable_previous:
+                raise AssuranceError(
+                    "Tester correction runtime support changed beyond the approved runtime commit",
+                    code="TESTER_CORRECTION_RUNTIME_SUPPORT_DRIFT",
+                    status="NEEDS_USER",
+                    details={
+                        "expected_runtime_support": previous_support,
+                        "actual_runtime_support": current_runtime_support,
+                    },
+                )
+            ledger["runtime_identity"] = current_runtime_identity
+            ledger["runtime_support"] = current_runtime_support
+            append_event(
+                ledger,
+                "runtime_identity_transitioned",
+                {
+                    "reason": normalized_reason,
+                    "architecture_action_id": action_id,
+                    "review_binding": review_binding,
+                    "previous_runtime_identity": previous_runtime_identity,
+                    "current_runtime_identity": copy.deepcopy(current_runtime_identity),
+                    "previous_runtime_support": previous_support,
+                    "current_runtime_support": copy.deepcopy(current_runtime_support),
+                },
+            )
+
+        authorization_id = digest(
+            {
+                "run_id": run_id,
+                "architecture_action_id": action_id,
+                "review_binding": review_binding,
+                "reason": normalized_reason,
+                "runtime_identity": ledger["runtime_identity"],
+            }
+        )
+        append_event(
+            ledger,
+            "tester_correction_authorized",
+            {
+                "authorization_id": authorization_id,
+                "architecture_action_id": action_id,
+                "review_binding": review_binding,
+                "reason": normalized_reason,
+                "runtime_identity": copy.deepcopy(ledger["runtime_identity"]),
+            },
+        )
         save_ledger(repo, ledger)
     return status(repo, run_id)
 

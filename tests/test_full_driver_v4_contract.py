@@ -1202,6 +1202,55 @@ class FullDriverV4ContractTest(unittest.TestCase):
         self.assertEqual(
             blocked["tester_correction_progress"]["completed"], 3
         )
+        self.assertRegex(
+            blocked["tester_correction_progress"]["progress_digest"],
+            r"^[0-9a-f]{64}$",
+        )
+        self.assertRegex(
+            blocked["tester_correction_review_binding"], r"^[0-9a-f]{64}$"
+        )
+
+        authorization_id = "f" * 64
+        ledger["events"].append(
+            {
+                "at": "2026-08-15T00:00:59+00:00",
+                "kind": "tester_correction_authorized",
+                "details": {
+                    "authorization_id": authorization_id,
+                    "architecture_action_id": blocked["action_id"],
+                    "review_binding": blocked[
+                        "tester_correction_review_binding"
+                    ],
+                    "reason": "user approved one exact correction",
+                    "runtime_identity": ledger["runtime_identity"],
+                },
+            }
+        )
+        authorized = driver.next_action(self.repo, run_id, _ledger=ledger)
+        self.assertEqual(authorized["status"], "CONTINUE")
+        self.assertEqual(authorized["action"], "tester_fix")
+        self.assertEqual(authorized["reason"], "tester_correction_authorized")
+        self.assertEqual(
+            authorized["tester_correction_authorization"]["authorization_id"],
+            authorization_id,
+        )
+
+        ledger["events"].append(
+            {
+                "at": "2026-08-15T00:00:59.500000+00:00",
+                "kind": "tester_correction_authorization_consumed",
+                "details": {
+                    "authorization_id": authorization_id,
+                    "review_binding": blocked[
+                        "tester_correction_review_binding"
+                    ],
+                    "tester_fix_action_id": authorized["action_id"],
+                },
+            }
+        )
+        blocked_again = driver.next_action(self.repo, run_id, _ledger=ledger)
+        self.assertEqual(blocked_again["status"], "NEEDS_USER")
+        self.assertEqual(blocked_again["action"], "architecture_review")
 
         ledger["events"].append(
             {
@@ -1213,6 +1262,179 @@ class FullDriverV4ContractTest(unittest.TestCase):
         reset = driver.next_action(self.repo, run_id, _ledger=ledger)
         self.assertEqual(reset["status"], "CONTINUE")
         self.assertEqual(reset["action"], "tester_fix")
+
+    def test_authorized_tester_correction_is_persisted_consumed_and_runtime_bound(
+        self,
+    ) -> None:
+        run_id = "tester-correction-authorization"
+        contract = contract_for(self.repo)
+        contract["execution"]["driver_enforced"] = False
+        contract_path = self.write_json(
+            f"{run_id}-contract.json", contract
+        )
+        rc, started = self.invoke(
+            "start",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--session-id",
+            "full-driver-v4-session",
+            "--contract",
+            contract_path,
+            "--driver-kind",
+            "native",
+            "--driver-transport",
+            "codex_app_server",
+            "--driver-runtime-version",
+            "codex-test",
+            "--driver-protocol-schema-digest",
+            "d" * 64,
+        )
+        self.assertEqual(rc, 0, started)
+        run_path = Path(started["candidate_worktree"]).parent
+        ledger = self.load_ledger(run_path)
+        ledger["problems"].append(
+            {
+                "key": "approved-tester-correction",
+                "summary": "One exact Tester correction needs review.",
+                "details": "The correction remains inside frozen Tester ownership.",
+                "owner": "tester",
+                "status": "open",
+                "producer": {
+                    "role": "tester",
+                    "agent_id": "full-driver-tester",
+                    "thread_id": "full-driver-tester-thread",
+                },
+                "candidate_head": ledger["facets"]["execution"]["candidate_head"],
+                "recorded_at": "2026-08-15T01:00:00+00:00",
+            }
+        )
+        for index in range(3):
+            correction_action_id = f"{index + 1:064x}"
+            ledger["events"].extend(
+                [
+                    {
+                        "at": f"2026-08-15T01:00:0{index * 2}+00:00",
+                        "kind": "dispatch_prepared",
+                        "details": {
+                            "action": "tester_fix",
+                            "action_id": correction_action_id,
+                        },
+                    },
+                    {
+                        "at": f"2026-08-15T01:00:0{index * 2 + 1}+00:00",
+                        "kind": "dispatch_consumed",
+                        "details": {"action_id": correction_action_id},
+                    },
+                ]
+            )
+        core.save_ledger(self.repo, ledger)
+        blocked = driver.next_action(self.repo, run_id)
+
+        transitioned_identity = {
+            "adapter": "codex",
+            "adapter_commit": "c" * 40,
+            "adapter_dirty": False,
+            "capture_status": "captured",
+        }
+        transitioned_support = {
+            **ledger["runtime_support"],
+            "runtime_head": "c" * 40,
+        }
+        with (
+            patch(
+                "runtime.codex_builder_loop.core.capture_runtime_identity",
+                return_value=transitioned_identity,
+            ),
+            patch.object(
+                core,
+                "_runtime_support_snapshot",
+                return_value=(transitioned_support, {}, []),
+            ),
+            patch.object(core, "_assert_runtime_support_contract"),
+        ):
+            authorized_status = core.authorize_tester_correction(
+                self.repo,
+                run_id,
+                action_id=blocked["action_id"],
+                review_binding=blocked["tester_correction_review_binding"],
+                reason="user approved one exact correction",
+                driver_runtime_kind="native",
+                allow_runtime_transition=True,
+            )
+        self.assertEqual(authorized_status["runtime_identity"], transitioned_identity)
+        authorized = driver.next_action(self.repo, run_id)
+        self.assertEqual(authorized["action"], "tester_fix")
+        self.assertEqual(authorized["reason"], "tester_correction_authorized")
+
+        with patch(
+            "runtime.codex_builder_loop.core.capture_runtime_identity",
+            return_value={**transitioned_identity, "adapter_commit": "d" * 40},
+        ):
+            with self.assertRaises(core.AssuranceError) as raised:
+                core.begin_dispatch(
+                    self.repo,
+                    run_id,
+                    action_id=authorized["action_id"],
+                    action="tester_fix",
+                    role="tester",
+                    thread_id="full-driver-tester-thread",
+                    prompt_digest="a" * 64,
+                    output_schema_digest="b" * 64,
+                )
+        self.assertEqual(
+            raised.exception.code,
+            "TESTER_CORRECTION_AUTHORIZATION_RUNTIME_MISMATCH",
+        )
+
+        with patch(
+            "runtime.codex_builder_loop.core.capture_runtime_identity",
+            return_value=transitioned_identity,
+        ):
+            core.begin_dispatch(
+                self.repo,
+                run_id,
+                action_id=authorized["action_id"],
+                action="tester_fix",
+                role="tester",
+                thread_id="full-driver-tester-thread",
+                prompt_digest="a" * 64,
+                output_schema_digest="b" * 64,
+            )
+            core.begin_dispatch(
+                self.repo,
+                run_id,
+                action_id=authorized["action_id"],
+                action="tester_fix",
+                role="tester",
+                thread_id="full-driver-tester-thread",
+                prompt_digest="a" * 64,
+                output_schema_digest="b" * 64,
+            )
+        persisted = self.load_ledger(run_path)
+        self.assertEqual(persisted["runtime_identity"], transitioned_identity)
+        self.assertEqual(persisted["runtime_support"], transitioned_support)
+        transition = next(
+            event
+            for event in persisted["events"]
+            if event.get("kind") == "runtime_identity_transitioned"
+        )
+        self.assertEqual(
+            transition["details"]["previous_runtime_identity"],
+            ledger["runtime_identity"],
+        )
+        consumed_events = [
+            event
+            for event in persisted["events"]
+            if event.get("kind")
+            == "tester_correction_authorization_consumed"
+        ]
+        self.assertEqual(len(consumed_events), 1)
+        consumed = consumed_events[0]
+        self.assertEqual(
+            consumed["details"]["tester_fix_action_id"], authorized["action_id"]
+        )
 
     def test_failed_machine_is_stale_after_candidate_or_tester_source_changes(self) -> None:
         for change in ("candidate", "tester-source"):

@@ -2316,6 +2316,82 @@ class NativeDriverCoreContractTest(unittest.TestCase):
             "user approved a new dispatch generation",
         )
 
+    def test_native_resume_authorizes_tester_architecture_review_without_renewal(
+        self,
+    ) -> None:
+        captured: dict[str, object] = {}
+        calls: list[tuple[str, tuple[str, ...]]] = []
+
+        class FakeCore:
+            def call(self, command: str, *args: str, input_value=None):
+                calls.append((command, args))
+                if command == "driver-context":
+                    return {
+                        "driver_runtime": {"kind": "native", "protocol_version": 1},
+                        "dispatch_intent": None,
+                    }
+                if command == "driver-next":
+                    return {
+                        "status": "NEEDS_USER",
+                        "action": "architecture_review",
+                        "reason": "tester_correction_limit_reached",
+                        "action_id": "a" * 64,
+                        "tester_correction_review_binding": "b" * 64,
+                    }
+                if command == "authorize-tester-correction":
+                    return {"status": "ACTIVE"}
+                raise AssertionError(command)
+
+        class FakeTransport:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+        class FakeCoordinator:
+            current_action = None
+
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+            def run(self):
+                return {"status": "NEEDS_USER", "run_id": "architecture-run"}
+
+        output = StringIO()
+        with (
+            patch.object(native_cli, "CorePort", return_value=FakeCore()),
+            patch.object(
+                native_cli,
+                "probe_app_server",
+                return_value=SimpleNamespace(
+                    runtime_version="codex-test",
+                    protocol_schema_digest="b" * 64,
+                ),
+            ),
+            patch.object(native_cli, "AppServerTransport", return_value=FakeTransport()),
+            patch.object(native_cli, "NativeCoordinator", FakeCoordinator),
+            redirect_stdout(output),
+        ):
+            rc = native_cli.main(
+                [
+                    "resume",
+                    "--repo",
+                    str(self.repo),
+                    "--run",
+                    "architecture-run",
+                    "--reason",
+                    "user approved one exact correction",
+                ]
+            )
+
+        self.assertEqual(rc, 1)
+        self.assertIsNone(captured["dispatch_renewal_reason"])
+        authorize_call = next(item for item in calls if item[0] == "authorize-tester-correction")
+        self.assertIn("--allow-runtime-transition", authorize_call[1])
+        self.assertIn("a" * 64, authorize_call[1])
+        self.assertIn("b" * 64, authorize_call[1])
+
     def test_native_cli_reports_finalized_when_fatal_finalize_recovery_succeeds(
         self,
     ) -> None:
