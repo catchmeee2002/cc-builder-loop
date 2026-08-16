@@ -4,7 +4,7 @@ import json
 import unittest
 from pathlib import Path
 
-from jsonschema import Draft202012Validator
+from jsonschema import Draft202012Validator, FormatChecker
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -29,7 +29,9 @@ class RetrospectiveContractTest(unittest.TestCase):
         self,
     ) -> None:
         Draft202012Validator.check_schema(RETROSPECTIVE_SCHEMA)
-        validator = Draft202012Validator(RETROSPECTIVE_SCHEMA)
+        validator = Draft202012Validator(
+            RETROSPECTIVE_SCHEMA, format_checker=FormatChecker()
+        )
         signal_id = "recorded-problem-0123456789abcdef"
         snapshot = {
             "schema_version": 1,
@@ -84,25 +86,70 @@ class RetrospectiveContractTest(unittest.TestCase):
             "report_digest": "d" * 64,
             "recorded_at": "2026-08-04T00:00:00+00:00",
         }
+        receipt = {
+            "owner": "builder_loop",
+            "reference": "https://example.invalid/issues/1",
+            "signal_ids": [signal_id],
+            "signal_digest": "e" * 64,
+            "remote_record_reference": (
+                "https://example.invalid/issues/1#issuecomment-1"
+            ),
+            "written_body_digest": "f" * 64,
+            "read_back_body_digest": "f" * 64,
+            "observed_at": "2026-08-04T00:00:00Z",
+        }
+        report_input_v2 = {
+            **report_input,
+            "schema_version": 2,
+            "issue_updates": [receipt],
+        }
+        stored_report_v2 = {
+            **report_input_v2,
+            "repo_root": snapshot["repo_root"],
+            "owner_session_id": snapshot["owner_session_id"],
+            "report_digest": "1" * 64,
+            "recorded_at": "2026-08-04T00:00:00+00:00",
+        }
         status = {
             "status": "READY",
             "owner_session_id": snapshot["owner_session_id"],
             "snapshot": snapshot,
-            "report": stored_report,
+            "report": stored_report_v2,
+            "issue_sync": {
+                "state": "verified",
+                "required_update_count": 1,
+                "verified_update_count": 1,
+                "required_bindings": [
+                    {
+                        "owner": receipt["owner"],
+                        "reference": receipt["reference"],
+                        "signal_ids": receipt["signal_ids"],
+                        "signal_digest": receipt["signal_digest"],
+                    }
+                ],
+                "receipts": [receipt],
+            },
             "required_block": (
                 "Canonical summary\n"
                 f"BUILDER_RETROSPECTIVE_READY:{snapshot['snapshot_digest']}:"
-                f"{stored_report['report_digest']}"
+                f"{stored_report_v2['report_digest']}"
             ),
             "required_user_block": (
                 "Builder-loop retrospective complete.\n"
                 "Runs: 1; Signals: 1; Issue routes: 1.\n"
-                f"Report: {stored_report['report_digest']}\n"
+                f"Report: {stored_report_v2['report_digest']}\n"
                 f"BUILDER_RETROSPECTIVE_READY:{snapshot['snapshot_digest']}:"
-                f"{stored_report['report_digest']}"
+                f"{stored_report_v2['report_digest']}"
             ),
         }
-        for value in (snapshot, report_input, stored_report, status):
+        for value in (
+            snapshot,
+            report_input,
+            stored_report,
+            report_input_v2,
+            stored_report_v2,
+            status,
+        ):
             with self.subTest(value=value):
                 validator.validate(value)
         self.assertIn(
@@ -122,6 +169,9 @@ class RetrospectiveContractTest(unittest.TestCase):
             ],
         }
         self.assertFalse(validator.is_valid(invalid_advisory))
+        invalid_time = json.loads(json.dumps(report_input_v2))
+        invalid_time["issue_updates"][0]["observed_at"] = "not-a-date-time"
+        self.assertFalse(validator.is_valid(invalid_time))
 
     def test_builder_delegates_memory_screening_without_copying_old_scoring(self) -> None:
         self.assertIn("post-delivery-retrospective.md", BUILDER_SKILL)

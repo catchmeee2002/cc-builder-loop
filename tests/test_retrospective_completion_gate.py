@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import sys
 import tempfile
@@ -261,6 +262,66 @@ class RetrospectiveCompletionGateTest(unittest.TestCase):
                 )
         return dispositions
 
+    @staticmethod
+    def issue_receipts(
+        snapshot_digest: str,
+        dispositions: list[dict[str, str]],
+    ) -> list[dict[str, Any]]:
+        grouped: dict[tuple[str, str], list[str]] = {}
+        for item in dispositions:
+            if item["disposition"] != "issue":
+                continue
+            key = (item["owner"], item["reference"])
+            grouped.setdefault(key, []).append(item["signal_id"])
+        receipts: list[dict[str, Any]] = []
+        for (owner, reference), signal_ids in sorted(grouped.items()):
+            normalized_ids = sorted(signal_ids)
+            binding = {
+                "snapshot_digest": snapshot_digest,
+                "owner": owner,
+                "reference": reference,
+                "signal_ids": normalized_ids,
+            }
+            signal_digest = hashlib.sha256(
+                json.dumps(
+                    binding,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest()
+            body_digest = hashlib.sha256(
+                f"{owner}\n{reference}\n{signal_digest}".encode("utf-8")
+            ).hexdigest()
+            receipts.append(
+                {
+                    "owner": owner,
+                    "reference": reference,
+                    "signal_ids": normalized_ids,
+                    "signal_digest": signal_digest,
+                    "remote_record_reference": (
+                        f"{reference}#retrospective-{signal_digest[:16]}"
+                    ),
+                    "written_body_digest": body_digest,
+                    "read_back_body_digest": body_digest,
+                    "observed_at": "2026-08-16T00:00:00Z",
+                }
+            )
+        return receipts
+
+    @classmethod
+    def v2_report(
+        cls,
+        snapshot_digest: str,
+        dispositions: list[dict[str, str]],
+    ) -> dict[str, Any]:
+        return {
+            "schema_version": 2,
+            "snapshot_digest": snapshot_digest,
+            "dispositions": dispositions,
+            "issue_updates": cls.issue_receipts(snapshot_digest, dispositions),
+        }
+
     def test_noop_active_and_terminal_statuses_are_distinct_and_read_only(self) -> None:
         session_id = "retrospective-status-session"
         noop = self.retrospective_status(session_id)
@@ -493,8 +554,27 @@ class RetrospectiveCompletionGateTest(unittest.TestCase):
         immutable_before = self.repository_state(run_paths)
         rc, recorded = self.record_report(session_id, needs_user_report)
         self.assertEqual(rc, 0, recorded)
+        sync_required = self.retrospective_status(session_id)
+        self.assertEqual(sync_required.get("status"), "REQUIRED", sync_required)
+        self.assertEqual(
+            sync_required.get("issue_sync", {}).get("state"),
+            "legacy-unverified",
+        )
+        self.assertNotIn("required_user_block", sync_required)
+        self.assertIn(
+            "BUILDER_RETROSPECTIVE_SYNC_REQUIRED",
+            sync_required["required_block"],
+        )
+        verified_needs_user_report = self.v2_report(
+            digest, needs_user_dispositions
+        )
+        rc, recorded = self.record_report(
+            session_id, verified_needs_user_report, replace=True
+        )
+        self.assertEqual(rc, 0, recorded)
         pending = self.retrospective_status(session_id)
         self.assertEqual(pending.get("status"), "NEEDS_USER", pending)
+        self.assertEqual(pending.get("issue_sync", {}).get("state"), "verified")
         pending_block = pending["required_block"]
         pending_user_block = pending["required_user_block"]
         self.assertIn("BUILDER_INPUT_REQUIRED", pending_block)
@@ -513,7 +593,7 @@ class RetrospectiveCompletionGateTest(unittest.TestCase):
                 self.assertNotIn(signal["signal_id"], pending_user_block)
 
         first_report = copy.deepcopy(pending["report"])
-        rc, replayed = self.record_report(session_id, needs_user_report)
+        rc, replayed = self.record_report(session_id, verified_needs_user_report)
         self.assertEqual(rc, 0, replayed)
         replay_status = self.retrospective_status(session_id)
         self.assertEqual(replay_status.get("report"), first_report)
@@ -522,7 +602,7 @@ class RetrospectiveCompletionGateTest(unittest.TestCase):
             replay_status.get("required_user_block"), pending_user_block
         )
 
-        conflicting = copy.deepcopy(needs_user_report)
+        conflicting = copy.deepcopy(verified_needs_user_report)
         conflicting["dispositions"][mandatory_index]["reason"] = (
             "A different same-snapshot decision."
         )
@@ -532,11 +612,7 @@ class RetrospectiveCompletionGateTest(unittest.TestCase):
             self.retrospective_status(session_id).get("report"), first_report
         )
 
-        ready_report = {
-            "schema_version": 1,
-            "snapshot_digest": digest,
-            "dispositions": complete,
-        }
+        ready_report = self.v2_report(digest, complete)
         rc, replaced = self.record_report(
             session_id, ready_report, replace=True
         )
@@ -646,6 +722,14 @@ class RetrospectiveCompletionGateTest(unittest.TestCase):
         )
         self.assertEqual(rc, 0, recorded)
 
+        sync_required = self.retrospective_status(session_id)
+        self.assertEqual(sync_required.get("status"), "REQUIRED", sync_required)
+        rc, recorded = self.record_report(
+            session_id,
+            self.v2_report(snapshot["snapshot_digest"], dispositions),
+            replace=True,
+        )
+        self.assertEqual(rc, 0, recorded)
         pending = self.retrospective_status(session_id)
         self.assertEqual(pending.get("status"), "NEEDS_USER", pending)
         self.assertTrue(
@@ -660,6 +744,109 @@ class RetrospectiveCompletionGateTest(unittest.TestCase):
             if item["disposition"] == "issue":
                 self.assertNotIn(item["reference"], user_block)
 
+    def test_issue_sync_receipts_are_exact_canonical_and_read_back(self) -> None:
+        session_id = "retrospective-issue-sync-session"
+        run_id = "retrospective-issue-sync-run"
+        self.start_run(run_id, session_id)
+        self.record_problems(
+            run_id,
+            [
+                {
+                    "key": "first-sync-problem",
+                    "summary": "First routed fact must be persisted remotely.",
+                    "details": "The first fact belongs in an Issue container.",
+                    "owner": "builder_loop",
+                },
+                {
+                    "key": "second-sync-problem",
+                    "summary": "Second routed fact must be persisted remotely.",
+                    "details": "The second fact belongs in another Issue container.",
+                    "owner": "builder_loop",
+                },
+            ],
+        )
+        self.abandon_run(run_id)
+        snapshot = self.retrospective_status(session_id)["snapshot"]
+        dispositions = self.complete_dispositions(snapshot["signals"])
+        legacy_report = {
+            "schema_version": 1,
+            "snapshot_digest": snapshot["snapshot_digest"],
+            "dispositions": dispositions,
+        }
+        rc, recorded = self.record_report(session_id, legacy_report)
+        self.assertEqual(rc, 0, recorded)
+        required = self.retrospective_status(session_id)
+        self.assertEqual(required["status"], "REQUIRED", required)
+        self.assertEqual(required["issue_sync"]["state"], "legacy-unverified")
+        self.assertEqual(
+            required["issue_sync"]["required_update_count"],
+            sum(item["disposition"] == "issue" for item in dispositions),
+        )
+
+        valid = self.v2_report(snapshot["snapshot_digest"], dispositions)
+        invalid_cases: list[tuple[str, dict[str, Any], str]] = []
+
+        missing = copy.deepcopy(valid)
+        missing["issue_updates"] = missing["issue_updates"][:-1]
+        invalid_cases.append(
+            ("missing", missing, "RETROSPECTIVE_ISSUE_UPDATE_COVERAGE_INVALID")
+        )
+
+        mismatched = copy.deepcopy(valid)
+        mismatched["issue_updates"][0]["signal_ids"] = [
+            "recorded-problem-0000000000000000"
+        ]
+        invalid_cases.append(
+            ("signal", mismatched, "RETROSPECTIVE_ISSUE_UPDATE_SIGNAL_MISMATCH")
+        )
+
+        body_mismatch = copy.deepcopy(valid)
+        body_mismatch["issue_updates"][0]["read_back_body_digest"] = "f" * 64
+        invalid_cases.append(
+            ("body", body_mismatch, "RETROSPECTIVE_ISSUE_UPDATE_BODY_MISMATCH")
+        )
+
+        reused_remote = copy.deepcopy(valid)
+        if len(reused_remote["issue_updates"]) > 1:
+            reused_remote["issue_updates"][1]["remote_record_reference"] = (
+                reused_remote["issue_updates"][0]["remote_record_reference"]
+            )
+            invalid_cases.append(
+                (
+                    "remote",
+                    reused_remote,
+                    "RETROSPECTIVE_ISSUE_UPDATE_REMOTE_RECORD_REUSED",
+                )
+            )
+
+        invalid_time = copy.deepcopy(valid)
+        invalid_time["issue_updates"][0]["observed_at"] = "not-a-date-time"
+        invalid_cases.append(
+            ("time", invalid_time, "RETROSPECTIVE_REPORT_INVALID")
+        )
+
+        for name, report, expected_code in invalid_cases:
+            with self.subTest(name=name):
+                rc, rejected = self.record_report(
+                    session_id, report, replace=True
+                )
+                self.assertNotEqual(rc, 0, rejected)
+                self.assertEqual(rejected.get("code"), expected_code, rejected)
+                self.assertEqual(
+                    self.retrospective_status(session_id)["report"]["schema_version"],
+                    1,
+                )
+
+        rc, replaced = self.record_report(session_id, valid, replace=True)
+        self.assertEqual(rc, 0, replaced)
+        ready = self.retrospective_status(session_id)
+        self.assertEqual(ready["status"], "READY", ready)
+        self.assertEqual(ready["issue_sync"]["state"], "verified")
+        self.assertEqual(
+            ready["issue_sync"]["verified_update_count"],
+            ready["issue_sync"]["required_update_count"],
+        )
+
     def test_real_stop_hook_accepts_only_the_fresh_compact_core_block(self) -> None:
         session_id = "retrospective-real-hook-session"
         run_id = "retrospective-real-hook-run"
@@ -667,13 +854,10 @@ class RetrospectiveCompletionGateTest(unittest.TestCase):
         self.abandon_run(run_id)
         required = self.retrospective_status(session_id)
         snapshot = required["snapshot"]
+        dispositions = self.complete_dispositions(snapshot["signals"])
         rc, recorded = self.record_report(
             session_id,
-            {
-                "schema_version": 1,
-                "snapshot_digest": snapshot["snapshot_digest"],
-                "dispositions": self.complete_dispositions(snapshot["signals"]),
-            },
+            self.v2_report(snapshot["snapshot_digest"], dispositions),
         )
         self.assertEqual(rc, 0, recorded)
         ready = self.retrospective_status(session_id)

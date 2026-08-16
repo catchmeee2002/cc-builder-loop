@@ -3041,6 +3041,157 @@ def _derive_retrospective_snapshot(
     return validate_retrospective_snapshot(snapshot)
 
 
+def _retrospective_report_digest_input(
+    report: Mapping[str, Any],
+) -> dict[str, Any]:
+    value = {
+        key: copy.deepcopy(report[key])
+        for key in (
+            "schema_version",
+            "repo_root",
+            "owner_session_id",
+            "snapshot_digest",
+            "dispositions",
+        )
+    }
+    if report["schema_version"] == 2:
+        value["issue_updates"] = copy.deepcopy(report["issue_updates"])
+    return value
+
+
+def _retrospective_issue_bindings(
+    snapshot_digest: str,
+    dispositions: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    groups: dict[tuple[str, str], list[str]] = {}
+    for item in dispositions:
+        if item.get("disposition") != "issue":
+            continue
+        key = (str(item["owner"]), str(item["reference"]))
+        groups.setdefault(key, []).append(str(item["signal_id"]))
+    bindings: list[dict[str, Any]] = []
+    for (owner, reference), signal_ids in sorted(groups.items()):
+        normalized_signal_ids = sorted(signal_ids)
+        binding_input = {
+            "snapshot_digest": snapshot_digest,
+            "owner": owner,
+            "reference": reference,
+            "signal_ids": normalized_signal_ids,
+        }
+        bindings.append(
+            {
+                "owner": owner,
+                "reference": reference,
+                "signal_ids": normalized_signal_ids,
+                "signal_digest": digest(binding_input),
+            }
+        )
+    return bindings
+
+
+def _ordered_retrospective_issue_updates(
+    snapshot_digest: str,
+    dispositions: Sequence[Mapping[str, Any]],
+    issue_updates: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    expected = _retrospective_issue_bindings(snapshot_digest, dispositions)
+    expected_by_key = {
+        (item["owner"], item["reference"]): item for item in expected
+    }
+    received_keys = [
+        (str(item["owner"]), str(item["reference"])) for item in issue_updates
+    ]
+    duplicate_keys = sorted(
+        {key for key in received_keys if received_keys.count(key) > 1}
+    )
+    received_by_key = {
+        (str(item["owner"]), str(item["reference"])): item
+        for item in issue_updates
+    }
+    missing = sorted(set(expected_by_key) - set(received_by_key))
+    unexpected = sorted(set(received_by_key) - set(expected_by_key))
+    if duplicate_keys or missing or unexpected:
+        raise AssuranceError(
+            "retrospective Issue update receipts must cover each owner/reference exactly once",
+            code="RETROSPECTIVE_ISSUE_UPDATE_COVERAGE_INVALID",
+            status="FAIL",
+            details={
+                "duplicates": [list(item) for item in duplicate_keys],
+                "missing": [list(item) for item in missing],
+                "unexpected": [list(item) for item in unexpected],
+            },
+        )
+    remote_records = [str(item["remote_record_reference"]) for item in issue_updates]
+    duplicate_remote_records = sorted(
+        {item for item in remote_records if remote_records.count(item) > 1}
+    )
+    if duplicate_remote_records:
+        raise AssuranceError(
+            "one remote Issue record cannot verify multiple retrospective bindings",
+            code="RETROSPECTIVE_ISSUE_UPDATE_REMOTE_RECORD_REUSED",
+            status="FAIL",
+            details={"remote_record_references": duplicate_remote_records},
+        )
+    ordered: list[dict[str, Any]] = []
+    for binding in expected:
+        key = (binding["owner"], binding["reference"])
+        receipt = received_by_key[key]
+        if (
+            list(receipt["signal_ids"]) != binding["signal_ids"]
+            or receipt["signal_digest"] != binding["signal_digest"]
+        ):
+            raise AssuranceError(
+                "retrospective Issue update receipt does not bind the current routed signals",
+                code="RETROSPECTIVE_ISSUE_UPDATE_SIGNAL_MISMATCH",
+                status="FAIL",
+                details={
+                    "owner": binding["owner"],
+                    "reference": binding["reference"],
+                    "expected_signal_ids": binding["signal_ids"],
+                    "actual_signal_ids": list(receipt["signal_ids"]),
+                    "expected_signal_digest": binding["signal_digest"],
+                    "actual_signal_digest": receipt["signal_digest"],
+                },
+            )
+        if receipt["written_body_digest"] != receipt["read_back_body_digest"]:
+            raise AssuranceError(
+                "retrospective Issue update was not read back byte-identically",
+                code="RETROSPECTIVE_ISSUE_UPDATE_BODY_MISMATCH",
+                status="FAIL",
+                details={
+                    "owner": binding["owner"],
+                    "reference": binding["reference"],
+                    "remote_record_reference": receipt["remote_record_reference"],
+                    "written_body_digest": receipt["written_body_digest"],
+                    "read_back_body_digest": receipt["read_back_body_digest"],
+                },
+            )
+        ordered.append(copy.deepcopy(dict(receipt)))
+    return ordered
+
+
+def _retrospective_issue_sync(report: Mapping[str, Any]) -> dict[str, Any]:
+    bindings = _retrospective_issue_bindings(
+        str(report["snapshot_digest"]), report["dispositions"]
+    )
+    if not bindings:
+        state = "not-required"
+        receipts: list[dict[str, Any]] = []
+    elif report["schema_version"] == 1:
+        state = "legacy-unverified"
+        receipts = []
+    else:
+        state = "verified"
+        receipts = copy.deepcopy(list(report["issue_updates"]))
+    return {
+        "state": state,
+        "required_update_count": len(bindings),
+        "verified_update_count": len(receipts),
+        "required_bindings": bindings,
+        "receipts": receipts,
+    }
+
+
 def _read_retrospective_report(repo: Path, session_id: str) -> dict[str, Any] | None:
     path = _retrospective_report_path(repo, session_id)
     if not path.exists():
@@ -3060,16 +3211,27 @@ def _read_retrospective_report(repo: Path, session_id: str) -> dict[str, Any] | 
             status="FATAL",
             details=exc.details,
         ) from exc
-    report_base = {
-        key: report[key]
-        for key in (
-            "schema_version",
-            "repo_root",
-            "owner_session_id",
-            "snapshot_digest",
-            "dispositions",
-        )
-    }
+    if report["schema_version"] == 2:
+        try:
+            ordered_updates = _ordered_retrospective_issue_updates(
+                report["snapshot_digest"],
+                report["dispositions"],
+                report["issue_updates"],
+            )
+        except AssuranceError as exc:
+            raise AssuranceError(
+                str(exc),
+                code="RETROSPECTIVE_REPORT_STORED_INVALID",
+                status="FATAL",
+                details={"reason_code": exc.code, **dict(exc.details or {})},
+            ) from exc
+        if ordered_updates != report["issue_updates"]:
+            raise AssuranceError(
+                "stored retrospective Issue update receipts are not canonical",
+                code="RETROSPECTIVE_REPORT_STORED_INVALID",
+                status="FATAL",
+            )
+    report_base = _retrospective_report_digest_input(report)
     if report["report_digest"] != digest(report_base):
         raise AssuranceError(
             "stored retrospective report digest does not match its content",
@@ -3080,19 +3242,30 @@ def _read_retrospective_report(repo: Path, session_id: str) -> dict[str, Any] | 
 
 
 def _render_retrospective_block(
-    snapshot: Mapping[str, Any], report: Mapping[str, Any], *, pending: bool
+    snapshot: Mapping[str, Any],
+    report: Mapping[str, Any],
+    *,
+    pending_user: bool,
+    issue_sync: Mapping[str, Any],
+    pending_issue_updates: Sequence[Mapping[str, Any]],
 ) -> str:
     signal_by_id = {item["signal_id"]: item for item in snapshot["signals"]}
-    heading = (
-        "Builder-loop retrospective requires user input."
-        if pending
-        else "Builder-loop retrospective complete."
-    )
+    if pending_issue_updates:
+        heading = "Builder-loop retrospective requires Issue synchronization."
+    elif pending_user:
+        heading = "Builder-loop retrospective requires user input."
+    else:
+        heading = "Builder-loop retrospective complete."
     lines = [
         heading,
         f"Session: {snapshot['owner_session_id']}",
         f"Snapshot: {snapshot['snapshot_digest']}",
         f"Report: {report['report_digest']}",
+        (
+            f"Issue synchronization: {issue_sync['state']} "
+            f"({issue_sync['verified_update_count']}/"
+            f"{issue_sync['required_update_count']} verified)."
+        ),
         "Dispositions:",
     ]
     if not report["dispositions"]:
@@ -3106,7 +3279,18 @@ def _render_retrospective_block(
         lines.append(
             f"- {item['signal_id']} [{signal['severity']}] {signal['summary']} => {result}"
         )
-    if pending:
+    for binding in pending_issue_updates:
+        lines.append(
+            "- Unverified Issue update "
+            f"{binding['owner']} {binding['reference']} => "
+            f"{','.join(binding['signal_ids'])} ({binding['signal_digest']})"
+        )
+    if pending_issue_updates:
+        lines.append(
+            f"BUILDER_RETROSPECTIVE_SYNC_REQUIRED:{snapshot['snapshot_digest']}:"
+            f"{report['report_digest']}"
+        )
+    elif pending_user:
         lines.append(
             f"BUILDER_INPUT_REQUIRED:{snapshot['owner_session_id']}:{snapshot['snapshot_digest']}"
         )
@@ -3282,27 +3466,49 @@ def retrospective_status(repo_value: str | Path, session_id: str) -> dict[str, A
         for run_id, fact in terminal_facts.items()
         if fact["terminal_status"] in {"needs-user", "continuity-failure"}
     }
-    pending = bool(pending_dispositions or pending_runs)
-    required_block = _render_retrospective_block(snapshot, report, pending=pending)
-    required_user_block = _render_retrospective_user_block(
+    issue_sync = _retrospective_issue_sync(report)
+    pending_issue_updates = (
+        issue_sync["required_bindings"]
+        if issue_sync["state"] == "legacy-unverified"
+        else []
+    )
+    pending_user = bool(pending_dispositions or pending_runs)
+    required_block = _render_retrospective_block(
         snapshot,
         report,
-        pending_runs=pending_runs,
-        pending_dispositions=pending_dispositions,
+        pending_user=pending_user,
+        issue_sync=issue_sync,
+        pending_issue_updates=pending_issue_updates,
     )
-    return {
-        "status": "NEEDS_USER" if pending else "READY",
+    if pending_issue_updates:
+        result_status = "REQUIRED"
+    elif pending_user:
+        result_status = "NEEDS_USER"
+    else:
+        result_status = "READY"
+    result = {
+        "status": result_status,
         "owner_session_id": owner_session_id,
         "message": (
-            "retrospective awaits an authorized user decision"
-            if pending
+            "retrospective Issue synchronization is required"
+            if pending_issue_updates
+            else "retrospective awaits an authorized user decision"
+            if pending_user
             else "retrospective report is complete"
         ),
         "snapshot": snapshot,
         "report": report,
+        "issue_sync": issue_sync,
         "required_block": required_block,
-        "required_user_block": required_user_block,
     }
+    if not pending_issue_updates:
+        result["required_user_block"] = _render_retrospective_user_block(
+            snapshot,
+            report,
+            pending_runs=pending_runs,
+            pending_dispositions=pending_dispositions,
+        )
+    return result
 
 
 def record_retrospective(
@@ -3364,12 +3570,18 @@ def record_retrospective(
                 details={"signal_ids": invalid_mandatory},
             )
         report_base = {
-            "schema_version": 1,
+            "schema_version": report_input["schema_version"],
             "repo_root": snapshot["repo_root"],
             "owner_session_id": owner_session_id,
             "snapshot_digest": snapshot["snapshot_digest"],
             "dispositions": ordered,
         }
+        if report_input["schema_version"] == 2:
+            report_base["issue_updates"] = _ordered_retrospective_issue_updates(
+                snapshot["snapshot_digest"],
+                ordered,
+                report_input["issue_updates"],
+            )
         stored = {
             **report_base,
             "report_digest": digest(report_base),

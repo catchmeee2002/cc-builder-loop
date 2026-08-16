@@ -114,7 +114,75 @@
         }
       ]
     },
-    "reportInput": {
+    "issueBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["owner", "reference", "signal_ids", "signal_digest"],
+      "properties": {
+        "owner": {"enum": ["current_project", "builder_loop", "external_platform"]},
+        "reference": {"type": "string", "minLength": 1, "pattern": "\\S"},
+        "signal_ids": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/signalId"},
+          "uniqueItems": true
+        },
+        "signal_digest": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "issueUpdateReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "owner", "reference", "signal_ids", "signal_digest",
+        "remote_record_reference", "written_body_digest",
+        "read_back_body_digest", "observed_at"
+      ],
+      "properties": {
+        "owner": {"enum": ["current_project", "builder_loop", "external_platform"]},
+        "reference": {"type": "string", "minLength": 1, "pattern": "\\S"},
+        "signal_ids": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/signalId"},
+          "uniqueItems": true
+        },
+        "signal_digest": {"$ref": "#/$defs/sha256"},
+        "remote_record_reference": {"type": "string", "minLength": 1, "pattern": "\\S"},
+        "written_body_digest": {"$ref": "#/$defs/sha256"},
+        "read_back_body_digest": {"$ref": "#/$defs/sha256"},
+        "observed_at": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S",
+          "format": "date-time"
+        }
+      }
+    },
+    "issueSyncStatus": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "state", "required_update_count", "verified_update_count",
+        "required_bindings", "receipts"
+      ],
+      "properties": {
+        "state": {"enum": ["not-required", "legacy-unverified", "verified"]},
+        "required_update_count": {"type": "integer", "minimum": 0},
+        "verified_update_count": {"type": "integer", "minimum": 0},
+        "required_bindings": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/issueBinding"},
+          "uniqueItems": true
+        },
+        "receipts": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/issueUpdateReceipt"},
+          "uniqueItems": true
+        }
+      }
+    },
+    "reportInputV1": {
       "type": "object",
       "additionalProperties": false,
       "required": ["schema_version", "snapshot_digest", "dispositions"],
@@ -127,7 +195,31 @@
         }
       }
     },
-    "storedReport": {
+    "reportInputV2": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "snapshot_digest", "dispositions", "issue_updates"],
+      "properties": {
+        "schema_version": {"const": 2},
+        "snapshot_digest": {"$ref": "#/$defs/sha256"},
+        "dispositions": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/disposition"}
+        },
+        "issue_updates": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/issueUpdateReceipt"},
+          "uniqueItems": true
+        }
+      }
+    },
+    "reportInput": {
+      "oneOf": [
+        {"$ref": "#/$defs/reportInputV1"},
+        {"$ref": "#/$defs/reportInputV2"}
+      ]
+    },
+    "storedReportV1": {
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -144,6 +236,34 @@
         "recorded_at": {"type": "string", "minLength": 1}
       }
     },
+    "storedReportV2": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version", "repo_root", "owner_session_id", "snapshot_digest",
+        "dispositions", "issue_updates", "report_digest", "recorded_at"
+      ],
+      "properties": {
+        "schema_version": {"const": 2},
+        "repo_root": {"type": "string", "minLength": 1},
+        "owner_session_id": {"type": "string", "minLength": 1},
+        "snapshot_digest": {"$ref": "#/$defs/sha256"},
+        "dispositions": {"type": "array", "items": {"$ref": "#/$defs/disposition"}},
+        "issue_updates": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/issueUpdateReceipt"},
+          "uniqueItems": true
+        },
+        "report_digest": {"$ref": "#/$defs/sha256"},
+        "recorded_at": {"type": "string", "minLength": 1}
+      }
+    },
+    "storedReport": {
+      "oneOf": [
+        {"$ref": "#/$defs/storedReportV1"},
+        {"$ref": "#/$defs/storedReportV2"}
+      ]
+    },
     "status": {
       "type": "object",
       "additionalProperties": true,
@@ -153,6 +273,7 @@
         "owner_session_id": {"type": "string", "minLength": 1},
         "snapshot": {"$ref": "#/$defs/snapshot"},
         "report": {"$ref": "#/$defs/storedReport"},
+        "issue_sync": {"$ref": "#/$defs/issueSyncStatus"},
         "required_block": {"type": "string", "minLength": 1},
         "required_user_block": {"type": "string", "minLength": 1},
         "message": {"type": "string", "minLength": 1}

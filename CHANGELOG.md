@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Machine/preflight failure signature 现在绑定实际 stdout 与 stderr，失败集合收敛不再被误计为三次同错。
+  终态 retrospective report v2 同时把每组 Issue routes 绑定到唯一远端更新及 body read-back receipt；旧 v1
+  Issue route 保持 `REQUIRED/legacy-unverified`，同步属于 Agent 执行义务，不伪装成用户产品决策（#182、#183）。
+
 - 角色行为实验场新增了六个 CC 遗留风险 canary contract：五个仓库外确定性 fixture 分别覆盖正向结果、
   大 diff 完整审查、文档 ground truth、内容密度和生产者到消费者链路，一个安全宿主探针复现既有进程
   持锁导致后续验证 timeout 并确认进程组回收。canary 只建立 fresh model 采样前提，结果不写 runtime

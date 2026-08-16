@@ -559,6 +559,7 @@ def _validate_retrospective(value: Any, definition: str) -> dict[str, Any]:
         jsonschema.Draft202012Validator(
             {"$ref": f"{schema['$id']}#/$defs/{definition}"},
             registry=Registry().with_resource(schema["$id"], Resource.from_contents(schema)),
+            format_checker=jsonschema.FormatChecker(),
         ).validate(value)
     except jsonschema.ValidationError as exc:
         path = "/".join(str(part) for part in exc.absolute_path)

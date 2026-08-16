@@ -89,6 +89,59 @@ description: 当用户要求“提 Issue”“开 Issue”“记录 bug”“把
 不要在结案评论中填写 `shadow_route`、`derived`、`batch_approval` 或 `needs_first_principles`。离线评测器
 根据根因、决策和验收事实推导路线，避免关闭 Agent 事后给自己打分。
 
+## Builder-loop retrospective 同步
+
+只有调用方明确提供当前 retrospective 的 `snapshot_digest` 和 canonical binding 时才进入本节；普通
+Issue 操作不自行制造 binding 或 receipt。binding 必须原样包含一个 `owner`、一个 canonical
+`reference`、排序且唯一的 `signal_ids` 和 `signal_digest`。`signal_digest` 必须等于以下对象按 UTF-8、
+key 排序、无空白 JSON 序列化后的 SHA-256，任何不一致都停止，不能从对话或 Issue 内容猜测修正：
+
+```json
+{
+  "snapshot_digest": "<supplied snapshot digest>",
+  "owner": "<supplied owner>",
+  "reference": "<supplied reference>",
+  "signal_ids": ["<supplied sorted signal id>"]
+}
+```
+
+同一 `(owner, reference)` 的全部 routed signals 只写一条专用更新。新建 Issue 时先取得最终 Issue
+reference，再追加这条更新；已有 Issue 直接追加。更新正文必须逐字保留下列 machine-readable block，
+并在 block 外只写本 skill 允许的客观事故事实：
+
+<!-- builder-retrospective-sync:v1 -->
+```json
+{
+  "snapshot_digest": "<supplied snapshot digest>",
+  "owner": "<supplied owner>",
+  "reference": "<supplied reference>",
+  "signal_ids": ["<supplied sorted signal id>"],
+  "signal_digest": "<supplied signal digest>"
+}
+```
+<!-- /builder-retrospective-sync:v1 -->
+
+写入后必须使用 `gh` 返回的 comment/record identity 读取同一远端记录，不能用 Issue 列表、最后一条评论
+或本地 body 冒充 read-back。分别对实际写入 body 和 API 回读的 body 字符串原值按 UTF-8 计算 SHA-256；
+CLI 展示换行、pretty JSON 或整个 API response 都不参与 digest。只有两个 digest 相等时，向调用方返回
+以下 receipt；字段不得改名、遗漏或附加第二个 binding：
+
+```json
+{
+  "owner": "<supplied owner>",
+  "reference": "<supplied reference>",
+  "signal_ids": ["<supplied sorted signal id>"],
+  "signal_digest": "<supplied signal digest>",
+  "remote_record_reference": "<exact comment or record URL/id>",
+  "written_body_digest": "<sha256>",
+  "read_back_body_digest": "<same sha256>",
+  "observed_at": "<UTC ISO-8601>"
+}
+```
+
+写入成功但无法按 identity 回读、block 被平台改写、body digest 不同或远端记录归属不匹配时，只报告同步
+失败，不返回 receipt，也不声称 retrospective 已完成。
+
 ## 返回结果
 
 创建、补充或关闭后核对 repository、Issue 编号、状态和 URL，只向用户简短报告结果。除非用户另有

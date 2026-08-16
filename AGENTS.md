@@ -83,6 +83,8 @@ python3 experiments/assurance-v4-replay/runner.py
 - 交付后工程事故只能归属 current project、builder-loop 或 external platform；跨边界因果链必须拆成
   两个原子事故。先经用户授权写对应问题容器，再把不可工程固化的剩余知识委托 `$memory-review`；
   memory 不得替代 issue、代码、测试、契约或项目文档。
+- retrospective 将 signal 路由到 Issue 时必须写入远端并按精确 comment/record identity 回读；只有
+  canonical binding 与 body digest receipt 完整后才算同步完成，Issue URL 或 Agent 自述不能替代 receipt。
 - Builder 写代码和文档，Tester 写计划允许的测试，Reviewer 只读审查。
 - 修复按 ownership 路由；测试实现问题回到原 Tester，目标、ownership 或验收标准变化按上述版本化
   lifecycle 处理，不用无条件 abandon 覆盖 Assurance v4。

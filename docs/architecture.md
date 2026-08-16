@@ -713,12 +713,17 @@ evidence。这遵循“每个事实只有一个家”：ledger 仍是执行事�
 `retrospective-status` 返回 `NOOP`、`ACTIVE`、`REQUIRED`、`STALE`、`NEEDS_USER`、`READY` 或 `FATAL`。
 `record-retrospective` 要求当前 snapshot 的完整、无重复 dispositions；mandatory signal 必须路由 issue
 container 或等待用户授权，advisory 的 not-incident 必须带显式理由。写入通过 repo lock 与 atomic rename
-实现幂等；同 snapshot 的冲突替换需要 `--replace`。Core 不访问 GitHub，只记录 root Agent 已完成的
-owner/reference/decision。
+实现幂等；同 snapshot 的冲突替换需要 `--replace`。只要存在 Issue route，report v2 还按
+`(owner, reference)` 绑定排序后的 signal ids，并要求每个远端更新提供写入 body 与按远端记录 identity
+回读 body 的相同 digest。Core 不访问 GitHub，只验证 root Agent 提供的 canonical binding、远端记录引用、
+read-back receipt 和覆盖率。含 Issue route 的 v1 report 保持可读但状态为 `REQUIRED/legacy-unverified`，
+不能以“内部已有 URL”冒充事故事实已进入外部问题容器。
 
 `retrospective-status` 同时返回完整审计 `required_block` 与用户可见 `required_user_block`。前者保留全部
 跨 run disposition inventory；后者只显示 run/signal/pending 计数、report digest、真正待决的 run 或
-disposition 及绑定 marker。Stop hook 优先逐字校验精简块，旧 runtime 缺字段时才回退完整块；marker-only、
+disposition 及绑定 marker。Issue 同步缺失是 Agent 的执行义务，状态保持 `REQUIRED` 且不生成伪造的
+用户决策块；receipt 验证完成后才继续判断 `NEEDS_USER` 或 `READY`。Stop hook 优先逐字校验精简块，
+旧 runtime 缺字段时才回退完整块；marker-only、
 旧 digest、prose-only 和 `stop_hook_active` recursion 都不能绕过。`READY` 仍不能越过普通 active run；
 fresh `NEEDS_USER` 精简块可让 active run 保留现场等待用户，而且已路由 Issue 不会掩盖仍未处理的 run
 decision。没有匹配 v4 run 时为 `NOOP`，不改变普通 Codex 行为。

@@ -38,6 +38,31 @@ mandatory signal 只能记录为已有/新 issue container，或在尚缺授权�
 显式 `--replace` 才能替换。report 只写 Git common state 下的独立 retrospective 文件，不改任何 source
 ledger、ref、worktree、role 或 evidence。
 
+只要存在 `disposition=issue`，完成报告必须使用 `schema_version=2` 并提供 `issue_updates`。先把全部
+Issue routes 按 `(owner, reference)` 分组；同一容器无论承载多少 signal，都只产生一个 canonical
+binding 和一条远端更新。每个 binding 包含排序后的唯一 `signal_ids`，其 `signal_digest` 是以下对象经
+UTF-8、key 排序、无空白 JSON 序列化后的 SHA-256：
+
+```json
+{
+  "snapshot_digest": "<current snapshot digest>",
+  "owner": "<current_project|builder_loop|external_platform>",
+  "reference": "<canonical issue reference>",
+  "signal_ids": ["<sorted signal id>"]
+}
+```
+
+把 binding 原样交给 `$file-github-issue`。workflow 必须在对应 Issue 写入一条专用更新，再按返回的远端
+记录 identity 回读 body 原值。每个 receipt 恰好包含 `owner`、`reference`、`signal_ids`、
+`signal_digest`、`remote_record_reference`、`written_body_digest`、`read_back_body_digest` 和
+`observed_at`；两个 body digest 必须相等。Core 只验证 binding、覆盖率与 receipt，不访问 GitHub。
+缺少任一分组、signal 子集或顺序不匹配、远端记录复用或 read-back 不一致，都不能写成完成报告。
+
+stored v1 report 继续可读。v1 没有 Issue route 时保留原终态兼容；v1 含 Issue route 时
+`retrospective-status` 返回 `REQUIRED`，并在 `issue_sync` 给出待同步 bindings。Issue 同步是当前 Agent
+已有授权内的执行义务，不是新的产品决定，因此不生成 `required_user_block` 或假装等待用户；完成回读后
+用 `--replace` 写入 v2 report，才继续判断是否存在真正的 `needs-user` disposition 或 active-run 决策。
+
 完整 `required_block` 保留全部跨 run dispositions，供结构化审计，不复制到最终用户消息。
 `NEEDS_USER` 与 `READY` 的最终消息都逐字包含精简 `required_user_block`：READY 只含 run/signal/issue
 route 计数、report digest 和 `BUILDER_RETROSPECTIVE_READY`；NEEDS_USER 只额外列真正待决的 run 或

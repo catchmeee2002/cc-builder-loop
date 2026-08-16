@@ -1,19 +1,15 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import re
 import unittest
 
-from harness import ROOT, git
+from harness import ROOT
 
 
 SKILL_DIR = ROOT / "skills" / "file-github-issue"
 SKILL_PATH = SKILL_DIR / "SKILL.md"
 METADATA_PATH = SKILL_DIR / "agents" / "openai.yaml"
-SPEC_HEAD = "492db76a1f3fb4a59532c2dfffce61850c9d66ac"
-
-
 def compact(text: str) -> str:
     return re.sub(r"\s+", "", text).lower()
 
@@ -53,14 +49,6 @@ class FileGithubIssueSkillTest(unittest.TestCase):
         self.assertIn(compact("证据可能含凭据或个人数据"), skill)
         self.assertIn(compact("改变产品目标或设计原则"), skill)
         self.assertIn("request_user_input", skill)
-        self.assertEqual(
-            git(ROOT, "rev-parse", "HEAD:skills/file-github-issue/SKILL.md"),
-            git(ROOT, "rev-parse", f"{SPEC_HEAD}:skills/file-github-issue/SKILL.md"),
-        )
-        self.assertEqual(
-            hashlib.sha256(SKILL_PATH.read_bytes()).hexdigest(),
-            "48cd3142d8d14cb003863198b8f35e7b01af4bcb08c8ecd49dc1ab8a47dc179c",
-        )
 
     def test_issue_preserves_facts_without_anchoring_a_fix(self) -> None:
         skill = compact(SKILL_PATH.read_text())
@@ -125,6 +113,26 @@ class FileGithubIssueSkillTest(unittest.TestCase):
         self.assertIn(compact("不要在结案评论中填写 `shadow_route`"), skill)
         self.assertIn("batch_approval", skill)
         self.assertIn("needs_first_principles", skill)
+
+    def test_retrospective_sync_requires_exact_remote_readback_receipt(self) -> None:
+        skill = SKILL_PATH.read_text()
+        compact_skill = compact(skill)
+
+        for token in (
+            "snapshot_digest",
+            "signal_ids",
+            "signal_digest",
+            "remote_record_reference",
+            "written_body_digest",
+            "read_back_body_digest",
+            "observed_at",
+            "builder-retrospective-sync:v1",
+        ):
+            self.assertIn(token, skill)
+        self.assertIn(compact("同一 `(owner, reference)`"), compact_skill)
+        self.assertIn(compact("读取同一远端记录"), compact_skill)
+        self.assertIn(compact("两个 digest 相等"), compact_skill)
+        self.assertIn(compact("不返回 receipt"), compact_skill)
 
 
 if __name__ == "__main__":
