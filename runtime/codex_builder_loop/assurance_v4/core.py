@@ -1636,7 +1636,12 @@ def complete_dispatch(
         append_event(
             ledger,
             "dispatch_completed",
-            {"action_id": action_id, "result": result["result"], "result_digest": intent["result_digest"]},
+            {
+                "action_id": action_id,
+                "turn_id": intent.get("turn_id"),
+                "result": result["result"],
+                "result_digest": intent["result_digest"],
+            },
         )
         save_ledger(repo, ledger)
     return status(repo, run_id)
@@ -1676,9 +1681,11 @@ def retry_dispatch(
                     ledger,
                     "dispatch_retry_exhausted_restore_required",
                     {
+                        "action_id": action_id,
                         "failure_code": normalized_failure_code,
                         "attempt": attempt,
                         "generation": generation,
+                        "turn_id": intent.get("turn_id"),
                     },
                 )
                 ledger["dispatch_intent"] = None
@@ -3279,6 +3286,9 @@ def telemetry(ledger: Mapping[str, Any]) -> dict[str, Any]:
     elapsed_ms = max(0, _timestamp_ms(end_at) - _timestamp_ms(ledger["created_at"]))
     stage_stats: dict[str, dict[str, Any]] = {}
     dispatches: dict[str, tuple[str, int]] = {}
+    dispatch_turns: dict[tuple[str, str], tuple[str, int]] = {}
+    open_dispatch_turns: dict[str, list[str]] = {}
+    legacy_attempt_started: dict[str, int] = {}
     evidence_attempts = {kind: 0 for kind in EVIDENCE_KINDS}
     retry_codes: dict[str, int] = {}
     candidate_changes = 0
@@ -3315,36 +3325,99 @@ def telemetry(ledger: Mapping[str, Any]) -> dict[str, Any]:
             },
         )
 
+    def bind_dispatch_turn(
+        action_id: str, turn_id: str, *, action: str, at_ms: int
+    ) -> None:
+        key = (action_id, turn_id)
+        if key in dispatch_turns:
+            return
+        dispatch_turns[key] = (action, at_ms)
+        open_dispatch_turns.setdefault(action_id, []).append(turn_id)
+        stage(action)["attempts"] += 1
+
+    def finish_dispatch_turn(
+        action_id: str, turn_id: Any, *, at_ms: int
+    ) -> tuple[str, int]:
+        action = dispatches.get(action_id, ("unknown", at_ms))[0]
+        selected: str | None = turn_id if isinstance(turn_id, str) else None
+        key = (action_id, selected) if selected is not None else None
+        if key not in dispatch_turns:
+            pending_turns = open_dispatch_turns.get(action_id, [])
+            selected = pending_turns[-1] if pending_turns else None
+            key = (action_id, selected) if selected is not None else None
+        if key in dispatch_turns:
+            action, started_at = dispatch_turns.pop(key)
+            pending_turns = open_dispatch_turns.get(action_id, [])
+            if selected in pending_turns:
+                pending_turns.remove(selected)
+            return action, max(0, at_ms - started_at)
+
+        # Older ledgers and hand-written fixtures may predate turn binding. They
+        # cannot identify the exact turn, but their ordered terminal events still
+        # provide a non-overlapping lower-fidelity duration fallback.
+        started_at = legacy_attempt_started.get(
+            action_id, dispatches.get(action_id, (action, at_ms))[1]
+        )
+        legacy_attempt_started[action_id] = at_ms
+        stage(action)["attempts"] += 1
+        return action, max(0, at_ms - started_at)
+
     for event in events:
         kind = event.get("kind")
         details = event.get("details") if isinstance(event.get("details"), dict) else {}
         at = event.get("at")
         if kind == "dispatch_prepared" and isinstance(details.get("action_id"), str):
             action = str(details.get("action", "unknown"))
-            dispatches[details["action_id"]] = (action, _timestamp_ms(str(at)))
-            stage(action)["attempts"] += 1
+            prepared_at = _timestamp_ms(str(at))
+            dispatches[details["action_id"]] = (action, prepared_at)
+            legacy_attempt_started[details["action_id"]] = prepared_at
+        elif kind == "dispatch_turn_bound" and isinstance(details.get("action_id"), str):
+            action_id = details["action_id"]
+            turn_id = details.get("turn_id")
+            if isinstance(turn_id, str):
+                action = dispatches.get(action_id, ("unknown", 0))[0]
+                bind_dispatch_turn(
+                    action_id,
+                    turn_id,
+                    action=action,
+                    at_ms=_timestamp_ms(str(at)),
+                )
         elif kind == "dispatch_completed" and isinstance(details.get("action_id"), str):
-            dispatch = dispatches.get(details["action_id"])
-            if dispatch is not None:
-                action, started_at = dispatch
-                current = stage(action)
-                current["completed_attempts"] += 1
-                duration = max(0, _timestamp_ms(str(at)) - started_at)
-                current["total_duration_ms"] += duration
-                agent_turn_ms += duration
-                if details.get("result") in {
-                    "fail",
-                    "findings",
-                    "blocked",
-                    "target_change_required",
-                }:
-                    current["failed_attempts"] += 1
-                    current["last_failure_code"] = str(details["result"])
-        elif kind == "dispatch_retry_scheduled":
-            action_id = details.get("action_id")
-            action = dispatches.get(action_id, ("unknown", 0))[0]
+            action, duration = finish_dispatch_turn(
+                details["action_id"],
+                details.get("turn_id"),
+                at_ms=_timestamp_ms(str(at)),
+            )
             current = stage(action)
+            current["completed_attempts"] += 1
+            current["total_duration_ms"] += duration
+            agent_turn_ms += duration
+            if details.get("result") in {
+                "fail",
+                "findings",
+                "blocked",
+                "target_change_required",
+            }:
+                current["failed_attempts"] += 1
+                current["last_failure_code"] = str(details["result"])
+        elif kind in {
+            "dispatch_retry_scheduled",
+            "dispatch_retry_exhausted",
+            "dispatch_retry_exhausted_restore_required",
+        }:
+            action_id = details.get("action_id")
+            if not isinstance(action_id, str):
+                continue
+            action, duration = finish_dispatch_turn(
+                action_id,
+                details.get("turn_id"),
+                at_ms=_timestamp_ms(str(at)),
+            )
+            current = stage(action)
+            current["failed_attempts"] += 1
             current["retry_count"] += 1
+            current["total_duration_ms"] += duration
+            agent_turn_ms += duration
             failure_code = str(details.get("failure_code", "unknown"))
             current["last_failure_code"] = failure_code
             retry_codes[failure_code] = retry_codes.get(failure_code, 0) + 1

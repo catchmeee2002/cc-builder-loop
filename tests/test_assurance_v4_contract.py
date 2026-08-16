@@ -698,17 +698,37 @@ class AssuranceV4ContractTest(unittest.TestCase):
                     },
                 },
                 {
+                    "at": "2026-08-01T00:00:01+00:00",
+                    "kind": "dispatch_turn_bound",
+                    "details": {
+                        "action_id": "a" * 64,
+                        "turn_id": "turn-1",
+                    },
+                },
+                {
                     "at": "2026-08-01T00:00:03+00:00",
                     "kind": "dispatch_retry_scheduled",
                     "details": {
                         "action_id": "a" * 64,
+                        "turn_id": "turn-1",
                         "failure_code": "responseStreamDisconnected",
+                    },
+                },
+                {
+                    "at": "2026-08-01T00:00:03+00:00",
+                    "kind": "dispatch_turn_bound",
+                    "details": {
+                        "action_id": "a" * 64,
+                        "turn_id": "turn-2",
                     },
                 },
                 {
                     "at": "2026-08-01T00:00:05+00:00",
                     "kind": "dispatch_completed",
-                    "details": {"action_id": "a" * 64},
+                    "details": {
+                        "action_id": "a" * 64,
+                        "turn_id": "turn-2",
+                    },
                 },
                 {
                     "at": "2026-08-01T00:00:06+00:00",
@@ -748,11 +768,99 @@ class AssuranceV4ContractTest(unittest.TestCase):
             },
         )
         stages = {item["name"]: item for item in telemetry["stages"]}
+        self.assertEqual(stages["tester_author"]["attempts"], 2)
+        self.assertEqual(stages["tester_author"]["completed_attempts"], 1)
+        self.assertEqual(stages["tester_author"]["failed_attempts"], 1)
         self.assertEqual(stages["tester_author"]["total_duration_ms"], 4000)
         self.assertEqual(stages["tester_author"]["retry_count"], 1)
         self.assertEqual(stages["verify_machine"]["attempts"], 2)
         self.assertEqual(stages["verify_machine"]["failed_attempts"], 1)
         self.assertEqual(stages["verify_machine"]["total_duration_ms"], 2000)
+
+    def test_status_counts_exhausted_dispatch_turn_as_agent_failure_time(self) -> None:
+        run_id = "telemetry-exhausted-turn"
+        _started, run_path = self.start(run_id)
+        ledger = self.load_ledger(run_path)
+        action_id = "b" * 64
+        ledger["created_at"] = "2026-08-01T00:00:00+00:00"
+        ledger["updated_at"] = "2026-08-01T00:00:10+00:00"
+        ledger["events"].extend(
+            [
+                {
+                    "at": "2026-08-01T00:00:01+00:00",
+                    "kind": "dispatch_prepared",
+                    "details": {"action_id": action_id, "action": "reviewer_preflight"},
+                },
+                {
+                    "at": "2026-08-01T00:00:01+00:00",
+                    "kind": "dispatch_turn_bound",
+                    "details": {"action_id": action_id, "turn_id": "turn-1"},
+                },
+                {
+                    "at": "2026-08-01T00:00:02+00:00",
+                    "kind": "dispatch_retry_scheduled",
+                    "details": {
+                        "action_id": action_id,
+                        "turn_id": "turn-1",
+                        "failure_code": "responseStreamDisconnected",
+                    },
+                },
+                {
+                    "at": "2026-08-01T00:00:02+00:00",
+                    "kind": "dispatch_turn_bound",
+                    "details": {"action_id": action_id, "turn_id": "turn-2"},
+                },
+                {
+                    "at": "2026-08-01T00:00:04+00:00",
+                    "kind": "dispatch_retry_scheduled",
+                    "details": {
+                        "action_id": action_id,
+                        "turn_id": "turn-2",
+                        "failure_code": "responseStreamDisconnected",
+                    },
+                },
+                {
+                    "at": "2026-08-01T00:00:04+00:00",
+                    "kind": "dispatch_turn_bound",
+                    "details": {"action_id": action_id, "turn_id": "turn-3"},
+                },
+                {
+                    "at": "2026-08-01T00:00:07+00:00",
+                    "kind": "dispatch_retry_exhausted",
+                    "details": {
+                        "action_id": action_id,
+                        "turn_id": "turn-3",
+                        "failure_code": "responseStreamDisconnected",
+                    },
+                },
+            ]
+        )
+        (run_path / "ledger.json").write_text(
+            json.dumps(ledger, ensure_ascii=False), encoding="utf-8"
+        )
+
+        rc, data, _stdout, _stderr = self.invoke(
+            "status", "--repo", self.repo, "--run", run_id
+        )
+
+        self.assertEqual(rc, 0, data)
+        telemetry = data["telemetry"]
+        stages = {item["name"]: item for item in telemetry["stages"]}
+        reviewer = stages["reviewer_preflight"]
+        self.assertEqual(reviewer["attempts"], 3)
+        self.assertEqual(reviewer["completed_attempts"], 0)
+        self.assertEqual(reviewer["failed_attempts"], 3)
+        self.assertEqual(reviewer["retry_count"], 3)
+        self.assertEqual(reviewer["total_duration_ms"], 6000)
+        self.assertEqual(
+            telemetry["retries"],
+            {
+                "total": 3,
+                "by_failure_code": {"responseStreamDisconnected": 3},
+            },
+        )
+        self.assertEqual(telemetry["time_classes"]["agent_turn_ms"], 6000)
+        self.assertEqual(telemetry["time_classes"]["idle_or_user_wait_ms"], 4000)
 
     def test_early_machine_command_stops_before_expensive_full_suite(self) -> None:
         marker = self.artifacts / "expensive-command-ran"
