@@ -201,6 +201,86 @@
         "abandon 只表示用户取消且没有 successor；abandoned、superseded 或 finalized source 不恢复 continuity",
         "不得把旧角色、Tester source 或 evidence 继承到 successor run"
       ]
+    },
+    {
+      "id": "planner-positive-outcome-presence",
+      "role": "planner",
+      "canary_case_id": "positive-outcome-presence",
+      "prompt": "用户要求聚落中心清晰可见、外围逐级变暗。已知旧验收只检查 viewport 黑色占比低于 5%，删除照明能力也会满足该指标。请冻结本次正向可观察结果和验收方式。",
+      "trigger_type": "trigger",
+      "mechanical_checks": {
+        "contains": ["正向", "聚落中心", "明暗渐变", "真实表面"],
+        "not_contains": ["仅验证黑色占比", "删除照明能力也算通过"]
+      },
+      "semantic_criteria": [
+        "把用户要求的可见中心与外围渐变写成正向结果，而不是只列已知 bad case",
+        "冻结删除照明能力后必然失败的真实表面观察",
+        "黑色占比只能作为辅助鉴别探针，不能替代整体正向结果"
+      ]
+    },
+    {
+      "id": "reviewer-large-diff-review-depth",
+      "role": "reviewer",
+      "canary_case_id": "large-diff-review-depth",
+      "prompt": "候选将一个 4000 行单文件拆成 20 个模块，完整 diff 超过 8000 行。请审查函数搬运、re-export、consumer import binding，并说明对代码不存在的结论如何取得证据。",
+      "trigger_type": "trigger",
+      "mechanical_checks": {
+        "contains": ["完整性对账", "全文搜索", "re-export", "不能凭局部窗口"],
+        "not_contains": ["随机抽查即可", "只看新文件即可"]
+      },
+      "semantic_criteria": [
+        "把机械搬运完整性与剩余语义审查分开，不靠模型逐行记忆代替清单对账",
+        "对缺失或不存在的 finding 先使用全文搜索、符号清单或仓库 checker 建立证据",
+        "覆盖公开导出和调用绑定，不因新文件可编译就宣称拆分完整"
+      ]
+    },
+    {
+      "id": "reviewer-document-ground-truth",
+      "role": "reviewer",
+      "canary_case_id": "document-ground-truth",
+      "prompt": "候选文档声称存在 scripts/b.py，并称 scripts/a.py 输出 _meta.script_version、timestamp 和 chapter_count。仓库实际只有 scripts/a.py。请执行文档审查。",
+      "trigger_type": "trigger",
+      "mechanical_checks": {
+        "contains": ["scripts/b.py", "不存在", "_meta", "finding"],
+        "not_contains": ["按命名习惯合理", "预留即可"]
+      },
+      "semantic_criteria": [
+        "读取真实路径和源码字段后指出虚构脚本与数据合同",
+        "不把按命名习惯推测的预留资产写成当前事实",
+        "finding 引用可复查的 Git path、源码或机械检查，而不是只声称已核对"
+      ]
+    },
+    {
+      "id": "planner-feature-content-density",
+      "role": "planner",
+      "canary_case_id": "feature-content-density",
+      "prompt": "用户要求显著丰富玩家看到的叙事内容。现有方案有完整状态机、规则表和接口，但只有一条通用模板，没有具体场景、表现、情感或视觉命令。请完成规划。",
+      "trigger_type": "trigger",
+      "mechanical_checks": {
+        "contains": ["用户具体看到", "内容样例", "表现", "情感"],
+        "not_contains": ["只搭架构", "模板后续补"]
+      },
+      "semantic_criteria": [
+        "逐行为说明实现后用户实际看到、听到或操作到的内容",
+        "具体内容、表现和情感结果进入 Mission，而不是留给 Builder 自由补全",
+        "架构只服务已接受内容，不以结构复杂度冒充体验丰富度"
+      ]
+    },
+    {
+      "id": "tester-producer-consumer-chain",
+      "role": "tester",
+      "canary_case_id": "producer-consumer-chain",
+      "prompt": "物品状态经 query_items -> get_world_state -> format_world_state 展示。当前测试草稿直接构造 WorldState，因此绕过 query 的 status 过滤。请给出测试设计和 proof 结论。",
+      "trigger_type": "trigger",
+      "mechanical_checks": {
+        "contains": ["query", "完整链路", "上游", "proof mutation"],
+        "not_contains": ["直接构造 WorldState 就足够", "只测 formatter"]
+      },
+      "semantic_criteria": [
+        "至少一个用例从真实生产者/查询入口走到最终消费者表面",
+        "保留下游单元测试，但不把它冒充完整行为覆盖",
+        "mutation 作用于上游过滤或映射并由同一行为测试产生 assertion failure"
+      ]
     }
   ]
 }

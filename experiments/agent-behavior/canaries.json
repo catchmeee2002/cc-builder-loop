@@ -1,0 +1,128 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "id": "positive-outcome-presence",
+      "issue": 7,
+      "mode": "fixture",
+      "fixture_kind": "positive-outcome",
+      "scenario_id": "planner-positive-outcome-presence",
+      "roles": ["planner", "tester", "reviewer"],
+      "weak_check": {
+        "argv": ["python3", "checks/weak.py"],
+        "expected_returncodes": [0]
+      },
+      "discriminating_check": {
+        "argv": ["python3", "checks/strong.py"],
+        "expected_returncodes": [1]
+      },
+      "required_observations": [
+        "聚落中心可见且外围保持更暗",
+        "删除目标照明能力后验收必须失败",
+        "已知 bad-case 指标只能作为辅助探针"
+      ],
+      "minimum_fresh_samples": 3
+    },
+    {
+      "id": "host-background-contention",
+      "issue": 23,
+      "mode": "operational_probe",
+      "probe_kind": "lock-contention",
+      "timeout_seconds": 0.5,
+      "holder_seconds": 30,
+      "required_observations": [
+        "既有后台进程在验证超时时仍存活",
+        "依赖同一宿主资源的前台验证发生 timeout",
+        "探针结束后后台进程被完整回收"
+      ]
+    },
+    {
+      "id": "large-diff-review-depth",
+      "issue": 28,
+      "mode": "fixture",
+      "fixture_kind": "large-diff",
+      "scenario_id": "reviewer-large-diff-review-depth",
+      "roles": ["reviewer"],
+      "weak_check": {
+        "argv": ["python3", "checks/weak.py"],
+        "expected_returncodes": [0]
+      },
+      "discriminating_check": {
+        "argv": ["python3", "checks/strong.py"],
+        "expected_returncodes": [1]
+      },
+      "required_observations": [
+        "diff 超过 8000 行",
+        "漏搬函数、漏 re-export 与错误 import binding 均有确定性种子",
+        "局部窗口不存在性结论必须由全文搜索或机械清单支持"
+      ],
+      "minimum_fresh_samples": 3
+    },
+    {
+      "id": "document-ground-truth",
+      "issue": 48,
+      "mode": "fixture",
+      "fixture_kind": "document-ground-truth",
+      "scenario_id": "reviewer-document-ground-truth",
+      "roles": ["builder", "reviewer"],
+      "weak_check": {
+        "argv": ["python3", "checks/weak.py"],
+        "expected_returncodes": [0]
+      },
+      "discriminating_check": {
+        "argv": ["python3", "checks/strong.py"],
+        "expected_returncodes": [1]
+      },
+      "required_observations": [
+        "文档提到的每个脚本必须存在",
+        "字段声明必须来自真实源码输出",
+        "按命名习惯补全的预留资产必须被拒绝"
+      ],
+      "minimum_fresh_samples": 3
+    },
+    {
+      "id": "feature-content-density",
+      "issue": 61,
+      "mode": "fixture",
+      "fixture_kind": "feature-content-density",
+      "scenario_id": "planner-feature-content-density",
+      "roles": ["planner"],
+      "weak_check": {
+        "argv": ["python3", "checks/weak.py"],
+        "expected_returncodes": [0]
+      },
+      "discriminating_check": {
+        "argv": ["python3", "checks/strong.py"],
+        "expected_returncodes": [1]
+      },
+      "required_observations": [
+        "结构完整但内容空壳的计划能通过弱 schema 检查",
+        "具体内容样例、表现和情感维度缺失时强检查失败",
+        "计划必须说明实现后用户能看到什么"
+      ],
+      "minimum_fresh_samples": 3
+    },
+    {
+      "id": "producer-consumer-chain",
+      "issue": 68,
+      "mode": "fixture",
+      "fixture_kind": "producer-consumer-chain",
+      "scenario_id": "tester-producer-consumer-chain",
+      "roles": ["tester", "reviewer"],
+      "weak_check": {
+        "argv": ["python3", "checks/weak.py"],
+        "expected_returncodes": [0]
+      },
+      "discriminating_check": {
+        "argv": ["python3", "checks/strong.py"],
+        "expected_returncodes": [1]
+      },
+      "required_observations": [
+        "直接构造下游对象的测试保持绿色",
+        "上游 query/filter 语义错误在完整链路测试中失败",
+        "proof mutation 必须覆盖真正的生产者到消费者边界"
+      ],
+      "minimum_fresh_samples": 3
+    }
+  ]
+}

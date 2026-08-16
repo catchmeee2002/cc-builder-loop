@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- 角色行为实验场新增了六个 CC 遗留风险 canary contract：五个仓库外确定性 fixture 分别覆盖正向结果、
+  大 diff 完整审查、文档 ground truth、内容密度和生产者到消费者链路，一个安全宿主探针复现既有进程
+  持锁导致后续验证 timeout 并确认进程组回收。canary 只建立 fresh model 采样前提，结果不写 runtime
+  ledger，也不替代交付 evidence（#7、#23、#28、#48、#61、#68）。
+
 - Native Driver 的长程 Reviewer prompt 改为 v2 单事实投影：contract、evidence、publication 与文档扫描
   只在 payload 顶层出现一次，审查契约以 JSON Pointer + digest 引用，并用紧凑 JSON 降低重复上下文。
   Reviewer 同一 dispatch 三次断流且尾部 turn 确认无输出时，会先持久化 thread 前缀与 compaction intent，

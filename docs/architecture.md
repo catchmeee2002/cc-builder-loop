@@ -378,12 +378,16 @@ Builder 对故障修复只常驻四个轻量问题：失败、机制、因果源
 stdout，真实响应和结果只能进入忽略目录或仓库外。未来原生评测平台证明等价后，只迁移
 场景和评分语义并删除本地 runner。
 
+其中风险 canary manifest 把场景绑定到仓库外的确定性 fixture 或安全宿主探针。fixture 必须先证明
+弱检查可通过而区分性检查会失败；宿主探针只报告直接观察和未证明边界。二者只建立 fresh model
+采样的输入前提，不进入 runtime ledger，也不替代 Tester、机器验证、blackbox 或 Reviewer evidence。
+
 ## 角色协作
 
 Builder 与 Tester 使用冻结基线协作：
 
 - Builder 写业务代码和受影响文档，不写 Tester-owned 路径。
-- Tester 与 Reviewer 的 initial spawn 显式使用 `fork_turns="none"`，task brief 只包含各角色需要的
+- Tester 与 Reviewer 的 initial spawn 显式使用 `fork_turns="none"`，最小 task brief 只包含各角色需要的
   冻结输入；这只提供 conversation-fork isolation。Git/artifact isolation 由 runtime 的 worktree、
   manifest、ownership 与 evidence 证明；当前不提供 filesystem ACL，也不提供 platform attestation 或 context
   manifest，ledger 不伪造对应字段。后续 turn 通过 `prepare-follow-up` 续接同一 agent/thread，

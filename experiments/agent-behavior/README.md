@@ -8,6 +8,8 @@
 - `scenarios.json`：版本化场景、触发类型、机械检查和待人工判断标准。
 - `variants.json`：基线或按角色匹配的指令来源路径及摘要；不复制第二份角色规则。
 - `runner.py`：只提供离线 `prepare` 和 `score`。
+- `canaries.json`：把高风险场景绑定到确定性 fixture 或安全宿主探针。
+- `canary.py`：在仓库外准备 fixture、验证区分性前提，或运行不调用模型的宿主探针。
 
 ## 使用
 
@@ -35,6 +37,21 @@ python3 experiments/agent-behavior/runner.py score \
 `baseline` 表示不附加角色指令，`request.instructions` 为空；角色指令变体才按摘要读取对应来源。
 `score` 只做字符串级机械检查，并把语义判断明确标为 `semantic_pending`。
 
-真实响应和评分结果只能由调用方写到仓库外，或忽略目录
+风险 canary 先机械证明场景确实能区分弱验收和目标行为，再交给调用方采集 fresh model 样本：
+
+```bash
+python3 experiments/agent-behavior/canary.py list
+python3 experiments/agent-behavior/canary.py prepare \
+  --case-id large-diff-review-depth \
+  --output /tmp/builder-loop-large-diff-canary
+python3 experiments/agent-behavior/canary.py probe \
+  --case-id host-background-contention
+```
+
+`prepare` 拒绝仓库内目录，并要求弱检查按预期通过、区分性检查按预期失败后才返回 `READY`。输出绑定
+fixture 文件摘要、场景、角色和最少 fresh 样本数。`host-background-contention` 只证明既有宿主进程可
+确定性阻塞后续验证且能被探针回收；它不证明进程来源、具体业务依赖或 Builder-loop 已具备归因能力。
+
+生成的 fixture 只能位于仓库外。探针结果、真实响应和评分结果只能由调用方写到仓库外，或忽略目录
 `.builder-loop/experiments/agent-behavior/`。不得提交结果、写 runtime ledger，或把实验结果冒充
 Tester、机器验证和 Reviewer 证据。
