@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import sys
 import tempfile
 from copy import deepcopy
 from pathlib import Path
 from typing import Any, Mapping, Sequence
+
+if __package__:
+    from tests.helpers.checkout_snapshot import clone_checkout_snapshot
+else:
+    from checkout_snapshot import clone_checkout_snapshot
 
 
 sys.dont_write_bytecode = True
@@ -69,59 +73,14 @@ def git(
 
 
 def clone_current_snapshot(destination: Path) -> str:
-    returncode, stdout, stderr = run(
-        ["git", "clone", "--no-hardlinks", "--quiet", ROOT, destination],
-        cwd=ROOT,
-    )
-    require(returncode == 0, "snapshot clone failed", stderr or stdout)
-
-    hooks_dir = destination / ".git" / "blackbox-hooks"
-    hooks_dir.mkdir(parents=True)
-    git(destination, "config", "core.hooksPath", str(hooks_dir))
-    git(destination, "config", "gc.auto", "0")
-    git(destination, "config", "maintenance.auto", "false")
-
-    patch = git(ROOT, "diff", "--binary", "HEAD")
-    if patch:
-        returncode, stdout, stderr = run(
-            ["git", "-C", destination, "apply", "--whitespace=nowarn", "-"],
-            cwd=destination,
-            input_text=patch,
-        )
-        require(returncode == 0, "snapshot patch failed", stderr or stdout)
-
-    untracked = git(
+    return clone_checkout_snapshot(
         ROOT,
-        "ls-files",
-        "--others",
-        "--exclude-standard",
-        "-z",
+        destination,
+        user_email="runtime-preparation@test.local",
+        user_name="Runtime Preparation Blackbox",
+        commit_message="test(assurance): [cr_id_skip] Freeze Runtime Preparation Snapshot",
+        disable_gc=True,
     )
-    for relative in (item for item in untracked.split("\0") if item):
-        source = ROOT / relative
-        target = destination / relative
-        target.parent.mkdir(parents=True, exist_ok=True)
-        if source.is_symlink():
-            target.symlink_to(os.readlink(source))
-        else:
-            shutil.copy2(source, target)
-
-    git(destination, "config", "user.email", "runtime-preparation@test.local")
-    git(destination, "config", "user.name", "Runtime Preparation Blackbox")
-    git(destination, "add", "-A")
-    if git(destination, "status", "--porcelain=v1").strip():
-        git(
-            destination,
-            "commit",
-            "-q",
-            "-m",
-            "test(assurance): [cr_id_skip] Freeze Runtime Preparation Snapshot",
-        )
-    require(
-        not git(destination, "status", "--porcelain=v1").strip(),
-        "snapshot clone is dirty after commit",
-    )
-    return git(destination, "rev-parse", "HEAD").strip()
 
 
 def parse_json(stdout: str, stderr: str) -> dict[str, Any]:

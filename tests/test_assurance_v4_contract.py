@@ -16,6 +16,7 @@ from harness import CLI, cleanup_repo, commit_all, git, head, init_repo, run_pro
 from runtime.codex_builder_loop.assurance_v4 import core as assurance_core
 from tests.helpers.rejected_checkpoint_successor_blackbox import (
     REJECTION_VARIANTS,
+    clone_snapshot,
     exercise_bound_tester_rejected_successor,
     exercise_ordinary_successor,
     exercise_rejection_matrix,
@@ -5531,6 +5532,34 @@ class AssuranceV4ContractTest(unittest.TestCase):
 class RejectedCheckpointSuccessorContractTest(unittest.TestCase):
     # 设计哲学“每个事实只有一个家”和“连续性属于事务身份”要求只从 ledger、
     # dispatch artifact 与 Git 对象恢复，并在 target 已持久化后才封存 source。
+    def test_snapshot_clone_preserves_dirty_patch_and_untracked_inputs(self) -> None:
+        source = init_repo({"README.md": "committed snapshot\n"})
+        try:
+            (source / "README.md").write_text(
+                "dirty tracked snapshot\n", encoding="utf-8"
+            )
+            untracked = source / "notes" / "input.txt"
+            untracked.parent.mkdir(parents=True)
+            untracked.write_text("untracked snapshot\n", encoding="utf-8")
+            with tempfile.TemporaryDirectory(
+                prefix="rejected-successor-dirty-snapshot-"
+            ) as raw:
+                destination = Path(raw) / "snapshot"
+                clone_snapshot(destination, source=source)
+                self.assertEqual(
+                    (destination / "README.md").read_text(encoding="utf-8"),
+                    "dirty tracked snapshot\n",
+                )
+                self.assertEqual(
+                    (destination / "notes" / "input.txt").read_text(
+                        encoding="utf-8"
+                    ),
+                    "untracked snapshot\n",
+                )
+                self.assertEqual(git(destination, "status", "--porcelain=v1"), "")
+        finally:
+            cleanup_repo(source)
+
     def test_eligible_rejected_checkpoint_candidate_transfers_exact_continuity(self) -> None:
         with tempfile.TemporaryDirectory(
             prefix="rejected-successor-valid-contract-"

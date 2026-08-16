@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import sys
 import tempfile
 from pathlib import Path
 from typing import Any, Mapping, Sequence
+
+if __package__:
+    from tests.helpers.checkout_snapshot import clone_checkout_snapshot
+else:
+    from checkout_snapshot import clone_checkout_snapshot
 
 
 sys.dont_write_bytecode = True
@@ -53,42 +57,13 @@ def git(repo: Path, *args: str) -> str:
 
 
 def clone_snapshot(destination: Path) -> str:
-    returncode, stdout, stderr = run(
-        ["git", "clone", "--no-hardlinks", "--quiet", ROOT, destination], cwd=ROOT
+    return clone_checkout_snapshot(
+        ROOT,
+        destination,
+        user_email="candidate-residue@test.local",
+        user_name="Candidate Residue Blackbox",
+        commit_message="test(assurance): [cr_id_skip] Freeze Candidate Residue Snapshot",
     )
-    require(returncode == 0, "snapshot clone failed", stderr or stdout)
-    hooks = destination / ".git/blackbox-hooks"
-    hooks.mkdir(parents=True)
-    git(destination, "config", "core.hooksPath", str(hooks))
-    patch = git(ROOT, "diff", "--binary", "HEAD")
-    if patch:
-        returncode, stdout, stderr = run(
-            ["git", "-C", destination, "apply", "--whitespace=nowarn", "-"],
-            cwd=destination,
-            input_text=patch,
-        )
-        require(returncode == 0, "snapshot patch failed", stderr or stdout)
-    for relative in (
-        item
-        for item in git(ROOT, "ls-files", "--others", "--exclude-standard", "-z").split("\0")
-        if item
-    ):
-        source = ROOT / relative
-        target = destination / relative
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, target)
-    git(destination, "config", "user.email", "candidate-residue@test.local")
-    git(destination, "config", "user.name", "Candidate Residue Blackbox")
-    git(destination, "add", "-A")
-    if git(destination, "status", "--porcelain=v1"):
-        git(
-            destination,
-            "commit",
-            "-q",
-            "-m",
-            "test(assurance): [cr_id_skip] Freeze Candidate Residue Snapshot",
-        )
-    return git(destination, "rev-parse", "HEAD")
 
 
 def main() -> int:
