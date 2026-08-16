@@ -13,6 +13,7 @@ from harness import ROOT, git, run_process
 
 RUNNER = ROOT / "experiments" / "agent-behavior" / "runner.py"
 BUILDER_SKILL = ROOT / "skills" / "builder" / "SKILL.md"
+BUILDER_AGENT = ROOT / "agents" / "builder.toml"
 PLANNER_SKILL = ROOT / "skills" / "builder-loop-planner" / "SKILL.md"
 VARIANTS = ROOT / "experiments" / "agent-behavior" / "variants.json"
 
@@ -59,6 +60,21 @@ class AgentBehaviorLabTest(unittest.TestCase):
             git(ROOT, "hash-object", "skills/builder/SKILL.md"),
         )
 
+    def test_builder_agent_current_binds_the_actual_builder_role(self) -> None:
+        variants = json.loads(VARIANTS.read_text())
+        matches = [
+            item
+            for item in variants["variants"]
+            if item["id"] == "builder-agent-current"
+        ]
+        self.assertEqual(len(matches), 1, matches)
+        source = matches[0]["instruction_source"]
+        self.assertEqual(source["path"], "agents/builder.toml")
+        self.assertEqual(source["revision"], "WORKTREE")
+        self.assertEqual(
+            source["sha256"], hashlib.sha256(BUILDER_AGENT.read_bytes()).hexdigest()
+        )
+
     def test_planner_current_binds_the_frozen_planner_skill(self) -> None:
         variants = json.loads(VARIANTS.read_text())
         matches = [
@@ -71,6 +87,22 @@ class AgentBehaviorLabTest(unittest.TestCase):
         self.assertEqual(
             source["sha256"], hashlib.sha256(PLANNER_SKILL.read_bytes()).hexdigest()
         )
+
+    def test_role_specific_scenario_rejects_the_wrong_builder_surface(self) -> None:
+        result = run_process(
+            [
+                sys.executable,
+                RUNNER,
+                "prepare",
+                "--scenario-id",
+                "builder-document-ground-truth",
+                "--variant-id",
+                "builder-current",
+            ],
+            cwd=ROOT,
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("必须使用变体 builder-agent-current", result.stdout)
 
     def test_planner_contract_scenarios_cover_authority_closure_and_plain_language(
         self,
@@ -185,6 +217,7 @@ class AgentBehaviorLabTest(unittest.TestCase):
             self.assertEqual(len(requests), len(scenario_ids))
             current_roles = {
                 "builder-current": "skills/builder/SKILL.md",
+                "builder-agent-current": "agents/builder.toml",
                 "planner-current": "skills/builder-loop-planner/SKILL.md",
                 "reviewer-current": "agents/reviewer.toml",
                 "tester-current": "agents/tester.toml",

@@ -379,8 +379,10 @@ stdout，真实响应和结果只能进入忽略目录或仓库外。未来原�
 场景和评分语义并删除本地 runner。
 
 其中风险 canary manifest 把场景绑定到仓库外的确定性 fixture 或安全宿主探针。fixture 必须先证明
-弱检查可通过而区分性检查会失败；宿主探针只报告直接观察和未证明边界。二者只建立 fresh model
-采样的输入前提，不进入 runtime ledger，也不替代 Tester、机器验证、blackbox 或 Reviewer evidence。
+弱检查可通过而区分性检查会失败；带 proof mutation 的 case 还必须从业务语义正确的 baseline 出发，
+只改冻结目标路径，观察同一完整检查失败并恢复原树。case 声明的每个角色分别绑定场景和 fresh 样本，
+不能跨角色代证。宿主探针只报告直接观察和未证明边界。这些结果只建立 fresh model 采样的输入前提，
+不进入 runtime ledger，也不替代 Tester、机器验证、blackbox 或 Reviewer evidence。
 
 ## 角色协作
 

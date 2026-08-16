@@ -18,6 +18,16 @@
       }
     },
     {
+      "id": "builder-agent-current",
+      "kind": "instruction",
+      "roles": ["builder"],
+      "instruction_source": {
+        "path": "agents/builder.toml",
+        "sha256": "73897a73a949bc1d239f1a003ea5e9dcaf612e227e6c2c5577717a21a08deeba",
+        "revision": "WORKTREE"
+      }
+    },
+    {
       "id": "planner-current",
       "kind": "instruction",
       "roles": ["planner"],

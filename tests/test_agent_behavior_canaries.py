@@ -63,7 +63,7 @@ class AgentBehaviorCanaryTest(unittest.TestCase):
             self.assertIn("不执行 admission 验证", prompt)
             self.assertIn("不要启动 run", prompt)
 
-    def test_manifest_and_scenarios_have_one_to_one_fixture_bindings(self) -> None:
+    def test_manifest_and_scenarios_cover_each_declared_fixture_role(self) -> None:
         manifest = json.loads(CANARIES.read_text(encoding="utf-8"))
         scenarios = json.loads(SCENARIOS.read_text(encoding="utf-8"))
         cases = {item["id"]: item for item in manifest["cases"]}
@@ -74,17 +74,39 @@ class AgentBehaviorCanaryTest(unittest.TestCase):
         ]
 
         self.assertEqual(len(cases), len(manifest["cases"]))
+        by_case = {
+            case_id: [
+                item for item in references if item["canary_case_id"] == case_id
+            ]
+            for case_id in FIXTURE_CASES
+        }
         self.assertEqual(
             {item["canary_case_id"] for item in references},
             set(FIXTURE_CASES),
         )
-        self.assertEqual(len(references), len(FIXTURE_CASES))
-        for scenario in references:
-            case = cases[scenario["canary_case_id"]]
+        self.assertEqual(set(by_case), set(FIXTURE_CASES))
+        self.assertEqual(len(references), 9)
+        for case_id, case_references in by_case.items():
+            case = cases[case_id]
             self.assertEqual(case["mode"], "fixture")
-            self.assertEqual(case["scenario_id"], scenario["id"])
-            self.assertIn(scenario["role"], case["roles"])
+            self.assertEqual(
+                {item["role"] for item in case_references},
+                set(case["roles"]),
+            )
+            self.assertIn(
+                case["scenario_id"],
+                {item["id"] for item in case_references},
+            )
+            self.assertEqual(
+                len(case_references),
+                len({item["id"] for item in case_references}),
+            )
             self.assertGreater(case["minimum_fresh_samples"], 0)
+
+        builder = next(
+            item for item in references if item["id"] == "builder-document-ground-truth"
+        )
+        self.assertEqual(builder["variant_id"], "builder-agent-current")
 
         probe = cases["host-background-contention"]
         self.assertEqual(probe["mode"], "operational_probe")
@@ -178,6 +200,29 @@ class AgentBehaviorCanaryTest(unittest.TestCase):
                 )
             )
             self.assertGreater(changed_lines, 8000)
+
+            producer = prepared["producer-consumer-chain"]
+            self.assertEqual(
+                producer["facts"]["status_policy"],
+                {"visible": ["active", "forged"], "hidden": ["archived"]},
+            )
+            proof = producer["proof_mutation"]
+            self.assertEqual(proof["target_paths"], ["world.py"])
+            self.assertEqual(proof["changed_paths"], ["world.py"])
+            self.assertEqual(proof["baseline_check"]["returncode"], 0)
+            self.assertEqual(proof["mutation_command"]["returncode"], 0)
+            self.assertEqual(proof["mutated_check"]["returncode"], 1)
+            self.assertEqual(proof["restored_check"]["returncode"], 0)
+            self.assertTrue(proof["tree_restored"])
+            producer_root = Path(producer["fixture_root"])
+            contract = json.loads(
+                (producer_root / "contract.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(contract["status_policy"], producer["facts"]["status_policy"])
+            self.assertEqual(
+                git(producer_root, "status", "--porcelain", "--untracked-files=all"),
+                "",
+            )
 
             repeat_root = parent / "large-diff-repeat"
             returncode, repeat, stderr = run_canary(

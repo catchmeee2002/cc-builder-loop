@@ -117,10 +117,16 @@
         "argv": ["python3", "checks/strong.py"],
         "expected_returncodes": [1]
       },
+      "proof_mutation": {
+        "argv": ["python3", "mutations/drop_forged_status.py"],
+        "expected_returncodes": [0],
+        "baseline_expected_returncodes": [0],
+        "target_paths": ["world.py"]
+      },
       "required_observations": [
-        "直接构造下游对象的测试保持绿色",
-        "上游 query/filter 语义错误在完整链路测试中失败",
-        "proof mutation 必须覆盖真正的生产者到消费者边界"
+        "业务契约明确 active 与 forged 展示、archived 不展示",
+        "直接构造下游对象的测试在上游 mutation 后仍保持绿色",
+        "真实改写 query/filter 的 proof mutation 让完整链路断言失败并恢复原树"
       ],
       "minimum_fresh_samples": 3
     }

@@ -81,6 +81,7 @@ def load_inputs(args: argparse.Namespace) -> tuple[dict[str, Any], dict[str, Any
     variant = select(variants.get("variants"), args.variant, "变体")
     role = scenario.get("role")
     roles = variant.get("roles")
+    declared_variant = scenario.get("variant_id")
     if (
         not isinstance(role, str)
         or not isinstance(roles, list)
@@ -89,6 +90,10 @@ def load_inputs(args: argparse.Namespace) -> tuple[dict[str, Any], dict[str, Any
     ):
         raise ExperimentError(
             f"场景 {scenario.get('id')} 的角色 {role} 与变体 {variant.get('id')} 不匹配"
+        )
+    if declared_variant is not None and variant.get("id") != declared_variant:
+        raise ExperimentError(
+            f"场景 {scenario.get('id')} 必须使用变体 {declared_variant}"
         )
     return scenario, variant
 
@@ -274,8 +279,20 @@ def suite_pairs(args: argparse.Namespace) -> list[tuple[str, str, dict[str, Any]
         role = scenario.get("role")
         if not isinstance(scenario_id, str) or not isinstance(role, str):
             raise ExperimentError("场景必须包含 id 和 role")
-        preferred = f"{role}-current"
-        variant_id = preferred if preferred in by_id else "baseline"
+        declared_variant = scenario.get("variant_id")
+        if declared_variant is not None and (
+            not isinstance(declared_variant, str) or not declared_variant
+        ):
+            raise ExperimentError(f"场景 {scenario_id} 的 variant_id 无效")
+        if declared_variant is not None:
+            if declared_variant not in by_id:
+                raise ExperimentError(
+                    f"场景 {scenario_id} 声明了不存在的变体 {declared_variant}"
+                )
+            variant_id = declared_variant
+        else:
+            preferred = f"{role}-current"
+            variant_id = preferred if preferred in by_id else "baseline"
         if variant_id not in by_id:
             raise ExperimentError(f"场景 {scenario_id} 没有可用变体")
         pairs.append((scenario_id, variant_id, scenario))
