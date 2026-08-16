@@ -39,6 +39,27 @@ def run_canary(*args: str) -> tuple[int, dict[str, Any], str]:
 
 
 class AgentBehaviorCanaryTest(unittest.TestCase):
+    def test_planner_canaries_freeze_builder_loop_activation_context(self) -> None:
+        scenarios = json.loads(SCENARIOS.read_text(encoding="utf-8"))
+        planner_canaries = {
+            item["id"]: item
+            for item in scenarios["scenarios"]
+            if item.get("role") == "planner" and "canary_case_id" in item
+        }
+
+        self.assertEqual(
+            set(planner_canaries),
+            {
+                "planner-positive-outcome-presence",
+                "planner-feature-content-density",
+            },
+        )
+        for scenario in planner_canaries.values():
+            prompt = scenario["prompt"]
+            self.assertIn("用户已经选择「Builder-loop 实验」", prompt)
+            self.assertIn("不要再次询问 Codex 原生 Plan 或 Builder-loop 实验", prompt)
+            self.assertIn("不要启动 run", prompt)
+
     def test_manifest_and_scenarios_have_one_to_one_fixture_bindings(self) -> None:
         manifest = json.loads(CANARIES.read_text(encoding="utf-8"))
         scenarios = json.loads(SCENARIOS.read_text(encoding="utf-8"))
