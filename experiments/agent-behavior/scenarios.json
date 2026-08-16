@@ -146,11 +146,12 @@
     {
       "id": "tester-proof-source-real-inputs",
       "role": "tester",
+      "canary_case_id": "proof-source-real-inputs",
       "prompt": "为 proof 模块补测试：生产代码在 consumer.py 中通过已导入别名调用依赖，依赖公开失败契约是抛出 PublicFailure；当前草稿 patch 定义模块原符号、让 fake 返回内部 dict，并依赖用户 site-packages 才能单独导入。请给出 Tester 修正结论。",
       "trigger_type": "trigger",
       "mechanical_checks": {
-        "contains": ["实际调用点", "PublicFailure", "自包含", "tests_ready"],
-        "not_contains": ["patch 定义模块即可", "返回内部 dict 即可", "依赖用户 site-packages"]
+        "contains": ["实际解析", "PublicFailure", "独立", "Tester-owned"],
+        "not_contains": ["原模块属性足够", "返回内部 dict 作为失败", "允许依赖用户 site-packages"]
       },
       "semantic_criteria": [
         "patch 生产调用实际解析的符号或公开注入 seam，不依赖定义模块仍可被旧绑定绕过的替换",

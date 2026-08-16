@@ -145,14 +145,36 @@ class AgentBehaviorLabTest(unittest.TestCase):
         tester = by_id["tester-proof-source-real-inputs"]
         self.assertEqual(tester["role"], "tester")
         self.assertTrue(
-            {"实际调用点", "PublicFailure", "自包含", "tests_ready"}.issubset(
+            {"实际解析", "PublicFailure", "独立", "Tester-owned"}.issubset(
                 set(tester["mechanical_checks"]["contains"])
             )
         )
         self.assertIn(
-            "依赖用户 site-packages",
+            "允许依赖用户 site-packages",
             tester["mechanical_checks"]["not_contains"],
         )
+
+        accepted_response = (
+            "这是 Tester-owned 测试缺陷：patch 必须命中 consumer 实际解析的别名，"
+            "失败替身抛 PublicFailure；每个 proof 模块必须独立运行，不得依赖用户 site-packages。"
+        )
+        scored = run_process(
+            [
+                sys.executable,
+                RUNNER,
+                "score",
+                "--scenario-id",
+                "tester-proof-source-real-inputs",
+                "--variant-id",
+                "tester-current",
+                "--response-file",
+                "-",
+            ],
+            cwd=ROOT,
+            input_text=accepted_response,
+        )
+        self.assertEqual(scored.returncode, 0, scored.stderr)
+        self.assertTrue(json.loads(scored.stdout)["mechanical_pass"])
 
         reviewer = by_id["reviewer-aggregate-proof-failures"]
         self.assertEqual(reviewer["role"], "reviewer")

@@ -6,14 +6,15 @@
   终态 retrospective report v2 同时把每组 Issue routes 绑定到唯一远端更新及 body read-back receipt；旧 v1
   Issue route 保持 `REQUIRED/legacy-unverified`，同步属于 Agent 执行义务，不伪装成用户产品决策（#182、#183）。
 
-- 角色行为实验场新增了六个 CC 遗留风险 canary contract：五个仓库外确定性 fixture 分别覆盖正向结果、
-  大 diff 完整审查、文档 ground truth、内容密度和生产者到消费者链路，一个安全宿主探针复现既有进程
+- 角色行为实验场新增了七个 CC 遗留风险 canary contract：六个仓库外确定性 fixture 分别覆盖正向结果、
+  大 diff 完整审查、文档 ground truth、内容密度、生产者到消费者链路，以及 proof 实际调用点、公开失败
+  语义和隔离依赖自包含；一个安全宿主探针复现既有进程
   持锁导致后续验证 timeout 并确认进程组回收。canary 只建立 fresh model 采样前提，结果不写 runtime
   ledger，也不替代交付 evidence；Planner canary 会冻结用户已选择 Builder-loop 实验的激活前置条件，
   并限定为只读行为判断，避免把路线选择问卷或完整 admission 工作误计为目标规划样本
   。正向结果 case 现分别覆盖 Planner、Tester、Reviewer，文档 ground-truth 补充真实 Builder agent，
   生产者到消费者 case 补充 Reviewer；后者冻结 active/forged 可见、archived 隐藏的业务语义，并真实
-  改写上游过滤、确认完整链路由绿转红后恢复 fixture（#7、#23、#28、#48、#61、#68）。
+  改写上游过滤、确认完整链路由绿转红后恢复 fixture（#7、#23、#28、#48、#61、#68、#174）。
 
 - Native Driver 的长程 Reviewer prompt 改为 v2 单事实投影：contract、evidence、publication 与文档扫描
   只在 payload 顶层出现一次，审查契约以 JSON Pointer + digest 引用，并用紧凑 JSON 降低重复上下文。
@@ -60,7 +61,7 @@
   `builder_loop` problem；已原子 supersede 且 disposition 为 `handled_elsewhere` 的 source 也可仅为 terminal
   cleanup 执行，不恢复角色、候选或 evidence。Native App Server 子进程同时强制使用 worktree 外的私有
   `PYTHONPYCACHEPREFIX` 并在退出后删除 cache tree，使显式 `py_compile` 保持 Python 语义而不污染角色
-  worktree。
+  worktree（#185）。
 
 - Successor start 现在把 source path/blob 只保存在 immutable carryover，本 revision 的
   `builder_files/tester_files` 从空集合开始；Authority 新增的 public prerequisite 可等待新 Builder 实际
@@ -70,7 +71,7 @@
   runtime-preparation Builder checkpoint 拒绝的 clean candidate。Core 只消费 source ledger 中唯一 open
   problem、completed 未消费 dispatch artifact、冻结 runtime support/authority 与未漂移 Git/target 事实，
   target ledger 落盘后才封存 source；普通 checkpointed successor 路径保持不变，且不新增 recovery command
-  或旁路 candidate 状态。
+  或旁路 candidate 状态（#184）。
 
 - Native Driver 将三次 transport retry 耗尽持久化为不可改写的 `exhausted` dispatch generation。用户
   显式提供 `native-driver resume --reason` 后，Core 仅在 runtime identity、role/thread、action 与 prompt

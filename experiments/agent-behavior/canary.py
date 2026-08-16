@@ -22,6 +22,7 @@ FIXTURE_KINDS = {
     "feature-content-density",
     "large-diff",
     "positive-outcome",
+    "proof-source-real-inputs",
     "producer-consumer-chain",
 }
 
@@ -590,11 +591,100 @@ def materialize_producer_consumer(root: Path) -> dict[str, Any]:
     }
 
 
+def materialize_proof_source_real_inputs(root: Path) -> dict[str, Any]:
+    write(
+        root,
+        "public_api.py",
+        "class PublicFailure(RuntimeError):\n"
+        "    pass\n\n"
+        "def deliver(value):\n"
+        "    raise PublicFailure(f'cannot deliver {value}')\n",
+    )
+    write(
+        root,
+        "consumer.py",
+        "from public_api import deliver as bound_deliver\n\n"
+        "def submit(value):\n"
+        "    return bound_deliver(value)\n",
+    )
+    write(
+        root,
+        "ambient_site/ambient_only.py",
+        "def helper():\n"
+        "    return 'ambient-user-site'\n",
+    )
+    write(
+        root,
+        "draft_test.py",
+        "from ambient_only import helper\n"
+        "from unittest.mock import patch\n"
+        "import public_api\n\n"
+        "with patch('public_api.deliver', return_value={'ok': False, 'detail': helper()}):\n"
+        "    result = public_api.deliver('payload')\n"
+        "    assert result['ok'] is False\n",
+    )
+    write(
+        root,
+        "checks/weak.py",
+        "import runpy\n"
+        "import sys\n"
+        "from pathlib import Path\n"
+        "root = Path(__file__).resolve().parents[1]\n"
+        "sys.path.insert(0, str(root / 'ambient_site'))\n"
+        "sys.path.insert(0, str(root))\n"
+        "runpy.run_path(str(root / 'draft_test.py'), run_name='__main__')\n",
+    )
+    write(
+        root,
+        "checks/strong.py",
+        "import json\n"
+        "import os\n"
+        "import subprocess\n"
+        "import sys\n"
+        "from pathlib import Path\n"
+        "root = Path(__file__).resolve().parents[1]\n"
+        "draft = (root / 'draft_test.py').read_text(encoding='utf-8')\n"
+        "findings = []\n"
+        "if \"patch('public_api.deliver'\" in draft:\n"
+        "    findings.append('patch misses consumer.bound_deliver')\n"
+        "if 'return_value={' in draft:\n"
+        "    findings.append('failure double returns dict instead of PublicFailure')\n"
+        "env = {'PATH': os.defpath, 'PYTHONNOUSERSITE': '1', 'PYTHONDONTWRITEBYTECODE': '1'}\n"
+        "isolated = subprocess.run(\n"
+        "    [sys.executable, str(root / 'draft_test.py')], cwd=root, env=env,\n"
+        "    text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,\n"
+        ")\n"
+        "if isolated.returncode != 0 and 'ambient_only' in isolated.stderr:\n"
+        "    findings.append('proof module depends on ambient user-site')\n"
+        "print(json.dumps({'findings': findings, 'isolated_returncode': isolated.returncode}, sort_keys=True))\n"
+        "raise SystemExit(1 if len(findings) == 3 else 2)\n",
+    )
+    write(
+        root,
+        "REQUEST.md",
+        "请修正 draft_test.py：测试必须 patch consumer.py 实际解析的 bound_deliver，"
+        "失败 double 必须抛出公开 PublicFailure，并且 proof 模块在禁用 user-site 的独立进程中可收集执行。\n",
+    )
+    candidate_head = initialize_fixture_repo(
+        root,
+        "test(canary): [cr_id_skip] Seed Invalid Proof Inputs",
+    )
+    return {
+        "candidate_head": candidate_head,
+        "seeded_defects": [
+            "wrong-bound-call-site",
+            "wrong-public-failure-semantics",
+            "ambient-proof-dependency",
+        ],
+    }
+
+
 MATERIALIZERS: dict[str, Callable[[Path], dict[str, Any]]] = {
     "positive-outcome": materialize_positive_outcome,
     "large-diff": materialize_large_diff,
     "document-ground-truth": materialize_document_ground_truth,
     "feature-content-density": materialize_feature_content,
+    "proof-source-real-inputs": materialize_proof_source_real_inputs,
     "producer-consumer-chain": materialize_producer_consumer,
 }
 

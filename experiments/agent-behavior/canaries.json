@@ -129,6 +129,28 @@
         "真实改写 query/filter 的 proof mutation 让完整链路断言失败并恢复原树"
       ],
       "minimum_fresh_samples": 3
+    },
+    {
+      "id": "proof-source-real-inputs",
+      "issue": 174,
+      "mode": "fixture",
+      "fixture_kind": "proof-source-real-inputs",
+      "scenario_id": "tester-proof-source-real-inputs",
+      "roles": ["tester"],
+      "weak_check": {
+        "argv": ["python3", "checks/weak.py"],
+        "expected_returncodes": [0]
+      },
+      "discriminating_check": {
+        "argv": ["python3", "checks/strong.py"],
+        "expected_returncodes": [1]
+      },
+      "required_observations": [
+        "patch 必须命中 consumer 实际解析的 bound_deliver，而不是定义模块原符号",
+        "failure double 必须抛出公开 PublicFailure，不能返回内部失败结构",
+        "proof 模块在禁用 user-site 的独立进程中必须可收集执行"
+      ],
+      "minimum_fresh_samples": 3
     }
   ]
 }

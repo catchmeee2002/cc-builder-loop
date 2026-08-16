@@ -19,6 +19,7 @@ FIXTURE_CASES = (
     "large-diff-review-depth",
     "document-ground-truth",
     "feature-content-density",
+    "proof-source-real-inputs",
     "producer-consumer-chain",
 )
 
@@ -85,7 +86,7 @@ class AgentBehaviorCanaryTest(unittest.TestCase):
             set(FIXTURE_CASES),
         )
         self.assertEqual(set(by_case), set(FIXTURE_CASES))
-        self.assertEqual(len(references), 9)
+        self.assertEqual(len(references), 10)
         for case_id, case_references in by_case.items():
             case = cases[case_id]
             self.assertEqual(case["mode"], "fixture")
@@ -126,7 +127,7 @@ class AgentBehaviorCanaryTest(unittest.TestCase):
         self.assertEqual(first.returncode, 0, first.stderr)
         self.assertEqual(first.stdout, second.stdout)
         listed = json.loads(first.stdout)
-        self.assertEqual(len(listed["cases"]), 6)
+        self.assertEqual(len(listed["cases"]), 7)
         self.assertEqual(
             {item["id"] for item in listed["cases"]},
             set(FIXTURE_CASES) | {"host-background-contention"},
@@ -224,6 +225,30 @@ class AgentBehaviorCanaryTest(unittest.TestCase):
                 "",
             )
 
+            proof_source = prepared["proof-source-real-inputs"]
+            self.assertEqual(
+                proof_source["facts"]["seeded_defects"],
+                [
+                    "wrong-bound-call-site",
+                    "wrong-public-failure-semantics",
+                    "ambient-proof-dependency",
+                ],
+            )
+            self.assertEqual(proof_source["weak_check"]["returncode"], 0)
+            self.assertEqual(
+                proof_source["discriminating_check"]["returncode"], 1
+            )
+            proof_source_root = Path(proof_source["fixture_root"])
+            self.assertEqual(
+                git(
+                    proof_source_root,
+                    "status",
+                    "--porcelain",
+                    "--untracked-files=all",
+                ),
+                "",
+            )
+
             repeat_root = parent / "large-diff-repeat"
             returncode, repeat, stderr = run_canary(
                 "prepare",
@@ -237,6 +262,21 @@ class AgentBehaviorCanaryTest(unittest.TestCase):
             self.assertEqual(
                 repeat["fixture_manifest"]["digest"],
                 large["fixture_manifest"]["digest"],
+            )
+
+            proof_repeat_root = parent / "proof-source-repeat"
+            returncode, proof_repeat, stderr = run_canary(
+                "prepare",
+                "--case-id",
+                "proof-source-real-inputs",
+                "--output",
+                str(proof_repeat_root),
+            )
+            self.assertEqual(returncode, 0, stderr)
+            self.assertEqual(proof_repeat["facts"], proof_source["facts"])
+            self.assertEqual(
+                proof_repeat["fixture_manifest"]["digest"],
+                proof_source["fixture_manifest"]["digest"],
             )
 
         self.assertEqual(
