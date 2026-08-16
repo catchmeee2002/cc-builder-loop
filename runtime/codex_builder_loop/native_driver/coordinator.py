@@ -23,6 +23,12 @@ from .transport_failures import (
 )
 
 
+REVIEWER_COMPACTION_FAILURE_CODES = {
+    "responseStreamDisconnected",
+    "missingAgentResult",
+}
+
+
 class NativeDriverError(RuntimeError):
     def __init__(self, message: str, *, code: str, status: str = "FATAL", details: Any = None):
         super().__init__(message)
@@ -44,6 +50,7 @@ class NativeCoordinator:
         event_sink: Callable[[dict[str, Any]], None] | None = None,
         now_fn: Callable[[], datetime] | None = None,
         sleep_fn: Callable[[float], None] | None = None,
+        thread_compaction_available: bool = False,
     ):
         self.repo = repo.resolve()
         self.run_id = run_id
@@ -72,6 +79,7 @@ class NativeCoordinator:
             if isinstance(dispatch_renewal_reason, str) and dispatch_renewal_reason.strip()
             else None
         )
+        self._thread_compaction_available = thread_compaction_available
 
     def run(self) -> dict[str, Any]:
         while True:
@@ -546,6 +554,20 @@ class NativeCoordinator:
             sandbox="danger-full-access",
         )
         thread = self.transport.read_thread(thread_id)
+        if pending.get("state") == "exhausted":
+            compacted = self._recover_reviewer_thread_compaction(pending, thread)
+            if compacted is not None:
+                return None
+            raise NativeDriverError(
+                "Native role transport failed three times",
+                code="NATIVE_DISPATCH_RETRY_EXHAUSTED",
+                status="NEEDS_USER",
+                details={
+                    "failure_code": pending.get("failure_code"),
+                    "attempt": pending.get("attempt"),
+                    "generation": pending.get("generation"),
+                },
+            )
         attempt = int(pending.get("attempt", 1))
         client_id = self._dispatch_client_id(pending)
         matches = [
@@ -1103,6 +1125,7 @@ class NativeCoordinator:
                 ),
             }
         if role == "reviewer":
+            payload["prompt_contract_version"] = 2
             payload["review_input_contract"] = self._review_input_contract(
                 context, phase=str(payload["phase"])
             )
@@ -1135,9 +1158,25 @@ class NativeCoordinator:
                 "defects to current_project, Builder-loop defects to builder_loop, and environment "
                 "failures to external_platform."
             )
+        json_options: dict[str, Any] = {
+            "ensure_ascii": False,
+            "sort_keys": True,
+        }
+        if role == "reviewer":
+            json_options["separators"] = (",", ":")
+        else:
+            json_options["indent"] = 2
         return "CBL_ACTION_ID:" + str(action["action_id"]) + "\n" + json.dumps(
-            payload, ensure_ascii=False, sort_keys=True, indent=2
+            payload, **json_options
         )
+
+    @staticmethod
+    def _prompt_source_ref(value: Any, pointer: str) -> dict[str, Any]:
+        return {
+            "source": "current_prompt_payload",
+            "json_pointer": pointer,
+            "digest": digest(value),
+        }
 
     def _review_input_contract(
         self, context: dict[str, Any], *, phase: str
@@ -1150,10 +1189,7 @@ class NativeCoordinator:
         candidate_head = str(execution["candidate_head"])
         return {
             "review_phase": phase,
-            "accepted_plan": {
-                "source": "canonical_assurance_v4_contract",
-                "value": facets,
-            },
+            "accepted_plan": self._prompt_source_ref(facets, "/contract"),
             "spec_head": spec_head,
             "candidate_head": candidate_head,
             "integrated_head": candidate_head,
@@ -1188,7 +1224,9 @@ class NativeCoordinator:
                 else None
             ),
             "documentation_policy_path": str(self.project_root / "policies" / "doc-policy.md"),
-            "doc_reference_scan": context.get("doc_reference_scan"),
+            "doc_reference_scan": self._prompt_source_ref(
+                context.get("doc_reference_scan"), "/doc_reference_scan"
+            ),
             "doc_reference_scan_state": context.get("doc_reference_scan_state"),
             "pre_turn_gates": {
                 "required": (
@@ -1213,10 +1251,16 @@ class NativeCoordinator:
                     if phase == "preflight"
                     else facets["assurance"].get("required", [])
                 ),
-                "evidence": context.get("evidence", {}),
-                "doc_reference_scan": context.get("doc_reference_scan"),
+                "evidence": self._prompt_source_ref(
+                    context.get("evidence", {}), "/evidence"
+                ),
+                "doc_reference_scan": self._prompt_source_ref(
+                    context.get("doc_reference_scan"), "/doc_reference_scan"
+                ),
                 "doc_reference_scan_state": context.get("doc_reference_scan_state"),
-                "publication": context.get("publication"),
+                "publication": self._prompt_source_ref(
+                    context.get("publication"), "/publication"
+                ),
                 "requirement_rule": (
                     "Only names in required are mandatory. When tester is absent, Tester "
                     "author, source, integration, and tester evidence are not gates; blackbox "
@@ -1224,10 +1268,12 @@ class NativeCoordinator:
                 ),
             },
             "mapping_note": (
-                "Assurance v4 uses the canonical contract above as the accepted plan. Its mission "
-                "behaviors, acceptance cases, and trust boundaries are the plan checklist; for an "
-                "L1 documentation delivery they are also the documentation specification. Legacy "
-                "sidecar plan-checklist or documentation-spec files are not separate v4 gates."
+                "Resolve each current_prompt_payload JSON Pointer against this same prompt and "
+                "verify its digest before use. Assurance v4 uses /contract as the accepted plan; "
+                "its mission behaviors, acceptance cases, and trust boundaries are the plan "
+                "checklist. For an L1 documentation delivery they are also the documentation "
+                "specification. Legacy sidecar plan-checklist or documentation-spec files are not "
+                "separate v4 gates."
             ),
         }
 
@@ -1445,6 +1491,267 @@ class NativeCoordinator:
     ) -> dict[str, Any]:
         return {"type": "dangerFullAccess"}
 
+    def _start_reviewer_thread_compaction(
+        self, action_id: str
+    ) -> dict[str, Any] | None:
+        if not self._thread_compaction_available:
+            return None
+        context = self._context()
+        pending = context.get("dispatch_intent")
+        if not isinstance(pending, dict) or pending.get("action_id") != action_id:
+            return None
+        thread_id = pending.get("thread_id")
+        if not isinstance(thread_id, str):
+            return None
+        try:
+            thread = self.transport.read_thread(thread_id)
+        except AppServerError as exc:
+            raise NativeDriverError(
+                "Reviewer thread could not be inspected before compaction",
+                code="NATIVE_DISPATCH_COMPACTION_INSPECTION_FAILED",
+                status="NEEDS_USER",
+                details={"source_code": exc.code, "source_details": exc.details},
+            ) from exc
+        return self._recover_reviewer_thread_compaction(pending, thread)
+
+    def _recover_reviewer_thread_compaction(
+        self, pending: dict[str, Any], thread: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        recovery = pending.get("compaction_recovery")
+        if isinstance(recovery, dict) and recovery.get("state") == "completed":
+            return None
+        eligible = bool(
+            pending.get("state") == "exhausted"
+            and int(pending.get("attempt", 1)) >= 3
+            and pending.get("role") == "reviewer"
+            and pending.get("action") in {"reviewer_preflight", "reviewer_final"}
+            and pending.get("failure_code") in REVIEWER_COMPACTION_FAILURE_CODES
+        )
+        if not eligible:
+            return None
+        if not self._thread_compaction_available:
+            if isinstance(recovery, dict) and recovery.get("state") == "prepared":
+                raise NativeDriverError(
+                    "persisted Reviewer compaction requires an unavailable App Server capability",
+                    code="NATIVE_DISPATCH_COMPACTION_UNAVAILABLE",
+                    status="NEEDS_USER",
+                )
+            return None
+        turns = self._thread_turns(thread)
+        if not isinstance(recovery, dict):
+            if not turns or not self._empty_exhausted_tail(pending, turns[-1]):
+                return None
+            self.core.call(
+                "prepare-dispatch-compaction",
+                "--repo",
+                str(self.repo),
+                "--run",
+                self.run_id,
+                "--action-id",
+                str(pending["action_id"]),
+                "--prior-turn-count",
+                str(len(turns)),
+                "--prior-tail-turn-id",
+                str(turns[-1]["id"]),
+                "--prior-turns-digest",
+                digest(turns),
+                "--driver-runtime-kind",
+                "native",
+            )
+            refreshed = self._context().get("dispatch_intent")
+            if not isinstance(refreshed, dict):
+                raise NativeDriverError(
+                    "prepared Reviewer compaction disappeared",
+                    code="NATIVE_DISPATCH_COMPACTION_INTENT_MISSING",
+                    status="NEEDS_USER",
+                )
+            pending = refreshed
+            recovery = pending.get("compaction_recovery")
+        if not isinstance(recovery, dict) or recovery.get("state") != "prepared":
+            raise NativeDriverError(
+                "Reviewer compaction intent is invalid",
+                code="NATIVE_DISPATCH_COMPACTION_INTENT_INVALID",
+                status="NEEDS_USER",
+            )
+        return self._complete_reviewer_thread_compaction(pending, thread)
+
+    @staticmethod
+    def _thread_turns(thread: dict[str, Any]) -> list[dict[str, Any]]:
+        raw = thread.get("turns")
+        if not isinstance(raw, list) or any(
+            not isinstance(turn, dict)
+            or not isinstance(turn.get("id"), str)
+            or not isinstance(turn.get("items", []), list)
+            for turn in raw
+        ):
+            raise NativeDriverError(
+                "Reviewer thread history is not readable",
+                code="NATIVE_DISPATCH_COMPACTION_THREAD_INVALID",
+                status="NEEDS_USER",
+            )
+        return raw
+
+    def _empty_exhausted_tail(
+        self, pending: dict[str, Any], turn: dict[str, Any]
+    ) -> bool:
+        if (
+            turn.get("id") != pending.get("turn_id")
+            or self._turn_agent_text(turn) is not None
+        ):
+            return False
+        status = turn.get("status")
+        failure_code = pending.get("failure_code")
+        if status == "failed":
+            return self._turn_failure_code(turn) == failure_code
+        return status == "completed" and failure_code == "missingAgentResult"
+
+    def _complete_reviewer_thread_compaction(
+        self, pending: dict[str, Any], thread: dict[str, Any]
+    ) -> dict[str, Any]:
+        recovery = pending["compaction_recovery"]
+        turns = self._thread_turns(thread)
+        prior_count = int(recovery["prior_turn_count"])
+        if (
+            len(turns) < prior_count
+            or turns[prior_count - 1].get("id") != recovery["prior_tail_turn_id"]
+            or digest(turns[:prior_count]) != recovery["prior_turns_digest"]
+        ):
+            raise NativeDriverError(
+                "Reviewer thread changed before compaction recovery",
+                code="NATIVE_DISPATCH_COMPACTION_PREFIX_DRIFT",
+                status="NEEDS_USER",
+            )
+        appended = turns[prior_count:]
+        if len(appended) > 1:
+            raise NativeDriverError(
+                "Reviewer thread gained unrelated turns during compaction recovery",
+                code="NATIVE_DISPATCH_COMPACTION_TAIL_DRIFT",
+                status="NEEDS_USER",
+                details={"appended_turn_ids": [turn.get("id") for turn in appended]},
+            )
+        transport_result = None
+        try:
+            if not appended:
+                self._emit_event(
+                    {
+                        "event": "native_driver_thread_compaction_started",
+                        "run_id": self.run_id,
+                        "action_id": pending.get("action_id"),
+                        "thread_id": recovery["thread_id"],
+                        "source_generation": recovery["source_generation"],
+                    }
+                )
+                transport_result = self.transport.compact_thread(
+                    str(recovery["thread_id"])
+                )
+                thread = self.transport.read_thread(str(recovery["thread_id"]))
+                turns = self._thread_turns(thread)
+                appended = turns[prior_count:]
+            elif appended[0].get("status") in {"inProgress", "in_progress"}:
+                turn = self.transport.wait_turn(
+                    thread_id=str(recovery["thread_id"]),
+                    turn_id=str(appended[0]["id"]),
+                )
+                if turn.status != "completed":
+                    raise AppServerError(
+                        "thread compaction turn failed",
+                        code="NATIVE_THREAD_COMPACTION_FAILED",
+                        details={
+                            "turn_id": turn.turn_id,
+                            "status": turn.status,
+                            "error": turn.error,
+                        },
+                    )
+                thread = self.transport.read_thread(str(recovery["thread_id"]))
+                turns = self._thread_turns(thread)
+                appended = turns[prior_count:]
+        except AppServerError as exc:
+            raise NativeDriverError(
+                "Reviewer thread compaction did not complete",
+                code="NATIVE_DISPATCH_COMPACTION_FAILED",
+                status="NEEDS_USER",
+                details={"source_code": exc.code, "source_details": exc.details},
+            ) from exc
+        if len(appended) != 1:
+            raise NativeDriverError(
+                "Reviewer thread compaction result is ambiguous",
+                code="NATIVE_DISPATCH_COMPACTION_RESULT_AMBIGUOUS",
+                status="NEEDS_USER",
+                details={"appended_turn_count": len(appended)},
+            )
+        compaction_turn = appended[0]
+        items = [
+            item
+            for item in compaction_turn.get("items", [])
+            if isinstance(item, dict) and item.get("type") == "contextCompaction"
+        ]
+        forbidden = [
+            item.get("type")
+            for item in compaction_turn.get("items", [])
+            if isinstance(item, dict)
+            and item.get("type")
+            not in {"contextCompaction", "reasoning"}
+        ]
+        if (
+            compaction_turn.get("status") != "completed"
+            or len(items) != 1
+            or forbidden
+        ):
+            raise NativeDriverError(
+                "Reviewer thread compaction turn is not a pure completed compaction",
+                code="NATIVE_DISPATCH_COMPACTION_RESULT_INVALID",
+                status="NEEDS_USER",
+                details={
+                    "turn_id": compaction_turn.get("id"),
+                    "status": compaction_turn.get("status"),
+                    "forbidden_item_types": forbidden,
+                },
+            )
+        if transport_result is not None and (
+            transport_result.turn_id != compaction_turn.get("id")
+            or transport_result.item_id != items[0].get("id")
+        ):
+            raise NativeDriverError(
+                "Reviewer compaction read-back identity changed",
+                code="NATIVE_DISPATCH_COMPACTION_RESULT_DRIFT",
+                status="NEEDS_USER",
+            )
+        completed = self.core.call(
+            "complete-dispatch-compaction",
+            "--repo",
+            str(self.repo),
+            "--run",
+            self.run_id,
+            "--action-id",
+            str(pending["action_id"]),
+            "--compaction-turn-id",
+            str(compaction_turn["id"]),
+            "--context-item-id",
+            str(items[0]["id"]),
+            "--compaction-turn-digest",
+            digest(compaction_turn),
+            "--compaction-duration-ms",
+            str(
+                compaction_turn.get("durationMs")
+                if isinstance(compaction_turn.get("durationMs"), int)
+                else 0
+            ),
+            "--observed-turn-count",
+            str(len(turns)),
+            "--driver-runtime-kind",
+            "native",
+        )
+        self._emit_event(
+            {
+                "event": "native_driver_thread_compaction_completed",
+                "run_id": self.run_id,
+                "action_id": pending.get("action_id"),
+                "thread_id": recovery["thread_id"],
+                "compaction_turn_id": compaction_turn["id"],
+            }
+        )
+        return completed
+
     def _emit_event(self, value: dict[str, Any]) -> None:
         if self._event_sink is not None:
             self._event_sink(copy.deepcopy(value))
@@ -1550,10 +1857,13 @@ class NativeCoordinator:
                 failure_code,
             )
         except CorePortError as error:
-            if (
-                error.code != "NATIVE_DISPATCH_RETRY_EXHAUSTED"
-                or self._dispatch_renewal_reason is None
-            ):
+            if error.code != "NATIVE_DISPATCH_RETRY_EXHAUSTED":
+                raise
+            compacted = self._start_reviewer_thread_compaction(action_id)
+            if compacted is not None:
+                self._dispatch_renewal_reason = None
+                return compacted
+            if self._dispatch_renewal_reason is None:
                 raise
             context = self._context()
             intent = context.get("dispatch_intent")

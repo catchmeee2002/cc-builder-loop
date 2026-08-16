@@ -76,6 +76,9 @@ TRUSTED_SYSTEM_PATH = "/usr/local/bin:/usr/bin:/bin"
 TRUSTED_SYSTEM_ROOTS = tuple(Path(item).resolve() for item in TRUSTED_SYSTEM_PATH.split(":"))
 AUTH_UNAVAILABLE_RETRY_BASE_SECONDS = 30
 AUTH_UNAVAILABLE_RETRY_MAX_SECONDS = 120
+REVIEWER_COMPACTION_FAILURE_CODES = frozenset(
+    {"responseStreamDisconnected", "missingAgentResult"}
+)
 RUNTIME_SUPPORT_MANIFEST_PATH = (
     "runtime/codex_builder_loop/assurance_v4/runtime-support.json"
 )
@@ -1792,6 +1795,13 @@ def renew_dispatch(
                 code="DISPATCH_RENEWAL_NOT_AVAILABLE",
                 status="NEEDS_USER",
             )
+        recovery = intent.get("compaction_recovery")
+        if isinstance(recovery, Mapping) and recovery.get("state") == "prepared":
+            raise AssuranceError(
+                "dispatch compaction recovery must finish before manual renewal",
+                code="DISPATCH_COMPACTION_PENDING",
+                status="NEEDS_USER",
+            )
         from ..core import capture_runtime_identity
 
         current_runtime_identity = capture_runtime_identity()
@@ -1829,6 +1839,10 @@ def renew_dispatch(
             "renewal_reason": normalized_reason,
             "created_at": now(),
         }
+        if isinstance(previous_intent.get("compaction_recovery"), Mapping):
+            renewed_intent["compaction_recovery"] = copy.deepcopy(
+                previous_intent["compaction_recovery"]
+            )
         ledger["dispatch_intent"] = renewed_intent
         append_event(
             ledger,
@@ -1844,6 +1858,259 @@ def renew_dispatch(
                 "failure_code": previous_intent.get("failure_code"),
                 "previous_digest": previous_digest,
                 "reason": normalized_reason,
+            },
+        )
+        append_event(ledger, "dispatch_prepared", copy.deepcopy(renewed_intent))
+        save_ledger(repo, ledger)
+    return status(repo, run_id)
+
+
+def prepare_dispatch_compaction(
+    repo_value: str | Path,
+    run_value: str,
+    *,
+    action_id: str,
+    prior_turn_count: int,
+    prior_tail_turn_id: str,
+    prior_turns_digest: str,
+    driver_runtime_kind: str,
+) -> dict[str, Any]:
+    repo = resolve_repo(repo_value)
+    run_id = ensure_run_id(run_value)
+    if prior_turn_count < 1:
+        raise AssuranceError(
+            "dispatch compaction requires a non-empty thread observation",
+            code="DISPATCH_COMPACTION_THREAD_EMPTY",
+            status="FAIL",
+        )
+    if not prior_tail_turn_id.strip() or not re.fullmatch(
+        r"[0-9a-f]{64}", prior_turns_digest
+    ):
+        raise AssuranceError(
+            "dispatch compaction observation identity is invalid",
+            code="DISPATCH_COMPACTION_OBSERVATION_INVALID",
+            status="FAIL",
+        )
+    with locked(repo):
+        ledger = read_ledger(repo, run_id)
+        _require_driver_runtime_owner(ledger, driver_runtime_kind)
+        if ledger["phase"] != "active":
+            raise AssuranceError(
+                "dispatch compaction requires an active run",
+                code="ASSURANCE_RUN_NOT_ACTIVE",
+                status="NEEDS_USER",
+            )
+        intent = ledger.get("dispatch_intent")
+        if not isinstance(intent, dict) or intent.get("action_id") != action_id:
+            raise AssuranceError(
+                "dispatch action is stale", code="DRIVER_ACTION_STALE", status="FAIL"
+            )
+        if (
+            intent.get("state") != "exhausted"
+            or int(intent.get("attempt", 1)) < 3
+            or intent.get("role") != "reviewer"
+            or intent.get("action") not in {"reviewer_preflight", "reviewer_final"}
+            or intent.get("failure_code") not in REVIEWER_COMPACTION_FAILURE_CODES
+        ):
+            raise AssuranceError(
+                "dispatch is not eligible for Reviewer thread compaction",
+                code="DISPATCH_COMPACTION_NOT_AVAILABLE",
+                status="NEEDS_USER",
+            )
+        if intent.get("turn_id") != prior_tail_turn_id:
+            raise AssuranceError(
+                "dispatch compaction tail does not match the exhausted turn",
+                code="DISPATCH_COMPACTION_TAIL_MISMATCH",
+                status="NEEDS_USER",
+            )
+        expected = {
+            "state": "prepared",
+            "source_generation": int(intent.get("generation", 1)),
+            "source_attempt": int(intent.get("attempt", 1)),
+            "failure_code": intent["failure_code"],
+            "thread_id": intent["thread_id"],
+            "prompt_digest": intent["prompt_digest"],
+            "prior_turn_count": prior_turn_count,
+            "prior_tail_turn_id": prior_tail_turn_id,
+            "prior_turns_digest": prior_turns_digest,
+        }
+        existing = intent.get("compaction_recovery")
+        if isinstance(existing, Mapping):
+            if all(existing.get(key) == value for key, value in expected.items()):
+                return status(repo, run_id)
+            raise AssuranceError(
+                "dispatch compaction observation changed",
+                code="DISPATCH_COMPACTION_OBSERVATION_DRIFT",
+                status="NEEDS_USER",
+            )
+        recovery = {**expected, "prepared_at": now()}
+        intent["compaction_recovery"] = recovery
+        append_event(
+            ledger,
+            "dispatch_compaction_prepared",
+            {
+                "action_id": action_id,
+                "thread_id": intent["thread_id"],
+                "generation": recovery["source_generation"],
+                "attempt": recovery["source_attempt"],
+                "failure_code": recovery["failure_code"],
+                "prior_turn_count": prior_turn_count,
+                "prior_tail_turn_id": prior_tail_turn_id,
+                "prior_turns_digest": prior_turns_digest,
+            },
+        )
+        save_ledger(repo, ledger)
+    return status(repo, run_id)
+
+
+def complete_dispatch_compaction(
+    repo_value: str | Path,
+    run_value: str,
+    *,
+    action_id: str,
+    compaction_turn_id: str,
+    context_item_id: str,
+    compaction_turn_digest: str,
+    compaction_duration_ms: int,
+    observed_turn_count: int,
+    driver_runtime_kind: str,
+) -> dict[str, Any]:
+    repo = resolve_repo(repo_value)
+    run_id = ensure_run_id(run_value)
+    if (
+        not compaction_turn_id.strip()
+        or not context_item_id.strip()
+        or not re.fullmatch(r"[0-9a-f]{64}", compaction_turn_digest)
+        or compaction_duration_ms < 0
+    ):
+        raise AssuranceError(
+            "completed dispatch compaction observation is invalid",
+            code="DISPATCH_COMPACTION_RESULT_INVALID",
+            status="FAIL",
+        )
+    with locked(repo):
+        ledger = read_ledger(repo, run_id)
+        _require_driver_runtime_owner(ledger, driver_runtime_kind)
+        intent = ledger.get("dispatch_intent")
+        if not isinstance(intent, dict) or intent.get("action_id") != action_id:
+            raise AssuranceError(
+                "dispatch action is stale", code="DRIVER_ACTION_STALE", status="FAIL"
+            )
+        recovery = intent.get("compaction_recovery")
+        if not isinstance(recovery, dict):
+            raise AssuranceError(
+                "dispatch compaction was not prepared",
+                code="DISPATCH_COMPACTION_NOT_PREPARED",
+                status="FAIL",
+            )
+        if recovery.get("state") == "completed":
+            if (
+                recovery.get("compaction_turn_id") == compaction_turn_id
+                and recovery.get("context_item_id") == context_item_id
+                and recovery.get("compaction_turn_digest") == compaction_turn_digest
+                and recovery.get("compaction_duration_ms") == compaction_duration_ms
+                and recovery.get("observed_turn_count") == observed_turn_count
+            ):
+                return status(repo, run_id)
+            raise AssuranceError(
+                "completed dispatch compaction observation changed",
+                code="DISPATCH_COMPACTION_RESULT_DRIFT",
+                status="NEEDS_USER",
+            )
+        if intent.get("state") != "exhausted" or recovery.get("state") != "prepared":
+            raise AssuranceError(
+                "dispatch compaction is not completable",
+                code="DISPATCH_COMPACTION_STATE_INVALID",
+                status="NEEDS_USER",
+            )
+        if observed_turn_count != int(recovery["prior_turn_count"]) + 1:
+            raise AssuranceError(
+                "dispatch thread changed by more than one compaction turn",
+                code="DISPATCH_COMPACTION_TURN_COUNT_DRIFT",
+                status="NEEDS_USER",
+            )
+        from ..core import capture_runtime_identity
+
+        current_runtime_identity = capture_runtime_identity()
+        if current_runtime_identity != ledger["runtime_identity"]:
+            raise AssuranceError(
+                "dispatch compaction cannot change the frozen runtime identity",
+                code="DISPATCH_RUNTIME_IDENTITY_MISMATCH",
+                status="NEEDS_USER",
+                details={
+                    "expected_runtime_identity": copy.deepcopy(ledger["runtime_identity"]),
+                    "actual_runtime_identity": current_runtime_identity,
+                },
+            )
+        agent = ledger["facets"]["execution"]["agents"].get("reviewer")
+        if not isinstance(agent, dict) or agent.get("thread_id") != recovery.get(
+            "thread_id"
+        ):
+            raise AssuranceError(
+                "dispatch compaction lost Reviewer thread continuity",
+                code="DISPATCH_COMPACTION_IDENTITY_MISMATCH",
+                status="NEEDS_USER",
+            )
+        completed_at = now()
+        completed_recovery = {
+            **copy.deepcopy(recovery),
+            "state": "completed",
+            "compaction_turn_id": compaction_turn_id,
+            "context_item_id": context_item_id,
+            "compaction_turn_digest": compaction_turn_digest,
+            "compaction_duration_ms": compaction_duration_ms,
+            "observed_turn_count": observed_turn_count,
+            "completed_at": completed_at,
+        }
+        previous_intent = copy.deepcopy(intent)
+        previous_intent["compaction_recovery"] = copy.deepcopy(completed_recovery)
+        previous_digest = digest(previous_intent)
+        previous_generation = int(previous_intent.get("generation", 1))
+        renewed_intent = {
+            "action_id": previous_intent["action_id"],
+            "action": previous_intent["action"],
+            "role": previous_intent["role"],
+            "thread_id": previous_intent["thread_id"],
+            "prompt_digest": previous_intent["prompt_digest"],
+            "output_schema_digest": previous_intent["output_schema_digest"],
+            "state": "prepared",
+            "attempt": 1,
+            "generation": previous_generation + 1,
+            "renewed_from_digest": previous_digest,
+            "renewal_reason": "automatic_reviewer_thread_compaction",
+            "compaction_recovery": completed_recovery,
+            "created_at": completed_at,
+        }
+        ledger["dispatch_intent"] = renewed_intent
+        append_event(
+            ledger,
+            "dispatch_compaction_completed",
+            {
+                "action_id": action_id,
+                "thread_id": previous_intent["thread_id"],
+                "source_generation": previous_generation,
+                "generation": renewed_intent["generation"],
+                "compaction_turn_id": compaction_turn_id,
+                "context_item_id": context_item_id,
+                "compaction_turn_digest": compaction_turn_digest,
+                "duration_ms": compaction_duration_ms,
+                "observed_turn_count": observed_turn_count,
+            },
+        )
+        append_event(
+            ledger,
+            "dispatch_renewed",
+            {
+                "action_id": action_id,
+                "role": previous_intent["role"],
+                "thread_id": previous_intent["thread_id"],
+                "previous_generation": previous_generation,
+                "generation": renewed_intent["generation"],
+                "previous_attempt": int(previous_intent.get("attempt", 1)),
+                "previous_turn_id": previous_intent.get("turn_id"),
+                "failure_code": previous_intent.get("failure_code"),
+                "previous_digest": previous_digest,
+                "reason": renewed_intent["renewal_reason"],
             },
         )
         append_event(ledger, "dispatch_prepared", copy.deepcopy(renewed_intent))
@@ -3309,6 +3576,7 @@ def telemetry(ledger: Mapping[str, Any]) -> dict[str, Any]:
         "tester_conflict_repairs": 0,
         "reviewer_preflight_attempts": 0,
         "dispatch_renewals": 0,
+        "reviewer_thread_compactions": 0,
     }
 
     def stage(name: str) -> dict[str, Any]:
@@ -3423,6 +3691,14 @@ def telemetry(ledger: Mapping[str, Any]) -> dict[str, Any]:
             retry_codes[failure_code] = retry_codes.get(failure_code, 0) + 1
         elif kind == "dispatch_renewed":
             lifecycle["dispatch_renewals"] += 1
+        elif kind == "dispatch_compaction_completed":
+            current = stage("reviewer_thread_compaction")
+            current["attempts"] += 1
+            current["completed_attempts"] += 1
+            lifecycle["reviewer_thread_compactions"] += 1
+            duration = max(0, int(details.get("duration_ms", 0)))
+            current["total_duration_ms"] += duration
+            agent_turn_ms += duration
         elif kind == "machine_verified":
             current = stage("verify_machine")
             current["attempts"] += 1

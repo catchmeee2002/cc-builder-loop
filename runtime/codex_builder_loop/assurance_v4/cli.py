@@ -376,6 +376,34 @@ def parser() -> argparse.ArgumentParser:
         required=True,
     )
 
+    prepare_compaction = commands.add_parser("prepare-dispatch-compaction")
+    prepare_compaction.add_argument("--repo", default=".")
+    prepare_compaction.add_argument("--run", required=True)
+    prepare_compaction.add_argument("--action-id", required=True)
+    prepare_compaction.add_argument("--prior-turn-count", type=int, required=True)
+    prepare_compaction.add_argument("--prior-tail-turn-id", required=True)
+    prepare_compaction.add_argument("--prior-turns-digest", required=True)
+    prepare_compaction.add_argument(
+        "--driver-runtime-kind",
+        choices=["native", "full_driver_skill"],
+        required=True,
+    )
+
+    complete_compaction = commands.add_parser("complete-dispatch-compaction")
+    complete_compaction.add_argument("--repo", default=".")
+    complete_compaction.add_argument("--run", required=True)
+    complete_compaction.add_argument("--action-id", required=True)
+    complete_compaction.add_argument("--compaction-turn-id", required=True)
+    complete_compaction.add_argument("--context-item-id", required=True)
+    complete_compaction.add_argument("--compaction-turn-digest", required=True)
+    complete_compaction.add_argument("--compaction-duration-ms", type=int, required=True)
+    complete_compaction.add_argument("--observed-turn-count", type=int, required=True)
+    complete_compaction.add_argument(
+        "--driver-runtime-kind",
+        choices=["native", "full_driver_skill"],
+        required=True,
+    )
+
     abandon = commands.add_parser("abandon")
     abandon.add_argument("--repo", default=".")
     abandon.add_argument("--run", required=True)
@@ -749,6 +777,28 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.run,
                 action_id=args.action_id,
                 reason=args.reason,
+                driver_runtime_kind=args.driver_runtime_kind,
+            )
+        elif args.command == "prepare-dispatch-compaction":
+            payload = core.prepare_dispatch_compaction(
+                args.repo,
+                args.run,
+                action_id=args.action_id,
+                prior_turn_count=args.prior_turn_count,
+                prior_tail_turn_id=args.prior_tail_turn_id,
+                prior_turns_digest=args.prior_turns_digest,
+                driver_runtime_kind=args.driver_runtime_kind,
+            )
+        elif args.command == "complete-dispatch-compaction":
+            payload = core.complete_dispatch_compaction(
+                args.repo,
+                args.run,
+                action_id=args.action_id,
+                compaction_turn_id=args.compaction_turn_id,
+                context_item_id=args.context_item_id,
+                compaction_turn_digest=args.compaction_turn_digest,
+                compaction_duration_ms=args.compaction_duration_ms,
+                observed_turn_count=args.observed_turn_count,
                 driver_runtime_kind=args.driver_runtime_kind,
             )
         elif args.command == "abandon":

@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- Native Driver 的长程 Reviewer prompt 改为 v2 单事实投影：contract、evidence、publication 与文档扫描
+  只在 payload 顶层出现一次，审查契约以 JSON Pointer + digest 引用，并用紧凑 JSON 降低重复上下文。
+  Reviewer 同一 dispatch 三次断流且尾部 turn 确认无输出时，会先持久化 thread 前缀与 compaction intent，
+  再通过稳定 `thread/compact/start` 完成一次可恢复 compaction 和同身份 generation 续接；不调用 deprecated
+  rollback，部分输出、非尾部、能力缺失、前缀漂移或第二次耗尽均停止。Telemetry 同时按真实
+  `dispatch_turn_bound` 到 completed/scheduled/exhausted 终点统计 Agent 时间和失败次数，不再把 exhausted
+  retry 成本归入 idle/user wait（#198、#199）。
+
+- Tester correction 以最近 machine PASS 划分窗口；前三次修正后，第四次会停在绑定当前 problem/action/
+  Reviewer/runtime 的 architecture review。用户通过 Native `resume --reason` 只授权一次额外原 Tester
+  correction，不重置历史计数；授权消费后再次失败仍停止，真实 machine PASS 才开启新窗口（#196、#197）。
+
 - Assurance proof 的绝对 `uv` launcher 在固定 frozen/offline/no-env-file 前缀后允许 virtual workspace
   显式选择唯一 `--all-packages`。runtime 为每个 candidate、baseline 与 mutation 执行创建并清理
   proof-worktree 外的临时 `UV_PROJECT_ENVIRONMENT`，既不借用 candidate `.venv`，也不放宽 ignored

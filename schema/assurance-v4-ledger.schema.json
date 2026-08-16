@@ -308,11 +308,50 @@
         "exhausted_at": {"type": "string", "minLength": 1},
         "renewed_from_digest": {"$ref": "#/$defs/sha256"},
         "renewal_reason": {"type": "string", "minLength": 1},
+        "compaction_recovery": {"$ref": "#/$defs/dispatchCompactionRecovery"},
         "result_path": {"type": "string", "minLength": 1},
         "result_digest": {"$ref": "#/$defs/sha256"},
         "created_at": {"type": "string", "minLength": 1},
         "completed_at": {"type": "string", "minLength": 1}
       }
+    },
+    "dispatchCompactionRecovery": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "state", "source_generation", "source_attempt", "failure_code",
+        "thread_id", "prompt_digest", "prior_turn_count", "prior_tail_turn_id",
+        "prior_turns_digest", "prepared_at"
+      ],
+      "properties": {
+        "state": {"enum": ["prepared", "completed"]},
+        "source_generation": {"type": "integer", "minimum": 1},
+        "source_attempt": {"type": "integer", "minimum": 3},
+        "failure_code": {"enum": ["responseStreamDisconnected", "missingAgentResult"]},
+        "thread_id": {"type": "string", "minLength": 1},
+        "prompt_digest": {"$ref": "#/$defs/sha256"},
+        "prior_turn_count": {"type": "integer", "minimum": 1},
+        "prior_tail_turn_id": {"type": "string", "minLength": 1},
+        "prior_turns_digest": {"$ref": "#/$defs/sha256"},
+        "prepared_at": {"type": "string", "format": "date-time"},
+        "compaction_turn_id": {"type": "string", "minLength": 1},
+        "context_item_id": {"type": "string", "minLength": 1},
+        "compaction_turn_digest": {"$ref": "#/$defs/sha256"},
+        "compaction_duration_ms": {"type": "integer", "minimum": 0},
+        "observed_turn_count": {"type": "integer", "minimum": 2},
+        "completed_at": {"type": "string", "format": "date-time"}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"state": {"const": "completed"}}},
+          "then": {
+            "required": [
+              "compaction_turn_id", "context_item_id", "compaction_turn_digest",
+              "compaction_duration_ms", "observed_turn_count", "completed_at"
+            ]
+          }
+        }
+      ]
     },
     "testerReplacementIntent": {
       "type": "object",

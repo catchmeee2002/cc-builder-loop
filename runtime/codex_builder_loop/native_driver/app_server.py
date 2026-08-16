@@ -20,6 +20,7 @@ class AppServerError(RuntimeError):
 class AppServerCapability:
     runtime_version: str
     protocol_schema_digest: str
+    thread_compaction: bool
 
 
 @dataclass(frozen=True)
@@ -28,6 +29,12 @@ class TurnResult:
     status: str
     text: str
     error: Any = None
+
+
+@dataclass(frozen=True)
+class ThreadCompactionResult:
+    turn_id: str
+    item_id: str
 
 
 REQUIRED_PROTOCOL_TOKENS = (
@@ -81,6 +88,7 @@ def probe_app_server(codex_bin: str = "codex") -> AppServerCapability:
         return AppServerCapability(
             runtime_version=version.stdout.strip(),
             protocol_schema_digest=hashlib.sha256(content).hexdigest(),
+            thread_compaction='"thread/compact/start"' in text,
         )
 
 
@@ -222,7 +230,7 @@ class AppServerTransport:
     def wait_turn(self, *, thread_id: str, turn_id: str) -> TurnResult:
         last_text = ""
         while True:
-            message = self._read()
+            message = self._next_message()
             if "id" in message and "method" in message:
                 self._answer_server_request(message)
                 continue
@@ -245,6 +253,59 @@ class AppServerTransport:
                     text=last_text,
                     error=turn.get("error"),
                 )
+
+    def compact_thread(self, thread_id: str) -> ThreadCompactionResult:
+        self._request("thread/compact/start", {"threadId": thread_id})
+        compaction_turn_id: str | None = None
+        compaction_item_id: str | None = None
+        while True:
+            message = self._next_message()
+            if "id" in message and "method" in message:
+                self._answer_server_request(message)
+                continue
+            method = message.get("method")
+            params = message.get("params", {})
+            if not isinstance(params, dict) or params.get("threadId") != thread_id:
+                continue
+            if method in {"item/started", "item/completed"}:
+                item = params.get("item", {})
+                if isinstance(item, dict) and item.get("type") == "contextCompaction":
+                    turn_id = params.get("turnId")
+                    item_id = item.get("id")
+                    if not isinstance(turn_id, str) or not isinstance(item_id, str):
+                        raise AppServerError(
+                            "thread compaction item lacks identity",
+                            code="NATIVE_THREAD_COMPACTION_IDENTITY_MISSING",
+                        )
+                    if compaction_turn_id not in {None, turn_id} or compaction_item_id not in {
+                        None,
+                        item_id,
+                    }:
+                        raise AppServerError(
+                            "thread compaction identity changed",
+                            code="NATIVE_THREAD_COMPACTION_IDENTITY_DRIFT",
+                        )
+                    compaction_turn_id = turn_id
+                    compaction_item_id = item_id
+            if method != "turn/completed":
+                continue
+            turn = params.get("turn", {})
+            if not isinstance(turn, dict) or turn.get("id") != compaction_turn_id:
+                continue
+            if turn.get("status") != "completed" or compaction_item_id is None:
+                raise AppServerError(
+                    "thread compaction did not complete",
+                    code="NATIVE_THREAD_COMPACTION_FAILED",
+                    details={
+                        "turn_id": turn.get("id"),
+                        "status": turn.get("status"),
+                        "error": turn.get("error"),
+                    },
+                )
+            return ThreadCompactionResult(
+                turn_id=compaction_turn_id,
+                item_id=compaction_item_id,
+            )
 
     def _request(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         request_id = self._next_id
@@ -298,6 +359,11 @@ class AppServerTransport:
         if not isinstance(value, dict):
             raise AppServerError("invalid App Server message", code="NATIVE_APP_SERVER_PROTOCOL_ERROR")
         return value
+
+    def _next_message(self) -> dict[str, Any]:
+        if self._deferred:
+            return self._deferred.pop(0)
+        return self._read()
 
     def _answer_server_request(self, message: dict[str, Any]) -> None:
         method = str(message.get("method", ""))

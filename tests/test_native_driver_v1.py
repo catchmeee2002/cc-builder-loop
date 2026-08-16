@@ -832,6 +832,150 @@ class NativeDriverCoreContractTest(unittest.TestCase):
             self.assertEqual(intent["attempt"], attempt + 1)
             self.assertEqual(intent["failure_code"], "authUnavailable")
 
+    def test_exhausted_reviewer_dispatch_compacts_once_and_renews(self) -> None:
+        run_id, run_path = self.start()
+        ledger_path = run_path / "ledger.json"
+        ledger = json.loads(ledger_path.read_text())
+        reviewer = {
+            "agent_id": "codex-app-server:reviewer-thread",
+            "thread_id": "reviewer-thread",
+        }
+        ledger["facets"]["execution"]["agents"]["reviewer"] = reviewer
+        ledger["digests"] = facet_digests(ledger["facets"])
+        action_id = "d" * 64
+        ledger["dispatch_intent"] = {
+            "action_id": action_id,
+            "action": "reviewer_preflight",
+            "role": "reviewer",
+            "thread_id": reviewer["thread_id"],
+            "prompt_digest": "e" * 64,
+            "output_schema_digest": "f" * 64,
+            "state": "exhausted",
+            "attempt": 3,
+            "generation": 1,
+            "turn_id": "reviewer-turn-3",
+            "failure_code": "responseStreamDisconnected",
+            "created_at": "2026-08-01T00:00:00+00:00",
+            "exhausted_at": "2026-08-01T00:00:03+00:00",
+        }
+        ledger_path.write_text(
+            json.dumps(ledger, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        prior_turns = [
+            {
+                "id": f"reviewer-turn-{index}",
+                "status": "failed",
+                "items": [],
+                "error": {"codexErrorInfo": {"responseStreamDisconnected": {}}},
+            }
+            for index in (1, 2, 3)
+        ]
+        self.invoke(
+            "prepare-dispatch-compaction",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--action-id",
+            action_id,
+            "--prior-turn-count",
+            "3",
+            "--prior-tail-turn-id",
+            "reviewer-turn-3",
+            "--prior-turns-digest",
+            digest(prior_turns),
+            "--driver-runtime-kind",
+            "native",
+        )
+        prepared = json.loads(ledger_path.read_text())["dispatch_intent"]
+        self.assertEqual(prepared["compaction_recovery"]["state"], "prepared")
+        self.assertEqual(
+            prepared["compaction_recovery"]["prior_turns_digest"],
+            digest(prior_turns),
+        )
+
+        blocked_renewal = run_process(
+            [
+                sys.executable,
+                CLI,
+                "assurance",
+                "--experimental-v4",
+                "renew-dispatch",
+                "--repo",
+                self.repo,
+                "--run",
+                run_id,
+                "--action-id",
+                action_id,
+                "--reason",
+                "do not bypass the persisted compaction",
+                "--driver-runtime-kind",
+                "native",
+            ]
+        )
+        self.assertNotEqual(blocked_renewal.returncode, 0)
+        self.assertEqual(
+            json.loads(blocked_renewal.stdout)["code"],
+            "DISPATCH_COMPACTION_PENDING",
+        )
+
+        compaction_turn = {
+            "id": "reviewer-compaction-turn",
+            "status": "completed",
+            "durationMs": 1250,
+            "items": [{"id": "context-item", "type": "contextCompaction"}],
+        }
+        self.invoke(
+            "complete-dispatch-compaction",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--action-id",
+            action_id,
+            "--compaction-turn-id",
+            compaction_turn["id"],
+            "--context-item-id",
+            "context-item",
+            "--compaction-turn-digest",
+            digest(compaction_turn),
+            "--compaction-duration-ms",
+            "1250",
+            "--observed-turn-count",
+            "4",
+            "--driver-runtime-kind",
+            "native",
+        )
+        renewed_ledger = json.loads(ledger_path.read_text())
+        renewed = renewed_ledger["dispatch_intent"]
+        self.assertEqual(renewed["state"], "prepared")
+        self.assertEqual(renewed["attempt"], 1)
+        self.assertEqual(renewed["generation"], 2)
+        self.assertEqual(
+            renewed["renewal_reason"], "automatic_reviewer_thread_compaction"
+        )
+        self.assertEqual(renewed["prompt_digest"], "e" * 64)
+        self.assertEqual(renewed["thread_id"], reviewer["thread_id"])
+        self.assertEqual(renewed["compaction_recovery"]["state"], "completed")
+        self.assertEqual(
+            renewed["compaction_recovery"]["compaction_turn_digest"],
+            digest(compaction_turn),
+        )
+        telemetry = self.invoke("status", "--repo", self.repo, "--run", run_id)[
+            "telemetry"
+        ]
+        self.assertEqual(telemetry["lifecycle"]["reviewer_thread_compactions"], 1)
+        self.assertEqual(telemetry["lifecycle"]["dispatch_renewals"], 1)
+        compaction_stage = next(
+            item
+            for item in telemetry["stages"]
+            if item["name"] == "reviewer_thread_compaction"
+        )
+        self.assertEqual(compaction_stage["attempts"], 1)
+        self.assertEqual(compaction_stage["completed_attempts"], 1)
+        self.assertEqual(compaction_stage["total_duration_ms"], 1250)
+
     def test_dispatch_retry_reconstructs_machine_failure_from_ledger(self) -> None:
         context = {
             "facets": {
@@ -2448,7 +2592,7 @@ if sys.argv[1:] == ['--version']:
 if sys.argv[1:3] == ['app-server', 'generate-json-schema']:
     out = sys.argv[sys.argv.index('--out') + 1]
     os.makedirs(out, exist_ok=True)
-    tokens = ['thread/start','thread/resume','thread/read','turn/start','turn/interrupt','developerInstructions','outputSchema','clientUserMessageId']
+    tokens = ['thread/start','thread/resume','thread/read','thread/compact/start','turn/start','turn/interrupt','developerInstructions','outputSchema','clientUserMessageId']
     open(os.path.join(out, 'codex_app_server_protocol.schemas.json'), 'w').write(json.dumps(tokens))
     raise SystemExit(0)
 if sys.argv[1:3] != ['app-server', '--stdio']:
@@ -2466,6 +2610,11 @@ for line in sys.stdin:
         print(json.dumps({'id': msg['id'], 'result': {'thread': {'id': msg['params']['threadId']}}}), flush=True)
     elif method == 'thread/read':
         print(json.dumps({'id': msg['id'], 'result': {'thread': {'id': msg['params']['threadId'], 'turns': []}}}), flush=True)
+    elif method == 'thread/compact/start':
+        print(json.dumps({'method':'item/started','params':{'threadId':'thr-native','turnId':'turn-compact','startedAtMs':1,'item':{'id':'item-compact','type':'contextCompaction'}}}), flush=True)
+        print(json.dumps({'id': msg['id'], 'result': {}}), flush=True)
+        print(json.dumps({'method':'item/completed','params':{'threadId':'thr-native','turnId':'turn-compact','completedAtMs':2,'item':{'id':'item-compact','type':'contextCompaction'}}}), flush=True)
+        print(json.dumps({'method':'turn/completed','params':{'threadId':'thr-native','turn':{'id':'turn-compact','status':'completed','items':[{'id':'item-compact','type':'contextCompaction'}]}}}), flush=True)
     elif method == 'turn/start':
         result = {'result':'implemented','evidence_report':None,'proof_spec':None,'problem_report':None}
         print(json.dumps({'id': msg['id'], 'result': {'turn': {'id': 'turn-native'}}}), flush=True)
@@ -2482,6 +2631,7 @@ for line in sys.stdin:
     def test_probe_and_thread_turn_use_versioned_native_protocol(self) -> None:
         capability = probe_app_server(str(self.codex))
         self.assertEqual(capability.runtime_version, "codex-cli fake-native")
+        self.assertTrue(capability.thread_compaction)
         with AppServerTransport(codex_bin=str(self.codex)) as transport:
             thread_id = transport.start_thread(
                 cwd=str(self.root), developer_instructions="role", sandbox="workspace-write"
@@ -2495,6 +2645,13 @@ for line in sys.stdin:
         self.assertEqual(thread_id, "thr-native")
         self.assertEqual(turn.status, "completed")
         self.assertEqual(json.loads(turn.text)["result"], "implemented")
+
+    def test_thread_compaction_consumes_deferred_context_item_notifications(self) -> None:
+        with AppServerTransport(codex_bin=str(self.codex)) as transport:
+            result = transport.compact_thread("thr-native")
+
+        self.assertEqual(result.turn_id, "turn-compact")
+        self.assertEqual(result.item_id, "item-compact")
 
     def test_process_disconnect_schedules_retry_and_resumes_same_thread(self) -> None:
         state = self.root / "disconnect-state"
@@ -3232,6 +3389,296 @@ class NativeCoordinatorContractTest(unittest.TestCase):
             f"{action_id}:g2:1",
         )
 
+    def test_exhausted_reviewer_dispatch_compacts_empty_tail_once(self) -> None:
+        action_id = "a" * 64
+        prior_turns = [
+            {
+                "id": f"reviewer-turn-{index}",
+                "status": "failed",
+                "items": [],
+                "error": {"codexErrorInfo": {"responseStreamDisconnected": {}}},
+            }
+            for index in (1, 2, 3)
+        ]
+        compaction_turn = {
+            "id": "reviewer-compaction-turn",
+            "status": "completed",
+            "durationMs": 900,
+            "items": [{"id": "context-item", "type": "contextCompaction"}],
+        }
+
+        class FakeCore:
+            def __init__(self) -> None:
+                self.calls: list[str] = []
+                self.intent = {
+                    "action": "reviewer_preflight",
+                    "action_id": action_id,
+                    "attempt": 3,
+                    "generation": 1,
+                    "role": "reviewer",
+                    "state": "exhausted",
+                    "thread_id": "reviewer-thread",
+                    "turn_id": "reviewer-turn-3",
+                    "failure_code": "responseStreamDisconnected",
+                    "prompt_digest": "b" * 64,
+                    "output_schema_digest": "c" * 64,
+                }
+
+            def call(self, command: str, *args: str, input_value=None):
+                self.calls.append(command)
+                if command == "retry-dispatch":
+                    raise CorePortError(
+                        "Native role transport failed three times",
+                        payload={
+                            "status": "NEEDS_USER",
+                            "code": "NATIVE_DISPATCH_RETRY_EXHAUSTED",
+                        },
+                        returncode=1,
+                    )
+                if command == "driver-context":
+                    return {
+                        "facets": {
+                            "execution": {
+                                "agents": {
+                                    "reviewer": {
+                                        "agent_id": "reviewer-agent",
+                                        "thread_id": "reviewer-thread",
+                                    }
+                                }
+                            }
+                        },
+                        "dispatch_intent": copy.deepcopy(self.intent),
+                    }
+                if command == "prepare-dispatch-compaction":
+                    self.intent["compaction_recovery"] = {
+                        "state": "prepared",
+                        "source_generation": 1,
+                        "source_attempt": 3,
+                        "failure_code": "responseStreamDisconnected",
+                        "thread_id": "reviewer-thread",
+                        "prompt_digest": "b" * 64,
+                        "prior_turn_count": 3,
+                        "prior_tail_turn_id": "reviewer-turn-3",
+                        "prior_turns_digest": digest(prior_turns),
+                        "prepared_at": "2026-08-01T00:00:03+00:00",
+                    }
+                    return {"status": "ACTIVE"}
+                if command == "complete-dispatch-compaction":
+                    self.intent = {
+                        **self.intent,
+                        "state": "prepared",
+                        "attempt": 1,
+                        "generation": 2,
+                        "renewal_reason": "automatic_reviewer_thread_compaction",
+                        "compaction_recovery": {
+                            **self.intent["compaction_recovery"],
+                            "state": "completed",
+                            "compaction_turn_id": compaction_turn["id"],
+                            "context_item_id": "context-item",
+                            "compaction_turn_digest": digest(compaction_turn),
+                            "compaction_duration_ms": 900,
+                            "observed_turn_count": 4,
+                            "completed_at": "2026-08-01T00:00:04+00:00",
+                        },
+                    }
+                    self.intent.pop("turn_id", None)
+                    self.intent.pop("failure_code", None)
+                    return {
+                        "status": "ACTIVE",
+                        "dispatch_intent": copy.deepcopy(self.intent),
+                    }
+                raise AssertionError(command)
+
+        class FakeTransport:
+            def __init__(self) -> None:
+                self.compacted = False
+
+            def read_thread(self, thread_id: str):
+                self.assert_thread(thread_id)
+                turns = prior_turns + ([compaction_turn] if self.compacted else [])
+                return {"id": thread_id, "turns": copy.deepcopy(turns)}
+
+            def compact_thread(self, thread_id: str):
+                self.assert_thread(thread_id)
+                self.compacted = True
+                return SimpleNamespace(
+                    turn_id=compaction_turn["id"], item_id="context-item"
+                )
+
+            @staticmethod
+            def assert_thread(thread_id: str) -> None:
+                if thread_id != "reviewer-thread":
+                    raise AssertionError(thread_id)
+
+        core = FakeCore()
+        transport = FakeTransport()
+        events: list[dict] = []
+        coordinator = NativeCoordinator(
+            repo=ROOT,
+            run_id="reviewer-compaction",
+            core=core,
+            transport=transport,
+            project_root=ROOT,
+            event_sink=events.append,
+            thread_compaction_available=True,
+            dispatch_renewal_reason="user approved recovery",
+        )
+        coordinator.current_action = {
+            "action": "reviewer_preflight",
+            "action_id": action_id,
+            "reason": "reviewer_preflight_missing",
+        }
+
+        recovered = coordinator._schedule_dispatch_retry(
+            action_id, "responseStreamDisconnected"
+        )
+
+        self.assertTrue(transport.compacted)
+        self.assertEqual(recovered["dispatch_intent"]["generation"], 2)
+        self.assertEqual(recovered["dispatch_intent"]["attempt"], 1)
+        self.assertEqual(recovered["dispatch_intent"]["thread_id"], "reviewer-thread")
+        self.assertEqual(recovered["dispatch_intent"]["prompt_digest"], "b" * 64)
+        self.assertIsNone(coordinator._dispatch_renewal_reason)
+        self.assertEqual(
+            core.calls,
+            [
+                "retry-dispatch",
+                "driver-context",
+                "prepare-dispatch-compaction",
+                "driver-context",
+                "complete-dispatch-compaction",
+            ],
+        )
+        self.assertEqual(
+            [event["event"] for event in events],
+            [
+                "native_driver_thread_compaction_started",
+                "native_driver_thread_compaction_completed",
+            ],
+        )
+
+    def test_reviewer_compaction_refuses_nonempty_or_non_tail_failure(self) -> None:
+        pending = {
+            "action": "reviewer_final",
+            "action_id": "a" * 64,
+            "attempt": 3,
+            "generation": 1,
+            "role": "reviewer",
+            "state": "exhausted",
+            "thread_id": "reviewer-thread",
+            "turn_id": "failed-turn",
+            "failure_code": "responseStreamDisconnected",
+        }
+
+        class NoMutationCore:
+            def call(self, command: str, *args: str, input_value=None):
+                raise AssertionError(command)
+
+        coordinator = NativeCoordinator(
+            repo=ROOT,
+            run_id="reviewer-compaction-refused",
+            core=NoMutationCore(),
+            transport=object(),
+            project_root=ROOT,
+            thread_compaction_available=True,
+        )
+        thread = {
+            "turns": [
+                {
+                    "id": "failed-turn",
+                    "status": "failed",
+                    "items": [{"id": "agent", "type": "agentMessage", "text": "partial"}],
+                    "error": {
+                        "codexErrorInfo": {"responseStreamDisconnected": {}}
+                    },
+                },
+                {"id": "later-turn", "status": "completed", "items": []},
+            ]
+        }
+
+        self.assertIsNone(
+            coordinator._recover_reviewer_thread_compaction(pending, thread)
+        )
+
+    def test_prepared_reviewer_compaction_recovers_without_repeating_side_effect(self) -> None:
+        prior_turns = [
+            {
+                "id": "failed-turn",
+                "status": "failed",
+                "items": [],
+                "error": {"codexErrorInfo": {"responseStreamDisconnected": {}}},
+            }
+        ]
+        compaction_turn = {
+            "id": "compaction-turn",
+            "status": "completed",
+            "durationMs": 700,
+            "items": [{"id": "context-item", "type": "contextCompaction"}],
+        }
+        pending = {
+            "action": "reviewer_final",
+            "action_id": "a" * 64,
+            "attempt": 3,
+            "generation": 1,
+            "role": "reviewer",
+            "state": "exhausted",
+            "thread_id": "reviewer-thread",
+            "turn_id": "failed-turn",
+            "failure_code": "responseStreamDisconnected",
+            "prompt_digest": "b" * 64,
+            "compaction_recovery": {
+                "state": "prepared",
+                "source_generation": 1,
+                "source_attempt": 3,
+                "failure_code": "responseStreamDisconnected",
+                "thread_id": "reviewer-thread",
+                "prompt_digest": "b" * 64,
+                "prior_turn_count": 1,
+                "prior_tail_turn_id": "failed-turn",
+                "prior_turns_digest": digest(prior_turns),
+                "prepared_at": "2026-08-01T00:00:03+00:00",
+            },
+        }
+
+        class CompleteOnlyCore:
+            def __init__(self) -> None:
+                self.calls: list[str] = []
+
+            def call(self, command: str, *args: str, input_value=None):
+                self.calls.append(command)
+                if command == "complete-dispatch-compaction":
+                    return {
+                        "status": "ACTIVE",
+                        "dispatch_intent": {
+                            "action_id": "a" * 64,
+                            "state": "prepared",
+                            "generation": 2,
+                        },
+                    }
+                raise AssertionError(command)
+
+        class NoRepeatTransport:
+            def compact_thread(self, thread_id: str):
+                raise AssertionError("persisted compaction must not repeat")
+
+        core = CompleteOnlyCore()
+        coordinator = NativeCoordinator(
+            repo=ROOT,
+            run_id="reviewer-compaction-resume",
+            core=core,
+            transport=NoRepeatTransport(),
+            project_root=ROOT,
+            thread_compaction_available=True,
+        )
+
+        recovered = coordinator._recover_reviewer_thread_compaction(
+            pending,
+            {"turns": [*prior_turns, compaction_turn]},
+        )
+
+        self.assertEqual(recovered["dispatch_intent"]["generation"], 2)
+        self.assertEqual(core.calls, ["complete-dispatch-compaction"])
+
     def test_missing_replacement_rollout_renews_and_binds_new_bootstrap(self) -> None:
         replacement_action_id = "a" * 64
         action = {
@@ -3430,7 +3877,12 @@ class NativeCoordinatorContractTest(unittest.TestCase):
             context,
         )
         payload = json.loads(prompt.split("\n", 1)[1])
+        self.assertEqual(payload["prompt_contract_version"], 2)
         review = payload["review_input_contract"]
+        self.assertEqual(review["accepted_plan"]["json_pointer"], "/contract")
+        self.assertEqual(
+            review["accepted_plan"]["digest"], digest(payload["contract"])
+        )
         self.assertEqual(review["verification_mode"], "L1-documentation-only")
         self.assertEqual(review["spec_head"], "1" * 40)
         self.assertEqual(review["candidate_head"], "2" * 40)
@@ -3440,7 +3892,10 @@ class NativeCoordinatorContractTest(unittest.TestCase):
         self.assertTrue(Path(review["documentation_policy_path"]).is_file())
         self.assertEqual(review["doc_reference_scan_state"], "pass")
         self.assertEqual(
-            review["doc_reference_scan"]["semantic_checks"][0]["file"], "README.md"
+            review["doc_reference_scan"]["json_pointer"], "/doc_reference_scan"
+        )
+        self.assertEqual(
+            payload["doc_reference_scan"]["semantic_checks"][0]["file"], "README.md"
         )
 
     def test_reviewer_preflight_prompt_is_early_evidence_not_the_final_gate(self) -> None:
@@ -3480,6 +3935,13 @@ class NativeCoordinatorContractTest(unittest.TestCase):
         self.assertEqual(review["pre_turn_gates"]["required"], ["tester", "preflight"])
         self.assertNotIn("machine", review["pre_turn_gates"]["required"])
         self.assertNotIn("blackbox", review["pre_turn_gates"]["required"])
+        self.assertEqual(
+            review["pre_turn_gates"]["evidence"]["json_pointer"], "/evidence"
+        )
+        self.assertEqual(
+            review["pre_turn_gates"]["evidence"]["digest"],
+            digest(payload["evidence"]),
+        )
 
         final_prompt = coordinator._prompt(
             {"action": "reviewer_final", "action_id": "b" * 64},
@@ -3510,6 +3972,46 @@ class NativeCoordinatorContractTest(unittest.TestCase):
         self.assertIn(
             "Tester author, source, integration, and tester evidence are not gates",
             blackbox_only_review["pre_turn_gates"]["requirement_rule"],
+        )
+
+    def test_reviewer_prompt_does_not_duplicate_large_authoritative_facts(self) -> None:
+        coordinator = NativeCoordinator(
+            repo=ROOT,
+            run_id="native-review-prompt-projection",
+            core=object(),
+            transport=object(),
+            project_root=ROOT,
+        )
+        marker = "unique-machine-output-" + ("x" * 200_000)
+        context = {
+            "target_start_head": "1" * 40,
+            "candidate_worktree": str(ROOT),
+            "facets": native_contract(ROOT),
+            "evidence": {
+                "machine": {
+                    "status": "pass",
+                    "details": {"stdout": marker},
+                }
+            },
+            "doc_reference_scan": None,
+            "doc_reference_scan_state": "missing",
+            "publication": None,
+            "problems": [],
+        }
+        context["facets"]["execution"]["candidate_head"] = "2" * 40
+
+        prompt = coordinator._prompt(
+            {"action": "reviewer_final", "action_id": "a" * 64},
+            "reviewer",
+            context,
+        )
+        payload = json.loads(prompt.split("\n", 1)[1])
+
+        self.assertEqual(prompt.count(marker), 1)
+        self.assertLess(len(prompt), len(marker) + 25_000)
+        self.assertEqual(
+            payload["review_input_contract"]["pre_turn_gates"]["evidence"],
+            NativeCoordinator._prompt_source_ref(payload["evidence"], "/evidence"),
         )
 
     def test_role_contracts_follow_frozen_optional_tester_gate(self) -> None:

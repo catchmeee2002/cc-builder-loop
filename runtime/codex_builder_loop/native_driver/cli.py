@@ -224,6 +224,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 transport=transport,
                 dispatch_renewal_reason=dispatch_renewal_reason,
                 event_sink=emit_event,
+                thread_compaction_available=getattr(
+                    capability, "thread_compaction", False
+                ),
             )
         with transport:
             if args.command == "start":
@@ -256,6 +259,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                     core=core,
                     transport=transport,
                     event_sink=emit_event,
+                    thread_compaction_available=getattr(
+                        capability, "thread_compaction", False
+                    ),
                 )
             if coordinator is None:
                 raise NativeDriverError(

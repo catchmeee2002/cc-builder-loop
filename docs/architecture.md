@@ -154,10 +154,21 @@ failure 在同一 role thread 和 dispatch 上最多尝试三次，attempt 与 t
 不参与身份判断。第二、三次 attempt 分别按 30 秒、60 秒的确定性指数退避持久化
 `retry_not_before`，Native CLI 按剩余时间输出等待事件，进程重启不重新计时。第三次失败后
 Core 将该 generation 持久化为 `exhausted` 并返回 `NEEDS_USER`，Driver 不重置旧 generation 的上限或
-另建 thread 绕过连续性。用户显式提供 `native-driver resume --reason` 后，只有实际 runtime identity、
-role/thread、action 和 prompt/output digest 全部未变，Core 才归档旧 generation 并在同一 role thread
-建立新的 dispatch generation；新的 attempt 从 1 开始，旧 attempt、turn 和 failure 仍保留在 ledger
-event 中。runtime identity 漂移、缺少用户理由、无匹配 dispatch、协议错误或未知 failure 均继续
+另建 thread 绕过连续性。Reviewer 的 `responseStreamDisconnected` 或 `missingAgentResult` 是唯一自动恢复
+例外：第三次失败的 turn 必须无 Agent 输出且仍是 thread 尾部，Native Driver 先把完整 turn 前缀 digest
+和 compaction intent 持久化，再调用当前 App Server schema 明确提供的稳定
+`thread/compact/start`。回读只接受同一 thread 恰好新增一个无命令、文件或外部工具副作用的
+`contextCompaction` turn；Core 随后保持 action、prompt/output digest 与 Reviewer identity 不变，自动建立
+且只建立一个新 generation。进程中断时根据前缀与 compaction turn digest 续接，不重复副作用；能力缺失、
+非尾部 turn、存在部分 Agent 输出、任何前缀/身份漂移或 compaction 后再次耗尽都继续 fail closed。
+deprecated `thread/rollback` 不进入自动路径。
+
+Reviewer prompt contract v2 把 contract、evidence、publication 和 doc-reference 事实各保留在顶层唯一位置，
+`review_input_contract` 只保存同 payload JSON Pointer 与 digest，并使用紧凑 JSON 编码；它不建立 prompt
+缓存、evidence 副本或 transcript 索引。用户显式提供 `native-driver resume --reason` 时，非上述自动恢复或
+再次耗尽的 dispatch 只有在实际 runtime identity、role/thread、action 和 prompt/output digest 全部未变时，
+Core 才归档旧 generation 并在同一 role thread 建立新的 generation；旧 attempt、turn 和 failure 仍保留在
+ledger event 中。runtime identity 漂移、缺少所需理由、无匹配 dispatch、协议错误或未知 failure 均继续
 fail closed；runtime 已升级时必须由新 run 重新绑定执行身份和 evidence。
 App Server turn 使用 host-level `danger-full-access`，因为部分本地环境无法创建 bwrap namespace；这不
 扩大产品信任声明，角色只读/写范围仍由独立 worktree、Git manifest、ownership 和 Core mutation gate
@@ -490,9 +501,11 @@ adopt、不删除，矛盾的合法来源事件进入结构化 continuity failur
   覆盖。abandon 保留现场，修订方案进入新 run。
 - Tester 初次 author 不计入 correction 窗口。之后每个已完成的 `purpose=author` follow-up 都从
   ledger `agent_event` 派生计数；最近一次 machine PASS 或用户对 correction 架构停止执行的显式
-  resume 开启新窗口。前三次 correction 可继续，未恢复 machine PASS 时第四次 prepare 进入
-  `architecture_review_required` 且不创建 pending turn。status/doctor 从事件派生当前和累计事实，
-  resume 保留历史与 machine attempt 上限，不维护第二份可漂移计数器。
+  授权开启新窗口。前三次 correction 可继续，未恢复 machine PASS 时第四次 prepare 进入
+  `architecture_review_required` 且不创建 pending turn。Native `resume --reason` 只在当前 action、problem、
+  Reviewer binding、runtime identity 与 Tester thread 未漂移时原子写入一次额外 correction 授权；它不重置
+  历史上限，授权消费后若仍失败会再次停住，只有真实 machine PASS 才自然开启后续窗口。status/doctor 从
+  事件派生当前和累计事实，不维护第二份可漂移计数器。
 - `record-problems` 以 run/source/source-id/key 生成稳定 id，同一报告幂等、冲突重放拒绝。
   abandon 在改变 phase 前检查全部必须报告的角色结果，并原子封存问题 snapshot；`status`/`doctor`
   公开缺报告来源、继承数量和 snapshot 摘要。`backfill-problems` 只允许对旧 abandoned ledger 追加
