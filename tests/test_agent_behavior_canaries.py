@@ -57,7 +57,10 @@ class AgentBehaviorCanaryTest(unittest.TestCase):
         for scenario in planner_canaries.values():
             prompt = scenario["prompt"]
             self.assertIn("用户已经选择「Builder-loop 实验」", prompt)
+            self.assertIn("只回答下述行为场景中的规划判据", prompt)
             self.assertIn("不要再次询问 Codex 原生 Plan 或 Builder-loop 实验", prompt)
+            self.assertIn("不生成完整 Assurance v4 contract", prompt)
+            self.assertIn("不执行 admission 验证", prompt)
             self.assertIn("不要启动 run", prompt)
 
     def test_manifest_and_scenarios_have_one_to_one_fixture_bindings(self) -> None:

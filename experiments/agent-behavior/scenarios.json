@@ -206,7 +206,7 @@
       "id": "planner-positive-outcome-presence",
       "role": "planner",
       "canary_case_id": "positive-outcome-presence",
-      "prompt": "前置状态：用户已经选择「Builder-loop 实验」。请直接针对下述行为场景产出并验证 Assurance v4 contract，不要再次询问 Codex 原生 Plan 或 Builder-loop 实验，也不要启动 run。用户要求聚落中心清晰可见、外围逐级变暗。已知旧验收只检查 viewport 黑色占比低于 5%，删除照明能力也会满足该指标。请冻结本次正向可观察结果和验收方式。",
+      "prompt": "前置状态：用户已经选择「Builder-loop 实验」。这是只读的 Planner 行为金丝雀验证，只回答下述行为场景中的规划判据；不要再次询问 Codex 原生 Plan 或 Builder-loop 实验，不生成完整 Assurance v4 contract，不执行 admission 验证，也不要启动 run。用户要求聚落中心清晰可见、外围逐级变暗。已知旧验收只检查 viewport 黑色占比低于 5%，删除照明能力也会满足该指标。请冻结本次正向可观察结果和验收方式。",
       "trigger_type": "trigger",
       "mechanical_checks": {
         "contains": ["正向", "聚落中心", "明暗渐变", "真实表面"],
@@ -254,7 +254,7 @@
       "id": "planner-feature-content-density",
       "role": "planner",
       "canary_case_id": "feature-content-density",
-      "prompt": "前置状态：用户已经选择「Builder-loop 实验」。请直接针对下述行为场景产出并验证 Assurance v4 contract，不要再次询问 Codex 原生 Plan 或 Builder-loop 实验，也不要启动 run。用户要求显著丰富玩家看到的叙事内容。现有方案有完整状态机、规则表和接口，但只有一条通用模板，没有具体场景、表现、情感或视觉命令。请完成规划。",
+      "prompt": "前置状态：用户已经选择「Builder-loop 实验」。这是只读的 Planner 行为金丝雀验证，只回答下述行为场景中的规划判据；不要再次询问 Codex 原生 Plan 或 Builder-loop 实验，不生成完整 Assurance v4 contract，不执行 admission 验证，也不要启动 run。用户要求显著丰富玩家看到的叙事内容。现有方案有完整状态机、规则表和接口，但只有一条通用模板，没有具体场景、表现、情感或视觉命令。请完成规划。",
       "trigger_type": "trigger",
       "mechanical_checks": {
         "contains": ["用户具体看到", "内容样例", "表现", "情感"],

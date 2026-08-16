@@ -6,7 +6,8 @@
   大 diff 完整审查、文档 ground truth、内容密度和生产者到消费者链路，一个安全宿主探针复现既有进程
   持锁导致后续验证 timeout 并确认进程组回收。canary 只建立 fresh model 采样前提，结果不写 runtime
   ledger，也不替代交付 evidence；Planner canary 会冻结用户已选择 Builder-loop 实验的激活前置条件，
-  避免把路线选择问卷误计为目标规划样本（#7、#23、#28、#48、#61、#68）。
+  并限定为只读行为判断，避免把路线选择问卷或完整 admission 工作误计为目标规划样本
+  （#7、#23、#28、#48、#61、#68）。
 
 - Native Driver 的长程 Reviewer prompt 改为 v2 单事实投影：contract、evidence、publication 与文档扫描
   只在 payload 顶层出现一次，审查契约以 JSON Pointer + digest 引用，并用紧凑 JSON 降低重复上下文。
