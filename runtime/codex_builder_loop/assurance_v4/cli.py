@@ -127,6 +127,11 @@ def parser() -> argparse.ArgumentParser:
         "--allow-runtime-transition", action="store_true"
     )
 
+    resolve_candidate_residue = commands.add_parser("resolve-candidate-residue")
+    resolve_candidate_residue.add_argument("--repo", default=".")
+    resolve_candidate_residue.add_argument("--run", required=True)
+    resolve_candidate_residue.add_argument("--request", required=True)
+
     context = commands.add_parser("driver-context")
     context.add_argument("--repo", default=".")
     context.add_argument("--run", required=True)
@@ -553,6 +558,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 driver_runtime_kind=args.driver_runtime_kind,
                 allow_runtime_transition=args.allow_runtime_transition,
             )
+        elif args.command == "resolve-candidate-residue":
+            payload = core.resolve_candidate_residue(
+                args.repo,
+                args.run,
+                _json(args.request),
+            )
         elif args.command == "driver-context":
             payload = core.driver_context(args.repo, args.run)
         elif args.command == "checkpoint-builder":
@@ -734,7 +745,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             _guard_dispatch(args, {"recover_finalize"})
             payload = core.recover_finalize(args.repo, args.run)
         elif args.command == "driver-next":
-            payload = driver.next_action(args.repo, args.run)
+            payload = core.candidate_residue_recovery_action(args.repo, args.run)
+            if payload is None:
+                payload = driver.next_action(args.repo, args.run)
         elif args.command == "begin-dispatch":
             payload = core.begin_dispatch(
                 args.repo,

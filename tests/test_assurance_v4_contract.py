@@ -14,6 +14,13 @@ from unittest.mock import patch
 
 from harness import CLI, cleanup_repo, commit_all, git, head, init_repo, run_process
 from runtime.codex_builder_loop.assurance_v4 import core as assurance_core
+from tests.helpers.rejected_checkpoint_successor_blackbox import (
+    REJECTION_VARIANTS,
+    exercise_bound_tester_rejected_successor,
+    exercise_ordinary_successor,
+    exercise_rejection_matrix,
+    exercise_valid_rejected_successor,
+)
 
 
 def canonical_digest(value: Any) -> str:
@@ -5519,6 +5526,69 @@ class AssuranceV4ContractTest(unittest.TestCase):
             data,
         )
         self.assertFalse((self.repo / ".builder-loop").exists())
+
+
+class RejectedCheckpointSuccessorContractTest(unittest.TestCase):
+    # 设计哲学“每个事实只有一个家”和“连续性属于事务身份”要求只从 ledger、
+    # dispatch artifact 与 Git 对象恢复，并在 target 已持久化后才封存 source。
+    def test_eligible_rejected_checkpoint_candidate_transfers_exact_continuity(self) -> None:
+        with tempfile.TemporaryDirectory(
+            prefix="rejected-successor-valid-contract-"
+        ) as raw:
+            observed = exercise_valid_rejected_successor(Path(raw))
+
+        self.assertEqual(observed["source_phase_before"], "active")
+        self.assertEqual(observed["source_phase_after"], "superseded")
+        self.assertEqual(observed["target_phase"], "active")
+        self.assertEqual(observed["lineage_revision_count"], 2)
+        self.assertFalse(observed["roles_reused"])
+        self.assertFalse(observed["evidence_reused"])
+        self.assertFalse(observed["dispatch_reused"])
+
+    def test_rejected_successor_accepts_only_the_exact_bound_tester_blob(self) -> None:
+        with tempfile.TemporaryDirectory(
+            prefix="rejected-successor-bound-tester-contract-"
+        ) as raw:
+            observed = exercise_bound_tester_rejected_successor(Path(raw))
+
+        self.assertEqual(observed["source_phase"], "superseded")
+        self.assertEqual(observed["target_phase"], "active")
+        self.assertFalse(observed["tester_source_reused"])
+        self.assertFalse(observed["tester_files_reused"])
+        self.assertEqual(
+            {item["path"] for item in observed["carryover"]},
+            {
+                "runtime/codex_builder_loop/assurance_v4/rejected_checkpoint_fixture.py",
+                "tests/test_bound_rejected_candidate.py",
+            },
+        )
+
+    def test_ineligible_rejected_candidates_fail_without_side_effects(self) -> None:
+        with tempfile.TemporaryDirectory(
+            prefix="rejected-successor-rejections-contract-"
+        ) as raw:
+            observed = exercise_rejection_matrix(Path(raw))
+
+        self.assertEqual(set(observed), set(REJECTION_VARIANTS))
+        for variant, result in observed.items():
+            with self.subTest(variant=variant):
+                self.assertTrue(result["rejected"], result)
+                self.assertTrue(result["zero_side_effects"], result)
+                self.assertIsInstance(result["code"], str, result)
+                self.assertTrue(result["code"], result)
+
+    def test_ordinary_checkpointed_successor_behavior_is_unchanged(self) -> None:
+        with tempfile.TemporaryDirectory(
+            prefix="ordinary-successor-regression-contract-"
+        ) as raw:
+            observed = exercise_ordinary_successor(Path(raw))
+
+        self.assertEqual(observed["source_phase"], "superseded")
+        self.assertEqual(observed["target_phase"], "active")
+        self.assertEqual(observed["lineage_revision_count"], 2)
+        self.assertEqual(
+            observed["open_problem_keys"], ["ordinary-carryover-problem"]
+        )
 
 
 if __name__ == "__main__":

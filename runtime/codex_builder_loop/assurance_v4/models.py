@@ -191,6 +191,39 @@ def validate_admission(value: Any) -> dict[str, Any]:
     return copy.deepcopy(value)
 
 
+def validate_candidate_residue_resolution(value: Any) -> dict[str, Any]:
+    try:
+        jsonschema.Draft202012Validator(
+            _schema("assurance-v4-candidate-residue-resolution.schema.json")
+        ).validate(value)
+    except jsonschema.ValidationError as exc:
+        path = "/".join(str(part) for part in exc.absolute_path)
+        raise ContractError(
+            exc.message,
+            code="CANDIDATE_RESIDUE_REQUEST_INVALID",
+            details={"path": path},
+        ) from exc
+    assert isinstance(value, dict)
+    request = copy.deepcopy(value)
+    paths = [item["path"] for item in request["files"]]
+    if len(paths) != len(set(paths)):
+        raise ContractError(
+            "candidate residue request contains duplicate paths",
+            code="CANDIDATE_RESIDUE_REQUEST_INVALID",
+            details={"paths": paths},
+        )
+    for path in paths:
+        validate_repo_path(path)
+        if any(token in path for token in "*?["):
+            raise ContractError(
+                "candidate residue request requires exact paths",
+                code="CANDIDATE_RESIDUE_REQUEST_INVALID",
+                details={"path": path},
+            )
+    request["files"].sort(key=lambda item: item["path"])
+    return request
+
+
 def validate_contract(value: Any) -> dict[str, Any]:
     try:
         jsonschema.Draft202012Validator(
@@ -623,6 +656,7 @@ def validate_ledger(value: Any) -> dict[str, Any]:
     normalized.setdefault("runtime_support", legacy_runtime_support())
     normalized.setdefault("machine_failure", None)
     normalized.setdefault("recomposition_intent", None)
+    normalized.setdefault("candidate_residue_intent", None)
     publication = normalized.get("publication")
     if isinstance(publication, dict):
         publication.setdefault("generation", 1 if publication.get("head") else 0)

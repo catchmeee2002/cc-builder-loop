@@ -38,8 +38,18 @@ description: 在 Codex Plan mode 中为显式选择的 Builder-loop 实验路线
   收敛；普通执行信息变化不得先 abandon 或自动升级为新 run。同 run Revision 绑定上一 mission digest。
 - 只有现有事务不能保持语义、授权或事务安全时才规划新 run。Assurance v4 source 必须在 successor
   contract 完成验证、`start` 持久化 target 前保持 active；不得先调用 `abandon`。新 contract 用
-  `mission.supersedes` 绑定 source run、revision、mission digest 和 candidate HEAD；`start` 创建 target 后
-  才把 source 封为 superseded，不从 transcript 猜 continuity。
+  `mission.supersedes` 绑定 source run、revision、mission digest 和 candidate HEAD；通常绑定 execution
+  facet 已 checkpoint 的 candidate。唯一例外是 active source 因 `runtime-preparation-required` 在 Builder
+  checkpoint 被拒：只有 ledger 中恰有一个仍 open 的结构化问题、其 candidate 比 execution candidate
+  更新且仍位于原 candidate branch/worktree、对应 Builder dispatch 已 completed 但未 consumed、dispatch
+  artifact 未漂移、问题按冻结 runtime support 可精确重现、target 未移动且全部变更仍在 source authority
+  内，才绑定该 rejected candidate。必须同时冻结它的 source problem disposition；任一事实不足时停止，
+  不搜索 orphan、不读 transcript、不 resume source。`start` 创建 target 后才把 source 封为 superseded。
+  ignored residue 不阻止该 successor 只在 source 留存，但 Planner 只有在 ledger 中唯一 open
+  `builder_loop` problem、当前 candidate/problem snapshot、完整 exact path/SHA-256 manifest 与普通文件
+  类型都可机械证明时，才可把后续 `resolve-candidate-residue` 作为独立 cleanup 事务；不得把删除授权
+  塞进 successor contract、猜测 `__pycache__` 模式或采用目录/glob。source terminal cleanup 还必须由
+  target ledger 证明该 problem 已逐条 disposition 为 `handled_elsewhere`。
 - `abandon` 只用于用户显式取消且没有 successor。abandoned、superseded 或 finalized run 都是 terminal，
   不重新激活、不 rescue，也不能作为连续 supersession source；遇到 terminal source 时停止交接并说明
   continuity 已不可恢复。以上 active-to-superseded 路由只适用于 Assurance v4，legacy v2/v3 保持既有
@@ -74,6 +84,8 @@ description: 在 Codex Plan mode 中为显式选择的 Builder-loop 实验路线
 - protected preparation 使用 `mission.delivery_kind=preparation` 与 exact `protected_support_paths`；后续
   business contract 只通过 `execution.continuation` 消费 Core 已验证的 finalized run 事实。不得解析
   transcript 重建 continuation，也不得让 preparation supersede 业务 run；事实不足时停止规划交接。
+  上述 rejected-checkpoint 例外只允许新的 preparation successor 承接未完成的 preparation candidate，
+  后续 business run 仍必须消费 finalized continuation。
   `runtime_support.affected_paths` 是自托管 runtime 写边界的唯一来源；不得让同一 run 热切换 evidence
   writer、补写旧 observation，或用 candidate 改写 manifest 后继续当前 proof gate。
 - `assurance.machine_commands` 冻结机器命令；`execution.commands` 冻结独立 blackbox 命令。argv 必须是

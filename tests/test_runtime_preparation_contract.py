@@ -153,13 +153,27 @@ class RuntimePreparationContractTest(unittest.TestCase):
         self.assertEqual(raised.exception.code, "RUNTIME_PREPARATION_PATH_MISMATCH")
         self.assertIn(NEW_PROOF_CORE, raised.exception.details["expected_paths"])
         ledger = read_ledger(self.repo, "runtime-preparation-late-path")
-        problem = next(
+        problems = [
             item
             for item in ledger["problems"]
             if item["key"] == "runtime-preparation-required"
-        )
+            and item["status"] == "open"
+        ]
+        self.assertEqual(len(problems), 1, problems)
+        problem = problems[0]
         self.assertEqual(problem["owner"], "builder_loop")
         self.assertEqual(problem["candidate_head"], candidate_head)
+        self.assertNotEqual(
+            ledger["facets"]["execution"]["candidate_head"],
+            candidate_head,
+        )
+        self.assertFalse(ledger["builder_checkpointed"])
+        details = json.loads(problem["details"])
+        self.assertEqual(details["code"], "RUNTIME_PREPARATION_PATH_MISMATCH")
+        self.assertEqual(
+            details["runtime_support"]["affected_paths"],
+            sorted([MANIFEST_PATH.as_posix(), NEW_PROOF_CORE]),
+        )
 
     def test_external_repository_remains_unaffected(self) -> None:
         self.source_patch.stop()

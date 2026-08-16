@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import copy
+import ctypes
 import fnmatch
 import hashlib
 import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import tempfile
 import time
@@ -37,6 +39,7 @@ from .models import (
     validate_new_contract,
     validate_agent_result,
     validate_admission,
+    validate_candidate_residue_resolution,
     validate_environment_probe,
     validate_evidence_report,
     validate_lineage,
@@ -102,6 +105,19 @@ PROOF_TESTER_DIAGNOSIS_CODES = frozenset(
 PROOF_FAILURE_VOLATILE_DETAIL_KEYS = frozenset(
     {"duration_ms", "log_path", "log_sha256", "log_tail"}
 )
+RUNTIME_PREPARATION_PROBLEM_KEY = "runtime-preparation-required"
+RUNTIME_PREPARATION_ERROR_CODES = frozenset(
+    {
+        "RUNTIME_PREPARATION_REQUIRED",
+        "RUNTIME_PREPARATION_PATH_MISMATCH",
+        "RUNTIME_PREPARATION_GATE_CYCLE",
+        "RUNTIME_PREPARATION_ASSURANCE_INCOMPLETE",
+    }
+)
+BUILDER_CHECKPOINT_ACTIONS = frozenset({"builder_implement", "builder_fix"})
+CANDIDATE_RESIDUE_RENAME_EXCHANGE = 2
+_LIBC = ctypes.CDLL(None, use_errno=True)
+_RENAMEAT2 = _LIBC.renameat2
 
 
 class AssuranceError(RuntimeError):
@@ -720,6 +736,232 @@ def _require_admission(repo: Path, contract: Mapping[str, Any]) -> dict[str, Any
     return admission
 
 
+def _runtime_preparation_problem_details(error: AssuranceError) -> dict[str, Any]:
+    return {
+        "code": error.code,
+        "message": str(error),
+        **copy.deepcopy(error.details),
+    }
+
+
+def _assert_completed_builder_dispatch(
+    repo: Path,
+    source_ledger: Mapping[str, Any],
+    problem: Mapping[str, Any],
+) -> None:
+    execution = source_ledger["facets"]["execution"]
+    builder = execution.get("agents", {}).get("builder")
+    expected_producer = (
+        {"role": "builder", **copy.deepcopy(builder)}
+        if isinstance(builder, Mapping)
+        else None
+    )
+    intent = source_ledger.get("dispatch_intent")
+    if (
+        expected_producer is None
+        or problem.get("producer") != expected_producer
+        or not isinstance(intent, Mapping)
+        or intent.get("state") != "completed"
+        or intent.get("role") != "builder"
+        or intent.get("action") not in BUILDER_CHECKPOINT_ACTIONS
+        or intent.get("thread_id") != builder.get("thread_id")
+    ):
+        raise AssuranceError(
+            "rejected checkpoint successor requires one completed unconsumed Builder dispatch",
+            code="SUPERSEDE_REJECTED_DISPATCH_UNAVAILABLE",
+            status="NEEDS_USER",
+        )
+    action_id = intent.get("action_id")
+    if not isinstance(action_id, str) or re.fullmatch(r"[0-9a-f]{64}", action_id) is None:
+        raise AssuranceError(
+            "rejected checkpoint Builder dispatch identity is invalid",
+            code="SUPERSEDE_REJECTED_DISPATCH_INVALID",
+            status="NEEDS_USER",
+        )
+    expected_artifact = (
+        run_dir(repo, str(source_ledger["run_id"]))
+        / "artifacts"
+        / f"dispatch-{action_id}.json"
+    )
+    result_path = intent.get("result_path")
+    if (
+        not isinstance(result_path, str)
+        or Path(result_path) != expected_artifact
+        or expected_artifact.is_symlink()
+        or not expected_artifact.is_file()
+    ):
+        raise AssuranceError(
+            "rejected checkpoint Builder dispatch artifact is unavailable",
+            code="SUPERSEDE_REJECTED_DISPATCH_ARTIFACT_INVALID",
+            status="NEEDS_USER",
+        )
+    try:
+        raw_result = json.loads(expected_artifact.read_text(encoding="utf-8"))
+        result = validate_agent_result(raw_result)
+    except (OSError, json.JSONDecodeError, ContractError) as exc:
+        raise AssuranceError(
+            "rejected checkpoint Builder dispatch artifact is invalid",
+            code="SUPERSEDE_REJECTED_DISPATCH_ARTIFACT_INVALID",
+            status="NEEDS_USER",
+        ) from exc
+    expected_result = {
+        "result": "implemented",
+        "evidence_report": None,
+        "proof_spec": None,
+        "problem_report": None,
+    }
+    if result != expected_result or intent.get("result_digest") != digest(result):
+        raise AssuranceError(
+            "rejected checkpoint Builder dispatch result does not prove an implementation",
+            code="SUPERSEDE_REJECTED_DISPATCH_RESULT_MISMATCH",
+            status="NEEDS_USER",
+        )
+
+
+def _rejected_checkpoint_candidate(
+    repo: Path,
+    source_ledger: Mapping[str, Any],
+    requested_candidate: str,
+) -> str:
+    problems = [
+        item
+        for item in source_ledger.get("problems", [])
+        if isinstance(item, Mapping)
+        and item.get("key") == RUNTIME_PREPARATION_PROBLEM_KEY
+        and item.get("status") == "open"
+    ]
+    if len(problems) != 1:
+        raise AssuranceError(
+            "rejected checkpoint successor requires exactly one open runtime preparation problem",
+            code="SUPERSEDE_REJECTED_PROBLEM_AMBIGUOUS",
+            status="NEEDS_USER",
+            details={"problem_count": len(problems)},
+        )
+    problem = problems[0]
+    if (
+        problem.get("owner") != "builder_loop"
+        or problem.get("summary")
+        != "Candidate changes require a protected runtime preparation"
+        or problem.get("candidate_head") != requested_candidate
+    ):
+        raise AssuranceError(
+            "mission supersedes binding does not match the rejected checkpoint problem",
+            code="MISSION_SUPERSEDES_MISMATCH",
+        )
+    source_candidate = source_ledger["facets"]["execution"].get("candidate_head")
+    if (
+        not isinstance(source_candidate, str)
+        or requested_candidate == source_candidate
+        or not commit_exists(repo, source_candidate)
+        or not commit_exists(repo, requested_candidate)
+        or git(
+            repo,
+            "merge-base",
+            "--is-ancestor",
+            source_candidate,
+            requested_candidate,
+            check=False,
+        ).returncode
+        != 0
+    ):
+        raise AssuranceError(
+            "rejected checkpoint candidate is not newer than the source execution candidate",
+            code="SUPERSEDE_REJECTED_CANDIDATE_ANCESTRY_INVALID",
+            status="NEEDS_USER",
+        )
+    worktree = Path(str(source_ledger["candidate_worktree"]))
+    branch = str(source_ledger["candidate_branch"])
+    branch_result = git(
+        repo,
+        "rev-parse",
+        "--verify",
+        f"refs/heads/{branch}",
+        check=False,
+    )
+    worktree_result = git(worktree, "rev-parse", "HEAD", check=False)
+    symbolic_result = git(worktree, "symbolic-ref", "--quiet", "HEAD", check=False)
+    if (
+        branch_result.returncode != 0
+        or branch_result.stdout.strip() != requested_candidate
+        or worktree_result.returncode != 0
+        or worktree_result.stdout.strip() != requested_candidate
+        or symbolic_result.returncode != 0
+        or symbolic_result.stdout.strip() != f"refs/heads/{branch}"
+        or dirty_paths(worktree)
+    ):
+        raise AssuranceError(
+            "rejected checkpoint candidate branch or worktree drifted",
+            code="SUPERSEDE_CANDIDATE_DRIFT",
+            status="NEEDS_USER",
+        )
+    target_head = str(source_ledger["target_start_head"])
+    if (
+        not commit_exists(repo, target_head)
+        or git(
+            repo,
+            "merge-base",
+            "--is-ancestor",
+            target_head,
+            requested_candidate,
+            check=False,
+        ).returncode
+        != 0
+    ):
+        raise AssuranceError(
+            "rejected checkpoint candidate does not descend from the source target",
+            code="SUPERSEDE_REJECTED_CANDIDATE_ANCESTRY_INVALID",
+            status="NEEDS_USER",
+        )
+    files = changed_files(repo, target_head, requested_candidate)
+    _validated_builder_files(
+        repo,
+        source_ledger,
+        candidate=requested_candidate,
+        files=files,
+    )
+    actual_runtime_support, required_independent = _runtime_support_for_changed_paths(
+        repo,
+        source_ledger,
+        files,
+    )
+    try:
+        _assert_runtime_support_contract(
+            source_ledger["facets"],
+            actual_runtime_support,
+            required_independent,
+        )
+    except AssuranceError as error:
+        if error.code not in RUNTIME_PREPARATION_ERROR_CODES:
+            raise
+        expected_problem_details = _runtime_preparation_problem_details(error)
+    else:
+        raise AssuranceError(
+            "rejected checkpoint runtime preparation problem is no longer reproducible",
+            code="SUPERSEDE_REJECTED_PROBLEM_STALE",
+            status="NEEDS_USER",
+        )
+    try:
+        recorded_problem_details = json.loads(str(problem.get("details")))
+    except json.JSONDecodeError as exc:
+        raise AssuranceError(
+            "rejected checkpoint runtime preparation problem is malformed",
+            code="SUPERSEDE_REJECTED_PROBLEM_STALE",
+            status="NEEDS_USER",
+        ) from exc
+    if recorded_problem_details != expected_problem_details:
+        raise AssuranceError(
+            "rejected checkpoint runtime preparation facts changed",
+            code="SUPERSEDE_REJECTED_PROBLEM_STALE",
+            status="NEEDS_USER",
+            details={
+                "expected_problem_details": expected_problem_details,
+                "recorded_problem_details": recorded_problem_details,
+            },
+        )
+    _assert_completed_builder_dispatch(repo, source_ledger, problem)
+    return requested_candidate
+
+
 def validate(contract: Any, repo_value: str | Path | None = None) -> dict[str, Any]:
     value = validate_new_contract(contract)
     result = {
@@ -787,6 +1029,7 @@ def start(
                 and existing["facets"]["mission"] == contract["mission"]
                 and existing_carryover.get("source_run_id") == requested_supersedes["run_id"]
             ):
+                _seal_replayed_successor_source(repo, existing, contract, session_id)
                 return status(repo, run_id)
             continuation = contract["execution"].get("continuation")
             if isinstance(continuation, dict):
@@ -828,8 +1071,11 @@ def start(
         candidate_base = target_head
         if isinstance(supersedes, dict):
             source_ledger = read_ledger(repo, supersedes["run_id"])
+            _assert_no_candidate_residue_intent(source_ledger)
             source_mission = source_ledger["facets"]["mission"]
-            source_candidate = source_ledger["facets"]["execution"].get("candidate_head")
+            checkpointed_candidate = source_ledger["facets"]["execution"].get(
+                "candidate_head"
+            )
             if source_ledger["phase"] != "active":
                 raise AssuranceError(
                     "superseded run must remain active until continuity transfers",
@@ -839,7 +1085,6 @@ def start(
             if (
                 supersedes["revision"] != source_mission["revision"]
                 or supersedes["mission_digest"] != source_ledger["digests"]["mission"]
-                or supersedes["candidate_head"] != source_candidate
             ):
                 raise AssuranceError(
                     "mission supersedes binding does not match the source run",
@@ -861,6 +1106,15 @@ def start(
                     "target moved before supersede continuity could be captured",
                     code="SUPERSEDE_TARGET_DRIFT",
                     status="NEEDS_USER",
+                )
+            requested_candidate = supersedes["candidate_head"]
+            if requested_candidate == checkpointed_candidate:
+                source_candidate = checkpointed_candidate
+            else:
+                source_candidate = _rejected_checkpoint_candidate(
+                    repo,
+                    source_ledger,
+                    requested_candidate,
                 )
             if not isinstance(source_candidate, str) or not commit_exists(repo, source_candidate):
                 raise AssuranceError(
@@ -1147,6 +1401,7 @@ def start(
                 "proof_failure": None,
                 "machine_failure": None,
                 "recomposition_intent": None,
+                "candidate_residue_intent": None,
                 "deployment_transaction": None,
                 "pending_blackbox": None,
                 "environment_lease": None,
@@ -1216,7 +1471,7 @@ def start(
                 )
                 save_ledger(repo, preparation_ledger)
         except Exception:
-            if business_persisted:
+            if business_persisted or ledger_path(repo, run_id).exists():
                 raise
             git(repo, "worktree", "remove", "--force", str(worktree), check=False)
             git(repo, "branch", "-D", branch, check=False)
@@ -1258,6 +1513,7 @@ def prepare_builder(
         raise AssuranceError("Builder identity is required", code="BUILDER_IDENTITY_REQUIRED")
     with locked(repo):
         ledger = read_ledger(repo, run_id)
+        _assert_no_candidate_residue_intent(ledger)
         existing = ledger["facets"]["execution"]["agents"].get("builder")
         if existing == agent:
             return status(repo, run_id)
@@ -1292,6 +1548,7 @@ def begin_dispatch(
         raise AssuranceError("dispatch role is invalid", code="DISPATCH_ROLE_INVALID")
     with locked(repo):
         ledger = read_ledger(repo, run_id)
+        _assert_no_candidate_residue_intent(ledger)
         runtime = ledger.get("driver_runtime")
         if not isinstance(runtime, dict) or runtime.get("kind") != "native":
             raise AssuranceError("run is not owned by Native Driver", code="NATIVE_DRIVER_NOT_OWNER")
@@ -1532,6 +1789,7 @@ def bind_dispatch_turn(
         raise AssuranceError("turn id is required", code="DISPATCH_TURN_ID_REQUIRED")
     with locked(repo):
         ledger = read_ledger(repo, run_id)
+        _assert_no_candidate_residue_intent(ledger)
         intent = ledger.get("dispatch_intent")
         if not isinstance(intent, dict) or intent.get("action_id") != action_id:
             raise AssuranceError("dispatch action is stale", code="DRIVER_ACTION_STALE", status="FAIL")
@@ -1620,6 +1878,7 @@ def complete_dispatch(
     run_id = ensure_run_id(run_value)
     with locked(repo):
         ledger = read_ledger(repo, run_id)
+        _assert_no_candidate_residue_intent(ledger)
         intent = ledger.get("dispatch_intent")
         if not isinstance(intent, dict) or intent.get("action_id") != action_id:
             raise AssuranceError("dispatch action is stale", code="DRIVER_ACTION_STALE", status="FAIL")
@@ -1668,6 +1927,7 @@ def retry_dispatch(
         )
     with locked(repo):
         ledger = read_ledger(repo, run_id)
+        _assert_no_candidate_residue_intent(ledger)
         intent = ledger.get("dispatch_intent")
         if not isinstance(intent, dict) or intent.get("action_id") != action_id:
             raise AssuranceError("dispatch action is stale", code="DRIVER_ACTION_STALE", status="FAIL")
@@ -1779,6 +2039,7 @@ def renew_dispatch(
         )
     with locked(repo):
         ledger = read_ledger(repo, run_id)
+        _assert_no_candidate_residue_intent(ledger)
         _require_driver_runtime_owner(ledger, driver_runtime_kind)
         if ledger["phase"] != "active":
             raise AssuranceError(
@@ -2129,6 +2390,7 @@ def consume_dispatch(
     run_id = ensure_run_id(run_value)
     with locked(repo):
         ledger = read_ledger(repo, run_id)
+        _assert_no_candidate_residue_intent(ledger)
         intent = ledger.get("dispatch_intent")
         if not isinstance(intent, dict) or intent.get("action_id") != action_id:
             raise AssuranceError("dispatch action is stale", code="DRIVER_ACTION_STALE", status="FAIL")
@@ -2352,6 +2614,7 @@ def record_driver_failure(
     run_id = ensure_run_id(run_value)
     with locked(repo):
         ledger = read_ledger(repo, run_id)
+        _assert_no_candidate_residue_intent(ledger)
         _require_driver_runtime_owner(ledger, driver_runtime_kind)
         existing = ledger.get("driver_failure")
         if isinstance(existing, dict):
@@ -2414,6 +2677,7 @@ def complete_driver_failure(
     run_id = ensure_run_id(run_value)
     with locked(repo):
         ledger = read_ledger(repo, run_id)
+        _assert_no_candidate_residue_intent(ledger)
         _require_driver_runtime_owner(ledger, driver_runtime_kind)
         failure = ledger.get("driver_failure")
         if not isinstance(failure, dict):
@@ -2443,6 +2707,7 @@ def complete_driver_failure(
         recover_finalize(repo, run_id)
         with locked(repo):
             ledger = read_ledger(repo, run_id)
+            _assert_no_candidate_residue_intent(ledger)
             failure = ledger.get("driver_failure")
             if not isinstance(failure, dict) or failure.get("digest") != failure_digest:
                 raise AssuranceError(
@@ -2473,6 +2738,7 @@ def complete_driver_failure(
 
     with locked(repo):
         ledger = read_ledger(repo, run_id)
+        _assert_no_candidate_residue_intent(ledger)
         _require_driver_runtime_owner(ledger, driver_runtime_kind)
         failure = ledger.get("driver_failure")
         if not isinstance(failure, dict) or failure.get("digest") != failure_digest:
@@ -2530,6 +2796,7 @@ def resolve_external_problem(
     run_id = ensure_run_id(run_value)
     with locked(repo):
         ledger = read_ledger(repo, run_id)
+        _assert_no_candidate_residue_intent(ledger)
         if ledger["phase"] != "active":
             raise AssuranceError(
                 "external problems can only be resolved on an active run",
@@ -2635,6 +2902,362 @@ def resolve_external_problem(
             },
         )
         ledger["machine_failure"] = None
+        save_ledger(repo, ledger)
+    return status(repo, run_id)
+
+
+def resolve_candidate_residue(
+    repo_value: str | Path,
+    run_value: str,
+    request_value: Any,
+) -> dict[str, Any]:
+    """Remove one exact ignored-file manifest without changing delivery facts."""
+
+    request = validate_candidate_residue_resolution(request_value)
+    request["reason"] = request["reason"].strip()
+    if not request["reason"]:
+        raise AssuranceError(
+            "candidate residue resolution requires a non-empty reason",
+            code="CANDIDATE_RESIDUE_REQUEST_INVALID",
+            status="FAIL",
+        )
+    request_digest = digest(request)
+    repo = resolve_repo(repo_value)
+    run_id = ensure_run_id(run_value)
+    with locked(repo):
+        ledger = read_ledger(repo, run_id)
+        intent = ledger.get("candidate_residue_intent")
+        completed = [
+            event
+            for event in ledger.get("events", [])
+            if isinstance(event, Mapping)
+            and event.get("kind") == "candidate_residue_resolved"
+            and isinstance(event.get("details"), Mapping)
+            and event["details"].get("problem_key") == request["problem_key"]
+        ]
+        if intent is None and completed:
+            matching = [
+                event
+                for event in completed
+                if event["details"].get("request_digest") == request_digest
+            ]
+            if len(completed) == 1 and len(matching) == 1:
+                return status(repo, run_id)
+            raise AssuranceError(
+                "candidate residue resolution conflicts with a completed request",
+                code="CANDIDATE_RESIDUE_RESOLUTION_CONFLICT",
+                status="FAIL",
+            )
+        if isinstance(intent, Mapping):
+            if intent.get("request_digest") != request_digest:
+                raise AssuranceError(
+                    "candidate residue recovery already has a different request",
+                    code="CANDIDATE_RESIDUE_INTENT_CONFLICT",
+                    status="FAIL",
+                )
+        elif intent is not None:
+            raise AssuranceError(
+                "candidate residue recovery intent is malformed",
+                code="CANDIDATE_RESIDUE_INTENT_CONFLICT",
+                status="FAIL",
+            )
+        elif ledger["phase"] not in {"active", "superseded"}:
+            raise AssuranceError(
+                "candidate residue recovery is not allowed in this run phase",
+                code="CANDIDATE_RESIDUE_RUN_PHASE_INVALID",
+                status="FAIL",
+                details={"phase": ledger["phase"]},
+            )
+
+        execution = ledger["facets"]["execution"]
+        checkpointed_candidate = execution.get("candidate_head")
+        worktree = Path(str(ledger["candidate_worktree"]))
+        if not worktree.is_dir():
+            raise AssuranceError(
+                "candidate worktree is unavailable",
+                code="CANDIDATE_RESIDUE_CANDIDATE_DRIFT",
+                status="FAIL",
+            )
+        live_head = git(worktree, "rev-parse", "HEAD", check=False)
+        live_branch = git(worktree, "symbolic-ref", "--quiet", "HEAD", check=False)
+        branch = git(
+            repo,
+            "rev-parse",
+            "--verify",
+            f"refs/heads/{ledger['candidate_branch']}",
+            check=False,
+        )
+        target = git(
+            repo,
+            "rev-parse",
+            "--verify",
+            f"refs/heads/{ledger['target_branch']}",
+            check=False,
+        )
+        if (
+            live_head.returncode != 0
+            or live_head.stdout.strip() != request["candidate_head"]
+            or live_branch.returncode != 0
+            or live_branch.stdout.strip() != f"refs/heads/{ledger['candidate_branch']}"
+            or branch.returncode != 0
+            or branch.stdout.strip() != request["candidate_head"]
+            or target.returncode != 0
+            or target.stdout.strip() != ledger["target_start_head"]
+        ):
+            raise AssuranceError(
+                "candidate or target identity changed before residue recovery",
+                code="CANDIDATE_RESIDUE_CANDIDATE_DRIFT",
+                status="FAIL",
+            )
+
+        requested_files = {
+            item["path"]: item["sha256"] for item in request["files"]
+        }
+        live_hashes, unauthorized = _candidate_residue_filesystem(worktree)
+        tracked = dirty_paths(worktree)
+        already_missing: set[str] = set()
+        if intent is None:
+            blockers = _candidate_residue_transaction_blockers(ledger)
+            if blockers:
+                raise AssuranceError(
+                    "candidate residue recovery conflicts with a pending transaction",
+                    code="CANDIDATE_RESIDUE_TRANSACTION_PENDING",
+                    status="FAIL",
+                    details={"transactions": sorted(set(blockers))},
+                )
+            snapshot_digest, problems = _open_problem_snapshot(ledger)
+            keyed = [
+                item
+                for item in ledger.get("problems", [])
+                if isinstance(item, Mapping)
+                and item.get("key") == request["problem_key"]
+            ]
+            if len(keyed) != 1:
+                raise AssuranceError(
+                    "candidate residue problem is missing or ambiguous",
+                    code="CANDIDATE_RESIDUE_PROBLEM_INVALID",
+                    status="FAIL",
+                    details={"matches": len(keyed)},
+                )
+            problem = keyed[0]
+            if (
+                problem.get("status") != "open"
+                or problem.get("owner") != "builder_loop"
+                or problem.get("candidate_head") != request["candidate_head"]
+                or request["problem_snapshot_digest"] != snapshot_digest
+                or request["problem_key"]
+                not in {item["key"] for item in problems}
+            ):
+                raise AssuranceError(
+                    "candidate residue problem facts are stale or unauthorized",
+                    code="CANDIDATE_RESIDUE_PROBLEM_INVALID",
+                    status="FAIL",
+                )
+            if ledger["phase"] == "superseded":
+                supersede_intent = ledger.get("supersede_intent")
+                target_run = (
+                    supersede_intent.get("target_run_id")
+                    if isinstance(supersede_intent, Mapping)
+                    else None
+                )
+                try:
+                    target_ledger = (
+                        read_ledger(repo, str(target_run))
+                        if isinstance(target_run, str)
+                        else None
+                    )
+                except StoreError as exc:
+                    raise AssuranceError(
+                        "superseded source target ledger is unavailable",
+                        code="CANDIDATE_RESIDUE_SOURCE_DISPOSITION_INVALID",
+                        status="FAIL",
+                    ) from exc
+                dispositioned = isinstance(target_ledger, Mapping) and any(
+                    item.get("source_run_id") == run_id
+                    and item.get("target_run_id") == target_run
+                    and item.get("key") == request["problem_key"]
+                    and item.get("disposition") == "handled_elsewhere"
+                    for item in target_ledger.get("problem_dispositions", [])
+                    if isinstance(item, Mapping)
+                )
+                if not dispositioned:
+                    raise AssuranceError(
+                        "superseded source residue was not dispositioned as handled elsewhere",
+                        code="CANDIDATE_RESIDUE_SOURCE_DISPOSITION_INVALID",
+                        status="FAIL",
+                    )
+            if tracked:
+                raise AssuranceError(
+                    "candidate contains tracked or ordinary-untracked drift",
+                    code="CANDIDATE_RESIDUE_UNAUTHORIZED_DRIFT",
+                    status="FAIL",
+                    details={"paths": tracked},
+                )
+            if unauthorized or live_hashes != requested_files:
+                raise AssuranceError(
+                    "candidate ignored residue does not exactly match the authorized manifest",
+                    code="CANDIDATE_RESIDUE_MANIFEST_MISMATCH",
+                    status="FAIL",
+                    details={
+                        "requested": request["files"],
+                        "observed": [
+                            {"path": path, "sha256": value}
+                            for path, value in sorted(live_hashes.items())
+                        ],
+                        "invalid_or_ordinary": unauthorized,
+                    },
+                )
+            pre_value = _candidate_residue_replay_value(
+                repo,
+                ledger,
+                request["files"],
+                problem_key=request["problem_key"],
+            )
+            created_at = now()
+            intent = {
+                "request_digest": request_digest,
+                "problem_key": request["problem_key"],
+                "problem_snapshot_digest": request["problem_snapshot_digest"],
+                "candidate_head": request["candidate_head"],
+                "reason": request["reason"],
+                "files": copy.deepcopy(request["files"]),
+                "pre_mutation_digest": digest(pre_value),
+                "state": "prepared",
+                "created_at": created_at,
+                "updated_at": created_at,
+            }
+            ledger["candidate_residue_intent"] = intent
+            append_event(
+                ledger,
+                "candidate_residue_intent_written",
+                {
+                    "request_digest": request_digest,
+                    "problem_key": request["problem_key"],
+                    "candidate_head": request["candidate_head"],
+                    "pre_mutation_digest": intent["pre_mutation_digest"],
+                    "created_at": created_at,
+                },
+            )
+            save_ledger(repo, ledger)
+        else:
+            request_recorded_at = next(
+                (
+                    str(event["details"].get("created_at"))
+                    for event in reversed(ledger.get("events", []))
+                    if isinstance(event, Mapping)
+                    and event.get("kind") == "candidate_residue_intent_written"
+                    and isinstance(event.get("details"), Mapping)
+                    and event["details"].get("request_digest") == request_digest
+                ),
+                None,
+            )
+            problem = next(
+                (
+                    item
+                    for item in ledger.get("problems", [])
+                    if isinstance(item, Mapping)
+                    and item.get("key") == request["problem_key"]
+                ),
+                None,
+            )
+            if not isinstance(problem, dict) or problem.get("status") != "open":
+                raise AssuranceError(
+                    "candidate residue replay no longer binds an open problem",
+                    code="CANDIDATE_RESIDUE_REPLAY_DRIFT",
+                    status="FAIL",
+                )
+            if (
+                request_recorded_at != intent.get("created_at")
+                or intent.get("problem_key") != request["problem_key"]
+                or intent.get("problem_snapshot_digest")
+                != request["problem_snapshot_digest"]
+                or intent.get("candidate_head") != request["candidate_head"]
+                or intent.get("reason") != request["reason"]
+                or intent.get("files") != request["files"]
+            ):
+                raise AssuranceError(
+                    "candidate residue replay intent facts changed",
+                    code="CANDIDATE_RESIDUE_REPLAY_DRIFT",
+                    status="FAIL",
+                )
+            pre_value = _candidate_residue_replay_value(
+                repo, ledger, request["files"]
+            )
+            if digest(pre_value) != intent.get("pre_mutation_digest"):
+                raise AssuranceError(
+                    "candidate residue replay facts changed",
+                    code="CANDIDATE_RESIDUE_REPLAY_DRIFT",
+                    status="FAIL",
+                )
+            unexpected = sorted(set(live_hashes) - set(requested_files))
+            changed = sorted(
+                path
+                for path, value in live_hashes.items()
+                if requested_files.get(path) != value
+            )
+            remaining = sorted(set(requested_files) & set(live_hashes))
+            missing = sorted(set(requested_files) - set(live_hashes))
+            already_missing = set(missing)
+            if tracked or unauthorized or unexpected or changed or any(
+                _candidate_residue_path(worktree, path).exists()
+                or _candidate_residue_path(worktree, path).is_symlink()
+                for path in missing
+            ):
+                raise AssuranceError(
+                    "candidate residue replay observed changed filesystem facts",
+                    code="CANDIDATE_RESIDUE_REPLAY_DRIFT",
+                    status="FAIL",
+                    details={
+                        "tracked": tracked,
+                        "invalid_or_ordinary": unauthorized,
+                        "unexpected": unexpected,
+                        "changed": changed,
+                    },
+                )
+
+        assert isinstance(intent, dict)
+        intent["state"] = "deleting"
+        intent["updated_at"] = now()
+        save_ledger(repo, ledger)
+        for item in request["files"]:
+            _quarantine_candidate_residue_file(
+                repo,
+                ledger,
+                worktree,
+                item["path"],
+                item["sha256"],
+                allow_missing=item["path"] in already_missing,
+            )
+        remaining_hashes, remaining_invalid = _candidate_residue_filesystem(worktree)
+        if dirty_paths(worktree) or remaining_hashes or remaining_invalid:
+            raise AssuranceError(
+                "candidate residue recovery did not leave a clean worktree",
+                code="CANDIDATE_RESIDUE_CLEANUP_INCOMPLETE",
+                status="FAIL",
+                details={
+                    "remaining": sorted(remaining_hashes),
+                    "invalid_or_ordinary": remaining_invalid,
+                },
+            )
+        intent["state"] = "completing"
+        intent["updated_at"] = now()
+        save_ledger(repo, ledger)
+        problem["status"] = "resolved"
+        problem["resolution"] = request["reason"]
+        problem["resolved_at"] = now()
+        append_event(
+            ledger,
+            "candidate_residue_resolved",
+            {
+                "request_digest": request_digest,
+                "problem_key": request["problem_key"],
+                "candidate_head": request["candidate_head"],
+                "files": copy.deepcopy(request["files"]),
+                "phase": ledger["phase"],
+                "checkpointed_candidate_head": checkpointed_candidate,
+            },
+        )
+        ledger["candidate_residue_intent"] = None
         save_ledger(repo, ledger)
     return status(repo, run_id)
 
@@ -4133,6 +4756,962 @@ def _open_problem_snapshot(ledger: Mapping[str, Any]) -> tuple[str, list[dict[st
     return digest(problems), problems
 
 
+def _candidate_residue_pre_mutation_value(
+    repo: Path,
+    ledger: Mapping[str, Any],
+    files: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    execution = ledger["facets"]["execution"]
+    worktree = Path(str(ledger["candidate_worktree"]))
+    worktree_head = git(worktree, "rev-parse", "HEAD", check=False)
+    worktree_branch = git(worktree, "symbolic-ref", "--quiet", "HEAD", check=False)
+    candidate_branch = git(
+        repo,
+        "rev-parse",
+        "--verify",
+        f"refs/heads/{ledger['candidate_branch']}",
+        check=False,
+    )
+    target_branch = git(
+        repo,
+        "rev-parse",
+        "--verify",
+        f"refs/heads/{ledger['target_branch']}",
+        check=False,
+    )
+    return {
+        "phase": ledger["phase"],
+        "candidate_head": execution.get("candidate_head"),
+        "candidate_branch": ledger["candidate_branch"],
+        "candidate_worktree": ledger["candidate_worktree"],
+        "candidate_branch_head": (
+            candidate_branch.stdout.strip() if candidate_branch.returncode == 0 else None
+        ),
+        "candidate_worktree_head": (
+            worktree_head.stdout.strip() if worktree_head.returncode == 0 else None
+        ),
+        "candidate_worktree_branch": (
+            worktree_branch.stdout.strip() if worktree_branch.returncode == 0 else None
+        ),
+        "target_start_head": ledger["target_start_head"],
+        "target_head": target_branch.stdout.strip() if target_branch.returncode == 0 else None,
+        "digests": copy.deepcopy(ledger["digests"]),
+        "agents": copy.deepcopy(execution.get("agents")),
+        "tester_source": copy.deepcopy(execution.get("tester_source")),
+        "evidence": copy.deepcopy(ledger.get("evidence", {})),
+        "problems": copy.deepcopy(ledger.get("problems", [])),
+        "driver_failure": copy.deepcopy(ledger.get("driver_failure")),
+        "dispatch_intent": copy.deepcopy(ledger.get("dispatch_intent")),
+        "proof_failure": copy.deepcopy(ledger.get("proof_failure")),
+        "machine_failure": copy.deepcopy(ledger.get("machine_failure")),
+        "recomposition_intent": copy.deepcopy(ledger.get("recomposition_intent")),
+        "deployment_transaction": copy.deepcopy(ledger.get("deployment_transaction")),
+        "pending_blackbox": copy.deepcopy(ledger.get("pending_blackbox")),
+        "environment_lease": copy.deepcopy(ledger.get("environment_lease")),
+        "supersede_intent": copy.deepcopy(ledger.get("supersede_intent")),
+        "abandon_intent": copy.deepcopy(ledger.get("abandon_intent")),
+        "finalize_intent": copy.deepcopy(ledger.get("finalize_intent")),
+        "files": copy.deepcopy(list(files)),
+    }
+
+
+def _candidate_residue_replay_value(
+    repo: Path,
+    ledger: Mapping[str, Any],
+    files: Sequence[Mapping[str, Any]],
+    *,
+    problem_key: str | None = None,
+) -> dict[str, Any]:
+    value = _candidate_residue_pre_mutation_value(repo, ledger, files)
+    intent = ledger.get("candidate_residue_intent")
+    bound_problem_key = (
+        problem_key
+        if problem_key is not None
+        else str(intent.get("problem_key")) if isinstance(intent, Mapping) else ""
+    )
+    value["problems"] = [
+        copy.deepcopy(item)
+        for item in ledger.get("problems", [])
+        if isinstance(item, Mapping)
+        and item.get("key") != bound_problem_key
+    ]
+    value["candidate_residue_problem"] = next(
+        (
+            {
+                key: copy.deepcopy(item.get(key))
+                for key in (
+                    "key", "summary", "details", "owner", "status", "producer",
+                    "candidate_head", "recorded_at",
+                )
+            }
+            for item in ledger.get("problems", [])
+            if isinstance(item, Mapping)
+            and item.get("key") == bound_problem_key
+        ),
+        None,
+    )
+    return value
+
+
+def _candidate_residue_filesystem(
+    worktree: Path,
+) -> tuple[dict[str, str], list[str]]:
+    ignored = {
+        path
+        for path in git(
+            worktree,
+            "ls-files",
+            "--others",
+            "--ignored",
+            "--exclude-standard",
+            "-z",
+        ).stdout.split("\0")
+        if path
+    }
+    ordinary = {
+        path
+        for path in git(
+            worktree,
+            "ls-files",
+            "--others",
+            "--exclude-standard",
+            "-z",
+        ).stdout.split("\0")
+        if path
+    }
+    hashes: dict[str, str] = {}
+    invalid: list[str] = []
+    root = worktree.resolve()
+    for relative in sorted(ignored):
+        path = worktree / relative
+        try:
+            resolved_parent = path.parent.resolve(strict=True)
+            stat = path.lstat()
+        except OSError:
+            invalid.append(relative)
+            continue
+        if root != resolved_parent and root not in resolved_parent.parents:
+            invalid.append(relative)
+            continue
+        cursor = worktree
+        if any(
+            (cursor := cursor / part).is_symlink()
+            for part in Path(relative).parts[:-1]
+        ):
+            invalid.append(relative)
+            continue
+        if path.is_symlink() or not path.is_file():
+            invalid.append(relative)
+            continue
+        hashes[relative] = hashlib.sha256(path.read_bytes()).hexdigest()
+    return hashes, sorted(ordinary | set(invalid))
+
+
+def _candidate_residue_path(worktree: Path, relative: str) -> Path:
+    try:
+        validate_repo_path(relative)
+    except ContractError as exc:
+        raise AssuranceError(
+            "candidate residue path is invalid",
+            code="CANDIDATE_RESIDUE_REPLAY_DRIFT",
+            status="FAIL",
+            details={"path": relative},
+        ) from exc
+    root = worktree.resolve()
+    cursor = worktree
+    for part in Path(relative).parts[:-1]:
+        cursor = cursor / part
+        if cursor.is_symlink():
+            raise AssuranceError(
+                "candidate residue path crosses a symbolic link",
+                code="CANDIDATE_RESIDUE_REPLAY_DRIFT",
+                status="FAIL",
+                details={"path": relative},
+            )
+    try:
+        parent = (worktree / relative).parent.resolve(strict=True)
+    except OSError as exc:
+        raise AssuranceError(
+            "candidate residue parent changed",
+            code="CANDIDATE_RESIDUE_REPLAY_DRIFT",
+            status="FAIL",
+            details={"path": relative},
+        ) from exc
+    if root != parent and root not in parent.parents:
+        raise AssuranceError(
+            "candidate residue path escapes the worktree",
+            code="CANDIDATE_RESIDUE_REPLAY_DRIFT",
+            status="FAIL",
+            details={"path": relative},
+        )
+    return worktree / relative
+
+
+def _candidate_residue_identity(value: os.stat_result) -> tuple[int, int]:
+    return (value.st_dev, value.st_ino)
+
+
+def _candidate_residue_file_identity(
+    value: os.stat_result,
+) -> tuple[int, int, int]:
+    return (
+        value.st_dev,
+        value.st_ino,
+        stat.S_IFMT(value.st_mode),
+    )
+
+
+def _candidate_residue_content_identity(
+    value: os.stat_result,
+) -> tuple[int, int, int, int, int]:
+    return (
+        value.st_dev,
+        value.st_ino,
+        stat.S_IFMT(value.st_mode),
+        value.st_size,
+        value.st_mtime_ns,
+    )
+
+
+def _raise_candidate_residue_drift(
+    message: str,
+    relative: str,
+    cause: BaseException | None = None,
+) -> None:
+    error = AssuranceError(
+        message,
+        code="CANDIDATE_RESIDUE_REPLAY_DRIFT",
+        status="FAIL",
+        details={"path": relative},
+    )
+    if cause is None:
+        raise error
+    raise error from cause
+
+
+def _candidate_residue_open_parent(
+    worktree: Path,
+    parent_parts: Sequence[str],
+    relative: str,
+) -> tuple[int, tuple[tuple[int, int], ...]]:
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    current_fd = -1
+    next_fd = -1
+    try:
+        current_fd = os.open(worktree, flags)
+        identities = [_candidate_residue_identity(os.fstat(current_fd))]
+        for part in parent_parts:
+            next_fd = os.open(part, flags, dir_fd=current_fd)
+            opened = os.fstat(next_fd)
+            named = os.stat(part, dir_fd=current_fd, follow_symlinks=False)
+            if (
+                not stat.S_ISDIR(named.st_mode)
+                or _candidate_residue_identity(opened)
+                != _candidate_residue_identity(named)
+            ):
+                _raise_candidate_residue_drift(
+                    "candidate residue parent changed",
+                    relative,
+                )
+            os.close(current_fd)
+            current_fd = next_fd
+            next_fd = -1
+            identities.append(_candidate_residue_identity(opened))
+        return current_fd, tuple(identities)
+    except AssuranceError:
+        if next_fd >= 0:
+            os.close(next_fd)
+        if current_fd >= 0:
+            os.close(current_fd)
+        raise
+    except OSError as exc:
+        if next_fd >= 0:
+            os.close(next_fd)
+        if current_fd >= 0:
+            os.close(current_fd)
+        _raise_candidate_residue_drift(
+            "candidate residue parent changed",
+            relative,
+            exc,
+        )
+    raise AssertionError("unreachable")
+
+
+def _candidate_residue_fd_sha256(fd: int) -> str:
+    value = hashlib.sha256()
+    os.lseek(fd, 0, os.SEEK_SET)
+    while True:
+        chunk = os.read(fd, 1024 * 1024)
+        if not chunk:
+            return value.hexdigest()
+        value.update(chunk)
+
+
+def _candidate_residue_quarantine_dir(
+    repo: Path,
+    ledger: Mapping[str, Any],
+) -> Path:
+    return run_dir(repo, str(ledger["run_id"])) / "candidate-residue-quarantine"
+
+
+def _candidate_residue_quarantine_name(
+    relative: str,
+    expected_sha256: str,
+) -> str:
+    return digest({"path": relative, "sha256": expected_sha256})
+
+
+def _candidate_residue_rename_exchange(
+    directory_fd: int,
+    first: str,
+    second: str,
+) -> None:
+    """Atomically exchange two entries anchored to one trusted directory."""
+
+    result = _RENAMEAT2(
+        directory_fd,
+        ctypes.c_char_p(os.fsencode(first)),
+        directory_fd,
+        ctypes.c_char_p(os.fsencode(second)),
+        CANDIDATE_RESIDUE_RENAME_EXCHANGE,
+    )
+    if result != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error))
+
+
+def _candidate_residue_create_tombstone(
+    directory_fd: int,
+    name: str,
+) -> tuple[int, tuple[int, int, int]]:
+    flags = os.O_WRONLY | os.O_NOFOLLOW | os.O_CLOEXEC
+    try:
+        fd = os.open(
+            name,
+            flags | os.O_CREAT | os.O_EXCL,
+            0o600,
+            dir_fd=directory_fd,
+        )
+    except FileExistsError:
+        fd = os.open(name, flags, dir_fd=directory_fd)
+        value = os.fstat(fd)
+        named = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+        if (
+            not stat.S_ISREG(value.st_mode)
+            or value.st_size != 0
+            or _candidate_residue_file_identity(value)
+            != _candidate_residue_file_identity(named)
+        ):
+            os.close(fd)
+            raise OSError("candidate residue deletion tombstone changed")
+        return fd, _candidate_residue_file_identity(value)
+    value = os.fstat(fd)
+    return fd, _candidate_residue_file_identity(value)
+
+
+def _candidate_residue_exchange_verified_entry(
+    directory_fd: int,
+    verified_name: str,
+    verified_identity: tuple[int, int, int],
+    tombstone_name: str,
+    tombstone_identity: tuple[int, int, int],
+) -> None:
+    """Move only the currently named verified inode behind the tombstone name."""
+
+    _candidate_residue_rename_exchange(
+        directory_fd,
+        verified_name,
+        tombstone_name,
+    )
+    try:
+        exchanged_verified = os.stat(
+            tombstone_name,
+            dir_fd=directory_fd,
+            follow_symlinks=False,
+        )
+        exchanged_tombstone = os.stat(
+            verified_name,
+            dir_fd=directory_fd,
+            follow_symlinks=False,
+        )
+    except OSError:
+        try:
+            _candidate_residue_rename_exchange(
+                directory_fd,
+                verified_name,
+                tombstone_name,
+            )
+        except OSError:
+            pass
+        raise
+    if (
+        _candidate_residue_file_identity(exchanged_verified) == verified_identity
+        and _candidate_residue_file_identity(exchanged_tombstone)
+        == tombstone_identity
+    ):
+        return
+    try:
+        _candidate_residue_rename_exchange(
+            directory_fd,
+            verified_name,
+            tombstone_name,
+        )
+    except OSError:
+        pass
+    raise OSError("candidate residue exchange identity changed")
+
+
+def _candidate_residue_unlink_fd_entry(
+    directory_fd: int,
+    name: str,
+) -> None:
+    """Remove one entry relative to an already verified directory descriptor."""
+
+    proc_parent = Path("/proc/self/fd") / str(directory_fd)
+    if _candidate_residue_identity(
+        proc_parent.stat()
+    ) != _candidate_residue_identity(os.fstat(directory_fd)):
+        raise OSError("directory descriptor identity changed")
+    (proc_parent / name).unlink()
+
+
+def _candidate_residue_replace_with_tombstone(
+    directory_fd: int,
+    verified_name: str,
+    verified_identity: tuple[int, int, int],
+    tombstone_name: str,
+    tombstone_identity: tuple[int, int, int],
+) -> None:
+    """Replace the bound entry while leaving its verified inode quarantined."""
+
+    _candidate_residue_exchange_verified_entry(
+        directory_fd,
+        verified_name,
+        verified_identity,
+        tombstone_name,
+        tombstone_identity,
+    )
+    try:
+        _candidate_residue_unlink_fd_entry(
+            directory_fd,
+            verified_name,
+        )
+    except OSError as exc:
+        try:
+            _candidate_residue_rename_exchange(
+                directory_fd,
+                verified_name,
+                tombstone_name,
+            )
+        except OSError:
+            pass
+        raise exc
+
+
+def _quarantine_candidate_residue_file(
+    repo: Path,
+    ledger: Mapping[str, Any],
+    worktree: Path,
+    relative: str,
+    expected_sha256: str,
+    *,
+    allow_missing: bool,
+) -> None:
+    try:
+        normalized = validate_repo_path(relative)
+    except ContractError as exc:
+        _raise_candidate_residue_drift(
+            "candidate residue path is invalid",
+            relative,
+            exc,
+        )
+    parts = Path(normalized).parts
+    parent_parts = parts[:-1]
+    leaf = parts[-1]
+    quarantine_dir = _candidate_residue_quarantine_dir(repo, ledger)
+    quarantine_name = _candidate_residue_quarantine_name(
+        normalized,
+        expected_sha256,
+    )
+    quarantine_path = quarantine_dir / quarantine_name
+    parent_fd = -1
+    verify_parent_fd = -1
+    file_fd = -1
+    quarantine_fd = -1
+    try:
+        parent_fd, parent_identity = _candidate_residue_open_parent(
+            worktree,
+            parent_parts,
+            normalized,
+        )
+        file_flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
+        try:
+            file_fd = os.open(leaf, file_flags, dir_fd=parent_fd)
+        except FileNotFoundError as exc:
+            verify_parent_fd, verify_parent_identity = _candidate_residue_open_parent(
+                worktree,
+                parent_parts,
+                normalized,
+            )
+            if parent_identity != verify_parent_identity:
+                _raise_candidate_residue_drift(
+                    "candidate residue parent changed",
+                    normalized,
+                )
+            try:
+                os.stat(leaf, dir_fd=verify_parent_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                if allow_missing:
+                    if quarantine_path.exists() or quarantine_path.is_symlink():
+                        quarantine_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+                        quarantine_fd = os.open(
+                            quarantine_dir,
+                            os.O_RDONLY
+                            | os.O_DIRECTORY
+                            | os.O_NOFOLLOW
+                            | os.O_CLOEXEC,
+                        )
+                        _remove_quarantined_candidate_residue(
+                            quarantine_fd,
+                            quarantine_name,
+                            normalized,
+                            expected_sha256,
+                        )
+                    return
+                _raise_candidate_residue_drift(
+                    "candidate residue disappeared before deletion",
+                    normalized,
+                    exc,
+                )
+            except OSError as verify_exc:
+                _raise_candidate_residue_drift(
+                    "candidate residue changed before deletion",
+                    normalized,
+                    verify_exc,
+                )
+            _raise_candidate_residue_drift(
+                "candidate residue changed before deletion",
+                normalized,
+                exc,
+            )
+        except OSError as exc:
+            _raise_candidate_residue_drift(
+                "candidate residue changed before deletion",
+                normalized,
+                exc,
+            )
+        opened = os.fstat(file_fd)
+        if not stat.S_ISREG(opened.st_mode):
+            _raise_candidate_residue_drift(
+                "candidate residue changed before deletion",
+                normalized,
+            )
+        try:
+            actual_sha256 = _candidate_residue_fd_sha256(file_fd)
+            hashed = os.fstat(file_fd)
+        except OSError as exc:
+            _raise_candidate_residue_drift(
+                "candidate residue content changed before deletion",
+                normalized,
+                exc,
+            )
+        if (
+            _candidate_residue_content_identity(opened)
+            != _candidate_residue_content_identity(hashed)
+            or actual_sha256 != expected_sha256
+        ):
+            _raise_candidate_residue_drift(
+                "candidate residue content changed before deletion",
+                normalized,
+            )
+        verify_parent_fd, verify_parent_identity = _candidate_residue_open_parent(
+            worktree,
+            parent_parts,
+            normalized,
+        )
+        if parent_identity != verify_parent_identity:
+            _raise_candidate_residue_drift(
+                "candidate residue parent changed",
+                normalized,
+            )
+        try:
+            named = os.stat(
+                leaf,
+                dir_fd=verify_parent_fd,
+                follow_symlinks=False,
+            )
+        except OSError as exc:
+            _raise_candidate_residue_drift(
+                "candidate residue changed before deletion",
+                normalized,
+                exc,
+            )
+        if _candidate_residue_file_identity(named) != _candidate_residue_file_identity(
+            hashed
+        ):
+            _raise_candidate_residue_drift(
+                "candidate residue identity changed before deletion",
+                normalized,
+            )
+        quarantine_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if quarantine_path.exists() or quarantine_path.is_symlink():
+            _raise_candidate_residue_drift(
+                "candidate residue quarantine entry already exists",
+                normalized,
+            )
+        quarantine_fd = os.open(
+            quarantine_dir,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+        )
+        try:
+            os.rename(
+                leaf,
+                quarantine_name,
+                src_dir_fd=verify_parent_fd,
+                dst_dir_fd=quarantine_fd,
+            )
+        except OSError as exc:
+            _raise_candidate_residue_drift(
+                "candidate residue changed before deletion",
+                normalized,
+                exc,
+            )
+        try:
+            quarantined = os.stat(
+                quarantine_name,
+                dir_fd=quarantine_fd,
+                follow_symlinks=False,
+            )
+        except OSError as exc:
+            _raise_candidate_residue_drift(
+                "candidate residue quarantine identity is unavailable",
+                normalized,
+                exc,
+            )
+        if _candidate_residue_file_identity(
+            quarantined
+        ) != _candidate_residue_file_identity(hashed):
+            try:
+                os.link(
+                    quarantine_name,
+                    leaf,
+                    src_dir_fd=quarantine_fd,
+                    dst_dir_fd=verify_parent_fd,
+                    follow_symlinks=False,
+                )
+            except OSError:
+                pass
+            else:
+                try:
+                    os.unlink(quarantine_name, dir_fd=quarantine_fd)
+                except OSError:
+                    pass
+            _raise_candidate_residue_drift(
+                "candidate residue quarantine identity changed",
+                normalized,
+            )
+        _remove_quarantined_candidate_residue(
+            quarantine_fd,
+            quarantine_name,
+            normalized,
+            expected_sha256,
+        )
+        return
+    finally:
+        for fd in (quarantine_fd, file_fd, verify_parent_fd, parent_fd):
+            if fd >= 0:
+                os.close(fd)
+
+
+def _remove_quarantined_candidate_residue(
+    quarantine_fd: int,
+    quarantine_name: str,
+    relative: str,
+    expected_sha256: str,
+) -> None:
+    file_fd = -1
+    tombstone_fd = -1
+    tombstone_name = f".{quarantine_name}.delete"
+    tombstone_identity: tuple[int, int, int] | None = None
+    try:
+        try:
+            tombstone_fd, tombstone_identity = _candidate_residue_create_tombstone(
+                quarantine_fd,
+                tombstone_name,
+            )
+        except OSError as exc:
+            _raise_candidate_residue_drift(
+                "candidate residue deletion tombstone is unavailable",
+                relative,
+                exc,
+            )
+        try:
+            file_fd = os.open(
+                quarantine_name,
+                os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
+                dir_fd=quarantine_fd,
+            )
+            value = os.fstat(file_fd)
+            if not stat.S_ISREG(value.st_mode):
+                _raise_candidate_residue_drift(
+                    "candidate residue quarantine entry changed",
+                    relative,
+                )
+            actual_sha256 = _candidate_residue_fd_sha256(file_fd)
+            verified = os.fstat(file_fd)
+        except AssuranceError:
+            raise
+        except OSError as exc:
+            _raise_candidate_residue_drift(
+                "candidate residue quarantine entry changed",
+                relative,
+                exc,
+            )
+        if (
+            _candidate_residue_content_identity(value)
+            != _candidate_residue_content_identity(verified)
+            or actual_sha256 != expected_sha256
+        ):
+            _raise_candidate_residue_drift(
+                "candidate residue quarantine content changed",
+                relative,
+            )
+        try:
+            named = os.stat(
+                quarantine_name,
+                dir_fd=quarantine_fd,
+                follow_symlinks=False,
+            )
+        except OSError as exc:
+            _raise_candidate_residue_drift(
+                "candidate residue quarantine entry changed",
+                relative,
+                exc,
+            )
+        if _candidate_residue_file_identity(
+            named
+        ) != _candidate_residue_file_identity(verified):
+            _raise_candidate_residue_drift(
+                "candidate residue quarantine identity changed",
+                relative,
+            )
+        assert tombstone_identity is not None
+        try:
+            _candidate_residue_replace_with_tombstone(
+                quarantine_fd,
+                quarantine_name,
+                _candidate_residue_file_identity(verified),
+                tombstone_name,
+                tombstone_identity,
+            )
+        except OSError as exc:
+            _raise_candidate_residue_drift(
+                "candidate residue quarantine entry could not be replaced",
+                relative,
+                exc,
+            )
+    finally:
+        if file_fd >= 0:
+            os.close(file_fd)
+        if tombstone_fd >= 0:
+            os.close(tombstone_fd)
+
+
+def _candidate_residue_transaction_blockers(
+    ledger: Mapping[str, Any],
+) -> list[str]:
+    blockers = []
+    for field in (
+        "driver_failure",
+        "recomposition_intent",
+        "deployment_transaction",
+        "pending_blackbox",
+        "environment_lease",
+        "abandon_intent",
+        "finalize_intent",
+    ):
+        if ledger.get(field) is not None:
+            blockers.append(field)
+    dispatch = ledger.get("dispatch_intent")
+    if isinstance(dispatch, Mapping) and not (
+        ledger.get("phase") == "superseded" and dispatch.get("state") == "completed"
+    ):
+        blockers.append("dispatch_intent")
+    supersede = ledger.get("supersede_intent")
+    if isinstance(supersede, Mapping) and not (
+        ledger.get("phase") == "superseded" and supersede.get("state") == "received"
+    ):
+        blockers.append("supersede_intent")
+    return blockers
+
+
+def _assert_no_candidate_residue_intent(ledger: Mapping[str, Any]) -> None:
+    if ledger.get("candidate_residue_intent") is not None:
+        raise AssuranceError(
+            "candidate residue recovery is the only allowed run mutation",
+            code="CANDIDATE_RESIDUE_TRANSACTION_PENDING",
+            status="NEEDS_USER",
+        )
+
+
+def candidate_residue_recovery_action(
+    repo_value: str | Path,
+    run_value: str,
+) -> dict[str, Any] | None:
+    """Derive the sole allowed action while residue recovery is persisted."""
+
+    repo = resolve_repo(repo_value)
+    run_id = ensure_run_id(run_value)
+    ledger = read_ledger(repo, run_id)
+    intent = ledger.get("candidate_residue_intent")
+    if not isinstance(intent, Mapping):
+        return None
+    action = "resolve_candidate_residue"
+    reason = "candidate_residue_recovery_pending"
+    payload = {"candidate_residue_intent": copy.deepcopy(dict(intent))}
+    action_id = digest(
+        {
+            "run_id": ledger["run_id"],
+            "updated_at": ledger["updated_at"],
+            "phase": ledger["phase"],
+            "digests": ledger["digests"],
+            "action": action,
+            "reason": reason,
+            "payload": payload,
+        }
+    )
+    runtime = ledger.get("driver_runtime")
+    return {
+        "driver_protocol_version": 1,
+        "status": "NEEDS_USER",
+        "run_id": ledger["run_id"],
+        "action": action,
+        "reason": reason,
+        "action_id": action_id,
+        "driver_enforced": bool(
+            ledger["facets"]["execution"].get("driver_enforced")
+        ),
+        "driver_runtime_kind": (
+            runtime.get("kind") if isinstance(runtime, Mapping) else None
+        ),
+        **payload,
+    }
+
+
+def _candidate_residue_safety_restore_only(ledger: Mapping[str, Any]) -> bool:
+    """Allow only an already-required external safety restore during recovery."""
+
+    transaction = ledger.get("deployment_transaction")
+    return isinstance(transaction, Mapping) and transaction.get("state") in {
+        "restore_required",
+        "restoring",
+        "restore_failed",
+    }
+
+
+def _seal_replayed_successor_source(
+    repo: Path,
+    existing: Mapping[str, Any],
+    contract: Mapping[str, Any],
+    session_id: str,
+) -> None:
+    supersedes = contract["mission"].get("supersedes")
+    existing_facets = existing.get("facets")
+    carryover = (
+        existing_facets.get("execution", {}).get("carryover")
+        if isinstance(existing_facets, Mapping)
+        else None
+    )
+    if not isinstance(supersedes, Mapping) or not isinstance(carryover, Mapping):
+        raise AssuranceError(
+            "existing successor continuity metadata is incomplete",
+            code="SUPERSEDE_REPLAY_MISMATCH",
+            status="NEEDS_USER",
+        )
+    expected_candidate = str(supersedes["candidate_head"])
+    expected_facets = validate_contract(copy.deepcopy(dict(contract)))
+    expected_execution = expected_facets["execution"]
+    expected_execution["candidate_head"] = expected_candidate
+    expected_execution["dirty_snapshot"] = []
+    expected_execution["builder_files"] = []
+    expected_execution["tester_files"] = []
+    expected_execution["tester_source"] = None
+    expected_files = _candidate_manifest(
+        repo,
+        str(existing["target_start_head"]),
+        expected_candidate,
+    )
+    expected_execution["carryover"] = {
+        "source_run_id": str(supersedes["run_id"]),
+        "source_candidate_head": expected_candidate,
+        "files": expected_files,
+    }
+    candidate_branch = str(existing.get("candidate_branch", ""))
+    candidate_worktree_value = existing.get("candidate_worktree")
+    candidate_worktree = (
+        Path(candidate_worktree_value)
+        if isinstance(candidate_worktree_value, str) and candidate_worktree_value
+        else None
+    )
+    branch_result = git(
+        repo,
+        "rev-parse",
+        "--verify",
+        f"refs/heads/{candidate_branch}",
+        check=False,
+    )
+    worktree_result = (
+        git(candidate_worktree, "rev-parse", "HEAD", check=False)
+        if candidate_worktree is not None and candidate_worktree.is_dir()
+        else None
+    )
+    live_target = branch_head(repo, str(existing["target_branch"]))
+    if (
+        existing.get("owner_session_id") != session_id.strip()
+        or existing_facets != expected_facets
+        or existing.get("digests") != facet_digests(expected_facets)
+        or carryover.get("source_run_id") != supersedes["run_id"]
+        or carryover.get("source_candidate_head") != expected_candidate
+        or carryover.get("files") != expected_files
+        or candidate_branch != f"assurance-v4/{existing['run_id']}/candidate"
+        or branch_result.returncode != 0
+        or branch_result.stdout.strip() != expected_candidate
+        or worktree_result is None
+        or worktree_result.returncode != 0
+        or worktree_result.stdout.strip() != expected_candidate
+        or candidate_worktree is None
+        or dirty_paths(candidate_worktree)
+        or live_target != existing.get("target_start_head")
+    ):
+        raise AssuranceError(
+            "existing successor does not match the persisted continuity receipt",
+            code="SUPERSEDE_REPLAY_MISMATCH",
+            status="NEEDS_USER",
+        )
+    source = read_ledger(repo, str(supersedes["run_id"]))
+    expected_intent = {
+        "source_run_id": str(supersedes["run_id"]),
+        "target_run_id": str(existing["run_id"]),
+        "state": "prepared",
+    }
+    received_intent = {**expected_intent, "state": "received"}
+    if source["phase"] == "superseded" and source.get("supersede_intent") == received_intent:
+        return
+    if source["phase"] != "active" or source.get("supersede_intent") != expected_intent:
+        raise AssuranceError(
+            "source run changed before successor replay could seal continuity",
+            code="SUPERSEDE_REPLAY_SOURCE_DRIFT",
+            status="NEEDS_USER",
+        )
+    source_lease = source.get("environment_lease")
+    if isinstance(source_lease, Mapping) and source_lease.get("state") == "held":
+        return
+    source["phase"] = "superseded"
+    source["supersede_intent"] = received_intent
+    append_event(source, "run_superseded", {"target_run_id": existing["run_id"]})
+    save_ledger(repo, source)
+
+
 def _lineage_ledgers(repo: Path, current: Mapping[str, Any]) -> tuple[list[dict[str, Any]], bool]:
     values = [copy.deepcopy(dict(current))]
     complete = True
@@ -4394,6 +5973,7 @@ def status(repo_value: str | Path, run_value: str) -> dict[str, Any]:
         "machine_failure": copy.deepcopy(ledger.get("machine_failure")),
         "machine_failure_state": machine_failure_state(ledger),
         "recomposition_intent": copy.deepcopy(ledger.get("recomposition_intent")),
+        "candidate_residue_intent": copy.deepcopy(ledger.get("candidate_residue_intent")),
         "deployment_transaction": copy.deepcopy(ledger.get("deployment_transaction")),
         "pending_blackbox": copy.deepcopy(ledger.get("pending_blackbox")),
         "doc_reference_contract_version": ledger.get("doc_reference_contract_version"),
@@ -5417,6 +6997,7 @@ def driver_context(repo_value: str | Path, run_value: str) -> dict[str, Any]:
         "machine_failure": copy.deepcopy(ledger.get("machine_failure")),
         "machine_failure_state": machine_failure_state(ledger),
         "recomposition_intent": copy.deepcopy(ledger.get("recomposition_intent")),
+        "candidate_residue_intent": copy.deepcopy(ledger.get("candidate_residue_intent")),
         "deployment_transaction": copy.deepcopy(ledger.get("deployment_transaction")),
         "pending_blackbox": copy.deepcopy(ledger.get("pending_blackbox")),
         "doc_reference_contract_version": ledger.get("doc_reference_contract_version"),
@@ -5510,6 +7091,7 @@ def update_facet(
         ledger = read_ledger(repo, run_id)
         if ledger["phase"] != "active":
             raise AssuranceError("run is not active", code="ASSURANCE_RUN_NOT_ACTIVE")
+        _assert_no_candidate_residue_intent(ledger)
         _assert_plan_decision_mutation_binding(
             repo,
             ledger,
@@ -5768,6 +7350,7 @@ def revise_mission(
         ledger = read_ledger(repo, run_id)
         if ledger["phase"] != "active":
             raise AssuranceError("run is not active", code="ASSURANCE_RUN_NOT_ACTIVE")
+        _assert_no_candidate_residue_intent(ledger)
         _assert_plan_decision_mutation_binding(
             repo,
             ledger,
@@ -5937,7 +7520,7 @@ def _record_runtime_preparation_problem(
     candidate_head: str,
     error: AssuranceError,
 ) -> None:
-    key = "runtime-preparation-required"
+    key = RUNTIME_PREPARATION_PROBLEM_KEY
     if any(
         item.get("key") == key and item.get("status") == "open"
         for item in ledger.get("problems", [])
@@ -5955,11 +7538,7 @@ def _record_runtime_preparation_problem(
             "key": key,
             "summary": "Candidate changes require a protected runtime preparation",
             "details": json.dumps(
-                {
-                    "code": error.code,
-                    "message": str(error),
-                    **copy.deepcopy(error.details),
-                },
+                _runtime_preparation_problem_details(error),
                 ensure_ascii=False,
                 sort_keys=True,
                 separators=(",", ":"),
@@ -6061,6 +7640,7 @@ def checkpoint_builder(repo_value: str | Path, run_value: str) -> dict[str, Any]
         ledger = read_ledger(repo, run_id)
         if ledger["phase"] != "active":
             raise AssuranceError("run is not active", code="ASSURANCE_RUN_NOT_ACTIVE")
+        _assert_no_candidate_residue_intent(ledger)
         worktree = Path(ledger["candidate_worktree"])
         if dirty_paths(worktree):
             raise AssuranceError(
@@ -6083,12 +7663,7 @@ def checkpoint_builder(repo_value: str | Path, run_value: str) -> dict[str, Any]
                 required_independent,
             )
         except AssuranceError as exc:
-            if exc.code in {
-                "RUNTIME_PREPARATION_REQUIRED",
-                "RUNTIME_PREPARATION_PATH_MISMATCH",
-                "RUNTIME_PREPARATION_GATE_CYCLE",
-                "RUNTIME_PREPARATION_ASSURANCE_INCOMPLETE",
-            }:
+            if exc.code in RUNTIME_PREPARATION_ERROR_CODES:
                 _record_runtime_preparation_problem(
                     ledger,
                     candidate_head=candidate,
@@ -6231,6 +7806,7 @@ def publish_prerequisites(repo_value: str | Path, run_value: str) -> dict[str, A
         ledger = read_ledger(repo, run_id)
         if ledger["phase"] != "active":
             raise AssuranceError("run is not active", code="ASSURANCE_RUN_NOT_ACTIVE")
+        _assert_no_candidate_residue_intent(ledger)
         publication = ledger.get("publication")
         if not isinstance(publication, dict) or not publication.get("required"):
             raise AssuranceError("run has no serial prerequisites", code="PUBLICATION_NOT_REQUIRED")
@@ -6306,6 +7882,7 @@ def prepare_reviewer(
         raise AssuranceError("Reviewer identity is required", code="REVIEWER_IDENTITY_REQUIRED")
     with locked(repo):
         ledger = read_ledger(repo, run_id)
+        _assert_no_candidate_residue_intent(ledger)
         execution = ledger["facets"]["execution"]
         existing = execution["agents"].get("reviewer")
         if existing == agent:
@@ -6337,6 +7914,7 @@ def scan_doc_references(repo_value: str | Path, run_value: str) -> dict[str, Any
         ledger = read_ledger(repo, run_id)
         if ledger["phase"] != "active":
             raise AssuranceError("run is not active", code="ASSURANCE_RUN_NOT_ACTIVE")
+        _assert_no_candidate_residue_intent(ledger)
         if ledger.get("doc_reference_contract_version") != DOC_REFERENCE_CONTRACT_VERSION:
             raise AssuranceError(
                 "documentation reference scan is not enabled for this ledger",
@@ -6414,6 +7992,7 @@ def record_problems(
     run_id = ensure_run_id(run_value)
     with locked(repo):
         ledger = read_ledger(repo, run_id)
+        _assert_no_candidate_residue_intent(ledger)
         expected = None
         if role in {"builder", "tester", "reviewer"}:
             expected = ledger["facets"]["execution"]["agents"].get(role)
@@ -7209,6 +8788,7 @@ def prepare_tester(
         ledger = read_ledger(repo, run_id)
         if ledger["phase"] != "active":
             raise AssuranceError("run is not active", code="ASSURANCE_RUN_NOT_ACTIVE")
+        _assert_no_candidate_residue_intent(ledger)
         execution = ledger["facets"]["execution"]
         agent = {"agent_id": agent_id.strip(), "thread_id": thread_id.strip()}
         existing_agent = execution["agents"].get("tester")
@@ -7369,6 +8949,7 @@ def integrate_tester(repo_value: str | Path, run_value: str) -> dict[str, Any]:
         ledger = read_ledger(repo, run_id)
         if ledger["phase"] != "active":
             raise AssuranceError("run is not active", code="ASSURANCE_RUN_NOT_ACTIVE")
+        _assert_no_candidate_residue_intent(ledger)
         execution = ledger["facets"]["execution"]
         source = execution.get("tester_source")
         if not isinstance(source, dict):
@@ -7570,6 +9151,7 @@ def record_evidence(
         ledger = read_ledger(repo, run_id)
         if ledger["phase"] != "active":
             raise AssuranceError("run is not active", code="ASSURANCE_RUN_NOT_ACTIVE")
+        _assert_no_candidate_residue_intent(ledger)
         candidate = ledger["facets"]["execution"].get("candidate_head")
         if report.get("candidate_head") != candidate:
             raise AssuranceError(
@@ -8155,6 +9737,7 @@ def prove_tests(
         ledger = read_ledger(repo, run_id)
         if ledger["phase"] != "active":
             raise AssuranceError("run is not active", code="ASSURANCE_RUN_NOT_ACTIVE")
+        _assert_no_candidate_residue_intent(ledger)
         if "proof" not in ledger["facets"]["assurance"]["required"]:
             raise AssuranceError("test proof is not required", code="TEST_PROOF_NOT_REQUIRED")
         expected_agent = ledger["facets"]["execution"]["agents"].get("tester")
@@ -8921,6 +10504,12 @@ def prepare_deployment(repo_value: str | Path, run_value: str) -> dict[str, Any]
         ledger = read_ledger(repo, run_id)
         if ledger["phase"] != "active":
             raise AssuranceError("run is not active", code="ASSURANCE_RUN_NOT_ACTIVE")
+        if ledger.get("candidate_residue_intent") is not None:
+            raise AssuranceError(
+                "candidate residue recovery must finish before deployment",
+                code="CANDIDATE_RESIDUE_TRANSACTION_PENDING",
+                status="NEEDS_USER",
+            )
         deployment = ledger["facets"]["execution"].get("deployment")
         if not isinstance(deployment, dict):
             raise AssuranceError("run has no deployment contract", code="DEPLOYMENT_NOT_REQUIRED")
@@ -9210,6 +10799,7 @@ def stage_blackbox(repo_value: str | Path, run_value: str, report_value: Any) ->
     run_id = ensure_run_id(run_value)
     with locked(repo):
         ledger = read_ledger(repo, run_id)
+        _assert_no_candidate_residue_intent(ledger)
         transaction = ledger.get("deployment_transaction")
         if not isinstance(transaction, dict) or transaction["state"] != "deployed":
             raise AssuranceError("deployment is not active", code="DEPLOYMENT_NOT_ACTIVE")
@@ -9238,6 +10828,11 @@ def restore_deployment(repo_value: str | Path, run_value: str) -> dict[str, Any]
     run_id = ensure_run_id(run_value)
     with locked(repo):
         ledger = read_ledger(repo, run_id)
+        if (
+            ledger.get("candidate_residue_intent") is not None
+            and not _candidate_residue_safety_restore_only(ledger)
+        ):
+            _assert_no_candidate_residue_intent(ledger)
         deployment = ledger["facets"]["execution"].get("deployment")
         transaction = ledger.get("deployment_transaction")
         if not isinstance(deployment, dict) or not isinstance(transaction, dict):
@@ -9411,6 +11006,7 @@ def complete_supersede_transfer(repo_value: str | Path, run_value: str) -> dict[
     run_id = ensure_run_id(run_value)
     with locked(repo):
         target = read_ledger(repo, run_id)
+        _assert_no_candidate_residue_intent(target)
         intent = target.get("supersede_intent")
         if not isinstance(intent, dict) or intent.get("state") != "received":
             raise AssuranceError("supersede transfer receipt is missing", code="SUPERSEDE_RECEIPT_MISSING")
@@ -9443,6 +11039,7 @@ def require_deployment_restore(
     run_id = ensure_run_id(run_value)
     with locked(repo):
         ledger = read_ledger(repo, run_id)
+        _assert_no_candidate_residue_intent(ledger)
         transaction = ledger.get("deployment_transaction")
         if not isinstance(transaction, dict) or transaction.get("state") != "deployed":
             raise AssuranceError("deployment is not active", code="DEPLOYMENT_NOT_ACTIVE")
@@ -9459,6 +11056,7 @@ def complete_staged_blackbox(repo_value: str | Path, run_value: str) -> dict[str
     run_id = ensure_run_id(run_value)
     with locked(repo):
         ledger = read_ledger(repo, run_id)
+        _assert_no_candidate_residue_intent(ledger)
         pending = copy.deepcopy(ledger.get("pending_blackbox"))
         transaction = copy.deepcopy(ledger.get("deployment_transaction"))
         if not isinstance(pending, dict) or not isinstance(transaction, dict):
@@ -9712,6 +11310,7 @@ def verify_preflight(
         ledger = read_ledger(repo, run_id)
         if ledger["phase"] != "active":
             raise AssuranceError("run is not active", code="ASSURANCE_RUN_NOT_ACTIVE")
+        _assert_no_candidate_residue_intent(ledger)
         candidate = ledger["facets"]["execution"].get("candidate_head")
         if not candidate or not commit_exists(repo, candidate):
             raise AssuranceError("candidate head is unavailable", code="CANDIDATE_HEAD_INVALID")
@@ -9777,6 +11376,7 @@ def verify_machine(
         ledger = read_ledger(repo, run_id)
         if ledger["phase"] != "active":
             raise AssuranceError("run is not active", code="ASSURANCE_RUN_NOT_ACTIVE")
+        _assert_no_candidate_residue_intent(ledger)
         candidate = ledger["facets"]["execution"].get("candidate_head")
         if not candidate or not commit_exists(repo, candidate):
             raise AssuranceError("candidate head is unavailable", code="CANDIDATE_HEAD_INVALID")
@@ -10645,6 +12245,7 @@ def recompose_candidate(
         ledger = read_ledger(repo, run_id)
         if ledger["phase"] != "active":
             raise AssuranceError("run is not active", code="ASSURANCE_RUN_NOT_ACTIVE")
+        _assert_no_candidate_residue_intent(ledger)
         intent = ledger.get("recomposition_intent")
         if not isinstance(intent, dict):
             live_target = branch_head(repo, ledger["target_branch"])
@@ -10738,6 +12339,7 @@ def finalize(repo_value: str | Path, run_value: str, message: str) -> dict[str, 
     run_id = ensure_run_id(run_value)
     with locked(repo):
         ledger = read_ledger(repo, run_id)
+        _assert_no_candidate_residue_intent(ledger)
         if ledger["phase"] == "finalized":
             return status(repo, run_id)
         if ledger["phase"] != "active":
@@ -10932,6 +12534,7 @@ def recover_finalize(repo_value: str | Path, run_value: str) -> dict[str, Any]:
     run_id = ensure_run_id(run_value)
     with locked(repo):
         ledger = read_ledger(repo, run_id)
+        _assert_no_candidate_residue_intent(ledger)
         if ledger["phase"] == "finalized":
             return status(repo, run_id)
         if ledger["phase"] != "finalizing" or not isinstance(ledger.get("finalize_intent"), dict):
@@ -11055,6 +12658,7 @@ def abandon(repo_value: str | Path, run_value: str, reason: str) -> dict[str, An
     run_id = ensure_run_id(run_value)
     with locked(repo):
         ledger = read_ledger(repo, run_id)
+        _assert_no_candidate_residue_intent(ledger)
         if ledger["phase"] == "finalized":
             raise AssuranceError("finalized run cannot be abandoned", code="ASSURANCE_RUN_FINALIZED")
         if ledger["phase"] == "failed":
@@ -11090,6 +12694,12 @@ def cleanup(repo_value: str | Path, run_value: str) -> dict[str, Any]:
             raise AssuranceError(
                 "only terminal assurance runs can be cleaned",
                 code="ASSURANCE_CLEANUP_NOT_TERMINAL",
+                status="NEEDS_USER",
+            )
+        if ledger.get("candidate_residue_intent") is not None:
+            raise AssuranceError(
+                "candidate residue recovery must finish before terminal cleanup",
+                code="ASSURANCE_CLEANUP_RESIDUE_INTENT_PENDING",
                 status="NEEDS_USER",
             )
         if any(

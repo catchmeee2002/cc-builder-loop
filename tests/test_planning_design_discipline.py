@@ -776,6 +776,58 @@ class PlanningDesignDisciplineTest(unittest.TestCase):
             "the frozen runtime support snapshot must prevent same-run writer replacement and backfill",
         )
 
+    def test_planner_freezes_rejected_checkpoint_and_exact_residue_facts(self) -> None:
+        planner = read(PLANNER_PATH)
+
+        self.assertTrue(
+            has_terms(
+                planner,
+                ("runtime-preparation-required",),
+                ("completed",),
+                ("未 consumed", "未consumed"),
+                ("candidate",),
+                ("authority",),
+                ("target",),
+                ("停止",),
+            ),
+            "Planner must bind all persisted rejected-checkpoint eligibility facts",
+        )
+        self.assertTrue(
+            has_terms(
+                planner,
+                ("resolve-candidate-residue",),
+                ("独立",),
+                ("exact", "精确"),
+                ("sha-256",),
+                ("普通文件",),
+                ("glob", "目录"),
+                ("不得",),
+            ),
+            "Planner must keep residue deletion outside successor admission and exact-bound",
+        )
+        self.assertTrue(
+            has_terms(
+                planner,
+                ("handled_elsewhere",),
+                ("source",),
+                ("terminal",),
+                ("cleanup",),
+            ),
+            "terminal source cleanup must be backed by target disposition facts",
+        )
+        self.assertTrue(
+            has_terms(
+                planner,
+                ("carryover",),
+                ("builder_files",),
+                ("tester_files",),
+                ("空",),
+                ("checkpoint",),
+                ("publication",),
+            ),
+            "successor publication classification must not project source outputs",
+        )
+
     def test_v4_supersession_guidance_is_active_first_and_version_scoped(self) -> None:
         self.assertTrue(
             affirmative_abandon_before_start(

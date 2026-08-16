@@ -56,6 +56,9 @@ python3 experiments/assurance-v4-replay/runner.py
   digest 和唯一完整 replacement contract，再以相同 binding 调用 `update-facet` 或 `revise-mission`，
   原子关闭 problem 并 resume 同一 active run；普通执行信息变化不得先 abandon 或自动升级为新 run。确需 successor 时，source 必须在新
   contract 验证和 `start` 持久化 target 前保持 active，由 `start` 创建 target 后封为 superseded。
+  Builder checkpoint 因受保护 runtime preparation 被拒时，successor 只能绑定 ledger 唯一 open problem
+  记录的 clean candidate，并同时验证未消费 dispatch artifact、冻结 authority、target 与 problem facts；
+  不 resume source、不搜索 orphan、不手工改 ledger。
   `abandon` 只表示用户取消且没有 successor；abandoned、superseded、failed、finalized source 不恢复 continuity。
   legacy v2/v3 保持既有 abandoned-source revision 契约。
 - 候选变化后按冻结 scope digest 处理 machine/blackbox evidence；未声明 scope 时全 tree 失效。
@@ -90,6 +93,10 @@ python3 experiments/assurance-v4-replay/runner.py
   lifecycle 处理，不用无条件 abandon 覆盖 Assurance v4。
 - target drift 与 publication refresh 共用持久化 recomposition intent；Builder/Tester 冲突回原 thread
   的隔离 staging worktree，target 再推进则从最新 HEAD 重启。未知 residue、判据/授权变化才停止。
+- candidate 仅有已确认 ignored 普通文件 residue 时，只能用 `resolve-candidate-residue` 绑定完整
+  path/SHA-256 manifest、当前 candidate 和 open `builder_loop` problem；先写 intent 再逐文件删除，
+  不按文件名特判、不清理未知内容。superseded source 只允许在 successor 已把该 problem disposition
+  为 `handled_elsewhere` 后做同一 terminal cleanup，不恢复角色或 evidence。
 - machine/preflight failure 先持久化结构化结果与 signature，再续接原 Tester thread 只读归因；不得把
   Agent 自述或重跑日志直接变成 evidence。
 - open problem owner 必须穷举：builder/tester 回原角色，plan/external_platform/builder_loop/

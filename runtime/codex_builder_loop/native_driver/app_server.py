@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import shutil
+import stat
 import subprocess
 import tempfile
 from dataclasses import dataclass
@@ -47,6 +50,28 @@ REQUIRED_PROTOCOL_TOKENS = (
     '"outputSchema"',
     '"clientUserMessageId"',
 )
+
+
+def _trusted_cache_parent() -> Path:
+    candidates = [Path("/var/tmp"), Path("/tmp")]
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve(strict=True)
+            info = resolved.stat()
+            if (
+                resolved == candidate
+                and stat.S_ISDIR(info.st_mode)
+                and info.st_uid == 0
+                and info.st_mode & stat.S_ISVTX
+                and os.access(resolved, os.W_OK | os.X_OK)
+            ):
+                return resolved
+        except OSError:
+            continue
+    raise AppServerError(
+        "no trusted external temporary directory is available",
+        code="NATIVE_DRIVER_CACHE_ROOT_UNAVAILABLE",
+    )
 
 
 def probe_app_server(codex_bin: str = "codex") -> AppServerCapability:
@@ -98,6 +123,7 @@ class AppServerTransport:
         self.process: subprocess.Popen[str] | None = None
         self._next_id = 1
         self._deferred: list[dict[str, Any]] = []
+        self._python_cache_root: Path | None = None
 
     def __enter__(self) -> "AppServerTransport":
         self.start()
@@ -109,45 +135,69 @@ class AppServerTransport:
     def start(self) -> None:
         if self.process is not None:
             return
-        self.process = subprocess.Popen(
-            [self.codex_bin, "app-server", "--stdio"],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            text=True,
-            bufsize=1,
+        cache_parent = _trusted_cache_parent()
+        cache_root = Path(
+            tempfile.mkdtemp(
+                prefix="codex-native-driver-pycache-",
+                dir=cache_parent,
+            )
         )
-        self._request(
-            "initialize",
-            {
-                "clientInfo": {
-                    "name": "cc_builder_loop_native_driver",
-                    "title": "CC Builder Loop Native Driver",
-                    "version": "1",
+        environment = os.environ.copy()
+        environment["PYTHONPYCACHEPREFIX"] = str(cache_root)
+        environment["TMPDIR"] = str(cache_parent)
+        environment.pop("TEMP", None)
+        environment.pop("TMP", None)
+        self._python_cache_root = cache_root
+        try:
+            self.process = subprocess.Popen(
+                [self.codex_bin, "app-server", "--stdio"],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                bufsize=1,
+                env=environment,
+            )
+            self._request(
+                "initialize",
+                {
+                    "clientInfo": {
+                        "name": "cc_builder_loop_native_driver",
+                        "title": "CC Builder Loop Native Driver",
+                        "version": "1",
+                    },
+                    "capabilities": {"experimentalApi": False},
                 },
-                "capabilities": {"experimentalApi": False},
-            },
-        )
-        self._send({"method": "initialized", "params": {}})
+            )
+            self._send({"method": "initialized", "params": {}})
+        except Exception:
+            self.close()
+            raise
 
     def close(self) -> None:
         process = self.process
         self.process = None
-        if process is None:
-            return
-        if process.stdin:
-            process.stdin.close()
         try:
-            process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            process.terminate()
+            if process is None:
+                return
+            if process.stdin:
+                process.stdin.close()
             try:
                 process.wait(timeout=5)
             except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait(timeout=5)
-        if process.stdout:
-            process.stdout.close()
+                process.terminate()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=5)
+            if process.stdout:
+                process.stdout.close()
+        finally:
+            cache_root = self._python_cache_root
+            self._python_cache_root = None
+            if cache_root is not None:
+                shutil.rmtree(cache_root, ignore_errors=True)
 
     def start_thread(
         self,

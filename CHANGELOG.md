@@ -54,6 +54,24 @@
   才解决绑定问题。首 turn 前 no-rollout 可在同一事务内续换 bootstrap identity，第三次停止到架构审查，
   candidate/target/source/问题 snapshot 或竞争事务漂移均零副作用拒绝（#187、#189）。
 
+- Assurance v4 新增显式 `resolve-candidate-residue` 事务：请求绑定 current candidate、open problem
+  snapshot 及完整 ignored regular-file path/SHA-256 manifest，Core 在首个 unlink 前持久化 intent，支持
+  identical replay，并拒绝普通 untracked、symlink、额外/变化内容和并发事务。active run 只关闭对应
+  `builder_loop` problem；已原子 supersede 且 disposition 为 `handled_elsewhere` 的 source 也可仅为 terminal
+  cleanup 执行，不恢复角色、候选或 evidence。Native App Server 子进程同时强制使用 worktree 外的私有
+  `PYTHONPYCACHEPREFIX` 并在退出后删除 cache tree，使显式 `py_compile` 保持 Python 语义而不污染角色
+  worktree。
+
+- Successor start 现在把 source path/blob 只保存在 immutable carryover，本 revision 的
+  `builder_files/tester_files` 从空集合开始；Authority 新增的 public prerequisite 可等待新 Builder 实际
+  创建和 checkpoint 后再发布，start 不再把历史 Builder manifest 投影成本 revision 的角色产出。
+
+- Assurance v4 `start` 允许 revision contract 用既有 `mission.supersedes.candidate_head` 精确绑定一个被
+  runtime-preparation Builder checkpoint 拒绝的 clean candidate。Core 只消费 source ledger 中唯一 open
+  problem、completed 未消费 dispatch artifact、冻结 runtime support/authority 与未漂移 Git/target 事实，
+  target ledger 落盘后才封存 source；普通 checkpointed successor 路径保持不变，且不新增 recovery command
+  或旁路 candidate 状态。
+
 - Native Driver 将三次 transport retry 耗尽持久化为不可改写的 `exhausted` dispatch generation。用户
   显式提供 `native-driver resume --reason` 后，Core 仅在 runtime identity、role/thread、action 与 prompt
   digest 均未漂移时建立同线程的新 generation；旧 attempt/turn/failure 保留，runtime 升级必须改走

@@ -128,6 +128,12 @@ active；`start` 从精确 candidate Git snapshot 建 target worktree，target �
 superseded。新 run 不继承 Tester/Reviewer identity 或旧 evidence。环境转移按 source intent、target receipt、
 source seal 三步持久化；只有当前制品、目标、deployment contract 和 probe 全部一致才转移 lease，否则先
 恢复 source 环境再部署新制品。同一目标的唯一 owner 由 Core 在仓库锁内从 ledger 派生，不新增旁路 registry。
+`mission.supersedes.candidate_head` 通常绑定 source execution facet 已 checkpoint 的 HEAD。受保护 runtime
+preparation 在 Builder checkpoint fail closed 时，Core 还可接受该 source ledger 唯一 open
+`runtime-preparation-required` 问题记录的 HEAD，但只在 completed 且未 consumed 的 Builder dispatch artifact、
+problem producer/details、原 candidate branch/worktree、Git ancestry、target HEAD 与冻结 authority 全部仍精确
+一致时成立。Core 用冻结 runtime support 重放原拒绝判定，拒绝 transcript、orphan 搜索或手工 candidate
+adoption；任何不一致都发生在 ref、worktree、target ledger 或 source supersede intent mutation 之前。
 若 source 已 abandoned、superseded、failed 或 finalized，Core 在 target ledger、ref、worktree 或 supersede intent
 mutation 前返回 `SUPERSEDED_RUN_NOT_ACTIVE`，source ledger 保持不变；terminal run 不重新激活或 rescue，
 其 continuity 不可恢复。`abandon` 只表达用户取消且没有 successor。该约束只修正 Assurance v4，
@@ -145,6 +151,19 @@ ledger 或累计缓存。每个新 transition 绑定 predecessor `pressure_diges
 problem，只保留内容和 owner；旧 producer、Tester/Reviewer identity、test source 与全部 evidence 均不复制。
 因此满足“每个事实只有一个家”和“独立判据重新绑定真实输入”，同时把三次同类恢复压力在 mutation 前
 落实为架构复审门禁。
+
+Successor ledger 将 source 变更只写入 immutable `execution.carryover`；新 revision 的
+`builder_files/tester_files` 从空集合开始，public prerequisite 也只有在新 Builder checkpoint 后才成为
+本 revision 产出并进入隔离 publication。这样 source blob、当前角色 ownership 与 serial publication
+各有唯一事实源，不会在 start 时把历史文件冒充新角色输出。
+
+若 active candidate 的唯一 residue 是 ledger problem 对应的 ignored 普通文件，Core 提供独立
+`resolve-candidate-residue` 事务。schema v1 请求绑定 run phase、candidate HEAD、规范 open-problem snapshot
+和完整 exact path/SHA-256 manifest；Core 先验证 candidate/target refs、worktree identity、owner、文件类型、
+ignored 分类和无其他事务，再持久化 immutable intent，之后才逐文件 unlink。相同请求可从任意删除边界
+继续，变化或替换的剩余内容则保留 intent 与现场。成功只关闭该 problem，保持 facet、role、Tester source
+和既有 evidence 不变，因此 blackbox 若原本缺失或失效仍必须真实重跑。已 supersede source 仅在 target
+ledger 把该 key disposition 为 `handled_elsewhere` 时允许同一 cleanup，source 保持 terminal。
 
 结构化 turn failure 与 raw App Server stdio disconnect 先在唯一 transport classifier 中归一；只有分类为
 可恢复且精确匹配 ledger 当前 role thread、action 和 dispatch 的事故才能进入 retry。可恢复 transport
@@ -196,6 +215,11 @@ preparation ledger 持久化 intent，business ledger 落盘后再提交 consume
 被修改 gate，并保留 manifest 要求的独立 machine/blackbox/Reviewer。candidate 新增路径或改写 manifest
 不能改变当前分类。交付 preparation 后，后续 business run 通过既有单次 continuation 在新 runtime 上
 重新取得角色和 evidence；同 run writer 热切换、旧 observation backfill 和旁路 evidence 均不存在。
+如果 checkpoint 已把 exact rejection 和 clean committed Builder candidate 写入 source ledger，而修正
+preparation contract 必须由更新后的 Core 才能启动，临时 bootstrap runtime 只执行上述 active-to-superseded
+事务：successor 从 rejected HEAD 建立完整 path/blob carryover，source 在 target ledger 落盘前保持 active，
+且 source role、Tester source、dispatch 与 evidence 一律不继承。该通道不增加 recovery command 或第二份
+candidate 状态；后续仍由 finalized preparation 的单次 continuation 回到普通 business flow。
 
 宿主 executable 准入同样在最早可知阶段派生，但不进入 contract digest 或 ledger。`validate --repo` 与
 `start` 从同一冻结 contract 枚举 machine、blackbox 和 deployment command：裸名称只在固定 trusted
@@ -455,7 +479,10 @@ worktree、绑定新 App Server identity、切换 source 并清理未漂移的�
 
 稳定 Python 入口在导入 runtime package 前设置当前解释器及子进程的 no-bytecode 条件，普通 CLI
 调用因此不会向调用方 worktree 写入 runtime `__pycache__`。显式 `py_compile` 与绕过稳定入口的
-任意 import 保持 Python 原语义；runtime 不以清理 residue 冒充预防。
+任意 import 保持 Python 原语义。Native App Server transport 额外为其 child process 覆盖
+`PYTHONPYCACHEPREFIX` 为 worktree 外私有临时目录，并在 child 退出后删除，因此 role turn 内显式
+`py_compile` 仍编译但不会在 candidate 留下 ignored bytecode；其他 residue 不按名称自动清理，仍走上述
+显式 generic transaction。
 
 Hook 使用 Codex 提供的 `session_id` 找到唯一 active run。`start` 会在当前用户的私有 runtime
 目录创建 locator，保存 repo/run 绑定、是否仍接收事件，以及首次 Tester Start 的冻结 baseline
