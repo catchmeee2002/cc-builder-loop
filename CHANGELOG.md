@@ -30,8 +30,10 @@
 
 - Assurance proof 的绝对 `uv` launcher 在固定 frozen/offline/no-env-file 前缀后允许 virtual workspace
   显式选择唯一 `--all-packages`。runtime 为每个 candidate、baseline 与 mutation 执行创建并清理
-  proof-worktree 外的临时 `UV_PROJECT_ENVIRONMENT`，既不借用 candidate `.venv`，也不放宽 ignored
-  residue；workspace member 依赖继续由冻结 `pyproject.toml`、`uv.lock` 与 uv identity 绑定（#195）。
+  proof-worktree 外的临时 `UV_PROJECT_ENVIRONMENT` 与 tracked worktree snapshot，`UV_PROJECT` 只指向
+  runtime-owned snapshot，使 editable-install 的 `egg-info`/build metadata 不污染被审 worktree；两者
+  执行后统一删除，既不借用 candidate `.venv`，也不放宽 ignored residue。workspace member 依赖继续由
+  冻结 `pyproject.toml`、`uv.lock` 与 uv identity 绑定（#195）。
 
 - 新增轻量 `dev-worktree` 生命周期：Codex-native 本仓开发统一进入父目录单一托管根，create/finish
   副作用由 Git common-dir manifest 与精确 intent 绑定；status/doctor 只读分类 orphan、missing、drift、

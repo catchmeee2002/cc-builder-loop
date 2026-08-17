@@ -635,8 +635,10 @@ env/PATH/PYTHONPATH 字段、命令分发器、内联 shell/解释器控制流�
 argv 必须精确以 `run --frozen --offline --no-env-file` 开头；virtual workspace 可再选择唯一
 `--all-packages`，随后必须直接执行 pytest 或 `python -m pytest/unittest`。runtime 同时绑定 uv SHA-256、
 proof HEAD 中的普通 `pyproject.toml` 与 `uv.lock`，并为每个 candidate/baseline/mutation 执行在 proof
-worktree 外创建独立临时 `UV_PROJECT_ENVIRONMENT`，结束后删除；不借用 candidate `.venv`，也不把 uv
-物化产物放宽为允许 residue。Tester source 集成前以语法感知检查拒绝嵌套 runner 和 proof channel
+worktree 外创建独立临时 `UV_PROJECT_ENVIRONMENT` 与 tracked worktree snapshot；`UV_PROJECT` 只指向该
+runtime-owned snapshot，使 editable-install 元数据和构建目录不能写入被审 proof worktree，执行后两者
+一并删除。不借用 candidate `.venv`，也不把任何 uv 物化产物放宽为允许 residue。Tester source 集成前
+以语法感知检查拒绝嵌套 runner 和 proof channel
 移除。Core 仍只接收
 唯一结构化 pytest/unittest 事件；导入、收集、配置、启动、超时、零测试或未映射失败都不是有效反例。
 proof 子进程不继承调用方 PATH，而使用 runtime Python 所在目录

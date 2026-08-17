@@ -9783,6 +9783,7 @@ def classify_text_proof_test_result(
 PROOF_FINAL_FD_ENV = "CODEX_BUILDER_PROOF_FINAL_FD"
 PROOF_RAW_FD_ENV = "CODEX_BUILDER_PROOF_RAW_FD"
 PROOF_SUPERVISOR_ENV = "CODEX_BUILDER_INTERNAL_PROOF_SUPERVISOR"
+UV_PROJECT_ENV = "UV_PROJECT"
 UV_PROJECT_ENVIRONMENT_ENV = "UV_PROJECT_ENVIRONMENT"
 
 TRUSTED_PROOF_INHERITED_ENV = (
@@ -10196,7 +10197,11 @@ def cmd_internal_proof_supervisor(
         else proof_supervised_child_argv(requested_argv, str(args.framework))
     )
     child_env = trusted_proof_environment()
-    for name in ("PYTHONPYCACHEPREFIX", UV_PROJECT_ENVIRONMENT_ENV):
+    for name in (
+        "PYTHONPYCACHEPREFIX",
+        UV_PROJECT_ENV,
+        UV_PROJECT_ENVIRONMENT_ENV,
+    ):
         if value := os.environ.get(name):
             child_env[name] = value
 
@@ -10564,6 +10569,26 @@ def run_proof_argv(
                     )
                 )
             )
+            project_snapshot = environment_root / "project-snapshot"
+            try:
+                shutil.copytree(
+                    worktree,
+                    project_snapshot,
+                    symlinks=True,
+                    ignore=shutil.ignore_patterns(".git"),
+                )
+            except OSError as exc:
+                raise RuntimeProblem(
+                    "proof uv project snapshot could not be materialized",
+                    result="FAIL",
+                    code="TEST_PROOF_RUNTIME_INVALID",
+                    details={
+                        "project_snapshot": str(project_snapshot),
+                        "worktree": str(worktree_root),
+                    },
+                    exit_code=EXIT_FAIL,
+                ) from exc
+            proof_env[UV_PROJECT_ENV] = str(project_snapshot)
             proof_env[UV_PROJECT_ENVIRONMENT_ENV] = str(
                 environment_root / "project-environment"
             )

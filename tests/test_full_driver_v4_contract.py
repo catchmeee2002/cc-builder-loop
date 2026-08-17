@@ -327,6 +327,7 @@ class FullDriverV4ContractTest(unittest.TestCase):
         execute_child: bool = True,
         invocation_marker: Path | None = None,
         environment_marker: Path | None = None,
+        project_marker: Path | None = None,
     ) -> Path:
         root = self.artifacts / name
         root.mkdir(parents=True, exist_ok=True)
@@ -362,11 +363,22 @@ class FullDriverV4ContractTest(unittest.TestCase):
             "project_environment = os.environ.get('UV_PROJECT_ENVIRONMENT')\n"
             "if not project_environment:\n"
             "    raise SystemExit(94)\n"
+            "project_snapshot = os.environ.get('UV_PROJECT')\n"
+            "if not project_snapshot:\n"
+            "    raise SystemExit(95)\n"
             "pathlib.Path(project_environment).mkdir(parents=True, exist_ok=True)\n"
             "pathlib.Path(project_environment, 'materialized').write_text('ok', encoding='utf-8')\n"
             + (
                 f"open({str(environment_marker)!r}, 'a', encoding='utf-8').write(project_environment + '\\n')\n"
                 if environment_marker is not None
+                else ""
+            )
+            + (
+                "metadata = pathlib.Path(project_snapshot, 'proof-fixture.egg-info')\n"
+                "metadata.mkdir(parents=True, exist_ok=True)\n"
+                "pathlib.Path(metadata, 'PKG-INFO').write_text('generated', encoding='utf-8')\n"
+                f"open({str(project_marker)!r}, 'a', encoding='utf-8').write(project_snapshot + '\\n')\n"
+                if project_marker is not None
                 else ""
             )
             + child,
@@ -1808,11 +1820,14 @@ class FullDriverV4ContractTest(unittest.TestCase):
             proof["details"]["spec"]["groups"][0]["argv"][0], str(launcher)
         )
 
-    def test_uv_all_packages_uses_ephemeral_external_project_environments(self) -> None:
+    def test_uv_all_packages_uses_ephemeral_external_project_materialization(self) -> None:
         run_id = "uv-proof-all-packages"
         environment_marker = self.artifacts / f"{run_id}-environments"
+        project_marker = self.artifacts / f"{run_id}-projects"
         launcher = self.make_uv_launcher(
-            run_id, environment_marker=environment_marker
+            run_id,
+            environment_marker=environment_marker,
+            project_marker=project_marker,
         )
         run_path, tester, action = self.prepare_uv_proof_run(
             run_id,
@@ -1877,6 +1892,18 @@ class FullDriverV4ContractTest(unittest.TestCase):
             self.assertTrue(environment.is_absolute())
             self.assertIn("proof-artifacts", environment.parts)
             self.assertFalse(environment.exists())
+        projects = [
+            Path(line)
+            for line in project_marker.read_text(encoding="utf-8").splitlines()
+            if line
+        ]
+        self.assertEqual(len(projects), 2)
+        self.assertEqual(len(set(projects)), 2)
+        for project in projects:
+            self.assertTrue(project.is_absolute())
+            self.assertIn("proof-artifacts", project.parts)
+            self.assertEqual(project.name, "project-snapshot")
+            self.assertFalse(project.exists())
 
     def test_v4_mutation_proof_rejects_diff_drift_during_test_execution(self) -> None:
         run_id = "v4-mutation-diff-drift"
