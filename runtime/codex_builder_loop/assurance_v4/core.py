@@ -30,10 +30,13 @@ from .models import (
     ContractError,
     assurance_downgrades,
     authority_expands,
+    compact_ineligibility_reasons,
     digest,
     doc_reference_scan_digest_input,
     evidence_dependency,
     facet_digests,
+    recovery_policy,
+    requested_profile,
     acceptance_observation_mode,
     validate_contract,
     validate_new_contract,
@@ -70,7 +73,7 @@ from .store import (
     read_ledger,
     resolve_repo,
     run_dir,
-    save_ledger,
+    save_ledger as _store_save_ledger,
     state_root,
     target_worktree,
 )
@@ -79,6 +82,7 @@ TRUSTED_SYSTEM_PATH = "/usr/local/bin:/usr/bin:/bin"
 TRUSTED_SYSTEM_ROOTS = tuple(Path(item).resolve() for item in TRUSTED_SYSTEM_PATH.split(":"))
 AUTH_UNAVAILABLE_RETRY_BASE_SECONDS = 30
 AUTH_UNAVAILABLE_RETRY_MAX_SECONDS = 120
+NON_SEMANTIC_CONTINUATION_WINDOW = 3
 REVIEWER_COMPACTION_FAILURE_CODES = frozenset(
     {"responseStreamDisconnected", "missingAgentResult"}
 )
@@ -133,6 +137,27 @@ class AssuranceError(RuntimeError):
         self.code = code
         self.status = status
         self.details = dict(details or {})
+
+
+def save_ledger(repo: Path, ledger: dict[str, Any]) -> None:
+    from ..core import runtime_identity_compatibility
+
+    compatibility = runtime_identity_compatibility(ledger["runtime_identity"])
+    safe_previous_terminal = compatibility["state"] == "previous-terminal-only" and (
+        ledger.get("phase") in {"finalized", "failed", "abandoned", "superseded"}
+        or (
+            ledger.get("phase") == "finalizing"
+            and ledger.get("finalize_intent") is not None
+        )
+    )
+    if compatibility["state"] != "current" and not safe_previous_terminal:
+        raise AssuranceError(
+            "runtime identity is not compatible with active ledger mutation",
+            code="RUNTIME_IDENTITY_MUTATION_INCOMPATIBLE",
+            status="NEEDS_USER",
+            details={"runtime_compatibility": compatibility},
+        )
+    _store_save_ledger(repo, ledger)
 
 
 def ensure_run_id(value: str) -> str:
@@ -968,6 +993,8 @@ def validate(contract: Any, repo_value: str | Path | None = None) -> dict[str, A
         "status": "READY",
         "schema_version": SCHEMA_VERSION,
         "digests": facet_digests(value),
+        "profile": requested_profile(value),
+        "recovery_policy": recovery_policy(value),
     }
     if repo_value is not None:
         repo = resolve_repo(repo_value)
@@ -1217,6 +1244,10 @@ def start(
                         target_run=run_id,
                         from_revision=source_mission["revision"],
                         to_revision=contract["mission"]["revision"],
+                        source_lineage=source_lineage,
+                        mission_semantics_digest=digest(
+                            _mission_semantics_value(source_mission)
+                        ),
                     )
                 )
             expected_supersede_intent = {
@@ -1231,6 +1262,7 @@ def start(
                     status="NEEDS_USER",
                 )
             candidate_base = source_candidate
+        cost_source_lineage = _validate_cost_ancestry_start(repo, run_id, contract)
         continuation = contract["execution"].get("continuation")
         preparation_ledger: dict[str, Any] | None = None
         if isinstance(continuation, dict):
@@ -1353,7 +1385,9 @@ def start(
                     )
                 item["blob"] = blob
             execution = copy.deepcopy(contract["execution"])
-            execution["candidate_head"] = candidate_head
+            execution["candidate_head"] = (
+                None if cost_source_lineage is not None else candidate_head
+            )
             execution["dirty_snapshot"] = snapshots
             retired_tester_sources: list[dict[str, Any]] = []
             if source_ledger is not None:
@@ -1442,9 +1476,13 @@ def start(
                 "run_started",
                 {
                     "target_head": target_head,
-                    "candidate_head": candidate_head,
+                    "candidate_head": execution["candidate_head"],
+                    "candidate_worktree_head": candidate_head,
                     "dirty_intake": captured,
                     "runtime_support": copy.deepcopy(runtime_support),
+                    "cost_ancestry": copy.deepcopy(
+                        execution.get("cost_ancestry")
+                    ),
                 },
             )
             save_ledger(repo, ledger)
@@ -3596,13 +3634,13 @@ def _derive_retrospective_snapshot(
                 )
         lineage_facts = _derive_lineage(repo, ledger)
         if (
-            lineage_facts["revision_count"] > 1
-            or lineage_facts["transition_count"] > 0
+            lineage_facts["task_revision_count"] > 1
+            or lineage_facts["task_transition_count"] > 0
             or lineage_facts["health"] != "healthy"
         ):
             severity = (
                 "mandatory"
-                if lineage_facts["revision_count"] >= 3
+                if lineage_facts["task_revision_count"] >= 3
                 or lineage_facts["health"] != "healthy"
                 else "advisory"
             )
@@ -3624,6 +3662,22 @@ def _derive_retrospective_snapshot(
                         ],
                         "transition_category_counts": lineage_facts[
                             "transition_category_counts"
+                        ],
+                        "task_root_run_id": lineage_facts["task_root_run_id"],
+                        "task_revision_count": lineage_facts[
+                            "task_revision_count"
+                        ],
+                        "task_transition_count": lineage_facts[
+                            "task_transition_count"
+                        ],
+                        "task_non_semantic_transition_count": lineage_facts[
+                            "task_non_semantic_transition_count"
+                        ],
+                        "task_transition_category_counts": lineage_facts[
+                            "task_transition_category_counts"
+                        ],
+                        "task_pressure_digest": lineage_facts[
+                            "task_pressure_digest"
                         ],
                         "health": lineage_facts["health"],
                     },
@@ -4382,6 +4436,74 @@ def _timestamp_ms(value: str) -> int:
     return int(parsed.timestamp() * 1000)
 
 
+def _profile_projection(ledger: Mapping[str, Any]) -> dict[str, Any]:
+    requested = requested_profile(ledger["facets"])
+    if requested != "compact":
+        return {"requested": "full", "effective": "full", "escalation_reason": None}
+    evidence_counts: dict[str, int] = {}
+    for event in ledger.get("events", []):
+        if not isinstance(event, Mapping):
+            continue
+        kind = event.get("kind")
+        details = event.get("details")
+        details = details if isinstance(details, Mapping) else {}
+        if kind == "automatic_engineering_correction_applied":
+            reason = "engineering-correction"
+        elif kind in {"facet_updated", "mission_revised"}:
+            reason = "contract-correction"
+        elif kind == "recomposition_started":
+            reason = "recomposition"
+        elif kind in {
+            "tester_replacement_started",
+            "tester_continuity_replaced",
+            "reviewer_replaced",
+        }:
+            reason = "role-replacement"
+        elif kind == "dispatch_renewed":
+            reason = "dispatch-renewal"
+        elif kind == "proof_failure_recorded":
+            reason = "evidence-replay:proof"
+        elif kind == "dispatch_prepared" and details.get("action") in {
+            "builder_fix",
+            "tester_fix",
+            "builder_recompose_fix",
+            "tester_recompose_fix",
+        }:
+            reason = "correction"
+        elif kind in {"machine_verified", "preflight_verified", "evidence_recorded"}:
+            evidence_kind = details.get(
+                "kind",
+                "machine"
+                if kind == "machine_verified"
+                else "preflight"
+                if kind == "preflight_verified"
+                else None,
+            )
+            if isinstance(evidence_kind, str):
+                evidence_counts[evidence_kind] = evidence_counts.get(evidence_kind, 0) + 1
+                if evidence_counts[evidence_kind] > 1:
+                    reason = f"evidence-replay:{evidence_kind}"
+                else:
+                    continue
+            else:
+                continue
+        else:
+            continue
+        return {
+            "requested": "compact",
+            "effective": "full",
+            "escalation_reason": reason,
+        }
+    reasons = compact_ineligibility_reasons(ledger["facets"])
+    if reasons:
+        return {
+            "requested": "compact",
+            "effective": "full",
+            "escalation_reason": f"eligibility-drift:{reasons[0]}",
+        }
+    return {"requested": "compact", "effective": "compact", "escalation_reason": None}
+
+
 def telemetry(ledger: Mapping[str, Any]) -> dict[str, Any]:
     events = [item for item in ledger.get("events", []) if isinstance(item, dict)]
     end_at = ledger["updated_at"]
@@ -4654,13 +4776,28 @@ def telemetry(ledger: Mapping[str, Any]) -> dict[str, Any]:
         if item["name"]
         in {
             "verify_preflight",
+            "tester_author",
+            "tester_fix",
+            "tester_recompose_fix",
             "tester_proof",
+            "tester_proof_diagnose",
+            "tester_machine_diagnose",
             "verify_machine",
             "tester_blackbox",
             "reviewer_preflight",
             "reviewer_final",
         }
     )
+    raw_waiting_ms = max(
+        0,
+        elapsed_ms - (agent_turn_ms + deterministic_gate_ms + recomposition_ms),
+    )
+    waiting_ms = min(raw_waiting_ms, elapsed_ms)
+    remaining_ms = elapsed_ms - waiting_ms
+    bounded_implementation_ms = min(implementation_ms, remaining_ms)
+    remaining_ms -= bounded_implementation_ms
+    bounded_verification_ms = min(verification_ms, remaining_ms)
+    orchestration_ms = remaining_ms - bounded_verification_ms
     warnings: list[str] = []
     if implementation_ms and verification_ms > implementation_ms:
         warnings.append("verification_exceeds_implementation")
@@ -4699,6 +4836,13 @@ def telemetry(ledger: Mapping[str, Any]) -> dict[str, Any]:
     return validate_telemetry(
         {
             "schema_version": 1,
+            "profile": _profile_projection(ledger),
+            "duration_breakdown": {
+                "implementation_ms": bounded_implementation_ms,
+                "verification_ms": bounded_verification_ms,
+                "orchestration_ms": orchestration_ms,
+                "waiting_ms": waiting_ms,
+            },
             "elapsed_ms": elapsed_ms,
             "active_stage": active_stage,
             "stages": stage_values,
@@ -5740,110 +5884,436 @@ def _lineage_ledgers(repo: Path, current: Mapping[str, Any]) -> tuple[list[dict[
     return values, complete
 
 
-def _derive_lineage(repo: Path, current: Mapping[str, Any]) -> dict[str, Any]:
-    run_id = str(current["run_id"])
-    ledgers, complete = _lineage_ledgers(repo, current)
-    transitions: list[dict[str, Any]] = []
-    stage_values: dict[str, dict[str, Any]] = {}
+def _cost_ancestry_consumers(
+    repo: Path, source_run_id: str, *, exclude_run_id: str
+) -> list[str]:
+    consumers: list[str] = []
+    runs_root = state_root(repo) / "runs"
+    if not runs_root.is_dir():
+        return consumers
+    for path in sorted(runs_root.glob("*/ledger.json")):
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        run_id = value.get("run_id")
+        ancestry = value.get("facets", {}).get("execution", {}).get("cost_ancestry")
+        if (
+            isinstance(run_id, str)
+            and run_id != exclude_run_id
+            and isinstance(ancestry, Mapping)
+            and ancestry.get("source_run_id") == source_run_id
+        ):
+            consumers.append(run_id)
+    return consumers
+
+
+def _validate_cost_ancestry_start(
+    repo: Path,
+    run_id: str,
+    contract: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    ancestry = contract["execution"].get("cost_ancestry")
+    if not isinstance(ancestry, Mapping):
+        return None
+    source_run_id = str(ancestry["source_run_id"])
+    if source_run_id == run_id:
+        raise AssuranceError(
+            "cost ancestry cannot point to the new root itself",
+            code="COST_ANCESTRY_CYCLE",
+            status="NEEDS_USER",
+        )
+    source = read_ledger(repo, source_run_id)
+    if source.get("phase") not in {"failed", "abandoned"}:
+        raise AssuranceError(
+            "cost ancestry requires one failed or abandoned source",
+            code="COST_ANCESTRY_SOURCE_PHASE_INVALID",
+            status="NEEDS_USER",
+            details={"source_run_id": source_run_id, "phase": source.get("phase")},
+        )
+    if source.get("target_branch") != contract["authority"]["target_branch"]:
+        raise AssuranceError(
+            "cost ancestry cannot change the target branch",
+            code="COST_ANCESTRY_TARGET_MISMATCH",
+            status="NEEDS_USER",
+        )
+    consumers = _cost_ancestry_consumers(
+        repo, source_run_id, exclude_run_id=run_id
+    )
+    if consumers:
+        raise AssuranceError(
+            "cost ancestry source already has a recovery-root consumer",
+            code="COST_ANCESTRY_FORK",
+            status="NEEDS_USER",
+            details={"source_run_id": source_run_id, "consumers": consumers},
+        )
+    source_lineage = _derive_lineage(repo, source)
+    if not source_lineage["complete"]:
+        raise AssuranceError(
+            "cost ancestry source lineage is incomplete",
+            code="COST_ANCESTRY_SOURCE_INCOMPLETE",
+            status="NEEDS_USER",
+        )
+    if (
+        ancestry.get("source_lineage_digest") != source_lineage["lineage_digest"]
+        or ancestry.get("source_task_pressure_digest")
+        != source_lineage["task_pressure_digest"]
+    ):
+        raise AssuranceError(
+            "cost ancestry does not bind the current source lineage",
+            code="COST_ANCESTRY_BINDING_STALE",
+            status="NEEDS_USER",
+        )
+    if _mission_semantics_value(source["facets"]["mission"]) != _mission_semantics_value(
+        contract["mission"]
+    ):
+        raise AssuranceError(
+            "cost ancestry cannot cross Mission semantics",
+            code="COST_ANCESTRY_SEMANTICS_MISMATCH",
+            status="NEEDS_USER",
+        )
+    if any(
+        item.get("source_run_id") == run_id
+        for item in source_lineage.get("cost_ancestry", [])
+        if isinstance(item, Mapping)
+    ):
+        raise AssuranceError(
+            "cost ancestry contains a cycle",
+            code="COST_ANCESTRY_CYCLE",
+            status="NEEDS_USER",
+        )
+    return source_lineage
+
+
+def _merge_cumulative_telemetry(*values: Mapping[str, Any]) -> dict[str, Any]:
+    stages: dict[str, dict[str, Any]] = {}
     evidence_attempts = {kind: 0 for kind in EVIDENCE_KINDS}
     retry_codes: dict[str, int] = {}
     elapsed_ms = 0
     candidate_changes = 0
+    for value in values:
+        elapsed_ms += int(value.get("elapsed_ms", 0))
+        candidate_changes += int(value.get("candidate_changes", 0))
+        for kind, count in value.get("evidence_attempts", {}).items():
+            evidence_attempts[str(kind)] = evidence_attempts.get(str(kind), 0) + int(count)
+        for code, count in value.get("retries", {}).get("by_failure_code", {}).items():
+            retry_codes[str(code)] = retry_codes.get(str(code), 0) + int(count)
+        for item in value.get("stages", []):
+            if not isinstance(item, Mapping):
+                continue
+            name = str(item["name"])
+            target = stages.setdefault(
+                name,
+                {
+                    "name": name,
+                    "attempts": 0,
+                    "completed_attempts": 0,
+                    "failed_attempts": 0,
+                    "retry_count": 0,
+                    "total_duration_ms": 0,
+                    "last_failure_code": None,
+                },
+            )
+            for field in (
+                "attempts",
+                "completed_attempts",
+                "failed_attempts",
+                "retry_count",
+                "total_duration_ms",
+            ):
+                target[field] += int(item.get(field, 0))
+            if item.get("last_failure_code") is not None:
+                target["last_failure_code"] = item["last_failure_code"]
+    return {
+        "elapsed_ms": elapsed_ms,
+        "stages": [stages[name] for name in sorted(stages)],
+        "candidate_changes": candidate_changes,
+        "evidence_attempts": evidence_attempts,
+        "evidence_replays": sum(max(0, count - 1) for count in evidence_attempts.values()),
+        "retries": {
+            "total": sum(retry_codes.values()),
+            "by_failure_code": dict(sorted(retry_codes.items())),
+        },
+    }
+
+
+def _mission_semantics_value(mission: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        key: copy.deepcopy(mission.get(key))
+        for key in (
+            "delivery_kind",
+            "objective",
+            "behaviors",
+            "interfaces",
+            "acceptance_cases",
+            "trust_boundaries",
+        )
+    }
+
+
+def _derive_lineage(
+    repo: Path,
+    current: Mapping[str, Any],
+    *,
+    _task_seen: set[str] | None = None,
+) -> dict[str, Any]:
+    run_id = str(current["run_id"])
+    ledgers, complete = _lineage_ledgers(repo, current)
+    lineage_run_ids = {str(item["run_id"]) for item in ledgers}
+    task_seen = set(_task_seen or set())
+    if task_seen & lineage_run_ids:
+        raise AssuranceError(
+            "task cost ancestry contains a cycle",
+            code="COST_ANCESTRY_CYCLE",
+            status="NEEDS_USER",
+        )
+    task_seen.update(lineage_run_ids)
+    transitions: list[dict[str, Any]] = []
     disposition_counts = {"included": 0, "handled_elsewhere": 0, "discarded": 0}
     telemetry_by_run: dict[str, dict[str, Any]] = {}
     for ledger in ledgers:
         revision = int(ledger["facets"]["mission"]["revision"])
         recorded = ledger.get("revision_transitions")
-        if revision > 1 and not isinstance(ledger["facets"]["execution"].get("revision_transition"), dict):
+        if revision > 1 and not isinstance(
+            ledger["facets"]["execution"].get("revision_transition"), dict
+        ):
             complete = False
         if recorded is None:
             recorded = []
         transitions.extend(copy.deepcopy(recorded))
-        run_telemetry = telemetry(ledger)
-        telemetry_by_run[str(ledger["run_id"])] = run_telemetry
-        elapsed_ms += run_telemetry["elapsed_ms"]
-        candidate_changes += run_telemetry["candidate_changes"]
-        for kind, count in run_telemetry["evidence_attempts"].items():
-            evidence_attempts[kind] += count
-        for code, count in run_telemetry["retries"]["by_failure_code"].items():
-            retry_codes[code] = retry_codes.get(code, 0) + count
-        for item in run_telemetry["stages"]:
-            target = stage_values.setdefault(
-                item["name"],
-                {
-                    "name": item["name"], "attempts": 0, "completed_attempts": 0,
-                    "failed_attempts": 0, "retry_count": 0, "total_duration_ms": 0,
-                    "last_failure_code": None,
-                },
-            )
-            for field in ("attempts", "completed_attempts", "failed_attempts", "retry_count", "total_duration_ms"):
-                target[field] += item[field]
-            if item["last_failure_code"] is not None:
-                target["last_failure_code"] = item["last_failure_code"]
+        telemetry_by_run[str(ledger["run_id"])] = telemetry(ledger)
         for item in ledger.get("problem_dispositions", []):
             disposition = item.get("disposition")
             if disposition in disposition_counts:
                 disposition_counts[disposition] += 1
-    transitions.sort(key=lambda item: (item["to_revision"], item["source_run_id"], item["target_run_id"]))
+    transitions.sort(
+        key=lambda item: (
+            item["to_revision"],
+            item["source_run_id"],
+            item["target_run_id"],
+        )
+    )
     semantic = sum(1 for item in transitions if item["semantic"])
     categories: dict[str, int] = {}
     for item in transitions:
         categories[item["category"]] = categories.get(item["category"], 0) + 1
     non_semantic = len(transitions) - semantic
-    pressure_value = {
-        "root_run_id": ledgers[0]["run_id"],
-        "current_run_id": run_id,
-        "complete": complete,
-        "non_semantic": non_semantic,
-        "by_category": {key: value for key, value in sorted(categories.items()) if key != "mission_change"},
-    }
-    pressure_digest = digest(pressure_value)
-    lineage_digest = digest(
-        [
+    cumulative = _merge_cumulative_telemetry(*telemetry_by_run.values())
+
+    root = ledgers[0]
+    ancestry_input = root["facets"]["execution"].get("cost_ancestry")
+    source_lineage: dict[str, Any] | None = None
+    cost_ancestry: list[dict[str, Any]] = []
+    if isinstance(ancestry_input, Mapping):
+        source_run_id = str(ancestry_input["source_run_id"])
+        if source_run_id in task_seen:
+            raise AssuranceError(
+                "task cost ancestry contains a cycle",
+                code="COST_ANCESTRY_CYCLE",
+                status="NEEDS_USER",
+            )
+        source = read_ledger(repo, source_run_id)
+        if source.get("phase") not in {"failed", "abandoned"}:
+            raise AssuranceError(
+                "cost ancestry source is no longer an eligible terminal root",
+                code="COST_ANCESTRY_SOURCE_PHASE_INVALID",
+                status="NEEDS_USER",
+                details={"source_run_id": source_run_id, "phase": source.get("phase")},
+            )
+        source_lineage = _derive_lineage(repo, source, _task_seen=task_seen)
+        if (
+            ancestry_input.get("source_lineage_digest")
+            != source_lineage["lineage_digest"]
+            or ancestry_input.get("source_task_pressure_digest")
+            != source_lineage["task_pressure_digest"]
+        ):
+            raise AssuranceError(
+                "cost ancestry binding is stale",
+                code="COST_ANCESTRY_BINDING_STALE",
+                status="NEEDS_USER",
+            )
+        cost_ancestry = [
+            *copy.deepcopy(source_lineage["cost_ancestry"]),
             {
-                "run_id": item["run_id"],
-                "mission_digest": item["digests"]["mission"],
-                "candidate_head": item["facets"]["execution"].get("candidate_head"),
-                "revision_transitions": item.get("revision_transitions"),
-                "problem_dispositions": item.get("problem_dispositions"),
-                "open_problem_snapshot": digest(_problem_snapshot_value(item)),
-                "telemetry": {
-                    key: value
-                    for key, value in telemetry_by_run[str(item["run_id"])].items()
-                    if key not in {"elapsed_ms", "active_stage"}
-                },
-            }
-            for item in ledgers
+                "source_run_id": source_run_id,
+                "target_run_id": str(root["run_id"]),
+                "source_lineage_digest": ancestry_input["source_lineage_digest"],
+                "source_task_pressure_digest": ancestry_input[
+                    "source_task_pressure_digest"
+                ],
+            },
         ]
+
+    source_task_categories = (
+        copy.deepcopy(source_lineage["task_transition_category_counts"])
+        if source_lineage is not None
+        else {}
     )
-    review_required = not complete or non_semantic >= 3 or any(
-        count >= 3 for category, count in categories.items() if category != "mission_change"
+    task_categories = dict(source_task_categories)
+    for category, count in categories.items():
+        task_categories[category] = task_categories.get(category, 0) + count
+    source_task_non_semantic = (
+        int(source_lineage["task_non_semantic_transition_count"])
+        if source_lineage is not None
+        else 0
+    )
+    task_non_semantic = source_task_non_semantic + non_semantic
+    task_transition_count = (
+        int(source_lineage["task_transition_count"])
+        if source_lineage is not None
+        else 0
+    ) + len(transitions)
+    task_revision_count = (
+        int(source_lineage["task_revision_count"])
+        if source_lineage is not None
+        else 0
+    ) + int(current["facets"]["mission"]["revision"])
+    task_cumulative = _merge_cumulative_telemetry(
+        source_lineage["task_cumulative_telemetry"]
+        if source_lineage is not None
+        else {},
+        cumulative,
+    )
+    mission_semantics_digest = digest(
+        _mission_semantics_value(current["facets"]["mission"])
+    )
+    continuation_grant = (
+        copy.deepcopy(source_lineage.get("continuation_grant"))
+        if source_lineage is not None
+        else None
+    )
+    running_non_semantic = source_task_non_semantic
+    for item in transitions:
+        if item["semantic"]:
+            continuation_grant = None
+            continue
+        running_non_semantic += 1
+        if isinstance(continuation_grant, Mapping) and (
+            continuation_grant.get("category") != item["category"]
+            or running_non_semantic
+            > int(continuation_grant.get("authorized_through_count", -1))
+        ):
+            continuation_grant = None
+        recorded_grant = item.get("continuation_grant")
+        if isinstance(recorded_grant, Mapping):
+            continuation_grant = copy.deepcopy(dict(recorded_grant))
+    if isinstance(continuation_grant, Mapping) and (
+        continuation_grant.get("mission_semantics_digest")
+        != mission_semantics_digest
+        or task_non_semantic
+        > int(continuation_grant.get("authorized_through_count", -1))
+    ):
+        continuation_grant = None
+
+    task_root_run_id = (
+        str(source_lineage["task_root_run_id"])
+        if source_lineage is not None
+        else str(root["run_id"])
+    )
+    task_pressure_value = {
+        "task_root_run_id": task_root_run_id,
+        "current_run_id": run_id,
+        "complete": complete and (source_lineage is None or source_lineage["complete"]),
+        "mission_semantics_digest": mission_semantics_digest,
+        "non_semantic": task_non_semantic,
+        "by_category": {
+            key: value
+            for key, value in sorted(task_categories.items())
+            if key != "mission_change"
+        },
+        "cost_ancestry": cost_ancestry,
+        "continuation_grant": continuation_grant,
+    }
+    task_pressure_digest = digest(task_pressure_value)
+    lineage_digest = digest(
+        {
+            "source_lineage_digest": (
+                source_lineage["lineage_digest"] if source_lineage is not None else None
+            ),
+            "cost_ancestry": cost_ancestry,
+            "runs": [
+                {
+                    "run_id": item["run_id"],
+                    "mission_digest": item["digests"]["mission"],
+                    "candidate_head": item["facets"]["execution"].get(
+                        "candidate_head"
+                    ),
+                    "revision_transitions": item.get("revision_transitions"),
+                    "problem_dispositions": item.get("problem_dispositions"),
+                    "open_problem_snapshot": digest(_problem_snapshot_value(item)),
+                    "telemetry": {
+                        key: copy.deepcopy(
+                            telemetry_by_run[str(item["run_id"])].get(key)
+                        )
+                        for key in (
+                            "stages",
+                            "candidate_changes",
+                            "evidence_attempts",
+                            "evidence_replays",
+                            "retries",
+                            "lifecycle",
+                            "profile",
+                        )
+                    },
+                }
+                for item in ledgers
+            ],
+        }
+    )
+    lineage_complete = complete and (
+        source_lineage is None or bool(source_lineage["complete"])
+    )
+    grant_covers_pressure = (
+        isinstance(continuation_grant, Mapping)
+        and continuation_grant.get("mission_semantics_digest")
+        == mission_semantics_digest
+        and task_non_semantic
+        <= int(continuation_grant.get("authorized_through_count", -1))
+    )
+    review_required = not lineage_complete or (
+        (
+            task_non_semantic >= 3
+            or any(
+                count >= 3
+                for category, count in task_categories.items()
+                if category != "mission_change"
+            )
+        )
+        and not grant_covers_pressure
     )
     current_problem_snapshot = _problem_snapshot_value(current)
     value = {
         "schema_version": 1,
-        "root_run_id": ledgers[0]["run_id"],
+        "root_run_id": root["run_id"],
         "current_run_id": run_id,
-        "complete": complete,
-        "health": "incomplete" if not complete else ("review_required" if review_required else "healthy"),
+        "complete": lineage_complete,
+        "health": (
+            "incomplete"
+            if not lineage_complete
+            else "review_required"
+            if review_required
+            else "healthy"
+        ),
         "revision_count": int(current["facets"]["mission"]["revision"]),
         "transitions": transitions,
         "transition_count": len(transitions),
         "non_semantic_transition_count": non_semantic,
         "transition_category_counts": dict(sorted(categories.items())),
-        "cumulative_telemetry": {
-            "elapsed_ms": elapsed_ms,
-            "stages": [stage_values[name] for name in sorted(stage_values)],
-            "candidate_changes": candidate_changes,
-            "evidence_attempts": evidence_attempts,
-            "evidence_replays": sum(max(0, count - 1) for count in evidence_attempts.values()),
-            "retries": {"total": sum(retry_codes.values()), "by_failure_code": dict(sorted(retry_codes.items()))},
-        },
+        "cumulative_telemetry": cumulative,
+        "task_root_run_id": task_root_run_id,
+        "cost_ancestry": cost_ancestry,
+        "task_revision_count": task_revision_count,
+        "task_transition_count": task_transition_count,
+        "task_non_semantic_transition_count": task_non_semantic,
+        "task_transition_category_counts": dict(sorted(task_categories.items())),
+        "task_cumulative_telemetry": task_cumulative,
+        "task_pressure_digest": task_pressure_digest,
+        "continuation_grant": copy.deepcopy(continuation_grant),
         "problem_disposition_counts": disposition_counts,
         "open_problem_snapshot_digest": digest(current_problem_snapshot),
         "open_problem_keys": [item["key"] for item in current_problem_snapshot],
         "lineage_digest": lineage_digest,
-        "pressure_digest": pressure_digest,
+        "pressure_digest": task_pressure_digest,
     }
     return validate_lineage(value)
 
@@ -5854,49 +6324,139 @@ def lineage(repo_value: str | Path, run_value: str) -> dict[str, Any]:
     return _derive_lineage(repo, read_ledger(repo, run_id))
 
 
+def runtime_compatibility(ledger: Mapping[str, Any]) -> dict[str, Any]:
+    from ..core import runtime_identity_compatibility
+
+    return runtime_identity_compatibility(ledger["runtime_identity"])
+
+
 def _validate_revision_transition(
     source_lineage: Mapping[str, Any], transition: Mapping[str, Any]
 ) -> None:
-    if transition.get("predecessor_pressure_digest") != source_lineage["pressure_digest"]:
+    if (
+        transition.get("predecessor_pressure_digest")
+        != source_lineage["task_pressure_digest"]
+    ):
         raise AssuranceError(
-            "revision transition does not bind the current predecessor lineage",
+            "revision transition does not bind the current task pressure",
             code="REVISION_LINEAGE_DIGEST_MISMATCH",
             status="NEEDS_USER",
         )
     category = transition.get("category")
     semantic = category == "mission_change"
-    proposed_non_semantic = int(source_lineage["non_semantic_transition_count"]) + (0 if semantic else 1)
-    proposed_category = int(source_lineage["transition_category_counts"].get(category, 0)) + 1
-    requires_review = (
-        not source_lineage["complete"]
-        or (not semantic and proposed_non_semantic >= 3)
-        or (not semantic and proposed_category >= 3)
-    )
     decision = transition.get("architecture_review")
     valid_decision = (
         isinstance(decision, dict)
         and decision.get("decision") == "continue"
-        and decision.get("pressure_digest") == source_lineage["pressure_digest"]
+        and decision.get("pressure_digest")
+        == source_lineage["task_pressure_digest"]
     )
+    if semantic:
+        if not source_lineage["complete"]:
+            if not valid_decision:
+                raise AssuranceError(
+                    "incomplete revision lineage requires an architecture-review continuation decision",
+                    code="LINEAGE_ARCHITECTURE_REVIEW_REQUIRED",
+                    status="NEEDS_USER",
+                    details={
+                        "pressure_digest": source_lineage[
+                            "task_pressure_digest"
+                        ],
+                        "task_cost_summary": {
+                            "task_root_run_id": source_lineage[
+                                "task_root_run_id"
+                            ],
+                            "task_revision_count": source_lineage[
+                                "task_revision_count"
+                            ],
+                            "task_transition_count": source_lineage[
+                                "task_transition_count"
+                            ],
+                            "task_non_semantic_transition_count": source_lineage[
+                                "task_non_semantic_transition_count"
+                            ],
+                            "task_transition_category_counts": source_lineage[
+                                "task_transition_category_counts"
+                            ],
+                            "task_cumulative_telemetry": source_lineage[
+                                "task_cumulative_telemetry"
+                            ],
+                            "proposed_category": category,
+                            "proposed_non_semantic_count": source_lineage[
+                                "task_non_semantic_transition_count"
+                            ],
+                            "continuation_window": NON_SEMANTIC_CONTINUATION_WINDOW,
+                        },
+                    },
+                )
+            return
+        if decision is not None:
+            raise AssuranceError(
+                "a semantic transition cannot consume a non-semantic continuation grant",
+                code="LINEAGE_CONTINUATION_DECISION_UNEXPECTED",
+                status="NEEDS_USER",
+            )
+        return
+    proposed_non_semantic = int(
+        source_lineage["task_non_semantic_transition_count"]
+    ) + 1
+    proposed_category = int(
+        source_lineage["task_transition_category_counts"].get(category, 0)
+    ) + 1
+    grant = source_lineage.get("continuation_grant")
+    grant_applies = (
+        isinstance(grant, Mapping)
+        and grant.get("category") == category
+        and proposed_non_semantic
+        <= int(grant.get("authorized_through_count", -1))
+    )
+    requires_review = (
+        not source_lineage["complete"]
+        or proposed_non_semantic >= 3
+        or proposed_category >= 3
+    ) and not grant_applies
     if requires_review and not valid_decision:
         raise AssuranceError(
             "revision lineage pressure requires an architecture-review continuation decision",
             code="LINEAGE_ARCHITECTURE_REVIEW_REQUIRED",
             status="NEEDS_USER",
-            details={"pressure_digest": source_lineage["pressure_digest"]},
+            details={
+                "pressure_digest": source_lineage["task_pressure_digest"],
+                "task_cost_summary": {
+                    "task_root_run_id": source_lineage["task_root_run_id"],
+                    "task_revision_count": source_lineage["task_revision_count"],
+                    "task_transition_count": source_lineage[
+                        "task_transition_count"
+                    ],
+                    "task_non_semantic_transition_count": source_lineage[
+                        "task_non_semantic_transition_count"
+                    ],
+                    "task_transition_category_counts": source_lineage[
+                        "task_transition_category_counts"
+                    ],
+                    "task_cumulative_telemetry": source_lineage[
+                        "task_cumulative_telemetry"
+                    ],
+                    "proposed_category": category,
+                    "proposed_non_semantic_count": proposed_non_semantic,
+                    "continuation_window": NON_SEMANTIC_CONTINUATION_WINDOW,
+                },
+            },
         )
-    if isinstance(decision, dict) and not valid_decision:
+    if isinstance(decision, dict) and (not valid_decision or not requires_review):
         raise AssuranceError(
-            "architecture-review decision is stale for the current lineage pressure",
+            "architecture-review decision is stale or not required for the current task pressure",
             code="LINEAGE_ARCHITECTURE_REVIEW_REQUIRED",
             status="NEEDS_USER",
         )
 
 
 def _recorded_transition(
-    transition: Mapping[str, Any], *, source_run: str, target_run: str, from_revision: int, to_revision: int
+    transition: Mapping[str, Any], *, source_run: str, target_run: str,
+    from_revision: int, to_revision: int, source_lineage: Mapping[str, Any],
+    mission_semantics_digest: str,
 ) -> dict[str, Any]:
-    return {
+    value = {
         "source_run_id": source_run,
         "target_run_id": target_run,
         "from_revision": from_revision,
@@ -5906,6 +6466,19 @@ def _recorded_transition(
         "predecessor_pressure_digest": transition["predecessor_pressure_digest"],
         "architecture_review": copy.deepcopy(transition.get("architecture_review")),
     }
+    decision = transition.get("architecture_review")
+    if transition["category"] != "mission_change" and isinstance(decision, Mapping):
+        granted_at = int(source_lineage["task_non_semantic_transition_count"]) + 1
+        value["continuation_grant"] = {
+            "category": transition["category"],
+            "granted_at_count": granted_at,
+            "authorized_through_count": (
+                granted_at + NON_SEMANTIC_CONTINUATION_WINDOW
+            ),
+            "pressure_digest": source_lineage["task_pressure_digest"],
+            "mission_semantics_digest": mission_semantics_digest,
+        }
+    return value
 
 
 def _target_contenders(repo: Path, ledger: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -5947,10 +6520,12 @@ def status(repo_value: str | Path, run_value: str) -> dict[str, Any]:
         if readiness(ledger)["ready"]
         else "ACTIVE"
     )
+    telemetry_value = telemetry(ledger)
     return {
         "status": public_status,
         "run_id": run_id,
         "runtime_identity": copy.deepcopy(ledger["runtime_identity"]),
+        "runtime_compatibility": runtime_compatibility(ledger),
         "runtime_support": copy.deepcopy(ledger["runtime_support"]),
         "phase": ledger["phase"],
         "repo_root": ledger["repo_root"],
@@ -5961,6 +6536,7 @@ def status(repo_value: str | Path, run_value: str) -> dict[str, Any]:
         "candidate_worktree": ledger["candidate_worktree"],
         "digests": ledger["digests"],
         "mission_revision": ledger["facets"]["mission"]["revision"],
+        "recovery_policy": recovery_policy(ledger["facets"]),
         "builder_checkpointed": ledger.get("builder_checkpointed", False),
         "driver_runtime": copy.deepcopy(ledger.get("driver_runtime")),
         "driver_failure": copy.deepcopy(ledger.get("driver_failure")),
@@ -5982,7 +6558,12 @@ def status(repo_value: str | Path, run_value: str) -> dict[str, Any]:
         "environment_lease": copy.deepcopy(ledger.get("environment_lease")),
         "supersede_intent": copy.deepcopy(ledger.get("supersede_intent")),
         "abandon_intent": copy.deepcopy(ledger.get("abandon_intent")),
-        "telemetry": telemetry(ledger),
+        "profile": copy.deepcopy(telemetry_value["profile"]),
+        "expected_stages": copy.deepcopy(telemetry_value["expected_stages"]),
+        "duration_breakdown": copy.deepcopy(
+            telemetry_value["duration_breakdown"]
+        ),
+        "telemetry": telemetry_value,
         "lineage": _derive_lineage(repo, ledger),
         "readiness": readiness(ledger),
         "publication": copy.deepcopy(ledger.get("publication")),
@@ -6976,6 +7557,7 @@ def driver_context(repo_value: str | Path, run_value: str) -> dict[str, Any]:
         "status": "FATAL" if ledger["phase"] == "failed" else "READY",
         "run_id": run_id,
         "runtime_identity": copy.deepcopy(ledger["runtime_identity"]),
+        "runtime_compatibility": runtime_compatibility(ledger),
         "runtime_support": copy.deepcopy(ledger["runtime_support"]),
         "phase": ledger["phase"],
         "repo_root": ledger["repo_root"],
@@ -6983,6 +7565,7 @@ def driver_context(repo_value: str | Path, run_value: str) -> dict[str, Any]:
         "target_contenders": _target_contenders(repo, ledger),
         "candidate_worktree": ledger["candidate_worktree"],
         "facets": copy.deepcopy(ledger["facets"]),
+        "recovery_policy": recovery_policy(ledger["facets"]),
         "evidence": _driver_evidence_view(ledger),
         "publication": copy.deepcopy(ledger.get("publication")),
         "problems": copy.deepcopy(ledger.get("problems", [])),
@@ -7067,6 +7650,98 @@ def _assert_plan_decision_mutation_binding(
                 "problem_key": problem_key,
             },
         )
+
+
+def apply_engineering_correction(
+    repo_value: str | Path,
+    run_value: str,
+    *,
+    action_id: str,
+    driver_runtime_kind: str,
+) -> dict[str, Any]:
+    repo = resolve_repo(repo_value)
+    run_id = ensure_run_id(run_value)
+    with locked(repo):
+        ledger = read_ledger(repo, run_id)
+        if ledger.get("phase") != "active":
+            raise AssuranceError(
+                "engineering correction requires an active run",
+                code="ASSURANCE_RUN_NOT_ACTIVE",
+                status="FAIL",
+            )
+        _assert_no_candidate_residue_intent(ledger)
+        _require_driver_runtime_owner(ledger, driver_runtime_kind)
+        from .driver import engineering_correction_preview, next_action
+
+        current = next_action(repo, run_id, _ledger=ledger)
+        problem = current.get("problem")
+        if (
+            current.get("status") != "CONTINUE"
+            or current.get("action") != "apply_engineering_correction"
+            or current.get("action_id") != action_id
+            or not isinstance(problem, Mapping)
+        ):
+            raise AssuranceError(
+                "engineering correction action is stale",
+                code="DRIVER_ACTION_STALE",
+                status="FAIL",
+            )
+        preview = engineering_correction_preview(repo, ledger, problem)
+        for field in (
+            "problem_key",
+            "base_assurance_digest",
+            "replacement_assurance_digest",
+            "replacement_contract_digest",
+            "invalidated_evidence",
+        ):
+            if current.get(field) != preview.get(field):
+                raise AssuranceError(
+                    "engineering correction preview changed before mutation",
+                    code="ENGINEERING_CORRECTION_STALE",
+                    status="FAIL",
+                    details={"field": field},
+                )
+        matches = [
+            item
+            for item in ledger.get("problems", [])
+            if item.get("status") == "open"
+            and item.get("key") == preview["problem_key"]
+            and item.get("owner") == "plan"
+        ]
+        if len(matches) != 1:
+            raise AssuranceError(
+                "engineering correction problem is stale or ambiguous",
+                code="ENGINEERING_CORRECTION_PROBLEM_MISMATCH",
+                status="FAIL",
+            )
+        old_digest = ledger["digests"]["assurance"]
+        replacement = copy.deepcopy(ledger["facets"])
+        replacement["assurance"] = copy.deepcopy(
+            preview["replacement_assurance"]
+        )
+        replacement = validate_contract(replacement)
+        ledger["facets"] = replacement
+        ledger["digests"] = facet_digests(replacement)
+        problem_record = matches[0]
+        problem_record["status"] = "resolved"
+        problem_record["resolution"] = (
+            "automatic-engineering-correction:"
+            + ledger["digests"]["assurance"]
+        )
+        problem_record["resolved_at"] = now()
+        append_event(
+            ledger,
+            "automatic_engineering_correction_applied",
+            {
+                "key": problem_record["key"],
+                "old_assurance_digest": old_digest,
+                "new_assurance_digest": ledger["digests"]["assurance"],
+                "invalidated_evidence": preview["invalidated_evidence"],
+                "action_id": action_id,
+            },
+        )
+        save_ledger(repo, ledger)
+    return status(repo, run_id)
 
 
 def update_facet(
@@ -7475,6 +8150,8 @@ def revise_mission(
                 target_run=run_id,
                 from_revision=old["revision"],
                 to_revision=mission_value["revision"],
+                source_lineage=source_lineage,
+                mission_semantics_digest=digest(_mission_semantics_value(old)),
             )
         )
         append_event(
@@ -7652,6 +8329,16 @@ def checkpoint_builder(repo_value: str | Path, run_value: str) -> dict[str, Any]
         if branch_head(repo, ledger["candidate_branch"]) != candidate:
             raise AssuranceError("candidate branch and worktree diverged", code="CANDIDATE_IDENTITY_MISMATCH")
         execution = ledger["facets"]["execution"]
+        if (
+            execution.get("candidate_head") is None
+            and isinstance(execution.get("cost_ancestry"), Mapping)
+            and candidate == ledger["target_start_head"]
+        ):
+            raise AssuranceError(
+                "cost ancestry recovery root requires a new committed Builder candidate",
+                code="COST_ANCESTRY_CANDIDATE_MISSING",
+                status="NEEDS_USER",
+            )
         files = changed_files(repo, ledger["target_start_head"], candidate)
         actual_runtime_support, required_independent = (
             _runtime_support_for_changed_paths(repo, ledger, files)

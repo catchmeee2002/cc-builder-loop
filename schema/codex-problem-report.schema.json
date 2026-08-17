@@ -22,6 +22,18 @@
         {
           "if": {"required": ["producer_continuity"]},
           "then": {"properties": {"owner": {"const": "tester"}}}
+        },
+        {
+          "if": {
+            "properties": {
+              "decision_request": {
+                "properties": {"kind": {"const": "engineering_correction"}},
+                "required": ["kind"]
+              }
+            },
+            "required": ["decision_request"]
+          },
+          "then": {"properties": {"owner": {"const": "plan"}}}
         }
       ],
       "properties": {
@@ -50,7 +62,7 @@
       "additionalProperties": false,
       "required": ["kind", "facet", "changes", "question"],
       "properties": {
-        "kind": {"enum": ["facet_change", "product_choice"]},
+        "kind": {"enum": ["facet_change", "product_choice", "engineering_correction"]},
         "facet": {
           "oneOf": [
             {"type": "null"},
@@ -71,7 +83,18 @@
           }
         },
         "question": {"type": "string", "minLength": 1, "pattern": "\\S"}
-      }
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"kind": {"const": "engineering_correction"}}},
+          "then": {
+            "properties": {
+              "facet": {"const": "assurance"},
+              "changes": {"minItems": 1}
+            }
+          }
+        }
+      ]
     }
   }
 }

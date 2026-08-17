@@ -182,7 +182,23 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["adapter", "adapter_commit", "adapter_dirty", "capture_status"],
+      "allOf": [
+        {
+          "if": {"required": ["builder_loop_version"], "properties": {"capture_status": {"const": "captured"}}},
+          "then": {"properties": {"builder_loop_version": {"type": "string"}, "adapter_commit": {"$ref": "#/$defs/commit"}, "adapter_dirty": {"type": "boolean"}}}
+        },
+        {
+          "if": {"required": ["builder_loop_version"], "properties": {"capture_status": {"enum": ["unavailable", "legacy-unavailable"]}}},
+          "then": {"properties": {"builder_loop_version": {"type": "null"}, "adapter_commit": {"type": "null"}, "adapter_dirty": {"type": "null"}}}
+        }
+      ],
       "properties": {
+        "builder_loop_version": {
+          "oneOf": [
+            {"type": "null"},
+            {"type": "string", "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?$"}
+          ]
+        },
         "adapter": {"enum": ["codex", "claude-code", "unknown"]},
         "adapter_commit": {"$ref": "#/$defs/nullableCommit"},
         "adapter_dirty": {

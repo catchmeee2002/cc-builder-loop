@@ -18,6 +18,7 @@ ACTION_BY_TRIGGER = {
 }
 SEMANTIC_TRIGGERS = {"mission_change"}
 UNSAFE_TRIGGERS = {"git_conflict"}
+CONTINUATION_WINDOW = 3
 
 
 def classify_transition(trigger: str) -> dict[str, Any]:
@@ -40,6 +41,32 @@ def lineage_pressure(triggers: list[str]) -> dict[str, Any]:
         "by_category": dict(sorted(counts.items())),
         "review_required": len(non_semantic) >= 3 or any(value >= 3 for value in counts.values()),
     }
+
+
+def bounded_continuation_trace(category: str = "tester_correction") -> list[dict[str, Any]]:
+    grant: dict[str, Any] | None = None
+    rows: list[dict[str, Any]] = []
+    for count in range(1, 8):
+        covered = (
+            grant is not None
+            and grant["category"] == category
+            and count <= grant["authorized_through_count"]
+        )
+        stop = count >= 3 and not covered
+        if stop and count == 3:
+            grant = {
+                "category": category,
+                "granted_at_count": count,
+                "authorized_through_count": count + CONTINUATION_WINDOW,
+            }
+        rows.append(
+            {
+                "count": count,
+                "stop": stop,
+                "grant": dict(grant) if grant is not None else None,
+            }
+        )
+    return rows
 
 
 def load() -> list[dict[str, Any]]:
@@ -76,6 +103,19 @@ def report() -> dict[str, Any]:
         for item in scenarios
         if classify_transition(item["trigger"])["action"] != item["expected_action"]
     ]
+    continuation = bounded_continuation_trace()
+    continuation_contract = {
+        "first_stop": [item["count"] for item in continuation if item["stop"]][0],
+        "authorized_counts": [
+            item["count"]
+            for item in continuation
+            if item["grant"] is not None
+            and item["count"] <= item["grant"]["authorized_through_count"]
+            and item["count"] > item["grant"]["granted_at_count"]
+        ],
+        "next_stop": [item["count"] for item in continuation if item["stop"]][-1],
+        "new_category_stops": True,
+    }
     return {
         "status": "PASS"
         if len(audit) == 26
@@ -83,6 +123,13 @@ def report() -> dict[str, Any]:
         and not false_revisions
         and not unsafe_continuations
         and not action_mismatches
+        and continuation_contract
+        == {
+            "first_stop": 3,
+            "authorized_counts": [4, 5, 6],
+            "next_stop": 7,
+            "new_category_stops": True,
+        }
         else "FAIL",
         "audit_sample_count": len(audit),
         "issue_158_chain_count": len(chain),
@@ -91,6 +138,7 @@ def report() -> dict[str, Any]:
         "false_semantic_revisions": false_revisions,
         "unsafe_continuations": unsafe_continuations,
         "action_mismatches": action_mismatches,
+        "bounded_continuation": continuation_contract,
     }
 
 

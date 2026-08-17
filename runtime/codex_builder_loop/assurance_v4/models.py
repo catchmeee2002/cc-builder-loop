@@ -23,6 +23,7 @@ EVIDENCE_KINDS = (
     "reviewer",
     "doc_review",
 )
+COMPACT_REQUIRED_GATES = {"tester", "proof", "machine", "blackbox", "reviewer"}
 
 
 class ContractError(ValueError):
@@ -382,6 +383,19 @@ def validate_contract(value: Any) -> dict[str, Any]:
             code="MISSION_SUPERSEDES_UNEXPECTED",
         )
     carryover = contract["execution"].get("carryover")
+    cost_ancestry = contract["execution"].get("cost_ancestry")
+    if isinstance(cost_ancestry, dict) and (
+        contract["mission"]["revision"] != 1 or supersedes is not None
+    ):
+        raise ContractError(
+            "execution cost ancestry is valid only on a revision-one root",
+            code="COST_ANCESTRY_ROOT_INVALID",
+        )
+    if isinstance(cost_ancestry, dict) and carryover is not None:
+        raise ContractError(
+            "cost ancestry cannot import candidate carryover",
+            code="COST_ANCESTRY_CONTINUITY_FORBIDDEN",
+        )
     if carryover is not None and supersedes is None:
         raise ContractError(
             "execution carryover requires mission supersedes",
@@ -515,7 +529,121 @@ def validate_new_contract(value: Any) -> dict[str, Any]:
             "new blackbox Assurance v4 contracts require an observation for every acceptance case",
             code="ACCEPTANCE_OBSERVATION_REQUIRED",
         )
+    compact_reasons = compact_ineligibility_reasons(contract)
+    if requested_profile(contract) == "compact":
+        execution = contract["execution"]
+        if (
+            execution.get("version") != 1
+            or execution.get("candidate_head") is not None
+            or execution.get("builder_files") != []
+            or execution.get("tester_files") != []
+            or execution.get("tester_source") is not None
+            or execution.get("agents") != {}
+            or execution.get("driver_enforced") is not True
+        ):
+            compact_reasons.append("root-execution-state")
+        compact_reasons = sorted(set(compact_reasons))
+    if requested_profile(contract) == "compact" and compact_reasons:
+        raise ContractError(
+            "compact Assurance profile is not eligible for this contract",
+            code="COMPACT_PROFILE_INELIGIBLE",
+            details={"reasons": compact_reasons},
+        )
+    ancestry = contract["execution"].get("cost_ancestry")
+    if isinstance(ancestry, Mapping):
+        execution = contract["execution"]
+        initial_facts = {
+            "candidate_head": execution.get("candidate_head"),
+            "builder_files": execution.get("builder_files"),
+            "tester_files": execution.get("tester_files"),
+            "tester_source": execution.get("tester_source"),
+            "carryover": execution.get("carryover"),
+            "agents": execution.get("agents"),
+        }
+        if (
+            contract["mission"]["revision"] != 1
+            or contract["mission"].get("supersedes") is not None
+            or execution.get("candidate_head") is not None
+            or execution.get("builder_files") != []
+            or execution.get("tester_files") != []
+            or execution.get("tester_source") is not None
+            or execution.get("carryover") is not None
+            or execution.get("continuation") is not None
+            or execution.get("agents") != {}
+            or contract["authority"].get("dirty_intake") != []
+        ):
+            raise ContractError(
+                "cost ancestry is valid only on a clean revision-one recovery root",
+                code="COST_ANCESTRY_ROOT_INVALID",
+                details={"execution": initial_facts},
+            )
     return contract
+
+
+def requested_profile(contract: Mapping[str, Any]) -> str:
+    value = contract.get("assurance", {}).get("profile", "full")
+    return str(value)
+
+
+def recovery_policy(contract: Mapping[str, Any]) -> dict[str, Any]:
+    value = contract.get("execution", {}).get("recovery_policy")
+    if isinstance(value, Mapping):
+        return copy.deepcopy(dict(value))
+    return {"schema_version": 1, "mode": "manual"}
+
+
+def compact_ineligibility_reasons(contract: Mapping[str, Any]) -> list[str]:
+    if requested_profile(contract) != "compact":
+        return []
+    mission = contract.get("mission", {})
+    authority = contract.get("authority", {})
+    assurance = contract.get("assurance", {})
+    execution = contract.get("execution", {})
+    reasons: list[str] = []
+    if mission.get("revision") != 1 or mission.get("supersedes") is not None:
+        reasons.append("not-root-revision")
+    if mission.get("delivery_kind", "code") != "code":
+        reasons.append("delivery-kind")
+    behaviors = mission.get("behaviors", [])
+    if not isinstance(behaviors, list) or not 1 <= len(behaviors) <= 3:
+        reasons.append("behavior-count")
+    if set(assurance.get("required", [])) != COMPACT_REQUIRED_GATES:
+        reasons.append("independent-gates")
+    machine_commands = assurance.get("machine_commands", [])
+    if not isinstance(machine_commands, list) or len(machine_commands) != 1:
+        reasons.append("machine-command-count")
+    if assurance.get("preflight_before_proof", False) or any(
+        isinstance(item, Mapping) and item.get("run_before_full_suite", False)
+        for item in machine_commands
+    ):
+        reasons.append("preflight")
+    if assurance.get("reviewer_preflight", False):
+        reasons.append("reviewer-preflight")
+    if authority.get("dirty_intake"):
+        reasons.append("dirty-intake")
+    if not authority.get("tester_write"):
+        reasons.append("tester-ownership")
+    if authority.get("public_prerequisites"):
+        reasons.append("publication")
+    if authority.get("protected_support_paths"):
+        reasons.append("protected-preparation")
+    if authority.get("external_targets") or execution.get("deployment") is not None:
+        reasons.append("external-target")
+    commands = execution.get("commands", [])
+    if not isinstance(commands, list) or len(commands) != 1:
+        reasons.append("blackbox-command-count")
+    if any(
+        execution.get(field) is not None
+        for field in (
+            "continuation",
+            "carryover",
+            "revision_transition",
+            "prior_problem_dispositions",
+            "cost_ancestry",
+        )
+    ):
+        reasons.append("continuity")
+    return sorted(set(reasons))
 
 
 def validate_evidence_report(value: Any) -> dict[str, Any]:
@@ -641,6 +769,7 @@ def validate_ledger(value: Any) -> dict[str, Any]:
     normalized = copy.deepcopy(value)
     if "runtime_identity" not in normalized:
         normalized["runtime_identity"] = {
+            "builder_loop_version": None,
             "adapter": "unknown",
             "adapter_commit": None,
             "adapter_dirty": None,
@@ -648,11 +777,18 @@ def validate_ledger(value: Any) -> dict[str, Any]:
         }
     elif normalized["runtime_identity"] is None:
         normalized["runtime_identity"] = {
+            "builder_loop_version": None,
             "adapter": "unknown",
             "adapter_commit": None,
             "adapter_dirty": None,
             "capture_status": "unavailable",
         }
+    else:
+        identity = normalized["runtime_identity"]
+        if isinstance(identity, dict) and "builder_loop_version" not in identity:
+            identity["builder_loop_version"] = None
+            if identity.get("capture_status") == "captured":
+                identity["capture_status"] = "partial"
     normalized.setdefault("runtime_support", legacy_runtime_support())
     normalized.setdefault("machine_failure", None)
     normalized.setdefault("recomposition_intent", None)
@@ -678,6 +814,24 @@ def validate_ledger(value: Any) -> dict[str, Any]:
             code="ASSURANCE_LEDGER_INVALID",
             details={"path": path},
         ) from exc
+    identity = normalized["runtime_identity"]
+    if identity.get("capture_status") == "captured" and (
+        not isinstance(identity.get("builder_loop_version"), str)
+        or not isinstance(identity.get("adapter_commit"), str)
+        or not isinstance(identity.get("adapter_dirty"), bool)
+    ):
+        raise ContractError(
+            "captured runtime identity must include version, commit, and dirty state",
+            code="RUNTIME_IDENTITY_INCONSISTENT",
+        )
+    if identity.get("capture_status") in {"unavailable", "legacy-unavailable"} and any(
+        identity.get(field) is not None
+        for field in ("builder_loop_version", "adapter_commit", "adapter_dirty")
+    ):
+        raise ContractError(
+            "unavailable runtime identity cannot claim captured version or Git facts",
+            code="RUNTIME_IDENTITY_INCONSISTENT",
+        )
     validate_contract(normalized["facets"])
     if facet_digests(normalized["facets"]) != normalized["digests"]:
         raise ContractError(

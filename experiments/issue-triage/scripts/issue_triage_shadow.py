@@ -30,6 +30,7 @@ import issue_triage_eval as evaluator  # noqa: E402
 meta = evaluator.meta
 SHADOW_SCHEMA_VERSION = 3
 CAPTURE_SCHEMA_VERSION = 1
+CAPTURE_SCHEMA_VERSIONS = (1, 2)
 RESOLUTION_SCHEMA_VERSION = 1
 PROFILES_PATH = EXPERIMENT_DIR / "profiles" / "projects.json"
 DEFAULT_RUN_ROOT = Path.home() / ".codex" / "issue-triage" / "runs"
@@ -52,6 +53,7 @@ PATH_TOKEN = re.compile(r"(?<![A-Za-z0-9_.-])((?:[A-Za-z0-9_.-]+/)+[A-Za-z0-9_.-
 IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_.]{2,100}\Z")
 COMMIT = re.compile(r"[0-9a-f]{40}\Z")
 CAPTURE_MARKER = f"issue-capture:v{CAPTURE_SCHEMA_VERSION}"
+CAPTURE_V2_MARKER = "issue-capture:v2"
 RESOLUTION_MARKER = f"issue-resolution:v{RESOLUTION_SCHEMA_VERSION}"
 ROOT_CAUSE_STATUSES = {"unknown", "candidate", "confirmed"}
 RESOLUTION_OUTCOMES = {"fixed", "duplicate", "not-a-bug", "cannot-reproduce", "wontfix"}
@@ -149,11 +151,86 @@ def parse_marker_json(text: str, marker: str) -> dict[str, Any] | None:
     return value
 
 
+def _capture_schema_version(value: Any) -> int:
+    return 2 if isinstance(value, dict) and "builder_loop_runtime" in value else 1
+
+
+def _validate_builder_loop_runtime(value: Any) -> dict[str, Any]:
+    runtime = _exact_object(
+        value,
+        name="capture.builder_loop_runtime",
+        keys={
+            "builder_loop_version",
+            "adapter",
+            "adapter_commit",
+            "adapter_dirty",
+            "capture_status",
+        },
+    )
+    version = runtime["builder_loop_version"]
+    if version is not None and (
+        not isinstance(version, str)
+        or re.fullmatch(
+            r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?",
+            version,
+        )
+        is None
+    ):
+        raise meta.RunnerError(
+            "input", "capture.builder_loop_runtime.builder_loop_version 非法", meta.EXIT_INPUT
+        )
+    if runtime["adapter"] not in {"codex", "claude-code", "unknown"}:
+        raise meta.RunnerError(
+            "input", "capture.builder_loop_runtime.adapter 非法", meta.EXIT_INPUT
+        )
+    commit = runtime["adapter_commit"]
+    if commit is not None and (not isinstance(commit, str) or not COMMIT.fullmatch(commit)):
+        raise meta.RunnerError(
+            "input", "capture.builder_loop_runtime.adapter_commit 非法", meta.EXIT_INPUT
+        )
+    dirty = runtime["adapter_dirty"]
+    if dirty is not None and not isinstance(dirty, bool):
+        raise meta.RunnerError(
+            "input", "capture.builder_loop_runtime.adapter_dirty 非法", meta.EXIT_INPUT
+        )
+    status = runtime["capture_status"]
+    if status not in {"captured", "partial", "unavailable", "legacy-unavailable"}:
+        raise meta.RunnerError(
+            "input", "capture.builder_loop_runtime.capture_status 非法", meta.EXIT_INPUT
+        )
+    if status == "captured" and (
+        not isinstance(version, str)
+        or not isinstance(commit, str)
+        or not isinstance(dirty, bool)
+    ):
+        raise meta.RunnerError(
+            "input", "capture.builder_loop_runtime captured 身份不完整", meta.EXIT_INPUT
+        )
+    if status in {"unavailable", "legacy-unavailable"} and any(
+        item is not None for item in (version, commit, dirty)
+    ):
+        raise meta.RunnerError(
+            "input", "capture.builder_loop_runtime unavailable 身份发生漂移", meta.EXIT_INPUT
+        )
+    return runtime
+
+
 def validate_capture(value: Any, *, expected_repository: str | None = None) -> dict[str, Any]:
+    schema_version = _capture_schema_version(value)
+    keys = {
+        "captured_at",
+        "repository",
+        "incident_head",
+        "branch",
+        "dirty",
+        "root_cause_status",
+    }
+    if schema_version == 2:
+        keys.add("builder_loop_runtime")
     capture = _exact_object(
         value,
-        name=CAPTURE_MARKER,
-        keys={"captured_at", "repository", "incident_head", "branch", "dirty", "root_cause_status"},
+        name=f"issue-capture:v{schema_version}",
+        keys=keys,
     )
     _utc_timestamp(capture["captured_at"], name="capture.captured_at")
     repository = _nonempty_string(capture["repository"], name="capture.repository", limit=200)
@@ -167,12 +244,29 @@ def validate_capture(value: Any, *, expected_repository: str | None = None) -> d
         raise meta.RunnerError("input", "capture.dirty 必须是 boolean", meta.EXIT_INPUT)
     if capture["root_cause_status"] not in ROOT_CAUSE_STATUSES:
         raise meta.RunnerError("input", "capture.root_cause_status 非法", meta.EXIT_INPUT)
+    if schema_version == 2:
+        _validate_builder_loop_runtime(capture["builder_loop_runtime"])
     return capture
 
 
 def parse_capture(text: str, *, expected_repository: str | None = None) -> dict[str, Any] | None:
-    value = parse_marker_json(text, CAPTURE_MARKER)
-    return None if value is None else validate_capture(value, expected_repository=expected_repository)
+    declared = set(re.findall(r"<!--\s*/?(issue-capture:v[0-9]+)\s*-->", text))
+    unknown = sorted(declared - {CAPTURE_MARKER, CAPTURE_V2_MARKER})
+    if unknown:
+        raise meta.RunnerError("input", "issue-capture schema version 非法", meta.EXIT_INPUT)
+    values = [
+        (version, value)
+        for version, marker in ((1, CAPTURE_MARKER), (2, CAPTURE_V2_MARKER))
+        if (value := parse_marker_json(text, marker)) is not None
+    ]
+    if not values:
+        return None
+    if len(values) != 1:
+        raise meta.RunnerError("input", "issue-capture v1/v2 不得混用", meta.EXIT_INPUT)
+    version, value = values[0]
+    if _capture_schema_version(value) != version:
+        raise meta.RunnerError("input", "issue-capture marker 与字段版本漂移", meta.EXIT_INPUT)
+    return validate_capture(value, expected_repository=expected_repository)
 
 
 def validate_resolution(value: Any, *, capture: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -642,7 +736,7 @@ def prediction_idempotency_key(
         "issue_number": issue_number,
         "incident_head": capture["incident_head"],
         "capture_sha256": contract_digest(capture),
-        "capture_schema_version": CAPTURE_SCHEMA_VERSION,
+        "capture_schema_version": _capture_schema_version(capture),
         "shadow_schema_version": SHADOW_SCHEMA_VERSION,
         "prompt_sha256": prompt_hashes(),
     }

@@ -28,10 +28,12 @@ description: 当用户要求“提 Issue”“开 Issue”“记录 bug”“把
    修法、建议或实施方案。
 6. 先用 `gh issue list --state all --search ...` 按触发条件、现象和责任边界查重。相同原子问题用
    `gh issue comment` 追加新现场；根因或责任仓库不同的分别创建并互相链接。
-7. 新建时由当前 Agent 直接运行 `gh issue create`。标题描述可观察症状；正文末尾必须包含以下快照，
-   并填写真实值：
+7. 新建时由当前 Agent 直接运行 `gh issue create`。标题描述可观察症状；正文末尾必须包含以下 v2
+   快照，并填写真实值。Builder-loop run 使用 ledger 冻结的 `runtime_identity`；普通场景先执行
+   `codex-builder-loop version --json`，逐字段复制其 `runtime_identity`，不得用当前 checkout 反推旧 run、
+   也不得补造缺失 commit：
 
-<!-- issue-capture:v1 -->
+<!-- issue-capture:v2 -->
 ```json
 {
   "captured_at": "<UTC ISO-8601>",
@@ -39,13 +41,21 @@ description: 当用户要求“提 Issue”“开 Issue”“记录 bug”“把
   "incident_head": "<40-char commit or unavailable>",
   "branch": "<branch or detached>",
   "dirty": true,
-  "root_cause_status": "<unknown|candidate|confirmed>"
+  "root_cause_status": "<unknown|candidate|confirmed>",
+  "builder_loop_runtime": {
+    "builder_loop_version": "<SemVer or null>",
+    "adapter": "<codex|claude-code|unknown>",
+    "adapter_commit": "<40-char commit or null>",
+    "adapter_dirty": false,
+    "capture_status": "<captured|partial|unavailable|legacy-unavailable>"
+  }
 }
 ```
-<!-- /issue-capture:v1 -->
+<!-- /issue-capture:v2 -->
 
 创建后不要改写原始正文和 `issue-capture`；新增事实只通过评论追加。这个快照是后续离线评测允许读取
-的事故输入，不得混入修复后的代码、结案结论或影子预测。
+的事故输入，不得混入修复后的代码、结案结论或影子预测。历史 `issue-capture:v1` 只读兼容；新 Issue
+不得继续生成 v1，也不得同时出现 v1/v2。
 
 ## 结案或关闭
 

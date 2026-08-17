@@ -15,7 +15,8 @@
 - 手工 shadow 结果写入 `~/.codex/issue-triage/runs/`；poller 的结果与状态写入
   `~/.codex/issue-triage/poller/`。实验分数和模型配置不提交到项目文档。
 
-周期流水线首次安装时记录 `enabled_at`，只处理此后创建且带有效 `issue-capture:v1` 的 Issue，默认不
+周期流水线首次安装时记录 `enabled_at`，只处理此后创建且带有效、唯一的 `issue-capture:v1` 或
+`issue-capture:v2` 的 Issue，默认不
 回灌历史。每个预测必须在 `incident_head` 的 detached worktree 中运行，事故 commit 不存在时拒绝回退
 当前 HEAD。`dirty=true` 只能恢复事故 commit 中的项目原则，不能恢复未提交文件，因此模型只读取创建
 正文，不读取文件摘录或 identifier 命中。
@@ -45,9 +46,10 @@
 
 ## 样本契约
 
-`$file-github-issue` 在创建正文中写入 `issue-capture:v1`，在关闭评论中写入
-`issue-resolution:v1`。前者保存事故版本和当时根因状态，后者保存最终根因、人类决策、验收证据和
-剩余不确定性。
+`$file-github-issue` 在新建正文中写入 `issue-capture:v2`，历史 v1 保持只读兼容；关闭评论仍写入
+`issue-resolution:v1`。capture 保存事故版本、当时根因状态和独立的 Builder-loop runtime 身份，
+resolution 保存最终根因、人类决策、验收证据和剩余不确定性。混用、重复或字段与 marker 版本漂移的
+capture 一律拒绝。
 
 有效的历史评测必须满足：
 

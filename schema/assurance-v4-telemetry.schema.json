@@ -6,10 +6,34 @@
   "additionalProperties": false,
   "required": [
     "schema_version", "elapsed_ms", "active_stage", "stages",
-    "candidate_changes", "evidence_attempts", "evidence_replays", "retries"
+    "candidate_changes", "evidence_attempts", "evidence_replays", "retries",
+    "profile", "duration_breakdown"
   ],
   "properties": {
     "schema_version": {"const": 1},
+    "profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["requested", "effective", "escalation_reason"],
+      "properties": {
+        "requested": {"enum": ["full", "compact"]},
+        "effective": {"enum": ["full", "compact"]},
+        "escalation_reason": {
+          "oneOf": [{"type": "null"}, {"type": "string", "minLength": 1}]
+        }
+      }
+    },
+    "duration_breakdown": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["implementation_ms", "verification_ms", "orchestration_ms", "waiting_ms"],
+      "properties": {
+        "implementation_ms": {"type": "integer", "minimum": 0},
+        "verification_ms": {"type": "integer", "minimum": 0},
+        "orchestration_ms": {"type": "integer", "minimum": 0},
+        "waiting_ms": {"type": "integer", "minimum": 0}
+      }
+    },
     "elapsed_ms": {"type": "integer", "minimum": 0},
     "active_stage": {
       "oneOf": [

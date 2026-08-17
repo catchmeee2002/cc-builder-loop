@@ -235,6 +235,32 @@ revision 的 Builder/Tester manifest 重置为空。Builder checkpoint 从当前
 下一动作、publication 和 recomposition 都复核这条分类。缺失时只让当前 Builder 阶段失效，不把旧产出
 冒充新产出，也不把可修复执行事实升级成新的产品决策。
 
+### Reliability profile、恢复与版本身份
+
+设计哲学“冻结稳定语义，改输入条件”要求把普通工程修正与 Mission/Authority/验收/信任边界变化分开。
+因此 `automatic_nonsemantic` policy 只接受 plan-owned 的精确 Assurance JSON Pointer delta；Core 在同一
+锁内重算 replacement、admission、单调性、action/problem/facet binding 和 evidence dependency，成功后
+只关闭该 problem。任何 Authority 扩大、gate 降级、已有命令语义替换、外部目标变化或 stale binding 都
+在 ledger、ref、worktree 和 evidence mutation 前停止。
+
+设计哲学“每个事实只有一个家”要求 compact 继续使用原 contract、ledger、Core、角色和 evidence store。
+`assurance.profile` 只保存 requested profile；effective profile、escalation reason、expected stages 和耗时
+均由 ledger event 派生。compact 只压缩 happy-path 编排，不移除 Tester、proof、machine、blackbox、
+Reviewer 任一 gate；correction、replay、recomposition、replacement、renewal 或 eligibility drift 使派生
+profile 永久升级为 full，不写第二份状态。
+
+失败或取消 root 的 `cost_ancestry` 只绑定 terminal source 的 lineage/task-pressure digest。新 root 从 target
+建立空 candidate 事实、空角色与空 evidence，不导入 carryover、Tester source、problem resolution、lease
+或 dispatch。task telemetry 与 transition pressure 通过只读 ancestry 链累计；同一 source 只能有一个消费
+者。第三次任务级非语义 transition 的 continuation grant 记录 category、当次 pressure digest 和
+`authorized_through_count=current+3`，只在 Mission 语义不变且 category 相同时复用。
+
+设计哲学“契约先于实现”和“单事实来源”要求 SemVer 只来自 runtime 中一个嵌入常量，commit/dirty 只来自
+实际执行 checkout。新 ledger、retrospective、`version --json`、Issue capture 与安装回读都引用同一
+`runtime_identity`；无 Git metadata 时保留 SemVer、commit/dirty 为 null、capture status 为 partial。
+当前 minor 可做 active mutation，上一 minor 只允许契约支持的终态收敛；更旧或未知 identity 只读诊断，
+不得改写历史 ledger 来伪造升级。
+
 ## Legacy v3 系统边界
 
 Codex 原生 Plan mode 负责探索和追问；全局托管规则先让用户选择继续使用原生 Plan，或加载

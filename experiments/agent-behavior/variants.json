@@ -33,7 +33,7 @@
       "roles": ["planner"],
       "instruction_source": {
         "path": "skills/builder-loop-planner/SKILL.md",
-        "sha256": "813a31ef37b1b7aec4dd07af6138d6f7b7ff2928f052d6a77f57890af913416c",
+        "sha256": "829acb851526f8c44b46828ae14a8ab52a6d858ab8334494701e4d27913471f5",
         "revision": "WORKTREE"
       }
     },

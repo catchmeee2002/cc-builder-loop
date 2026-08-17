@@ -24,6 +24,7 @@
 ```bash
 python3 -m pip install -r requirements-dev.txt
 python3 scripts/codex-builder-loop.py --help
+python3 scripts/codex-builder-loop.py version --json
 python3 scripts/codex-builder-loop.py native-driver --help
 python3 scripts/codex-builder-loop.py dev-worktree --help
 bash scripts/verify-all.sh
@@ -131,9 +132,10 @@ python3 experiments/assurance-v4-replay/runner.py
 - 原生 Codex 开发必须通过 `codex-builder-loop dev-worktree create/finish` 进入和退出任务 worktree；
   默认只使用主仓父目录下单一 `codex-worktrees/<repo-id>/` 托管根，不得裸建散落 sibling。未知、dirty、
   preserved 或 ledger-owned 现场只诊断不回收；中断后仅用 `dev-worktree recover` 续接已持久化 intent。
-- 本项目发布完成必须同时满足：提交已 push、安装 checkout 已同步到发布 commit、`./install.sh` 成功、
-  实际安装的 CLI/Skills 路径与版本已核对并完成 smoke。只 push 不算发布完成；需要新 session 才能
-  重新发现的内容必须明确提示，并以新 session 验收。
+- 本项目发布完成必须同时满足：clean 发布提交已 push、SemVer tag 精确指向该提交、GitHub Release 已
+  发布、安装 checkout 已同步到同一提交、`./install.sh` 成功，且实际安装的 CLI/Skills 路径、
+  `version --json` SemVer/commit 与 smoke 均已回读。只 push、只打 tag 或只安装都不算发布完成；需要新
+  session 才能重新发现的内容必须明确提示，并以新 session 验收。
 - 自动提交前运行全部 fixtures 和 Skill validator。
 - Markdown 只记录稳定契约、架构和用户说明；运行快照写结构化 evidence。
 

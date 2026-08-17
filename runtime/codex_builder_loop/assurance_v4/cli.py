@@ -132,6 +132,18 @@ def parser() -> argparse.ArgumentParser:
     resolve_candidate_residue.add_argument("--run", required=True)
     resolve_candidate_residue.add_argument("--request", required=True)
 
+    apply_engineering_correction = commands.add_parser(
+        "apply-engineering-correction"
+    )
+    apply_engineering_correction.add_argument("--repo", default=".")
+    apply_engineering_correction.add_argument("--run", required=True)
+    apply_engineering_correction.add_argument("--action-id", required=True)
+    apply_engineering_correction.add_argument(
+        "--driver-runtime-kind",
+        choices=["native", "full_driver_skill"],
+        required=True,
+    )
+
     context = commands.add_parser("driver-context")
     context.add_argument("--repo", default=".")
     context.add_argument("--run", required=True)
@@ -563,6 +575,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.repo,
                 args.run,
                 _json(args.request),
+            )
+        elif args.command == "apply-engineering-correction":
+            payload = core.apply_engineering_correction(
+                args.repo,
+                args.run,
+                action_id=args.action_id,
+                driver_runtime_kind=args.driver_runtime_kind,
             )
         elif args.command == "driver-context":
             payload = core.driver_context(args.repo, args.run)

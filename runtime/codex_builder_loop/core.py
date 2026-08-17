@@ -28,7 +28,36 @@ from . import evidence as evidence_contract
 from . import lifecycle as lifecycle_delivery
 from . import workspace as workspace_contract
 
+
+def _builder_loop_minor(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    match = re.fullmatch(
+        r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:[-+].*)?",
+        value,
+    )
+    if match is None:
+        return None
+    return f"{match.group(1)}.{match.group(2)}"
+
+
 SCHEMA_VERSION = 2
+BUILDER_LOOP_VERSION = "0.1.0"
+BUILDER_LOOP_CURRENT_MINOR = _builder_loop_minor(BUILDER_LOOP_VERSION)
+if BUILDER_LOOP_CURRENT_MINOR is None:
+    raise RuntimeError("BUILDER_LOOP_VERSION must be valid SemVer")
+BUILDER_LOOP_PREVIOUS_MINOR = "0.0"
+BUILDER_LOOP_COMPATIBILITY_POLICY = {
+    "schema_version": 1,
+    "current_minor": BUILDER_LOOP_CURRENT_MINOR,
+    "previous_minor": BUILDER_LOOP_PREVIOUS_MINOR,
+    "readable_minors": [BUILDER_LOOP_CURRENT_MINOR, BUILDER_LOOP_PREVIOUS_MINOR],
+    "active_mutation_minors": [BUILDER_LOOP_CURRENT_MINOR],
+    "terminal_completion_minors": [
+        BUILDER_LOOP_CURRENT_MINOR,
+        BUILDER_LOOP_PREVIOUS_MINOR,
+    ],
+}
 LEGACY_SCHEMA_VERSION = 1
 PLAN_SCHEMA_VERSION = 3
 LEGACY_PLAN_SCHEMA_VERSION = 2
@@ -354,6 +383,7 @@ def branch_head(repo: Path, branch: str) -> str:
 
 def unavailable_runtime_identity() -> dict[str, Any]:
     return {
+        "builder_loop_version": None,
         "adapter": "unknown",
         "adapter_commit": None,
         "adapter_dirty": None,
@@ -363,13 +393,20 @@ def unavailable_runtime_identity() -> dict[str, Any]:
 
 def capture_runtime_identity() -> dict[str, Any]:
     source_root = Path(__file__).resolve().parents[2]
+    top = git(source_root, "rev-parse", "--show-toplevel", check=False)
     head = git(source_root, "rev-parse", "--verify", "HEAD^{commit}", check=False)
-    if head.returncode != 0 or not re.fullmatch(r"[0-9a-f]{40}", head.stdout.strip()):
+    if (
+        top.returncode != 0
+        or Path(top.stdout.strip()).resolve() != source_root.resolve()
+        or head.returncode != 0
+        or not re.fullmatch(r"[0-9a-f]{40}", head.stdout.strip())
+    ):
         return {
+            "builder_loop_version": BUILDER_LOOP_VERSION,
             "adapter": "codex",
             "adapter_commit": None,
             "adapter_dirty": None,
-            "capture_status": "unavailable",
+            "capture_status": "partial",
         }
     status = git(
         source_root,
@@ -379,10 +416,30 @@ def capture_runtime_identity() -> dict[str, Any]:
         check=False,
     )
     return {
+        "builder_loop_version": BUILDER_LOOP_VERSION,
         "adapter": "codex",
         "adapter_commit": head.stdout.strip(),
         "adapter_dirty": bool(status.stdout) if status.returncode == 0 else None,
         "capture_status": "captured" if status.returncode == 0 else "partial",
+    }
+
+
+def runtime_identity_compatibility(identity: Mapping[str, Any]) -> dict[str, Any]:
+    raw = identity.get("builder_loop_version")
+    minor = _builder_loop_minor(raw)
+    if minor == BUILDER_LOOP_COMPATIBILITY_POLICY["current_minor"]:
+        state = "current"
+    elif minor == BUILDER_LOOP_COMPATIBILITY_POLICY["previous_minor"]:
+        state = "previous-terminal-only"
+    elif raw is None:
+        state = "historical-missing"
+    else:
+        state = "incompatible"
+    return {
+        "state": state,
+        "captured_version": raw,
+        "captured_minor": minor,
+        "policy": dict(BUILDER_LOOP_COMPATIBILITY_POLICY),
     }
 
 
@@ -538,6 +595,11 @@ def read_json(path: Path) -> dict[str, Any]:
     if value.get("schema_version") == LEGACY_SCHEMA_VERSION:
         value = migrate_ledger_v1(value)
     value.setdefault("runtime_identity", unavailable_runtime_identity())
+    identity = value.get("runtime_identity")
+    if isinstance(identity, dict) and "builder_loop_version" not in identity:
+        identity["builder_loop_version"] = None
+        if identity.get("capture_status") == "captured":
+            identity["capture_status"] = "partial"
     plan = value.get("plan")
     if isinstance(plan, dict):
         plan.setdefault("contract_schema_version", LEGACY_PLAN_SCHEMA_VERSION)
@@ -883,6 +945,20 @@ def append_event(ledger: dict[str, Any], event_type: str, facts: dict[str, Any])
 
 
 def save_ledger(repo: Path, ledger: dict[str, Any]) -> None:
+    compatibility = runtime_identity_compatibility(
+        ledger.get("runtime_identity", unavailable_runtime_identity())
+    )
+    safe_previous_terminal = (
+        compatibility["state"] == "previous-terminal-only"
+        and ledger.get("phase") not in ACTIVE_PHASES
+    )
+    if compatibility["state"] != "current" and not safe_previous_terminal:
+        raise RuntimeProblem(
+            "runtime identity is not compatible with active ledger mutation",
+            result="NEEDS_USER",
+            code="RUNTIME_IDENTITY_MUTATION_INCOMPATIBLE",
+            details={"runtime_compatibility": compatibility},
+        )
     write_json_atomic(ledger_path(repo, str(ledger["run_id"])), ledger)
 
 
@@ -6024,6 +6100,9 @@ def status_facts(repo: Path, ledger: dict[str, Any]) -> dict[str, Any]:
     return {
         "run_id": ledger["run_id"],
         "runtime_identity": ledger.get("runtime_identity"),
+        "runtime_compatibility": runtime_identity_compatibility(
+            ledger.get("runtime_identity", unavailable_runtime_identity())
+        ),
         "owner_session_id": ledger["owner_session_id"],
         "phase": ledger["phase"],
         "spec_head": ledger["spec_head"],
@@ -14963,6 +15042,24 @@ def cmd_cleanup(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         }, EXIT_PASS
 
 
+def cmd_version(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
+    if not args.json:
+        raise RuntimeProblem(
+            "version currently requires --json",
+            code="VERSION_JSON_REQUIRED",
+        )
+    identity = capture_runtime_identity()
+    return {
+        "status": "PASS",
+        "schema_version": 1,
+        "version": BUILDER_LOOP_VERSION,
+        "builder_loop_version": BUILDER_LOOP_VERSION,
+        "compatibility": dict(BUILDER_LOOP_COMPATIBILITY_POLICY),
+        "compatibility_policy": dict(BUILDER_LOOP_COMPATIBILITY_POLICY),
+        "runtime_identity": identity,
+    }, EXIT_PASS
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = RuntimeArgumentParser(prog="codex-builder-loop")
     subparsers = parser.add_subparsers(
@@ -14970,6 +15067,10 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         parser_class=RuntimeArgumentParser,
     )
+
+    version = subparsers.add_parser("version")
+    version.add_argument("--json", action="store_true")
+    version.set_defaults(handler=cmd_version)
 
     plan = subparsers.add_parser("plan-validate")
     plan.add_argument("--repo", default=".", help="target Git repository")

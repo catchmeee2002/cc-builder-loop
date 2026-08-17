@@ -9,6 +9,7 @@ from .core import (
     AssuranceError,
     _derive_lineage,
     _public_prerequisite_classification,
+    _require_admission,
     _validate_revision_transition,
     current_machine_failure,
     current_proof_failure,
@@ -16,14 +17,17 @@ from .core import (
     ensure_run_id,
     evidence_state,
     readiness,
+    runtime_compatibility,
 )
 from .models import (
     EVIDENCE_KINDS,
+    ContractError,
     assurance_downgrades,
     authority_expands,
     digest,
     evidence_dependency,
     facet_digests,
+    recovery_policy,
     validate_contract,
 )
 from .store import branch_head, dirty_paths, git, read_ledger, resolve_repo
@@ -260,6 +264,126 @@ def contract_problem_decision(
         "open_plan_problem",
         **payload,
     )
+
+
+def engineering_correction_preview(
+    repo: Path,
+    ledger: Mapping[str, Any],
+    problem: Mapping[str, Any],
+) -> dict[str, Any]:
+    policy = recovery_policy(ledger["facets"])
+    if policy.get("mode") != "automatic_nonsemantic":
+        raise AssuranceError(
+            "automatic non-semantic recovery is not enabled",
+            code="ENGINEERING_CORRECTION_POLICY_MANUAL",
+            status="NEEDS_USER",
+        )
+    request = problem.get("decision_request")
+    if (
+        problem.get("owner") != "plan"
+        or not isinstance(request, Mapping)
+        or request.get("kind") != "engineering_correction"
+        or request.get("facet") != "assurance"
+    ):
+        raise AssuranceError(
+            "problem is not an exact Assurance engineering correction",
+            code="ENGINEERING_CORRECTION_REQUEST_INVALID",
+            status="NEEDS_USER",
+        )
+    current_contract = ledger["facets"]
+    old = current_contract["assurance"]
+    replacement_assurance = _apply_decision_changes(old, request.get("changes"))
+    if replacement_assurance == old:
+        raise AssuranceError(
+            "engineering correction is a no-op",
+            code="ENGINEERING_CORRECTION_NOOP",
+            status="NEEDS_USER",
+        )
+    replacement = copy.deepcopy(current_contract)
+    replacement["assurance"] = replacement_assurance
+    replacement = validate_contract(replacement)
+    new = replacement["assurance"]
+    if new.get("profile", "full") != old.get("profile", "full"):
+        raise AssuranceError(
+            "engineering correction cannot change the requested profile",
+            code="ENGINEERING_CORRECTION_PROFILE_CHANGE",
+            status="NEEDS_USER",
+        )
+    if not set(old["required"]).issubset(set(new["required"])):
+        raise AssuranceError(
+            "engineering correction cannot remove an assurance gate",
+            code="ENGINEERING_CORRECTION_ASSURANCE_DOWNGRADE",
+            status="NEEDS_USER",
+        )
+    added_gates = sorted(set(new["required"]) - set(old["required"]))
+    if added_gates:
+        raise AssuranceError(
+            "engineering correction cannot add gates whose execution dependencies were not frozen",
+            code="ENGINEERING_CORRECTION_GATE_ADDED",
+            status="NEEDS_USER",
+            details={"gates": added_gates},
+        )
+    for field in ("preflight_before_proof", "reviewer_preflight"):
+        if old.get(field, False) and not new.get(field, False):
+            raise AssuranceError(
+                "engineering correction cannot disable an assurance stage",
+                code="ENGINEERING_CORRECTION_ASSURANCE_DOWNGRADE",
+                status="NEEDS_USER",
+                details={"field": field},
+            )
+    old_commands = {item["id"]: item for item in old["machine_commands"]}
+    new_commands = {item["id"]: item for item in new["machine_commands"]}
+    missing = sorted(set(old_commands) - set(new_commands))
+    if missing:
+        raise AssuranceError(
+            "engineering correction cannot remove machine commands",
+            code="ENGINEERING_CORRECTION_COMMAND_REMOVED",
+            status="NEEDS_USER",
+            details={"command_ids": missing},
+        )
+    for command_id, previous in old_commands.items():
+        current = new_commands[command_id]
+        stable_previous = {
+            key: copy.deepcopy(previous.get(key))
+            for key in ("id", "argv", "expected_returncodes", "run_before_full_suite")
+        }
+        stable_current = {
+            key: copy.deepcopy(current.get(key))
+            for key in ("id", "argv", "expected_returncodes", "run_before_full_suite")
+        }
+        if stable_current != stable_previous:
+            raise AssuranceError(
+                "engineering correction cannot replace machine command semantics",
+                code="ENGINEERING_CORRECTION_COMMAND_REPLACED",
+                status="NEEDS_USER",
+                details={"command_id": command_id},
+            )
+        if int(current["timeout_seconds"]) < int(previous["timeout_seconds"]):
+            raise AssuranceError(
+                "engineering correction cannot reduce a machine timeout",
+                code="ENGINEERING_CORRECTION_TIMEOUT_REDUCED",
+                status="NEEDS_USER",
+                details={"command_id": command_id},
+            )
+    _require_admission(repo, replacement)
+    replacement_ledger = copy.deepcopy(dict(ledger))
+    replacement_ledger["facets"] = replacement
+    replacement_ledger["digests"] = facet_digests(replacement)
+    invalidated = sorted(
+        kind
+        for kind in EVIDENCE_KINDS
+        if isinstance(ledger.get("evidence", {}).get(kind), Mapping)
+        and ledger["evidence"][kind].get("dependency_digest")
+        != evidence_dependency(replacement_ledger, kind)
+    )
+    return {
+        "problem_key": problem["key"],
+        "base_assurance_digest": ledger["digests"]["assurance"],
+        "replacement_assurance": copy.deepcopy(new),
+        "replacement_assurance_digest": replacement_ledger["digests"]["assurance"],
+        "replacement_contract_digest": digest(replacement),
+        "invalidated_evidence": invalidated,
+    }
 
 
 def _json_pointer_parts(pointer: str) -> list[str]:
@@ -929,6 +1053,32 @@ def next_action(
             action, reason = blocking[owner]
             related = [item for item in problems if item.get("owner") == owner]
             if owner == "plan":
+                request = problem.get("decision_request")
+                engineering_corrections = [
+                    item
+                    for item in related
+                    if isinstance(item.get("decision_request"), Mapping)
+                    and item["decision_request"].get("kind")
+                    == "engineering_correction"
+                ]
+                if (
+                    isinstance(request, Mapping)
+                    and request.get("kind") == "engineering_correction"
+                    and len(engineering_corrections) == 1
+                    and recovery_policy(ledger["facets"]).get("mode")
+                    == "automatic_nonsemantic"
+                ):
+                    try:
+                        preview = engineering_correction_preview(repo, ledger, problem)
+                    except (AssuranceError, ContractError):
+                        return contract_problem_decision(ledger, problem, problems)
+                    return decision(
+                        "CONTINUE",
+                        "apply_engineering_correction",
+                        "eligible_nonsemantic_engineering_correction",
+                        problem=copy.deepcopy(problem),
+                        **preview,
+                    )
                 return contract_problem_decision(ledger, problem, problems)
             payload: dict[str, Any] = {
                 "problem": problem,
@@ -960,6 +1110,20 @@ def next_action(
         )
     if ledger["phase"] == "failed":
         return decision("STOP", "none", "failed", driver_failure=driver_failure)
+    compatibility = runtime_compatibility(ledger)
+    if ledger["phase"] in {"active", "finalizing"} and compatibility[
+        "state"
+    ] != "current" and not (
+        compatibility["state"] == "previous-terminal-only"
+        and ledger["phase"] == "finalizing"
+        and ledger.get("finalize_intent") is not None
+    ):
+        return decision(
+            "NEEDS_USER",
+            "runtime_compatibility_decision",
+            "runtime_identity_not_mutable",
+            runtime_compatibility=compatibility,
+        )
     pending_dispatch = ledger.get("dispatch_intent")
     if isinstance(pending_dispatch, dict):
         return _dispatch_action(ledger, run_id, pending_dispatch)
@@ -1146,6 +1310,18 @@ def next_action(
             candidate_worktree=ledger["candidate_worktree"],
             branch_head=live_candidate,
             worktree_head=worktree_head,
+        )
+    if (
+        execution.get("candidate_head") is None
+        and isinstance(execution.get("cost_ancestry"), Mapping)
+        and live_candidate == ledger["target_start_head"]
+    ):
+        return decision(
+            "CONTINUE",
+            "builder_implement",
+            "candidate_missing",
+            candidate_worktree=ledger["candidate_worktree"],
+            agent=execution["agents"].get("builder"),
         )
     if live_candidate != execution.get("candidate_head"):
         return decision(

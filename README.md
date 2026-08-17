@@ -39,6 +39,17 @@ Skill；选择 Builder-loop 实验时，Planner Skill 冻结并验证 v4 四事�
 验证、blackbox、Reviewer 和 Git 收尾。Codex App Server 在创建 run 前不兼容时，才透明回退到现有
 Full Driver Skill；run 创建后禁止更换控制器。
 
+Assurance v4 contract 可显式选择 `assurance.profile=compact`。它只适用于 revision-one、1–3 个 behavior、
+单一 machine/blackbox 命令、无发布/dirty intake/外部目标的本地任务，并仍保留 Tester、proof、machine、
+blackbox、Reviewer 五个独立 gate。发生 correction、evidence replay、recomposition、角色 replacement、
+dispatch renewal 或资格漂移后，同一 ledger 派生为 effective full profile，不创建第二套 runtime。
+
+`execution.recovery_policy.mode=automatic_nonsemantic` 允许 Core 对 plan-owned、精确 Assurance delta 做一次
+单 run 单调修正；Mission/Authority/验收/信任边界、命令替换、外部目标、降级、stale binding 或 Git 冲突
+仍停到用户决定。失败或取消的旧 root 可通过 `execution.cost_ancestry` 只聚合任务成本；它不继承 candidate、
+角色、Tester source、evidence、problem resolution、lease 或 dispatch。第三次任务级非语义 transition 的
+一次授权只覆盖当前及同 category 的后续三次，过期、新 category 或语义变化重新停止。
+
 ## 核心行为
 
 - Builder-loop Planner 在输出前运行带仓库上下文的确定性 plan validator；缺少规划 HEAD/revision、行为边界
@@ -104,22 +115,25 @@ Full Driver Skill；run 创建后禁止更换控制器。
 - 本仓 Codex-native 开发使用 `dev-worktree create/status/finish/preserve/recover`。任务 checkout 统一进入
   主仓父目录的单一 `codex-worktrees/<repo-id>/` 根；只有精确 create/finish intent 可恢复，未知 worktree
   只报告。该命令管理 Git 生命周期，不复制宿主 dirty、凭据或共享运行态，也不替代部署事务。
-- start 冻结实际运行的 adapter 类型、commit 和 dirty 状态。高信号交付完成后，Builder 将业务项目、
+- start 冻结正式 Builder-loop SemVer、实际运行的 adapter 类型、commit 和 dirty 状态；缺少 Git metadata
+  时保留 SemVer 并标记 partial，不补造 commit。`codex-builder-loop version --json` 在 checkout 和复制安装
+  中都返回同一版本契约。高信号交付完成后，Builder 将业务项目、
   builder-loop 与外部平台事故按单一 owner 分流；跨边界因果链拆成两个原子事故，经用户授权才写
   项目问题文档或 GitHub issue。工程问题处理后，剩余隐含知识委托 `$memory-review`，不再执行旧版
   五问打分或直接写 memory。
-- `$file-github-issue` 在创建时冻结事故快照，在关闭时追加最终根因、人类决策和验收证据，再由当前
+- `$file-github-issue` 对新 Issue 写入 `issue-capture:v2`，把事故仓库 identity 与 Builder-loop runtime
+  identity 分开冻结；历史 v1 只读兼容且不能与 v2 混用。关闭时仍追加 `issue-resolution:v1` 的最终根因、
+  人类决策和验收证据，再由当前
   Agent 直接调用 `gh` 创建、补充或关闭；用户的动作指令就是授权，不增加第二次确认，也不引入
   Issue CLI。结案语料可供按需离线影子评测，但影子结果不写回 GitHub。
 - finalize 只更新本地目标分支，不自动 push、创建 PR 或合并远端分支。
 - 正常修复循环会自动继续；测试目标或 ownership 变化、计划过期、迭代上限、Reviewer
   决策项、agent/target continuity 失败、目标同步 blocker 或 Git 冲突等安全停止会交还用户。
 
-测试目标、ownership 或验收标准一旦需要修订，不能在现有 frozen run 内批准。保持原目标时
-续接原 Tester/Reviewer thread；选择修订时先 abandon 当前 run 保留现场，再用 `/plan` 生成更高
-`plan_revision` 且携带旧 run id/plan digest 的方案。runtime 会核对旧 run 确已 abandoned 且
-revision 单调增加。新方案验证后可使用原生“实施计划”动作交接，或显式调用 `$builder`。达到
-迭代上限时遵循同一流程。
+Mission、ownership、验收目标、信任边界或产品取舍变化仍需用户批准；现有同 run facet 事务能完整表达
+时原地更新并只重验受影响 gate，否则 source 保持 active，直到 successor `start` 持久化 target 后才封为
+superseded。`abandon` 只表示用户取消且没有 successor。保持原目标的 Tester correction、角色 replacement、
+target recomposition 和受限 Assurance engineering correction 续接原 run，不再无条件重跑完整规划。
 
 计划契约只接受 `schema_version: 3`；旧 v1/v2 计划必须重新规划。`plan-validate` 返回
 canonical-v2 identity：只规范换行、唯一受管生命周期 header 和末尾换行，同时单独公开 raw source
@@ -153,7 +167,14 @@ cd /path/to/cc-builder-loop-codex
 
 checkout 必须保留在安装时的路径；移动或删除前先运行 `./uninstall.sh`，移动后再重新安装。
 安装器不会修改 `~/.claude`，因此可以与 `main` 分支上的 Claude Code 版本共存。首次安装或
-hook 内容变化后，需要再次检查并信任新 hash。
+hook 内容变化后，需要再次检查并信任新 hash。安装完成会立即回读并打印 installed
+`runtime_identity`；发布验收必须以该输出和 `codex-builder-loop version --json` 的 SemVer/commit 为准。
+
+## 发布 0.1.0
+
+发布只有在同一个 clean commit 已 push、以 `v0.1.0` tag 指向、GitHub Release 已发布、安装 checkout
+同步到该 commit、`./install.sh` 成功，且已安装 CLI 回读 `builder_loop_version=0.1.0` 与相同 commit 时
+才完成。缺少任一远端或本机 read-back 都只是候选，不得宣称已发布。
 
 ## 项目配置
 
@@ -223,6 +244,7 @@ blackbox accepted execution 的全部 command 依赖始终强制属于 affects�
 ```bash
 python3 -m pip install -r requirements-dev.txt
 python3 scripts/codex-builder-loop.py --help
+python3 scripts/codex-builder-loop.py version --json
 python3 scripts/codex-builder-loop.py dev-worktree --help
 bash scripts/verify-all.sh
 ```

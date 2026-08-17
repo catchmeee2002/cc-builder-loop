@@ -22,6 +22,8 @@
         "schema/assurance-v4-candidate-residue-resolution.schema.json",
         "schema/assurance-v4-evidence.schema.json",
         "schema/assurance-v4-ledger.schema.json",
+        "schema/assurance-v4-lineage.schema.json",
+        "schema/assurance-v4-retrospective.schema.json",
         "schema/assurance-v4-runtime-support.schema.json",
         "schema/assurance-v4-telemetry.schema.json",
         "schema/codex-loop-ledger.schema.json",

@@ -116,6 +116,8 @@ class NativeCoordinator:
                 continue
             if name == "checkpoint_builder":
                 self._simple("checkpoint-builder", action)
+            elif name == "apply_engineering_correction":
+                self._simple("apply-engineering-correction", action)
             elif name == "replace_tester":
                 self._replace_tester(action)
             elif name == "publish_prerequisites":
@@ -1073,6 +1075,15 @@ class NativeCoordinator:
             "output schema. Do not add marker lines, Markdown fences, commentary, or extra keys. "
             "Each non-null evidence_report, proof_spec, or problem_report value must be a compact "
             "JSON string; the Native Driver normalizes it back to the public object schema."
+        )
+        instructions += (
+            "\nAssurance v4 recovery rule: when the supplied contract enables "
+            "execution.recovery_policy.mode=automatic_nonsemantic, an owner=plan problem may use "
+            "decision_request.kind=engineering_correction only for one exact Assurance-facet "
+            "delta that preserves Mission, Authority, acceptance, trust boundaries, external "
+            "targets and existing command semantics while monotonically strengthening assurance. "
+            "Use facet_change or product_choice for every other plan-owned decision; do not label "
+            "an uncertain or semantic change as engineering_correction."
         )
         return instructions, str(value["sandbox_mode"])
 

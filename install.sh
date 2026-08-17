@@ -195,6 +195,26 @@ python3 "$REPO_DIR/scripts/codex-builder-loop-config.py" install \
   --agents-file "$GLOBAL_AGENTS" \
   --agents-block "$REPO_DIR/agents/AGENTS.md.block"
 
+INSTALLED_IDENTITY="$("$LOCAL_BIN/codex-builder-loop" version --json)"
+EXPECTED_COMMIT="$(git -C "$REPO_DIR" rev-parse --verify HEAD 2>/dev/null || true)"
+python3 - "$INSTALLED_IDENTITY" "$EXPECTED_COMMIT" <<'PY'
+import json
+import sys
+
+value = json.loads(sys.argv[1])
+identity = value.get("runtime_identity")
+version = value.get("builder_loop_version")
+expected_commit = sys.argv[2] or None
+if (
+    not isinstance(version, str)
+    or value.get("version") != version
+    or not isinstance(identity, dict)
+    or identity.get("builder_loop_version") != version
+    or identity.get("adapter_commit") != expected_commit
+):
+    raise SystemExit("installed Builder-loop version identity mismatch")
+PY
+
 trap - ERR
 
 case ":${PATH}:" in
@@ -202,4 +222,5 @@ case ":${PATH}:" in
   *) echo "warning: add $LOCAL_BIN to PATH before using \$builder" >&2 ;;
 esac
 
+echo "Installed Builder-loop identity: $INSTALLED_IDENTITY"
 echo "Codex builder-loop installed. Start a new Codex session and review /hooks trust."

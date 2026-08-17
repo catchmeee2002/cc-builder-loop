@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- Assurance v4 新增 `automatic_nonsemantic` recovery policy：Core 只对绑定当前 action/problem/facet 的精确
+  Assurance 增量执行单调修正，并让依赖 evidence 重新验收；Mission、Authority、验收、信任边界、命令
+  替换、外部目标、降级、stale binding 与 Git 冲突继续 fail closed。失败/取消 root 可用只读
+  `cost_ancestry` 累积 task telemetry，不继承 candidate、角色、Tester source、evidence 或 lease；第三次
+  非语义 transition 的一次决定只授权当前及同 category 后续三次（#144、#160）。
+
+- Assurance v4 增加同 Core `compact` profile：仅 revision-one、1–3 behavior、单 machine/blackbox runner、
+  无 publication/dirty/external target 的任务可进入；Tester、proof、machine、blackbox、Reviewer 五 gate
+  保持独立。任一 correction、replay、recomposition、replacement、renewal 或 eligibility drift 只把派生
+  effective profile 升为 full；telemetry 同时公开 profile、expected stages 与互不重叠的实现、验证、编排、
+  等待耗时（#128）。
+
+- Builder-loop 现在从单一 runtime 常量公开正式 SemVer `0.1.0`；`version --json`、新旧 ledger、
+  retrospective、复制目录和安装回读统一携带 version/commit/dirty/capture status。当前 runtime 只允许当前
+  minor 做 active mutation，对上一 minor 仅保留安全终态完成；新 GitHub Issue 改用唯一
+  `issue-capture:v2` 嵌套 runtime identity，历史 v1 与 resolution v1 保持只读语义（#147）。
+
 - Machine/preflight failure signature 现在绑定实际 stdout 与 stderr，失败集合收敛不再被误计为三次同错。
   终态 retrospective report v2 同时把每组 Issue routes 绑定到唯一远端更新及 body read-back receipt；旧 v1
   Issue route 保持 `REQUIRED/legacy-unverified`，同步属于 Agent 执行义务，不伪装成用户产品决策（#182、#183）。

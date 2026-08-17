@@ -56,9 +56,10 @@ description: 在 Codex Plan mode 中为显式选择的 Builder-loop 实验路线
   abandoned-source revision 契约。
 - 更高 revision 先读取 `status.lineage`，只向用户呈现发生变化的语义 facet、逐条 open problem 处理和
   `lineage.health` 要求的架构复审。`execution.revision_transition.predecessor_pressure_digest` 必须绑定当前
-  `pressure_digest`；第三次
-  累计非语义 transition、同 category 第三次或 legacy incomplete lineage 还必须携带绑定当前
-  `pressure_digest` 的 continue decision。Mission change 归类为 semantic，不增加恢复压力。
+  `task_pressure_digest`。第三次任务级非语义 transition、同 category 第三次或 incomplete ancestry 首次
+  停止时，continue decision 也精确绑定该 digest；Core 将它记录为当前 transition 加同 category 后续三次
+  的 grant。授权范围内不重复询问；过期、stale pressure、新 category 或 Mission 语义变化重新停止。
+  Mission change 归类为 semantic，不增加非语义压力，也不能消费该 grant。
   category 只使用 `execution_contract`、`resource_parameter`、`target_drift`、`role_continuity`、
   `tester_correction`、`mission_change`、`git_conflict`。
 - 跨 run supersession 用 `execution.prior_problem_dispositions` 绑定 source
@@ -68,19 +69,29 @@ description: 在 Codex Plan mode 中为显式选择的 Builder-loop 实验路线
   Tester source 或 evidence。最终仍只输出一份完整、可验证的 v4 contract，不另建 delta contract。
 - `authority` 冻结 target branch、Builder/Tester 精确写边界、dirty intake、串行公开前置产物和受保护
   support path。权限扩大必须重新交给用户决定。
-- 代码任务的 `assurance.required` 默认精确包含 `tester`、`proof`、`machine`、`blackbox`、`reviewer`；
-  同时默认 `reviewer_preflight:true`。但 `validate --repo <repo>` 返回 self-hosted `runtime_support` 冲突时，
+- 代码任务的 `assurance.required` 默认精确包含 `tester`、`proof`、`machine`、`blackbox`、`reviewer`。
+  revision-one、1–3 behavior、单一 machine/blackbox command、无 dirty intake/publication/protected support/
+  external target/deployment/continuity 的局部任务使用 `profile:compact` 并保持 preflight 与
+  reviewer_preflight false；任一条件不满足时使用 `profile:full` 与默认 `reviewer_preflight:true`。不得为
+  追求 compact 删除 gate 或改写验收。但 `validate --repo <repo>` 返回 self-hosted `runtime_support` 冲突时，
   必须改为 protected preparation，移除 `affected_gates` 并加入全部 `required_independent_gates`。纯
   Markdown L1 只要求 `reviewer` 且保持 preflight false，不得伪造 Tester、machine 或 blackbox。
 - Tester 可信来源由独立 thread、提交的普通测试文件、source manifest 与 Reviewer 审查共同绑定；这不
   宣称操作系统级恶意代码 sandbox。
-- `execution` 初始固定为 `version: 1`、`driver_enforced: true`、`candidate_head: null`、空的
-  `builder_files/tester_files/dirty_snapshot/agents`、`tester_source: null`、`deployment: null`，Authority 的
+- `execution` 初始固定为 `version: 1`、`driver_enforced: true`、`candidate_head: null`、
+  `recovery_policy:{"schema_version":1,"mode":"automatic_nonsemantic","continuation_window":3}`、
+  `cost_ancestry:null`、空的 `builder_files/tester_files/dirty_snapshot/agents`、`tester_source: null`、
+  `deployment: null`，Authority 的
   `external_targets` 默认空。Agent identity 只能在真实 spawn
   后由专用事务写入，Planner 不预填。
 - successor 的 `execution.carryover` 只记录 source candidate 相对 target 的 exact path/blob；当前 revision 的
   `builder_files` 与 `tester_files` 仍从空集合开始。公开前置文件只有在当前 Builder 实际创建或修改并
   checkpoint 后，或 candidate blob 与 carryover 完全一致时才算 ready，不能把旧角色产出复制成本轮产出。
+- 当同一 Mission 必须从 `failed` 或用户取消的 `abandoned` terminal root 重新开始、且只需累计交付成本时，
+  新 contract 保持 `mission.revision=1`、`supersedes:null`，以 `execution.cost_ancestry` 精确绑定 source 的
+  `lineage_digest` 与 `task_pressure_digest`。只允许一个未被消费的 terminal source、相同 target 与完全相同
+  Mission 语义；新 root 的 candidate、files、roles、Tester source、carryover、evidence 和 dirty intake 都
+  为空。active、finalized、superseded、forked、cyclic、stale 或语义不同的 source 不得使用该通道。
 - protected preparation 使用 `mission.delivery_kind=preparation` 与 exact `protected_support_paths`；后续
   business contract 只通过 `execution.continuation` 消费 Core 已验证的 finalized run 事实。不得解析
   transcript 重建 continuation，也不得让 preparation supersede 业务 run；事实不足时停止规划交接。
