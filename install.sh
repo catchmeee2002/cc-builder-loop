@@ -188,13 +188,6 @@ for index in "${!LINK_TARGETS[@]}"; do
   install_link "${LINK_SOURCES[$index]}" "${LINK_TARGETS[$index]}"
 done
 
-python3 "$REPO_DIR/scripts/codex-builder-loop-config.py" install \
-  --hooks-file "$HOOKS_FILE" \
-  --hooks-template "$REPO_DIR/hooks/hooks.json" \
-  --installed-hook "$CODEX_HOME/hooks/builder-loop.py" \
-  --agents-file "$GLOBAL_AGENTS" \
-  --agents-block "$REPO_DIR/agents/AGENTS.md.block"
-
 INSTALLED_IDENTITY="$("$LOCAL_BIN/codex-builder-loop" version --json)"
 EXPECTED_COMMIT="$(git -C "$REPO_DIR" rev-parse --verify HEAD 2>/dev/null || true)"
 python3 - "$INSTALLED_IDENTITY" "$EXPECTED_COMMIT" <<'PY'
@@ -214,6 +207,13 @@ if (
 ):
     raise SystemExit("installed Builder-loop version identity mismatch")
 PY
+
+python3 "$REPO_DIR/scripts/codex-builder-loop-config.py" install \
+  --hooks-file "$HOOKS_FILE" \
+  --hooks-template "$REPO_DIR/hooks/hooks.json" \
+  --installed-hook "$CODEX_HOME/hooks/builder-loop.py" \
+  --agents-file "$GLOBAL_AGENTS" \
+  --agents-block "$REPO_DIR/agents/AGENTS.md.block"
 
 trap - ERR
 

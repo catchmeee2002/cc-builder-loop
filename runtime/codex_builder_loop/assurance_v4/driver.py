@@ -30,7 +30,7 @@ from .models import (
     recovery_policy,
     validate_contract,
 )
-from .store import branch_head, dirty_paths, git, read_ledger, resolve_repo
+from .store import StoreError, branch_head, dirty_paths, git, read_ledger, resolve_repo
 
 
 TESTER_CORRECTION_LIMIT = 3
@@ -290,6 +290,7 @@ def engineering_correction_preview(
             code="ENGINEERING_CORRECTION_REQUEST_INVALID",
             status="NEEDS_USER",
         )
+    _assert_engineering_correction_candidate(repo, ledger)
     current_contract = ledger["facets"]
     old = current_contract["assurance"]
     replacement_assurance = _apply_decision_changes(old, request.get("changes"))
@@ -341,6 +342,21 @@ def engineering_correction_preview(
             status="NEEDS_USER",
             details={"command_ids": missing},
         )
+    old_order = [item["id"] for item in old["machine_commands"]]
+    new_positions = {
+        item["id"]: index for index, item in enumerate(new["machine_commands"])
+    }
+    old_positions = [new_positions[command_id] for command_id in old_order]
+    if old_positions != sorted(old_positions):
+        raise AssuranceError(
+            "engineering correction cannot reorder existing machine commands",
+            code="ENGINEERING_CORRECTION_COMMAND_ORDER_CHANGED",
+            status="NEEDS_USER",
+            details={
+                "old_order": old_order,
+                "new_order": [item["id"] for item in new["machine_commands"]],
+            },
+        )
     for command_id, previous in old_commands.items():
         current = new_commands[command_id]
         stable_previous = {
@@ -384,6 +400,115 @@ def engineering_correction_preview(
         "replacement_contract_digest": digest(replacement),
         "invalidated_evidence": invalidated,
     }
+
+
+def _assert_engineering_correction_candidate(
+    repo: Path, ledger: Mapping[str, Any]
+) -> None:
+    """Require the correction to be bound to the current, clean candidate."""
+
+    execution = ledger["facets"]["execution"]
+    expected_head = execution.get("candidate_head")
+    candidate_branch = ledger.get("candidate_branch")
+    candidate_value = ledger.get("candidate_worktree")
+    if (
+        not isinstance(expected_head, str)
+        or not expected_head
+        or not isinstance(candidate_branch, str)
+        or not candidate_branch
+        or not isinstance(candidate_value, str)
+        or not candidate_value
+    ):
+        raise AssuranceError(
+            "automatic engineering correction requires a materialized candidate",
+            code="ENGINEERING_CORRECTION_CANDIDATE_INVALID",
+            status="NEEDS_USER",
+            details={
+                "candidate_head": expected_head,
+                "candidate_branch": candidate_branch,
+                "candidate_worktree": candidate_value,
+            },
+        )
+
+    candidate_worktree = Path(candidate_value)
+    if not candidate_worktree.is_dir():
+        raise AssuranceError(
+            "automatic engineering correction requires an existing candidate worktree",
+            code="ENGINEERING_CORRECTION_CANDIDATE_INVALID",
+            status="NEEDS_USER",
+            details={"candidate_worktree": candidate_value},
+        )
+
+    repository_check = git(
+        candidate_worktree, "rev-parse", "--show-toplevel", check=False
+    )
+    if repository_check.returncode != 0:
+        raise AssuranceError(
+            "automatic engineering correction requires a Git candidate worktree",
+            code="ENGINEERING_CORRECTION_CANDIDATE_INVALID",
+            status="NEEDS_USER",
+            details={"candidate_worktree": candidate_value},
+        )
+    actual_root = Path(repository_check.stdout.strip()).resolve()
+    if actual_root != candidate_worktree.resolve():
+        raise AssuranceError(
+            "automatic engineering correction requires the ledger candidate root",
+            code="ENGINEERING_CORRECTION_CANDIDATE_INVALID",
+            status="NEEDS_USER",
+            details={
+                "candidate_worktree": candidate_value,
+                "git_worktree_root": str(actual_root),
+            },
+        )
+
+    worktree_head = git(candidate_worktree, "rev-parse", "HEAD", check=False)
+    worktree_branch = git(
+        candidate_worktree, "symbolic-ref", "--quiet", "HEAD", check=False
+    )
+    branch_result = git(
+        repo,
+        "rev-parse",
+        "--verify",
+        f"refs/heads/{candidate_branch}",
+        check=False,
+    )
+    try:
+        dirty = dirty_paths(candidate_worktree)
+    except StoreError as exc:
+        raise AssuranceError(
+            "automatic engineering correction could not inspect the candidate worktree",
+            code="ENGINEERING_CORRECTION_CANDIDATE_INVALID",
+            status="NEEDS_USER",
+            details={
+                "candidate_worktree": candidate_value,
+                "error": str(exc),
+            },
+        ) from exc
+    actual_head = worktree_head.stdout.strip() if worktree_head.returncode == 0 else None
+    actual_branch = (
+        worktree_branch.stdout.strip() if worktree_branch.returncode == 0 else None
+    )
+    branch_head = branch_result.stdout.strip() if branch_result.returncode == 0 else None
+    expected_branch = f"refs/heads/{candidate_branch}"
+    if (
+        actual_head != expected_head
+        or actual_branch != expected_branch
+        or branch_head != expected_head
+        or dirty
+    ):
+        raise AssuranceError(
+            "automatic engineering correction requires a clean, bound candidate",
+            code="ENGINEERING_CORRECTION_CANDIDATE_INVALID",
+            status="NEEDS_USER",
+            details={
+                "expected_head": expected_head,
+                "actual_head": actual_head,
+                "expected_branch": expected_branch,
+                "actual_branch": actual_branch,
+                "branch_head": branch_head,
+                "dirty_paths": dirty,
+            },
+        )
 
 
 def _json_pointer_parts(pointer: str) -> list[str]:

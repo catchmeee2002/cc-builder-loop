@@ -7714,6 +7714,10 @@ def apply_engineering_correction(
                 code="ENGINEERING_CORRECTION_PROBLEM_MISMATCH",
                 status="FAIL",
             )
+        # Re-check the candidate immediately before mutating the ledger.  The
+        # preview is intentionally read-only, but a Git conflict or branch
+        # drift can appear between the driver decision and this transaction.
+        engineering_correction_preview(repo, ledger, problem)
         old_digest = ledger["digests"]["assurance"]
         replacement = copy.deepcopy(ledger["facets"])
         replacement["assurance"] = copy.deepcopy(

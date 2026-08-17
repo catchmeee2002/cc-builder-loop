@@ -250,7 +250,8 @@ def validate_capture(value: Any, *, expected_repository: str | None = None) -> d
 
 
 def parse_capture(text: str, *, expected_repository: str | None = None) -> dict[str, Any] | None:
-    declared = set(re.findall(r"<!--\s*/?(issue-capture:v[0-9]+)\s*-->", text))
+    declared_matches = re.findall(r"<!--\s*/?(issue-capture:v[0-9]+)\s*-->", text)
+    declared = set(declared_matches)
     unknown = sorted(declared - {CAPTURE_MARKER, CAPTURE_V2_MARKER})
     if unknown:
         raise meta.RunnerError("input", "issue-capture schema version 非法", meta.EXIT_INPUT)
@@ -260,10 +261,19 @@ def parse_capture(text: str, *, expected_repository: str | None = None) -> dict[
         if (value := parse_marker_json(text, marker)) is not None
     ]
     if not values:
+        if declared:
+            raise meta.RunnerError(
+                "input", "issue-capture marker 格式非法或无法唯一解析", meta.EXIT_INPUT
+            )
         return None
     if len(values) != 1:
         raise meta.RunnerError("input", "issue-capture v1/v2 不得混用", meta.EXIT_INPUT)
     version, value = values[0]
+    expected_marker = CAPTURE_MARKER if version == 1 else CAPTURE_V2_MARKER
+    if declared != {expected_marker} or len(declared_matches) != 2:
+        raise meta.RunnerError(
+            "input", "issue-capture marker 格式非法或无法唯一解析", meta.EXIT_INPUT
+        )
     if _capture_schema_version(value) != version:
         raise meta.RunnerError("input", "issue-capture marker 与字段版本漂移", meta.EXIT_INPUT)
     return validate_capture(value, expected_repository=expected_repository)
