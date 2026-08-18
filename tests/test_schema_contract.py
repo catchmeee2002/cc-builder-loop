@@ -16,6 +16,7 @@ from harness import (
     start_run,
     write_plan,
 )
+from runtime.codex_builder_loop.assurance_v4.models import validate_lineage, validate_telemetry
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -70,6 +71,91 @@ class LedgerSchemaContractTest(unittest.TestCase):
         ledger = load_ledger(run_path)
         self.validator.validate(ledger)
         self.assertEqual(ledger["plan"]["builder_write"], ["README.md"])
+
+    def test_telemetry_profile_and_duration_breakdown_are_schema_bound(self) -> None:
+        value = {
+            "schema_version": 1,
+            "elapsed_ms": 12,
+            "active_stage": "machine",
+            "stages": [
+                {
+                    "name": "machine",
+                    "attempts": 1,
+                    "completed_attempts": 1,
+                    "failed_attempts": 0,
+                    "retry_count": 0,
+                    "total_duration_ms": 12,
+                    "last_failure_code": None,
+                }
+            ],
+            "candidate_changes": 0,
+            "evidence_attempts": {"machine": 1},
+            "evidence_replays": 0,
+            "retries": {"total": 0, "by_failure_code": {}},
+            "profile": {
+                "requested": "compact",
+                "effective": "compact",
+                "escalation_reason": None,
+            },
+            "duration_breakdown": {
+                "implementation_ms": 0,
+                "verification_ms": 12,
+                "orchestration_ms": 0,
+                "waiting_ms": 0,
+            },
+        }
+        self.assertEqual(validate_telemetry(value), value)
+
+    def test_lineage_schema_keeps_task_pressure_and_cost_ancestry_derived(self) -> None:
+        stage = {
+            "name": "machine",
+            "attempts": 0,
+            "completed_attempts": 0,
+            "failed_attempts": 0,
+            "retry_count": 0,
+            "total_duration_ms": 0,
+            "last_failure_code": None,
+        }
+        cumulative = {
+            "elapsed_ms": 0,
+            "stages": [stage],
+            "candidate_changes": 0,
+            "evidence_attempts": {},
+            "evidence_replays": 0,
+            "retries": {"total": 0, "by_failure_code": {}},
+        }
+        value = {
+            "schema_version": 1,
+            "root_run_id": "root-run",
+            "current_run_id": "root-run",
+            "complete": True,
+            "health": "healthy",
+            "revision_count": 1,
+            "transition_count": 0,
+            "transitions": [],
+            "non_semantic_transition_count": 0,
+            "transition_category_counts": {},
+            "cumulative_telemetry": cumulative,
+            "task_root_run_id": "root-run",
+            "cost_ancestry": [],
+            "task_revision_count": 1,
+            "task_transition_count": 0,
+            "task_non_semantic_transition_count": 0,
+            "task_transition_category_counts": {},
+            "task_cumulative_telemetry": cumulative,
+            "task_pressure_digest": "a" * 64,
+            "continuation_grant": None,
+            "problem_disposition_counts": {
+                "included": 0,
+                "handled_elsewhere": 0,
+                "discarded": 0,
+            },
+            "open_problem_snapshot_digest": "b" * 64,
+            "open_problem_keys": [],
+            "lineage_digest": "c" * 64,
+            "pressure_digest": "d" * 64,
+        }
+        self.assertEqual(validate_lineage(value), value)
 
 
 if __name__ == "__main__":

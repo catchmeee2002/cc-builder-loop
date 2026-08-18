@@ -186,6 +186,18 @@ class RuntimePreparationContractTest(unittest.TestCase):
         self.assertEqual(validated["runtime_support"]["mode"], "external")
         self.assertEqual(validated["runtime_support"]["affected_paths"], [])
 
+    def test_finalized_runtime_support_manifest_contains_lineage_and_retrospective_once(self) -> None:
+        manifest = json.loads((ROOT / MANIFEST_PATH).read_text(encoding="utf-8"))
+        patterns = manifest["support_sets"][0]["path_patterns"]
+        self.assertEqual(
+            patterns.count("schema/assurance-v4-lineage.schema.json"),
+            1,
+        )
+        self.assertEqual(
+            patterns.count("schema/assurance-v4-retrospective.schema.json"),
+            1,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

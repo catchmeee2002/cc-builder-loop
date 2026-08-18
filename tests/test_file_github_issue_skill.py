@@ -14,9 +14,9 @@ def compact(text: str) -> str:
     return re.sub(r"\s+", "", text).lower()
 
 
-def contract(text: str, name: str) -> dict:
-    start = f"<!-- {name}:v1 -->"
-    end = f"<!-- /{name}:v1 -->"
+def contract(text: str, name: str, version: int = 1) -> dict:
+    start = f"<!-- {name}:v{version} -->"
+    end = f"<!-- /{name}:v{version} -->"
     block = text.split(start, 1)[1].split(end, 1)[0]
     payload = re.search(r"```json\s*(.*?)\s*```", block, flags=re.DOTALL)
     if payload is None:
@@ -70,18 +70,28 @@ class FileGithubIssueSkillTest(unittest.TestCase):
     def test_capture_and_resolution_contracts_are_separated(self) -> None:
         skill = SKILL_PATH.read_text()
 
-        self.assertIn("<!-- issue-capture:v1 -->", skill)
-        self.assertIn("<!-- /issue-capture:v1 -->", skill)
+        self.assertIn("<!-- issue-capture:v2 -->", skill)
+        self.assertIn("<!-- /issue-capture:v2 -->", skill)
         self.assertIn("<!-- issue-resolution:v1 -->", skill)
         self.assertIn("<!-- /issue-resolution:v1 -->", skill)
+        self.assertIn("历史 `issue-capture:v1` 只读兼容", skill)
         self.assertIn("incident_head", skill)
+        self.assertIn("builder_loop_runtime", skill)
         self.assertIn("resolved_head", skill)
         self.assertIn("human_decision", skill)
         self.assertIn("acceptance", skill)
         self.assertIn("创建后不要改写原始正文", skill)
         self.assertEqual(
-            set(contract(skill, "issue-capture")),
-            {"captured_at", "repository", "incident_head", "branch", "dirty", "root_cause_status"},
+            set(contract(skill, "issue-capture", 2)),
+            {
+                "captured_at",
+                "repository",
+                "incident_head",
+                "branch",
+                "dirty",
+                "root_cause_status",
+                "builder_loop_runtime",
+            },
         )
         self.assertEqual(
             set(contract(skill, "issue-resolution")),

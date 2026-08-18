@@ -46,6 +46,7 @@ class RetrospectiveContractTest(unittest.TestCase):
                     "mission_revision": 1,
                     "ledger_digest": "a" * 64,
                     "runtime_identity": {
+                        "builder_loop_version": "0.1.0",
                         "adapter": "codex",
                         "adapter_commit": "b" * 40,
                         "adapter_dirty": False,
@@ -155,6 +156,10 @@ class RetrospectiveContractTest(unittest.TestCase):
         self.assertIn(
             "required_user_block",
             RETROSPECTIVE_SCHEMA["$defs"]["status"]["properties"],
+        )
+        self.assertEqual(
+            snapshot["runs"][0]["runtime_identity"]["builder_loop_version"],
+            "0.1.0",
         )
 
         invalid_advisory = {

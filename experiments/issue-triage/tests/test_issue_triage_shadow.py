@@ -162,6 +162,74 @@ class IssueTriageShadowTests(unittest.TestCase):
                 shadow.CAPTURE_MARKER,
             )
 
+    def test_v2_capture_preserves_runtime_identity_and_keeps_v1_readable(self):
+        head = "c" * 40
+        body = f"""<!-- issue-capture:v2 -->
+```json
+{{
+  "captured_at": "2026-08-18T00:00:00Z",
+  "repository": "catch/repo",
+  "incident_head": "{head}",
+  "branch": "main",
+  "dirty": false,
+  "root_cause_status": "unknown",
+  "builder_loop_runtime": {{
+    "builder_loop_version": "0.1.0",
+    "adapter": "codex",
+    "adapter_commit": "{'d' * 40}",
+    "adapter_dirty": false,
+    "capture_status": "captured"
+  }}
+}}
+```
+<!-- /issue-capture:v2 -->"""
+
+        capture = shadow.parse_capture(body, expected_repository="catch/repo")
+
+        self.assertEqual(capture["incident_head"], head)
+        self.assertEqual(capture["builder_loop_runtime"]["builder_loop_version"], "0.1.0")
+        self.assertEqual(capture["builder_loop_runtime"]["capture_status"], "captured")
+
+        # Historical v1 remains readable, but a new v2 body cannot carry both
+        # marker versions or duplicate runtime identity blocks.
+        self.assertEqual(
+            shadow.parse_capture(
+                capture_body("catch/repo", "a" * 40, dirty=False),
+                expected_repository="catch/repo",
+            )["incident_head"],
+            "a" * 40,
+        )
+        with self.assertRaises(evaluator.meta.RunnerError):
+            shadow.parse_capture(
+                body + capture_body("catch/repo", "a" * 40, dirty=False),
+                expected_repository="catch/repo",
+            )
+
+    def test_v2_capture_rejects_drifted_or_malformed_runtime_identity(self):
+        head = "e" * 40
+        body = f"""<!-- issue-capture:v2 -->
+```json
+{{
+  "captured_at": "2026-08-18T00:00:00Z",
+  "repository": "catch/repo",
+  "incident_head": "{head}",
+  "branch": "main",
+  "dirty": false,
+  "root_cause_status": "unknown",
+  "builder_loop_runtime": {{
+    "builder_loop_version": "0.1.0",
+    "adapter": "codex",
+    "adapter_commit": "not-a-commit",
+    "adapter_dirty": false,
+    "capture_status": "captured"
+  }}
+}}
+```
+<!-- /issue-capture:v2 -->"""
+
+        with self.assertRaises(evaluator.meta.RunnerError):
+            shadow.parse_capture(body, expected_repository="catch/repo")
+
     def test_remote_credentials_are_redacted_and_slug_is_stable(self):
         remote = "https://user:ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ@github.com/catch/repo.git"
 
