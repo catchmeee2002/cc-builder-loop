@@ -131,7 +131,10 @@ class CompactProfileContractTest(unittest.TestCase):
         with self.assertRaises(ContractError) as raised:
             core.validate(contract, self.repo)
 
-        self.assertIn(raised.exception.status, {"FAIL", "NEEDS_USER"})
+        self.assertEqual(
+            str(raised.exception),
+            "compact Assurance profile is not eligible for this contract",
+        )
         self.assertFalse((self.repo / ".git" / "builder-loop-assurance-v4").exists())
 
     def test_compact_start_projects_requested_and_effective_profile(self) -> None:
@@ -164,7 +167,10 @@ class CompactProfileContractTest(unittest.TestCase):
         with self.assertRaises(ContractError) as raised:
             core.validate(contract, self.repo)
 
-        self.assertIn(raised.exception.status, {"FAIL", "NEEDS_USER"})
+        self.assertEqual(
+            str(raised.exception),
+            "compact Assurance profile is not eligible for this contract",
+        )
 
     def test_profile_fields_are_not_a_second_runtime_state_store(self) -> None:
         contract = compact_contract()
