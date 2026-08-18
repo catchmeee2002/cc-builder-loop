@@ -948,11 +948,21 @@ def save_ledger(repo: Path, ledger: dict[str, Any]) -> None:
     compatibility = runtime_identity_compatibility(
         ledger.get("runtime_identity", unavailable_runtime_identity())
     )
+    # Legacy v1/v2 ledgers predate runtime identity capture entirely.  Their
+    # normalized ``legacy-unavailable`` identity is an honest absence of
+    # historical data, not an incompatible runtime version.  Allow the
+    # normal next-write migration/continuation to persist that identity while
+    # keeping unknown or incompatible captured versions fail-closed.
+    safe_historical_missing = compatibility["state"] == "historical-missing"
     safe_previous_terminal = (
         compatibility["state"] == "previous-terminal-only"
         and ledger.get("phase") not in ACTIVE_PHASES
     )
-    if compatibility["state"] != "current" and not safe_previous_terminal:
+    if (
+        compatibility["state"] != "current"
+        and not safe_historical_missing
+        and not safe_previous_terminal
+    ):
         raise RuntimeProblem(
             "runtime identity is not compatible with active ledger mutation",
             result="NEEDS_USER",
