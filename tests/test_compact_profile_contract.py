@@ -9,6 +9,7 @@ from pathlib import Path
 
 from harness import cleanup_repo, commit_all, init_repo
 from runtime.codex_builder_loop.assurance_v4 import core
+from runtime.codex_builder_loop.assurance_v4.models import ContractError
 from runtime.codex_builder_loop.assurance_v4.store import read_ledger
 
 
@@ -127,7 +128,7 @@ class CompactProfileContractTest(unittest.TestCase):
             ]
         )
 
-        with self.assertRaises(core.AssuranceError) as raised:
+        with self.assertRaises(ContractError) as raised:
             core.validate(contract, self.repo)
 
         self.assertIn(raised.exception.status, {"FAIL", "NEEDS_USER"})
@@ -160,7 +161,7 @@ class CompactProfileContractTest(unittest.TestCase):
         contract = compact_contract()
         contract["assurance"]["reviewer_preflight"] = True
 
-        with self.assertRaises(core.AssuranceError) as raised:
+        with self.assertRaises(ContractError) as raised:
             core.validate(contract, self.repo)
 
         self.assertIn(raised.exception.status, {"FAIL", "NEEDS_USER"})
