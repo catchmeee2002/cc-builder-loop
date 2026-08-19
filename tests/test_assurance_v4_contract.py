@@ -2707,6 +2707,7 @@ class AssuranceV4ContractTest(unittest.TestCase):
 
     def test_v4_runtime_identity_is_frozen_and_legacy_missing_values_normalize_read_only(self) -> None:
         runtime_fields = {
+            "builder_loop_version",
             "adapter",
             "adapter_commit",
             "adapter_dirty",
@@ -2815,7 +2816,7 @@ class AssuranceV4ContractTest(unittest.TestCase):
             self.assertEqual(unavailable["adapter"], "codex")
             self.assertIsNone(unavailable["adapter_commit"])
             self.assertIsNone(unavailable["adapter_dirty"])
-            self.assertEqual(unavailable["capture_status"], "unavailable")
+            self.assertEqual(unavailable["capture_status"], "partial")
 
     def test_legacy_v4_ledger_normalizes_new_optional_reliability_fields_read_only(self) -> None:
         run_id = "legacy-reliability-fields"

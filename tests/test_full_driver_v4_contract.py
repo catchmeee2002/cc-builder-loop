@@ -1345,6 +1345,7 @@ class FullDriverV4ContractTest(unittest.TestCase):
         blocked = driver.next_action(self.repo, run_id)
 
         transitioned_identity = {
+            "builder_loop_version": "0.1.0",
             "adapter": "codex",
             "adapter_commit": "c" * 40,
             "adapter_dirty": False,
