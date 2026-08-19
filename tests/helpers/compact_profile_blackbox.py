@@ -6,10 +6,11 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
 
 from harness import CLI, cleanup_repo, fixture_runtime_env, init_repo, run_process  # noqa: E402
-from test_compact_profile_contract import compact_contract  # noqa: E402
+from tests.test_compact_profile_contract import compact_contract  # noqa: E402
 
 
 def main() -> int:

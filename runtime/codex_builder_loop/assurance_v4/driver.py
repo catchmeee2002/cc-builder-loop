@@ -293,17 +293,26 @@ def engineering_correction_preview(
     _assert_engineering_correction_candidate(repo, ledger)
     current_contract = ledger["facets"]
     old = current_contract["assurance"]
-    replacement_assurance = _apply_decision_changes(old, request.get("changes"))
-    if replacement_assurance == old:
+    # Decision pointers are absolute against the frozen contract.  Apply the
+    # proposed patch to that complete contract first, then prove that the
+    # resulting delta is confined to the Assurance facet.
+    replacement = _apply_decision_changes(current_contract, request.get("changes"))
+    if replacement == current_contract:
         raise AssuranceError(
             "engineering correction is a no-op",
             code="ENGINEERING_CORRECTION_NOOP",
             status="NEEDS_USER",
         )
-    replacement = copy.deepcopy(current_contract)
-    replacement["assurance"] = replacement_assurance
     replacement = validate_contract(replacement)
     new = replacement["assurance"]
+    for facet in ("mission", "authority", "execution"):
+        if replacement[facet] != current_contract[facet]:
+            raise AssuranceError(
+                "engineering correction must be confined to the Assurance facet",
+                code="ENGINEERING_CORRECTION_NON_ASSURANCE_CHANGE",
+                status="NEEDS_USER",
+                details={"facet": facet},
+            )
     if new.get("profile", "full") != old.get("profile", "full"):
         raise AssuranceError(
             "engineering correction cannot change the requested profile",
@@ -411,6 +420,13 @@ def _assert_engineering_correction_candidate(
     expected_head = execution.get("candidate_head")
     candidate_branch = ledger.get("candidate_branch")
     candidate_value = ledger.get("candidate_worktree")
+    # A correction can be raised before the first Builder checkpoint.  In
+    # that state the start transaction has already materialized a clean
+    # candidate worktree at target_start_head, but execution.candidate_head is
+    # intentionally still null.  Bind that pre-checkpoint state to the
+    # frozen target head below; any branch/worktree drift still fails closed.
+    if expected_head is None:
+        expected_head = ledger.get("target_start_head")
     if (
         not isinstance(expected_head, str)
         or not expected_head
