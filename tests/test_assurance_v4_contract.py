@@ -4670,6 +4670,66 @@ class AssuranceV4ContractTest(unittest.TestCase):
             self.load_ledger(run_path)["facets"]["mission"], mission_before
         )
 
+    def test_public_prerequisite_checkpoint_rejection_records_one_routable_problem(
+        self,
+    ) -> None:
+        run_id = "public-prerequisite-classification-problem"
+        contract = contract_for(self.repo)
+        contract["authority"]["public_prerequisites"] = ["src/calc.py"]
+        _started, run_path = self.start(run_id, contract=contract)
+
+        for _attempt in range(2):
+            rc, checkpointed, _stdout, _stderr = self.invoke(
+                "checkpoint-builder", "--repo", self.repo, "--run", run_id
+            )
+            self.assertEqual(rc, 0, checkpointed)
+            self.assertFalse(checkpointed["builder_checkpointed"])
+
+        ledger = self.load_ledger(run_path)
+        problems = [
+            item
+            for item in ledger["problems"]
+            if item["key"] == "public-prerequisite-classification-invalid"
+            and item["status"] == "open"
+        ]
+        self.assertEqual(len(problems), 1, problems)
+        problem = problems[0]
+        self.assertEqual(problem["owner"], "builder_loop")
+        self.assertEqual(
+            problem["candidate_head"],
+            ledger["facets"]["execution"]["candidate_head"],
+        )
+        details = json.loads(problem["details"])
+        self.assertEqual(details["authority_digest"], ledger["digests"]["authority"])
+        self.assertEqual(details["paths"], ["src/calc.py"])
+        self.assertEqual(
+            details["classification"],
+            [{"path": "src/calc.py", "source": "builder", "status": "deferred"}],
+        )
+        self.assertEqual(
+            details["classification_digest"],
+            canonical_digest(details["classification"]),
+        )
+        blocked_events = [
+            item
+            for item in ledger["events"]
+            if item["kind"] == "builder_checkpoint_blocked"
+        ]
+        self.assertEqual(len(blocked_events), 2)
+        self.assertTrue(
+            all(
+                item["details"]["problem_details_digest"]
+                == canonical_digest(details)
+                for item in blocked_events
+            )
+        )
+        rc, decision, _stdout, _stderr = self.invoke(
+            "driver-next", "--repo", self.repo, "--run", run_id
+        )
+        self.assertEqual(rc, 0, decision)
+        self.assertEqual(decision["status"], "NEEDS_USER")
+        self.assertEqual(decision["action"], "builder_loop_problem_decision")
+
     def test_nonconflicting_target_drift_rematerializes_without_mission_change(self) -> None:
         run_id = "rematerialize-clean"
         data, run_path = self.start(run_id)
@@ -4692,6 +4752,59 @@ class AssuranceV4ContractTest(unittest.TestCase):
         self.assertEqual(after["facets"]["mission"], before["facets"]["mission"])
         for kind in ("tester", "machine", "blackbox", "reviewer"):
             self.assertEqual(rematerialized["readiness"]["states"][kind], "stale")
+
+    def test_target_drift_new_tester_files_join_tester_manifest_not_builder_delta(
+        self,
+    ) -> None:
+        run_id = "target-drift-new-tester-files"
+        data, run_path = self.start(run_id)
+        candidate = Path(data["candidate_worktree"])
+        self.commit_candidate_change(run_id, run_path, candidate)
+        self.prepare_tester_source(run_id, run_path)
+
+        target_paths = [
+            "tests/test_target_contract.py",
+            "tests/test_target_driver.py",
+        ]
+        for path in target_paths:
+            target = self.repo / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(
+                f"def test_{target.stem.removeprefix('test_')}():\n    assert True\n",
+                encoding="utf-8",
+            )
+        target_advanced = commit_all(self.repo, "add independent target tester files")
+
+        rc, recomposed, _stdout, _stderr = self.invoke(
+            "recompose-candidate", "--repo", self.repo, "--run", run_id
+        )
+        self.assertEqual(rc, 0, recomposed)
+        self.assertIsNone(recomposed.get("recomposition_intent"))
+        ledger = self.load_ledger(run_path)
+        execution = ledger["facets"]["execution"]
+        expected_tester = {
+            "tests/test_assurance_fixture.py",
+            *target_paths,
+        }
+        self.assertEqual(ledger["target_start_head"], target_advanced)
+        self.assertEqual(set(execution["tester_files"]), expected_tester)
+        self.assertEqual(
+            {item["path"] for item in execution["tester_source"]["files"]},
+            expected_tester,
+        )
+        self.assertTrue(
+            expected_tester.isdisjoint(execution["builder_files"]),
+            execution,
+        )
+        for path in target_paths:
+            target_blob = git(self.repo, "rev-parse", f"{target_advanced}:{path}")
+            source_blob = next(
+                item["blob"]
+                for item in execution["tester_source"]["files"]
+                if item["path"] == path
+            )
+            self.assertEqual(source_blob, target_blob)
+            self.assertTrue((candidate / path).is_file())
 
     def test_superseding_recomposition_preserves_carryover_tester_ownership(self) -> None:
         source_run = "carryover-tester-source"
@@ -5574,6 +5687,13 @@ class RejectedCheckpointSuccessorContractTest(unittest.TestCase):
         self.assertFalse(observed["roles_reused"])
         self.assertFalse(observed["evidence_reused"])
         self.assertFalse(observed["dispatch_reused"])
+        self.assertEqual(observed["target_problem"], observed["source_problem"])
+        self.assertEqual(
+            observed["target_problem_snapshot_digest"],
+            observed["source_problem_snapshot_digest"],
+        )
+        self.assertEqual(observed["next_action"]["status"], "CONTINUE")
+        self.assertEqual(observed["next_action"]["action"], "builder_implement")
 
     def test_rejected_successor_accepts_only_the_exact_bound_tester_blob(self) -> None:
         with tempfile.TemporaryDirectory(

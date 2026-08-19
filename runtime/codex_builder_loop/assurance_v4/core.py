@@ -110,6 +110,9 @@ PROOF_FAILURE_VOLATILE_DETAIL_KEYS = frozenset(
     {"duration_ms", "log_path", "log_sha256", "log_tail"}
 )
 RUNTIME_PREPARATION_PROBLEM_KEY = "runtime-preparation-required"
+PUBLIC_PREREQUISITE_CLASSIFICATION_PROBLEM_KEY = (
+    "public-prerequisite-classification-invalid"
+)
 RUNTIME_PREPARATION_ERROR_CODES = frozenset(
     {
         "RUNTIME_PREPARATION_REQUIRED",
@@ -1214,6 +1217,11 @@ def start(
                         status="NEEDS_USER",
                     )
                 source_by_key = {item["key"]: item for item in source_problems}
+                source_open_by_key = {
+                    item["key"]: copy.deepcopy(item)
+                    for item in source_ledger.get("problems", [])
+                    if isinstance(item, Mapping) and item.get("status") == "open"
+                }
                 dispositions = prior_problems.get("items", [])
                 disposition_by_key = {item["key"]: item for item in dispositions}
                 if set(disposition_by_key) != set(source_by_key):
@@ -1236,7 +1244,15 @@ def start(
                         }
                     )
                     if decision["disposition"] == "included":
-                        inherited_problems.append(copy.deepcopy(source_by_key[key]))
+                        inherited = source_open_by_key.get(key)
+                        if not isinstance(inherited, dict):
+                            raise AssuranceError(
+                                "included source problem is not present in the source ledger",
+                                code="PRIOR_PROBLEM_SOURCE_MISSING",
+                                status="NEEDS_USER",
+                                details={"key": key},
+                            )
+                        inherited_problems.append(inherited)
                 revision_transitions.append(
                     _recorded_transition(
                         transition,
@@ -1442,14 +1458,7 @@ def start(
                 "supersede_intent": None,
                 "abandon_intent": None,
                 "problems": [
-                    {
-                        **problem,
-                        "status": "open",
-                        "producer": None,
-                        "candidate_head": candidate_head,
-                        "recorded_at": created_at,
-                    }
-                    for problem in inherited_problems
+                    copy.deepcopy(problem) for problem in inherited_problems
                 ],
                 "revision_transitions": revision_transitions,
                 "problem_dispositions": problem_dispositions,
@@ -4278,6 +4287,45 @@ def record_retrospective(
     return retrospective_status(repo, owner_session_id)
 
 
+def _proof_tester_scope(
+    repo: Path,
+    source_head: Any,
+    tester_patterns: Sequence[str],
+) -> list[dict[str, str]] | None:
+    if (
+        not isinstance(source_head, str)
+        or re.fullmatch(r"[0-9a-f]{40}", source_head) is None
+        or not commit_exists(repo, source_head)
+    ):
+        return None
+    try:
+        from ..core import proof_manifest
+
+        entries, _manifest_digest = proof_manifest(
+            repo,
+            source_head,
+            tester_patterns,
+        )
+    except Exception:
+        return None
+    scope: list[dict[str, str]] = []
+    for item in entries:
+        if (
+            not isinstance(item, Mapping)
+            or item.get("type") != "blob"
+            or item.get("mode") not in {"100644", "100755"}
+            or not isinstance(item.get("path"), str)
+            or not isinstance(item.get("oid"), str)
+        ):
+            return None
+        path = str(item["path"])
+        blob = str(item["oid"])
+        if _regular_blob_at(repo, source_head, path) != blob:
+            return None
+        scope.append({"path": path, "blob": blob})
+    return scope
+
+
 def evidence_state(ledger: Mapping[str, Any], kind: str) -> str:
     record = ledger.get("evidence", {}).get(kind)
     if not isinstance(record, dict):
@@ -4308,7 +4356,6 @@ def evidence_state(ledger: Mapping[str, Any], kind: str) -> str:
         )
         execution = ledger.get("facets", {}).get("execution", {})
         source = execution.get("tester_source") if isinstance(execution, Mapping) else None
-        source_files = source.get("files") if isinstance(source, Mapping) else None
         authority = ledger.get("facets", {}).get("authority", {})
         builder_patterns = (
             authority.get("builder_write", [])
@@ -4320,19 +4367,24 @@ def evidence_state(ledger: Mapping[str, Any], kind: str) -> str:
             if isinstance(authority, Mapping)
             else []
         )
-        tester_paths = (
-            [
-                {"path": item.get("path"), "blob": item.get("blob")}
-                for item in source_files
-            ]
-            if isinstance(source_files, list)
-            and all(isinstance(item, Mapping) for item in source_files)
-            else []
-        )
         expected_source_head = source.get("head") if isinstance(source, Mapping) else None
+        tester_paths = _proof_tester_scope(
+            Path(ledger["repo_root"]),
+            expected_source_head,
+            tester_patterns,
+        )
+        if tester_paths is None:
+            return "stale"
         candidate_head = (
             execution.get("candidate_head") if isinstance(execution, Mapping) else None
         )
+        candidate_tester_paths = _proof_tester_scope(
+            Path(ledger["repo_root"]),
+            candidate_head,
+            tester_patterns,
+        )
+        if candidate_tester_paths != tester_paths:
+            return "stale"
         tester_agent = (
             execution.get("agents", {}).get("tester")
             if isinstance(execution, Mapping)
@@ -7421,6 +7473,19 @@ def _proof_record_replayable(
         != digest({"spec": spec, "results": results})
     ):
         return False
+    if isinstance(repo, Path):
+        source_scope = _proof_tester_scope(
+            repo,
+            details["source_head"],
+            tester_patterns,
+        )
+        candidate_scope = _proof_tester_scope(
+            repo,
+            candidate_head,
+            tester_patterns,
+        )
+        if source_scope is None or candidate_scope != source_scope:
+            return False
     return all(
         _proof_group_replayable(
             group,
@@ -7516,15 +7581,19 @@ def _driver_evidence_view(ledger: Mapping[str, Any]) -> dict[str, Any]:
     ):
         return evidence
     source = ledger.get("facets", {}).get("execution", {}).get("tester_source")
-    tester_paths: list[dict[str, str]] = []
-    if isinstance(source, Mapping):
-        tester_paths = [
-            {"path": item["path"], "blob": item["blob"]}
-            for item in source.get("files", [])
-            if isinstance(item, Mapping)
-            and isinstance(item.get("path"), str)
-            and isinstance(item.get("blob"), str)
-        ]
+    authority = ledger.get("facets", {}).get("authority", {})
+    tester_patterns = (
+        authority.get("tester_write", [])
+        if isinstance(authority, Mapping)
+        else []
+    )
+    tester_paths = _proof_tester_scope(
+        Path(str(ledger["repo_root"])),
+        source.get("head") if isinstance(source, Mapping) else None,
+        tester_patterns,
+    )
+    if tester_paths is None:
+        return evidence
     machine_head: str | None = None
     if any(group.get("method") == "reviewed-boundaries" for group in groups):
         machine = ledger.get("evidence", {}).get("machine")
@@ -8195,6 +8264,14 @@ def _close_problems(ledger: dict[str, Any], owner: str, resolution: str) -> None
             item["resolved_at"] = now()
 
 
+def _close_problem_key(ledger: dict[str, Any], key: str, resolution: str) -> None:
+    for item in ledger.get("problems", []):
+        if item.get("key") == key and item.get("status") == "open":
+            item["status"] = "resolved"
+            item["resolution"] = resolution
+            item["resolved_at"] = now()
+
+
 def _record_runtime_preparation_problem(
     ledger: dict[str, Any],
     *,
@@ -8238,12 +8315,103 @@ def _record_runtime_preparation_problem(
     )
 
 
+def _record_public_prerequisite_classification_problem(
+    ledger: dict[str, Any],
+    *,
+    previous_candidate_head: str | None,
+    candidate_head: str,
+    classification: Sequence[Mapping[str, str]],
+) -> str:
+    key = PUBLIC_PREREQUISITE_CLASSIFICATION_PROBLEM_KEY
+    classification_value = [copy.deepcopy(dict(item)) for item in classification]
+    paths = sorted(
+        str(item["path"])
+        for item in classification_value
+        if item.get("status") != "ready"
+    )
+    details_value = {
+        "code": "PUBLIC_PREREQUISITE_CLASSIFICATION_INVALID",
+        "previous_candidate_head": previous_candidate_head,
+        "candidate_head": candidate_head,
+        "authority_digest": ledger["digests"]["authority"],
+        "paths": paths,
+        "classification": classification_value,
+        "classification_digest": digest(classification_value),
+    }
+    details_digest = digest(details_value)
+    existing = [
+        item
+        for item in ledger.get("problems", [])
+        if isinstance(item, Mapping)
+        and item.get("key") == key
+        and item.get("status") == "open"
+    ]
+    if existing:
+        if len(existing) != 1 or existing[0].get("candidate_head") != candidate_head:
+            raise AssuranceError(
+                "public prerequisite classification problem identity changed",
+                code="PUBLIC_PREREQUISITE_CLASSIFICATION_PROBLEM_CONFLICT",
+                status="NEEDS_USER",
+                details={"candidate_head": candidate_head, "problem_count": len(existing)},
+            )
+        try:
+            existing_details = json.loads(str(existing[0]["details"]))
+        except json.JSONDecodeError as exc:
+            raise AssuranceError(
+                "public prerequisite classification problem details are malformed",
+                code="PUBLIC_PREREQUISITE_CLASSIFICATION_PROBLEM_CONFLICT",
+                status="NEEDS_USER",
+            ) from exc
+        if existing_details != details_value:
+            raise AssuranceError(
+                "public prerequisite classification facts changed",
+                code="PUBLIC_PREREQUISITE_CLASSIFICATION_PROBLEM_CONFLICT",
+                status="NEEDS_USER",
+                details={
+                    "candidate_head": candidate_head,
+                    "recorded": existing_details,
+                    "expected": details_value,
+                },
+            )
+        return digest(existing_details)
+    builder = ledger["facets"]["execution"].get("agents", {}).get("builder")
+    producer = (
+        {"role": "builder", **copy.deepcopy(builder)}
+        if isinstance(builder, Mapping)
+        else None
+    )
+    ledger.setdefault("problems", []).append(
+        {
+            "key": key,
+            "summary": "Public prerequisite classification blocks Builder checkpoint",
+            "details": json.dumps(
+                details_value,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+            "owner": "builder_loop",
+            "status": "open",
+            "producer": producer,
+            "candidate_head": candidate_head,
+            "recorded_at": now(),
+        }
+    )
+    append_event(
+        ledger,
+        "problems_recorded",
+        {"role": "builder", "keys": [key]},
+    )
+    return details_digest
+
+
 def _validated_builder_files(
     repo: Path,
     ledger: Mapping[str, Any],
     *,
     candidate: str,
     files: Sequence[str],
+    trusted_tester_manifest: Mapping[str, str] | None = None,
 ) -> list[str]:
     execution = ledger["facets"]["execution"]
     authority = ledger["facets"]["authority"]
@@ -8265,6 +8433,13 @@ def _validated_builder_files(
         item["path"]: item["blob"]
         for item in (execution.get("tester_source") or {}).get("files", [])
     }
+    if trusted_tester_manifest is not None:
+        tester_manifest.update(
+            {
+                str(path): str(blob)
+                for path, blob in trusted_tester_manifest.items()
+            }
+        )
     tester_files = set(execution.get("tester_files", []))
     carryover_manifest = {
         item["path"]: item["blob"]
@@ -8389,6 +8564,14 @@ def checkpoint_builder(repo_value: str | Path, run_value: str) -> dict[str, Any]
             execution["builder_files"] = builder_files
             ledger["builder_checkpointed"] = False
             ledger["digests"] = facet_digests(ledger["facets"])
+            problem_details_digest = (
+                _record_public_prerequisite_classification_problem(
+                    ledger,
+                    previous_candidate_head=previous,
+                    candidate_head=candidate,
+                    classification=public_classification,
+                )
+            )
             append_event(
                 ledger,
                 "builder_checkpoint_blocked",
@@ -8397,6 +8580,10 @@ def checkpoint_builder(repo_value: str | Path, run_value: str) -> dict[str, Any]
                     "old_head": previous,
                     "candidate_head": candidate,
                     "paths": unready_public,
+                    "authority_digest": ledger["digests"]["authority"],
+                    "classification": copy.deepcopy(public_classification),
+                    "classification_digest": digest(public_classification),
+                    "problem_details_digest": problem_details_digest,
                 },
             )
             save_ledger(repo, ledger)
@@ -8428,6 +8615,16 @@ def checkpoint_builder(repo_value: str | Path, run_value: str) -> dict[str, Any]
         execution["builder_files"] = builder_files
         ledger["builder_checkpointed"] = True
         ledger["digests"] = facet_digests(ledger["facets"])
+        _close_problem_key(
+            ledger,
+            RUNTIME_PREPARATION_PROBLEM_KEY,
+            f"checkpoint:{candidate}",
+        )
+        _close_problem_key(
+            ledger,
+            PUBLIC_PREREQUISITE_CLASSIFICATION_PROBLEM_KEY,
+            f"checkpoint:{candidate}",
+        )
         _close_problems(ledger, "builder", f"checkpoint:{candidate}")
         append_event(
             ledger,
@@ -10512,12 +10709,25 @@ def prove_tests(
                     code="PROOF_BEHAVIOR_COVERAGE_MISMATCH",
                 )
             )
-        source_manifest = {item["path"]: item["blob"] for item in tester_source["files"]}
+        tester_patterns = ledger["facets"]["authority"]["tester_write"]
+        tester_scope = _proof_tester_scope(
+            repo,
+            tester_source["head"],
+            tester_patterns,
+        )
+        if tester_scope is None:
+            fail(
+                AssuranceError(
+                    "Tester-owned proof scope cannot be derived from the frozen source",
+                    code="TEST_PROOF_MANIFEST_MISMATCH",
+                    status="FAIL",
+                )
+            )
+        source_manifest = {item["path"]: item["blob"] for item in tester_scope}
         mismatched = [
             path
             for path, blob in source_manifest.items()
-            if _blob_at(repo, tester_source["head"], path) != blob
-            or _blob_at(repo, candidate, path) != blob
+            if _regular_blob_at(repo, candidate, path) != blob
         ]
         if mismatched:
             fail(
@@ -10530,7 +10740,6 @@ def prove_tests(
             )
         from ..core import proof_test_source_path
 
-        tester_patterns = ledger["facets"]["authority"]["tester_write"]
         unbound_tests: list[dict[str, str]] = []
         for group in spec["groups"]:
             framework = capture(lambda: _proof_framework(list(group["argv"])))
@@ -12453,7 +12662,10 @@ def _recomposition_builder_paths(repo: Path, ledger: Mapping[str, Any], intent: 
     files = changed_files(repo, source_base, source_head)
     authority = ledger["facets"]["authority"]
     builder_files = sorted(
-        path for path in files if _matches(path, authority["builder_write"])
+        path
+        for path in files
+        if _matches(path, authority["builder_write"])
+        and not _matches(path, authority["tester_write"])
     )
     invalid = [
         path
@@ -12524,6 +12736,137 @@ def _validate_recomposition_tester_inputs(
         )
 
 
+def _recomposition_target_tester_manifest(
+    repo: Path,
+    ledger: Mapping[str, Any],
+    intent: Mapping[str, Any],
+) -> dict[str, str]:
+    if intent.get("kind") != "target_rematerialization":
+        return {}
+    authority = ledger["facets"]["authority"]
+    paths = sorted(
+        path
+        for path in changed_files(
+            repo,
+            str(intent["old_target_head"]),
+            str(intent["new_target_head"]),
+        )
+        if _matches(path, authority["tester_write"])
+    )
+    manifest: dict[str, str] = {}
+    unsupported: list[str] = []
+    for path in paths:
+        blob = _regular_blob_at(repo, str(intent["new_target_head"]), path)
+        if blob is None:
+            unsupported.append(path)
+        else:
+            manifest[path] = blob
+    if unsupported:
+        raise AssuranceError(
+            "target drift Tester input contains a deletion or non-file entry",
+            code="RECOMPOSITION_TARGET_TESTER_ENTRY_UNSUPPORTED",
+            status="NEEDS_USER",
+            details={"paths": unsupported},
+        )
+    return manifest
+
+
+def _recomposition_tester_manifest(
+    repo: Path,
+    ledger: Mapping[str, Any],
+    intent: Mapping[str, Any],
+    *,
+    tester_head: str,
+) -> list[dict[str, str]]:
+    execution = ledger["facets"]["execution"]
+    authority = ledger["facets"]["authority"]
+    expected: dict[str, set[str]] = {}
+
+    def bind(path: str, blob: str) -> None:
+        if _matches(path, authority["tester_write"]):
+            expected.setdefault(path, set()).add(blob)
+
+    source = execution.get("tester_source")
+    if isinstance(source, Mapping):
+        source_head = str(source["head"])
+        for item in source.get("files", []):
+            path = str(item["path"])
+            blob = str(item["blob"])
+            if _regular_blob_at(repo, source_head, path) != blob:
+                raise AssuranceError(
+                    "recomposition Tester source manifest drifted",
+                    code="RECOMPOSITION_TESTER_INPUT_UNBOUND",
+                    details={"paths": [path]},
+                )
+            bind(path, blob)
+
+    carryover = execution.get("carryover")
+    if isinstance(carryover, Mapping):
+        carryover_head = str(carryover["source_candidate_head"])
+        for item in carryover.get("files", []):
+            path = str(item["path"])
+            blob = str(item["blob"])
+            if not _matches(path, authority["tester_write"]):
+                continue
+            if _regular_blob_at(repo, carryover_head, path) != blob:
+                raise AssuranceError(
+                    "recomposition Tester carryover manifest drifted",
+                    code="RECOMPOSITION_TESTER_INPUT_UNBOUND",
+                    details={"paths": [path]},
+                )
+            bind(path, blob)
+
+    for path, blob in _recomposition_target_tester_manifest(
+        repo, ledger, intent
+    ).items():
+        bind(path, blob)
+
+    unbound_delta: list[str] = []
+    for path in _recomposition_tester_paths(repo, ledger, intent):
+        blob = _regular_blob_at(repo, tester_head, path)
+        if blob is None:
+            raise AssuranceError(
+                "recomposed Tester source lost a regular file",
+                code="RECOMPOSITION_TESTER_ENTRY_UNSUPPORTED",
+                details={"paths": [path]},
+            )
+        if path not in expected:
+            unbound_delta.append(path)
+    if unbound_delta:
+        raise AssuranceError(
+            "recomposed Tester source introduced an unbound path",
+            code="RECOMPOSITION_TESTER_INPUT_UNBOUND",
+            details={"paths": sorted(unbound_delta)},
+        )
+
+    manifest: list[dict[str, str]] = []
+    drifted: list[str] = []
+    unsupported: list[str] = []
+    for path in sorted(expected):
+        blob = _regular_blob_at(repo, tester_head, path)
+        if blob is None:
+            unsupported.append(path)
+            continue
+        expected_blobs = expected[path]
+        if len(expected_blobs) == 1 and blob not in expected_blobs:
+            drifted.append(path)
+            continue
+        manifest.append({"path": path, "blob": blob})
+    if unsupported:
+        raise AssuranceError(
+            "recomposed Tester manifest contains a deletion or non-file entry",
+            code="RECOMPOSITION_TESTER_ENTRY_UNSUPPORTED",
+            details={"paths": unsupported},
+        )
+    if drifted:
+        raise AssuranceError(
+            "recomposed Tester manifest blob drifted",
+            code="RECOMPOSITION_TESTER_BLOB_DRIFT",
+            details={"paths": drifted},
+        )
+    return manifest
+
+
 def _recomposition_tester_paths(repo: Path, ledger: Mapping[str, Any], intent: Mapping[str, Any]) -> list[str]:
     source_base = intent.get("source_tester_base")
     source_head = intent.get("source_tester_head")
@@ -12546,7 +12889,11 @@ def _recomposition_tester_paths(repo: Path, ledger: Mapping[str, Any], intent: M
             code="RECOMPOSITION_TESTER_AUTHORITY_VIOLATION",
             details={"paths": invalid},
         )
-    if source_head == intent.get("incoming_candidate_head"):
+    current_source = ledger["facets"]["execution"].get("tester_source")
+    bound_source_heads = {intent.get("incoming_candidate_head")}
+    if isinstance(current_source, Mapping):
+        bound_source_heads.add(current_source.get("head"))
+    if source_head in bound_source_heads:
         _validate_recomposition_tester_inputs(repo, ledger, intent, files)
     return files
 
@@ -12592,6 +12939,9 @@ def _commit_recomposition(repo: Path, ledger: dict[str, Any], intent: dict[str, 
     old_source = execution.get("tester_source")
     tester_head = intent.get("tester_head")
     tester_base = intent.get("publication_head") or intent["new_target_head"]
+    target_tester_manifest = _recomposition_target_tester_manifest(
+        repo, ledger, intent
+    )
     if isinstance(old_source, dict) and isinstance(tester_head, str):
         tester_worktree = Path(old_source["worktree"])
         if dirty_paths(tester_worktree):
@@ -12611,17 +12961,13 @@ def _commit_recomposition(repo: Path, ledger: dict[str, Any], intent: dict[str, 
             reset = git(tester_worktree, "reset", "--hard", tester_head, check=False)
             if reset.returncode != 0:
                 raise AssuranceError("Tester source CAS failed", code="RECOMPOSITION_TESTER_CAS_FAILED")
-        tester_files = _recomposition_tester_paths(repo, ledger, intent)
-        manifest: list[dict[str, str]] = []
-        for path in tester_files:
-            blob = _blob_at(repo, tester_head, path)
-            if blob is None:
-                raise AssuranceError(
-                    "recomposed Tester source lost a file",
-                    code="TESTER_SOURCE_BLOB_MISSING",
-                    details={"path": path},
-                )
-            manifest.append({"path": path, "blob": blob})
+        manifest = _recomposition_tester_manifest(
+            repo,
+            ledger,
+            intent,
+            tester_head=tester_head,
+        )
+        tester_files = [item["path"] for item in manifest]
         ledger.setdefault("retired_tester_sources", []).append(copy.deepcopy(old_source))
         execution["tester_source"] = {
             **old_source,
@@ -12636,7 +12982,19 @@ def _commit_recomposition(repo: Path, ledger: dict[str, Any], intent: dict[str, 
             carryover["files"] = [
                 item for item in carryover["files"] if item["path"] not in set(tester_files)
             ]
+    elif target_tester_manifest:
+        execution["tester_files"] = sorted(target_tester_manifest)
 
+    final_tester_manifest = {
+        str(item["path"]): str(item["blob"])
+        for item in (
+            execution.get("tester_source", {}).get("files", [])
+            if isinstance(execution.get("tester_source"), Mapping)
+            else []
+        )
+    }
+    if not final_tester_manifest:
+        final_tester_manifest = target_tester_manifest
     files = changed_files(repo, intent["new_target_head"], candidate_head)
     _assert_authorized_files(ledger["facets"], files)
     execution["builder_files"] = _validated_builder_files(
@@ -12644,7 +13002,17 @@ def _commit_recomposition(repo: Path, ledger: dict[str, Any], intent: dict[str, 
         ledger,
         candidate=candidate_head,
         files=files,
+        trusted_tester_manifest=final_tester_manifest,
     )
+    overlap = sorted(
+        set(execution["builder_files"]) & set(execution["tester_files"])
+    )
+    if overlap:
+        raise AssuranceError(
+            "recomposition assigned paths to both Builder and Tester",
+            code="RECOMPOSITION_OWNERSHIP_OVERLAP",
+            details={"paths": overlap},
+        )
     execution["candidate_head"] = candidate_head
     execution["version"] += 1
     ledger["target_start_head"] = intent["new_target_head"]

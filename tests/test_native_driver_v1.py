@@ -3052,6 +3052,194 @@ class NativeCoordinatorContractTest(unittest.TestCase):
         )
         self.assertEqual(result["evidence_report"], evidence)
 
+    def test_invalid_role_json_uses_bounded_retry_before_dispatch_completion(self) -> None:
+        action = {
+            "action": "builder_implement",
+            "action_id": "a" * 64,
+            "reason": "candidate_missing",
+        }
+        context = {
+            "run_id": "native-invalid-json",
+            "target_start_head": "1" * 40,
+            "candidate_worktree": str(ROOT),
+            "publication": None,
+            "evidence": {},
+            "problems": [],
+            "facets": {
+                "mission": {},
+                "authority": {},
+                "assurance": {},
+                "execution": {
+                    "agents": {
+                        "builder": {
+                            "agent_id": "builder-agent",
+                            "thread_id": "builder-thread",
+                        }
+                    },
+                    "tester_source": None,
+                },
+            },
+        }
+
+        class FakeCore:
+            def __init__(self) -> None:
+                self.calls: list[str] = []
+
+            def call(self, command: str, *args: str, input_value=None):
+                self.calls.append(command)
+                if command == "driver-context":
+                    return context
+                if command == "retry-dispatch":
+                    return {"status": "ACTIVE"}
+                return {"status": "ACTIVE"}
+
+        class FakeTransport:
+            def resume_thread(self, **_kwargs):
+                return None
+
+            def run_turn(self, **kwargs):
+                kwargs["on_started"]("turn-invalid")
+                return TurnResult(
+                    turn_id="turn-invalid",
+                    status="completed",
+                    text="{not-json",
+                )
+
+        core = FakeCore()
+        coordinator = NativeCoordinator(
+            repo=ROOT,
+            run_id="native-invalid-json",
+            core=core,
+            transport=FakeTransport(),
+            project_root=ROOT,
+        )
+        coordinator._run_agent_action(
+            action,
+            AGENT_ACTION_CAPABILITIES["builder_implement"],
+        )
+        self.assertIn("retry-dispatch", core.calls)
+        self.assertNotIn("complete-dispatch", core.calls)
+
+    def test_recovered_invalid_role_json_uses_same_retry_path(self) -> None:
+        action = {
+            "action": "builder_implement",
+            "action_id": "b" * 64,
+            "reason": "candidate_missing",
+        }
+        context = {
+            "target_start_head": "1" * 40,
+            "candidate_worktree": str(ROOT),
+            "publication": None,
+            "evidence": {},
+            "problems": [],
+            "facets": {
+                "mission": {},
+                "authority": {},
+                "assurance": {},
+                "execution": {
+                    "agents": {
+                        "builder": {
+                            "agent_id": "builder-agent",
+                            "thread_id": "builder-thread",
+                        }
+                    },
+                    "tester_source": None,
+                },
+            },
+        }
+
+        class FakeCore:
+            def __init__(self) -> None:
+                self.calls: list[str] = []
+
+            def call(self, command: str, *args: str, input_value=None):
+                self.calls.append(command)
+                return {"status": "ACTIVE"}
+
+        class FakeTransport:
+            def resume_thread(self, **_kwargs):
+                return None
+
+            def read_thread(self, _thread_id):
+                return {
+                    "turns": [
+                        {
+                            "id": "turn-invalid-recovered",
+                            "status": "completed",
+                            "items": [
+                                {"type": "agentMessage", "text": "{not-json"}
+                            ],
+                        }
+                    ]
+                }
+
+        core = FakeCore()
+        coordinator = NativeCoordinator(
+            repo=ROOT,
+            run_id="native-invalid-json-recovered",
+            core=core,
+            transport=FakeTransport(),
+            project_root=ROOT,
+        )
+        prompt = coordinator._prompt(action, "builder", context)
+        pending = {
+            "action_id": action["action_id"],
+            "action": action["action"],
+            "role": "builder",
+            "thread_id": "builder-thread",
+            "prompt_digest": digest(prompt),
+            "output_schema_digest": coordinator.output_schema_digest,
+            "state": "in_flight",
+            "attempt": 1,
+            "generation": 1,
+            "turn_id": "turn-invalid-recovered",
+        }
+        recovered = coordinator._recover_dispatch(
+            pending,
+            "builder",
+            context,
+            action,
+        )
+        self.assertIsNone(recovered)
+        self.assertIn("retry-dispatch", core.calls)
+        self.assertNotIn("complete-dispatch", core.calls)
+
+    def test_invalid_role_json_exhaustion_remains_needs_user(self) -> None:
+        class ExhaustingCore:
+            def call(self, command: str, *args: str, input_value=None):
+                if command == "retry-dispatch":
+                    raise CorePortError(
+                        "retry exhausted",
+                        payload={
+                            "status": "NEEDS_USER",
+                            "code": "NATIVE_DISPATCH_RETRY_EXHAUSTED",
+                        },
+                        returncode=1,
+                    )
+                raise AssertionError(command)
+
+        coordinator = NativeCoordinator(
+            repo=ROOT,
+            run_id="native-invalid-json-exhausted",
+            core=ExhaustingCore(),
+            transport=object(),
+            project_root=ROOT,
+        )
+        with self.assertRaises(CorePortError) as raised:
+            coordinator._parse_action_result_or_retry(
+                "tester_proof_diagnose",
+                TurnResult(
+                    turn_id="turn-invalid-exhausted",
+                    status="completed",
+                    text="{not-json",
+                ),
+                "c" * 64,
+            )
+        self.assertEqual(raised.exception.payload["status"], "NEEDS_USER")
+        self.assertEqual(
+            raised.exception.payload["code"], "NATIVE_DISPATCH_RETRY_EXHAUSTED"
+        )
+
     def test_retryable_live_turn_failure_schedules_same_dispatch(self) -> None:
         class FakeCore:
             def __init__(self) -> None:

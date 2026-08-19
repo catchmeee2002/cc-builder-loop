@@ -7,6 +7,8 @@ from typing import Any, Mapping
 
 from .core import (
     AssuranceError,
+    PUBLIC_PREREQUISITE_CLASSIFICATION_PROBLEM_KEY,
+    RUNTIME_PREPARATION_PROBLEM_KEY,
     _derive_lineage,
     _public_prerequisite_classification,
     _require_admission,
@@ -34,6 +36,41 @@ from .store import StoreError, branch_head, dirty_paths, git, read_ledger, resol
 
 
 TESTER_CORRECTION_LIMIT = 3
+
+
+def _included_execution_problem_keys(ledger: Mapping[str, Any]) -> set[str]:
+    return {
+        str(item["key"])
+        for item in ledger.get("problem_dispositions", [])
+        if isinstance(item, Mapping)
+        and item.get("target_run_id") == ledger.get("run_id")
+        and item.get("disposition") == "included"
+        and item.get("key") == RUNTIME_PREPARATION_PROBLEM_KEY
+    }
+
+
+def _recoverable_public_prerequisite_problem(problem: Mapping[str, Any]) -> bool:
+    """Keep partial Builder progress on the normal recovery path.
+
+    A rejected checkpoint with at least one prerequisite already produced by
+    the current Builder is recoverable: Driver must let that Builder continue
+    instead of routing the run to a user decision.  An all-deferred
+    classification remains a routable builder-loop problem, which prevents a
+    zero-progress dispatch loop.
+    """
+    if problem.get("key") != PUBLIC_PREREQUISITE_CLASSIFICATION_PROBLEM_KEY:
+        return False
+    try:
+        details = json.loads(str(problem["details"]))
+    except (KeyError, TypeError, json.JSONDecodeError):
+        return False
+    classification = details.get("classification")
+    return isinstance(classification, list) and any(
+        isinstance(item, Mapping)
+        and item.get("status") == "ready"
+        and item.get("source") == "builder"
+        for item in classification
+    )
 
 
 def _tester_correction_progress(ledger: Mapping[str, Any]) -> dict[str, Any]:
@@ -1402,11 +1439,13 @@ def next_action(
         and replacement.get("stage") == "awaiting_first_turn"
         else None
     )
+    included_execution_problem_keys = _included_execution_problem_keys(ledger)
     open_problems = [
         item
         for item in ledger.get("problems", [])
         if item.get("status") == "open"
         and item.get("key") != replacement_problem_key
+        and item.get("key") not in included_execution_problem_keys
     ]
     blocking_problems = [
         item
@@ -1418,6 +1457,21 @@ def next_action(
     if live_target != ledger["target_start_head"]:
         return decision("CONTINUE", "recompose_candidate", "target_drift")
     execution = ledger["facets"]["execution"]
+    recoverable_public_problem = any(
+        _recoverable_public_prerequisite_problem(item)
+        for item in open_problems
+    )
+    if recoverable_public_problem:
+        open_problems = [
+            item
+            for item in open_problems
+            if not _recoverable_public_prerequisite_problem(item)
+        ]
+        blocking_problems = [
+            item
+            for item in blocking_problems
+            if not _recoverable_public_prerequisite_problem(item)
+        ]
     candidate_worktree = Path(ledger["candidate_worktree"])
     candidate_ref = f"refs/heads/{ledger['candidate_branch']}"
     candidate_result = git(repo, "rev-parse", "--verify", candidate_ref, check=False)

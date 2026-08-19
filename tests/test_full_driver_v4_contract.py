@@ -2435,6 +2435,63 @@ class FullDriverV4ContractTest(unittest.TestCase):
             ledger["facets"]["execution"]["tester_source"]["head"], tester_before
         )
 
+    def test_proof_replay_uses_complete_frozen_tester_scope_without_rerun(self) -> None:
+        run_id = "proof-complete-tester-scope-replay"
+        preexisting_test = self.repo / "tests" / "test_uv_proof.py"
+        preexisting_test.parent.mkdir(parents=True, exist_ok=True)
+        preexisting_test.write_text(
+            "from src.calc import add\n\n"
+            "def test_observation():\n"
+            "    assert add(1, 2) == 3\n",
+            encoding="utf-8",
+        )
+        marker = self.artifacts / "proof-complete-scope-invoked"
+        launcher = self.make_uv_launcher(run_id, invocation_marker=marker)
+        run_path, tester, action = self.prepare_uv_proof_run(
+            run_id,
+            baseline_source="def add(a, b):\n    return a + b - 1\n",
+            candidate_source="def add(a, b):\n    return a + b\n",
+            test_files={
+                "tests/test_new_scope.py": (
+                    "def test_new_scope_fixture():\n    assert True\n"
+                )
+            },
+        )
+        spec_path = self.write_json(
+            "proof-complete-tester-scope.json",
+            self.uv_baseline_spec(launcher),
+        )
+        rc, proved = self.invoke(
+            "prove-tests",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--spec",
+            spec_path,
+            "--agent-id",
+            tester["agent_id"],
+            "--thread-id",
+            tester["thread_id"],
+            "--action-id",
+            action["action_id"],
+        )
+        self.assertEqual(rc, 0, proved)
+        ledger = self.load_ledger(run_path)
+        changed_manifest = {
+            item["path"]
+            for item in ledger["facets"]["execution"]["tester_source"]["files"]
+        }
+        self.assertNotIn("tests/test_uv_proof.py", changed_manifest)
+        invocations_before = marker.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(core.evidence_state(ledger, "proof"), "pass")
+        self.assertEqual(
+            marker.read_text(encoding="utf-8").splitlines(),
+            invocations_before,
+        )
+        decision = driver.next_action(self.repo, run_id)
+        self.assertNotEqual(decision.get("action"), "tester_proof", decision)
+
     def test_native_completed_proof_dispatch_replays_failure_without_rerun(self) -> None:
         run_id = "native-proof-failure-replay"
         marker = self.artifacts / "native-proof-failure-invoked"

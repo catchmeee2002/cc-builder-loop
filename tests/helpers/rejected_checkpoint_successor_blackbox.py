@@ -256,7 +256,7 @@ def _successor_contract(
     }
     contract["execution"]["prior_problem_dispositions"] = {
         "source_snapshot_digest": snapshot_digest,
-        "items": [{"key": PROBLEM_KEY, "disposition": "handled_elsewhere"}],
+        "items": [{"key": PROBLEM_KEY, "disposition": "included"}],
     }
     if invalid_classification:
         contract["execution"]["carryover"] = {
@@ -425,6 +425,11 @@ def exercise_valid_rejected_successor(root: Path) -> dict[str, Any]:
     fixture = _prepare_rejected_source(root)
     core, _digest, read_ledger, _save_ledger = _runtime()
     source_before = core.status(fixture["repo"], fixture["source_run"])
+    source_problem = next(
+        deepcopy(item)
+        for item in fixture["source_ledger"]["problems"]
+        if item["key"] == PROBLEM_KEY and item["status"] == "open"
+    )
     runtime_patch = __import__("unittest.mock", fromlist=["patch"]).patch.object(
         core, "_runtime_source_root", return_value=fixture["repo"]
     )
@@ -445,6 +450,9 @@ def exercise_valid_rejected_successor(root: Path) -> dict[str, Any]:
     source_after = core.status(fixture["repo"], fixture["source_run"])
     target_ledger = read_ledger(fixture["repo"], "rejected-target")
     target_execution = target_ledger["facets"]["execution"]
+    from runtime.codex_builder_loop.assurance_v4 import driver
+
+    next_action = driver.next_action(fixture["repo"], "rejected-target")
     return {
         "source_phase_before": source_before["phase"],
         "source_phase_after": source_after["phase"],
@@ -453,6 +461,17 @@ def exercise_valid_rejected_successor(root: Path) -> dict[str, Any]:
         "roles_reused": bool(target_execution["agents"]),
         "evidence_reused": bool(target_ledger["evidence"]),
         "dispatch_reused": target_ledger["dispatch_intent"] is not None,
+        "source_problem": source_problem,
+        "target_problem": next(
+            deepcopy(item)
+            for item in target_ledger["problems"]
+            if item["key"] == PROBLEM_KEY and item["status"] == "open"
+        ),
+        "target_problem_snapshot_digest": core._open_problem_snapshot(target_ledger)[0],
+        "source_problem_snapshot_digest": core._open_problem_snapshot(
+            fixture["source_ledger"]
+        )[0],
+        "next_action": next_action,
     }
 
 

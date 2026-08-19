@@ -432,9 +432,13 @@ class NativeCoordinator:
         )
         if self._retry_turn_failure(turn, str(action["action_id"])):
             return
-        result = self._normalize_action_result(
-            str(action["action"]), self._parse_turn(turn)
+        result = self._parse_action_result_or_retry(
+            str(action["action"]),
+            turn,
+            str(action["action_id"]),
         )
+        if result is None:
+            return
         self.core.call(
             "complete-dispatch",
             "--repo",
@@ -600,9 +604,13 @@ class NativeCoordinator:
             )
             if self._retry_turn_failure(turn, str(pending["action_id"])):
                 return None
-            result = self._normalize_action_result(
-                str(pending["action"]), self._parse_turn(turn)
+            result = self._parse_action_result_or_retry(
+                str(pending["action"]),
+                turn,
+                str(pending["action_id"]),
             )
+            if result is None:
+                return None
             self.core.call(
                 "complete-dispatch",
                 "--repo",
@@ -636,9 +644,13 @@ class NativeCoordinator:
             )
             if self._retry_turn_failure(turn, str(pending["action_id"])):
                 return None
-            result = self._normalize_action_result(
-                str(pending["action"]), self._parse_turn(turn)
+            result = self._parse_action_result_or_retry(
+                str(pending["action"]),
+                turn,
+                str(pending["action_id"]),
             )
+            if result is None:
+                return None
             self.core.call(
                 "complete-dispatch",
                 "--repo",
@@ -661,17 +673,18 @@ class NativeCoordinator:
             )
         turn_value = matches[0]
         text = self._turn_agent_text(turn_value) or ""
-        result = self._normalize_action_result(
+        result = self._parse_action_result_or_retry(
             str(pending["action"]),
-            self._parse_turn(
-                TurnResult(
-                    turn_id=str(turn_value["id"]),
-                    status=str(turn_value["status"]),
-                    text=text,
-                    error=turn_value.get("error"),
-                )
+            TurnResult(
+                turn_id=str(turn_value["id"]),
+                status=str(turn_value["status"]),
+                text=text,
+                error=turn_value.get("error"),
             ),
+            str(pending["action_id"]),
         )
+        if result is None:
+            return None
         if pending.get("state") == "prepared":
             self.core.call(
                 "bind-dispatch-turn",
@@ -1851,6 +1864,21 @@ class NativeCoordinator:
             return False
         self._schedule_dispatch_retry(action_id, failure_code)
         return True
+
+    def _parse_action_result_or_retry(
+        self,
+        action: str,
+        turn: TurnResult,
+        action_id: str,
+    ) -> dict[str, Any] | None:
+        try:
+            parsed = self._parse_turn(turn)
+        except NativeDriverError as exc:
+            if exc.code != "NATIVE_ROLE_RESULT_INVALID_JSON":
+                raise
+            self._schedule_dispatch_retry(action_id, exc.code)
+            return None
+        return self._normalize_action_result(action, parsed)
 
     def _schedule_dispatch_retry(
         self, action_id: str, failure_code: str
