@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Assurance engineering correction 现在先把绝对 decision pointer 应用到完整冻结 contract，再验证变更只落在
+  Assurance facet；首个 Builder checkpoint 前的 correction 以冻结 `target_start_head` 作为候选绑定，避免
+  相对 facet 指针和空 candidate HEAD 造成错误拒绝。Compact profile blackbox helper 同时自包含仓库根路径和
+  `tests.*` 导入，冻结命令可直接从 candidate worktree 执行（#128、#144、#147、#160）。
+
 - Assurance v4 新增 `automatic_nonsemantic` recovery policy：Core 只对绑定当前 action/problem/facet 的精确
   Assurance 增量执行单调修正，并让依赖 evidence 重新验收；Mission、Authority、验收、信任边界、命令
   替换、外部目标、降级、stale binding 与 Git 冲突继续 fail closed。失败/取消 root 可用只读
