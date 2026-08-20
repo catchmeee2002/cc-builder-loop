@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Assurance v4 reliability correction batch：public prerequisite checkpoint 会把 candidate、Authority digest、路径及
+  classification 事实原子记录为唯一 `builder_loop` problem；若 classification 已包含当前 Builder 的实际产出，
+  Driver 继续原 Builder 恢复，完全 deferred 的零进展现场则进入 `NEEDS_USER`。Rejected-checkpoint successor
+  继承 source open problem 的完整 snapshot；target drift 重组维护 Tester-owned manifest；proof replay 依据完整
+  冻结 Tester scope 校验 source/candidate blob；spec-only proof correction 不重新集成 Tester；非法 role JSON
+  复用同 action/thread/prompt identity 的 bounded retry（#204、#202、#211、#210、#177、#207）。
+
 - Assurance engineering correction 现在先把绝对 decision pointer 应用到完整冻结 contract，再验证变更只落在
   Assurance facet；首个 Builder checkpoint 前的 correction 以冻结 `target_start_head` 作为候选绑定，避免
   相对 facet 指针和空 candidate HEAD 造成错误拒绝。Compact profile blackbox helper 同时自包含仓库根路径和

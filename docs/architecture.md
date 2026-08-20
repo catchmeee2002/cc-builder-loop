@@ -581,7 +581,10 @@ Builder turn 的 completed dispatch 先 checkpoint clean commit、关闭 Builder
 的 live candidate，避免同一 `builder_fix` 无限重派。
 open problem 的 owner 采用穷举路由：`builder`/`tester` 分别回原角色，`plan`、`external_platform`、
 `builder_loop`、`current_project` 分别进入专属 `NEEDS_USER` decision。后四类任一仍 open 时禁止新的
-Agent dispatch；clean committed candidate 仍先执行确定性 checkpoint，使失败现场与最新 Git 身份一致。
+Agent dispatch；但 public prerequisite checkpoint 的 `builder_loop` problem 若其冻结 classification 已包含
+当前 Builder 的实际 ready 产出，仍沿原 Builder 恢复路径继续补齐缺口，避免把可完成的局部进展升级为用户决策；
+完全 deferred、无法证明有 Builder 进展的 classification 仍进入 `NEEDS_USER`，防止零进展重复派发。clean
+committed candidate 仍先执行确定性 checkpoint，使失败现场与最新 Git 身份一致。
 Native `tester_proof` 的 completed dispatch 先区分结果分支：合法非空 `problem_report` 直接记录并进入
 ownership 路由，不要求同时伪造 `proof_spec`；无 problem 时才应用 Core gate，成功 evidence 或 current
 `proof_failure` 二者必须恰有一个与该 action 对应，Coordinator 才能消费。failure 的相同 action/spec
