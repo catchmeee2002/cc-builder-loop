@@ -468,12 +468,27 @@ class AppServerTransport:
             raise AppServerError("invalid App Server JSON", code="NATIVE_APP_SERVER_PROTOCOL_ERROR") from exc
         if not isinstance(value, dict):
             raise AppServerError("invalid App Server message", code="NATIVE_APP_SERVER_PROTOCOL_ERROR")
-        if self.strict_protocol and value.get("jsonrpc") != "2.0":
-            raise AppServerError(
-                "App Server message is not a JSON-RPC 2.0 envelope",
-                code="NATIVE_DRIVER_PROTOCOL_INCOMPATIBLE",
-                details={"message_digest": hashlib.sha256(line).hexdigest()},
-            )
+        if self.strict_protocol:
+            jsonrpc = value.get("jsonrpc")
+            if jsonrpc is not None and jsonrpc != "2.0":
+                raise AppServerError(
+                    "App Server message has an invalid JSON-RPC version",
+                    code="NATIVE_DRIVER_PROTOCOL_INCOMPATIBLE",
+                    details={"message_digest": hashlib.sha256(line).hexdigest()},
+                )
+            method = value.get("method")
+            has_method = isinstance(method, str) and bool(method)
+            has_id = "id" in value
+            has_result = "result" in value
+            has_error = "error" in value
+            valid_response = has_id and (has_result ^ has_error) and not has_method
+            valid_request = has_method and (not has_id or "params" in value)
+            if not valid_response and not valid_request:
+                raise AppServerError(
+                    "App Server message is not a valid request, notification, or response",
+                    code="NATIVE_DRIVER_PROTOCOL_INCOMPATIBLE",
+                    details={"message_digest": hashlib.sha256(line).hexdigest()},
+                )
         return value
 
     def _next_message(self, timeout: float = 10.0) -> dict[str, Any]:

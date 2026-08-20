@@ -267,11 +267,14 @@ release intent stores only snapshot/report/identity digests and stage receipts, 
 release can report `RELEASE_READY` only after the current owner session is derivation-verified `READY` and the
 external tag, GitHub Release and installed CLI all read back the same release commit.
 
-Native Driver App Server traffic uses JSON-RPC 2.0 envelopes. The business Native Driver performs an isolated
-`initialize → initialized → thread/start` canary before creating a run, while transport reads are bounded
-(initialize 5 seconds, protocol requests 10 seconds, turn idle-read 30 seconds). An interrupted in-flight turn
-may consume one same-generation retry only when its role/thread/action/prompt/output and observation digests
-remain identical and no output or side effect is observed; later recovery follows the explicit authorization path.
+Native Driver App Server traffic uses the Codex JSON-RPC-compatible request/response contract. The official
+stdio wire may omit the `jsonrpc` version member, so compatibility is proved by validating request,
+notification, response/error shape and matching ids rather than by requiring a header that the server
+intentionally omits. The business Native Driver performs an isolated `initialize → initialized → thread/start`
+canary before creating a run, while transport reads are bounded (initialize 5 seconds, protocol requests
+10 seconds, turn idle-read 30 seconds). An interrupted in-flight turn may consume one same-generation retry
+only when its role/thread/action/prompt/output and observation digests remain identical and no output or side
+effect is observed; later recovery follows the explicit authorization path.
 
 ## Legacy v3 系统边界
 
