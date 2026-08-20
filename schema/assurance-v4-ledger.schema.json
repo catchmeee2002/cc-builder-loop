@@ -59,6 +59,18 @@
         {"$ref": "#/$defs/driverRuntime"}
       ]
     },
+    "transport_cleanup_intent": {
+      "oneOf": [
+        {"type": "null"},
+        {"$ref": "#/$defs/transportCleanupIntent"}
+      ]
+    },
+    "deferred_wait": {
+      "oneOf": [
+        {"type": "null"},
+        {"$ref": "#/$defs/deferredWait"}
+      ]
+    },
     "driver_failure": {
       "oneOf": [
         {"type": "null"},
@@ -221,7 +233,131 @@
         "protocol_schema_digest": {"$ref": "#/$defs/sha256"},
         "protocol_canary_digest": {
           "oneOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]
+        },
+        "native_transport": {
+          "oneOf": [
+            {"type": "null"},
+            {"$ref": "#/$defs/nativeTransport"}
+          ]
         }
+      }
+    },
+    "executableIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "requested", "resolved", "sha256", "runtime_version",
+        "protocol_schema_digest", "protocol_canary_digest"
+      ],
+      "properties": {
+        "requested": {"type": "string", "minLength": 1},
+        "resolved": {"type": "string", "minLength": 1},
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "runtime_version": {"type": "string", "minLength": 1},
+        "protocol_schema_digest": {"$ref": "#/$defs/sha256"},
+        "protocol_canary_digest": {
+          "oneOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]
+        }
+      }
+    },
+    "processIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "pid", "pgid", "starttime", "parent_pid", "argv_digest",
+        "executable_identity_digest", "started_at"
+      ],
+      "properties": {
+        "pid": {"type": "integer", "minimum": 1},
+        "pgid": {"type": "integer", "minimum": 1},
+        "starttime": {"type": "string", "minLength": 1},
+        "parent_pid": {"type": ["integer", "null"]},
+        "argv_digest": {"$ref": "#/$defs/sha256"},
+        "executable_identity_digest": {"$ref": "#/$defs/sha256"},
+        "started_at": {"type": "string", "format": "date-time"},
+        "exited_at": {"type": ["string", "null"]},
+        "exit_code": {"type": ["integer", "null"]},
+        "process_group_gone": {"type": ["boolean", "null"]}
+      }
+    },
+    "nativeTransport": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract_version", "generation", "state",
+        "executable_identity", "process_identity"
+      ],
+      "properties": {
+        "contract_version": {"const": 2},
+        "generation": {"type": "string", "minLength": 1},
+        "state": {
+          "enum": [
+            "absent", "spawning", "initializing", "ready",
+            "draining", "exited", "cleaned", "cleanup_unknown"
+          ]
+        },
+        "executable_identity": {"$ref": "#/$defs/executableIdentity"},
+        "process_identity": {
+          "oneOf": [
+            {"type": "null"},
+            {"$ref": "#/$defs/processIdentity"}
+          ]
+        }
+      }
+    },
+    "transportCleanupIntent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_generation", "process_identity", "state",
+        "term_attempt", "kill_attempt", "created_at"
+      ],
+      "properties": {
+        "source_generation": {"type": "string", "minLength": 1},
+        "process_identity": {"$ref": "#/$defs/processIdentity"},
+        "state": {
+          "enum": ["prepared", "term_sent", "kill_sent", "completed", "unknown"]
+        },
+        "term_attempt": {"type": "integer", "minimum": 0},
+        "kill_attempt": {"type": "integer", "minimum": 0},
+        "process_group_gone": {"type": ["boolean", "null"]},
+        "observation_digest": {
+          "oneOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]
+        },
+        "created_at": {"type": "string", "format": "date-time"},
+        "updated_at": {"type": ["string", "null"]}
+      }
+    },
+    "deferredWait": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "state", "action_id", "dispatch_generation",
+        "transport_generation", "started_at", "observation_digest"
+      ],
+      "properties": {
+        "state": {"enum": ["idle", "active", "stalled", "terminal", "unknown"]},
+        "action_id": {"$ref": "#/$defs/sha256"},
+        "dispatch_generation": {"type": "integer", "minimum": 1},
+        "transport_generation": {"type": "string", "minLength": 1},
+        "started_at": {"type": "string", "format": "date-time"},
+        "last_heartbeat_at": {"type": ["string", "null"]},
+        "terminal_at": {"type": ["string", "null"]},
+        "delivery_state": {"type": "string", "minLength": 1},
+        "observation_digest": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "eventRecord": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["at", "kind", "details"],
+      "properties": {
+        "at": {"type": "string", "minLength": 1},
+        "kind": {"type": "string", "minLength": 1},
+        "details": {"type": "object"},
+        "sequence": {"type": "integer", "minimum": 1},
+        "event_id": {"$ref": "#/$defs/sha256"},
+        "details_digest": {"$ref": "#/$defs/sha256"}
       }
     },
     "driverFailureAction": {
@@ -325,6 +461,14 @@
         "output_schema_digest": {"$ref": "#/$defs/sha256"},
         "dispatch_observation_digest": {
           "oneOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]
+        },
+        "native_transport_generation": {"type": "string", "minLength": 1},
+        "timeout_profile_digest": {"$ref": "#/$defs/sha256"},
+        "last_wire_sequence": {"type": "integer", "minimum": 0},
+        "last_wire_event_digest": {"$ref": "#/$defs/sha256"},
+        "side_effect_observation_digest": {"$ref": "#/$defs/sha256"},
+        "continuity_state": {
+          "enum": ["prepared", "in_flight", "completed", "exhausted", "unknown"]
         },
         "state": {"enum": ["prepared", "in_flight", "completed", "exhausted"]},
         "attempt": {"type": "integer", "minimum": 1, "maximum": 3},

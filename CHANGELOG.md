@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Native Driver transport lifecycle now records executable/process identity, versioned App Server generations,
+  monotonic wire checkpoints, total turn/compaction deadlines, and exact process-group cleanup observations.
+  Added read-only `native-driver doctor` diagnostics and Core transactions for transport cleanup and deferred-wait
+  liveness; legacy ledgers remain readable as `legacy-unbound`. This extends the existing bounded interrupted
+  dispatch and Reviewer compaction recovery without increasing retry limits (#198, #201, #23, #209).
+
 - A+B reliability batch: retrospective snapshots now carry a v2 derivation identity and v3 reports bind its
   digest; legacy v1 reports remain read-only and cannot satisfy release readiness. Added session-scoped
   `assurance release-preflight` / `release-verify` receipts for the ordered tag → GitHub Release → install

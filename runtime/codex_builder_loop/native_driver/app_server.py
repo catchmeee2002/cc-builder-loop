@@ -8,9 +8,12 @@ import stat
 import subprocess
 import tempfile
 import select
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, IO
+
+from ..process import capture_process_identity, digest as process_digest, reap_process_group
 
 
 class AppServerError(RuntimeError):
@@ -26,6 +29,7 @@ class AppServerCapability:
     protocol_schema_digest: str
     thread_compaction: bool
     protocol_canary_digest: str | None = None
+    executable_identity: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -52,6 +56,31 @@ REQUIRED_PROTOCOL_TOKENS = (
     '"outputSchema"',
     '"clientUserMessageId"',
 )
+
+TURN_IDLE_TIMEOUT_SECONDS = 30.0
+TURN_TOTAL_TIMEOUT_SECONDS = 3600.0
+COMPACTION_TOTAL_TIMEOUT_SECONDS = 600.0
+PROCESS_CLEANUP_GRACE_SECONDS = 5.0
+
+
+def _canonical_digest(value: Any) -> str:
+    return process_digest(value)
+
+
+def _resolved_executable(value: str) -> Path:
+    requested = Path(value).expanduser()
+    if requested.is_absolute() or "/" in value:
+        return requested.resolve()
+    resolved = shutil.which(value)
+    return Path(resolved).resolve() if resolved else requested
+
+
+def _file_sha256(path: Path) -> str:
+    hasher = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            hasher.update(chunk)
+    return hasher.hexdigest()
 
 
 def _trusted_cache_parent() -> Path:
@@ -129,7 +158,7 @@ def probe_app_server(
                         json.dumps(
                             {
                                 "sequence": ["initialize", "initialized", "thread/start"],
-                                "thread_id": thread_id,
+                                "thread_id_observed": bool(thread_id),
                             },
                             sort_keys=True,
                         ).encode()
@@ -145,18 +174,60 @@ def probe_app_server(
             protocol_schema_digest=hashlib.sha256(content).hexdigest(),
             thread_compaction='"thread/compact/start"' in text,
             protocol_canary_digest=canary_digest,
+            executable_identity={
+                "requested": codex_bin,
+                "resolved": str(_resolved_executable(codex_bin)),
+                "sha256": _file_sha256(_resolved_executable(codex_bin)),
+                "runtime_version": version.stdout.strip(),
+                "protocol_schema_digest": hashlib.sha256(content).hexdigest(),
+                "protocol_canary_digest": canary_digest,
+            },
         )
 
 
 class AppServerTransport:
-    def __init__(self, *, codex_bin: str = "codex", strict_protocol: bool = False):
+    def __init__(
+        self,
+        *,
+        codex_bin: str = "codex",
+        strict_protocol: bool = False,
+        executable_identity: dict[str, Any] | None = None,
+        turn_idle_timeout: float = TURN_IDLE_TIMEOUT_SECONDS,
+        turn_total_timeout: float = TURN_TOTAL_TIMEOUT_SECONDS,
+        compaction_total_timeout: float = COMPACTION_TOTAL_TIMEOUT_SECONDS,
+    ):
         self.codex_bin = codex_bin
         self.strict_protocol = strict_protocol
+        self.executable_identity = executable_identity or self._fallback_executable_identity()
+        self.turn_idle_timeout = float(turn_idle_timeout)
+        self.turn_total_timeout = float(turn_total_timeout)
+        self.compaction_total_timeout = float(compaction_total_timeout)
         self.process: subprocess.Popen[Any] | None = None
         self._next_id = 1
         self._deferred: list[dict[str, Any]] = []
         self._python_cache_root: Path | None = None
         self._read_buffer = b""
+        self._wire_sequence = 0
+        self._last_wire_event_digest: str | None = None
+        self._process_identity: dict[str, Any] | None = None
+        self._generation: str | None = None
+        self._transport_state = "absent"
+        self._cleanup_observation: dict[str, Any] | None = None
+
+    def _fallback_executable_identity(self) -> dict[str, Any]:
+        resolved = _resolved_executable(self.codex_bin)
+        try:
+            executable_sha = _file_sha256(resolved)
+        except OSError:
+            executable_sha = "0" * 64
+        return {
+            "requested": self.codex_bin,
+            "resolved": str(resolved),
+            "sha256": executable_sha,
+            "runtime_version": "unknown",
+            "protocol_schema_digest": "0" * 64,
+            "protocol_canary_digest": None,
+        }
 
     def __enter__(self) -> "AppServerTransport":
         self.start()
@@ -165,9 +236,43 @@ class AppServerTransport:
     def __exit__(self, *_: object) -> None:
         self.close()
 
+    @property
+    def generation(self) -> str | None:
+        return self._generation
+
+    @property
+    def cleanup_observation(self) -> dict[str, Any] | None:
+        return dict(self._cleanup_observation) if self._cleanup_observation else None
+
+    def runtime_snapshot(self) -> dict[str, Any]:
+        return {
+            "contract_version": 2,
+            "generation": self._generation or "unbound",
+            "state": self._transport_state,
+            "executable_identity": dict(self.executable_identity),
+            "process_identity": (
+                dict(self._process_identity)
+                if self._process_identity is not None
+                else None
+            ),
+        }
+
+    def wire_snapshot(self) -> dict[str, Any]:
+        return {
+            "generation": self._generation,
+            "sequence": self._wire_sequence,
+            "event_digest": self._last_wire_event_digest,
+        }
+
     def start(self) -> None:
         if self.process is not None:
             return
+        self._transport_state = "spawning"
+        self._deferred.clear()
+        self._read_buffer = b""
+        self._wire_sequence = 0
+        self._last_wire_event_digest = None
+        self._cleanup_observation = None
         cache_parent = _trusted_cache_parent()
         cache_root = Path(
             tempfile.mkdtemp(
@@ -190,7 +295,27 @@ class AppServerTransport:
                 text=False,
                 bufsize=0,
                 env=environment,
+                process_group=0,
             )
+            try:
+                proc = capture_process_identity(
+                    self.process,
+                    argv=[self.codex_bin, "app-server", "--stdio"],
+                    executable_identity=self.executable_identity,
+                )
+            except RuntimeError as exc:
+                raise AppServerError(
+                    "App Server process identity could not be observed",
+                    code="NATIVE_APP_SERVER_PROCESS_IDENTITY_MISSING",
+                ) from exc
+            self._process_identity = proc
+            self._generation = _canonical_digest(
+                {
+                    "executable_identity": self.executable_identity,
+                    "process_identity": proc,
+                }
+            )
+            self._transport_state = "initializing"
             self._request(
                 "initialize",
                 {
@@ -203,29 +328,54 @@ class AppServerTransport:
                 },
             )
             self._send({"method": "initialized", "params": {}})
+            self._transport_state = "ready"
         except Exception:
             self.close()
             raise
 
-    def close(self) -> None:
+    def close(self) -> dict[str, Any] | None:
         process = self.process
         self.process = None
         try:
             if process is None:
-                return
+                return self._cleanup_observation
+            self._transport_state = "draining"
             if process.stdin:
-                process.stdin.close()
-            try:
-                process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                process.terminate()
                 try:
-                    process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    process.wait(timeout=5)
+                    process.stdin.close()
+                except OSError:
+                    pass
+            if self._process_identity is None:
+                self._process_identity = capture_process_identity(
+                    process,
+                    argv=[self.codex_bin, "app-server", "--stdio"],
+                    executable_identity=self.executable_identity,
+                )
+            cleanup = reap_process_group(
+                process,
+                process_identity=self._process_identity,
+                grace_seconds=PROCESS_CLEANUP_GRACE_SECONDS,
+            )
             if process.stdout:
-                process.stdout.close()
+                try:
+                    process.stdout.close()
+                except OSError:
+                    pass
+            group_gone = bool(cleanup["process_group_gone"])
+            self._transport_state = cleanup["state"]
+            self._cleanup_observation = {
+                "generation": self._generation,
+                "pid": process.pid,
+                "pgid": self._process_identity["pgid"],
+                "term_attempt": cleanup["term_attempt"],
+                "kill_attempt": cleanup["kill_attempt"],
+                "returncode": cleanup["returncode"],
+                "process_group_gone": group_gone,
+                "state": self._transport_state,
+            }
+            self._deferred.clear()
+            self._read_buffer = b""
+            return dict(self._cleanup_observation)
         finally:
             cache_root = self._python_cache_root
             self._python_cache_root = None
@@ -312,8 +462,38 @@ class AppServerTransport:
 
     def wait_turn(self, *, thread_id: str, turn_id: str) -> TurnResult:
         last_text = ""
+        deadline = time.monotonic() + self.turn_total_timeout
         while True:
-            message = self._next_message(timeout=30.0)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise AppServerError(
+                    "Codex App Server turn total timeout",
+                    code="NATIVE_APP_SERVER_TURN_TIMEOUT",
+                    details={
+                        "thread_id": thread_id,
+                        "turn_id": turn_id,
+                        "timeout_seconds": self.turn_total_timeout,
+                    },
+                )
+            try:
+                message = self._next_message(
+                    timeout=min(self.turn_idle_timeout, remaining)
+                )
+            except AppServerError as exc:
+                if (
+                    exc.code == "NATIVE_APP_SERVER_TIMEOUT"
+                    and time.monotonic() >= deadline
+                ):
+                    raise AppServerError(
+                        "Codex App Server turn total timeout",
+                        code="NATIVE_APP_SERVER_TURN_TIMEOUT",
+                        details={
+                            "thread_id": thread_id,
+                            "turn_id": turn_id,
+                            "timeout_seconds": self.turn_total_timeout,
+                        },
+                    ) from exc
+                raise
             if "id" in message and "method" in message:
                 self._answer_server_request(message)
                 continue
@@ -341,8 +521,36 @@ class AppServerTransport:
         self._request("thread/compact/start", {"threadId": thread_id})
         compaction_turn_id: str | None = None
         compaction_item_id: str | None = None
+        deadline = time.monotonic() + self.compaction_total_timeout
         while True:
-            message = self._next_message(timeout=30.0)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise AppServerError(
+                    "Codex App Server compaction total timeout",
+                    code="NATIVE_APP_SERVER_COMPACTION_TIMEOUT",
+                    details={
+                        "thread_id": thread_id,
+                        "timeout_seconds": self.compaction_total_timeout,
+                    },
+                )
+            try:
+                message = self._next_message(
+                    timeout=min(self.turn_idle_timeout, remaining)
+                )
+            except AppServerError as exc:
+                if (
+                    exc.code == "NATIVE_APP_SERVER_TIMEOUT"
+                    and time.monotonic() >= deadline
+                ):
+                    raise AppServerError(
+                        "Codex App Server compaction total timeout",
+                        code="NATIVE_APP_SERVER_COMPACTION_TIMEOUT",
+                        details={
+                            "thread_id": thread_id,
+                            "timeout_seconds": self.compaction_total_timeout,
+                        },
+                    ) from exc
+                raise
             if "id" in message and "method" in message:
                 self._answer_server_request(message)
                 continue
@@ -468,6 +676,14 @@ class AppServerTransport:
             raise AppServerError("invalid App Server JSON", code="NATIVE_APP_SERVER_PROTOCOL_ERROR") from exc
         if not isinstance(value, dict):
             raise AppServerError("invalid App Server message", code="NATIVE_APP_SERVER_PROTOCOL_ERROR")
+        self._wire_sequence += 1
+        self._last_wire_event_digest = _canonical_digest(
+            {
+                "generation": self._generation,
+                "sequence": self._wire_sequence,
+                "message": value,
+            }
+        )
         if self.strict_protocol:
             jsonrpc = value.get("jsonrpc")
             if jsonrpc is not None and jsonrpc != "2.0":

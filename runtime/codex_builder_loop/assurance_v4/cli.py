@@ -75,6 +75,7 @@ def parser() -> argparse.ArgumentParser:
     start.add_argument("--driver-runtime-version")
     start.add_argument("--driver-protocol-schema-digest")
     start.add_argument("--driver-protocol-canary-digest")
+    start.add_argument("--driver-native-transport")
 
     status = commands.add_parser("status")
     status.add_argument("--repo", default=".")
@@ -376,12 +377,86 @@ def parser() -> argparse.ArgumentParser:
     begin_dispatch.add_argument("--thread-id", required=True)
     begin_dispatch.add_argument("--prompt-digest", required=True)
     begin_dispatch.add_argument("--output-schema-digest", required=True)
+    begin_dispatch.add_argument("--native-transport-generation")
+    begin_dispatch.add_argument("--timeout-profile-digest")
 
     bind_turn = commands.add_parser("bind-dispatch-turn")
     bind_turn.add_argument("--repo", default=".")
     bind_turn.add_argument("--run", required=True)
     bind_turn.add_argument("--action-id", required=True)
     bind_turn.add_argument("--turn-id", required=True)
+
+    bind_transport = commands.add_parser("bind-dispatch-transport")
+    bind_transport.add_argument("--repo", default=".")
+    bind_transport.add_argument("--run", required=True)
+    bind_transport.add_argument("--action-id", required=True)
+    bind_transport.add_argument("--native-transport-generation", required=True)
+    bind_transport.add_argument("--timeout-profile-digest")
+    bind_transport.add_argument(
+        "--driver-runtime-kind",
+        choices=["native", "full_driver_skill"],
+        required=True,
+    )
+
+    bind_native_transport = commands.add_parser("bind-native-transport")
+    bind_native_transport.add_argument("--repo", default=".")
+    bind_native_transport.add_argument("--run", required=True)
+    bind_native_transport.add_argument("--transport", required=True)
+    bind_native_transport.add_argument(
+        "--driver-runtime-kind",
+        choices=["native", "full_driver_skill"],
+        required=True,
+    )
+
+    wire_observation = commands.add_parser("record-dispatch-wire")
+    wire_observation.add_argument("--repo", default=".")
+    wire_observation.add_argument("--run", required=True)
+    wire_observation.add_argument("--action-id", required=True)
+    wire_observation.add_argument("--native-transport-generation", required=True)
+    wire_observation.add_argument("--sequence", type=int, required=True)
+    wire_observation.add_argument("--event-digest", required=True)
+    wire_observation.add_argument(
+        "--driver-runtime-kind",
+        choices=["native", "full_driver_skill"],
+        required=True,
+    )
+
+    transport_cleanup = commands.add_parser("record-transport-cleanup")
+    transport_cleanup.add_argument("--repo", default=".")
+    transport_cleanup.add_argument("--run", required=True)
+    transport_cleanup.add_argument("--generation", required=True)
+    transport_cleanup.add_argument("--process-identity", required=True)
+    transport_cleanup.add_argument(
+        "--state", choices=["completed", "unknown"], required=True
+    )
+    transport_cleanup.add_argument("--term-attempt", type=int, required=True)
+    transport_cleanup.add_argument("--kill-attempt", type=int, required=True)
+    transport_cleanup.add_argument("--process-group-gone", action="store_true")
+    transport_cleanup.add_argument(
+        "--driver-runtime-kind",
+        choices=["native", "full_driver_skill"],
+        required=True,
+    )
+
+    deferred_wait = commands.add_parser("record-deferred-wait")
+    deferred_wait.add_argument("--repo", default=".")
+    deferred_wait.add_argument("--run", required=True)
+    deferred_wait.add_argument(
+        "--state",
+        choices=["idle", "active", "stalled", "terminal", "unknown"],
+        required=True,
+    )
+    deferred_wait.add_argument("--action-id", required=True)
+    deferred_wait.add_argument("--dispatch-generation", type=int, required=True)
+    deferred_wait.add_argument("--transport-generation", required=True)
+    deferred_wait.add_argument("--delivery-state", required=True)
+    deferred_wait.add_argument("--last-heartbeat-at")
+    deferred_wait.add_argument("--terminal-at")
+    deferred_wait.add_argument(
+        "--driver-runtime-kind",
+        choices=["native", "full_driver_skill"],
+        required=True,
+    )
 
     complete_dispatch = commands.add_parser("complete-dispatch")
     complete_dispatch.add_argument("--repo", default=".")
@@ -546,6 +621,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "protocol_schema_digest": args.driver_protocol_schema_digest,
                     "protocol_canary_digest": args.driver_protocol_canary_digest,
                 }
+                if args.driver_native_transport:
+                    try:
+                        runtime["native_transport"] = json.loads(
+                            args.driver_native_transport
+                        )
+                    except json.JSONDecodeError as exc:
+                        raise core.AssuranceError(
+                            "driver native transport must be valid JSON",
+                            code="DRIVER_NATIVE_TRANSPORT_INVALID",
+                        ) from exc
             payload = core.start(
                 args.repo,
                 args.run,
@@ -821,10 +906,63 @@ def main(argv: Sequence[str] | None = None) -> int:
                 thread_id=args.thread_id,
                 prompt_digest=args.prompt_digest,
                 output_schema_digest=args.output_schema_digest,
+                native_transport_generation=args.native_transport_generation,
+                timeout_profile_digest=args.timeout_profile_digest,
             )
         elif args.command == "bind-dispatch-turn":
             payload = core.bind_dispatch_turn(
                 args.repo, args.run, action_id=args.action_id, turn_id=args.turn_id
+            )
+        elif args.command == "bind-dispatch-transport":
+            payload = core.bind_dispatch_transport(
+                args.repo,
+                args.run,
+                action_id=args.action_id,
+                native_transport_generation=args.native_transport_generation,
+                timeout_profile_digest=args.timeout_profile_digest,
+                driver_runtime_kind=args.driver_runtime_kind,
+            )
+        elif args.command == "bind-native-transport":
+            payload = core.bind_native_transport(
+                args.repo,
+                args.run,
+                native_transport=_json(args.transport),
+                driver_runtime_kind=args.driver_runtime_kind,
+            )
+        elif args.command == "record-dispatch-wire":
+            payload = core.record_dispatch_wire(
+                args.repo,
+                args.run,
+                action_id=args.action_id,
+                native_transport_generation=args.native_transport_generation,
+                sequence=args.sequence,
+                event_digest=args.event_digest,
+                driver_runtime_kind=args.driver_runtime_kind,
+            )
+        elif args.command == "record-transport-cleanup":
+            payload = core.record_transport_cleanup(
+                args.repo,
+                args.run,
+                generation=args.generation,
+                process_identity=_json(args.process_identity),
+                state=args.state,
+                term_attempt=args.term_attempt,
+                kill_attempt=args.kill_attempt,
+                process_group_gone=args.process_group_gone,
+                driver_runtime_kind=args.driver_runtime_kind,
+            )
+        elif args.command == "record-deferred-wait":
+            payload = core.record_deferred_wait(
+                args.repo,
+                args.run,
+                state=args.state,
+                action_id=args.action_id,
+                dispatch_generation=args.dispatch_generation,
+                transport_generation=args.transport_generation,
+                delivery_state=args.delivery_state,
+                last_heartbeat_at=args.last_heartbeat_at,
+                terminal_at=args.terminal_at,
+                driver_runtime_kind=args.driver_runtime_kind,
             )
         elif args.command == "complete-dispatch":
             payload = core.complete_dispatch(

@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import datetime as dt
 import fcntl
+import hashlib
 import json
 import os
 import subprocess
@@ -198,4 +199,36 @@ def dirty_paths_against(worktree: Path, treeish: str) -> list[str]:
 
 
 def append_event(ledger: dict[str, Any], kind: str, details: dict[str, Any]) -> None:
-    ledger.setdefault("events", []).append({"at": now(), "kind": kind, "details": details})
+    at = now()
+    sequence = len(ledger.setdefault("events", [])) + 1
+    details_digest = hashlib.sha256(
+        json.dumps(
+            details,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    event_id = hashlib.sha256(
+        json.dumps(
+            {
+                "sequence": sequence,
+                "at": at,
+                "kind": kind,
+                "details_digest": details_digest,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    ledger["events"].append(
+        {
+            "at": at,
+            "kind": kind,
+            "details": details,
+            "sequence": sequence,
+            "event_id": event_id,
+            "details_digest": details_digest,
+        }
+    )

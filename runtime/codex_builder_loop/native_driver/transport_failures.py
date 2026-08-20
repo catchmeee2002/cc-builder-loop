@@ -71,6 +71,11 @@ def classify_app_server_failure(error: AppServerError) -> str | None:
         return "responseStreamDisconnected"
     if error.code == "NATIVE_APP_SERVER_TIMEOUT":
         return "responseStreamTimeout"
+    if error.code in {
+        "NATIVE_APP_SERVER_TURN_TIMEOUT",
+        "NATIVE_APP_SERVER_COMPACTION_TIMEOUT",
+    }:
+        return "responseStreamTimeout"
     return None
 
 

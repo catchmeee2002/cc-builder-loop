@@ -35,6 +35,9 @@
       }
     },
     "elapsed_ms": {"type": "integer", "minimum": 0},
+    "wire_observation_checkpoints": {"type": "integer", "minimum": 0},
+    "transport_cleanup_unknown": {"type": "integer", "minimum": 0},
+    "deferred_wait_stalls": {"type": "integer", "minimum": 0},
     "active_stage": {
       "oneOf": [
         {"type": "null"},

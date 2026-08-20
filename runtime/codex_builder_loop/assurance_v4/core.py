@@ -77,6 +77,7 @@ from .store import (
     state_root,
     target_worktree,
 )
+from ..process import run_owned_command
 
 TRUSTED_SYSTEM_PATH = "/usr/local/bin:/usr/bin:/bin"
 TRUSTED_SYSTEM_ROOTS = tuple(Path(item).resolve() for item in TRUSTED_SYSTEM_PATH.split(":"))
@@ -1447,6 +1448,8 @@ def start(
                 "driver_runtime": copy.deepcopy(driver_runtime),
                 "driver_failure": None,
                 "dispatch_intent": None,
+                "transport_cleanup_intent": None,
+                "deferred_wait": None,
                 "tester_replacement_intent": None,
                 "proof_failure": None,
                 "machine_failure": None,
@@ -1588,6 +1591,8 @@ def begin_dispatch(
     thread_id: str,
     prompt_digest: str,
     output_schema_digest: str,
+    native_transport_generation: str | None = None,
+    timeout_profile_digest: str | None = None,
 ) -> dict[str, Any]:
     repo = resolve_repo(repo_value)
     run_id = ensure_run_id(run_value)
@@ -1662,7 +1667,7 @@ def begin_dispatch(
             "publication": ledger.get("publication"),
             "deployment_transaction": ledger.get("deployment_transaction"),
         }
-        ledger["dispatch_intent"] = {
+        dispatch_intent = {
             "action_id": action_id,
             "action": action,
             "role": role,
@@ -1673,10 +1678,21 @@ def begin_dispatch(
             "state": "prepared",
             "attempt": 1,
             "generation": 1,
+            "continuity_state": "prepared",
             "interrupted_retry_used": False,
             "interrupted_retry_blocked": False,
             "created_at": now(),
         }
+        if native_transport_generation:
+            dispatch_intent["native_transport_generation"] = native_transport_generation
+            dispatch_intent["last_wire_sequence"] = 0
+            dispatch_intent["last_wire_event_digest"] = digest(
+                {"generation": native_transport_generation, "sequence": 0}
+            )
+        if timeout_profile_digest:
+            dispatch_intent["timeout_profile_digest"] = timeout_profile_digest
+        dispatch_intent["side_effect_observation_digest"] = digest(observation)
+        ledger["dispatch_intent"] = dispatch_intent
         append_event(ledger, "dispatch_prepared", copy.deepcopy(ledger["dispatch_intent"]))
         save_ledger(repo, ledger)
     return status(repo, run_id)
@@ -1854,6 +1870,7 @@ def bind_dispatch_turn(
             raise AssuranceError("dispatch turn identity changed", code="DISPATCH_TURN_MISMATCH")
         intent["turn_id"] = turn_id.strip()
         intent["state"] = "in_flight"
+        intent["continuity_state"] = "in_flight"
         replacement = ledger.get("tester_replacement_intent")
         if (
             intent.get("action") == "tester_author"
@@ -1927,6 +1944,442 @@ def bind_dispatch_turn(
     return status(repo, run_id)
 
 
+def bind_dispatch_transport(
+    repo_value: str | Path,
+    run_value: str,
+    *,
+    action_id: str,
+    native_transport_generation: str,
+    timeout_profile_digest: str | None = None,
+    driver_runtime_kind: str = "native",
+) -> dict[str, Any]:
+    repo = resolve_repo(repo_value)
+    run_id = ensure_run_id(run_value)
+    generation = native_transport_generation.strip()
+    if not generation:
+        raise AssuranceError(
+            "native transport generation is required",
+            code="DISPATCH_TRANSPORT_GENERATION_REQUIRED",
+            status="FAIL",
+        )
+    if timeout_profile_digest is not None and not re.fullmatch(
+        r"[0-9a-f]{64}", timeout_profile_digest
+    ):
+        raise AssuranceError(
+            "timeout profile digest is invalid",
+            code="DISPATCH_TIMEOUT_PROFILE_INVALID",
+            status="FAIL",
+        )
+    with locked(repo):
+        ledger = read_ledger(repo, run_id)
+        _require_driver_runtime_owner(ledger, driver_runtime_kind)
+        _assert_no_candidate_residue_intent(ledger)
+        cleanup = ledger.get("transport_cleanup_intent")
+        if isinstance(cleanup, Mapping) and cleanup.get("state") not in {
+            "completed",
+            "unknown",
+        }:
+            raise AssuranceError(
+                "transport cleanup is still pending",
+                code="DISPATCH_TRANSPORT_CLEANUP_PENDING",
+                status="NEEDS_USER",
+            )
+        intent = ledger.get("dispatch_intent")
+        if not isinstance(intent, dict) or intent.get("action_id") != action_id:
+            raise AssuranceError(
+                "dispatch action is stale",
+                code="DRIVER_ACTION_STALE",
+                status="FAIL",
+            )
+        if intent.get("state") == "completed":
+            raise AssuranceError(
+                "completed dispatch transport cannot be rebound",
+                code="DISPATCH_TRANSPORT_ALREADY_COMPLETE",
+                status="FAIL",
+            )
+        previous = intent.get("native_transport_generation")
+        previous_timeout = intent.get("timeout_profile_digest")
+        if previous == generation and (
+            timeout_profile_digest is None or previous_timeout == timeout_profile_digest
+        ):
+            return status(repo, run_id)
+        intent["native_transport_generation"] = generation
+        intent["last_wire_sequence"] = 0
+        intent["last_wire_event_digest"] = digest(
+            {"generation": generation, "sequence": 0}
+        )
+        if timeout_profile_digest is not None:
+            intent["timeout_profile_digest"] = timeout_profile_digest
+        intent["continuity_state"] = intent.get("state", "unknown")
+        append_event(
+            ledger,
+            "dispatch_transport_bound",
+            {
+                "action_id": action_id,
+                "thread_id": intent.get("thread_id"),
+                "previous_generation": previous,
+                "generation": generation,
+                "timeout_profile_digest": timeout_profile_digest,
+            },
+        )
+        save_ledger(repo, ledger)
+    return status(repo, run_id)
+
+
+def bind_native_transport(
+    repo_value: str | Path,
+    run_value: str,
+    *,
+    native_transport: Mapping[str, Any],
+    driver_runtime_kind: str = "native",
+) -> dict[str, Any]:
+    repo = resolve_repo(repo_value)
+    run_id = ensure_run_id(run_value)
+    candidate = copy.deepcopy(dict(native_transport))
+    if candidate.get("contract_version") != 2:
+        raise AssuranceError(
+            "native transport contract version is unsupported",
+            code="NATIVE_TRANSPORT_CONTRACT_UNSUPPORTED",
+            status="FAIL",
+        )
+    generation = candidate.get("generation")
+    if not isinstance(generation, str) or not generation or generation == "unbound":
+        raise AssuranceError(
+            "native transport generation is required",
+            code="NATIVE_TRANSPORT_GENERATION_REQUIRED",
+            status="FAIL",
+        )
+    with locked(repo):
+        ledger = read_ledger(repo, run_id)
+        _require_driver_runtime_owner(ledger, driver_runtime_kind)
+        runtime = ledger.get("driver_runtime")
+        if not isinstance(runtime, dict):
+            raise AssuranceError(
+                "Native Driver runtime identity is missing",
+                code="NATIVE_TRANSPORT_RUNTIME_MISSING",
+                status="NEEDS_USER",
+            )
+        previous = runtime.get("native_transport")
+        previous_generation = (
+            previous.get("generation") if isinstance(previous, Mapping) else None
+        )
+        if previous_generation == generation:
+            if previous != candidate:
+                raise AssuranceError(
+                    "native transport identity changed within one generation",
+                    code="NATIVE_TRANSPORT_IDENTITY_DRIFT",
+                    status="NEEDS_USER",
+                )
+            return status(repo, run_id)
+        cleanup = ledger.get("transport_cleanup_intent")
+        if isinstance(cleanup, Mapping) and cleanup.get("state") not in {
+            "completed",
+            "unknown",
+        }:
+            raise AssuranceError(
+                "previous Native transport cleanup is still pending",
+                code="NATIVE_TRANSPORT_PREVIOUS_CLEANUP_PENDING",
+                status="NEEDS_USER",
+                details={"generation": cleanup.get("source_generation")},
+            )
+        if isinstance(cleanup, Mapping) and cleanup.get("state") == "unknown":
+            raise AssuranceError(
+                "previous Native transport cleanup is unknown",
+                code="NATIVE_TRANSPORT_PREVIOUS_CLEANUP_UNKNOWN",
+                status="NEEDS_USER",
+                details={"generation": cleanup.get("source_generation")},
+            )
+        runtime["native_transport"] = candidate
+        # Terminal cleanup history remains in immutable events; this slot tracks
+        # only the currently-owned transport cleanup intent.
+        ledger["transport_cleanup_intent"] = None
+        intent = ledger.get("dispatch_intent")
+        if isinstance(intent, dict):
+            intent["native_transport_generation"] = generation
+            intent["last_wire_sequence"] = 0
+            intent["last_wire_event_digest"] = digest(
+                {"generation": generation, "sequence": 0}
+            )
+            intent["continuity_state"] = intent.get("state", "unknown")
+        append_event(
+            ledger,
+            "native_transport_generation_bound",
+            {
+                "previous_generation": previous_generation,
+                "generation": generation,
+                "dispatch_action_id": (
+                    intent.get("action_id") if isinstance(intent, dict) else None
+                ),
+                "process_identity": copy.deepcopy(candidate.get("process_identity")),
+            },
+        )
+        save_ledger(repo, ledger)
+    return status(repo, run_id)
+
+
+def record_dispatch_wire(
+    repo_value: str | Path,
+    run_value: str,
+    *,
+    action_id: str,
+    native_transport_generation: str,
+    sequence: int,
+    event_digest: str,
+    driver_runtime_kind: str = "native",
+) -> dict[str, Any]:
+    if sequence < 0 or not re.fullmatch(r"[0-9a-f]{64}", event_digest):
+        raise AssuranceError(
+            "dispatch wire observation is invalid",
+            code="DISPATCH_WIRE_OBSERVATION_INVALID",
+            status="FAIL",
+        )
+    repo = resolve_repo(repo_value)
+    run_id = ensure_run_id(run_value)
+    with locked(repo):
+        ledger = read_ledger(repo, run_id)
+        _require_driver_runtime_owner(ledger, driver_runtime_kind)
+        _assert_no_candidate_residue_intent(ledger)
+        intent = ledger.get("dispatch_intent")
+        if not isinstance(intent, dict) or intent.get("action_id") != action_id:
+            raise AssuranceError(
+                "dispatch action is stale",
+                code="DRIVER_ACTION_STALE",
+                status="FAIL",
+            )
+        expected_generation = intent.get("native_transport_generation")
+        if expected_generation != native_transport_generation:
+            raise AssuranceError(
+                "dispatch wire transport generation changed",
+                code="DISPATCH_WIRE_GENERATION_MISMATCH",
+                status="NEEDS_USER",
+                details={
+                    "expected_generation": expected_generation,
+                    "actual_generation": native_transport_generation,
+                },
+            )
+        previous_sequence = int(intent.get("last_wire_sequence", 0))
+        previous_digest = intent.get("last_wire_event_digest")
+        if sequence < previous_sequence:
+            raise AssuranceError(
+                "dispatch wire sequence moved backwards",
+                code="DISPATCH_WIRE_SEQUENCE_DRIFT",
+                status="NEEDS_USER",
+            )
+        if sequence == previous_sequence:
+            if previous_digest == event_digest:
+                return status(repo, run_id)
+            raise AssuranceError(
+                "dispatch wire observation changed at the same sequence",
+                code="DISPATCH_WIRE_OBSERVATION_DRIFT",
+                status="NEEDS_USER",
+            )
+        intent["last_wire_sequence"] = sequence
+        intent["last_wire_event_digest"] = event_digest
+        append_event(
+            ledger,
+            "wire_observation_checkpointed",
+            {
+                "action_id": action_id,
+                "thread_id": intent.get("thread_id"),
+                "transport_generation": native_transport_generation,
+                "sequence": sequence,
+                "event_digest": event_digest,
+            },
+        )
+        save_ledger(repo, ledger)
+    return status(repo, run_id)
+
+
+def record_deferred_wait(
+    repo_value: str | Path,
+    run_value: str,
+    *,
+    state: str,
+    action_id: str,
+    dispatch_generation: int,
+    transport_generation: str,
+    delivery_state: str,
+    last_heartbeat_at: str | None = None,
+    terminal_at: str | None = None,
+    driver_runtime_kind: str = "native",
+) -> dict[str, Any]:
+    if state not in {"idle", "active", "stalled", "terminal", "unknown"}:
+        raise AssuranceError(
+            "deferred wait state is invalid",
+            code="DEFERRED_WAIT_STATE_INVALID",
+            status="FAIL",
+        )
+    repo = resolve_repo(repo_value)
+    run_id = ensure_run_id(run_value)
+    with locked(repo):
+        ledger = read_ledger(repo, run_id)
+        _require_driver_runtime_owner(ledger, driver_runtime_kind)
+        intent = ledger.get("dispatch_intent")
+        if not isinstance(intent, dict) or intent.get("action_id") != action_id:
+            raise AssuranceError(
+                "deferred wait action is stale",
+                code="DEFERRED_WAIT_ACTION_STALE",
+                status="FAIL",
+            )
+        if int(intent.get("generation", 0)) != dispatch_generation:
+            raise AssuranceError(
+                "deferred wait dispatch generation is stale",
+                code="DEFERRED_WAIT_DISPATCH_GENERATION_STALE",
+                status="NEEDS_USER",
+            )
+        runtime = ledger.get("driver_runtime")
+        native_transport = (
+            runtime.get("native_transport")
+            if isinstance(runtime, Mapping)
+            else None
+        )
+        if not isinstance(native_transport, Mapping) or native_transport.get(
+            "generation"
+        ) != transport_generation:
+            raise AssuranceError(
+                "deferred wait transport generation is stale",
+                code="DEFERRED_WAIT_TRANSPORT_GENERATION_STALE",
+                status="NEEDS_USER",
+            )
+        observation = {
+            "state": state,
+            "action_id": action_id,
+            "dispatch_generation": dispatch_generation,
+            "transport_generation": transport_generation,
+            "started_at": (
+                ledger.get("deferred_wait", {}).get("started_at")
+                if isinstance(ledger.get("deferred_wait"), Mapping)
+                else now()
+            ),
+            "last_heartbeat_at": last_heartbeat_at,
+            "terminal_at": terminal_at,
+            "delivery_state": delivery_state,
+        }
+        observation["observation_digest"] = digest(observation)
+        ledger["deferred_wait"] = observation
+        append_event(
+            ledger,
+            "deferred_wait_" + ("heartbeat" if state == "active" else state),
+            copy.deepcopy(observation),
+        )
+        save_ledger(repo, ledger)
+    return status(repo, run_id)
+
+
+def record_transport_cleanup(
+    repo_value: str | Path,
+    run_value: str,
+    *,
+    generation: str,
+    process_identity: Mapping[str, Any],
+    state: str,
+    term_attempt: int,
+    kill_attempt: int,
+    process_group_gone: bool,
+    driver_runtime_kind: str = "native",
+) -> dict[str, Any]:
+    if state not in {"completed", "unknown"}:
+        raise AssuranceError(
+            "transport cleanup state is invalid",
+            code="TRANSPORT_CLEANUP_STATE_INVALID",
+            status="FAIL",
+        )
+    repo = resolve_repo(repo_value)
+    run_id = ensure_run_id(run_value)
+    with locked(repo):
+        ledger = read_ledger(repo, run_id)
+        _require_driver_runtime_owner(ledger, driver_runtime_kind)
+        runtime = ledger.get("driver_runtime")
+        native_transport = (
+            runtime.get("native_transport")
+            if isinstance(runtime, Mapping)
+            else None
+        )
+        if not isinstance(native_transport, Mapping):
+            raise AssuranceError(
+                "run has no Native transport identity",
+                code="TRANSPORT_CLEANUP_IDENTITY_MISSING",
+                status="NEEDS_USER",
+            )
+        if native_transport.get("generation") != generation:
+            raise AssuranceError(
+                "transport cleanup generation is stale",
+                code="TRANSPORT_CLEANUP_GENERATION_MISMATCH",
+                status="NEEDS_USER",
+            )
+        existing = ledger.get("transport_cleanup_intent")
+        payload = {
+            "source_generation": generation,
+            "process_identity": copy.deepcopy(dict(process_identity)),
+            "state": state,
+            "term_attempt": term_attempt,
+            "kill_attempt": kill_attempt,
+            "process_group_gone": process_group_gone,
+            "observation_digest": digest(
+                {
+                    "generation": generation,
+                    "process_identity": process_identity,
+                    "state": state,
+                    "term_attempt": term_attempt,
+                    "kill_attempt": kill_attempt,
+                    "process_group_gone": process_group_gone,
+                }
+            ),
+            "created_at": (
+                existing.get("created_at")
+                if isinstance(existing, Mapping)
+                else now()
+            ),
+            "updated_at": now(),
+        }
+        if isinstance(existing, Mapping):
+            comparable_keys = (
+                "source_generation",
+                "process_identity",
+                "state",
+                "term_attempt",
+                "kill_attempt",
+                "process_group_gone",
+                "observation_digest",
+                "created_at",
+            )
+            if all(existing.get(key) == payload.get(key) for key in comparable_keys):
+                return status(repo, run_id)
+            if existing.get("state") == "unknown" and state == "completed":
+                payload["created_at"] = existing.get("created_at", payload["created_at"])
+            elif existing.get("observation_digest") != payload["observation_digest"]:
+                raise AssuranceError(
+                    "transport cleanup observation changed",
+                    code="TRANSPORT_CLEANUP_OBSERVATION_DRIFT",
+                    status="NEEDS_USER",
+                )
+        native_transport = dict(native_transport)
+        native_transport["state"] = (
+            "cleaned" if state == "completed" else "cleanup_unknown"
+        )
+        native_transport["process_identity"] = copy.deepcopy(
+            payload["process_identity"]
+        )
+        runtime["native_transport"] = native_transport
+        ledger["transport_cleanup_intent"] = payload
+        append_event(
+            ledger,
+            "transport_cleanup_completed"
+            if state == "completed"
+            else "transport_cleanup_unknown",
+            {
+                "generation": generation,
+                "process_identity": copy.deepcopy(dict(process_identity)),
+                "term_attempt": term_attempt,
+                "kill_attempt": kill_attempt,
+                "process_group_gone": process_group_gone,
+                "observation_digest": payload["observation_digest"],
+            },
+        )
+        save_ledger(repo, ledger)
+    return status(repo, run_id)
+
+
 def complete_dispatch(
     repo_value: str | Path, run_value: str, *, action_id: str, result_value: Any
 ) -> dict[str, Any]:
@@ -1949,6 +2402,7 @@ def complete_dispatch(
         artifact = run_dir(repo, run_id) / "artifacts" / f"dispatch-{action_id}.json"
         atomic_write_json(artifact, result)
         intent["state"] = "completed"
+        intent["continuity_state"] = "completed"
         intent["result_path"] = str(artifact)
         intent["result_digest"] = digest(result)
         intent["completed_at"] = now()
@@ -2057,6 +2511,7 @@ def retry_dispatch(
                 return status(repo, run_id)
             if intent.get("state") != "exhausted":
                 intent["state"] = "exhausted"
+                intent["continuity_state"] = "exhausted"
                 intent["failure_code"] = normalized_failure_code
                 intent["exhausted_at"] = now()
                 append_event(
@@ -2110,6 +2565,7 @@ def retry_dispatch(
         )
         intent["attempt"] = next_attempt
         intent["state"] = "prepared"
+        intent["continuity_state"] = "prepared"
         intent["failure_code"] = normalized_failure_code
         intent["retry_scheduled_at"] = scheduled_at
         if retry_not_before is None:
@@ -2197,7 +2653,17 @@ def renew_dispatch(
             "dispatch_observation_digest": previous_intent.get(
                 "dispatch_observation_digest"
             ),
+            "native_transport_generation": previous_intent.get(
+                "native_transport_generation"
+            ),
+            "timeout_profile_digest": previous_intent.get("timeout_profile_digest"),
+            "last_wire_sequence": previous_intent.get("last_wire_sequence", 0),
+            "last_wire_event_digest": previous_intent.get("last_wire_event_digest"),
+            "side_effect_observation_digest": previous_intent.get(
+                "side_effect_observation_digest"
+            ),
             "state": "prepared",
+            "continuity_state": "prepared",
             "attempt": 1,
             "generation": previous_generation + 1,
             "interrupted_retry_used": False,
@@ -2210,6 +2676,14 @@ def renew_dispatch(
             renewed_intent["compaction_recovery"] = copy.deepcopy(
                 previous_intent["compaction_recovery"]
             )
+        for key in (
+            "native_transport_generation",
+            "timeout_profile_digest",
+            "last_wire_event_digest",
+            "side_effect_observation_digest",
+        ):
+            if renewed_intent.get(key) is None:
+                renewed_intent.pop(key, None)
         ledger["dispatch_intent"] = renewed_intent
         append_event(
             ledger,
@@ -2443,7 +2917,17 @@ def complete_dispatch_compaction(
             "dispatch_observation_digest": previous_intent.get(
                 "dispatch_observation_digest"
             ),
+            "native_transport_generation": previous_intent.get(
+                "native_transport_generation"
+            ),
+            "timeout_profile_digest": previous_intent.get("timeout_profile_digest"),
+            "last_wire_sequence": previous_intent.get("last_wire_sequence", 0),
+            "last_wire_event_digest": previous_intent.get("last_wire_event_digest"),
+            "side_effect_observation_digest": previous_intent.get(
+                "side_effect_observation_digest"
+            ),
             "state": "prepared",
+            "continuity_state": "prepared",
             "attempt": 1,
             "generation": previous_generation + 1,
             "interrupted_retry_used": False,
@@ -2453,6 +2937,14 @@ def complete_dispatch_compaction(
             "compaction_recovery": completed_recovery,
             "created_at": completed_at,
         }
+        for key in (
+            "native_transport_generation",
+            "timeout_profile_digest",
+            "last_wire_event_digest",
+            "side_effect_observation_digest",
+        ):
+            if renewed_intent.get(key) is None:
+                renewed_intent.pop(key, None)
         ledger["dispatch_intent"] = renewed_intent
         append_event(
             ledger,
@@ -4695,6 +5187,9 @@ def telemetry(ledger: Mapping[str, Any]) -> dict[str, Any]:
     legacy_attempt_started: dict[str, int] = {}
     evidence_attempts = {kind: 0 for kind in EVIDENCE_KINDS}
     retry_codes: dict[str, int] = {}
+    wire_observation_checkpoints = 0
+    transport_cleanup_unknown = 0
+    deferred_wait_stalls = 0
     candidate_changes = 0
     agent_turn_ms = 0
     deterministic_gate_ms = 0
@@ -4828,6 +5323,12 @@ def telemetry(ledger: Mapping[str, Any]) -> dict[str, Any]:
             retry_codes[failure_code] = retry_codes.get(failure_code, 0) + 1
         elif kind == "dispatch_renewed":
             lifecycle["dispatch_renewals"] += 1
+        elif kind == "wire_observation_checkpointed":
+            wire_observation_checkpoints += 1
+        elif kind == "transport_cleanup_unknown":
+            transport_cleanup_unknown += 1
+        elif kind == "deferred_wait_stalled":
+            deferred_wait_stalls += 1
         elif kind == "dispatch_compaction_completed":
             current = stage("reviewer_thread_compaction")
             current["attempts"] += 1
@@ -5024,6 +5525,9 @@ def telemetry(ledger: Mapping[str, Any]) -> dict[str, Any]:
                 "waiting_ms": waiting_ms,
             },
             "elapsed_ms": elapsed_ms,
+            "wire_observation_checkpoints": wire_observation_checkpoints,
+            "transport_cleanup_unknown": transport_cleanup_unknown,
+            "deferred_wait_stalls": deferred_wait_stalls,
             "active_stage": active_stage,
             "stages": stage_values,
             "candidate_changes": candidate_changes,
@@ -6719,6 +7223,10 @@ def status(repo_value: str | Path, run_value: str) -> dict[str, Any]:
         "recovery_policy": recovery_policy(ledger["facets"]),
         "builder_checkpointed": ledger.get("builder_checkpointed", False),
         "driver_runtime": copy.deepcopy(ledger.get("driver_runtime")),
+        "transport_cleanup_intent": copy.deepcopy(
+            ledger.get("transport_cleanup_intent")
+        ),
+        "deferred_wait": copy.deepcopy(ledger.get("deferred_wait")),
         "driver_failure": copy.deepcopy(ledger.get("driver_failure")),
         "dispatch_intent": copy.deepcopy(ledger.get("dispatch_intent")),
         "tester_replacement_intent": copy.deepcopy(
@@ -7767,6 +8275,10 @@ def driver_context(repo_value: str | Path, run_value: str) -> dict[str, Any]:
         "publication": copy.deepcopy(ledger.get("publication")),
         "problems": copy.deepcopy(ledger.get("problems", [])),
         "driver_runtime": copy.deepcopy(ledger.get("driver_runtime")),
+        "transport_cleanup_intent": copy.deepcopy(
+            ledger.get("transport_cleanup_intent")
+        ),
+        "deferred_wait": copy.deepcopy(ledger.get("deferred_wait")),
         "driver_failure": copy.deepcopy(ledger.get("driver_failure")),
         "dispatch_intent": copy.deepcopy(ledger.get("dispatch_intent")),
         "tester_replacement_intent": copy.deepcopy(
@@ -11391,40 +11903,37 @@ def _run_frozen_command(
         env["BUILDER_LOOP_ARTIFACT_PATH"] = artifact_path
     if artifact_sha256 is not None:
         env["BUILDER_LOOP_ARTIFACT_SHA256"] = artifact_sha256
-    try:
-        completed = subprocess.run(
-            [executable, *command["argv"][1:]],
-            cwd=worktree,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=command["timeout_seconds"],
-            check=False,
-            env=env,
-        )
-        return {
-            "id": command["id"],
-            "argv": command["argv"],
-            "returncode": completed.returncode,
-            "stdout": completed.stdout[-8000:],
-            "stderr": completed.stderr[-8000:],
-            "timed_out": False,
-            "executable_identity": identity,
-        }
-    except subprocess.TimeoutExpired as exc:
-        return {
-            "id": command["id"],
-            "argv": command["argv"],
-            "returncode": None,
-            "stdout": (exc.stdout or "")[-8000:] if isinstance(exc.stdout, str) else "",
-            "stderr": (exc.stderr or "")[-8000:] if isinstance(exc.stderr, str) else "",
-            "timed_out": True,
-            "executable_identity": identity,
-        }
+    result = run_owned_command(
+        [executable, *command["argv"][1:]],
+        cwd=str(worktree),
+        timeout=command["timeout_seconds"],
+        executable_identity=identity,
+        env=env,
+    )
+    return {
+        "id": command["id"],
+        "argv": command["argv"],
+        "returncode": result["returncode"],
+        "stdout": result["stdout"][-8000:],
+        "stderr": result["stderr"][-8000:],
+        "timed_out": result["timed_out"],
+        "executable_identity": identity,
+        "process_identity": result["process_identity"],
+        "cleanup": result["cleanup"],
+    }
 
 
 def _command_passed(command: Mapping[str, Any], result: Mapping[str, Any]) -> bool:
-    return not result["timed_out"] and result["returncode"] in command["expected_returncodes"]
+    cleanup = result.get("cleanup")
+    cleanup_ok = (
+        not isinstance(cleanup, Mapping)
+        or cleanup.get("process_group_gone") is True
+    )
+    return (
+        not result["timed_out"]
+        and result["returncode"] in command["expected_returncodes"]
+        and cleanup_ok
+    )
 
 
 def _probe_environment(
@@ -12261,52 +12770,39 @@ def _run_machine_commands(
                 )
                 break
             argv = [executable, *command["argv"][1:]]
-            try:
-                completed = subprocess.run(
-                    argv,
-                    cwd=verify_worktree,
-                    text=True,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    timeout=command["timeout_seconds"],
-                    check=False,
-                    env={
-                        "HOME": os.environ.get("HOME", ""),
-                        "LANG": os.environ.get("LANG", "C.UTF-8"),
-                        "LC_ALL": os.environ.get("LC_ALL", "C.UTF-8"),
-                        "PATH": TRUSTED_SYSTEM_PATH,
-                        "PYTHONDONTWRITEBYTECODE": "1",
-                    },
-                )
-                results.append(
-                    {
-                        "id": command["id"],
-                        "argv": command["argv"],
-                        "executable": executable,
-                        "executable_identity": executable_identity,
-                        "returncode": completed.returncode,
-                        "stdout": completed.stdout[-8000:],
-                        "stderr": completed.stderr[-8000:],
-                        "timed_out": False,
-                        "source": "runtime",
-                    }
-                )
-                if completed.returncode not in command["expected_returncodes"]:
-                    break
-            except subprocess.TimeoutExpired as exc:
-                results.append(
-                    {
-                        "id": command["id"],
-                        "argv": command["argv"],
-                        "executable": executable,
-                        "executable_identity": executable_identity,
-                        "returncode": None,
-                        "stdout": (exc.stdout or "")[-8000:] if isinstance(exc.stdout, str) else "",
-                        "stderr": (exc.stderr or "")[-8000:] if isinstance(exc.stderr, str) else "",
-                        "timed_out": True,
-                        "source": "runtime",
-                    }
-                )
+            result = run_owned_command(
+                argv,
+                cwd=str(verify_worktree),
+                timeout=command["timeout_seconds"],
+                executable_identity=executable_identity,
+                env={
+                    "HOME": os.environ.get("HOME", ""),
+                    "LANG": os.environ.get("LANG", "C.UTF-8"),
+                    "LC_ALL": os.environ.get("LC_ALL", "C.UTF-8"),
+                    "PATH": TRUSTED_SYSTEM_PATH,
+                    "PYTHONDONTWRITEBYTECODE": "1",
+                },
+            )
+            results.append(
+                {
+                    "id": command["id"],
+                    "argv": command["argv"],
+                    "executable": executable,
+                    "executable_identity": executable_identity,
+                    "returncode": result["returncode"],
+                    "stdout": result["stdout"][-8000:],
+                    "stderr": result["stderr"][-8000:],
+                    "timed_out": result["timed_out"],
+                    "process_identity": result["process_identity"],
+                    "cleanup": result["cleanup"],
+                    "source": "runtime",
+                }
+            )
+            if (
+                result["returncode"] not in command["expected_returncodes"]
+                or result["timed_out"]
+                or not result["cleanup"]["process_group_gone"]
+            ):
                 break
     finally:
         git(repo, "worktree", "remove", "--force", str(verify_worktree), check=False)
@@ -12321,6 +12817,10 @@ def _machine_results_pass(
     return len(results) == len(commands) and all(
         not item["timed_out"]
         and item["returncode"] in declared[item["id"]]["expected_returncodes"]
+        and (
+            not isinstance(item.get("cleanup"), Mapping)
+            or item["cleanup"].get("process_group_gone") is True
+        )
         for item in results
     )
 

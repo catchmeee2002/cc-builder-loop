@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import json
+import hashlib
 import time
 import tomllib
 from datetime import datetime, timezone
@@ -80,6 +81,67 @@ class NativeCoordinator:
             else None
         )
         self._thread_compaction_available = thread_compaction_available
+
+    def _transport_generation(self) -> str | None:
+        value = getattr(self.transport, "generation", None)
+        return value if isinstance(value, str) and value else None
+
+    def _timeout_profile_digest(self) -> str:
+        profile = {
+            "turn_idle_seconds": getattr(self.transport, "turn_idle_timeout", 30.0),
+            "turn_total_seconds": getattr(
+                self.transport, "turn_total_timeout", 3600.0
+            ),
+            "compaction_total_seconds": getattr(
+                self.transport, "compaction_total_timeout", 600.0
+            ),
+        }
+        return hashlib.sha256(
+            json.dumps(
+                profile,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+
+    def _checkpoint_wire(
+        self, action_id: str, *, expected_generation: str | None = None
+    ) -> None:
+        snapshot = getattr(self.transport, "wire_snapshot", None)
+        if not callable(snapshot):
+            return
+        value = snapshot()
+        if not isinstance(value, dict):
+            return
+        generation = value.get("generation")
+        sequence = value.get("sequence")
+        event_digest = value.get("event_digest")
+        if (
+            not isinstance(generation, str)
+            or not isinstance(sequence, int)
+            or not isinstance(event_digest, str)
+            or expected_generation is None
+            or generation != expected_generation
+        ):
+            return
+        self.core.call(
+            "record-dispatch-wire",
+            "--repo",
+            str(self.repo),
+            "--run",
+            self.run_id,
+            "--action-id",
+            action_id,
+            "--native-transport-generation",
+            generation,
+            "--sequence",
+            str(sequence),
+            "--event-digest",
+            event_digest,
+            "--driver-runtime-kind",
+            "native",
+        )
 
     def run(self) -> dict[str, Any]:
         while True:
@@ -392,7 +454,7 @@ class NativeCoordinator:
             if self._renew_tester_bootstrap_after_missing_rollout(action, context, exc):
                 return
             raise
-        self.core.call(
+        dispatch_args = [
             "begin-dispatch",
             "--repo",
             str(self.repo),
@@ -410,6 +472,19 @@ class NativeCoordinator:
             digest(prompt),
             "--output-schema-digest",
             self.output_schema_digest,
+        ]
+        transport_generation = self._transport_generation()
+        if transport_generation is not None:
+            dispatch_args.extend(
+                [
+                    "--native-transport-generation",
+                    transport_generation,
+                    "--timeout-profile-digest",
+                    self._timeout_profile_digest(),
+                ]
+            )
+        self.core.call(
+            *dispatch_args,
         )
         turn = self.transport.run_turn(
             thread_id=agent["thread_id"],
@@ -429,6 +504,10 @@ class NativeCoordinator:
                 "--turn-id",
                 turn_id,
             ),
+        )
+        self._checkpoint_wire(
+            str(action["action_id"]),
+            expected_generation=transport_generation,
         )
         if self._retry_interrupted_turn(turn, action, context):
             return
@@ -654,6 +733,10 @@ class NativeCoordinator:
                     turn_id,
                 ),
             )
+            self._checkpoint_wire(
+                str(pending["action_id"]),
+                expected_generation=pending.get("native_transport_generation"),
+            )
             if self._retry_turn_failure(turn, str(pending["action_id"])):
                 return None
             result = self._parse_action_result_or_retry(
@@ -693,6 +776,10 @@ class NativeCoordinator:
         if len(matches) == 1 and matches[0].get("status") in {"inProgress", "in_progress"}:
             turn = self.transport.wait_turn(
                 thread_id=thread_id, turn_id=str(matches[0]["id"])
+            )
+            self._checkpoint_wire(
+                str(pending["action_id"]),
+                expected_generation=pending.get("native_transport_generation"),
             )
             if self._retry_interrupted_turn(turn, current, context):
                 return None

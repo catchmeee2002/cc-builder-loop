@@ -31,6 +31,7 @@ from codex_builder_loop.native_driver import cli as native_cli
 from codex_builder_loop.native_driver.coordinator import NativeCoordinator, NativeDriverError
 from codex_builder_loop.native_driver.core_port import CorePort, CorePortError
 from codex_builder_loop.native_driver.transport_failures import classify_turn_failure
+from codex_builder_loop.process import process_group_gone, read_proc_identity
 
 
 def native_contract(repo: Path) -> dict:
@@ -552,6 +553,266 @@ class NativeDriverCoreContractTest(unittest.TestCase):
         self.assertEqual(
             consumed.get("details", {}).get("consumer_source"), "native_driver"
         )
+
+    def test_native_transport_wire_wait_and_cleanup_facts_are_ledger_bound(self) -> None:
+        run_id, run_path = self.start()
+        ledger_path = run_path / "ledger.json"
+        ledger = json.loads(ledger_path.read_text())
+        ledger["driver_runtime"]["native_transport"] = {
+            "contract_version": 2,
+            "generation": "transport-generation-1",
+            "state": "ready",
+            "executable_identity": {
+                "requested": "/usr/bin/codex",
+                "resolved": "/usr/bin/codex",
+                "sha256": "a" * 64,
+                "runtime_version": "codex-test",
+                "protocol_schema_digest": "b" * 64,
+                "protocol_canary_digest": "c" * 64,
+            },
+            "process_identity": {
+                "pid": 1001,
+                "pgid": 1001,
+                "starttime": "1",
+                "parent_pid": 1,
+                "argv_digest": "d" * 64,
+                "executable_identity_digest": "e" * 64,
+                "started_at": "2026-08-20T00:00:00+00:00",
+                "exited_at": None,
+                "exit_code": None,
+                "process_group_gone": None,
+            },
+        }
+        ledger_path.write_text(
+            json.dumps(ledger, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        first = self.invoke("driver-next", "--repo", self.repo, "--run", run_id)
+        self.invoke(
+            "prepare-builder",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--agent-id",
+            "native-builder",
+            "--thread-id",
+            "thread-builder",
+            "--action-id",
+            first["action_id"],
+            "--driver-runtime-kind",
+            "native",
+        )
+        action = self.invoke("driver-next", "--repo", self.repo, "--run", run_id)
+        self.invoke(
+            "begin-dispatch",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--action-id",
+            action["action_id"],
+            "--action",
+            action["action"],
+            "--role",
+            "builder",
+            "--thread-id",
+            "thread-builder",
+            "--prompt-digest",
+            "f" * 64,
+            "--output-schema-digest",
+            "1" * 64,
+            "--native-transport-generation",
+            "transport-generation-1",
+            "--timeout-profile-digest",
+            "2" * 64,
+        )
+        self.invoke(
+            "bind-dispatch-turn",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--action-id",
+            action["action_id"],
+            "--turn-id",
+            "turn-1",
+        )
+        self.invoke(
+            "record-dispatch-wire",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--action-id",
+            action["action_id"],
+            "--native-transport-generation",
+            "transport-generation-1",
+            "--sequence",
+            "1",
+            "--event-digest",
+            "3" * 64,
+            "--driver-runtime-kind",
+            "native",
+        )
+        self.invoke(
+            "record-deferred-wait",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--state",
+            "active",
+            "--action-id",
+            action["action_id"],
+            "--dispatch-generation",
+            "1",
+            "--transport-generation",
+            "transport-generation-1",
+            "--delivery-state",
+            "waiting",
+            "--last-heartbeat-at",
+            "2026-08-20T00:00:01+00:00",
+            "--driver-runtime-kind",
+            "native",
+        )
+        self.invoke(
+            "record-deferred-wait",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--state",
+            "stalled",
+            "--action-id",
+            action["action_id"],
+            "--dispatch-generation",
+            "1",
+            "--transport-generation",
+            "transport-generation-1",
+            "--delivery-state",
+            "external_delivery_unknown",
+            "--last-heartbeat-at",
+            "2026-08-20T00:02:01+00:00",
+            "--driver-runtime-kind",
+            "native",
+        )
+        process_identity = {
+            "pid": 1001,
+            "pgid": 1001,
+            "starttime": "1",
+            "parent_pid": 1,
+            "argv_digest": "d" * 64,
+            "executable_identity_digest": "e" * 64,
+            "started_at": "2026-08-20T00:00:00+00:00",
+            "exited_at": "2026-08-20T00:02:02+00:00",
+            "exit_code": -15,
+            "process_group_gone": True,
+        }
+        self.invoke(
+            "record-transport-cleanup",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--generation",
+            "transport-generation-1",
+            "--process-identity",
+            "-",
+            "--state",
+            "completed",
+            "--term-attempt",
+            "1",
+            "--kill-attempt",
+            "0",
+            "--process-group-gone",
+            "--driver-runtime-kind",
+            "native",
+            stdin=process_identity,
+        )
+        observed = json.loads(ledger_path.read_text())
+        self.assertEqual(
+            observed["dispatch_intent"]["native_transport_generation"],
+            "transport-generation-1",
+        )
+        self.assertEqual(observed["dispatch_intent"]["last_wire_sequence"], 1)
+        self.assertEqual(observed["deferred_wait"]["state"], "stalled")
+        self.assertEqual(
+            observed["transport_cleanup_intent"]["state"],
+            "completed",
+        )
+        self.assertEqual(
+            observed["driver_runtime"]["native_transport"]["state"],
+            "cleaned",
+        )
+        second_transport = copy.deepcopy(observed["driver_runtime"]["native_transport"])
+        second_transport["generation"] = "transport-generation-2"
+        second_transport["state"] = "ready"
+        second_transport["process_identity"] = {
+            **second_transport["process_identity"],
+            "pid": 1002,
+            "pgid": 1002,
+            "starttime": "2",
+            "started_at": "2026-08-20T00:03:00+00:00",
+            "exited_at": None,
+            "exit_code": None,
+            "process_group_gone": None,
+        }
+        self.invoke(
+            "bind-native-transport",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--transport",
+            "-",
+            "--driver-runtime-kind",
+            "native",
+            stdin=second_transport,
+        )
+        second_identity = {
+            **second_transport["process_identity"],
+            "exited_at": "2026-08-20T00:03:01+00:00",
+            "exit_code": 0,
+            "process_group_gone": True,
+        }
+        self.invoke(
+            "record-transport-cleanup",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--generation",
+            "transport-generation-2",
+            "--process-identity",
+            "-",
+            "--state",
+            "completed",
+            "--term-attempt",
+            "1",
+            "--kill-attempt",
+            "0",
+            "--process-group-gone",
+            "--driver-runtime-kind",
+            "native",
+            stdin=second_identity,
+        )
+        observed = json.loads(ledger_path.read_text())
+        cleanup_events = [
+            item
+            for item in observed["events"]
+            if item["kind"] == "transport_cleanup_completed"
+        ]
+        self.assertEqual(len(cleanup_events), 2)
+        self.assertEqual(
+            observed["transport_cleanup_intent"]["source_generation"],
+            "transport-generation-2",
+        )
+        telemetry = self.invoke("status", "--repo", self.repo, "--run", run_id)[
+            "telemetry"
+        ]
+        self.assertEqual(telemetry["wire_observation_checkpoints"], 1)
+        self.assertEqual(telemetry["deferred_wait_stalls"], 1)
 
     def test_exhausted_dispatch_requires_authorized_new_generation(self) -> None:
         run_id, run_path = self.start()
@@ -2628,6 +2889,38 @@ for line in sys.stdin:
     def tearDown(self) -> None:
         self.tmp.cleanup()
 
+    def test_native_doctor_reports_legacy_transport_without_mutation(self) -> None:
+        class FakeCore:
+            def call(self, command: str, *args: str, input_value=None):
+                self.command = command
+                return {
+                    "run_id": "doctor-run",
+                    "driver_runtime": {"kind": "native", "protocol_version": 1},
+                    "dispatch_intent": None,
+                    "transport_cleanup_intent": None,
+                    "deferred_wait": None,
+                }
+
+        output = StringIO()
+        fake_core = FakeCore()
+        with (
+            patch.object(native_cli, "CorePort", return_value=fake_core),
+            redirect_stdout(output),
+        ):
+            rc = native_cli.main(
+                [
+                    "doctor",
+                    "--repo",
+                    str(self.root),
+                    "--run",
+                    "doctor-run",
+                ]
+            )
+        self.assertEqual(rc, 0)
+        payload = json.loads(output.getvalue().splitlines()[-1])
+        self.assertEqual(payload["diagnostic_state"], "legacy-unbound")
+        self.assertEqual(fake_core.command, "driver-context")
+
     def test_probe_and_thread_turn_use_versioned_native_protocol(self) -> None:
         capability = probe_app_server(str(self.codex))
         self.assertEqual(capability.runtime_version, "codex-cli fake-native")
@@ -2663,6 +2956,28 @@ for line in sys.stdin:
 
         self.assertEqual(result.turn_id, "turn-compact")
         self.assertEqual(result.item_id, "item-compact")
+
+    def test_transport_binds_process_identity_and_reaps_owned_group(self) -> None:
+        transport = AppServerTransport(codex_bin=str(self.codex), strict_protocol=True)
+        with transport:
+            snapshot = transport.runtime_snapshot()
+            self.assertEqual(snapshot["contract_version"], 2)
+            self.assertNotEqual(snapshot["generation"], "unbound")
+            process = snapshot["process_identity"]
+            self.assertIsInstance(process, dict)
+            self.assertEqual(process["pid"], transport.process.pid)
+            self.assertEqual(process["pgid"], transport.process.pid)
+            self.assertIsNotNone(read_proc_identity(process["pid"]))
+
+        cleanup = transport.cleanup_observation
+        self.assertIsInstance(cleanup, dict)
+        self.assertEqual(cleanup["state"], "cleaned")
+        self.assertTrue(cleanup["process_group_gone"])
+        self.assertTrue(process_group_gone(process["pgid"]))
+        self.assertEqual(
+            transport.runtime_snapshot()["state"],
+            "cleaned",
+        )
 
     def test_process_disconnect_schedules_retry_and_resumes_same_thread(self) -> None:
         state = self.root / "disconnect-state"

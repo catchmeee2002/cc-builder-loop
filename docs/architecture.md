@@ -276,6 +276,18 @@ canary before creating a run, while transport reads are bounded (initialize 5 se
 only when its role/thread/action/prompt/output and observation digests remain identical and no output or side
 effect is observed; later recovery follows the explicit authorization path.
 
+Native transport continuity is separate from logical dispatch continuity. Each new App Server child runs in its
+own process group and is bound to an executable identity, `/proc` starttime, PID/PGID, and a versioned transport
+generation. Dispatches record the transport generation, timeout profile, monotonic wire checkpoints, and the
+side-effect observation digest. A transport close records an independent cleanup fact; an unobserved or surviving
+process group blocks automatic recovery and is never adopted by name or PID alone.
+
+Turn waiting keeps the existing initialize/request/idle read limits and adds role-independent total turn and
+compaction deadlines. Machine and deployment commands use the same owned process-group observation boundary.
+`native-driver doctor` is read-only and reports legacy-unbound transport, process identity drift, deferred-wait
+state, and cleanup uncertainty. Deferred wait events describe delivery liveness only; they do not prove that a
+root Agent received a result or authorize replaying a side effect.
+
 ## Legacy v3 系统边界
 
 Codex 原生 Plan mode 负责探索和追问；全局托管规则先让用户选择继续使用原生 Plan，或加载

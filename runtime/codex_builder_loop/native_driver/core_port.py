@@ -72,6 +72,7 @@ class CorePort:
         runtime_version: str,
         protocol_schema_digest: str,
         protocol_canary_digest: str | None = None,
+        native_transport: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         return self.call(
             "start",
@@ -94,6 +95,19 @@ class CorePort:
             *(
                 ["--driver-protocol-canary-digest", protocol_canary_digest]
                 if protocol_canary_digest
+                else []
+            ),
+            *(
+                [
+                    "--driver-native-transport",
+                    json.dumps(
+                        native_transport,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                ]
+                if native_transport is not None
                 else []
             ),
             input_value=contract,
