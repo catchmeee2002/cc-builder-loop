@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Full Driver fallback now has an explicit owner-bound dispatch preparation transaction, turn binding and
+  result consumption path; Native transport facts remain restricted to the Native Driver owner.
+
 - Native Driver transport lifecycle now records executable/process identity, versioned App Server generations,
   monotonic wire checkpoints, total turn/compaction deadlines, and exact process-group cleanup observations.
   Added read-only `native-driver doctor` diagnostics and Core transactions for transport cleanup and deferred-wait

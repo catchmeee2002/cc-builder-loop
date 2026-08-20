@@ -379,6 +379,11 @@ def parser() -> argparse.ArgumentParser:
     begin_dispatch.add_argument("--output-schema-digest", required=True)
     begin_dispatch.add_argument("--native-transport-generation")
     begin_dispatch.add_argument("--timeout-profile-digest")
+    begin_dispatch.add_argument(
+        "--driver-runtime-kind",
+        choices=["native", "full_driver_skill"],
+        default="native",
+    )
 
     bind_turn = commands.add_parser("bind-dispatch-turn")
     bind_turn.add_argument("--repo", default=".")
@@ -908,6 +913,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 output_schema_digest=args.output_schema_digest,
                 native_transport_generation=args.native_transport_generation,
                 timeout_profile_digest=args.timeout_profile_digest,
+                driver_runtime_kind=args.driver_runtime_kind,
             )
         elif args.command == "bind-dispatch-turn":
             payload = core.bind_dispatch_turn(

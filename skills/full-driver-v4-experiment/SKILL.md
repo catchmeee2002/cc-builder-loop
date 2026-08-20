@@ -68,6 +68,11 @@ dispatch。直到 `finalize` 或明确的决策边界。动作面如下，不能
 
 - `builder_implement` / `builder_fix`：只在 candidate worktree 和 Builder ownership 内实现。普通
   修复、fixture 修正和实现缺陷不修改 Mission。
+- Full Driver fallback 每次角色 turn 先用 `begin-dispatch` 绑定当前 `action_id`、role/thread、
+  prompt/output digest，并显式传 `--driver-runtime-kind full_driver_skill`；真实 turn 开始后再
+  `bind-dispatch-turn`，结果用 `complete-dispatch` 落盘并以
+  `consume-dispatch --consumer-source full_driver_skill` 消费。Native transport 字段只由 Native Driver
+  owner 绑定，不能由 fallback 冒充。
 - `checkpoint_builder`：Builder 工作完成后先提交 candidate，再调用 `checkpoint-builder`，让 Core
   计算并绑定 candidate HEAD、builder files 和 evidence invalidation；Skill 不手写 Execution 清单。
 - `scan_doc_references`：每次 candidate identity 变化后、进入 Tester 或 Reviewer 前调用 Core

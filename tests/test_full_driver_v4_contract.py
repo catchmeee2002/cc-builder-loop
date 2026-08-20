@@ -230,6 +230,126 @@ class FullDriverV4ContractTest(unittest.TestCase):
     def load_ledger(self, run_path: Path) -> dict[str, Any]:
         return json.loads((run_path / "ledger.json").read_text(encoding="utf-8"))
 
+    def test_full_driver_skill_dispatch_owner_binds_and_consumes(self) -> None:
+        run_id = "full-driver-dispatch-owner"
+        contract = contract_for(self.repo)
+        contract["execution"]["agents"] = {}
+        contract_path = self.write_json(f"{run_id}-contract.json", contract)
+        rc, started = self.invoke(
+            "start",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--session-id",
+            "full-driver-dispatch-session",
+            "--contract",
+            contract_path,
+            "--driver-kind",
+            "full_driver_skill",
+        )
+        self.assertEqual(rc, 0, started)
+        run_path = Path(started["candidate_worktree"]).parent
+
+        action = self.invoke("driver-next", "--repo", self.repo, "--run", run_id)[1]
+        self.assertEqual(action["action"], "builder_implement", action)
+        rc, prepared = self.invoke(
+            "prepare-builder",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--agent-id",
+            "full-driver-builder",
+            "--thread-id",
+            "full-driver-builder-thread",
+            "--action-id",
+            action["action_id"],
+            "--driver-runtime-kind",
+            "full_driver_skill",
+        )
+        self.assertEqual(rc, 0, prepared)
+
+        action = self.invoke("driver-next", "--repo", self.repo, "--run", run_id)[1]
+        rc, begun = self.invoke(
+            "begin-dispatch",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--action-id",
+            action["action_id"],
+            "--action",
+            action["action"],
+            "--role",
+            "builder",
+            "--thread-id",
+            "full-driver-builder-thread",
+            "--prompt-digest",
+            "a" * 64,
+            "--output-schema-digest",
+            "b" * 64,
+            "--driver-runtime-kind",
+            "full_driver_skill",
+        )
+        self.assertEqual(rc, 0, begun)
+        self.assertEqual(
+            self.load_ledger(run_path)["dispatch_intent"]["state"],
+            "prepared",
+        )
+
+        rc, bound = self.invoke(
+            "bind-dispatch-turn",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--action-id",
+            action["action_id"],
+            "--turn-id",
+            "full-driver-builder-turn",
+        )
+        self.assertEqual(rc, 0, bound)
+        self.assertEqual(
+            self.load_ledger(run_path)["dispatch_intent"]["state"],
+            "in_flight",
+        )
+
+        result_path = self.write_json(
+            f"{run_id}-result.json",
+            {
+                "result": "implemented",
+                "evidence_report": None,
+                "proof_spec": None,
+                "problem_report": None,
+            },
+        )
+        rc, completed = self.invoke(
+            "complete-dispatch",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--action-id",
+            action["action_id"],
+            "--result",
+            result_path,
+        )
+        self.assertEqual(rc, 0, completed)
+        rc, consumed = self.invoke(
+            "consume-dispatch",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--action-id",
+            action["action_id"],
+            "--consumer-source",
+            "full_driver_skill",
+        )
+        self.assertEqual(rc, 0, consumed)
+        self.assertIsNone(self.load_ledger(run_path)["dispatch_intent"])
+
     def assert_proof_failure(
         self,
         run_path: Path,

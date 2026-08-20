@@ -27,8 +27,10 @@ Execution Manifest 记录实际 candidate、文件、命令和 Agent identity。
 run 收敛；普通执行信息变化不以 abandon 或新 run 代替局部失效与重验。
 
 Core ledger 保存 `active/finalizing/finalized/failed/abandoned/superseded`、facet/evidence digest、candidate、target 与
-可恢复事务，不保存“下一步让谁做”、correction budget 或普通 Agent 循环。Native Driver 在启动外部
-role turn 前只额外持久化一个 dispatch intent，绑定 action/thread/prompt/output digest 和 turn/result；
+可恢复事务，不保存“下一步让谁做”、correction budget 或普通 Agent 循环。Native Driver 与 Full Driver
+fallback 在启动外部 role turn 前都只额外持久化一个 owner-bound dispatch intent，绑定
+action/thread/prompt/output digest 和 turn/result；fallback 使用 `full_driver_skill` owner，不能写入
+Native transport 事实。
 它是跨进程副作用的恢复事实，不是调度状态，消费后立即清空。`driver.py` 每轮从 readiness 重新决定
 Builder、Tester、机器、候选部署、黑盒或 Reviewer 动作；
 同一失败签名三次只触发架构复核，不自动创建新 Mission。无冲突 target drift 通过 candidate

@@ -1593,17 +1593,29 @@ def begin_dispatch(
     output_schema_digest: str,
     native_transport_generation: str | None = None,
     timeout_profile_digest: str | None = None,
+    driver_runtime_kind: str = "native",
 ) -> dict[str, Any]:
     repo = resolve_repo(repo_value)
     run_id = ensure_run_id(run_value)
     if role not in {"builder", "tester", "reviewer"}:
         raise AssuranceError("dispatch role is invalid", code="DISPATCH_ROLE_INVALID")
+    if driver_runtime_kind not in {"native", "full_driver_skill"}:
+        raise AssuranceError(
+            "dispatch driver runtime kind is invalid",
+            code="DRIVER_RUNTIME_KIND_INVALID",
+        )
     with locked(repo):
         ledger = read_ledger(repo, run_id)
         _assert_no_candidate_residue_intent(ledger)
-        runtime = ledger.get("driver_runtime")
-        if not isinstance(runtime, dict) or runtime.get("kind") != "native":
-            raise AssuranceError("run is not owned by Native Driver", code="NATIVE_DRIVER_NOT_OWNER")
+        _require_driver_runtime_owner(ledger, driver_runtime_kind)
+        if driver_runtime_kind == "full_driver_skill" and (
+            native_transport_generation is not None
+            or timeout_profile_digest is not None
+        ):
+            raise AssuranceError(
+                "Full Driver dispatch cannot bind Native transport facts",
+                code="FULL_DRIVER_NATIVE_TRANSPORT_INVALID",
+            )
         existing = ledger.get("dispatch_intent")
         if existing is not None:
             if existing.get("action_id") == action_id:
