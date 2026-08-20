@@ -10,6 +10,29 @@
   ],
   "$defs": {
     "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "derivationIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "runtime_commit",
+        "retrospective_schema_version",
+        "derivation_version",
+        "capture_status"
+      ],
+      "properties": {
+        "runtime_commit": {
+          "oneOf": [
+            {"type": "null"},
+            {"type": "string", "pattern": "^[0-9a-f]{40}$"}
+          ]
+        },
+        "retrospective_schema_version": {"const": 2},
+        "derivation_version": {"const": "assurance-v4-retrospective-v2"},
+        "capture_status": {
+          "enum": ["captured", "partial", "unavailable"]
+        }
+      }
+    },
     "signalId": {"type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*-[0-9a-f]{16}$"},
     "runtimeIdentity": {
       "type": "object",
@@ -82,7 +105,7 @@
         "facts": {"type": "object"}
       }
     },
-    "snapshot": {
+    "snapshotV1": {
       "type": "object",
       "additionalProperties": false,
       "required": ["schema_version", "repo_root", "owner_session_id", "runs", "signals", "snapshot_digest"],
@@ -94,6 +117,30 @@
         "signals": {"type": "array", "items": {"$ref": "#/$defs/signal"}},
         "snapshot_digest": {"$ref": "#/$defs/sha256"}
       }
+    },
+    "snapshotV2": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version", "repo_root", "owner_session_id", "runs", "signals",
+        "derivation_identity", "derivation_identity_digest", "snapshot_digest"
+      ],
+      "properties": {
+        "schema_version": {"const": 2},
+        "repo_root": {"type": "string", "minLength": 1},
+        "owner_session_id": {"type": "string", "minLength": 1},
+        "runs": {"type": "array", "items": {"$ref": "#/$defs/runFact"}},
+        "signals": {"type": "array", "items": {"$ref": "#/$defs/signal"}},
+        "derivation_identity": {"$ref": "#/$defs/derivationIdentity"},
+        "derivation_identity_digest": {"$ref": "#/$defs/sha256"},
+        "snapshot_digest": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "snapshot": {
+      "oneOf": [
+        {"$ref": "#/$defs/snapshotV1"},
+        {"$ref": "#/$defs/snapshotV2"}
+      ]
     },
     "disposition": {
       "oneOf": [
@@ -229,10 +276,33 @@
         }
       }
     },
+    "reportInputV3": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version", "snapshot_digest", "derivation_identity_digest",
+        "dispositions", "issue_updates"
+      ],
+      "properties": {
+        "schema_version": {"const": 3},
+        "snapshot_digest": {"$ref": "#/$defs/sha256"},
+        "derivation_identity_digest": {"$ref": "#/$defs/sha256"},
+        "dispositions": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/disposition"}
+        },
+        "issue_updates": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/issueUpdateReceipt"},
+          "uniqueItems": true
+        }
+      }
+    },
     "reportInput": {
       "oneOf": [
         {"$ref": "#/$defs/reportInputV1"},
-        {"$ref": "#/$defs/reportInputV2"}
+        {"$ref": "#/$defs/reportInputV2"},
+        {"$ref": "#/$defs/reportInputV3"}
       ]
     },
     "storedReportV1": {
@@ -274,10 +344,38 @@
         "recorded_at": {"type": "string", "minLength": 1}
       }
     },
+    "storedReportV3": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version", "repo_root", "owner_session_id", "snapshot_digest",
+        "derivation_identity_digest", "dispositions", "issue_updates",
+        "report_digest", "recorded_at"
+      ],
+      "properties": {
+        "schema_version": {"const": 3},
+        "repo_root": {"type": "string", "minLength": 1},
+        "owner_session_id": {"type": "string", "minLength": 1},
+        "snapshot_digest": {"$ref": "#/$defs/sha256"},
+        "derivation_identity_digest": {"$ref": "#/$defs/sha256"},
+        "dispositions": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/disposition"}
+        },
+        "issue_updates": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/issueUpdateReceipt"},
+          "uniqueItems": true
+        },
+        "report_digest": {"$ref": "#/$defs/sha256"},
+        "recorded_at": {"type": "string", "minLength": 1}
+      }
+    },
     "storedReport": {
       "oneOf": [
         {"$ref": "#/$defs/storedReportV1"},
-        {"$ref": "#/$defs/storedReportV2"}
+        {"$ref": "#/$defs/storedReportV2"},
+        {"$ref": "#/$defs/storedReportV3"}
       ]
     },
     "status": {

@@ -2646,6 +2646,19 @@ for line in sys.stdin:
         self.assertEqual(turn.status, "completed")
         self.assertEqual(json.loads(turn.text)["result"], "implemented")
 
+    def test_strict_protocol_rejects_legacy_response_envelope(self) -> None:
+        transport = AppServerTransport(
+            codex_bin=str(self.codex), strict_protocol=True
+        )
+        try:
+            with self.assertRaises(AppServerError) as raised:
+                transport.start()
+        finally:
+            transport.close()
+        self.assertEqual(
+            raised.exception.code, "NATIVE_DRIVER_PROTOCOL_INCOMPATIBLE"
+        )
+
     def test_thread_compaction_consumes_deferred_context_item_notifications(self) -> None:
         with AppServerTransport(codex_bin=str(self.codex)) as transport:
             result = transport.compact_thread("thr-native")

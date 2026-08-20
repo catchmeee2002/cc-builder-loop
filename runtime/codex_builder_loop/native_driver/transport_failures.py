@@ -11,6 +11,7 @@ RETRYABLE_TRANSPORT_FAILURES = frozenset(
         "serverOverloaded",
         "responseStreamConnectionFailed",
         "responseStreamDisconnected",
+        "responseStreamTimeout",
         "responseTooManyFailedAttempts",
         "httpConnectionFailed",
         "authUnavailable",
@@ -68,6 +69,8 @@ def classify_turn_failure(error: Any) -> str:
 def classify_app_server_failure(error: AppServerError) -> str | None:
     if error.code == "NATIVE_APP_SERVER_DISCONNECTED":
         return "responseStreamDisconnected"
+    if error.code == "NATIVE_APP_SERVER_TIMEOUT":
+        return "responseStreamTimeout"
     return None
 
 

@@ -430,6 +430,8 @@ class NativeCoordinator:
                 turn_id,
             ),
         )
+        if self._retry_interrupted_turn(turn, action, context):
+            return
         if self._retry_turn_failure(turn, str(action["action_id"])):
             return
         result = self._parse_action_result_or_retry(
@@ -452,6 +454,56 @@ class NativeCoordinator:
             input_value=result,
         )
         self._apply_agent_result(action, role, result, self._context())
+
+    @staticmethod
+    def _interrupted_turn_is_empty(turn: TurnResult) -> bool:
+        if turn.status != "interrupted" or turn.text:
+            return False
+        return True
+
+    def _retry_interrupted_turn(
+        self,
+        turn: TurnResult,
+        action: dict[str, Any],
+        context: dict[str, Any],
+    ) -> bool:
+        if not self._interrupted_turn_is_empty(turn):
+            return False
+        intent = context.get("dispatch_intent")
+        if not isinstance(intent, dict) or intent.get("state") != "in_flight":
+            return False
+        observation = {
+            "candidate_head": context["facets"]["execution"].get("candidate_head"),
+            "target_start_head": context.get("target_start_head"),
+            "evidence": context.get("evidence", {}),
+            "publication": context.get("publication"),
+            "deployment_transaction": context.get("deployment_transaction"),
+        }
+        if intent.get("dispatch_observation_digest") != digest(observation):
+            return False
+        try:
+            self.core.call(
+                "retry-dispatch",
+                "--repo",
+                str(self.repo),
+                "--run",
+                self.run_id,
+                "--action-id",
+                str(action["action_id"]),
+                "--failure-code",
+                "interruptedNoOutput",
+                "--interrupted-retry",
+            )
+        except CorePortError as exc:
+            if exc.status in {"FAIL", "NEEDS_USER"}:
+                raise NativeDriverError(
+                    "interrupted dispatch requires explicit user recovery",
+                    code="NATIVE_DISPATCH_INTERRUPTED_REQUIRES_USER",
+                    status="NEEDS_USER",
+                    details=exc.payload,
+                ) from exc
+            raise
+        return True
 
     def _prepare_role(
         self,
@@ -642,6 +694,8 @@ class NativeCoordinator:
             turn = self.transport.wait_turn(
                 thread_id=thread_id, turn_id=str(matches[0]["id"])
             )
+            if self._retry_interrupted_turn(turn, current, context):
+                return None
             if self._retry_turn_failure(turn, str(pending["action_id"])):
                 return None
             result = self._parse_action_result_or_retry(
@@ -673,14 +727,17 @@ class NativeCoordinator:
             )
         turn_value = matches[0]
         text = self._turn_agent_text(turn_value) or ""
+        turn_result = TurnResult(
+            turn_id=str(turn_value["id"]),
+            status=str(turn_value["status"]),
+            text=text,
+            error=turn_value.get("error"),
+        )
+        if self._retry_interrupted_turn(turn_result, current, context):
+            return None
         result = self._parse_action_result_or_retry(
             str(pending["action"]),
-            TurnResult(
-                turn_id=str(turn_value["id"]),
-                status=str(turn_value["status"]),
-                text=text,
-                error=turn_value.get("error"),
-            ),
+            turn_result,
             str(pending["action_id"]),
         )
         if result is None:

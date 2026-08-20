@@ -71,6 +71,7 @@ class CorePort:
         contract: dict[str, Any],
         runtime_version: str,
         protocol_schema_digest: str,
+        protocol_canary_digest: str | None = None,
     ) -> dict[str, Any]:
         return self.call(
             "start",
@@ -90,5 +91,10 @@ class CorePort:
             runtime_version,
             "--driver-protocol-schema-digest",
             protocol_schema_digest,
+            *(
+                ["--driver-protocol-canary-digest", protocol_canary_digest]
+                if protocol_canary_digest
+                else []
+            ),
             input_value=contract,
         )

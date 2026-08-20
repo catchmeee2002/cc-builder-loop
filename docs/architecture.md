@@ -261,6 +261,18 @@ profile 永久升级为 full，不写第二份状态。
 当前 minor 可做 active mutation，上一 minor 只允许契约支持的终态收敛；更旧或未知 identity 只读诊断，
 不得改写历史 ledger 来伪造升级。
 
+Retrospective snapshot v2 additionally freezes a derivation identity consisting of runtime commit, retrospective
+schema version and derivation version. Report v3 stores only that identity digest plus its Issue receipts; the
+release intent stores only snapshot/report/identity digests and stage receipts, never a second snapshot copy. A
+release can report `RELEASE_READY` only after the current owner session is derivation-verified `READY` and the
+external tag, GitHub Release and installed CLI all read back the same release commit.
+
+Native Driver App Server traffic uses JSON-RPC 2.0 envelopes. The business Native Driver performs an isolated
+`initialize → initialized → thread/start` canary before creating a run, while transport reads are bounded
+(initialize 5 seconds, protocol requests 10 seconds, turn idle-read 30 seconds). An interrupted in-flight turn
+may consume one same-generation retry only when its role/thread/action/prompt/output and observation digests
+remain identical and no output or side effect is observed; later recovery follows the explicit authorization path.
+
 ## Legacy v3 系统边界
 
 Codex 原生 Plan mode 负责探索和追问；全局托管规则先让用户选择继续使用原生 Plan，或加载

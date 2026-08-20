@@ -8,6 +8,7 @@ from typing import Any, Sequence
 
 from . import core
 from . import driver
+from . import release
 from .driver_contract import actions_for_preparation
 from .models import ContractError, digest, load_json_source
 from .store import StoreError
@@ -73,6 +74,7 @@ def parser() -> argparse.ArgumentParser:
     start.add_argument("--driver-transport", choices=["codex_app_server", "native_tools"])
     start.add_argument("--driver-runtime-version")
     start.add_argument("--driver-protocol-schema-digest")
+    start.add_argument("--driver-protocol-canary-digest")
 
     status = commands.add_parser("status")
     status.add_argument("--repo", default=".")
@@ -106,6 +108,26 @@ def parser() -> argparse.ArgumentParser:
     record_retrospective.add_argument("--session-id", required=True)
     record_retrospective.add_argument("--report", required=True)
     record_retrospective.add_argument("--replace", action="store_true")
+
+    release_preflight = commands.add_parser("release-preflight")
+    release_preflight.add_argument("--repo", default=".")
+    release_preflight.add_argument("--session-id", required=True)
+    release_preflight.add_argument("--version", required=True)
+    release_preflight.add_argument("--tag", required=True)
+    release_preflight.add_argument("--release-commit", required=True)
+    release_preflight.add_argument("--remote", default="origin")
+    release_preflight.add_argument("--replace-intent")
+    release_preflight.add_argument("--reason")
+
+    release_verify = commands.add_parser("release-verify")
+    release_verify.add_argument("--repo", default=".")
+    release_verify.add_argument("--session-id", required=True)
+    release_verify.add_argument("--intent-id", required=True)
+    release_verify.add_argument(
+        "--stage", choices=["tag", "github-release", "install-smoke"], required=True
+    )
+    release_verify.add_argument("--remote", default="origin")
+    release_verify.add_argument("--installed-cli")
 
     resolve_external_problem = commands.add_parser("resolve-external-problem")
     resolve_external_problem.add_argument("--repo", default=".")
@@ -381,6 +403,7 @@ def parser() -> argparse.ArgumentParser:
     retry_dispatch.add_argument("--run", required=True)
     retry_dispatch.add_argument("--action-id", required=True)
     retry_dispatch.add_argument("--failure-code", required=True)
+    retry_dispatch.add_argument("--interrupted-retry", action="store_true")
 
     renew_dispatch = commands.add_parser("renew-dispatch")
     renew_dispatch.add_argument("--repo", default=".")
@@ -521,6 +544,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "transport": args.driver_transport,
                     "runtime_version": args.driver_runtime_version,
                     "protocol_schema_digest": args.driver_protocol_schema_digest,
+                    "protocol_canary_digest": args.driver_protocol_canary_digest,
                 }
             payload = core.start(
                 args.repo,
@@ -552,6 +576,26 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.session_id,
                 _json(args.report),
                 replace=args.replace,
+            )
+        elif args.command == "release-preflight":
+            payload = release.release_preflight(
+                args.repo,
+                session_id=args.session_id,
+                version=args.version,
+                tag=args.tag,
+                release_commit=args.release_commit,
+                remote=args.remote,
+                replace_intent=args.replace_intent,
+                reason=args.reason,
+            )
+        elif args.command == "release-verify":
+            payload = release.release_verify(
+                args.repo,
+                session_id=args.session_id,
+                intent_id=args.intent_id,
+                stage=args.stage,
+                remote=args.remote,
+                installed_cli=args.installed_cli,
             )
         elif args.command == "resolve-external-problem":
             payload = core.resolve_external_problem(
@@ -802,6 +846,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.run,
                 action_id=args.action_id,
                 failure_code=args.failure_code,
+                interrupted_retry=args.interrupted_retry,
             )
         elif args.command == "renew-dispatch":
             payload = core.renew_dispatch(

@@ -7,6 +7,7 @@ import shutil
 import stat
 import subprocess
 import tempfile
+import select
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, IO
@@ -24,6 +25,7 @@ class AppServerCapability:
     runtime_version: str
     protocol_schema_digest: str
     thread_compaction: bool
+    protocol_canary_digest: str | None = None
 
 
 @dataclass(frozen=True)
@@ -74,7 +76,9 @@ def _trusted_cache_parent() -> Path:
     )
 
 
-def probe_app_server(codex_bin: str = "codex") -> AppServerCapability:
+def probe_app_server(
+    codex_bin: str = "codex", *, strict_protocol: bool = False
+) -> AppServerCapability:
     version = subprocess.run(
         [codex_bin, "--version"],
         text=True,
@@ -110,20 +114,49 @@ def probe_app_server(codex_bin: str = "codex") -> AppServerCapability:
                 code="NATIVE_DRIVER_PROTOCOL_INCOMPATIBLE",
                 details={"missing": missing},
             )
+        canary_digest: str | None = None
+        try:
+            with tempfile.TemporaryDirectory(prefix="codex-native-driver-canary-") as canary_cwd:
+                with AppServerTransport(
+                    codex_bin=codex_bin, strict_protocol=strict_protocol
+                ) as transport:
+                    thread_id = transport.start_thread(
+                        cwd=canary_cwd,
+                        developer_instructions="protocol canary",
+                        sandbox="danger-full-access",
+                    )
+                    canary_digest = hashlib.sha256(
+                        json.dumps(
+                            {
+                                "sequence": ["initialize", "initialized", "thread/start"],
+                                "thread_id": thread_id,
+                            },
+                            sort_keys=True,
+                        ).encode()
+                    ).hexdigest()
+        except AppServerError as exc:
+            raise AppServerError(
+                "Codex App Server protocol canary failed",
+                code="NATIVE_DRIVER_PROTOCOL_INCOMPATIBLE",
+                details={"canary_code": exc.code, "canary_details": exc.details},
+            ) from exc
         return AppServerCapability(
             runtime_version=version.stdout.strip(),
             protocol_schema_digest=hashlib.sha256(content).hexdigest(),
             thread_compaction='"thread/compact/start"' in text,
+            protocol_canary_digest=canary_digest,
         )
 
 
 class AppServerTransport:
-    def __init__(self, *, codex_bin: str = "codex"):
+    def __init__(self, *, codex_bin: str = "codex", strict_protocol: bool = False):
         self.codex_bin = codex_bin
-        self.process: subprocess.Popen[str] | None = None
+        self.strict_protocol = strict_protocol
+        self.process: subprocess.Popen[Any] | None = None
         self._next_id = 1
         self._deferred: list[dict[str, Any]] = []
         self._python_cache_root: Path | None = None
+        self._read_buffer = b""
 
     def __enter__(self) -> "AppServerTransport":
         self.start()
@@ -154,8 +187,8 @@ class AppServerTransport:
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
-                text=True,
-                bufsize=1,
+                text=False,
+                bufsize=0,
                 env=environment,
             )
             self._request(
@@ -280,7 +313,7 @@ class AppServerTransport:
     def wait_turn(self, *, thread_id: str, turn_id: str) -> TurnResult:
         last_text = ""
         while True:
-            message = self._next_message()
+            message = self._next_message(timeout=30.0)
             if "id" in message and "method" in message:
                 self._answer_server_request(message)
                 continue
@@ -309,7 +342,7 @@ class AppServerTransport:
         compaction_turn_id: str | None = None
         compaction_item_id: str | None = None
         while True:
-            message = self._next_message()
+            message = self._next_message(timeout=30.0)
             if "id" in message and "method" in message:
                 self._answer_server_request(message)
                 continue
@@ -360,9 +393,10 @@ class AppServerTransport:
     def _request(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         request_id = self._next_id
         self._next_id += 1
-        self._send({"method": method, "id": request_id, "params": params})
+        self._send({"jsonrpc": "2.0", "method": method, "id": request_id, "params": params})
         while True:
-            message = self._read()
+            timeout = 5.0 if method == "initialize" else 10.0
+            message = self._read(timeout=timeout)
             if message.get("id") == request_id and "method" not in message:
                 if "error" in message:
                     error = message["error"]
@@ -380,40 +414,72 @@ class AppServerTransport:
 
     def _send(self, value: dict[str, Any]) -> None:
         process = self.process
-        stream: IO[str] | None = process.stdin if process is not None else None
+        stream: IO[Any] | None = process.stdin if process is not None else None
         if stream is None:
             raise AppServerError("App Server is not running", code="NATIVE_APP_SERVER_NOT_RUNNING")
         try:
-            stream.write(json.dumps(value, ensure_ascii=False, separators=(",", ":")) + "\n")
+            payload = dict(value)
+            payload.setdefault("jsonrpc", "2.0")
+            stream.write(
+                (
+                    json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n"
+                ).encode("utf-8")
+            )
             stream.flush()
         except (BrokenPipeError, OSError) as exc:
             raise AppServerError(str(exc), code="NATIVE_APP_SERVER_DISCONNECTED") from exc
 
-    def _read(self) -> dict[str, Any]:
+    def _read(self, timeout: float = 10.0) -> dict[str, Any]:
         process = self.process
-        stream: IO[str] | None = process.stdout if process is not None else None
+        stream: IO[Any] | None = process.stdout if process is not None else None
         if stream is None:
             raise AppServerError("App Server is not running", code="NATIVE_APP_SERVER_NOT_RUNNING")
-        line = stream.readline()
-        if not line:
+        if b"\n" in self._read_buffer:
+            ready = []
+        else:
+            try:
+                ready, _, _ = select.select([stream.fileno()], [], [], timeout)
+            except (OSError, ValueError):
+                ready = [stream]
+        if not ready and b"\n" not in self._read_buffer:
+            raise AppServerError(
+                "Codex App Server read timed out",
+                code="NATIVE_APP_SERVER_TIMEOUT",
+                details={"timeout_seconds": timeout},
+            )
+        if ready:
+            try:
+                self._read_buffer += os.read(stream.fileno(), 65536)
+            except OSError as exc:
+                raise AppServerError(
+                    str(exc), code="NATIVE_APP_SERVER_DISCONNECTED"
+                ) from exc
+        if b"\n" not in self._read_buffer:
             code = process.poll() if process is not None else None
             raise AppServerError(
                 "Codex App Server closed its output",
                 code="NATIVE_APP_SERVER_DISCONNECTED",
                 details={"returncode": code},
             )
+        line, self._read_buffer = self._read_buffer.split(b"\n", 1)
         try:
-            value = json.loads(line)
-        except json.JSONDecodeError as exc:
+            value = json.loads(line.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise AppServerError("invalid App Server JSON", code="NATIVE_APP_SERVER_PROTOCOL_ERROR") from exc
         if not isinstance(value, dict):
             raise AppServerError("invalid App Server message", code="NATIVE_APP_SERVER_PROTOCOL_ERROR")
+        if self.strict_protocol and value.get("jsonrpc") != "2.0":
+            raise AppServerError(
+                "App Server message is not a JSON-RPC 2.0 envelope",
+                code="NATIVE_DRIVER_PROTOCOL_INCOMPATIBLE",
+                details={"message_digest": hashlib.sha256(line).hexdigest()},
+            )
         return value
 
-    def _next_message(self) -> dict[str, Any]:
+    def _next_message(self, timeout: float = 10.0) -> dict[str, Any]:
         if self._deferred:
             return self._deferred.pop(0)
-        return self._read()
+        return self._read(timeout=timeout)
 
     def _answer_server_request(self, message: dict[str, Any]) -> None:
         method = str(message.get("method", ""))

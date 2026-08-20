@@ -150,8 +150,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             return emit(
                 core.call("driver-context", "--repo", str(repo), "--run", args.run), 0
             )
-        capability = probe_app_server(args.codex_bin)
-        transport = AppServerTransport(codex_bin=args.codex_bin)
+        capability = probe_app_server(args.codex_bin, strict_protocol=True)
+        transport = AppServerTransport(
+            codex_bin=args.codex_bin, strict_protocol=True
+        )
         if args.command == "resume":
             context = core.call(
                 "driver-context", "--repo", str(repo), "--run", args.run
@@ -239,6 +241,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     contract=contract,
                     runtime_version=capability.runtime_version,
                     protocol_schema_digest=capability.protocol_schema_digest,
+                    protocol_canary_digest=getattr(capability, "protocol_canary_digest", None),
                 )
                 run_may_exist = True
                 print(

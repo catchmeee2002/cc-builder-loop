@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- A+B reliability batch: retrospective snapshots now carry a v2 derivation identity and v3 reports bind its
+  digest; legacy v1 reports remain read-only and cannot satisfy release readiness. Added session-scoped
+  `assurance release-preflight` / `release-verify` receipts for the ordered tag → GitHub Release → install
+  smoke read-back chain. Native App Server transport now emits JSON-RPC 2.0 envelopes, supports strict
+  initialize/initialized/thread-start protocol canary, bounded 5/10/30-second reads, and records one
+  digest-bound interrupted/no-output retry without resetting generation or attempt history (#208, #212, #200, #201).
+
 - Assurance v4 reliability correction batch：public prerequisite checkpoint 会把 candidate、Authority digest、路径及
   classification 事实原子记录为唯一 `builder_loop` problem；若 classification 已包含当前 Builder 的实际产出，
   Driver 继续原 Builder 恢复，完全 deferred 的零进展现场则进入 `NEEDS_USER`。Rejected-checkpoint successor

@@ -218,7 +218,10 @@
         "protocol_version": {"const": 1},
         "transport": {"enum": ["codex_app_server", "native_tools"]},
         "runtime_version": {"type": "string", "minLength": 1},
-        "protocol_schema_digest": {"$ref": "#/$defs/sha256"}
+        "protocol_schema_digest": {"$ref": "#/$defs/sha256"},
+        "protocol_canary_digest": {
+          "oneOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]
+        }
       }
     },
     "driverFailureAction": {
@@ -320,9 +323,14 @@
         "thread_id": {"type": "string", "minLength": 1},
         "prompt_digest": {"$ref": "#/$defs/sha256"},
         "output_schema_digest": {"$ref": "#/$defs/sha256"},
+        "dispatch_observation_digest": {
+          "oneOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]
+        },
         "state": {"enum": ["prepared", "in_flight", "completed", "exhausted"]},
         "attempt": {"type": "integer", "minimum": 1, "maximum": 3},
         "generation": {"type": "integer", "minimum": 1},
+        "interrupted_retry_used": {"type": "boolean"},
+        "interrupted_retry_blocked": {"type": "boolean"},
         "turn_id": {"type": "string", "minLength": 1},
         "failure_code": {"type": "string", "minLength": 1},
         "retry_scheduled_at": {"type": "string", "format": "date-time"},

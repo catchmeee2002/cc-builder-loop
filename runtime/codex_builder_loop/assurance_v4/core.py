@@ -1655,6 +1655,13 @@ def begin_dispatch(
                     "tester_fix_action_id": action_id,
                 },
             )
+        observation = {
+            "candidate_head": ledger["facets"]["execution"].get("candidate_head"),
+            "target_start_head": ledger.get("target_start_head"),
+            "evidence": ledger.get("evidence", {}),
+            "publication": ledger.get("publication"),
+            "deployment_transaction": ledger.get("deployment_transaction"),
+        }
         ledger["dispatch_intent"] = {
             "action_id": action_id,
             "action": action,
@@ -1662,9 +1669,12 @@ def begin_dispatch(
             "thread_id": thread_id,
             "prompt_digest": prompt_digest,
             "output_schema_digest": output_schema_digest,
+            "dispatch_observation_digest": digest(observation),
             "state": "prepared",
             "attempt": 1,
             "generation": 1,
+            "interrupted_retry_used": False,
+            "interrupted_retry_blocked": False,
             "created_at": now(),
         }
         append_event(ledger, "dispatch_prepared", copy.deepcopy(ledger["dispatch_intent"]))
@@ -1962,6 +1972,7 @@ def retry_dispatch(
     *,
     action_id: str,
     failure_code: str,
+    interrupted_retry: bool = False,
 ) -> dict[str, Any]:
     repo = resolve_repo(repo_value)
     run_id = ensure_run_id(run_value)
@@ -1980,6 +1991,49 @@ def retry_dispatch(
             raise AssuranceError("dispatch action is stale", code="DRIVER_ACTION_STALE", status="FAIL")
         if intent.get("state") == "completed":
             raise AssuranceError("completed dispatch cannot be retried", code="DISPATCH_ALREADY_COMPLETE")
+        if interrupted_retry:
+            if intent.get("state") != "in_flight":
+                raise AssuranceError(
+                    "interrupted retry requires an in-flight dispatch",
+                    code="DISPATCH_INTERRUPTED_RETRY_STATE_INVALID",
+                    status="NEEDS_USER",
+                )
+            if intent.get("interrupted_retry_used"):
+                intent["interrupted_retry_blocked"] = True
+                append_event(
+                    ledger,
+                    "dispatch_interrupted_retry_rejected",
+                    {
+                        "action_id": action_id,
+                        "generation": intent.get("generation"),
+                        "attempt": intent.get("attempt"),
+                        "turn_id": intent.get("turn_id"),
+                        "reason": "interrupted_retry_already_used",
+                    },
+                )
+                save_ledger(repo, ledger)
+                raise AssuranceError(
+                    "interrupted dispatch retry has already been consumed",
+                    code="NATIVE_DISPATCH_INTERRUPTED_REQUIRES_USER",
+                    status="NEEDS_USER",
+                )
+            intent["interrupted_retry_used"] = True
+            append_event(
+                ledger,
+                "dispatch_interrupted_retry",
+                {
+                    "action_id": action_id,
+                    "generation": intent.get("generation"),
+                    "previous_attempt": intent.get("attempt"),
+                    "next_attempt": int(intent.get("attempt", 1)) + 1,
+                    "thread_id": intent.get("thread_id"),
+                    "turn_id": intent.get("turn_id"),
+                    "prompt_digest": intent.get("prompt_digest"),
+                    "output_schema_digest": intent.get("output_schema_digest"),
+                    "observation_digest": intent.get("dispatch_observation_digest"),
+                    "reason": "no_output_no_side_effect",
+                },
+            )
         attempt = int(intent.get("attempt", 1))
         generation = int(intent.get("generation", 1))
         if attempt >= 3:
@@ -2140,9 +2194,14 @@ def renew_dispatch(
             "thread_id": previous_intent["thread_id"],
             "prompt_digest": previous_intent["prompt_digest"],
             "output_schema_digest": previous_intent["output_schema_digest"],
+            "dispatch_observation_digest": previous_intent.get(
+                "dispatch_observation_digest"
+            ),
             "state": "prepared",
             "attempt": 1,
             "generation": previous_generation + 1,
+            "interrupted_retry_used": False,
+            "interrupted_retry_blocked": False,
             "renewed_from_digest": previous_digest,
             "renewal_reason": normalized_reason,
             "created_at": now(),
@@ -2381,9 +2440,14 @@ def complete_dispatch_compaction(
             "thread_id": previous_intent["thread_id"],
             "prompt_digest": previous_intent["prompt_digest"],
             "output_schema_digest": previous_intent["output_schema_digest"],
+            "dispatch_observation_digest": previous_intent.get(
+                "dispatch_observation_digest"
+            ),
             "state": "prepared",
             "attempt": 1,
             "generation": previous_generation + 1,
+            "interrupted_retry_used": False,
+            "interrupted_retry_blocked": False,
             "renewed_from_digest": previous_digest,
             "renewal_reason": "automatic_reviewer_thread_compaction",
             "compaction_recovery": completed_recovery,
@@ -3716,12 +3780,40 @@ def _derive_retrospective_snapshot(
         )
     signals.sort(key=lambda item: item["signal_id"])
     repository_identity = str(Path(str(ledgers[0][0]["repo_root"])).resolve())
+    runtime_commits = {
+        str(item[0].get("runtime_identity", {}).get("adapter_commit"))
+        for item in ledgers
+        if item[0].get("runtime_identity", {}).get("capture_status") == "captured"
+        and isinstance(item[0].get("runtime_identity", {}).get("adapter_commit"), str)
+    }
+    identity_statuses = {
+        str(item[0].get("runtime_identity", {}).get("capture_status"))
+        for item in ledgers
+    }
+    if len(runtime_commits) == 1 and identity_statuses == {"captured"}:
+        runtime_commit: str | None = next(iter(runtime_commits))
+        derivation_capture_status = "captured"
+    elif runtime_commits:
+        runtime_commit = None
+        derivation_capture_status = "partial"
+    else:
+        runtime_commit = None
+        derivation_capture_status = "unavailable"
+    derivation_identity = {
+        "runtime_commit": runtime_commit,
+        "retrospective_schema_version": 2,
+        "derivation_version": "assurance-v4-retrospective-v2",
+        "capture_status": derivation_capture_status,
+    }
+    derivation_identity_digest = digest(derivation_identity)
     snapshot_base = {
-        "schema_version": 1,
+        "schema_version": 2,
         "repo_root": repository_identity,
         "owner_session_id": session_id,
         "runs": run_facts,
         "signals": signals,
+        "derivation_identity": derivation_identity,
+        "derivation_identity_digest": derivation_identity_digest,
     }
     snapshot = {**snapshot_base, "snapshot_digest": digest(snapshot_base)}
     return validate_retrospective_snapshot(snapshot)
@@ -3741,6 +3833,9 @@ def _retrospective_report_digest_input(
         )
     }
     if report["schema_version"] == 2:
+        value["issue_updates"] = copy.deepcopy(report["issue_updates"])
+    if report["schema_version"] == 3:
+        value["derivation_identity_digest"] = report["derivation_identity_digest"]
         value["issue_updates"] = copy.deepcopy(report["issue_updates"])
     return value
 
@@ -3897,7 +3992,7 @@ def _read_retrospective_report(repo: Path, session_id: str) -> dict[str, Any] | 
             status="FATAL",
             details=exc.details,
         ) from exc
-    if report["schema_version"] == 2:
+    if report["schema_version"] in {2, 3}:
         try:
             ordered_updates = _ordered_retrospective_issue_updates(
                 report["snapshot_digest"],
@@ -4136,6 +4231,11 @@ def retrospective_status(repo_value: str | Path, session_id: str) -> dict[str, A
         report["repo_root"] != snapshot["repo_root"]
         or report["owner_session_id"] != owner_session_id
         or report["snapshot_digest"] != snapshot["snapshot_digest"]
+        or (
+            report["schema_version"] == 3
+            and report.get("derivation_identity_digest")
+            != snapshot.get("derivation_identity_digest")
+        )
     ):
         return {
             "status": "STALE",
@@ -4185,6 +4285,13 @@ def retrospective_status(repo_value: str | Path, session_id: str) -> dict[str, A
         "snapshot": snapshot,
         "report": report,
         "issue_sync": issue_sync,
+        "derivation_status": (
+            "verified"
+            if report["schema_version"] == 3
+            and report.get("derivation_identity_digest")
+            == snapshot.get("derivation_identity_digest")
+            else "legacy-unverified"
+        ),
         "required_block": required_block,
     }
     if not pending_issue_updates:
@@ -4262,12 +4369,33 @@ def record_retrospective(
             "snapshot_digest": snapshot["snapshot_digest"],
             "dispositions": ordered,
         }
-        if report_input["schema_version"] == 2:
+        if report_input["schema_version"] in {2, 3}:
             report_base["issue_updates"] = _ordered_retrospective_issue_updates(
                 snapshot["snapshot_digest"],
                 ordered,
                 report_input["issue_updates"],
             )
+        if report_input["schema_version"] == 3:
+            if (
+                report_input["derivation_identity_digest"]
+                != snapshot["derivation_identity_digest"]
+            ):
+                raise AssuranceError(
+                    "retrospective report does not bind the current derivation identity",
+                    code="RETROSPECTIVE_DERIVATION_STALE",
+                    status="FAIL",
+                    details={
+                        "expected_derivation_identity_digest": snapshot[
+                            "derivation_identity_digest"
+                        ],
+                        "actual_derivation_identity_digest": report_input[
+                            "derivation_identity_digest"
+                        ],
+                    },
+                )
+            report_base["derivation_identity_digest"] = snapshot[
+                "derivation_identity_digest"
+            ]
         stored = {
             **report_base,
             "report_digest": digest(report_base),
