@@ -273,10 +273,12 @@ Native Driver App Server traffic uses the Codex JSON-RPC-compatible request/resp
 stdio wire may omit the `jsonrpc` version member, so compatibility is proved by validating request,
 notification, response/error shape and matching ids rather than by requiring a header that the server
 intentionally omits. The business Native Driver performs an isolated `initialize → initialized → thread/start`
-canary before creating a run, while transport reads are bounded (initialize 5 seconds, protocol requests
-10 seconds, turn idle-read 30 seconds). An interrupted in-flight turn may consume one same-generation retry
-only when its role/thread/action/prompt/output and observation digests remain identical and no output or side
-effect is observed; later recovery follows the explicit authorization path.
+canary before creating a run, while transport reads are bounded (initialize 30 seconds, protocol requests
+30 seconds, turn idle-read 120 seconds). The pre-run canary permits up to three total attempts for transient
+timeout/disconnect failures; exhaustion reports `NATIVE_DRIVER_PROTOCOL_UNAVAILABLE`, while non-transient
+wire or capability failures remain `NATIVE_DRIVER_PROTOCOL_INCOMPATIBLE`. An interrupted in-flight turn may
+consume one same-generation retry only when its role/thread/action/prompt/output and observation digests remain
+identical and no output or side effect is observed; later recovery follows the explicit authorization path.
 
 Native transport continuity is separate from logical dispatch continuity. Each new App Server child runs in its
 own process group and is bound to an executable identity, `/proc` starttime, PID/PGID, and a versioned transport

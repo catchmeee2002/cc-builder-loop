@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Native App Server startup and control requests now use 30-second bounded reads, long-turn idle reads use
+  120 seconds, and the pre-run protocol canary allows up to three total attempts for transient timeout or
+  disconnect failures. Exhaustion remains fail-closed as `NATIVE_DRIVER_PROTOCOL_UNAVAILABLE` instead of
+  misclassifying an environment timeout as protocol incompatibility (#214).
+
 - Full Driver fallback now has an explicit owner-bound dispatch preparation transaction, turn binding and
   result consumption path; Native transport facts remain restricted to the Native Driver owner.
 
