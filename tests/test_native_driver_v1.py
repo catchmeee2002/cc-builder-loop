@@ -22,6 +22,9 @@ from codex_builder_loop.assurance_v4 import driver as assurance_core_driver
 from codex_builder_loop.native_driver.app_server import (
     AppServerError,
     AppServerTransport,
+    INITIALIZE_TIMEOUT_SECONDS,
+    REQUEST_TIMEOUT_SECONDS,
+    TURN_IDLE_TIMEOUT_SECONDS,
     TurnResult,
     probe_app_server,
 )
@@ -2938,6 +2941,102 @@ for line in sys.stdin:
         self.assertEqual(thread_id, "thr-native")
         self.assertEqual(turn.status, "completed")
         self.assertEqual(json.loads(turn.text)["result"], "implemented")
+
+    def test_transport_uses_explicit_timeout_profile(self) -> None:
+        transport = AppServerTransport(codex_bin=str(self.codex))
+
+        self.assertEqual(transport.turn_idle_timeout, TURN_IDLE_TIMEOUT_SECONDS)
+        self.assertEqual(transport.turn_idle_timeout, 120.0)
+        self.assertEqual(transport.turn_total_timeout, 3600.0)
+        self.assertEqual(transport.compaction_total_timeout, 600.0)
+
+    def test_request_uses_longer_initialize_and_control_timeouts(self) -> None:
+        transport = AppServerTransport(codex_bin=str(self.codex))
+
+        with (
+            patch.object(transport, "_send"),
+            patch.object(
+                transport,
+                "_read",
+                return_value={"id": 1, "result": {}},
+            ) as read,
+        ):
+            transport._request("initialize", {})
+        read.assert_called_once_with(timeout=INITIALIZE_TIMEOUT_SECONDS)
+
+        with (
+            patch.object(transport, "_send"),
+            patch.object(
+                transport,
+                "_read",
+                return_value={"id": 2, "result": {}},
+            ) as read,
+        ):
+            transport._next_id = 2
+            transport._request("thread/start", {})
+        read.assert_called_once_with(timeout=REQUEST_TIMEOUT_SECONDS)
+
+    def test_probe_retries_transient_canary_timeout(self) -> None:
+        attempts = 0
+
+        class RetryTransport:
+            def __init__(self, **_kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def start_thread(self, **_kwargs):
+                nonlocal attempts
+                attempts += 1
+                if attempts == 1:
+                    raise AppServerError(
+                        "initialize delayed",
+                        code="NATIVE_APP_SERVER_TIMEOUT",
+                        details={"timeout_seconds": INITIALIZE_TIMEOUT_SECONDS},
+                    )
+                return "thread-canary"
+
+        with patch(
+            "codex_builder_loop.native_driver.app_server.AppServerTransport",
+            RetryTransport,
+        ):
+            capability = probe_app_server(str(self.codex), strict_protocol=True)
+
+        self.assertEqual(attempts, 2)
+        self.assertEqual(capability.protocol_canary_digest is not None, True)
+
+    def test_probe_does_not_label_canary_timeout_as_protocol_incompatible(self) -> None:
+        class TimeoutTransport:
+            def __init__(self, **_kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def start_thread(self, **_kwargs):
+                raise AppServerError(
+                    "initialize delayed",
+                    code="NATIVE_APP_SERVER_TIMEOUT",
+                    details={"timeout_seconds": INITIALIZE_TIMEOUT_SECONDS},
+                )
+
+        with patch(
+            "codex_builder_loop.native_driver.app_server.AppServerTransport",
+            TimeoutTransport,
+        ):
+            with self.assertRaises(AppServerError) as raised:
+                probe_app_server(str(self.codex), strict_protocol=True)
+
+        self.assertEqual(raised.exception.code, "NATIVE_DRIVER_PROTOCOL_UNAVAILABLE")
+        self.assertEqual(raised.exception.details["canary_code"], "NATIVE_APP_SERVER_TIMEOUT")
+        self.assertEqual(raised.exception.details["attempts"], 3)
 
     def test_strict_protocol_accepts_official_headerless_response_envelope(self) -> None:
         with AppServerTransport(

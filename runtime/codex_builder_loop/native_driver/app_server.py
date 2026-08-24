@@ -57,9 +57,13 @@ REQUIRED_PROTOCOL_TOKENS = (
     '"clientUserMessageId"',
 )
 
-TURN_IDLE_TIMEOUT_SECONDS = 30.0
+TURN_IDLE_TIMEOUT_SECONDS = 120.0
+INITIALIZE_TIMEOUT_SECONDS = 30.0
+REQUEST_TIMEOUT_SECONDS = 30.0
 TURN_TOTAL_TIMEOUT_SECONDS = 3600.0
 COMPACTION_TOTAL_TIMEOUT_SECONDS = 600.0
+PROTOCOL_CANARY_ATTEMPTS = 3
+PROTOCOL_CANARY_RETRY_DELAY_SECONDS = 0.5
 PROCESS_CLEANUP_GRACE_SECONDS = 5.0
 
 
@@ -144,31 +148,58 @@ def probe_app_server(
                 details={"missing": missing},
             )
         canary_digest: str | None = None
-        try:
-            with tempfile.TemporaryDirectory(prefix="codex-native-driver-canary-") as canary_cwd:
-                with AppServerTransport(
-                    codex_bin=codex_bin, strict_protocol=strict_protocol
-                ) as transport:
-                    thread_id = transport.start_thread(
-                        cwd=canary_cwd,
-                        developer_instructions="protocol canary",
-                        sandbox="danger-full-access",
+        last_error: AppServerError | None = None
+        for attempt in range(1, PROTOCOL_CANARY_ATTEMPTS + 1):
+            try:
+                with tempfile.TemporaryDirectory(
+                    prefix="codex-native-driver-canary-"
+                ) as canary_cwd:
+                    with AppServerTransport(
+                        codex_bin=codex_bin, strict_protocol=strict_protocol
+                    ) as transport:
+                        thread_id = transport.start_thread(
+                            cwd=canary_cwd,
+                            developer_instructions="protocol canary",
+                            sandbox="danger-full-access",
+                        )
+                        canary_digest = hashlib.sha256(
+                            json.dumps(
+                                {
+                                    "sequence": [
+                                        "initialize",
+                                        "initialized",
+                                        "thread/start",
+                                    ],
+                                    "thread_id_observed": bool(thread_id),
+                                },
+                                sort_keys=True,
+                            ).encode()
+                        ).hexdigest()
+                break
+            except AppServerError as exc:
+                last_error = exc
+                retryable = exc.code in {
+                    "NATIVE_APP_SERVER_TIMEOUT",
+                    "NATIVE_APP_SERVER_DISCONNECTED",
+                }
+                if not retryable or attempt == PROTOCOL_CANARY_ATTEMPTS:
+                    code = (
+                        "NATIVE_DRIVER_PROTOCOL_UNAVAILABLE"
+                        if retryable
+                        else "NATIVE_DRIVER_PROTOCOL_INCOMPATIBLE"
                     )
-                    canary_digest = hashlib.sha256(
-                        json.dumps(
-                            {
-                                "sequence": ["initialize", "initialized", "thread/start"],
-                                "thread_id_observed": bool(thread_id),
-                            },
-                            sort_keys=True,
-                        ).encode()
-                    ).hexdigest()
-        except AppServerError as exc:
-            raise AppServerError(
-                "Codex App Server protocol canary failed",
-                code="NATIVE_DRIVER_PROTOCOL_INCOMPATIBLE",
-                details={"canary_code": exc.code, "canary_details": exc.details},
-            ) from exc
+                    raise AppServerError(
+                        "Codex App Server protocol canary failed",
+                        code=code,
+                        details={
+                            "canary_code": exc.code,
+                            "canary_details": exc.details,
+                            "attempts": attempt,
+                        },
+                    ) from exc
+                time.sleep(PROTOCOL_CANARY_RETRY_DELAY_SECONDS)
+        if canary_digest is None and last_error is not None:
+            raise last_error
         return AppServerCapability(
             runtime_version=version.stdout.strip(),
             protocol_schema_digest=hashlib.sha256(content).hexdigest(),
@@ -603,7 +634,11 @@ class AppServerTransport:
         self._next_id += 1
         self._send({"jsonrpc": "2.0", "method": method, "id": request_id, "params": params})
         while True:
-            timeout = 5.0 if method == "initialize" else 10.0
+            timeout = (
+                INITIALIZE_TIMEOUT_SECONDS
+                if method == "initialize"
+                else REQUEST_TIMEOUT_SECONDS
+            )
             message = self._read(timeout=timeout)
             if message.get("id") == request_id and "method" not in message:
                 if "error" in message:
