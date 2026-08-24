@@ -254,6 +254,7 @@ class SessionStartAuthorizationNeutralityTest(unittest.TestCase):
             self.assertIn("session_id=installed-fixed-session", context)
 
             planner = (home / ".agents/skills/builder-loop-planner/SKILL.md").read_text()
+            native_planner = (home / ".agents/skills/planner/SKILL.md").read_text()
             builder = (home / ".agents/skills/builder/SKILL.md").read_text()
             full_driver_manifest = (
                 home
@@ -263,6 +264,8 @@ class SessionStartAuthorizationNeutralityTest(unittest.TestCase):
             self.assertIn(compact(MARKER), compact(planner))
             self.assertIn("assurance-v4-contract", planner)
             self.assertIn("--experimental-v4 validate", planner)
+            self.assertIn("native_codex", native_planner)
+            self.assertIn("BUILDER_HANDOFF_READY", native_planner)
             self.assertIn("full-driver-v4-experiment", builder)
             self.assertIn("native-driver start", builder)
             self.assertIn(
@@ -284,6 +287,7 @@ class SessionStartAuthorizationNeutralityTest(unittest.TestCase):
             self.assertEqual(
                 installed_paths,
                 {
+                    ".agents/skills/planner",
                     ".agents/skills/builder",
                     ".agents/skills/builder-loop-planner",
                     ".agents/skills/file-github-issue",

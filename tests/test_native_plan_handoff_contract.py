@@ -73,7 +73,7 @@ class ExperimentalEntryContractTest(unittest.TestCase):
         self.assertNotEqual(result.data["code"], "BUILDER_MAINTENANCE_DISABLED")
 
     def test_public_skills_open_only_as_v4_experiment(self) -> None:
-        for skill in ("builder", "builder-loop-planner"):
+        for skill in ("planner", "builder", "builder-loop-planner"):
             body = read(f"skills/{skill}/SKILL.md")
             metadata = read(f"skills/{skill}/agents/openai.yaml")
             self.assertNotIn("维护门禁", body)
@@ -89,6 +89,13 @@ class ExperimentalEntryContractTest(unittest.TestCase):
         self.assertIn("native-driver resume", builder)
         self.assertIn("assurance-v4-decision", builder)
         planner = read("skills/builder-loop-planner/SKILL.md")
+        native_planner = read("skills/planner/SKILL.md")
+        self.assertIn("native_codex", native_planner)
+        self.assertIn("builder_loop", native_planner)
+        self.assertIn("$builder-loop-planner", native_planner)
+        self.assertIn("BUILDER_HANDOFF_READY", native_planner)
+        self.assertIn("不生成", native_planner)
+        self.assertIn("Planner Adapter", planner)
         self.assertIn("assurance-v4-contract", planner)
         self.assertIn("--experimental-v4 validate", planner)
         self.assertIn("validate-decision", planner)
@@ -100,11 +107,14 @@ class ExperimentalEntryContractTest(unittest.TestCase):
 
     def test_managed_agents_restore_experimental_route_choice_and_handoff(self) -> None:
         agents = read("agents/AGENTS.md.block")
-        self.assertIn("Codex 原生 Plan", agents)
+        self.assertIn("Planner + Codex 原生执行", agents)
+        self.assertIn("$planner", agents)
         self.assertIn("Builder-loop 实验", agents)
+        self.assertIn("$builder-loop-planner", agents)
         self.assertIn("request_user_input", agents)
         self.assertIn("Implement the plan.", agents)
         self.assertIn("BUILDER_HANDOFF_READY", agents)
+        self.assertIn("普通 `$planner` 计划继续由 Codex 原生能力执行", agents)
         self.assertIn("legacy v2/v3 新 run", agents)
 
     def test_install_is_idempotent_without_builder_hooks(self) -> None:
@@ -130,6 +140,7 @@ class ExperimentalEntryContractTest(unittest.TestCase):
                 managed_block(installed_agents),
                 managed_block(read("agents/AGENTS.md.block")),
             )
+            self.assertTrue((home / ".agents" / "skills" / "planner").is_symlink())
             hooks = json.loads((codex_home / "hooks.json").read_text())["hooks"]
             self.assertEqual(hooks, {})
 

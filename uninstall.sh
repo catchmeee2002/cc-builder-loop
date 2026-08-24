@@ -13,6 +13,7 @@ INSTALLED_HOOK="${CODEX_HOME}/hooks/builder-loop.py"
 DOC_POLICY="${CODEX_HOME}/builder-loop/doc-policy.md"
 
 LINK_TARGETS=(
+  "$SKILLS_HOME/planner"
   "$SKILLS_HOME/builder-loop-planner"
   "$SKILLS_HOME/builder"
   "$CODEX_HOME/agents/tester.toml"
@@ -25,6 +26,7 @@ LINK_TARGETS=(
   "$CODEX_HOME/agents/builder.toml"
 )
 LINK_EXPECTED=(
+  "$REPO_DIR/skills/planner"
   "$REPO_DIR/skills/builder-loop-planner"
   "$REPO_DIR/skills/builder"
   "$REPO_DIR/agents/tester.toml"
@@ -64,8 +66,11 @@ for index in "${!LINK_TARGETS[@]}"; do
   preflight_link "${LINK_TARGETS[$index]}" "${LINK_EXPECTED[$index]}"
 done
 
-HOOK_LINK_OWNED="${LINK_OWNED[4]}"
-INSTALLATION_OWNED="${LINK_OWNED[1]}"
+HOOK_LINK_OWNED="${LINK_OWNED[5]}"
+INSTALLATION_OWNED=0
+if [ "${LINK_OWNED[0]}" -eq 1 ] || [ "${LINK_OWNED[2]}" -eq 1 ]; then
+  INSTALLATION_OWNED=1
+fi
 
 python3 - "$HOOKS_FILE" "$GLOBAL_AGENTS" "$ANY_LINK_OWNED" <<'PY'
 from __future__ import annotations

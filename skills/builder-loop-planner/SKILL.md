@@ -1,12 +1,23 @@
 ---
 name: builder-loop-planner
-description: 在 Codex Plan mode 中为显式选择的 Builder-loop 实验路线生成并验证 Assurance v4 四事实面 contract，冻结目标、权限、独立验收与执行入口，并为紧邻的原生 Implement the plan. 输出一次性 Builder handoff。仅在用户通过 Plan 选项卡选择 Builder-loop 实验，或显式调用 $builder-loop-planner 时使用；普通原生 Plan、问答和只读分析不要使用。
+description: Builder-loop 的执行 adapter：消费通用 Planner 冻结的语义计划，生成并验证 Assurance v4 四事实面 contract，冻结目标、权限、独立验收与执行入口，并为紧邻的原生 Implement the plan. 输出一次性 Builder handoff。仅在用户选择 Builder-loop 实验、明确把已接受计划切换到 Builder，或显式调用 $builder-loop-planner 时使用；Planner + Codex 原生执行、问答和只读分析不要使用。
 ---
 
-# Builder-loop 实验 Planner
+# Builder-loop Planner Adapter
 
-只规划和验证，不实现、不启动 run。该路线由 `/plan` 中的一次选项进入，验证后交给 `$builder`；
-公共 legacy v2/v3 `start` 保持关闭。
+本 Skill 不是通用 Planner，也不是执行器。它由 `/plan` 的 Builder-loop 选项或显式 adapter 入口使用；
+通用目标、设计决策和实施计划遵循 `$planner`；
+本 Skill 只把同一份语义计划投影成 Builder-loop 所需的 v4 contract。它只规划和验证，不实现、
+不启动 run；验证后的 handoff 交给 `$builder`，公共 legacy v2/v3 `start` 保持关闭。
+
+## 与通用 Planner 的边界
+
+- 选择 `native_codex` 时不加载本 Skill；普通计划不生成 v4 contract、handoff 或 run。
+- 用户已经接受 `$planner` 计划后显式切换到 `builder_loop` 时，复用该计划的目标、范围、接口、
+  验收语义和用户授权；只补齐 v4 所需的 authority、assurance、execution 和 admission 事实。
+- 不输出第二份独立产品方案，不把 Builder 的恢复、角色或 evidence 状态反写进 Planner 计划。
+- 本 Skill 仍必须在 handoff 前完整读取并验证 v4 schema；缺少可验证事实就停止，不用自然语言
+  “计划已完成”替代 contract。
 
 ## 建立方案
 

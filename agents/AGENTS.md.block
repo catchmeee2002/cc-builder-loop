@@ -2,12 +2,15 @@
 ## Codex Builder Loop Experiment
 
 - 每次进入 Plan mode 为代码或文档变更制定方案时，先使用 `request_user_input` 让用户选择
-  「Codex 原生 Plan」或「Builder-loop 实验」；不得用纯文本问卷替代。
-- 选择「Codex 原生 Plan」时不加载 `$builder-loop-planner`，按 Codex 原生 Plan mode 产出方案。
-- 选择「Builder-loop 实验」时调用 `$builder-loop-planner`；只产出并验证 Assurance v4 contract，
-  `READY` 后在方案外输出独立行 `BUILDER_HANDOFF_READY`，不得实现或启动 run。
+  「Planner + Codex 原生执行」或「Builder-loop 实验」；不得用纯文本问卷替代。
+- 选择「Planner + Codex 原生执行」时加载 `$planner`，只产出普通 Codex 实施计划；不得加载
+  `$builder-loop-planner`，不得生成 Assurance v4 contract、`BUILDER_HANDOFF_READY` 或启动 run。
+- 选择「Builder-loop 实验」时调用 `$builder-loop-planner` adapter；它消费通用 Planner 的语义计划，
+  只产出并验证 Assurance v4 contract，`READY` 后在方案外输出独立行 `BUILDER_HANDOFF_READY`，
+  不得实现或启动 run。
 - 若同一 session 的紧邻下一轮已处于 Default mode，且用户通过 Codex 原生“实施计划”动作提交
-  `Implement the plan.`，该动作等价于对上述实验方案显式调用 `$builder`，直接加载 Builder Skill，
+  `Implement the plan.`，仅当上一轮存在 `BUILDER_HANDOFF_READY` 时，该动作才等价于对上述实验方案
+  显式调用 `$builder`，直接加载 Builder Skill；普通 `$planner` 计划继续由 Codex 原生能力执行，
   不重复授权。
 - 显式 `$builder` 继续作为手工入口。缺少就绪标记、不是紧邻下一轮、仍在 Plan mode、contract 未验证
   或来自 Codex 原生 Plan 时，不得把普通实施请求隐式转成 Builder-loop。

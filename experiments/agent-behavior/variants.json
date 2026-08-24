@@ -33,7 +33,17 @@
       "roles": ["planner"],
       "instruction_source": {
         "path": "skills/builder-loop-planner/SKILL.md",
-        "sha256": "829acb851526f8c44b46828ae14a8ab52a6d858ab8334494701e4d27913471f5",
+        "sha256": "d9aa46cafe761865ed6a42d143891130ee9e37ec80fc6f099655a872b6dca770",
+        "revision": "WORKTREE"
+      }
+    },
+    {
+      "id": "planner-native-current",
+      "kind": "instruction",
+      "roles": ["planner"],
+      "instruction_source": {
+        "path": "skills/planner/SKILL.md",
+        "sha256": "6df593febd513d72f9f0ebed8f4096f4cf1d8eca86b56881fe049f2eefa1b563",
         "revision": "WORKTREE"
       }
     },

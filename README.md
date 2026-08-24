@@ -4,8 +4,9 @@
 
 [保质期: Full Driver v4 完成跨项目真实验收, owner: cc-builder-loop, 正向归宿: CHANGELOG.md]
 
-Plan 环节现在提供「Codex 原生 Plan」与「Builder-loop 实验」一次选择。实验路线由 Planner 生成并
-验证 Assurance v4 contract，紧邻的原生“实施计划”动作自动进入 `$builder`，再桥接 Full Driver v4。
+Plan 环节现在提供「Planner + Codex 原生执行」与「Builder-loop 实验」一次选择。通用 Planner
+冻结语义计划；原生路线直接交给 Codex 实施，实验路线再由 Builder adapter 生成并验证 Assurance
+v4 contract，紧邻的原生“实施计划”动作才进入 `$builder`。
 legacy `start` 仍默认返回 `BUILDER_MAINTENANCE_DISABLED`，安装器也不注册 Builder lifecycle hooks；
 v2/v3 ledger 保留原位，只继续支持诊断、恢复、finalize 与安全 cleanup。
 
@@ -23,21 +24,23 @@ blackbox 仍重新执行，结束时再次确认环境未漂移。计划授权�
 environment lease；显式 supersedes 的新 run 可携带精确 candidate snapshot 并原子接管 lease。旧角色
 identity 和 evidence 不会因制品相同而自动继承，终态前仍必须恢复环境。
 
-面向 Codex CLI 的独立判据交付闭环。进入 Plan mode 后先选择规划方式：
+面向 Codex CLI 的独立判据交付闭环。进入 Plan mode 后先选择规划与执行路线：
 
 ```text
 /plan <需求>
-├─ Codex 原生 Plan
-└─ Builder-loop 实验 Planner → 原生“实施计划” → Native Driver 承载 Full Driver v4
-                              └─ $builder 手工回退
+├─ Planner + Codex 原生执行 → 普通计划 → 原生“实施计划”
+└─ Builder-loop 实验
+   └─ Planner → Builder adapter → 原生“实施计划” / $builder → Native Driver 承载 Full Driver v4
 ```
 
-全局托管规则会在每次进入 Plan mode 时通过选项卡询问。选择 Codex 原生 Plan 时不加载本项目
-Skill；选择 Builder-loop 实验时，Planner Skill 冻结并验证 v4 四事实面 contract，验证通过后输出
-一次性就绪标记。用户选择 Codex 原生“实施计划”后，下一轮 Default mode 自动进入 Builder；也可
-显式调用 `$builder`。Builder Skill 只做授权桥接；Native Driver 负责 Builder、Tester、proof、机器
-验证、blackbox、Reviewer 和 Git 收尾。Codex App Server 在创建 run 前不兼容时，才透明回退到现有
-Full Driver Skill；run 创建后禁止更换控制器。
+全局托管规则会在每次进入 Plan mode 时通过选项卡询问。选择原生路线时加载 `$planner`，只输出
+普通实施计划，不生成 v4 contract、handoff 或 Builder run；下一轮 `Implement the plan.` 仍由
+Codex 原生能力执行。选择 Builder-loop 实验时，`$builder-loop-planner` 作为 adapter 消费同一份
+语义计划，冻结并验证 v4 四事实面 contract，验证通过后输出一次性就绪标记。只有存在该标记时，
+同 session 紧邻的原生“实施计划”才进入 Builder；显式 `$builder` 仍需已接受且验证的 Builder
+contract。Builder Skill 只做授权桥接；Native
+Driver 负责 Builder、Tester、proof、机器验证、blackbox、Reviewer 和 Git 收尾。Codex App Server
+在创建 run 前不兼容时，才透明回退到现有 Full Driver Skill；run 创建后禁止更换控制器。
 
 Assurance v4 contract 可显式选择 `assurance.profile=compact`。它只适用于 revision-one、1–3 个 behavior、
 单一 machine/blackbox 命令、无发布/dirty intake/外部目标的本地任务，并仍保留 Tester、proof、machine、
@@ -52,10 +55,12 @@ dispatch renewal 或资格漂移后，同一 ledger 派生为 effective full pro
 
 ## 核心行为
 
-- Builder-loop Planner 在输出前运行带仓库上下文的确定性 plan validator；缺少规划 HEAD/revision、行为边界
+- 通用 `$planner` 先冻结目标、范围、设计决策、ownership、验收和执行路线；Builder-loop adapter
+  再运行带仓库上下文的确定性 plan validator。缺少规划 HEAD/revision、行为边界
   与不变量、mock 策略、角色写边界、串行公开前置产物或有效 checklist 的计划不能进入执行，
   实际生效的验证配置不合法时也不会返回 `READY`。
-- `READY` 后的 `BUILDER_HANDOFF_READY` 位于冻结方案之外，只对同 session 紧邻的原生“实施计划”
+- 原生路线不输出 `BUILDER_HANDOFF_READY`，因此不会隐式启动 Builder-loop。Builder adapter 返回
+  `READY` 后的 `BUILDER_HANDOFF_READY` 位于冻结方案之外，只对同 session 紧邻的原生“实施计划”
   动作有效；标记缺失、过期、方案变化或 Codex 原生 Plan 不会隐式启动 builder-loop。标记不进入
   plan digest 或 ledger，`$builder` 继续作为兼容入口。
 - 详细规划前可用只读 `plan-preflight --path <exact-path>` 检查预期写入。当前 machine runner/control
@@ -158,11 +163,11 @@ cd /path/to/cc-builder-loop-codex
 安装器只配置 Codex。以下路径中的 Skills、custom agents、CLI、hook 脚本和默认文档政策均为
 指向当前 checkout 的符号链接；`hooks.json` 与 `AGENTS.md` 只合并托管注册：
 
-- Skills（Planner、Builder、GitHub Issue 记录、Full Driver 兼容回退）→ `~/.agents/skills/`
+- Skills（Planner、Builder adapter、Builder、GitHub Issue 记录、Full Driver 兼容回退）→ `~/.agents/skills/`
 - Builder、Tester、Reviewer role 配置 → `${CODEX_HOME:-$HOME/.codex}/agents/`
 - CLI → `~/.local/bin/codex-builder-loop`
 - lifecycle hook 注册 → `${CODEX_HOME:-$HOME/.codex}/hooks.json`
-- Planner 自动加载规则 → `${CODEX_HOME:-$HOME/.codex}/AGENTS.md` 的托管区块
+- Planner/native 与 Builder 路线选择规则 → `${CODEX_HOME:-$HOME/.codex}/AGENTS.md` 的托管区块
 - 默认文档政策 → `${CODEX_HOME:-$HOME/.codex}/builder-loop/doc-policy.md`
 
 checkout 必须保留在安装时的路径；移动或删除前先运行 `./uninstall.sh`，移动后再重新安装。

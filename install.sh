@@ -13,6 +13,7 @@ GLOBAL_AGENTS_OVERRIDE="${CODEX_HOME}/AGENTS.override.md"
 DOC_POLICY="${CODEX_HOME}/builder-loop/doc-policy.md"
 
 LINK_SOURCES=(
+  "$REPO_DIR/skills/planner"
   "$REPO_DIR/skills/builder-loop-planner"
   "$REPO_DIR/skills/builder"
   "$REPO_DIR/agents/tester.toml"
@@ -25,6 +26,7 @@ LINK_SOURCES=(
   "$REPO_DIR/agents/builder.toml"
 )
 LINK_TARGETS=(
+  "$SKILLS_HOME/planner"
   "$SKILLS_HOME/builder-loop-planner"
   "$SKILLS_HOME/builder"
   "$CODEX_HOME/agents/tester.toml"

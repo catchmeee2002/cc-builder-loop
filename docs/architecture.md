@@ -200,8 +200,9 @@ App Server turn 使用 host-level `danger-full-access`，因为部分本地环�
 不自动 adopt。
 
 内部确定性入口为 `codex-builder-loop assurance --experimental-v4 ...`，Native 编排入口为
-`codex-builder-loop native-driver start|resume|status`，但用户不直接调用。Plan 选项中的实验 Planner
-冻结并验证 v4 contract，`$builder` 只消费已验证 handoff 并启动 Native Driver；内部 Full Driver
+`codex-builder-loop native-driver start|resume|status`，但用户不直接调用。通用 `$planner` 负责冻结
+语义计划；Plan 选项可以把它交给 Codex 原生执行，也可以交给 `builder-loop-planner` adapter
+生成并验证 v4 contract。`$builder` 只消费已验证 handoff 并启动 Native Driver；内部 Full Driver
 Skill 仍禁止被普通请求隐式调用。首版覆盖本地单仓 Git 代码、L1 文档交付，以及由项目 wrapper
 定义的单 run 候选部署事务；相邻 Revision 可在当前 probe 证明目标、制品和状态一致时跳过重复 deploy，
 显式 supersedes 可携带 candidate snapshot 并转移授权 lease，但不复用旧 blackbox 结论或角色身份；
@@ -294,15 +295,17 @@ root Agent received a result or authorize replaying a side effect.
 
 ## Legacy v3 系统边界
 
-Codex 原生 Plan mode 负责探索和追问；全局托管规则先让用户选择继续使用原生 Plan，或加载
-Planner Skill 固定 builder-loop 方案契约。根线程作为 Builder，Codex subagent threads 承担
-Tester 与 Reviewer。runtime CLI 只处理可确定验证的内容，不替模型做产品或架构判断。
+Codex 原生 Plan mode 负责探索和追问；全局托管规则先让用户选择由通用 Planner 交给 Codex
+原生执行，或加载 Builder adapter 固定 Builder-loop 方案契约。根线程作为 Builder，Codex
+subagent threads 承担 Tester 与 Reviewer。runtime CLI 只处理可确定验证的内容，不替模型做产品
+或架构判断。
 
 ```text
 /plan ── request_user_input
-   ├─ Codex 原生 Plan → proposed_plan
-   └─ Builder-loop Planner
-             │ validated plan + BUILDER_HANDOFF_READY
+   ├─ Planner + native_codex → proposed_plan
+   │                           └→ Codex 原生“实施计划”
+   └─ Planner + builder_loop → Builder adapter
+             │ validated v4 contract + BUILDER_HANDOFF_READY
              ▼
  原生“实施计划” / $builder ─ optional exact dirty snapshot ─ Builder worktree
     ├─ parallel_ready=true  ── Tester thread 与 Builder 并行
@@ -317,11 +320,13 @@ Tester 与 Reviewer。runtime CLI 只处理可确定验证的内容，不替模�
 temporary final ref/worktree → hooks → tree check → target CAS → cleanup
 ```
 
-就绪标记只在带仓库上下文的 plan validator 返回 `READY` 后出现，并位于冻结方案之外。它只授权同一
-session 紧邻下一轮、已切回 Default mode 的 Codex 原生“实施计划”动作；消息插入、方案修订、session
-变化或 Codex 原生 Plan 都使该路径失效。Builder Skill 因此允许隐式发现，但会在计划物化和任何
-runtime 调用前核对完整条件；`$builder` 保留为不依赖标记的手工入口。该交接不写 Hook、计划摘要或
-ledger，run 启动后仍只以 ledger 为执行事实源。
+就绪标记只在 Builder adapter 的带仓库上下文 plan validator 返回 `READY` 后出现，并位于冻结方案之外。
+原生路线没有该标记，也不创建 Builder ledger；普通 `Implement the plan.` 继续由 Codex 原生能力执行。
+Builder 标记只授权同一 session 紧邻下一轮、已切回 Default mode 的 Codex 原生“实施计划”动作；
+消息插入、方案修订、session 变化、原生路线或普通 `$planner` 计划都使该 Builder 路径失效。
+Builder Skill 因此允许隐式发现，但会在计划物化和任何 runtime 调用前核对完整条件；`$builder` 保留
+为显式、带已验证 handoff 的手工入口。该交接不写 Hook、计划摘要或 ledger，run 启动后仍只以
+ledger 为执行事实源。
 
 ## Workspace intake
 

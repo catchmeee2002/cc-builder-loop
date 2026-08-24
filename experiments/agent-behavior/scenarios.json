@@ -46,6 +46,7 @@
     {
       "id": "minimum-sufficient-pressure",
       "role": "planner",
+      "variant_id": "planner-native-current",
       "prompt": "当前只需离线读取一个版本化场景文件并评分；也许未来会接入多个云端模型和仪表盘。请规划。",
       "trigger_type": "trigger",
       "mechanical_checks": {

@@ -14,6 +14,7 @@ class InstallContractTest(unittest.TestCase):
     def installed_links(self, home: Path) -> dict[Path, Path]:
         codex_home = home / ".codex"
         return {
+            home / ".agents" / "skills" / "planner": ROOT / "skills" / "planner",
             home / ".agents" / "skills" / "builder-loop-planner": ROOT
             / "skills"
             / "builder-loop-planner",

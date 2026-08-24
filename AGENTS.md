@@ -29,6 +29,7 @@ python3 scripts/codex-builder-loop.py native-driver --help
 python3 scripts/codex-builder-loop.py dev-worktree --help
 bash scripts/verify-all.sh
 python3 "${CODEX_HOME:-$HOME/.codex}/skills/.system/skill-creator/scripts/quick_validate.py" skills/builder-loop-planner
+python3 "${CODEX_HOME:-$HOME/.codex}/skills/.system/skill-creator/scripts/quick_validate.py" skills/planner
 python3 "${CODEX_HOME:-$HOME/.codex}/skills/.system/skill-creator/scripts/quick_validate.py" skills/builder
 python3 "${CODEX_HOME:-$HOME/.codex}/skills/.system/skill-creator/scripts/quick_validate.py" skills/file-github-issue
 python3 "${CODEX_HOME:-$HOME/.codex}/skills/.system/skill-creator/scripts/quick_validate.py" skills/full-driver-v4-experiment
@@ -143,7 +144,8 @@ python3 experiments/assurance-v4-replay/runner.py
 
 - 设计判断：[docs/design-philosophy.md](docs/design-philosophy.md)
 - 运行架构：[docs/architecture.md](docs/architecture.md)
-- Planner：`$builder-loop-planner`
+- Planner：`$planner`
+- Builder adapter：`$builder-loop-planner`
 - 执行：`$builder`
 - 记录 GitHub Issue：`$file-github-issue`
 - 离线 Issue 分流实验：[experiments/issue-triage/README.md](experiments/issue-triage/README.md)
