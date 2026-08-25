@@ -284,8 +284,17 @@ identical and no output or side effect is observed; later recovery follows the e
 Native transport continuity is separate from logical dispatch continuity. Each new App Server child runs in its
 own process group and is bound to an executable identity, `/proc` starttime, PID/PGID, and a versioned transport
 generation. Dispatches record the transport generation, timeout profile, monotonic wire checkpoints, and the
-side-effect observation digest. A transport close records an independent cleanup fact; an unobserved or surviving
-process group blocks automatic recovery and is never adopted by name or PID alone.
+side-effect observation digest. Builder-owned dispatches additionally freeze a candidate worktree manifest digest
+before the turn. Retry is allowed only when the current manifest remains identical; a changed or unreadable
+candidate is recorded as a fatal side-effect observation and is never sent through `retry-dispatch`. The failure
+record keeps the exact dirty paths and content hashes, while old dispatch intents without the extended digest
+remain on their legacy observation path and are not retroactively upgraded.
+
+The Native transport drains App Server stderr independently of the protocol stdout reader. It retains a bounded,
+redacted summary plus total byte count and SHA-256, and binds that diagnostic receipt to the transport generation,
+structured turn error, and cleanup observation. Authorization material and tokens are never persisted in the
+receipt. This diagnostic path does not change the existing timeout values, retry limit, or Reviewer compaction
+exception.
 
 Turn waiting keeps the existing initialize/request/idle read limits and adds role-independent total turn and
 compaction deadlines. Machine and deployment commands use the same owned process-group observation boundary.

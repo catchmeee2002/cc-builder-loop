@@ -3,11 +3,13 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
 import tempfile
 import select
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -65,6 +67,72 @@ COMPACTION_TOTAL_TIMEOUT_SECONDS = 600.0
 PROTOCOL_CANARY_ATTEMPTS = 3
 PROTOCOL_CANARY_RETRY_DELAY_SECONDS = 0.5
 PROCESS_CLEANUP_GRACE_SECONDS = 5.0
+STDERR_CAPTURE_LIMIT_BYTES = 16 * 1024
+STDERR_READ_CHUNK_BYTES = 64 * 1024
+
+_BEARER_RE = re.compile(r"(?i)\bBearer\s+[^\s,;]+")
+_SECRET_ASSIGNMENT_RE = re.compile(
+    r"(?i)(\b(?:authorization|api[-_ ]?key|access[-_ ]?token|refresh[-_ ]?token|"
+    r"password|passwd|secret|token)\s*[:=]\s*)(['\"]?)[^,\s'\"}]+"
+)
+_ENV_SECRET_ASSIGNMENT_RE = re.compile(
+    r"(?i)(\b(?:[a-z0-9]+_)*(?:api_key|access_token|secret(?:_key)?|password)"
+    r"\s*=\s*)(['\"]?)[^,\s'\"}]+"
+)
+_TOKEN_SHAPE_RE = re.compile(
+    r"(?i)\b(?:sk-(?:proj-)?[a-z0-9_-]{12,}|gh[pousr]_[a-z0-9_]{12,}|"
+    r"xox[baprs]-[a-z0-9-]{12,}|eyj[a-z0-9_-]{20,}\.[a-z0-9_-]{10,}\."
+    r"[a-z0-9_-]{10,})"
+)
+
+
+def _redact_text(value: str) -> tuple[str, int]:
+    redactions = 0
+
+    def replace_bearer(match: re.Match[str]) -> str:
+        nonlocal redactions
+        redactions += 1
+        return "Bearer [REDACTED]"
+
+    value = _BEARER_RE.sub(replace_bearer, value)
+
+    def replace_assignment(match: re.Match[str]) -> str:
+        nonlocal redactions
+        redactions += 1
+        return f"{match.group(1)}[REDACTED]"
+
+    value = _SECRET_ASSIGNMENT_RE.sub(replace_assignment, value)
+    value = _ENV_SECRET_ASSIGNMENT_RE.sub(replace_assignment, value)
+
+    def replace_token_shape(match: re.Match[str]) -> str:
+        nonlocal redactions
+        redactions += 1
+        return "[REDACTED]"
+
+    value = _TOKEN_SHAPE_RE.sub(replace_token_shape, value)
+    return value, redactions
+
+
+def _redact_value(value: Any) -> tuple[Any, int]:
+    if isinstance(value, str):
+        return _redact_text(value)
+    if isinstance(value, list):
+        redacted: list[Any] = []
+        count = 0
+        for item in value:
+            item_value, item_count = _redact_value(item)
+            redacted.append(item_value)
+            count += item_count
+        return redacted, count
+    if isinstance(value, dict):
+        redacted_dict: dict[str, Any] = {}
+        count = 0
+        for key, item in value.items():
+            item_value, item_count = _redact_value(item)
+            redacted_dict[key] = item_value
+            count += item_count
+        return redacted_dict, count
+    return value, 0
 
 
 def _canonical_digest(value: Any) -> str:
@@ -244,6 +312,12 @@ class AppServerTransport:
         self._generation: str | None = None
         self._transport_state = "absent"
         self._cleanup_observation: dict[str, Any] | None = None
+        self._stderr_buffer = bytearray()
+        self._stderr_bytes = 0
+        self._stderr_hasher = hashlib.sha256()
+        self._stderr_truncated = False
+        self._stderr_thread: threading.Thread | None = None
+        self._stderr_drain_error: str | None = None
 
     def _fallback_executable_identity(self) -> dict[str, Any]:
         resolved = _resolved_executable(self.codex_bin)
@@ -295,6 +369,57 @@ class AppServerTransport:
             "event_digest": self._last_wire_event_digest,
         }
 
+    def diagnostic_receipt(
+        self,
+        *,
+        failure_code: str,
+        turn_error: Any = None,
+    ) -> dict[str, Any]:
+        summary, stderr_redactions = _redact_text(
+            bytes(self._stderr_buffer).decode("utf-8", errors="replace")
+        )
+        redacted_error, error_redactions = _redact_value(turn_error)
+        receipt: dict[str, Any] = {
+            "schema_version": 1,
+            "failure_code": failure_code,
+            "transport_generation": self._generation,
+            "stderr_bytes": self._stderr_bytes,
+            "stderr_sha256": self._stderr_hasher.hexdigest(),
+            "stderr_summary": summary[:STDERR_CAPTURE_LIMIT_BYTES],
+            "stderr_truncated": self._stderr_truncated,
+            "redaction_count": stderr_redactions + error_redactions,
+            "turn_error": redacted_error,
+            "cleanup_observation": self.cleanup_observation,
+        }
+        receipt["receipt_digest"] = _canonical_digest(receipt)
+        return receipt
+
+    def _reset_stderr_capture(self) -> None:
+        self._stderr_buffer = bytearray()
+        self._stderr_bytes = 0
+        self._stderr_hasher = hashlib.sha256()
+        self._stderr_truncated = False
+        self._stderr_thread = None
+        self._stderr_drain_error = None
+
+    def _drain_stderr(self, stream: IO[Any]) -> None:
+        try:
+            while True:
+                chunk = stream.read(STDERR_READ_CHUNK_BYTES)
+                if not chunk:
+                    return
+                if isinstance(chunk, str):
+                    chunk = chunk.encode("utf-8", errors="replace")
+                self._stderr_bytes += len(chunk)
+                self._stderr_hasher.update(chunk)
+                remaining = STDERR_CAPTURE_LIMIT_BYTES - len(self._stderr_buffer)
+                if remaining > 0:
+                    self._stderr_buffer.extend(chunk[:remaining])
+                if len(chunk) > max(remaining, 0):
+                    self._stderr_truncated = True
+        except (OSError, ValueError) as exc:
+            self._stderr_drain_error = str(exc)
+
     def start(self) -> None:
         if self.process is not None:
             return
@@ -304,6 +429,7 @@ class AppServerTransport:
         self._wire_sequence = 0
         self._last_wire_event_digest = None
         self._cleanup_observation = None
+        self._reset_stderr_capture()
         cache_parent = _trusted_cache_parent()
         cache_root = Path(
             tempfile.mkdtemp(
@@ -322,12 +448,20 @@ class AppServerTransport:
                 [self.codex_bin, "app-server", "--stdio"],
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
                 text=False,
                 bufsize=0,
                 env=environment,
                 process_group=0,
             )
+            if self.process.stderr is not None:
+                self._stderr_thread = threading.Thread(
+                    target=self._drain_stderr,
+                    args=(self.process.stderr,),
+                    name="codex-app-server-stderr",
+                    daemon=True,
+                )
+                self._stderr_thread.start()
             try:
                 proc = capture_process_identity(
                     self.process,
@@ -392,6 +526,14 @@ class AppServerTransport:
                     process.stdout.close()
                 except OSError:
                     pass
+            if process.stderr:
+                try:
+                    process.stderr.close()
+                except OSError:
+                    pass
+            if self._stderr_thread is not None:
+                self._stderr_thread.join(timeout=1.0)
+                self._stderr_thread = None
             group_gone = bool(cleanup["process_group_gone"])
             self._transport_state = cleanup["state"]
             self._cleanup_observation = {

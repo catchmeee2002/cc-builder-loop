@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Native Builder failure handling now drains App Server stderr without blocking the protocol reader, stores a
+  bounded redacted diagnostic receipt, and records exact candidate dirty manifests with content hashes.
+  Builder dispatch retries now fail closed after a durable candidate side effect, while clean retries and the
+  existing Reviewer compaction path retain their previous limits and continuity rules.
+
 - Native App Server startup and control requests now use 30-second bounded reads, long-turn idle reads use
   120 seconds, and the pre-run protocol canary allows up to three total attempts for transient timeout or
   disconnect failures. Exhaustion remains fail-closed as `NATIVE_DRIVER_PROTOCOL_UNAVAILABLE` instead of

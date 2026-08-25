@@ -560,6 +560,9 @@ class NativeCoordinator:
         }
         if intent.get("dispatch_observation_digest") != digest(observation):
             return False
+        self._assert_builder_retry_safe(
+            str(action["action_id"]), action_name=str(action["action"])
+        )
         try:
             self.core.call(
                 "retry-dispatch",
@@ -762,7 +765,11 @@ class NativeCoordinator:
         if len(matches) == 1 and matches[0].get("status") == "failed":
             failure_code = self._turn_failure_code(matches[0])
             if is_retryable_transport_failure(failure_code):
-                self._schedule_dispatch_retry(str(pending["action_id"]), failure_code)
+                self._schedule_dispatch_retry(
+                    str(pending["action_id"]),
+                    failure_code,
+                    action_name=str(pending["action"]),
+                )
                 return None
         if (
             len(matches) == 1
@@ -770,7 +777,9 @@ class NativeCoordinator:
             and self._turn_agent_text(matches[0]) is None
         ):
             self._schedule_dispatch_retry(
-                str(pending["action_id"]), "missingAgentResult"
+                str(pending["action_id"]),
+                "missingAgentResult",
+                action_name=str(pending["action"]),
             )
             return None
         if len(matches) == 1 and matches[0].get("status") in {"inProgress", "in_progress"}:
@@ -2006,7 +2015,15 @@ class NativeCoordinator:
                 )
                 return True
             return False
-        self._schedule_dispatch_retry(action_id, failure_code)
+        action_name = (
+            self.current_action.get("action")
+            if isinstance(self.current_action, dict)
+            and self.current_action.get("action_id") == action_id
+            else None
+        )
+        self._schedule_dispatch_retry(
+            action_id, failure_code, action_name=action_name
+        )
         return True
 
     def _parse_action_result_or_retry(
@@ -2020,13 +2037,20 @@ class NativeCoordinator:
         except NativeDriverError as exc:
             if exc.code != "NATIVE_ROLE_RESULT_INVALID_JSON":
                 raise
-            self._schedule_dispatch_retry(action_id, exc.code)
+            self._schedule_dispatch_retry(
+                action_id, exc.code, action_name=action
+            )
             return None
         return self._normalize_action_result(action, parsed)
 
     def _schedule_dispatch_retry(
-        self, action_id: str, failure_code: str
+        self,
+        action_id: str,
+        failure_code: str,
+        *,
+        action_name: str | None = None,
     ) -> dict[str, Any]:
+        self._assert_builder_retry_safe(action_id, action_name=action_name)
         try:
             return self.core.call(
                 "retry-dispatch",
@@ -2073,6 +2097,43 @@ class NativeCoordinator:
             self._dispatch_renewal_reason = None
             return renewed
 
+    def _assert_builder_retry_safe(
+        self, action_id: str, *, action_name: str | None = None
+    ) -> None:
+        if action_name is None and isinstance(self.current_action, dict):
+            if self.current_action.get("action_id") == action_id:
+                action_name = self.current_action.get("action")
+        if action_name not in {
+            "builder_implement",
+            "builder_fix",
+            "builder_recompose_fix",
+        }:
+            return
+        context = self._context()
+        intent = context.get("dispatch_intent")
+        if not isinstance(intent, dict) or intent.get("action_id") != action_id:
+            return
+        baseline = intent.get("candidate_manifest_digest")
+        if not isinstance(baseline, str):
+            return
+        observation = context.get("candidate_observation")
+        current = (
+            observation.get("manifest_digest")
+            if isinstance(observation, dict)
+            else None
+        )
+        if current == baseline:
+            return
+        raise NativeDriverError(
+            "Builder retry is blocked after a candidate side effect",
+            code="NATIVE_BUILDER_SIDE_EFFECT_RETRY_BLOCKED",
+            status="FATAL",
+            details={
+                "baseline_manifest_digest": baseline,
+                "candidate_observation": observation,
+            },
+        )
+
     def retry_transport_failure(self, error: AppServerError) -> dict[str, Any] | None:
         failure_code = classify_app_server_failure(error)
         if failure_code is None or not is_retryable_transport_failure(failure_code):
@@ -2102,7 +2163,9 @@ class NativeCoordinator:
         ):
             return None
         try:
-            payload = self._schedule_dispatch_retry(action_id, failure_code)
+            payload = self._schedule_dispatch_retry(
+                action_id, failure_code, action_name=str(action_name)
+            )
         except CorePortError as retry_error:
             if retry_error.status not in {"FAIL", "NEEDS_USER"}:
                 raise

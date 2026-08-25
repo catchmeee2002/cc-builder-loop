@@ -390,10 +390,78 @@
             "state": {"enum": ["prepared", "in_flight", "completed", "exhausted"]},
             "attempt": {"type": "integer", "minimum": 1, "maximum": 3},
             "generation": {"type": "integer", "minimum": 1},
-            "turn_id": {"type": "string", "minLength": 1}
+            "turn_id": {"type": "string", "minLength": 1},
+            "candidate_manifest_digest": {
+              "oneOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]
+            }
           }
         }
       ]
+    },
+    "candidateManifestEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "status", "sha256", "size_bytes"],
+      "properties": {
+        "path": {
+          "type": "string",
+          "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+"
+        },
+        "status": {"enum": ["present", "deleted", "unreadable"]},
+        "sha256": {
+          "oneOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]
+        },
+        "size_bytes": {"type": "integer", "minimum": 0}
+      }
+    },
+    "candidateManifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["head", "dirty_paths", "entries", "manifest_digest"],
+      "properties": {
+        "head": {"$ref": "#/$defs/nullableCommit"},
+        "dirty_paths": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+"
+          }
+        },
+        "entries": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/candidateManifestEntry"}
+        },
+        "manifest_digest": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "diagnosticReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version", "failure_code", "transport_generation",
+        "stderr_bytes", "stderr_sha256", "stderr_summary",
+        "stderr_truncated", "redaction_count", "turn_error",
+        "cleanup_observation", "receipt_digest"
+      ],
+      "properties": {
+        "schema_version": {"const": 1},
+        "failure_code": {"type": "string", "minLength": 1},
+        "transport_generation": {
+          "oneOf": [{"type": "string", "minLength": 1}, {"type": "null"}]
+        },
+        "stderr_bytes": {"type": "integer", "minimum": 0},
+        "stderr_sha256": {"$ref": "#/$defs/sha256"},
+        "stderr_summary": {"type": "string", "maxLength": 16384},
+        "stderr_truncated": {"type": "boolean"},
+        "redaction_count": {"type": "integer", "minimum": 0},
+        "turn_error": {},
+        "cleanup_observation": {
+          "oneOf": [{"type": "object"}, {"type": "null"}]
+        },
+        "receipt_digest": {"$ref": "#/$defs/sha256"}
+      }
     },
     "driverFailureObservation": {
       "type": "object",
@@ -416,6 +484,9 @@
           "type": "array",
           "uniqueItems": true,
           "items": {"type": "string", "minLength": 1}
+        },
+        "candidate_manifest": {
+          "oneOf": [{"type": "null"}, {"$ref": "#/$defs/candidateManifest"}]
         }
       }
     },
@@ -435,6 +506,9 @@
         "action": {"$ref": "#/$defs/driverFailureAction"},
         "dispatch": {"$ref": "#/$defs/driverFailureDispatch"},
         "observation": {"$ref": "#/$defs/driverFailureObservation"},
+        "diagnostic_receipt": {
+          "oneOf": [{"type": "null"}, {"$ref": "#/$defs/diagnosticReceipt"}]
+        },
         "signature": {"$ref": "#/$defs/sha256"},
         "digest": {"$ref": "#/$defs/sha256"},
         "recovery": {"enum": ["none", "finalize", "deployment"]},
@@ -460,6 +534,9 @@
         "prompt_digest": {"$ref": "#/$defs/sha256"},
         "output_schema_digest": {"$ref": "#/$defs/sha256"},
         "dispatch_observation_digest": {
+          "oneOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]
+        },
+        "candidate_manifest_digest": {
           "oneOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]
         },
         "native_transport_generation": {"type": "string", "minLength": 1},

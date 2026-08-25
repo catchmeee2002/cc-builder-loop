@@ -2942,6 +2942,68 @@ for line in sys.stdin:
         self.assertEqual(turn.status, "completed")
         self.assertEqual(json.loads(turn.text)["result"], "implemented")
 
+    def test_stderr_is_drained_bounded_and_redacted_in_diagnostic_receipt(self) -> None:
+        codex = self.root / "codex-stderr"
+        codex.write_text(
+            """#!/usr/bin/env python3
+import json, os, sys
+if sys.argv[1:] == ['--version']:
+    print('codex-cli fake-stderr')
+    raise SystemExit(0)
+if sys.argv[1:3] == ['app-server', 'generate-json-schema']:
+    out = sys.argv[sys.argv.index('--out') + 1]
+    os.makedirs(out, exist_ok=True)
+    open(os.path.join(out, 'codex_app_server_protocol.schemas.json'), 'w').write(
+        json.dumps(['thread/start','thread/resume','thread/read','turn/start',
+                    'turn/interrupt','developerInstructions','outputSchema',
+                    'clientUserMessageId'])
+    )
+    raise SystemExit(0)
+if sys.argv[1:3] != ['app-server', '--stdio']:
+    raise SystemExit(2)
+sys.stderr.write('Authorization: Bearer super-secret-token\\n')
+sys.stderr.write('OPENAI_API_KEY=sk-proj-secret-token\\n')
+sys.stderr.write('x' * (256 * 1024))
+sys.stderr.flush()
+for line in sys.stdin:
+    msg = json.loads(line)
+    if msg.get('method') == 'initialize':
+        print(json.dumps({'id': msg['id'], 'result': {}}), flush=True)
+    elif msg.get('method') == 'initialized':
+        pass
+    elif msg.get('method') == 'thread/start':
+        print(json.dumps({'id': msg['id'], 'result': {'thread': {'id': 'thr-stderr'}}}), flush=True)
+""",
+            encoding="utf-8",
+        )
+        codex.chmod(0o755)
+
+        transport = AppServerTransport(codex_bin=str(codex))
+        with transport:
+            self.assertEqual(
+                transport.start_thread(
+                    cwd=str(self.root),
+                    developer_instructions="role",
+                    sandbox="danger-full-access",
+                ),
+                "thr-stderr",
+            )
+            receipt = transport.diagnostic_receipt(
+                failure_code="responseStreamTimeout",
+                turn_error={"message": "Bearer another-secret-token"},
+            )
+
+        self.assertGreater(receipt["stderr_bytes"], 256 * 1024)
+        self.assertTrue(receipt["stderr_truncated"])
+        self.assertNotIn("super-secret-token", json.dumps(receipt))
+        self.assertNotIn("sk-proj-secret-token", json.dumps(receipt))
+        self.assertNotIn("another-secret-token", json.dumps(receipt))
+        self.assertIn("[REDACTED]", receipt["stderr_summary"])
+        self.assertEqual(
+            receipt["receipt_digest"],
+            digest({key: value for key, value in receipt.items() if key != "receipt_digest"}),
+        )
+
     def test_transport_uses_explicit_timeout_profile(self) -> None:
         transport = AppServerTransport(codex_bin=str(self.codex))
 
@@ -3694,6 +3756,98 @@ class NativeCoordinatorContractTest(unittest.TestCase):
         self.assertTrue(retried)
         self.assertEqual(core.calls[0][0], "retry-dispatch")
         self.assertIn("serverOverloaded", core.calls[0][1])
+
+    def test_dirty_builder_retry_is_blocked_before_retry_dispatch(self) -> None:
+        action_id = "a" * 64
+
+        class FakeCore:
+            def __init__(self) -> None:
+                self.calls: list[str] = []
+
+            def call(self, command: str, *args: str, input_value=None):
+                self.calls.append(command)
+                if command == "driver-context":
+                    return {
+                        "dispatch_intent": {
+                            "action": "builder_implement",
+                            "action_id": action_id,
+                            "candidate_manifest_digest": "b" * 64,
+                        },
+                        "candidate_observation": {
+                            "manifest_digest": "c" * 64,
+                            "candidate_manifest": {
+                                "head": "d" * 40,
+                                "dirty_paths": ["src/changed.py"],
+                                "entries": [],
+                                "manifest_digest": "c" * 64,
+                            },
+                        },
+                    }
+                raise AssertionError(command)
+
+        core = FakeCore()
+        coordinator = NativeCoordinator(
+            repo=ROOT,
+            run_id="native-dirty-builder-retry",
+            core=core,
+            transport=object(),
+            project_root=ROOT,
+        )
+
+        with self.assertRaises(NativeDriverError) as raised:
+            coordinator._schedule_dispatch_retry(
+                action_id,
+                "responseStreamDisconnected",
+                action_name="builder_implement",
+            )
+
+        self.assertEqual(
+            raised.exception.code,
+            "NATIVE_BUILDER_SIDE_EFFECT_RETRY_BLOCKED",
+        )
+        self.assertEqual(raised.exception.status, "FATAL")
+        self.assertEqual(core.calls, ["driver-context"])
+
+    def test_clean_builder_retry_keeps_existing_retry_dispatch(self) -> None:
+        action_id = "a" * 64
+
+        class FakeCore:
+            def __init__(self) -> None:
+                self.calls: list[str] = []
+
+            def call(self, command: str, *args: str, input_value=None):
+                self.calls.append(command)
+                if command == "driver-context":
+                    return {
+                        "dispatch_intent": {
+                            "action": "builder_fix",
+                            "action_id": action_id,
+                            "candidate_manifest_digest": "b" * 64,
+                        },
+                        "candidate_observation": {
+                            "manifest_digest": "b" * 64,
+                        },
+                    }
+                if command == "retry-dispatch":
+                    return {"status": "ACTIVE", "dispatch_intent": {"attempt": 2}}
+                raise AssertionError(command)
+
+        core = FakeCore()
+        coordinator = NativeCoordinator(
+            repo=ROOT,
+            run_id="native-clean-builder-retry",
+            core=core,
+            transport=object(),
+            project_root=ROOT,
+        )
+        retried = coordinator._schedule_dispatch_retry(
+            action_id,
+            "responseStreamDisconnected",
+            action_name="builder_fix",
+        )
+
+        self.assertEqual(retried["dispatch_intent"]["attempt"], 2)
+        self.assertEqual(core.calls, ["driver-context", "retry-dispatch"])
 
     def test_known_other_stream_disconnect_schedules_same_dispatch(self) -> None:
         class FakeCore:

@@ -816,6 +816,7 @@ def validate_ledger(value: Any) -> dict[str, Any]:
             code="ASSURANCE_LEDGER_INVALID",
             details={"path": path},
         ) from exc
+    _validate_ledger_observation_digests(normalized)
     identity = normalized["runtime_identity"]
     if identity.get("capture_status") == "captured" and (
         not isinstance(identity.get("builder_loop_version"), str)
@@ -865,6 +866,50 @@ def validate_ledger(value: Any) -> dict[str, Any]:
                 code="DOC_REFERENCE_SCAN_STATUS_MISMATCH",
             )
     return normalized
+
+
+def _validate_ledger_observation_digests(ledger: Mapping[str, Any]) -> None:
+    failure = ledger.get("driver_failure")
+    if not isinstance(failure, Mapping):
+        return
+    observation = failure.get("observation")
+    if isinstance(observation, Mapping):
+        manifest = observation.get("candidate_manifest")
+        if isinstance(manifest, Mapping):
+            expected = digest(
+                {
+                    key: copy.deepcopy(item)
+                    for key, item in manifest.items()
+                    if key != "manifest_digest"
+                }
+            )
+            if manifest.get("manifest_digest") != expected:
+                raise ContractError(
+                    "candidate manifest digest does not match its contents",
+                    code="CANDIDATE_MANIFEST_DIGEST_MISMATCH",
+                    details={
+                        "expected": expected,
+                        "actual": manifest.get("manifest_digest"),
+                    },
+                )
+    receipt = failure.get("diagnostic_receipt")
+    if isinstance(receipt, Mapping):
+        expected = digest(
+            {
+                key: copy.deepcopy(item)
+                for key, item in receipt.items()
+                if key != "receipt_digest"
+            }
+        )
+        if receipt.get("receipt_digest") != expected:
+            raise ContractError(
+                "diagnostic receipt digest does not match its contents",
+                code="DIAGNOSTIC_RECEIPT_DIGEST_MISMATCH",
+                details={
+                    "expected": expected,
+                    "actual": receipt.get("receipt_digest"),
+                },
+            )
 
 
 def validate_repo_path(value: str) -> str:

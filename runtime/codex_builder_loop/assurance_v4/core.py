@@ -123,6 +123,9 @@ RUNTIME_PREPARATION_ERROR_CODES = frozenset(
     }
 )
 BUILDER_CHECKPOINT_ACTIONS = frozenset({"builder_implement", "builder_fix"})
+BUILDER_SIDE_EFFECT_ACTIONS = frozenset(
+    {"builder_implement", "builder_fix", "builder_recompose_fix"}
+)
 CANDIDATE_RESIDUE_RENAME_EXCHANGE = 2
 _LIBC = ctypes.CDLL(None, use_errno=True)
 _RENAMEAT2 = _LIBC.renameat2
@@ -312,6 +315,93 @@ def _candidate_manifest(repo: Path, base: str, candidate: str) -> list[dict[str,
         if blob is not None:
             manifest.append({"path": path, "blob": blob})
     return manifest
+
+
+def _candidate_worktree_manifest(worktree: Path) -> dict[str, Any]:
+    """Capture durable candidate changes without mutating the worktree."""
+
+    head_result = git(worktree, "rev-parse", "HEAD", check=False)
+    head = head_result.stdout.strip() if head_result.returncode == 0 else None
+    paths = dirty_paths(worktree)
+    entries: list[dict[str, Any]] = []
+    for relative in paths:
+        path = worktree / relative
+        try:
+            info = path.lstat()
+        except FileNotFoundError:
+            entries.append(
+                {
+                    "path": relative,
+                    "status": "deleted",
+                    "sha256": None,
+                    "size_bytes": 0,
+                }
+            )
+            continue
+        except OSError:
+            entries.append(
+                {
+                    "path": relative,
+                    "status": "unreadable",
+                    "sha256": None,
+                    "size_bytes": 0,
+                }
+            )
+            continue
+
+        hasher = hashlib.sha256()
+        size = 0
+        try:
+            if stat.S_ISREG(info.st_mode):
+                with path.open("rb") as stream:
+                    for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                        hasher.update(chunk)
+                        size += len(chunk)
+            elif stat.S_ISLNK(info.st_mode):
+                target = os.readlink(path).encode("utf-8", errors="surrogateescape")
+                hasher.update(target)
+                size = len(target)
+            else:
+                hasher.update(stat.filemode(info.st_mode).encode("ascii"))
+        except OSError:
+            entries.append(
+                {
+                    "path": relative,
+                    "status": "unreadable",
+                    "sha256": None,
+                    "size_bytes": 0,
+                }
+            )
+            continue
+        entries.append(
+            {
+                "path": relative,
+                "status": "present",
+                "sha256": hasher.hexdigest(),
+                "size_bytes": size,
+            }
+        )
+
+    manifest: dict[str, Any] = {
+        "head": head,
+        "dirty_paths": paths,
+        "entries": entries,
+    }
+    manifest["manifest_digest"] = digest(manifest)
+    return manifest
+
+
+def _candidate_manifest_for_ledger(ledger: Mapping[str, Any]) -> dict[str, Any] | None:
+    worktree_value = ledger.get("candidate_worktree")
+    if not isinstance(worktree_value, str) or not worktree_value:
+        return None
+    worktree = Path(worktree_value)
+    if not worktree.is_dir():
+        return None
+    try:
+        return _candidate_worktree_manifest(worktree)
+    except (OSError, StoreError):
+        return None
 
 
 def _runtime_source_root() -> Path:
@@ -1679,6 +1769,19 @@ def begin_dispatch(
             "publication": ledger.get("publication"),
             "deployment_transaction": ledger.get("deployment_transaction"),
         }
+        candidate_manifest_digest: str | None = None
+        if action in BUILDER_SIDE_EFFECT_ACTIONS:
+            try:
+                candidate_manifest_digest = _candidate_worktree_manifest(
+                    Path(str(ledger["candidate_worktree"]))
+                )["manifest_digest"]
+            except (OSError, StoreError) as exc:
+                raise AssuranceError(
+                    "Builder dispatch requires a readable candidate manifest",
+                    code="DISPATCH_CANDIDATE_OBSERVATION_UNAVAILABLE",
+                    status="NEEDS_USER",
+                    details={"error": str(exc)},
+                ) from exc
         dispatch_intent = {
             "action_id": action_id,
             "action": action,
@@ -1695,6 +1798,8 @@ def begin_dispatch(
             "interrupted_retry_blocked": False,
             "created_at": now(),
         }
+        if candidate_manifest_digest is not None:
+            dispatch_intent["candidate_manifest_digest"] = candidate_manifest_digest
         if native_transport_generation:
             dispatch_intent["native_transport_generation"] = native_transport_generation
             dispatch_intent["last_wire_sequence"] = 0
@@ -2457,6 +2562,32 @@ def retry_dispatch(
             raise AssuranceError("dispatch action is stale", code="DRIVER_ACTION_STALE", status="FAIL")
         if intent.get("state") == "completed":
             raise AssuranceError("completed dispatch cannot be retried", code="DISPATCH_ALREADY_COMPLETE")
+        baseline_manifest_digest = intent.get("candidate_manifest_digest")
+        if (
+            intent.get("action") in BUILDER_SIDE_EFFECT_ACTIONS
+            and isinstance(baseline_manifest_digest, str)
+        ):
+            current_manifest = _candidate_manifest_for_ledger(ledger)
+            if current_manifest is None:
+                raise AssuranceError(
+                    "Builder retry cannot prove the current candidate manifest",
+                    code="NATIVE_BUILDER_SIDE_EFFECT_RETRY_BLOCKED",
+                    status="FATAL",
+                    details={
+                        "baseline_manifest_digest": baseline_manifest_digest,
+                        "candidate_manifest": None,
+                    },
+                )
+            if current_manifest["manifest_digest"] != baseline_manifest_digest:
+                raise AssuranceError(
+                    "Builder retry is blocked after a candidate side effect",
+                    code="NATIVE_BUILDER_SIDE_EFFECT_RETRY_BLOCKED",
+                    status="FATAL",
+                    details={
+                        "baseline_manifest_digest": baseline_manifest_digest,
+                        "candidate_manifest": current_manifest,
+                    },
+                )
         if interrupted_retry:
             if intent.get("state") != "in_flight":
                 raise AssuranceError(
@@ -2665,6 +2796,9 @@ def renew_dispatch(
             "dispatch_observation_digest": previous_intent.get(
                 "dispatch_observation_digest"
             ),
+            "candidate_manifest_digest": previous_intent.get(
+                "candidate_manifest_digest"
+            ),
             "native_transport_generation": previous_intent.get(
                 "native_transport_generation"
             ),
@@ -2693,6 +2827,7 @@ def renew_dispatch(
             "timeout_profile_digest",
             "last_wire_event_digest",
             "side_effect_observation_digest",
+            "candidate_manifest_digest",
         ):
             if renewed_intent.get(key) is None:
                 renewed_intent.pop(key, None)
@@ -2929,6 +3064,9 @@ def complete_dispatch_compaction(
             "dispatch_observation_digest": previous_intent.get(
                 "dispatch_observation_digest"
             ),
+            "candidate_manifest_digest": previous_intent.get(
+                "candidate_manifest_digest"
+            ),
             "native_transport_generation": previous_intent.get(
                 "native_transport_generation"
             ),
@@ -2954,6 +3092,7 @@ def complete_dispatch_compaction(
             "timeout_profile_digest",
             "last_wire_event_digest",
             "side_effect_observation_digest",
+            "candidate_manifest_digest",
         ):
             if renewed_intent.get(key) is None:
                 renewed_intent.pop(key, None)
@@ -3059,12 +3198,13 @@ def _normalize_driver_failure_input(value: Any) -> dict[str, Any]:
             status="FAIL",
         )
     required = {"source", "status", "code", "message", "details", "action"}
-    if set(value) != required:
+    allowed = required | {"diagnostic_receipt"}
+    if not required.issubset(value) or not set(value).issubset(allowed):
         raise AssuranceError(
             "driver failure fields do not match the public transaction contract",
             code="DRIVER_FAILURE_INVALID",
             status="FAIL",
-            details={"required_fields": sorted(required)},
+            details={"required_fields": sorted(required), "allowed_fields": sorted(allowed)},
         )
     normalized: dict[str, Any] = {}
     for field in ("source", "code", "message"):
@@ -3084,6 +3224,8 @@ def _normalize_driver_failure_input(value: Any) -> dict[str, Any]:
         )
     normalized["status"] = "FATAL"
     normalized["details"] = copy.deepcopy(value.get("details"))
+    if "diagnostic_receipt" in value:
+        normalized["diagnostic_receipt"] = copy.deepcopy(value["diagnostic_receipt"])
     action = value.get("action")
     if action is None:
         normalized["action"] = None
@@ -3145,6 +3287,8 @@ def _driver_failure_dispatch(ledger: Mapping[str, Any]) -> dict[str, Any] | None
     }
     if isinstance(intent.get("turn_id"), str):
         value["turn_id"] = intent["turn_id"]
+    if isinstance(intent.get("candidate_manifest_digest"), str):
+        value["candidate_manifest_digest"] = intent["candidate_manifest_digest"]
     return value
 
 
@@ -3161,11 +3305,15 @@ def _driver_failure_observation(
     worktree_exists = worktree.is_dir()
     worktree_head = None
     dirty: list[str] = []
+    manifest: dict[str, Any] | None = None
     if worktree_exists:
         worktree_head = _optional_ref_head(worktree, "HEAD")
         try:
             dirty = dirty_paths(worktree)
+            manifest = _candidate_worktree_manifest(worktree)
         except StoreError:
+            dirty = ["<unreadable>"]
+        except OSError:
             dirty = ["<unreadable>"]
     return {
         "ledger_phase": ledger["phase"],
@@ -3181,6 +3329,7 @@ def _driver_failure_observation(
         "candidate_worktree_exists": worktree_exists,
         "candidate_worktree_head": worktree_head,
         "candidate_dirty_paths": dirty,
+        "candidate_manifest": manifest,
     }
 
 
@@ -8270,6 +8419,22 @@ def driver_context(repo_value: str | Path, run_value: str) -> dict[str, Any]:
     repo = resolve_repo(repo_value)
     run_id = ensure_run_id(run_value)
     ledger = read_ledger(repo, run_id)
+    dispatch = ledger.get("dispatch_intent")
+    candidate_observation: dict[str, Any] | None = None
+    if (
+        isinstance(dispatch, Mapping)
+        and dispatch.get("action") in BUILDER_SIDE_EFFECT_ACTIONS
+        and isinstance(dispatch.get("candidate_manifest_digest"), str)
+    ):
+        current_manifest = _candidate_manifest_for_ledger(ledger)
+        candidate_observation = {
+            "candidate_manifest": copy.deepcopy(current_manifest),
+            "manifest_digest": (
+                current_manifest.get("manifest_digest")
+                if isinstance(current_manifest, Mapping)
+                else None
+            ),
+        }
     return {
         "status": "FATAL" if ledger["phase"] == "failed" else "READY",
         "run_id": run_id,
@@ -8293,6 +8458,7 @@ def driver_context(repo_value: str | Path, run_value: str) -> dict[str, Any]:
         "deferred_wait": copy.deepcopy(ledger.get("deferred_wait")),
         "driver_failure": copy.deepcopy(ledger.get("driver_failure")),
         "dispatch_intent": copy.deepcopy(ledger.get("dispatch_intent")),
+        "candidate_observation": candidate_observation,
         "tester_replacement_intent": copy.deepcopy(
             ledger.get("tester_replacement_intent")
         ),

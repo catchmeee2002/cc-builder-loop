@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import sys
 import tempfile
 import unittest
@@ -9,6 +10,7 @@ from typing import Any
 
 from harness import CLI, cleanup_repo, commit_all, git, init_repo, run_process
 from test_assurance_v4_contract import contract_for
+from runtime.codex_builder_loop.assurance_v4.models import digest
 
 
 class DriverFailureContractTest(unittest.TestCase):
@@ -398,6 +400,140 @@ class DriverFailureContractTest(unittest.TestCase):
         self.assertNotEqual(rc, 0, blocked)
         self.assertEqual(blocked.get("code"), "ASSURANCE_CLEANUP_DRIFT")
         self.assertTrue(residue.is_file())
+
+    def test_builder_side_effect_blocks_retry_and_persists_exact_manifest(self) -> None:
+        run_id = "builder-side-effect-failure"
+        started, run_path = self.start(run_id, native=True)
+        first = self.invoke("driver-next", "--repo", self.repo, "--run", run_id)[1]
+        self.invoke(
+            "prepare-builder",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--agent-id",
+            "native-builder",
+            "--thread-id",
+            "native-builder-thread",
+            "--action-id",
+            first["action_id"],
+            "--driver-runtime-kind",
+            "native",
+        )
+        action = self.invoke("driver-next", "--repo", self.repo, "--run", run_id)[1]
+        self.invoke(
+            "begin-dispatch",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--action-id",
+            action["action_id"],
+            "--action",
+            action["action"],
+            "--role",
+            "builder",
+            "--thread-id",
+            "native-builder-thread",
+            "--prompt-digest",
+            "b" * 64,
+            "--output-schema-digest",
+            "c" * 64,
+            "--driver-runtime-kind",
+            "native",
+        )
+        self.invoke(
+            "bind-dispatch-turn",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--action-id",
+            action["action_id"],
+            "--turn-id",
+            "builder-turn-1",
+        )
+
+        candidate = Path(started["candidate_worktree"])
+        changed = candidate / "src" / "changed.py"
+        changed.write_text("SIDE_EFFECT = True\n", encoding="utf-8")
+        retry_rc, retry = self.invoke(
+            "retry-dispatch",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--action-id",
+            action["action_id"],
+            "--failure-code",
+            "responseStreamDisconnected",
+        )
+        self.assertNotEqual(retry_rc, 0, retry)
+        self.assertEqual(retry["code"], "NATIVE_BUILDER_SIDE_EFFECT_RETRY_BLOCKED")
+
+        content = changed.read_bytes()
+        receipt = {
+            "schema_version": 1,
+            "failure_code": "responseStreamDisconnected",
+            "transport_generation": "transport-builder-1",
+            "stderr_bytes": 9,
+            "stderr_sha256": hashlib.sha256(b"stderr\\n").hexdigest(),
+            "stderr_summary": "stderr",
+            "stderr_truncated": False,
+            "redaction_count": 0,
+            "turn_error": {"codexErrorInfo": {"responseStreamDisconnected": {}}},
+            "cleanup_observation": None,
+        }
+        receipt["receipt_digest"] = digest(receipt)
+        failure = self.failure(
+            {
+                "action_id": action["action_id"],
+                "action": action["action"],
+                "reason": action["reason"],
+            }
+        )
+        failure["diagnostic_receipt"] = receipt
+        record_rc, recorded = self.invoke(
+            "record-driver-failure",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--failure",
+            "-",
+            "--driver-runtime-kind",
+            "native",
+            input_value=failure,
+        )
+        self.assertEqual(record_rc, 0, recorded)
+        observation = recorded["driver_failure"]["observation"]
+        manifest = observation["candidate_manifest"]
+        entry = next(item for item in manifest["entries"] if item["path"] == "src/changed.py")
+        self.assertEqual(entry["status"], "present")
+        self.assertEqual(entry["size_bytes"], len(content))
+        self.assertEqual(entry["sha256"], hashlib.sha256(content).hexdigest())
+        self.assertEqual(
+            manifest["manifest_digest"],
+            digest({key: value for key, value in manifest.items() if key != "manifest_digest"}),
+        )
+        self.assertEqual(
+            recorded["driver_failure"]["diagnostic_receipt"]["receipt_digest"],
+            receipt["receipt_digest"],
+        )
+
+        terminal_rc, terminal = self.invoke(
+            "complete-driver-failure",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--driver-runtime-kind",
+            "native",
+        )
+        self.assertEqual(terminal_rc, 0, terminal)
+        self.assertEqual(terminal["phase"], "failed")
+        ledger = json.loads((run_path / "ledger.json").read_text())
+        self.assertEqual(ledger["driver_failure"]["state"], "terminal")
 
 
 if __name__ == "__main__":

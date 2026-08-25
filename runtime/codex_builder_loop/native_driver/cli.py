@@ -88,6 +88,7 @@ def _persist_fatal(
     run_id: str,
     exc: CorePortError | NativeDriverError | AppServerError,
     coordinator: NativeCoordinator | None,
+    transport: Any = None,
 ) -> tuple[dict[str, Any], int]:
     original = _exception_payload(exc)
     failure = {
@@ -95,6 +96,15 @@ def _persist_fatal(
         **original,
         "action": _failure_action(coordinator),
     }
+    receipt_fn = getattr(transport, "diagnostic_receipt", None)
+    if callable(receipt_fn):
+        try:
+            failure["diagnostic_receipt"] = receipt_fn(
+                failure_code=original["code"],
+                turn_error=original.get("details"),
+            )
+        except (OSError, TypeError, ValueError):
+            pass
     try:
         core.call(
             "record-driver-failure",
@@ -597,6 +607,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 run_id=args.run,
                 exc=exc,
                 coordinator=coordinator,
+                transport=transport,
             )
             return emit(payload, returncode)
         payload = _exception_payload(exc)
