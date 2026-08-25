@@ -329,6 +329,24 @@ subagent threads 承担 Tester 与 Reviewer。runtime CLI 只处理可确定验�
 temporary final ref/worktree → hooks → tree check → target CAS → cleanup
 ```
 
+Builder-loop contracts freeze a separate `execution.builder_runtime.mode`. New Builder-loop plans default to
+`root_session`; Plan shows `native_thread` only as an explicit experimental choice. The Core remains the sole
+action controller in both modes. Root mode returns a compact `BUILDER_HANDOFF` for one Builder action, binds the
+current session as a first-class owner, and records completion through the existing dispatch/checkpoint transactions.
+It never creates or aliases an App Server thread. Native-thread mode retains the existing App Server transport and
+retry/compaction behavior. A root Builder failure waits for the same session's explicit continuation and never
+falls back across modes.
+
+Root mode defers App Server admission and transport binding until a Tester or Reviewer action is reached. This
+keeps the default Builder path independent from child-thread startup while preserving the existing independent
+Tester/Reviewer evidence boundary. Retained contracts and ledgers without `builder_runtime` remain on the legacy
+native-thread path; no active run is reinterpreted.
+
+For a root Builder dispatch, Core also records which result application completed before consumption:
+`checkpoint_builder`, `record_problems`, or `recompose_candidate`. A completed dispatch without its matching
+application remains pending and cannot be consumed, so a resumed root session can finish the exact side effect
+without rerunning the implementation.
+
 就绪标记只在 Builder adapter 的带仓库上下文 plan validator 返回 `READY` 后出现，并位于冻结方案之外。
 原生路线没有该标记，也不创建 Builder ledger；普通 `Implement the plan.` 继续由 Codex 原生能力执行。
 Builder 标记只授权同一 session 紧邻下一轮、已切回 Default mode 的 Codex 原生“实施计划”动作；

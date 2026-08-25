@@ -228,7 +228,7 @@
       "properties": {
         "kind": {"enum": ["native", "full_driver_skill"]},
         "protocol_version": {"const": 1},
-        "transport": {"enum": ["codex_app_server", "native_tools"]},
+        "transport": {"enum": ["codex_app_server", "native_tools", "root_session"]},
         "runtime_version": {"type": "string", "minLength": 1},
         "protocol_schema_digest": {"$ref": "#/$defs/sha256"},
         "protocol_canary_digest": {
@@ -239,7 +239,23 @@
             {"type": "null"},
             {"$ref": "#/$defs/nativeTransport"}
           ]
+        },
+        "root_session_identity": {
+          "oneOf": [
+            {"type": "null"},
+            {"$ref": "#/$defs/rootSessionIdentity"}
+          ]
         }
+      }
+    },
+    "rootSessionIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["session_id", "agent_id", "identity_digest"],
+      "properties": {
+        "session_id": {"type": "string", "minLength": 1},
+        "agent_id": {"type": "string", "minLength": 1},
+        "identity_digest": {"$ref": "#/$defs/sha256"}
       }
     },
     "executableIdentity": {
@@ -386,7 +402,11 @@
             "action_id": {"$ref": "#/$defs/sha256"},
             "action": {"type": "string", "minLength": 1},
             "role": {"enum": ["builder", "tester", "reviewer"]},
-            "thread_id": {"type": "string", "minLength": 1},
+            "thread_id": {
+              "oneOf": [{"type": "string", "minLength": 1}, {"type": "null"}]
+            },
+            "owner_mode": {"enum": ["root_session", "native_thread"]},
+            "owner_session_id": {"type": "string", "minLength": 1},
             "state": {"enum": ["prepared", "in_flight", "completed", "exhausted"]},
             "attempt": {"type": "integer", "minimum": 1, "maximum": 3},
             "generation": {"type": "integer", "minimum": 1},
@@ -530,7 +550,14 @@
         "action_id": {"$ref": "#/$defs/sha256"},
         "action": {"type": "string", "minLength": 1},
         "role": {"enum": ["builder", "tester", "reviewer"]},
-        "thread_id": {"type": "string", "minLength": 1},
+        "thread_id": {
+          "oneOf": [{"type": "string", "minLength": 1}, {"type": "null"}]
+        },
+        "owner_mode": {"enum": ["root_session", "native_thread"]},
+        "owner_session_id": {"type": "string", "minLength": 1},
+        "result_application": {
+          "enum": ["checkpoint_builder", "record_problems", "recompose_candidate"]
+        },
         "prompt_digest": {"$ref": "#/$defs/sha256"},
         "output_schema_digest": {"$ref": "#/$defs/sha256"},
         "dispatch_observation_digest": {
@@ -931,6 +958,17 @@
                 "role": {"enum": ["builder", "tester", "reviewer"]},
                 "agent_id": {"type": "string", "minLength": 1},
                 "thread_id": {"type": "string", "minLength": 1}
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["role", "mode", "agent_id", "session_id"],
+              "properties": {
+                "role": {"const": "builder"},
+                "mode": {"const": "root_session"},
+                "agent_id": {"type": "string", "minLength": 1},
+                "session_id": {"type": "string", "minLength": 1}
               }
             }
           ]

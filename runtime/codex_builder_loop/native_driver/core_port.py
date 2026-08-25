@@ -73,6 +73,8 @@ class CorePort:
         protocol_schema_digest: str,
         protocol_canary_digest: str | None = None,
         native_transport: dict[str, Any] | None = None,
+        driver_transport: str = "codex_app_server",
+        root_session_identity: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         return self.call(
             "start",
@@ -87,7 +89,7 @@ class CorePort:
             "--driver-kind",
             "native",
             "--driver-transport",
-            "codex_app_server",
+            driver_transport,
             "--driver-runtime-version",
             runtime_version,
             "--driver-protocol-schema-digest",
@@ -108,6 +110,19 @@ class CorePort:
                     ),
                 ]
                 if native_transport is not None
+                else []
+            ),
+            *(
+                [
+                    "--driver-root-session-identity",
+                    json.dumps(
+                        root_session_identity,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                ]
+                if root_session_identity is not None
                 else []
             ),
             input_value=contract,

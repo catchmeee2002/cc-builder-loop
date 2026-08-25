@@ -87,6 +87,15 @@ def native_contract(repo: Path) -> dict:
     }
 
 
+def root_native_contract(repo: Path) -> dict:
+    contract = native_contract(repo)
+    contract["execution"]["builder_runtime"] = {
+        "schema_version": 1,
+        "mode": "root_session",
+    }
+    return contract
+
+
 class NativeDriverCoreContractTest(unittest.TestCase):
     def test_core_port_defaults_to_the_current_checkout_cli(self) -> None:
         previous = os.environ.pop("CODEX_BUILDER_LOOP_BIN", None)
@@ -123,27 +132,42 @@ class NativeDriverCoreContractTest(unittest.TestCase):
         self,
         run_id: str,
         contract: dict,
+        *,
+        session_id: str = "native-session",
+        transport: str = "codex_app_server",
+        runtime_version: str = "codex-test",
     ) -> tuple[dict, Path]:
-        result = self.invoke(
+        args = [
             "start",
             "--repo",
             self.repo,
             "--run",
             run_id,
             "--session-id",
-            "native-session",
+            session_id,
             "--contract",
             "-",
             "--driver-kind",
             "native",
             "--driver-transport",
-            "codex_app_server",
+            transport,
             "--driver-runtime-version",
-            "codex-test",
+            runtime_version,
             "--driver-protocol-schema-digest",
             "a" * 64,
-            stdin=contract,
-        )
+        ]
+        if transport == "root_session":
+            args.extend(
+                [
+                    "--driver-root-session-identity",
+                    json.dumps(
+                        native_cli._root_session_identity(session_id),
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ),
+                ]
+            )
+        result = self.invoke(*args, stdin=contract)
         return result, Path(result["candidate_worktree"]).parent
 
     def start(self) -> tuple[str, Path]:
@@ -153,6 +177,372 @@ class NativeDriverCoreContractTest(unittest.TestCase):
             native_contract(self.repo),
         )
         return run_id, run_path
+
+    def test_root_builder_dispatch_requires_owner_and_application_before_consume(
+        self,
+    ) -> None:
+        run_id = "root-builder-transaction"
+        started, _run_path = self.start_with_contract(
+            run_id,
+            root_native_contract(self.repo),
+            transport="root_session",
+            runtime_version="root-session",
+        )
+        self.assertEqual(started["driver_runtime"]["transport"], "root_session")
+        action = self.invoke("driver-next", "--repo", self.repo, "--run", run_id)
+        self.assertEqual(action["action"], "builder_implement")
+
+        self.invoke(
+            "prepare-builder",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--agent-id",
+            "codex-root-session:native-session",
+            "--owner-mode",
+            "root_session",
+            "--owner-session-id",
+            "native-session",
+            "--action-id",
+            action["action_id"],
+            "--driver-runtime-kind",
+            "native",
+        )
+        action = self.invoke("driver-next", "--repo", self.repo, "--run", run_id)
+        self.assertEqual(action["action"], "builder_implement")
+
+        def failed(*args: str, stdin: object | None = None) -> dict:
+            completed = run_process(
+                [
+                    sys.executable,
+                    CLI,
+                    "assurance",
+                    "--experimental-v4",
+                    *args,
+                ],
+                input_text=json.dumps(stdin) if stdin is not None else None,
+            )
+            lines = [line for line in completed.stdout.splitlines() if line.strip()]
+            self.assertTrue(lines, completed.stderr)
+            payload = json.loads(lines[-1])
+            self.assertNotEqual(completed.returncode, 0, payload)
+            return payload
+
+        begin_args = (
+            "begin-dispatch",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--action-id",
+            action["action_id"],
+            "--action",
+            action["action"],
+            "--role",
+            "builder",
+            "--prompt-digest",
+            "b" * 64,
+            "--output-schema-digest",
+            "c" * 64,
+            "--driver-runtime-kind",
+            "native",
+        )
+        wrong_begin = failed(
+            *begin_args,
+            "--owner-session-id",
+            "wrong-session",
+        )
+        self.assertEqual(wrong_begin["code"], "BUILDER_OWNER_SESSION_MISMATCH")
+        self.invoke(
+            *begin_args,
+            "--owner-session-id",
+            "native-session",
+        )
+        context = self.invoke("driver-context", "--repo", self.repo, "--run", run_id)
+        self.assertEqual(context["dispatch_intent"]["state"], "in_flight")
+        self.assertIsNone(context["dispatch_intent"]["thread_id"])
+        self.assertEqual(
+            context["dispatch_intent"]["owner_session_id"], "native-session"
+        )
+        retry = failed(
+            "retry-dispatch",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--action-id",
+            action["action_id"],
+            "--failure-code",
+            "interruptedNoOutput",
+        )
+        self.assertEqual(retry["code"], "NATIVE_ROOT_BUILDER_RETRY_FORBIDDEN")
+
+        result = {
+            "result": "implemented",
+            "evidence_report": None,
+            "proof_spec": None,
+            "problem_report": None,
+        }
+        wrong_complete = failed(
+            "complete-dispatch",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--action-id",
+            action["action_id"],
+            "--result",
+            "-",
+            "--owner-session-id",
+            "wrong-session",
+            stdin=result,
+        )
+        self.assertEqual(wrong_complete["code"], "BUILDER_OWNER_SESSION_MISMATCH")
+        self.invoke(
+            "complete-dispatch",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--action-id",
+            action["action_id"],
+            "--result",
+            "-",
+            "--owner-session-id",
+            "native-session",
+            stdin=result,
+        )
+        not_applied = failed(
+            "consume-dispatch",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--action-id",
+            action["action_id"],
+            "--owner-session-id",
+            "native-session",
+            "--consumer-source",
+            "native_driver",
+        )
+        self.assertEqual(not_applied["code"], "ROOT_BUILDER_RESULT_NOT_APPLIED")
+
+        self.invoke(
+            "checkpoint-builder",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--action-id",
+            action["action_id"],
+            "--owner-session-id",
+            "native-session",
+            "--driver-runtime-kind",
+            "native",
+        )
+        applied = self.invoke("driver-context", "--repo", self.repo, "--run", run_id)
+        self.assertEqual(
+            applied["dispatch_intent"]["result_application"], "checkpoint_builder"
+        )
+        self.invoke(
+            "consume-dispatch",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--action-id",
+            action["action_id"],
+            "--owner-session-id",
+            "native-session",
+            "--consumer-source",
+            "native_driver",
+        )
+        finished = self.invoke("driver-context", "--repo", self.repo, "--run", run_id)
+        self.assertIsNone(finished["dispatch_intent"])
+
+    def test_root_start_does_not_probe_app_server_until_transport_handoff(self) -> None:
+        repo = self.repo
+
+        class FakeCore:
+            def start(self, **_kwargs):
+                return {"candidate_worktree": str(repo / "candidate")}
+
+        class FakeCoordinator:
+            def __init__(self, **_kwargs):
+                pass
+
+            def run(self):
+                return {
+                    "status": "BUILDER_HANDOFF",
+                    "run_id": "root-lazy-probe",
+                    "action": "builder_implement",
+                    "action_id": "a" * 64,
+                }
+
+        contract_path = self.artifacts / "root-lazy-contract.json"
+        contract_path.write_text(
+            json.dumps(root_native_contract(self.repo)),
+            encoding="utf-8",
+        )
+        output = StringIO()
+        with (
+            patch.object(native_cli, "CorePort", return_value=FakeCore()),
+            patch.object(
+                native_cli,
+                "NativeCoordinator",
+                FakeCoordinator,
+            ),
+            patch.object(
+                native_cli,
+                "probe_app_server",
+                side_effect=AssertionError("Builder handoff must not probe App Server"),
+            ),
+            redirect_stdout(output),
+        ):
+            rc = native_cli.main(
+                [
+                    "start",
+                    "--repo",
+                    str(self.repo),
+                    "--run",
+                    "root-lazy-probe",
+                    "--session-id",
+                    "root-lazy-session",
+                    "--contract",
+                    str(contract_path),
+                ]
+            )
+        self.assertEqual(rc, 1)
+        payload = json.loads(output.getvalue().splitlines()[-1])
+        self.assertEqual(payload["status"], "BUILDER_HANDOFF")
+
+    def test_root_builder_problem_result_uses_session_producer_and_consumes_after_record(
+        self,
+    ) -> None:
+        run_id = "root-builder-problem"
+        self.start_with_contract(
+            run_id,
+            root_native_contract(self.repo),
+            transport="root_session",
+            runtime_version="root-session",
+        )
+        action = self.invoke("driver-next", "--repo", self.repo, "--run", run_id)
+        self.invoke(
+            "prepare-builder",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--agent-id",
+            "codex-root-session:native-session",
+            "--owner-mode",
+            "root_session",
+            "--owner-session-id",
+            "native-session",
+            "--action-id",
+            action["action_id"],
+            "--driver-runtime-kind",
+            "native",
+        )
+        action = self.invoke("driver-next", "--repo", self.repo, "--run", run_id)
+        self.invoke(
+            "begin-dispatch",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--action-id",
+            action["action_id"],
+            "--action",
+            action["action"],
+            "--role",
+            "builder",
+            "--prompt-digest",
+            "b" * 64,
+            "--output-schema-digest",
+            "c" * 64,
+            "--owner-session-id",
+            "native-session",
+            "--driver-runtime-kind",
+            "native",
+        )
+        result = {
+            "result": "blocked",
+            "evidence_report": None,
+            "proof_spec": None,
+            "problem_report": {
+                "schema_version": 1,
+                "problems": [
+                    {
+                        "key": "builder-blocked",
+                        "summary": "Builder is blocked by a fixture problem.",
+                        "details": "The root Builder needs a user-visible decision.",
+                        "owner": "builder",
+                    }
+                ],
+            },
+        }
+        self.invoke(
+            "complete-dispatch",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--action-id",
+            action["action_id"],
+            "--result",
+            "-",
+            "--owner-session-id",
+            "native-session",
+            stdin=result,
+        )
+        self.invoke(
+            "record-problems",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--report",
+            "-",
+            "--role",
+            "builder",
+            "--agent-id",
+            "codex-root-session:native-session",
+            "--action-id",
+            action["action_id"],
+            "--owner-session-id",
+            "native-session",
+            "--driver-runtime-kind",
+            "native",
+            stdin=result["problem_report"],
+        )
+        context = self.invoke("driver-context", "--repo", self.repo, "--run", run_id)
+        self.assertEqual(
+            context["dispatch_intent"]["result_application"], "record_problems"
+        )
+        self.assertEqual(
+            context["problems"][-1]["producer"],
+            {
+                "role": "builder",
+                "mode": "root_session",
+                "agent_id": "codex-root-session:native-session",
+                "session_id": "native-session",
+            },
+        )
+        self.invoke(
+            "consume-dispatch",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--action-id",
+            action["action_id"],
+            "--owner-session-id",
+            "native-session",
+            "--consumer-source",
+            "native_driver",
+        )
 
     def prepare_replacement_fixture(
         self, run_id: str

@@ -45,13 +45,15 @@ class NativeCoordinator:
         repo: Path,
         run_id: str,
         core: CorePort,
-        transport: AppServerTransport,
+        transport: AppServerTransport | None,
         project_root: Path | None = None,
         dispatch_renewal_reason: str | None = None,
         event_sink: Callable[[dict[str, Any]], None] | None = None,
         now_fn: Callable[[], datetime] | None = None,
         sleep_fn: Callable[[float], None] | None = None,
         thread_compaction_available: bool = False,
+        builder_mode: str = "native_thread",
+        root_session_id: str | None = None,
     ):
         self.repo = repo.resolve()
         self.run_id = run_id
@@ -81,6 +83,8 @@ class NativeCoordinator:
             else None
         )
         self._thread_compaction_available = thread_compaction_available
+        self.builder_mode = builder_mode
+        self.root_session_id = root_session_id
 
     def _transport_generation(self) -> str | None:
         value = getattr(self.transport, "generation", None)
@@ -174,6 +178,16 @@ class NativeCoordinator:
             name = str(action.get("action"))
             capability = AGENT_ACTION_CAPABILITIES.get(name)
             if capability is not None:
+                if capability.role == "builder" and self.builder_mode == "root_session":
+                    return self._root_builder_handoff(action)
+                if self.transport is None:
+                    return {
+                        "status": "TRANSPORT_HANDOFF",
+                        "run_id": self.run_id,
+                        "action": name,
+                        "action_id": action.get("action_id"),
+                        "reason": "native_transport_required",
+                    }
                 self._run_agent_action(action, capability)
                 continue
             if name == "checkpoint_builder":
@@ -205,15 +219,17 @@ class NativeCoordinator:
             elif name == "recover_finalize":
                 self._simple("recover-finalize", action)
             elif name == "complete_driver_failure":
-                self.core.call(
-                    "complete-driver-failure",
+                args = [
                     "--repo",
                     str(self.repo),
                     "--run",
                     self.run_id,
                     "--driver-runtime-kind",
                     "native",
-                )
+                ]
+                if self.builder_mode == "root_session":
+                    args.extend(["--owner-session-id", str(self.root_session_id)])
+                self.core.call("complete-driver-failure", *args)
             elif name == "finalize":
                 self.core.call(
                     "finalize",
@@ -237,9 +253,69 @@ class NativeCoordinator:
                     details=action,
                 )
 
+    def _root_builder_handoff(self, action: dict[str, Any]) -> dict[str, Any]:
+        context = self._context()
+        owner = context["facets"]["execution"]["agents"].get("builder")
+        if (
+            not isinstance(owner, dict)
+            or owner.get("mode") != "root_session"
+            or owner.get("session_id") != self.root_session_id
+        ):
+            agent_id = f"codex-root-session:{self.root_session_id or self.run_id}"
+            self.core.call(
+                "prepare-builder",
+                "--repo",
+                str(self.repo),
+                "--run",
+                self.run_id,
+                "--agent-id",
+                agent_id,
+                "--owner-mode",
+                "root_session",
+                "--owner-session-id",
+                str(self.root_session_id),
+                "--action-id",
+                str(action["action_id"]),
+                "--driver-runtime-kind",
+                "native",
+            )
+            action = self.core.call(
+                "driver-next", "--repo", str(self.repo), "--run", self.run_id
+            )
+            context = self._context()
+            owner = context["facets"]["execution"]["agents"].get("builder")
+        if not isinstance(owner, dict):
+            raise NativeDriverError(
+                "root Builder owner preparation did not persist",
+                code="NATIVE_ROOT_BUILDER_OWNER_MISSING",
+                status="NEEDS_USER",
+            )
+        pending = context.get("dispatch_intent")
+        prompt = self._prompt(action, "builder", context)
+        return {
+            "status": "BUILDER_HANDOFF",
+            "run_id": self.run_id,
+            "action": action.get("action"),
+            "action_id": action.get("action_id"),
+            "reason": action.get("reason"),
+            "builder_owner": owner,
+            "candidate_worktree": context.get("candidate_worktree"),
+            "target_start_head": context.get("target_start_head"),
+            "dispatch_state": (
+                pending.get("state")
+                if isinstance(pending, dict)
+                else "unprepared"
+            ),
+            "dispatch_intent": (
+                copy.deepcopy(pending) if isinstance(pending, dict) else None
+            ),
+            "prompt_digest": digest(prompt),
+            "output_schema_digest": self.output_schema_digest,
+            "result_schema": self.output_schema,
+        }
+
     def _simple(self, command: str, action: dict[str, Any]) -> None:
-        self.core.call(
-            command,
+        args = [
             "--repo",
             str(self.repo),
             "--run",
@@ -248,6 +324,16 @@ class NativeCoordinator:
             str(action["action_id"]),
             "--driver-runtime-kind",
             "native",
+        ]
+        if command == "checkpoint-builder" and self.builder_mode == "root_session":
+            args.extend(["--owner-session-id", str(self.root_session_id)])
+        if command == "complete-driver-failure" and self.builder_mode == "root_session":
+            args.extend(["--owner-session-id", str(self.root_session_id)])
+        if command == "recompose-candidate" and self.builder_mode == "root_session":
+            args.extend(["--owner-session-id", str(self.root_session_id)])
+        self.core.call(
+            command,
+            *args,
         )
 
     def _replace_tester(self, action: dict[str, Any]) -> None:
@@ -400,6 +486,12 @@ class NativeCoordinator:
         action: dict[str, Any],
         capability: AgentActionCapability,
     ) -> None:
+        if self.transport is None:
+            raise NativeDriverError(
+                "Native transport is required for this non-root Builder action",
+                code="NATIVE_ROOT_TRANSPORT_REQUIRED",
+                status="NEEDS_USER",
+            )
         context = self._context()
         role = capability.role
         agent = context["facets"]["execution"]["agents"].get(role)

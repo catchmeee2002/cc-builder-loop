@@ -71,11 +71,15 @@ def parser() -> argparse.ArgumentParser:
     start.add_argument("--session-id", required=True)
     start.add_argument("--contract", required=True)
     start.add_argument("--driver-kind", choices=["native", "full_driver_skill"])
-    start.add_argument("--driver-transport", choices=["codex_app_server", "native_tools"])
+    start.add_argument(
+        "--driver-transport",
+        choices=["codex_app_server", "native_tools", "root_session"],
+    )
     start.add_argument("--driver-runtime-version")
     start.add_argument("--driver-protocol-schema-digest")
     start.add_argument("--driver-protocol-canary-digest")
     start.add_argument("--driver-native-transport")
+    start.add_argument("--driver-root-session-identity")
 
     status = commands.add_parser("status")
     status.add_argument("--repo", default=".")
@@ -90,6 +94,7 @@ def parser() -> argparse.ArgumentParser:
         choices=["native", "full_driver_skill"],
         required=True,
     )
+    record_driver_failure.add_argument("--owner-session-id")
 
     complete_driver_failure = commands.add_parser("complete-driver-failure")
     complete_driver_failure.add_argument("--repo", default=".")
@@ -99,6 +104,7 @@ def parser() -> argparse.ArgumentParser:
         choices=["native", "full_driver_skill"],
         required=True,
     )
+    complete_driver_failure.add_argument("--owner-session-id")
 
     retrospective_status = commands.add_parser("retrospective-status")
     retrospective_status.add_argument("--repo", default=".")
@@ -174,6 +180,7 @@ def parser() -> argparse.ArgumentParser:
     checkpoint = commands.add_parser("checkpoint-builder")
     checkpoint.add_argument("--repo", default=".")
     checkpoint.add_argument("--run", required=True)
+    checkpoint.add_argument("--owner-session-id")
     dispatch_guard(checkpoint)
 
     publication = commands.add_parser("publish-prerequisites")
@@ -224,7 +231,13 @@ def parser() -> argparse.ArgumentParser:
     prepare_builder.add_argument("--repo", default=".")
     prepare_builder.add_argument("--run", required=True)
     prepare_builder.add_argument("--agent-id", required=True)
-    prepare_builder.add_argument("--thread-id", required=True)
+    prepare_builder.add_argument("--thread-id")
+    prepare_builder.add_argument(
+        "--owner-mode",
+        choices=["root_session", "native_thread"],
+        default="native_thread",
+    )
+    prepare_builder.add_argument("--owner-session-id")
     dispatch_guard(prepare_builder)
 
     prepare_reviewer = commands.add_parser("prepare-reviewer")
@@ -241,7 +254,8 @@ def parser() -> argparse.ArgumentParser:
     problems.add_argument("--report", required=True)
     problems.add_argument("--role", choices=["builder", "tester", "reviewer"], required=True)
     problems.add_argument("--agent-id", required=True)
-    problems.add_argument("--thread-id", required=True)
+    problems.add_argument("--thread-id")
+    problems.add_argument("--owner-session-id")
     dispatch_guard(problems)
 
     begin_tester_replacement = commands.add_parser("begin-tester-replacement")
@@ -357,6 +371,7 @@ def parser() -> argparse.ArgumentParser:
     recompose = commands.add_parser("recompose-candidate")
     recompose.add_argument("--repo", default=".")
     recompose.add_argument("--run", required=True)
+    recompose.add_argument("--owner-session-id")
     dispatch_guard(recompose)
 
     recover_finalize = commands.add_parser("recover-finalize")
@@ -374,7 +389,8 @@ def parser() -> argparse.ArgumentParser:
     begin_dispatch.add_argument("--action-id", required=True)
     begin_dispatch.add_argument("--action", required=True)
     begin_dispatch.add_argument("--role", choices=["builder", "tester", "reviewer"], required=True)
-    begin_dispatch.add_argument("--thread-id", required=True)
+    begin_dispatch.add_argument("--thread-id")
+    begin_dispatch.add_argument("--owner-session-id")
     begin_dispatch.add_argument("--prompt-digest", required=True)
     begin_dispatch.add_argument("--output-schema-digest", required=True)
     begin_dispatch.add_argument("--native-transport-generation")
@@ -468,11 +484,13 @@ def parser() -> argparse.ArgumentParser:
     complete_dispatch.add_argument("--run", required=True)
     complete_dispatch.add_argument("--action-id", required=True)
     complete_dispatch.add_argument("--result", required=True)
+    complete_dispatch.add_argument("--owner-session-id")
 
     consume_dispatch = commands.add_parser("consume-dispatch")
     consume_dispatch.add_argument("--repo", default=".")
     consume_dispatch.add_argument("--run", required=True)
     consume_dispatch.add_argument("--action-id", required=True)
+    consume_dispatch.add_argument("--owner-session-id")
     consume_dispatch.add_argument(
         "--consumer-source",
         choices=["native_driver", "full_driver_skill", "operator_recovery"],
@@ -636,6 +654,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                             "driver native transport must be valid JSON",
                             code="DRIVER_NATIVE_TRANSPORT_INVALID",
                         ) from exc
+                if args.driver_root_session_identity:
+                    try:
+                        runtime["root_session_identity"] = json.loads(
+                            args.driver_root_session_identity
+                        )
+                    except json.JSONDecodeError as exc:
+                        raise core.AssuranceError(
+                            "driver root session identity must be valid JSON",
+                            code="DRIVER_ROOT_SESSION_IDENTITY_INVALID",
+                        ) from exc
             payload = core.start(
                 args.repo,
                 args.run,
@@ -651,12 +679,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.run,
                 _json(args.failure),
                 driver_runtime_kind=args.driver_runtime_kind,
+                owner_session_id=args.owner_session_id,
             )
         elif args.command == "complete-driver-failure":
             payload = core.complete_driver_failure(
                 args.repo,
                 args.run,
                 driver_runtime_kind=args.driver_runtime_kind,
+                owner_session_id=args.owner_session_id,
             )
         elif args.command == "retrospective-status":
             payload = core.retrospective_status(args.repo, args.session_id)
@@ -721,7 +751,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             payload = core.driver_context(args.repo, args.run)
         elif args.command == "checkpoint-builder":
             _guard_dispatch(args, {"builder_implement", "builder_fix", "checkpoint_builder"})
-            payload = core.checkpoint_builder(args.repo, args.run)
+            payload = core.checkpoint_builder(
+                args.repo,
+                args.run,
+                action_id=args.action_id,
+                owner_session_id=args.owner_session_id,
+            )
         elif args.command == "publish-prerequisites":
             _guard_dispatch(args, {"publish_prerequisites"})
             payload = core.publish_prerequisites(args.repo, args.run)
@@ -774,7 +809,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         elif args.command == "prepare-builder":
             _guard_dispatch(args, actions_for_preparation("builder", "role_identity"))
-            payload = core.prepare_builder(args.repo, args.run, args.agent_id, args.thread_id)
+            payload = core.prepare_builder(
+                args.repo,
+                args.run,
+                args.agent_id,
+                args.thread_id,
+                owner_mode=args.owner_mode,
+                session_id=args.owner_session_id,
+            )
         elif args.command == "prepare-reviewer":
             _guard_dispatch(args, actions_for_preparation("reviewer", "role_identity"))
             payload = core.prepare_reviewer(
@@ -811,6 +853,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 role=args.role,
                 agent_id=args.agent_id,
                 thread_id=args.thread_id,
+                action_id=args.action_id,
+                owner_session_id=args.owner_session_id,
             )
         elif args.command == "begin-tester-replacement":
             payload = core.begin_tester_replacement(
@@ -893,7 +937,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args,
                 {"recompose_candidate", "builder_recompose_fix", "tester_recompose_fix"},
             )
-            payload = core.recompose_candidate(args.repo, args.run)
+            payload = core.recompose_candidate(
+                args.repo,
+                args.run,
+                action_id=args.action_id,
+                owner_session_id=args.owner_session_id,
+            )
         elif args.command == "recover-finalize":
             _guard_dispatch(args, {"recover_finalize"})
             payload = core.recover_finalize(args.repo, args.run)
@@ -909,6 +958,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 action=args.action,
                 role=args.role,
                 thread_id=args.thread_id,
+                owner_session_id=args.owner_session_id,
                 prompt_digest=args.prompt_digest,
                 output_schema_digest=args.output_schema_digest,
                 native_transport_generation=args.native_transport_generation,
@@ -976,6 +1026,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.run,
                 action_id=args.action_id,
                 result_value=_json(args.result),
+                owner_session_id=args.owner_session_id,
             )
         elif args.command == "consume-dispatch":
             payload = core.consume_dispatch(
@@ -983,6 +1034,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.run,
                 action_id=args.action_id,
                 consumer_source=args.consumer_source,
+                owner_session_id=args.owner_session_id,
             )
         elif args.command == "retry-dispatch":
             payload = core.retry_dispatch(

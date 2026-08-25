@@ -30,6 +30,7 @@ from .models import (
     ContractError,
     assurance_downgrades,
     authority_expands,
+    builder_runtime_mode,
     compact_ineligibility_reasons,
     digest,
     doc_reference_scan_digest_input,
@@ -126,9 +127,169 @@ BUILDER_CHECKPOINT_ACTIONS = frozenset({"builder_implement", "builder_fix"})
 BUILDER_SIDE_EFFECT_ACTIONS = frozenset(
     {"builder_implement", "builder_fix", "builder_recompose_fix"}
 )
+ROOT_SESSION_AGENT_PREFIX = "codex-root-session:"
 CANDIDATE_RESIDUE_RENAME_EXCHANGE = 2
 _LIBC = ctypes.CDLL(None, use_errno=True)
 _RENAMEAT2 = _LIBC.renameat2
+
+
+def _builder_mode(ledger: Mapping[str, Any]) -> str:
+    return builder_runtime_mode(ledger["facets"])
+
+
+def _validate_builder_runtime_binding(
+    contract: Mapping[str, Any],
+    session_id: str,
+    driver_runtime: Mapping[str, Any] | None,
+) -> None:
+    if not isinstance(driver_runtime, Mapping):
+        return
+    mode = builder_runtime_mode(contract)
+    transport = driver_runtime.get("transport")
+    if mode == "root_session":
+        if (
+            driver_runtime.get("kind") != "native"
+            or transport != "root_session"
+        ):
+            raise AssuranceError(
+                "root_session Builder mode requires the root-session Native runtime",
+                code="BUILDER_RUNTIME_MODE_TRANSPORT_MISMATCH",
+                status="FAIL",
+                details={
+                    "builder_mode": mode,
+                    "driver_kind": driver_runtime.get("kind"),
+                    "driver_transport": transport,
+                },
+            )
+        identity = driver_runtime.get("root_session_identity")
+        expected_agent = ROOT_SESSION_AGENT_PREFIX + session_id
+        expected_digest = digest(
+            {
+                "mode": "root_session",
+                "session_id": session_id,
+                "agent_id": expected_agent,
+            }
+        )
+        if (
+            not isinstance(identity, Mapping)
+            or identity.get("session_id") != session_id
+            or identity.get("agent_id") != expected_agent
+            or identity.get("identity_digest") != expected_digest
+        ):
+            raise AssuranceError(
+                "root-session Native runtime identity is not bound to the run owner",
+                code="BUILDER_RUNTIME_ROOT_IDENTITY_MISMATCH",
+                status="FAIL",
+                details={
+                    "session_id": session_id,
+                    "root_session_identity": copy.deepcopy(identity),
+                },
+            )
+    elif transport == "root_session":
+        raise AssuranceError(
+            "native_thread Builder mode cannot use the root-session transport",
+            code="BUILDER_RUNTIME_MODE_TRANSPORT_MISMATCH",
+            status="FAIL",
+            details={
+                "builder_mode": mode,
+                "driver_kind": driver_runtime.get("kind"),
+                "driver_transport": transport,
+            },
+        )
+
+
+def _builder_owner_mode(owner: Mapping[str, Any] | None) -> str:
+    if owner and owner.get("mode") in {"root_session", "native_thread"}:
+        return str(owner["mode"])
+    return "native_thread"
+
+
+def _builder_owner_session(owner: Mapping[str, Any] | None) -> str | None:
+    value = owner.get("session_id") if isinstance(owner, Mapping) else None
+    return value if isinstance(value, str) and value else None
+
+
+def _builder_owner_thread(owner: Mapping[str, Any] | None) -> str | None:
+    value = owner.get("thread_id") if isinstance(owner, Mapping) else None
+    return value if isinstance(value, str) and value else None
+
+
+def _root_session_id(ledger: Mapping[str, Any]) -> str | None:
+    runtime = ledger.get("driver_runtime")
+    identity = runtime.get("root_session_identity") if isinstance(runtime, Mapping) else None
+    value = identity.get("session_id") if isinstance(identity, Mapping) else None
+    if isinstance(value, str) and value:
+        return value
+    owner = ledger.get("facets", {}).get("execution", {}).get("agents", {}).get("builder")
+    return _builder_owner_session(owner if isinstance(owner, Mapping) else None)
+
+
+def _assert_root_session_identity(
+    ledger: Mapping[str, Any], owner_session_id: str | None
+) -> None:
+    expected = _root_session_id(ledger)
+    if not expected or owner_session_id != expected:
+        raise AssuranceError(
+            "root Builder session identity does not match",
+            code="BUILDER_OWNER_SESSION_MISMATCH",
+            status="FAIL",
+            details={
+                "expected_session_id": expected,
+                "provided_session_id": owner_session_id,
+            },
+        )
+
+
+def _assert_builder_owner(
+    ledger: Mapping[str, Any],
+    *,
+    owner_session_id: str | None = None,
+    owner_thread_id: str | None = None,
+) -> dict[str, Any]:
+    owner = ledger["facets"]["execution"]["agents"].get("builder")
+    if not isinstance(owner, Mapping):
+        raise AssuranceError(
+            "Builder owner is not prepared",
+            code="BUILDER_OWNER_MISSING",
+            status="NEEDS_USER",
+        )
+    mode = _builder_owner_mode(owner)
+    if mode != _builder_mode(ledger):
+        raise AssuranceError(
+            "Builder owner mode does not match the frozen contract",
+            code="BUILDER_OWNER_MODE_MISMATCH",
+            status="NEEDS_USER",
+            details={
+                "contract_mode": _builder_mode(ledger),
+                "owner_mode": mode,
+            },
+        )
+    if mode == "root_session":
+        expected = _builder_owner_session(owner)
+        _assert_root_session_identity(ledger, owner_session_id)
+        if not expected or owner_session_id != expected:
+            raise AssuranceError(
+                "root Builder owner identity does not match the session",
+                code="BUILDER_OWNER_SESSION_MISMATCH",
+                status="FAIL",
+                details={
+                    "expected_session_id": expected,
+                    "provided_session_id": owner_session_id,
+                },
+            )
+    else:
+        expected = _builder_owner_thread(owner)
+        if owner_thread_id is not None and expected != owner_thread_id:
+            raise AssuranceError(
+                "Native Builder thread identity does not match",
+                code="BUILDER_OWNER_THREAD_MISMATCH",
+                status="FAIL",
+                details={
+                    "expected_thread_id": expected,
+                    "provided_thread_id": owner_thread_id,
+                },
+            )
+    return dict(owner)
 
 
 class AssuranceError(RuntimeError):
@@ -876,6 +1037,25 @@ def _assert_completed_builder_dispatch(
         else None
     )
     intent = source_ledger.get("dispatch_intent")
+    builder_mode = _builder_owner_mode(builder if isinstance(builder, Mapping) else None)
+    builder_identity_matches = (
+        (
+            builder_mode == "root_session"
+            and intent.get("owner_mode") == "root_session"
+            and intent.get("owner_session_id") == builder.get("session_id")
+            and intent.get("thread_id") is None
+        )
+        if (
+            builder_mode == "root_session"
+            and isinstance(intent, Mapping)
+            and isinstance(builder, Mapping)
+        )
+        else (
+            isinstance(intent, Mapping)
+            and isinstance(builder, Mapping)
+            and intent.get("thread_id") == builder.get("thread_id")
+        )
+    )
     if (
         expected_producer is None
         or problem.get("producer") != expected_producer
@@ -883,7 +1063,7 @@ def _assert_completed_builder_dispatch(
         or intent.get("state") != "completed"
         or intent.get("role") != "builder"
         or intent.get("action") not in BUILDER_CHECKPOINT_ACTIONS
-        or intent.get("thread_id") != builder.get("thread_id")
+        or not builder_identity_matches
     ):
         raise AssuranceError(
             "rejected checkpoint successor requires one completed unconsumed Builder dispatch",
@@ -1137,6 +1317,7 @@ def start(
         required_independent,
     )
     _require_admission(repo, contract)
+    _validate_builder_runtime_binding(contract, session_id.strip(), driver_runtime)
     target_branch = contract["authority"]["target_branch"]
     with locked(repo):
         if ledger_path(repo, run_id).exists():
@@ -1644,18 +1825,79 @@ def prepare_builder(
     repo_value: str | Path,
     run_value: str,
     agent_id: str,
-    thread_id: str,
+    thread_id: str | None = None,
+    *,
+    owner_mode: str = "native_thread",
+    session_id: str | None = None,
 ) -> dict[str, Any]:
     repo = resolve_repo(repo_value)
     run_id = ensure_run_id(run_value)
-    agent = {"agent_id": agent_id.strip(), "thread_id": thread_id.strip()}
-    if not all(agent.values()):
-        raise AssuranceError("Builder identity is required", code="BUILDER_IDENTITY_REQUIRED")
     with locked(repo):
         ledger = read_ledger(repo, run_id)
         _assert_no_candidate_residue_intent(ledger)
+        if owner_mode != _builder_mode(ledger):
+            raise AssuranceError(
+                "requested Builder owner mode does not match the frozen contract",
+                code="BUILDER_OWNER_MODE_MISMATCH",
+                status="FAIL",
+                details={
+                    "contract_mode": _builder_mode(ledger),
+                    "requested_mode": owner_mode,
+                },
+            )
+        if owner_mode == "root_session":
+            normalized_session = (session_id or "").strip()
+            if not normalized_session:
+                raise AssuranceError(
+                    "root Builder session identity is required",
+                    code="BUILDER_OWNER_SESSION_REQUIRED",
+                    status="FAIL",
+                )
+            normalized_agent = agent_id.strip() or (
+                ROOT_SESSION_AGENT_PREFIX + normalized_session
+            )
+            agent = {
+                "mode": "root_session",
+                "agent_id": normalized_agent,
+                "session_id": normalized_session,
+            }
+        elif owner_mode == "native_thread":
+            normalized_thread = (thread_id or "").strip()
+            normalized_agent = agent_id.strip()
+            if not normalized_agent or not normalized_thread:
+                raise AssuranceError(
+                    "Native Builder identity is required",
+                    code="BUILDER_IDENTITY_REQUIRED",
+                    status="FAIL",
+                )
+            agent = {
+                "agent_id": normalized_agent,
+                "thread_id": normalized_thread,
+            }
+        else:
+            raise AssuranceError(
+                "Builder owner mode is invalid",
+                code="BUILDER_OWNER_MODE_INVALID",
+                status="FAIL",
+                details={"owner_mode": owner_mode},
+            )
         existing = ledger["facets"]["execution"]["agents"].get("builder")
-        if existing == agent:
+        if (
+            isinstance(existing, Mapping)
+            and _builder_owner_mode(existing) == owner_mode
+            and (
+                (
+                    owner_mode == "root_session"
+                    and existing.get("session_id") == agent.get("session_id")
+                    and existing.get("agent_id") == agent.get("agent_id")
+                )
+                or (
+                    owner_mode == "native_thread"
+                    and existing.get("thread_id") == agent.get("thread_id")
+                    and existing.get("agent_id") == agent.get("agent_id")
+                )
+            )
+        ):
             return status(repo, run_id)
         if existing is not None:
             raise AssuranceError(
@@ -1678,9 +1920,10 @@ def begin_dispatch(
     action_id: str,
     action: str,
     role: str,
-    thread_id: str,
+    thread_id: str | None,
     prompt_digest: str,
     output_schema_digest: str,
+    owner_session_id: str | None = None,
     native_transport_generation: str | None = None,
     timeout_profile_digest: str | None = None,
     driver_runtime_kind: str = "native",
@@ -1721,8 +1964,26 @@ def begin_dispatch(
         if current.get("action_id") != action_id or current.get("action") != action:
             raise AssuranceError("driver action is stale", code="DRIVER_ACTION_STALE", status="FAIL")
         agent = ledger["facets"]["execution"]["agents"].get(role)
-        if not isinstance(agent, dict) or agent.get("thread_id") != thread_id:
-            raise AssuranceError("dispatch thread identity mismatch", code="DISPATCH_IDENTITY_MISMATCH")
+        owner_mode = "native_thread"
+        if role == "builder":
+            owner = _assert_builder_owner(
+                ledger,
+                owner_session_id=owner_session_id,
+                owner_thread_id=thread_id,
+            )
+            owner_mode = _builder_owner_mode(owner)
+            if owner_mode == "root_session":
+                thread_id = None
+            elif _builder_owner_thread(owner) != thread_id:
+                raise AssuranceError(
+                    "dispatch thread identity mismatch",
+                    code="DISPATCH_IDENTITY_MISMATCH",
+                )
+        elif not isinstance(agent, dict) or agent.get("thread_id") != thread_id:
+            raise AssuranceError(
+                "dispatch thread identity mismatch",
+                code="DISPATCH_IDENTITY_MISMATCH",
+            )
         authorization = current.get("tester_correction_authorization")
         if action == "tester_fix" and current.get("reason") == "tester_correction_authorized":
             if not isinstance(authorization, Mapping):
@@ -1790,14 +2051,19 @@ def begin_dispatch(
             "prompt_digest": prompt_digest,
             "output_schema_digest": output_schema_digest,
             "dispatch_observation_digest": digest(observation),
-            "state": "prepared",
+            "state": "in_flight" if owner_mode == "root_session" else "prepared",
             "attempt": 1,
             "generation": 1,
-            "continuity_state": "prepared",
+            "continuity_state": (
+                "in_flight" if owner_mode == "root_session" else "prepared"
+            ),
             "interrupted_retry_used": False,
             "interrupted_retry_blocked": False,
             "created_at": now(),
         }
+        if role == "builder" and owner_mode == "root_session":
+            dispatch_intent["owner_mode"] = owner_mode
+            dispatch_intent["owner_session_id"] = owner_session_id
         if candidate_manifest_digest is not None:
             dispatch_intent["candidate_manifest_digest"] = candidate_manifest_digest
         if native_transport_generation:
@@ -2498,7 +2764,12 @@ def record_transport_cleanup(
 
 
 def complete_dispatch(
-    repo_value: str | Path, run_value: str, *, action_id: str, result_value: Any
+    repo_value: str | Path,
+    run_value: str,
+    *,
+    action_id: str,
+    result_value: Any,
+    owner_session_id: str | None = None,
 ) -> dict[str, Any]:
     result = validate_agent_result(result_value)
     repo = resolve_repo(repo_value)
@@ -2509,6 +2780,19 @@ def complete_dispatch(
         intent = ledger.get("dispatch_intent")
         if not isinstance(intent, dict) or intent.get("action_id") != action_id:
             raise AssuranceError("dispatch action is stale", code="DRIVER_ACTION_STALE", status="FAIL")
+        if (
+            intent.get("owner_mode") == "root_session"
+            and intent.get("owner_session_id") != owner_session_id
+        ):
+            raise AssuranceError(
+                "root Builder dispatch completion identity does not match",
+                code="BUILDER_OWNER_SESSION_MISMATCH",
+                status="FAIL",
+                details={
+                    "expected_session_id": intent.get("owner_session_id"),
+                    "provided_session_id": owner_session_id,
+                },
+            )
         if intent.get("state") == "completed":
             if intent.get("result_digest") != digest(result):
                 raise AssuranceError(
@@ -2537,6 +2821,97 @@ def complete_dispatch(
     return status(repo, run_id)
 
 
+def _root_builder_dispatch_for_application(
+    ledger: Mapping[str, Any],
+    *,
+    action_id: str | None,
+    owner_session_id: str | None,
+) -> dict[str, Any] | None:
+    intent = ledger.get("dispatch_intent")
+    if not (
+        _builder_mode(ledger) == "root_session"
+        and isinstance(intent, Mapping)
+        and intent.get("role") == "builder"
+        and intent.get("owner_mode") == "root_session"
+    ):
+        return None
+    _assert_builder_owner(ledger, owner_session_id=owner_session_id)
+    if action_id is None or intent.get("action_id") != action_id:
+        raise AssuranceError(
+            "root Builder result application action is stale",
+            code="DRIVER_ACTION_STALE",
+            status="FAIL",
+        )
+    if intent.get("state") != "completed":
+        raise AssuranceError(
+            "root Builder result must complete before its side effects are applied",
+            code="ROOT_BUILDER_DISPATCH_NOT_COMPLETE",
+            status="FAIL",
+        )
+    return intent if isinstance(intent, dict) else dict(intent)
+
+
+def _mark_root_builder_result_applied(
+    ledger: dict[str, Any],
+    intent: dict[str, Any] | None,
+    application: str,
+) -> bool:
+    if intent is None:
+        return False
+    existing = intent.get("result_application")
+    if existing is not None and existing != application:
+        raise AssuranceError(
+            "root Builder result was already applied through another transaction",
+            code="ROOT_BUILDER_RESULT_APPLICATION_MISMATCH",
+            status="FAIL",
+            details={"expected": existing, "provided": application},
+        )
+    if existing == application:
+        return False
+    intent["result_application"] = application
+    append_event(
+        ledger,
+        "root_builder_result_applied",
+        {
+            "action_id": intent["action_id"],
+            "action": intent["action"],
+            "application": application,
+            "result_digest": intent.get("result_digest"),
+        },
+    )
+    return True
+
+
+def _expected_root_builder_result_application(intent: Mapping[str, Any]) -> str:
+    result_path = intent.get("result_path")
+    if not isinstance(result_path, str):
+        raise AssuranceError(
+            "root Builder result artifact is missing",
+            code="ROOT_BUILDER_RESULT_ARTIFACT_MISSING",
+            status="NEEDS_USER",
+        )
+    try:
+        result = json.loads(Path(result_path).read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        raise AssuranceError(
+            "root Builder result artifact is unreadable",
+            code="ROOT_BUILDER_RESULT_ARTIFACT_INVALID",
+            status="NEEDS_USER",
+            details={"path": result_path, "error": str(exc)},
+        ) from exc
+    if digest(result) != intent.get("result_digest"):
+        raise AssuranceError(
+            "root Builder result artifact digest changed",
+            code="ROOT_BUILDER_RESULT_ARTIFACT_DRIFT",
+            status="NEEDS_USER",
+        )
+    if isinstance(result.get("problem_report"), Mapping):
+        return "record_problems"
+    if intent.get("action") == "builder_recompose_fix":
+        return "recompose_candidate"
+    return "checkpoint_builder"
+
+
 def retry_dispatch(
     repo_value: str | Path,
     run_value: str,
@@ -2562,6 +2937,15 @@ def retry_dispatch(
             raise AssuranceError("dispatch action is stale", code="DRIVER_ACTION_STALE", status="FAIL")
         if intent.get("state") == "completed":
             raise AssuranceError("completed dispatch cannot be retried", code="DISPATCH_ALREADY_COMPLETE")
+        if (
+            intent.get("role") == "builder"
+            and intent.get("owner_mode") == "root_session"
+        ):
+            raise AssuranceError(
+                "root Builder dispatch requires explicit session continuation",
+                code="NATIVE_ROOT_BUILDER_RETRY_FORBIDDEN",
+                status="NEEDS_USER",
+            )
         baseline_manifest_digest = intent.get("candidate_manifest_digest")
         if (
             intent.get("action") in BUILDER_SIDE_EFFECT_ACTIONS
@@ -2750,6 +3134,15 @@ def renew_dispatch(
         intent = ledger.get("dispatch_intent")
         if not isinstance(intent, dict) or intent.get("action_id") != action_id:
             raise AssuranceError("dispatch action is stale", code="DRIVER_ACTION_STALE", status="FAIL")
+        if (
+            intent.get("role") == "builder"
+            and intent.get("owner_mode") == "root_session"
+        ):
+            raise AssuranceError(
+                "root Builder dispatch cannot renew a Native generation",
+                code="NATIVE_ROOT_BUILDER_RENEWAL_FORBIDDEN",
+                status="NEEDS_USER",
+            )
         if intent.get("state") != "exhausted" or int(intent.get("attempt", 1)) < 3:
             raise AssuranceError(
                 "only an exhausted dispatch can start a new generation",
@@ -3139,6 +3532,7 @@ def consume_dispatch(
     *,
     action_id: str,
     consumer_source: str | None = None,
+    owner_session_id: str | None = None,
 ) -> dict[str, Any]:
     repo = resolve_repo(repo_value)
     run_id = ensure_run_id(run_value)
@@ -3148,6 +3542,34 @@ def consume_dispatch(
         intent = ledger.get("dispatch_intent")
         if not isinstance(intent, dict) or intent.get("action_id") != action_id:
             raise AssuranceError("dispatch action is stale", code="DRIVER_ACTION_STALE", status="FAIL")
+        if (
+            intent.get("owner_mode") == "root_session"
+            and intent.get("owner_session_id") != owner_session_id
+        ):
+            raise AssuranceError(
+                "root Builder dispatch consumption identity does not match",
+                code="BUILDER_OWNER_SESSION_MISMATCH",
+                status="FAIL",
+                details={
+                    "expected_session_id": intent.get("owner_session_id"),
+                    "provided_session_id": owner_session_id,
+                },
+            )
+        if (
+            intent.get("role") == "builder"
+            and intent.get("owner_mode") == "root_session"
+        ):
+            expected_application = _expected_root_builder_result_application(intent)
+            if intent.get("result_application") != expected_application:
+                raise AssuranceError(
+                    "root Builder result must be applied before dispatch consumption",
+                    code="ROOT_BUILDER_RESULT_NOT_APPLIED",
+                    status="FAIL",
+                    details={
+                        "expected_application": expected_application,
+                        "actual_application": intent.get("result_application"),
+                    },
+                )
         if intent.get("state") != "completed":
             raise AssuranceError("dispatch is not complete", code="DISPATCH_NOT_COMPLETE")
         if consumer_source is None:
@@ -3287,6 +3709,12 @@ def _driver_failure_dispatch(ledger: Mapping[str, Any]) -> dict[str, Any] | None
     }
     if isinstance(intent.get("turn_id"), str):
         value["turn_id"] = intent["turn_id"]
+    elif intent.get("thread_id") is None:
+        value["thread_id"] = None
+    if isinstance(intent.get("owner_mode"), str):
+        value["owner_mode"] = intent["owner_mode"]
+    if isinstance(intent.get("owner_session_id"), str):
+        value["owner_session_id"] = intent["owner_session_id"]
     if isinstance(intent.get("candidate_manifest_digest"), str):
         value["candidate_manifest_digest"] = intent["candidate_manifest_digest"]
     return value
@@ -3371,6 +3799,7 @@ def record_driver_failure(
     failure_value: Any,
     *,
     driver_runtime_kind: str,
+    owner_session_id: str | None = None,
 ) -> dict[str, Any]:
     normalized = _normalize_driver_failure_input(failure_value)
     signature = digest(normalized)
@@ -3380,6 +3809,8 @@ def record_driver_failure(
         ledger = read_ledger(repo, run_id)
         _assert_no_candidate_residue_intent(ledger)
         _require_driver_runtime_owner(ledger, driver_runtime_kind)
+        if _builder_mode(ledger) == "root_session":
+            _assert_root_session_identity(ledger, owner_session_id)
         existing = ledger.get("driver_failure")
         if isinstance(existing, dict):
             if existing.get("signature") == signature:
@@ -3436,6 +3867,7 @@ def complete_driver_failure(
     run_value: str,
     *,
     driver_runtime_kind: str,
+    owner_session_id: str | None = None,
 ) -> dict[str, Any]:
     repo = resolve_repo(repo_value)
     run_id = ensure_run_id(run_value)
@@ -3443,6 +3875,8 @@ def complete_driver_failure(
         ledger = read_ledger(repo, run_id)
         _assert_no_candidate_residue_intent(ledger)
         _require_driver_runtime_owner(ledger, driver_runtime_kind)
+        if _builder_mode(ledger) == "root_session":
+            _assert_root_session_identity(ledger, owner_session_id)
         failure = ledger.get("driver_failure")
         if not isinstance(failure, dict):
             raise AssuranceError(
@@ -9307,7 +9741,13 @@ def _validated_builder_files(
     return builder_files
 
 
-def checkpoint_builder(repo_value: str | Path, run_value: str) -> dict[str, Any]:
+def checkpoint_builder(
+    repo_value: str | Path,
+    run_value: str,
+    *,
+    action_id: str | None = None,
+    owner_session_id: str | None = None,
+) -> dict[str, Any]:
     repo = resolve_repo(repo_value)
     run_id = ensure_run_id(run_value)
     with locked(repo):
@@ -9315,6 +9755,13 @@ def checkpoint_builder(repo_value: str | Path, run_value: str) -> dict[str, Any]
         if ledger["phase"] != "active":
             raise AssuranceError("run is not active", code="ASSURANCE_RUN_NOT_ACTIVE")
         _assert_no_candidate_residue_intent(ledger)
+        if _builder_mode(ledger) == "root_session":
+            _assert_builder_owner(ledger, owner_session_id=owner_session_id)
+        root_dispatch = _root_builder_dispatch_for_application(
+            ledger,
+            action_id=action_id,
+            owner_session_id=owner_session_id,
+        )
         worktree = Path(ledger["candidate_worktree"])
         if dirty_paths(worktree):
             raise AssuranceError(
@@ -9404,6 +9851,9 @@ def checkpoint_builder(repo_value: str | Path, run_value: str) -> dict[str, Any]
                     "problem_details_digest": problem_details_digest,
                 },
             )
+            _mark_root_builder_result_applied(
+                ledger, root_dispatch, "checkpoint_builder"
+            )
             save_ledger(repo, ledger)
             return status(repo, run_id)
         publication = ledger.get("publication")
@@ -9413,6 +9863,9 @@ def checkpoint_builder(repo_value: str | Path, run_value: str) -> dict[str, Any]
                 path for path, blob in frozen.items() if _blob_at(repo, candidate, path) != blob
             )
             if changed_public:
+                _mark_root_builder_result_applied(
+                    ledger, root_dispatch, "checkpoint_builder"
+                )
                 _begin_recomposition(
                     repo,
                     ledger,
@@ -9427,6 +9880,10 @@ def checkpoint_builder(repo_value: str | Path, run_value: str) -> dict[str, Any]
             and execution.get("builder_files") == builder_files
             and ledger.get("builder_checkpointed") is True
         ):
+            if _mark_root_builder_result_applied(
+                ledger, root_dispatch, "checkpoint_builder"
+            ):
+                save_ledger(repo, ledger)
             return status(repo, run_id)
         execution["version"] += 1
         execution["candidate_head"] = candidate
@@ -9448,6 +9905,9 @@ def checkpoint_builder(repo_value: str | Path, run_value: str) -> dict[str, Any]
             ledger,
             "builder_checkpointed",
             {"old_head": previous, "candidate_head": candidate, "files": builder_files},
+        )
+        _mark_root_builder_result_applied(
+            ledger, root_dispatch, "checkpoint_builder"
         )
         save_ledger(repo, ledger)
     return status(repo, run_id)
@@ -9689,7 +10149,9 @@ def record_problems(
     *,
     role: str,
     agent_id: str,
-    thread_id: str,
+    thread_id: str | None,
+    action_id: str | None = None,
+    owner_session_id: str | None = None,
 ) -> dict[str, Any]:
     report = validate_problem_report(report_value)
     if role not in {"builder", "tester", "reviewer"}:
@@ -9702,11 +10164,34 @@ def record_problems(
         expected = None
         if role in {"builder", "tester", "reviewer"}:
             expected = ledger["facets"]["execution"]["agents"].get(role)
-        if expected is not None:
-            if expected != {"agent_id": agent_id, "thread_id": thread_id}:
+        root_dispatch = None
+        if role == "builder" and _builder_mode(ledger) == "root_session":
+            owner = _assert_builder_owner(
+                ledger,
+                owner_session_id=owner_session_id,
+            )
+            root_dispatch = _root_builder_dispatch_for_application(
+                ledger,
+                action_id=action_id,
+                owner_session_id=owner_session_id,
+            )
+            if (
+                agent_id != owner.get("agent_id")
+                or thread_id is not None
+            ):
                 raise AssuranceError("problem producer identity mismatch", code="PROBLEM_PRODUCER_MISMATCH")
+            producer = {"role": role, **owner}
+        else:
+            if not isinstance(thread_id, str) or not thread_id:
+                raise AssuranceError(
+                    "problem producer thread identity is required",
+                    code="PROBLEM_PRODUCER_MISMATCH",
+                )
+            if expected is not None:
+                if expected != {"agent_id": agent_id, "thread_id": thread_id}:
+                    raise AssuranceError("problem producer identity mismatch", code="PROBLEM_PRODUCER_MISMATCH")
+            producer = {"role": role, "agent_id": agent_id, "thread_id": thread_id}
         candidate = ledger["facets"]["execution"].get("candidate_head")
-        producer = {"role": role, "agent_id": agent_id, "thread_id": thread_id}
         added: list[str] = []
         for problem in report["problems"]:
             if problem.get("producer_continuity") == "invalid" and (
@@ -9761,11 +10246,18 @@ def record_problems(
             ledger.setdefault("problems", []).append(stored)
             added.append(problem["key"])
         if not added:
+            if _mark_root_builder_result_applied(
+                ledger, root_dispatch, "record_problems"
+            ):
+                save_ledger(repo, ledger)
             return status(repo, run_id)
         append_event(
             ledger,
             "problems_recorded",
             {"role": role, "keys": added},
+        )
+        _mark_root_builder_result_applied(
+            ledger, root_dispatch, "record_problems"
         )
         save_ledger(repo, ledger)
     return status(repo, run_id)
@@ -14103,6 +14595,8 @@ def recompose_candidate(
     run_value: str,
     *,
     kind: str | None = None,
+    action_id: str | None = None,
+    owner_session_id: str | None = None,
 ) -> dict[str, Any]:
     repo = resolve_repo(repo_value)
     run_id = ensure_run_id(run_value)
@@ -14111,6 +14605,11 @@ def recompose_candidate(
         if ledger["phase"] != "active":
             raise AssuranceError("run is not active", code="ASSURANCE_RUN_NOT_ACTIVE")
         _assert_no_candidate_residue_intent(ledger)
+        root_dispatch = _root_builder_dispatch_for_application(
+            ledger,
+            action_id=action_id,
+            owner_session_id=owner_session_id,
+        )
         intent = ledger.get("recomposition_intent")
         if not isinstance(intent, dict):
             live_target = branch_head(repo, ledger["target_branch"])
@@ -14134,6 +14633,10 @@ def recompose_candidate(
                 )
             incoming = git(worktree, "rev-parse", "HEAD").stdout.strip()
             if live_target == ledger["target_start_head"]:
+                if _mark_root_builder_result_applied(
+                    ledger, root_dispatch, "recompose_candidate"
+                ):
+                    save_ledger(repo, ledger)
                 return status(repo, run_id)
             _begin_recomposition(
                 repo,
@@ -14143,7 +14646,16 @@ def recompose_candidate(
                 new_target=live_target,
             )
             ledger = read_ledger(repo, run_id)
+            root_dispatch = _root_builder_dispatch_for_application(
+                ledger,
+                action_id=action_id,
+                owner_session_id=owner_session_id,
+            )
         _advance_recomposition(repo, ledger)
+        if _mark_root_builder_result_applied(
+            ledger, root_dispatch, "recompose_candidate"
+        ):
+            save_ledger(repo, ledger)
     return status(repo, run_id)
 
 

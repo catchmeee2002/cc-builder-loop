@@ -521,6 +521,10 @@ def acceptance_observation_mode(contract: Mapping[str, Any]) -> str:
 
 def validate_new_contract(value: Any) -> dict[str, Any]:
     contract = validate_contract(value)
+    contract["execution"].setdefault(
+        "builder_runtime",
+        {"schema_version": 1, "mode": "native_thread"},
+    )
     if (
         "blackbox" in set(contract["assurance"]["required"])
         and acceptance_observation_mode(contract) != "bound"
@@ -583,6 +587,16 @@ def validate_new_contract(value: Any) -> dict[str, Any]:
 def requested_profile(contract: Mapping[str, Any]) -> str:
     value = contract.get("assurance", {}).get("profile", "full")
     return str(value)
+
+
+def builder_runtime_mode(contract: Mapping[str, Any]) -> str:
+    value = contract.get("execution", {}).get("builder_runtime")
+    if isinstance(value, Mapping) and value.get("mode") in {
+        "root_session",
+        "native_thread",
+    }:
+        return str(value["mode"])
+    return "native_thread"
 
 
 def recovery_policy(contract: Mapping[str, Any]) -> dict[str, Any]:

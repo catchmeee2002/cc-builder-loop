@@ -41,7 +41,24 @@ description: 执行已接受的 Builder-loop 实验方案，把同 session 紧�
 
    `codex-builder-loop native-driver start --repo <repo> --run <run-id> --session-id <session-id> --contract -`
 
-6. 新 run 看到 `event=native_driver_run_started` 后，或同 run decision 更新成功后，立即输出
+6. 如果 contract 的 `execution.builder_runtime.mode=root_session`，Native Driver 返回
+   `status=BUILDER_HANDOFF` 时，当前主 session 必须逐 action 执行 Builder：
+   - 以 handoff 中的 `builder_owner.session_id` 调用 `prepare-builder --owner-mode root_session`；
+   - 根据 `dispatch_state` 恢复单一 action：`unprepared` 才调用
+     `begin-dispatch --owner-session-id`；`in_flight` 续接同一 action；`completed` 读取已绑定的
+     result artifact，不重做实现，也不重新 begin；
+   - 新结果用 `complete-dispatch --owner-session-id` 回传。若结果含 `problem_report`，先用同一 action
+     调用 `record-problems`（省略 `--thread-id`，带 `--owner-session-id`）；否则
+     `builder_recompose_fix` 调用 `recompose-candidate`，其他 Builder action 调用
+     `checkpoint-builder`。最后才用原 Builder action id 调用带 owner binding 的
+     `consume-dispatch`；这些事务完成前不得重新读取 `driver-next`；
+   - 不调用 `thread/start`、不创建 Builder App Server thread，也不把 root session 映射成 thread；
+   - 完成当前 Builder action 后调用 `native-driver resume`，把 Tester/Reviewer 和后续 gate 交回
+     Native Driver。Builder 中断、dirty side effect 或 owner 漂移不得切换到 `native_thread`。
+   `execution.builder_runtime.mode=native_thread` 时继续执行现有 Native Driver Builder/Tester/Reviewer
+   thread 路径；该模式只由 Builder-loop Plan 的显式实验选择产生。
+
+7. 新 run 看到 `event=native_driver_run_started` 后，或同 run decision 更新成功后，立即输出
    `BUILDER_LOOP_RUN_ID:<run-id>`，持续等待 Native
    Driver 到 `FINALIZED`、`FAILED` 或 `NEEDS_USER`。普通 revision、修复、Agent follow-up、target rematerialize
    和 finalize recovery 不交还用户。run 创建后若仅遇到 App Server disconnect/overload，用

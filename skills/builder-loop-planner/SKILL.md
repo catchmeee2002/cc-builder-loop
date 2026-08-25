@@ -23,8 +23,11 @@ description: Builder-loop 的执行 adapter：消费通用 Planner 冻结的语�
 
 1. 读取项目 `AGENTS.md`、设计哲学、文档政策、Git HEAD/branch、测试布局和可复制执行的验证命令。
 2. 只在答案会改变目标、权限或验收强度时使用 `request_user_input`。问题、标题和选项先写用户能观察到
-   的行为、成本与退路；`carryover`、`turn`、`supersession`、`actionable finding` 等内部词只能在白话
-   后补充，不能单独作为用户标签。不要恢复固定问卷。
+  的行为、成本与退路；`carryover`、`turn`、`supersession`、`actionable finding` 等内部词只能在白话
+  后补充，不能单独作为用户标签。不要恢复固定问卷。
+   在用户选择 Builder-loop 后，必须追加一次 Builder 承载选择：
+   「本次由谁承担 Builder 实现？」默认选项为「主 session（推荐）」；另一选项为
+   「独立 Native thread（实验）」。普通 Planner + Codex 原生执行路线不显示该问题。
    只有存在重大、难逆或范式级且真实的设计分叉时，才读取
    [方案取舍与演进](references/design-decisions.md)，并把取舍交给用户决定；局部可逆任务不虚构备选
    方案。只有一条可信路径时说明其他方向被什么约束排除；不存在真实分叉时不做方案比较。
@@ -90,6 +93,8 @@ description: Builder-loop 的执行 adapter：消费通用 Planner 冻结的语�
 - Tester 可信来源由独立 thread、提交的普通测试文件、source manifest 与 Reviewer 审查共同绑定；这不
   宣称操作系统级恶意代码 sandbox。
 - `execution` 初始固定为 `version: 1`、`driver_enforced: true`、`candidate_head: null`、
+  `builder_runtime:{"schema_version":1,"mode":"root_session"}`（仅 Builder-loop 新 contract；缺失字段的
+  retained legacy contract 按 `native_thread` 读取）、
   `recovery_policy:{"schema_version":1,"mode":"automatic_nonsemantic","continuation_window":3}`、
   `cost_ancestry:null`、空的 `builder_files/tester_files/dirty_snapshot/agents`、`tester_source: null`、
   `deployment: null`，Authority 的

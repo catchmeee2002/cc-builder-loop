@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Sequence
 
-from ..assurance_v4.models import load_json_source
+from ..assurance_v4.models import builder_runtime_mode, digest, load_json_source
 from ..process import process_group_gone, read_proc_identity
 from .app_server import AppServerError, AppServerTransport, probe_app_server
 from .coordinator import NativeCoordinator, NativeDriverError
@@ -89,6 +89,7 @@ def _persist_fatal(
     exc: CorePortError | NativeDriverError | AppServerError,
     coordinator: NativeCoordinator | None,
     transport: Any = None,
+    owner_session_id: str | None = None,
 ) -> tuple[dict[str, Any], int]:
     original = _exception_payload(exc)
     failure = {
@@ -106,8 +107,7 @@ def _persist_fatal(
         except (OSError, TypeError, ValueError):
             pass
     try:
-        core.call(
-            "record-driver-failure",
+        failure_args = [
             "--repo",
             str(repo),
             "--run",
@@ -116,16 +116,27 @@ def _persist_fatal(
             "-",
             "--driver-runtime-kind",
             "native",
+        ]
+        if owner_session_id:
+            failure_args.extend(["--owner-session-id", owner_session_id])
+        core.call(
+            "record-driver-failure",
+            *failure_args,
             input_value=failure,
         )
-        completed = core.call(
-            "complete-driver-failure",
+        completion_args = [
             "--repo",
             str(repo),
             "--run",
             run_id,
             "--driver-runtime-kind",
             "native",
+        ]
+        if owner_session_id:
+            completion_args.extend(["--owner-session-id", owner_session_id])
+        completed = core.call(
+            "complete-driver-failure",
+            *completion_args,
         )
     except CorePortError as recovery_error:
         recovery = dict(recovery_error.payload)
@@ -371,6 +382,157 @@ def _doctor_payload(context: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _root_session_identity(session_id: str) -> dict[str, Any]:
+    agent_id = f"codex-root-session:{session_id}"
+    return {
+        "session_id": session_id,
+        "agent_id": agent_id,
+        "identity_digest": digest(
+            {"mode": "root_session", "session_id": session_id, "agent_id": agent_id}
+        ),
+    }
+
+
+def _root_runtime(
+    session_id: str,
+    *,
+    native_transport: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return {
+        "kind": "native",
+        "protocol_version": 1,
+        "transport": "root_session",
+        "runtime_version": "root-session",
+        "protocol_schema_digest": digest(
+            {"schema_version": 1, "mode": "root_session"}
+        ),
+        "protocol_canary_digest": None,
+        "root_session_identity": _root_session_identity(session_id),
+        "native_transport": native_transport,
+    }
+
+
+def _root_builder_result(
+    *,
+    args: argparse.Namespace,
+    core: CorePort,
+    repo: Path,
+    run_id: str,
+    root_session_id: str,
+    start_contract: dict[str, Any] | None = None,
+    runtime_state: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], int]:
+    run_may_exist = args.command == "resume"
+    if args.command == "start":
+        if start_contract is None:
+            raise NativeDriverError(
+                "root Builder start contract is missing",
+                code="NATIVE_ROOT_CONTRACT_MISSING",
+            )
+        started = core.start(
+            repo=repo,
+            run_id=run_id,
+            session_id=root_session_id,
+            contract=start_contract,
+            runtime_version="root-session",
+            protocol_schema_digest=digest(
+                {"schema_version": 1, "mode": "root_session"}
+            ),
+            driver_transport="root_session",
+            root_session_identity=_root_session_identity(root_session_id),
+        )
+        run_may_exist = True
+        if runtime_state is not None:
+            runtime_state["started"] = True
+        print(
+            json.dumps(
+                {
+                    "event": "native_driver_run_started",
+                    "run_id": run_id,
+                    "candidate_worktree": started.get("candidate_worktree"),
+                    "builder_mode": "root_session",
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            flush=True,
+        )
+    reason = getattr(args, "reason", None)
+    if reason is not None:
+        raise NativeDriverError(
+            "root Builder continuation does not renew a dispatch generation",
+            code="NATIVE_ROOT_CONTINUATION_REASON_INVALID",
+            status="NEEDS_USER",
+        )
+    coordinator = NativeCoordinator(
+        repo=repo,
+        run_id=run_id,
+        core=core,
+        transport=None,
+        builder_mode="root_session",
+        root_session_id=root_session_id,
+        event_sink=emit_event,
+    )
+    if runtime_state is not None:
+        runtime_state["coordinator"] = coordinator
+    result = coordinator.run()
+    if result.get("status") == "TRANSPORT_HANDOFF":
+        capability = probe_app_server(args.codex_bin, strict_protocol=True)
+        if args.command == "resume":
+            context = core.call(
+                "driver-context", "--repo", str(repo), "--run", run_id
+            )
+            _verify_resume_executable_identity(context, capability)
+            _reconcile_previous_transport(
+                core=core,
+                repo=repo,
+                run_id=run_id,
+                context=context,
+            )
+        transport = AppServerTransport(
+            codex_bin=args.codex_bin,
+            strict_protocol=True,
+            executable_identity=getattr(capability, "executable_identity", None),
+        )
+        with transport:
+            core.call(
+                "bind-native-transport",
+                "--repo",
+                str(repo),
+                "--run",
+                run_id,
+                "--transport",
+                "-",
+                "--driver-runtime-kind",
+                "native",
+                input_value=transport.runtime_snapshot(),
+            )
+            coordinator = NativeCoordinator(
+                repo=repo,
+                run_id=run_id,
+                core=core,
+                transport=transport,
+                builder_mode="root_session",
+                root_session_id=root_session_id,
+                event_sink=emit_event,
+                thread_compaction_available=getattr(
+                    capability, "thread_compaction", False
+                ),
+            )
+            result = coordinator.run()
+        if run_may_exist:
+            _persist_transport_cleanup(
+                core=core,
+                repo=repo,
+                run_id=run_id,
+                transport=transport,
+            )
+    result_status = result.get("status")
+    return result, (
+        0 if result_status == "FINALIZED" else 2 if result_status == "FAILED" else 1
+    )
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = parser().parse_args(argv)
     core = CorePort()
@@ -378,6 +540,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     run_may_exist = args.command == "resume"
     coordinator: NativeCoordinator | None = None
     transport: Any = None
+    resume_context: dict[str, Any] | None = None
+    failure_owner_session_id: str | None = None
+    root_start_state = {"started": False}
     try:
         if args.command in {"status", "doctor"}:
             context = core.call(
@@ -390,6 +555,54 @@ def main(argv: Sequence[str] | None = None) -> int:
             return emit(
                 context, 0
             )
+        if args.command == "start":
+            raw = sys.stdin.read() if args.contract == "-" else None
+            start_contract = load_json_source(args.contract, stdin_text=raw)
+            if builder_runtime_mode(start_contract) == "root_session":
+                failure_owner_session_id = args.session_id
+                result, returncode = _root_builder_result(
+                    args=args,
+                    core=core,
+                    repo=repo,
+                    run_id=args.run,
+                    root_session_id=args.session_id,
+                    start_contract=start_contract,
+                    runtime_state=root_start_state,
+                )
+                return emit(result, returncode)
+        if args.command == "resume":
+            resume_context = core.call(
+                "driver-context", "--repo", str(repo), "--run", args.run
+            )
+            root_runtime = resume_context.get("driver_runtime")
+            if (
+                isinstance(root_runtime, dict)
+                and root_runtime.get("kind") == "native"
+                and root_runtime.get("transport") == "root_session"
+            ):
+                run_may_exist = True
+                root_identity = root_runtime.get("root_session_identity")
+                root_session_id = (
+                    root_identity.get("session_id")
+                    if isinstance(root_identity, dict)
+                    else None
+                )
+                if not isinstance(root_session_id, str) or not root_session_id:
+                    raise NativeDriverError(
+                        "root Builder session identity is missing",
+                        code="NATIVE_ROOT_SESSION_IDENTITY_MISSING",
+                        status="NEEDS_USER",
+                    )
+                failure_owner_session_id = root_session_id
+                result, returncode = _root_builder_result(
+                    args=args,
+                    core=core,
+                    repo=repo,
+                    run_id=args.run,
+                    root_session_id=root_session_id,
+                    runtime_state=root_start_state,
+                )
+                return emit(result, returncode)
         capability = probe_app_server(args.codex_bin, strict_protocol=True)
         transport = AppServerTransport(
             codex_bin=args.codex_bin,
@@ -397,9 +610,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             executable_identity=getattr(capability, "executable_identity", None),
         )
         if args.command == "resume":
-            context = core.call(
-                "driver-context", "--repo", str(repo), "--run", args.run
-            )
+            context = resume_context
+            if context is None:
+                raise NativeDriverError(
+                    "Native resume context is missing",
+                    code="NATIVE_RESUME_CONTEXT_MISSING",
+                )
             _verify_resume_executable_identity(context, capability)
             _reconcile_previous_transport(
                 core=core,
@@ -570,6 +786,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
             return emit(result_payload, result_returncode)
     except (CorePortError, NativeDriverError, AppServerError) as exc:
+        if root_start_state.get("started"):
+            run_may_exist = True
+        if coordinator is None:
+            candidate_coordinator = root_start_state.get("coordinator")
+            if candidate_coordinator is not None:
+                coordinator = candidate_coordinator
         if run_may_exist and transport is not None:
             try:
                 _persist_transport_cleanup(
@@ -608,6 +830,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 exc=exc,
                 coordinator=coordinator,
                 transport=transport,
+                owner_session_id=failure_owner_session_id,
             )
             return emit(payload, returncode)
         payload = _exception_payload(exc)

@@ -13,7 +13,7 @@
       "roles": ["builder"],
       "instruction_source": {
         "path": "skills/builder/SKILL.md",
-        "sha256": "86765f29eb5ad0715365ca3c2e9841399f61fe8f00e9fb9a2f1816cb22fe6b56",
+        "sha256": "4c0738c2552d47360a6b2f3dd26a9d601f63d8ecaeb2a4019630ac98d56a78dc",
         "revision": "WORKTREE"
       }
     },
@@ -33,7 +33,7 @@
       "roles": ["planner"],
       "instruction_source": {
         "path": "skills/builder-loop-planner/SKILL.md",
-        "sha256": "d9aa46cafe761865ed6a42d143891130ee9e37ec80fc6f099655a872b6dca770",
+        "sha256": "26fa6d4c317db029819d5ac98856389417e27334233b487adb447736a9ef5d1b",
         "revision": "WORKTREE"
       }
     },

@@ -164,6 +164,49 @@ class AssuranceV4ContractTest(unittest.TestCase):
         path.write_text(json.dumps(value, ensure_ascii=False), encoding="utf-8")
         return path
 
+    def test_builder_runtime_defaults_legacy_and_preserves_explicit_root_mode(self) -> None:
+        legacy = assurance_core.validate_new_contract(contract_for(self.repo))
+        self.assertEqual(
+            legacy["execution"]["builder_runtime"],
+            {"schema_version": 1, "mode": "native_thread"},
+        )
+
+        root = contract_for(self.repo)
+        root["execution"]["builder_runtime"] = {
+            "schema_version": 1,
+            "mode": "root_session",
+        }
+        validated = assurance_core.validate_new_contract(root)
+        self.assertEqual(
+            validated["execution"]["builder_runtime"],
+            {"schema_version": 1, "mode": "root_session"},
+        )
+
+    def test_root_builder_mode_rejects_a_native_thread_runtime_binding(self) -> None:
+        contract = contract_for(self.repo)
+        contract["execution"]["builder_runtime"] = {
+            "schema_version": 1,
+            "mode": "root_session",
+        }
+        with self.assertRaises(assurance_core.AssuranceError) as raised:
+            assurance_core.start(
+                self.repo,
+                "root-runtime-mismatch",
+                "root-runtime-session",
+                contract,
+                driver_runtime={
+                    "kind": "native",
+                    "protocol_version": 1,
+                    "transport": "codex_app_server",
+                    "runtime_version": "codex-test",
+                    "protocol_schema_digest": "a" * 64,
+                },
+            )
+        self.assertEqual(
+            raised.exception.code,
+            "BUILDER_RUNTIME_MODE_TRANSPORT_MISMATCH",
+        )
+
     def invoke(
         self,
         command: str,
