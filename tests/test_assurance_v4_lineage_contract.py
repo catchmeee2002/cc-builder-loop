@@ -7,7 +7,13 @@ import unittest
 from pathlib import Path
 from typing import Any
 
-from harness import CLI, cleanup_repo, init_repo, run_process
+from harness import (
+    CLI,
+    add_v4_progress_contract,
+    cleanup_repo,
+    init_repo,
+    run_process,
+)
 
 
 NON_SEMANTIC = "tester_correction"
@@ -25,7 +31,7 @@ def canonical_digest(value: Any) -> str:
 
 
 def base_contract() -> dict[str, Any]:
-    return {
+    contract = {
         "schema_version": 4,
         "mission": {
             "delivery_kind": "code",
@@ -83,6 +89,7 @@ def base_contract() -> dict[str, Any]:
             "agents": {},
         },
     }
+    return add_v4_progress_contract(contract)
 
 
 class AssuranceV4LineageContractTest(unittest.TestCase):

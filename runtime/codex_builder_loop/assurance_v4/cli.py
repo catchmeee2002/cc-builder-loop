@@ -459,7 +459,112 @@ def parser() -> argparse.ArgumentParser:
     begin_dispatch.add_argument("--output-schema-digest", required=True)
     begin_dispatch.add_argument("--native-transport-generation")
     begin_dispatch.add_argument("--timeout-profile-digest")
+    begin_dispatch.add_argument("--work-unit-id")
+    begin_dispatch.add_argument("--context-projection-digest")
     begin_dispatch.add_argument(
+        "--driver-runtime-kind",
+        choices=["native", "full_driver_skill"],
+        default="native",
+    )
+
+    begin_rehydration = commands.add_parser("begin-dispatch-rehydration")
+    begin_rehydration.add_argument("--repo", default=".")
+    begin_rehydration.add_argument("--run", required=True)
+    begin_rehydration.add_argument("--action-id", required=True)
+    begin_rehydration.add_argument("--context-projection-digest", required=True)
+    begin_rehydration.add_argument(
+        "--driver-runtime-kind",
+        choices=["native", "full_driver_skill"],
+        default="native",
+    )
+
+    claim_rehydration = commands.add_parser("claim-dispatch-rehydration")
+    claim_rehydration.add_argument("--repo", default=".")
+    claim_rehydration.add_argument("--run", required=True)
+    claim_rehydration.add_argument("--action-id", required=True)
+    claim_rehydration.add_argument("--claim-id", required=True)
+    claim_rehydration.add_argument(
+        "--driver-runtime-kind",
+        choices=["native", "full_driver_skill"],
+        default="native",
+    )
+
+    record_rehydration_spawn = commands.add_parser(
+        "record-dispatch-rehydration-spawn"
+    )
+    record_rehydration_spawn.add_argument("--repo", default=".")
+    record_rehydration_spawn.add_argument("--run", required=True)
+    record_rehydration_spawn.add_argument("--action-id", required=True)
+    record_rehydration_spawn.add_argument("--claim-id", required=True)
+    record_rehydration_spawn.add_argument("--new-agent-id", required=True)
+    record_rehydration_spawn.add_argument("--new-thread-id", required=True)
+    record_rehydration_spawn.add_argument(
+        "--driver-runtime-kind",
+        choices=["native", "full_driver_skill"],
+        default="native",
+    )
+
+    bind_rehydration = commands.add_parser("bind-dispatch-rehydration")
+    bind_rehydration.add_argument("--repo", default=".")
+    bind_rehydration.add_argument("--run", required=True)
+    bind_rehydration.add_argument("--action-id", required=True)
+    bind_rehydration.add_argument("--new-agent-id", required=True)
+    bind_rehydration.add_argument("--new-thread-id", required=True)
+    bind_rehydration.add_argument("--prompt-digest", required=True)
+    bind_rehydration.add_argument(
+        "--driver-runtime-kind",
+        choices=["native", "full_driver_skill"],
+        default="native",
+    )
+
+    begin_rotation = commands.add_parser("begin-context-rotation")
+    begin_rotation.add_argument("--repo", default=".")
+    begin_rotation.add_argument("--run", required=True)
+    begin_rotation.add_argument(
+        "--role", choices=["builder", "tester", "reviewer"], required=True
+    )
+    begin_rotation.add_argument("--work-unit-id", required=True)
+    begin_rotation.add_argument("--action-id")
+    begin_rotation.add_argument("--action", default="work_unit")
+    begin_rotation.add_argument("--context-projection-digest", required=True)
+    begin_rotation.add_argument(
+        "--driver-runtime-kind",
+        choices=["native", "full_driver_skill"],
+        default="native",
+    )
+
+    bind_rotation = commands.add_parser("bind-context-rotation")
+    bind_rotation.add_argument("--repo", default=".")
+    bind_rotation.add_argument("--run", required=True)
+    bind_rotation.add_argument("--new-agent-id", required=True)
+    bind_rotation.add_argument("--new-thread-id", required=True)
+    bind_rotation.add_argument(
+        "--driver-runtime-kind",
+        choices=["native", "full_driver_skill"],
+        default="native",
+    )
+
+    claim_rotation = commands.add_parser("claim-context-rotation")
+    claim_rotation.add_argument("--repo", default=".")
+    claim_rotation.add_argument("--run", required=True)
+    claim_rotation.add_argument("--action-id", required=True)
+    claim_rotation.add_argument("--claim-id", required=True)
+    claim_rotation.add_argument(
+        "--driver-runtime-kind",
+        choices=["native", "full_driver_skill"],
+        default="native",
+    )
+
+    record_rotation_spawn = commands.add_parser(
+        "record-context-rotation-spawn"
+    )
+    record_rotation_spawn.add_argument("--repo", default=".")
+    record_rotation_spawn.add_argument("--run", required=True)
+    record_rotation_spawn.add_argument("--action-id", required=True)
+    record_rotation_spawn.add_argument("--claim-id", required=True)
+    record_rotation_spawn.add_argument("--new-agent-id", required=True)
+    record_rotation_spawn.add_argument("--new-thread-id", required=True)
+    record_rotation_spawn.add_argument(
         "--driver-runtime-kind",
         choices=["native", "full_driver_skill"],
         default="native",
@@ -1073,6 +1178,81 @@ def main(argv: Sequence[str] | None = None) -> int:
                 output_schema_digest=args.output_schema_digest,
                 native_transport_generation=args.native_transport_generation,
                 timeout_profile_digest=args.timeout_profile_digest,
+                work_unit_id=args.work_unit_id,
+                context_projection_digest=args.context_projection_digest,
+                driver_runtime_kind=args.driver_runtime_kind,
+            )
+        elif args.command == "begin-dispatch-rehydration":
+            payload = core.begin_dispatch_rehydration(
+                args.repo,
+                args.run,
+                action_id=args.action_id,
+                context_projection_digest=args.context_projection_digest,
+                driver_runtime_kind=args.driver_runtime_kind,
+            )
+        elif args.command == "claim-dispatch-rehydration":
+            payload = core.claim_dispatch_rehydration(
+                args.repo,
+                args.run,
+                action_id=args.action_id,
+                claim_id=args.claim_id,
+                driver_runtime_kind=args.driver_runtime_kind,
+            )
+        elif args.command == "record-dispatch-rehydration-spawn":
+            payload = core.record_dispatch_rehydration_spawn(
+                args.repo,
+                args.run,
+                action_id=args.action_id,
+                claim_id=args.claim_id,
+                new_agent_id=args.new_agent_id,
+                new_thread_id=args.new_thread_id,
+                driver_runtime_kind=args.driver_runtime_kind,
+            )
+        elif args.command == "bind-dispatch-rehydration":
+            payload = core.bind_dispatch_rehydration(
+                args.repo,
+                args.run,
+                action_id=args.action_id,
+                new_agent_id=args.new_agent_id,
+                new_thread_id=args.new_thread_id,
+                prompt_digest=args.prompt_digest,
+                driver_runtime_kind=args.driver_runtime_kind,
+            )
+        elif args.command == "begin-context-rotation":
+            payload = core.begin_context_rotation(
+                args.repo,
+                args.run,
+                role=args.role,
+                work_unit_id=args.work_unit_id,
+                context_projection_digest=args.context_projection_digest,
+                action_id=args.action_id,
+                action=args.action,
+                driver_runtime_kind=args.driver_runtime_kind,
+            )
+        elif args.command == "bind-context-rotation":
+            payload = core.bind_context_rotation(
+                args.repo,
+                args.run,
+                new_agent_id=args.new_agent_id,
+                new_thread_id=args.new_thread_id,
+                driver_runtime_kind=args.driver_runtime_kind,
+            )
+        elif args.command == "claim-context-rotation":
+            payload = core.claim_context_rotation(
+                args.repo,
+                args.run,
+                action_id=args.action_id,
+                claim_id=args.claim_id,
+                driver_runtime_kind=args.driver_runtime_kind,
+            )
+        elif args.command == "record-context-rotation-spawn":
+            payload = core.record_context_rotation_spawn(
+                args.repo,
+                args.run,
+                action_id=args.action_id,
+                claim_id=args.claim_id,
+                new_agent_id=args.new_agent_id,
+                new_thread_id=args.new_thread_id,
                 driver_runtime_kind=args.driver_runtime_kind,
             )
         elif args.command == "bind-dispatch-turn":

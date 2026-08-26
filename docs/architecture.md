@@ -290,6 +290,21 @@ candidate is recorded as a fatal side-effect observation and is never sent throu
 record keeps the exact dirty paths and content hashes, while old dispatch intents without the extended digest
 remain on their legacy observation path and are not retroactively upgraded.
 
+New Assurance v4 contracts freeze an execution progress policy and an ordered work-unit graph. A work unit binds
+one role to one independently completable objective, exact scope, dependencies, and one required mechanical
+completion observation. Core derives completed units only from ledger events produced by candidate commits,
+Tester source integration, or formal Reviewer evidence; Agent prose and transcript length never advance progress.
+The graph is immutable for the run, and a missing or cyclic graph is rejected before run/worktree creation.
+
+Work-unit dispatch is bounded to three attempts in its current context and at most one canonical rehydration.
+Canonical projection is derived from the current contract, ledger, Git identity, candidate/publication facts,
+evidence and open problems; prior thread history is not a progress source. A failed pure transport attempt may
+rehydrate into a new role thread only after Core persists a digest-bound rehydration intent and proves the role
+side-effect observation unchanged. Candidate or Tester-source changes block replay and require reconcile. A role
+thread
+can carry at most three completed work units before Core persists a context-rotation intent and the Driver starts
+a new thread. These operations change execution identity and evidence dependencies, not Mission revision.
+
 The Native transport drains App Server stderr independently of the protocol stdout reader. It retains a bounded,
 redacted summary plus total byte count and SHA-256, and binds that diagnostic receipt to the transport generation,
 structured turn error, and cleanup observation. Authorization material and tokens are never persisted in the
@@ -327,7 +342,7 @@ subagent threads 承担 Tester 与 Reviewer。runtime CLI 只处理可确定验�
              │ validated v4 contract + BUILDER_HANDOFF_READY
              ▼
  原生“实施计划” / $builder ─ optional exact dirty snapshot ─ Builder worktree
-    ├─ parallel_ready=true  ── Tester thread 与 Builder 并行
+    ├─ parallel_ready=true  ── Tester thread 与 Builder 可独立承载
     └─ parallel_ready=false ─ exact public files → isolated publication HEAD/manifest
                                                    └→ Tester author baseline
         │ Tester author tests_ready → integrate tester commit
@@ -520,7 +535,9 @@ Builder 与 Tester 使用冻结基线协作：
   manifest、ownership 与 evidence 证明；当前不提供 filesystem ACL，也不提供 platform attestation 或 context
   manifest，ledger 不伪造对应字段。后续 turn 通过 `prepare-follow-up` 续接同一 agent/thread，
   不再次清空上下文。
-- `parallel_ready=true` 时，两者从 `spec_head` 并行；为 `false` 时，Tester 必须等
+- `parallel_ready=true` 时，两者从 `spec_head` 具备独立承载条件；该事实不等于已经发生并发。
+  Native Coordinator 当前一次只持有一个 `dispatch_intent`，按单动作串行落账；只有外部明确提供
+  两个独立执行承载时才可实际并行，且同一角色内部仍串行。为 `false` 时，Tester 必须等
   `publish-prerequisites` 成功并从隔离 publication HEAD 启动。publication manifest 会绑定
   Tester author turn、integration 与 Reviewer prerequisite snapshot；发布路径随后不可变。
 - Tester author 必须返回 `tests_ready`，runtime 将该 turn 与 Tester HEAD 持久化；即使测试 tree

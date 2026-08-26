@@ -24,6 +24,16 @@ EVIDENCE_KINDS = (
     "doc_review",
 )
 COMPACT_REQUIRED_GATES = {"tester", "proof", "machine", "blackbox", "reviewer"}
+WORK_UNIT_COMPLETION_KINDS = {
+    "builder": "candidate_checkpoint",
+    "tester": "tester_source",
+    "reviewer": "review_evidence",
+}
+WORK_UNIT_REQUIRED_OBSERVATIONS = {
+    "candidate_checkpoint": "candidate_commit",
+    "tester_source": "tester_source_commit",
+    "review_evidence": "review_report",
+}
 
 
 class ContractError(ValueError):
@@ -521,6 +531,7 @@ def acceptance_observation_mode(contract: Mapping[str, Any]) -> str:
 
 def validate_new_contract(value: Any) -> dict[str, Any]:
     contract = validate_contract(value)
+    _validate_new_progress_contract(contract)
     contract["execution"].setdefault(
         "builder_runtime",
         {"schema_version": 1, "mode": "native_thread"},
@@ -584,6 +595,18 @@ def validate_new_contract(value: Any) -> dict[str, Any]:
     return contract
 
 
+def validate_persisted_contract(value: Any) -> dict[str, Any]:
+    """Validate stored contracts while preserving legacy read-only ledgers."""
+
+    contract = validate_contract(value)
+    execution = contract.get("execution", {})
+    if isinstance(execution, Mapping) and (
+        "progress_policy" in execution or "work_units" in execution
+    ):
+        _validate_new_progress_contract(contract)
+    return contract
+
+
 def requested_profile(contract: Mapping[str, Any]) -> str:
     value = contract.get("assurance", {}).get("profile", "full")
     return str(value)
@@ -604,6 +627,291 @@ def recovery_policy(contract: Mapping[str, Any]) -> dict[str, Any]:
     if isinstance(value, Mapping):
         return copy.deepcopy(dict(value))
     return {"schema_version": 1, "mode": "manual"}
+
+
+def progress_policy(contract: Mapping[str, Any]) -> dict[str, Any]:
+    value = contract.get("execution", {}).get("progress_policy")
+    if isinstance(value, Mapping):
+        return copy.deepcopy(dict(value))
+    return {
+        "schema_version": 0,
+        "mode": "legacy",
+        "attempt_limit": 3,
+        "rehydration_limit": 0,
+        "max_units_per_thread": 0,
+        "context_source": "legacy",
+    }
+
+
+def work_units(contract: Mapping[str, Any]) -> list[dict[str, Any]]:
+    value = contract.get("execution", {}).get("work_units")
+    if not isinstance(value, list):
+        return []
+    return [copy.deepcopy(item) for item in value if isinstance(item, Mapping)]
+
+
+def _validate_new_progress_contract(contract: Mapping[str, Any]) -> None:
+    execution = contract.get("execution")
+    if not isinstance(execution, Mapping):
+        raise ContractError(
+            "new Assurance v4 contracts require execution progress rules",
+            code="WORK_UNITS_REQUIRED",
+        )
+    policy = execution.get("progress_policy")
+    if not isinstance(policy, Mapping):
+        raise ContractError(
+            "new Assurance v4 contracts require progress_policy",
+            code="PROGRESS_POLICY_REQUIRED",
+        )
+    expected_policy = {
+        "schema_version": 1,
+        "mode": "bounded_rehydration",
+        "attempt_limit": 3,
+        "rehydration_limit": 1,
+        "max_units_per_thread": 3,
+        "context_source": "canonical",
+    }
+    if dict(policy) != expected_policy:
+        raise ContractError(
+            "new Assurance v4 contracts must use the frozen bounded rehydration policy",
+            code="PROGRESS_POLICY_INVALID",
+            details={"expected": expected_policy, "actual": copy.deepcopy(dict(policy))},
+        )
+    raw_units = execution.get("work_units")
+    if not isinstance(raw_units, list) or not raw_units:
+        raise ContractError(
+            "new Assurance v4 contracts require at least one work unit",
+            code="WORK_UNITS_REQUIRED",
+        )
+    units = [item for item in raw_units if isinstance(item, Mapping)]
+    if len(units) != len(raw_units):
+        raise ContractError(
+            "work_units must contain only objects",
+            code="WORK_UNIT_INVALID",
+        )
+    unit_by_id: dict[str, Mapping[str, Any]] = {}
+    for unit in units:
+        unit_id = unit.get("id")
+        if not isinstance(unit_id, str) or not unit_id:
+            raise ContractError(
+                "work unit id is required",
+                code="WORK_UNIT_INVALID",
+            )
+        if unit_id in unit_by_id:
+            raise ContractError(
+                "work unit ids must be unique",
+                code="WORK_UNIT_DUPLICATE",
+                details={"id": unit_id},
+            )
+        unit_by_id[unit_id] = unit
+
+    mission = contract["mission"]
+    authority = contract["authority"]
+    assurance = contract["assurance"]
+    behavior_ids = {item["id"] for item in mission["behaviors"]}
+    command_ids = {
+        item["id"]
+        for item in [
+            *assurance["machine_commands"],
+            *execution["commands"],
+        ]
+    }
+    deployment = execution.get("deployment")
+    if isinstance(deployment, Mapping):
+        command_ids.update(
+            deployment[field]["id"]
+            for field in (
+                "build_command",
+                "deploy_command",
+                "probe_command",
+                "restore_command",
+            )
+        )
+    required_roles = {"builder"}
+    required = set(assurance["required"])
+    if "tester" in required:
+        required_roles.add("tester")
+    if "reviewer" in required or "doc_review" in required:
+        required_roles.add("reviewer")
+    present_roles: set[str] = set()
+    scoped_paths_by_role: dict[str, set[str]] = {
+        "builder": set(),
+        "tester": set(),
+    }
+    for unit in units:
+        role = unit.get("role")
+        if role not in WORK_UNIT_COMPLETION_KINDS:
+            raise ContractError(
+                "work unit role is invalid",
+                code="WORK_UNIT_INVALID",
+                details={"id": unit.get("id"), "role": role},
+            )
+        present_roles.add(str(role))
+        completion = unit.get("completion")
+        if not isinstance(completion, Mapping):
+            raise ContractError(
+                "work unit completion is required",
+                code="WORK_UNIT_INVALID",
+                details={"id": unit.get("id")},
+            )
+        expected_kind = WORK_UNIT_COMPLETION_KINDS[str(role)]
+        if completion.get("kind") != expected_kind:
+            raise ContractError(
+                "work unit completion kind does not match its role",
+                code="WORK_UNIT_COMPLETION_INVALID",
+                details={
+                    "id": unit.get("id"),
+                    "role": role,
+                    "expected": expected_kind,
+                    "actual": completion.get("kind"),
+                },
+            )
+        observations = completion.get("required_observations")
+        expected_observation = WORK_UNIT_REQUIRED_OBSERVATIONS[expected_kind]
+        if observations != [expected_observation]:
+            raise ContractError(
+                "work unit completion must name its single required observation",
+                code="WORK_UNIT_COMPLETION_INVALID",
+                details={
+                    "id": unit.get("id"),
+                    "expected": [expected_observation],
+                    "actual": observations,
+                },
+            )
+        scope = unit.get("scope")
+        if not isinstance(scope, Mapping):
+            raise ContractError(
+                "work unit scope is required",
+                code="WORK_UNIT_INVALID",
+                details={"id": unit.get("id")},
+            )
+        paths = scope.get("paths")
+        if not isinstance(paths, list) or len(paths) != len(set(paths)):
+            raise ContractError(
+                "work unit paths must be unique",
+                code="WORK_UNIT_SCOPE_INVALID",
+                details={"id": unit.get("id")},
+            )
+        authority_patterns = (
+            authority["builder_write"]
+            if role == "builder"
+            else authority["tester_write"]
+            if role == "tester"
+            else []
+        )
+        for path in paths:
+            if not isinstance(path, str):
+                raise ContractError(
+                    "work unit paths must be strings",
+                    code="WORK_UNIT_SCOPE_INVALID",
+                    details={"id": unit.get("id")},
+                )
+            validate_repo_path(path)
+            if role in {"builder", "tester"} and not any(
+                fnmatch.fnmatchcase(path, pattern) for pattern in authority_patterns
+            ):
+                raise ContractError(
+                    "work unit path is outside its role authority",
+                    code="WORK_UNIT_SCOPE_AUTHORITY_VIOLATION",
+                    details={"id": unit.get("id"), "path": path, "role": role},
+                )
+            if role in scoped_paths_by_role:
+                scoped_paths_by_role[role].add(path)
+        overlap = sorted(
+            scoped_paths_by_role["builder"] & scoped_paths_by_role["tester"]
+        )
+        if overlap:
+            raise ContractError(
+                "Builder and Tester work unit write scopes must not overlap",
+                code="WORK_UNIT_SCOPE_OVERLAP",
+                details={"paths": overlap},
+            )
+        behavior_scope = scope.get("behavior_ids")
+        if not isinstance(behavior_scope, list) or len(behavior_scope) != len(
+            set(behavior_scope)
+        ):
+            raise ContractError(
+                "work unit behavior_ids must be unique",
+                code="WORK_UNIT_SCOPE_INVALID",
+                details={"id": unit.get("id")},
+            )
+        unknown_behaviors = sorted(set(behavior_scope) - behavior_ids)
+        if unknown_behaviors:
+            raise ContractError(
+                "work unit references unknown behaviors",
+                code="WORK_UNIT_SCOPE_REFERENCE_INVALID",
+                details={"id": unit.get("id"), "behavior_ids": unknown_behaviors},
+            )
+        command_scope = scope.get("command_ids")
+        if not isinstance(command_scope, list) or len(command_scope) != len(
+            set(command_scope)
+        ):
+            raise ContractError(
+                "work unit command_ids must be unique",
+                code="WORK_UNIT_SCOPE_INVALID",
+                details={"id": unit.get("id")},
+            )
+        unknown_commands = sorted(set(command_scope) - command_ids)
+        if unknown_commands:
+            raise ContractError(
+                "work unit references unknown commands",
+                code="WORK_UNIT_SCOPE_REFERENCE_INVALID",
+                details={"id": unit.get("id"), "command_ids": unknown_commands},
+            )
+        dependencies = unit.get("depends_on")
+        if not isinstance(dependencies, list) or len(dependencies) != len(
+            set(dependencies)
+        ):
+            raise ContractError(
+                "work unit dependencies must be unique",
+                code="WORK_UNIT_DEPENDENCY_INVALID",
+                details={"id": unit.get("id")},
+            )
+        if unit["id"] in dependencies:
+            raise ContractError(
+                "work unit cannot depend on itself",
+                code="WORK_UNIT_DEPENDENCY_INVALID",
+                details={"id": unit.get("id")},
+            )
+        unknown_dependencies = sorted(
+            dependency
+            for dependency in dependencies
+            if dependency not in unit_by_id
+        )
+        if unknown_dependencies:
+            raise ContractError(
+                "work unit dependency is unknown",
+                code="WORK_UNIT_DEPENDENCY_INVALID",
+                details={"id": unit.get("id"), "dependencies": unknown_dependencies},
+            )
+    missing_roles = sorted(required_roles - present_roles)
+    if missing_roles:
+        raise ContractError(
+            "work_units must cover every required Agent role",
+            code="WORK_UNIT_ROLE_MISSING",
+            details={"roles": missing_roles},
+        )
+
+    visiting: set[str] = set()
+    visited: set[str] = set()
+
+    def visit(unit_id: str) -> None:
+        if unit_id in visited:
+            return
+        if unit_id in visiting:
+            raise ContractError(
+                "work unit dependency graph contains a cycle",
+                code="WORK_UNIT_DEPENDENCY_CYCLE",
+                details={"id": unit_id},
+            )
+        visiting.add(unit_id)
+        for dependency in unit_by_id[unit_id]["depends_on"]:
+            visit(str(dependency))
+        visiting.remove(unit_id)
+        visited.add(unit_id)
+
+    for unit_id in unit_by_id:
+        visit(unit_id)
 
 
 def compact_ineligibility_reasons(contract: Mapping[str, Any]) -> list[str]:
@@ -777,6 +1085,45 @@ def doc_reference_scan_digest_input(value: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _normalize_progress_intents(normalized: dict[str, Any]) -> None:
+    """Read older in-flight intent shapes as unresolved, never as safe retries."""
+
+    rehydration = normalized.get("dispatch_rehydration_intent")
+    if isinstance(rehydration, dict):
+        if "spawn_state" not in rehydration:
+            rehydration["spawn_state"] = (
+                "spawned"
+                if rehydration.get("new_agent_id")
+                and rehydration.get("new_thread_id")
+                else "claimed"
+            )
+        rehydration.setdefault("spawn_claim_id", None)
+
+    rotation = normalized.get("context_rotation_intent")
+    if isinstance(rotation, dict):
+        rotation.setdefault(
+            "action_id",
+            digest(
+                {
+                    "run_id": normalized.get("run_id"),
+                    "role": rotation.get("role"),
+                    "work_unit_id": rotation.get("work_unit_id"),
+                    "action": "work_unit",
+                    "operation": "context_rotation",
+                }
+            ),
+        )
+        rotation.setdefault("action", "work_unit")
+        if "spawn_state" not in rotation:
+            rotation["spawn_state"] = (
+                "spawned"
+                if rotation.get("new_agent_id")
+                and rotation.get("new_thread_id")
+                else "claimed"
+            )
+        rotation.setdefault("spawn_claim_id", None)
+
+
 def validate_ledger(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ContractError("ledger must be an object", code="ASSURANCE_LEDGER_INVALID")
@@ -808,8 +1155,11 @@ def validate_ledger(value: Any) -> dict[str, Any]:
     normalized.setdefault("recomposition_intent", None)
     normalized.setdefault("candidate_residue_intent", None)
     normalized.setdefault("reviewer_replacement_intent", None)
+    normalized.setdefault("dispatch_rehydration_intent", None)
+    normalized.setdefault("context_rotation_intent", None)
     normalized.setdefault("transport_cleanup_intent", None)
     normalized.setdefault("deferred_wait", None)
+    _normalize_progress_intents(normalized)
     publication = normalized.get("publication")
     if isinstance(publication, dict):
         publication.setdefault("generation", 1 if publication.get("head") else 0)
@@ -850,7 +1200,7 @@ def validate_ledger(value: Any) -> dict[str, Any]:
             "unavailable runtime identity cannot claim captured version or Git facts",
             code="RUNTIME_IDENTITY_INCONSISTENT",
         )
-    validate_contract(normalized["facets"])
+    validate_persisted_contract(normalized["facets"])
     if facet_digests(normalized["facets"]) != normalized["digests"]:
         raise ContractError(
             "ledger facet digests do not match their canonical values",

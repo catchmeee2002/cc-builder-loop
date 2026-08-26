@@ -13,6 +13,10 @@ from typing import Any, Sequence
 
 ROOT = Path(__file__).resolve().parents[2]
 CLI = ROOT / "scripts" / "codex-builder-loop.py"
+if str(ROOT / "tests") not in sys.path:
+    sys.path.insert(0, str(ROOT / "tests"))
+
+from harness import add_v4_progress_contract  # noqa: E402
 
 
 def run(argv: Sequence[str | Path], *, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
@@ -35,7 +39,7 @@ def git(repo: Path, *args: str) -> str:
 
 
 def contract() -> dict[str, Any]:
-    return {
+    value = {
         "schema_version": 4,
         "mission": {
             "revision": 1,
@@ -111,6 +115,7 @@ def contract() -> dict[str, Any]:
             "agents": {},
         },
     }
+    return add_v4_progress_contract(value)
 
 
 def fake_codex(path: Path, trace: Path) -> Path:

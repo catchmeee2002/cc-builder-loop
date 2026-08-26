@@ -17,6 +17,7 @@ if str(TESTS) not in sys.path:
 
 from harness import (  # noqa: E402
     CLI,
+    add_v4_progress_contract,
     cleanup_repo,
     commit_all,
     fixture_runtime_env,
@@ -353,7 +354,7 @@ def legacy_observations(artifacts: Path) -> dict[str, Any]:
 
 
 def v4_contract(behavior_ids: list[str], execution_id: str) -> dict[str, Any]:
-    return {
+    value = {
         "schema_version": 4,
         "mission": {
             "revision": 1,
@@ -440,6 +441,7 @@ def v4_contract(behavior_ids: list[str], execution_id: str) -> dict[str, Any]:
             },
         },
     }
+    return add_v4_progress_contract(value)
 
 
 def make_uv_launcher(path: Path, marker: Path) -> Path:

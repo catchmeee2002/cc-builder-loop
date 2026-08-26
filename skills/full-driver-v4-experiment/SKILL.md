@@ -83,7 +83,15 @@ dispatch。直到 `finalize` 或明确的决策边界。动作面如下，不能
   ledger 事实。
 - `parallel_ready:true`：先用只允许 identity bootstrap、禁止读写仓库的最小 prompt spawn `tester`
   custom agent；使用工具返回的真实 identity 调用 `prepare-tester`，再 follow-up 同一 thread 执行
-  `phase=author`。Tester 以 spec HEAD 为独立基线。
+  `phase=author`。Tester 以 spec HEAD 为独立基线。该字段只表示工作单元具备独立承载条件，
+  不证明已经发生并发；Native Coordinator 当前以单一 `dispatch_intent` 串行落账，只有外部明确
+  提供两个独立执行承载时才可实际并行。
+- 新 v4 角色动作还必须带冻结的 `work_unit_id`。每个工作单元的目标、依赖、精确范围和完成观察
+  在 contract 中固定；Core 只根据 Git、manifest、命令和正式 evidence 确认进度，不能接受 Agent
+  自报或 transcript 作为 checkpoint。
+- Native transport 断流后，只有无输出且无副作用的当前工作单元允许使用现有 retry 限额；candidate
+  或 Tester source 变化时禁止重放，必须保留 manifest 并进入 reconcile。canonical projection 是
+  重建上下文的唯一输入，旧对话不作为事实来源。
 - `parallel_ready:false`：先 `publish-prerequisites`，再 spawn Tester 并以真实 identity 调用
   `prepare-tester`；Tester 只能从隔离
   publication HEAD 读取 exact file/blob manifest。publication path 集合冻结；每个 generation 的 manifest

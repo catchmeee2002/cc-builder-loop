@@ -17,6 +17,10 @@ else:
 sys.dont_write_bytecode = True
 
 ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT / "tests") not in sys.path:
+    sys.path.insert(0, str(ROOT / "tests"))
+
+from harness import add_v4_progress_contract  # noqa: E402
 CLI_PATH = Path("scripts/codex-builder-loop.py")
 MANIFEST_PATH = Path(
     "runtime/codex_builder_loop/assurance_v4/runtime-support.json"
@@ -123,7 +127,7 @@ def contract(repo: Path, *, preparation: bool) -> dict[str, Any]:
     required = ["machine", "blackbox", "reviewer"]
     if not preparation:
         required.insert(1, "proof")
-    return {
+    value = {
         "schema_version": 4,
         "mission": {
             "delivery_kind": "preparation" if preparation else "code",
@@ -201,6 +205,7 @@ def contract(repo: Path, *, preparation: bool) -> dict[str, Any]:
             "agents": {},
         },
     }
+    return add_v4_progress_contract(value)
 
 
 def repository_facts(repo: Path) -> dict[str, Any]:

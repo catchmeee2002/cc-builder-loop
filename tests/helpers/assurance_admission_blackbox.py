@@ -6,12 +6,17 @@ import hashlib
 import json
 import os
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any, Sequence
 
 
 ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT / "tests") not in sys.path:
+    sys.path.insert(0, str(ROOT / "tests"))
+
+from harness import add_v4_progress_contract  # noqa: E402
 
 
 def run(
@@ -35,7 +40,7 @@ def git(repo: Path, *args: str) -> str:
 
 
 def contract(executable: str) -> dict[str, Any]:
-    return {
+    value = {
         "schema_version": 4,
         "mission": {
             "delivery_kind": "code",
@@ -97,6 +102,7 @@ def contract(executable: str) -> dict[str, Any]:
             "agents": {},
         },
     }
+    return add_v4_progress_contract(value)
 
 
 def invoke(

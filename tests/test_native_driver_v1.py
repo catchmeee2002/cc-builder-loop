@@ -13,7 +13,15 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from harness import CLI, ROOT, cleanup_repo, commit_all, init_repo, run_process
+from harness import (
+    CLI,
+    ROOT,
+    add_v4_progress_contract,
+    cleanup_repo,
+    commit_all,
+    init_repo,
+    run_process,
+)
 
 sys.path.insert(0, str(ROOT / "runtime"))
 
@@ -38,7 +46,7 @@ from codex_builder_loop.process import process_group_gone, read_proc_identity
 
 
 def native_contract(repo: Path) -> dict:
-    return {
+    contract = {
         "schema_version": 4,
         "mission": {
             "revision": 1,
@@ -85,6 +93,7 @@ def native_contract(repo: Path) -> dict:
             "agents": {},
         },
     }
+    return add_v4_progress_contract(contract)
 
 
 def root_native_contract(repo: Path) -> dict:

@@ -36,10 +36,12 @@ from .models import (
     doc_reference_scan_digest_input,
     evidence_dependency,
     facet_digests,
+    progress_policy,
     recovery_policy,
     requested_profile,
     acceptance_observation_mode,
     validate_contract,
+    work_units,
     validate_new_contract,
     validate_agent_result,
     validate_admission,
@@ -47,6 +49,7 @@ from .models import (
     validate_environment_probe,
     validate_evidence_report,
     validate_lineage,
+    validate_persisted_contract,
     validate_problem_report,
     validate_repo_path,
     validate_retrospective_report,
@@ -89,6 +92,17 @@ REVIEWER_COMPACTION_FAILURE_CODES = frozenset(
     {"responseStreamDisconnected", "missingAgentResult"}
 )
 REVIEWER_REPLACEMENT_MAX = 3
+REHYDRATABLE_DISPATCH_FAILURE_CODES = frozenset(
+    {
+        "serverOverloaded",
+        "responseStreamConnectionFailed",
+        "responseStreamDisconnected",
+        "responseStreamTimeout",
+        "responseTooManyFailedAttempts",
+        "httpConnectionFailed",
+        "authUnavailable",
+    }
+)
 RUNTIME_SUPPORT_MANIFEST_PATH = (
     "runtime/codex_builder_loop/assurance_v4/runtime-support.json"
 )
@@ -146,6 +160,572 @@ def _dispatch_observation(ledger: Mapping[str, Any]) -> dict[str, Any]:
         "publication": ledger.get("publication"),
         "deployment_transaction": ledger.get("deployment_transaction"),
     }
+
+
+def _progress_side_effect_observation(
+    ledger: Mapping[str, Any], role: str
+) -> dict[str, Any]:
+    observation: dict[str, Any] = {
+        "role": role,
+        "candidate_head": ledger["facets"]["execution"].get("candidate_head"),
+        "target_start_head": ledger.get("target_start_head"),
+        "evidence": copy.deepcopy(ledger.get("evidence", {})),
+        "publication": copy.deepcopy(ledger.get("publication")),
+        "deployment_transaction": copy.deepcopy(
+            ledger.get("deployment_transaction")
+        ),
+    }
+    manifest = _candidate_manifest_for_ledger(ledger)
+    observation["candidate_manifest"] = manifest
+    if role == "tester":
+        source = ledger["facets"]["execution"].get("tester_source")
+        observation["tester_source"] = copy.deepcopy(source)
+        if isinstance(source, Mapping):
+            worktree = source.get("worktree")
+            if isinstance(worktree, str) and worktree:
+                observation["tester_worktree_manifest"] = _candidate_worktree_manifest(
+                    Path(worktree)
+                )
+    return observation
+
+
+def _progress_side_effect_digest(ledger: Mapping[str, Any], role: str) -> str:
+    return digest(_progress_side_effect_observation(ledger, role))
+
+
+def _progress_enabled(ledger: Mapping[str, Any]) -> bool:
+    return progress_policy(ledger["facets"]).get("mode") == "bounded_rehydration"
+
+
+def _completed_work_unit_ids(ledger: Mapping[str, Any]) -> set[str]:
+    completed: set[str] = set()
+    for event in ledger.get("events", []):
+        if not isinstance(event, Mapping) or event.get("kind") != "work_unit_completed":
+            continue
+        details = event.get("details")
+        if isinstance(details, Mapping) and isinstance(details.get("work_unit_id"), str):
+            completed.add(str(details["work_unit_id"]))
+    return completed
+
+
+def _work_unit_for_id(
+    ledger: Mapping[str, Any], work_unit_id: str | None
+) -> Mapping[str, Any] | None:
+    if not isinstance(work_unit_id, str) or not work_unit_id:
+        return None
+    for unit in work_units(ledger["facets"]):
+        if unit.get("id") == work_unit_id:
+            return unit
+    return None
+
+
+def _progress_work_units(ledger: Mapping[str, Any]) -> list[dict[str, Any]]:
+    facets = ledger.get("facets", {})
+    assurance = facets.get("assurance", {}) if isinstance(facets, Mapping) else {}
+    required = set(assurance.get("required", []))
+    roles = {"builder"}
+    if "tester" in required:
+        roles.add("tester")
+    if "reviewer" in required or "doc_review" in required:
+        roles.add("reviewer")
+    return [
+        unit
+        for unit in work_units(ledger["facets"])
+        if unit.get("role") in roles
+    ]
+
+
+def _work_unit_role_for_action(action: str) -> str | None:
+    if action.startswith("builder_"):
+        return "builder"
+    if action in {"tester_author", "tester_fix", "tester_recompose_fix"}:
+        return "tester"
+    if action in {"reviewer_preflight", "reviewer_final"}:
+        return "reviewer"
+    return None
+
+
+def _next_work_unit(
+    ledger: Mapping[str, Any], *, role: str, completed: set[str] | None = None
+) -> Mapping[str, Any] | None:
+    if not _progress_enabled(ledger):
+        return None
+    done = _completed_work_unit_ids(ledger) if completed is None else completed
+    units = _progress_work_units(ledger)
+    for unit in units:
+        if unit.get("role") != role or unit.get("id") in done:
+            continue
+        dependencies = unit.get("depends_on", [])
+        if all(str(dependency) in done for dependency in dependencies):
+            return unit
+    return None
+
+
+def _parallel_ready_units(
+    ledger: Mapping[str, Any],
+    *,
+    completed: set[str],
+) -> list[dict[str, Any]]:
+    if not _progress_enabled(ledger):
+        return []
+    required = set(ledger["facets"]["assurance"].get("required", []))
+    if "tester" not in required:
+        return []
+    units = _progress_work_units(ledger)
+    ready = [
+        unit
+        for unit in units
+        if unit.get("id") not in completed
+        and all(str(dep) in completed for dep in unit.get("depends_on", []))
+    ]
+    builder = next(
+        (unit for unit in ready if unit.get("role") == "builder"), None
+    )
+    tester = next(
+        (unit for unit in ready if unit.get("role") == "tester"), None
+    )
+    if not isinstance(builder, Mapping) or not isinstance(tester, Mapping):
+        return []
+    unit_by_id = {str(unit["id"]): unit for unit in units}
+    tester_builder_dependencies = [
+        dependency
+        for dependency in tester.get("depends_on", [])
+        if unit_by_id.get(str(dependency), {}).get("role") == "builder"
+    ]
+    builder_tester_dependencies = [
+        dependency
+        for dependency in builder.get("depends_on", [])
+        if unit_by_id.get(str(dependency), {}).get("role") == "tester"
+    ]
+    if tester_builder_dependencies or builder_tester_dependencies:
+        return []
+    if set(builder.get("scope", {}).get("paths", [])) & set(
+        tester.get("scope", {}).get("paths", [])
+    ):
+        return []
+    return [copy.deepcopy(dict(builder)), copy.deepcopy(dict(tester))]
+
+
+def current_work_unit(
+    ledger: Mapping[str, Any], *, role: str
+) -> dict[str, Any] | None:
+    unit = _next_work_unit(ledger, role=role)
+    return copy.deepcopy(dict(unit)) if isinstance(unit, Mapping) else None
+
+
+def _progress_intent_for_role(
+    ledger: Mapping[str, Any],
+    *,
+    role: str,
+    action_id: str | None = None,
+    action: str | None = None,
+) -> Mapping[str, Any] | None:
+    pending = ledger.get("dispatch_intent")
+    if isinstance(pending, Mapping) and pending.get("role") == role:
+        return pending
+    unit = current_work_unit(ledger, role=role)
+    if not isinstance(unit, Mapping):
+        return None
+    return {
+        "action_id": action_id,
+        "action": action,
+        "role": role,
+        "work_unit_id": unit["id"],
+        "generation": None,
+        "attempt": None,
+        "thread_id": None,
+    }
+
+
+def _validate_dispatch_work_unit(
+    ledger: Mapping[str, Any],
+    *,
+    action: str,
+    role: str,
+    work_unit_id: str | None,
+) -> Mapping[str, Any] | None:
+    if not _progress_enabled(ledger):
+        return None
+    expected_role = _work_unit_role_for_action(action)
+    if expected_role is not None and expected_role != role:
+        raise AssuranceError(
+            "dispatch role does not match its action",
+            code="WORK_UNIT_ROLE_ACTION_MISMATCH",
+            status="FAIL",
+        )
+    if expected_role is None:
+        return None
+    expected = _next_work_unit(ledger, role=expected_role)
+    provided = _work_unit_for_id(ledger, work_unit_id)
+    if provided is not None and provided.get("role") != role:
+        raise AssuranceError(
+            "dispatch work unit role does not match its role owner",
+            code="WORK_UNIT_ROLE_ACTION_MISMATCH",
+            status="FAIL",
+            details={"work_unit_id": work_unit_id, "role": role},
+        )
+    if expected is None:
+        if provided is not None:
+            raise AssuranceError(
+                "dispatch references a completed or blocked work unit",
+                code="WORK_UNIT_DISPATCH_STALE",
+                status="NEEDS_USER",
+                details={"work_unit_id": work_unit_id, "action": action},
+            )
+        return None
+    if work_unit_id is not None and work_unit_id != expected.get("id"):
+        raise AssuranceError(
+            "dispatch work unit is stale or missing",
+            code="WORK_UNIT_DISPATCH_STALE",
+            status="FAIL",
+            details={
+                "expected_work_unit_id": expected.get("id"),
+                "actual_work_unit_id": work_unit_id,
+                "action": action,
+            },
+        )
+    return expected
+
+
+def work_unit_progress(ledger: Mapping[str, Any]) -> dict[str, Any]:
+    units = _progress_work_units(ledger)
+    completed = _completed_work_unit_ids(ledger)
+    thread_usage: dict[str, int] = {}
+    for event in ledger.get("events", []):
+        if not isinstance(event, Mapping) or event.get("kind") != "work_unit_completed":
+            continue
+        details = event.get("details")
+        thread_id = (
+            details.get("thread_id") if isinstance(details, Mapping) else None
+        )
+        if isinstance(thread_id, str) and thread_id:
+            thread_usage[thread_id] = thread_usage.get(thread_id, 0) + 1
+    ready = [
+        str(unit["id"])
+        for unit in units
+        if str(unit["id"]) not in completed
+        and all(str(dep) in completed for dep in unit.get("depends_on", []))
+    ]
+    ready_by_role = {
+        role: [
+            str(unit["id"])
+            for unit in units
+            if unit.get("role") == role
+            and str(unit["id"]) not in completed
+            and all(
+                str(dep) in completed for dep in unit.get("depends_on", [])
+            )
+        ]
+        for role in ("builder", "tester", "reviewer")
+    }
+    parallel_units = _parallel_ready_units(ledger, completed=completed)
+    pending = [
+        str(unit["id"]) for unit in units if str(unit["id"]) not in completed
+    ]
+    dispatch = ledger.get("dispatch_intent")
+    value = {
+        "enabled": _progress_enabled(ledger),
+        "policy": progress_policy(ledger["facets"]),
+        "total": len(units),
+        "completed": sorted(completed),
+        "pending": pending,
+        "ready": ready,
+        "ready_by_role": ready_by_role,
+        "parallel_ready": bool(parallel_units),
+        "parallel_work_unit_ids": [
+            str(unit["id"]) for unit in parallel_units
+        ],
+        "parallel_work_units": copy.deepcopy(parallel_units),
+        "thread_usage": dict(sorted(thread_usage.items())),
+        "active": (
+            {
+                "work_unit_id": dispatch.get("work_unit_id"),
+                "action": dispatch.get("action"),
+                "attempt": dispatch.get("attempt"),
+                "generation": dispatch.get("generation"),
+            }
+            if isinstance(dispatch, Mapping)
+            and isinstance(dispatch.get("work_unit_id"), str)
+            else None
+        ),
+    }
+    value["progress_digest"] = digest(value)
+    return value
+
+
+def _strip_context_identity(value: Any) -> Any:
+    """Remove physical role/session identity from a logical context snapshot."""
+
+    if isinstance(value, Mapping):
+        return {
+            str(key): _strip_context_identity(item)
+            for key, item in value.items()
+            if key
+            not in {
+                "agent",
+                "agent_id",
+                "thread_id",
+                "session_id",
+                "dependency_digest",
+            }
+        }
+    if isinstance(value, list):
+        return [_strip_context_identity(item) for item in value]
+    return copy.deepcopy(value)
+
+
+def _canonical_progress_projection(ledger: Mapping[str, Any]) -> dict[str, Any] | None:
+    if not _progress_enabled(ledger):
+        return None
+    progress = work_unit_progress(ledger)
+    usage = progress.get("thread_usage")
+    usage_counts = (
+        sorted(int(item) for item in usage.values())
+        if isinstance(usage, Mapping)
+        else []
+    )
+    return {
+        "enabled": bool(progress.get("enabled")),
+        "policy": copy.deepcopy(progress.get("policy")),
+        "total": progress.get("total"),
+        "completed": copy.deepcopy(progress.get("completed", [])),
+        "pending": copy.deepcopy(progress.get("pending", [])),
+        "ready": copy.deepcopy(progress.get("ready", [])),
+        "ready_by_role": copy.deepcopy(progress.get("ready_by_role", {})),
+        "parallel_ready": bool(progress.get("parallel_ready", False)),
+        "parallel_work_unit_ids": copy.deepcopy(
+            progress.get("parallel_work_unit_ids", [])
+        ),
+        "parallel_work_units": copy.deepcopy(
+            progress.get("parallel_work_units", [])
+        ),
+        "thread_usage": usage_counts,
+    }
+
+
+def canonical_context_projection(
+    ledger: Mapping[str, Any],
+    *,
+    action_id: str | None,
+    action: str,
+    role: str,
+    work_unit_id: str | None = None,
+    work_unit: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build the logical context that Core can independently digest and verify."""
+
+    facets = copy.deepcopy(ledger.get("facets", {}))
+    if not isinstance(facets, dict):
+        facets = {}
+    execution = facets.get("execution")
+    if isinstance(execution, dict):
+        execution.pop("agents", None)
+        # Execution version changes for identity bookkeeping and is not logical
+        # progress.  Keeping it would make rotation change the projection.
+        execution.pop("version", None)
+        tester_source = execution.get("tester_source")
+        if isinstance(tester_source, dict):
+            tester_source.pop("agent", None)
+    facets = _strip_context_identity(facets)
+
+    selected_unit = None
+    if isinstance(work_unit_id, str):
+        found = _work_unit_for_id(ledger, work_unit_id)
+        if isinstance(found, Mapping):
+            selected_unit = copy.deepcopy(dict(found))
+    if selected_unit is None and isinstance(work_unit, Mapping):
+        selected_unit = copy.deepcopy(dict(work_unit))
+
+    logical_digests = copy.deepcopy(ledger.get("digests", {}))
+    if isinstance(logical_digests, dict) and isinstance(facets.get("execution"), Mapping):
+        logical_digests["execution"] = digest(facets["execution"])
+
+    evidence = (
+        _driver_evidence_view(ledger)
+        if isinstance(ledger.get("repo_root"), str)
+        else ledger.get("evidence")
+    )
+    return {
+        "schema_version": 1,
+        "source": "assurance_ledger",
+        "run_id": ledger.get("run_id"),
+        "action_id": action_id,
+        "action": action,
+        "role": role,
+        "work_unit_id": work_unit_id,
+        "work_unit": _strip_context_identity(selected_unit),
+        "facets": facets,
+        "digests": _strip_context_identity(logical_digests),
+        "candidate": {
+            "worktree": ledger.get("candidate_worktree"),
+            "head": ledger.get("facets", {})
+            .get("execution", {})
+            .get("candidate_head"),
+        },
+        "publication": _strip_context_identity(ledger.get("publication")),
+        "evidence": _strip_context_identity(evidence),
+        "problems": _strip_context_identity(ledger.get("problems")),
+        "recomposition": _strip_context_identity(
+            ledger.get("recomposition_intent")
+        ),
+        "work_unit_progress": _canonical_progress_projection(ledger),
+    }
+
+
+def canonical_context_projection_digest(
+    ledger: Mapping[str, Any],
+    *,
+    action_id: str | None,
+    action: str,
+    role: str,
+    work_unit_id: str | None = None,
+    work_unit: Mapping[str, Any] | None = None,
+) -> str:
+    return digest(
+        canonical_context_projection(
+            ledger,
+            action_id=action_id,
+            action=action,
+            role=role,
+            work_unit_id=work_unit_id,
+            work_unit=work_unit,
+        )
+    )
+
+
+def _validated_projection_digest(
+    ledger: Mapping[str, Any],
+    *,
+    action_id: str | None,
+    action: str,
+    role: str,
+    work_unit_id: str | None,
+    supplied: str | None,
+    work_unit: Mapping[str, Any] | None = None,
+) -> str:
+    expected = canonical_context_projection_digest(
+        ledger,
+        action_id=action_id,
+        action=action,
+        role=role,
+        work_unit_id=work_unit_id,
+        work_unit=work_unit,
+    )
+    if supplied is not None and supplied != expected:
+        raise AssuranceError(
+            "work unit context projection digest does not match the canonical projection",
+            code="WORK_UNIT_PROJECTION_DIGEST_MISMATCH",
+            status="NEEDS_USER",
+            details={"expected": expected, "actual": supplied},
+        )
+    return expected
+
+
+def _mark_work_unit_completed(
+    ledger: dict[str, Any],
+    *,
+    intent: Mapping[str, Any] | None,
+    observation: str,
+    observation_digest: str | None = None,
+) -> bool:
+    if not _progress_enabled(ledger) or not isinstance(intent, Mapping):
+        return False
+    work_unit_id = intent.get("work_unit_id")
+    if not isinstance(work_unit_id, str):
+        return False
+    unit = _work_unit_for_id(ledger, work_unit_id)
+    if not isinstance(unit, Mapping):
+        raise AssuranceError(
+            "dispatch work unit is no longer present in the contract",
+            code="WORK_UNIT_DISPATCH_STALE",
+            status="NEEDS_USER",
+            details={"work_unit_id": work_unit_id},
+        )
+    if intent.get("role") not in {None, unit.get("role")}:
+        raise AssuranceError(
+            "work unit completion role does not match its contract",
+            code="WORK_UNIT_ROLE_ACTION_MISMATCH",
+            status="FAIL",
+            details={
+                "work_unit_id": work_unit_id,
+                "expected_role": unit.get("role"),
+                "actual_role": intent.get("role"),
+            },
+        )
+    dependencies = [
+        str(item) for item in unit.get("depends_on", [])
+    ]
+    completed = _completed_work_unit_ids(ledger)
+    missing_dependencies = [
+        item for item in dependencies if item not in completed
+    ]
+    if missing_dependencies:
+        raise AssuranceError(
+            "work unit dependencies are not complete",
+            code="WORK_UNIT_DEPENDENCY_BLOCKED",
+            status="NEEDS_USER",
+            details={
+                "work_unit_id": work_unit_id,
+                "missing_dependencies": missing_dependencies,
+            },
+        )
+    expected_observation = unit["completion"]["required_observations"][0]
+    if expected_observation != observation:
+        raise AssuranceError(
+            "work unit completion observation does not match its contract",
+            code="WORK_UNIT_COMPLETION_OBSERVATION_MISMATCH",
+            status="FAIL",
+            details={
+                "work_unit_id": work_unit_id,
+                "expected": expected_observation,
+                "actual": observation,
+            },
+        )
+    if work_unit_id in _completed_work_unit_ids(ledger):
+        existing = [
+            event.get("details")
+            for event in ledger.get("events", [])
+            if isinstance(event, Mapping)
+            and event.get("kind") == "work_unit_completed"
+            and isinstance(event.get("details"), Mapping)
+            and event["details"].get("work_unit_id") == work_unit_id
+        ]
+        if existing and (
+            existing[-1].get("role") != unit.get("role")
+            or existing[-1].get("required_observation") != observation
+        ):
+            raise AssuranceError(
+                "work unit completion replay conflicts with its original observation",
+                code="WORK_UNIT_COMPLETION_CONFLICT",
+                status="NEEDS_USER",
+                details={"work_unit_id": work_unit_id},
+            )
+        return False
+    append_event(
+        ledger,
+        "work_unit_completed",
+        {
+            "work_unit_id": work_unit_id,
+            "role": unit["role"],
+            "completion_kind": unit["completion"]["kind"],
+            "required_observation": observation,
+            "action_id": intent.get("action_id"),
+            "generation": intent.get("generation"),
+            "attempt": intent.get("attempt"),
+            "thread_id": intent.get("thread_id"),
+            "candidate_head": ledger["facets"]["execution"].get("candidate_head"),
+            "observation_digest": observation_digest
+            or digest(
+                {
+                    "candidate_head": ledger["facets"]["execution"].get(
+                        "candidate_head"
+                    ),
+                    "evidence": ledger.get("evidence", {}),
+                }
+            ),
+        },
+    )
+    return True
 
 
 def _validate_builder_runtime_binding(
@@ -1280,6 +1860,8 @@ def validate(contract: Any, repo_value: str | Path | None = None) -> dict[str, A
         "digests": facet_digests(value),
         "profile": requested_profile(value),
         "recovery_policy": recovery_policy(value),
+        "progress_policy": progress_policy(value),
+        "work_unit_count": len(work_units(value)),
     }
     if repo_value is not None:
         repo = resolve_repo(repo_value)
@@ -1730,6 +2312,8 @@ def start(
                 "driver_runtime": copy.deepcopy(driver_runtime),
                 "driver_failure": None,
                 "dispatch_intent": None,
+                "dispatch_rehydration_intent": None,
+                "context_rotation_intent": None,
                 "transport_cleanup_intent": None,
                 "deferred_wait": None,
                 "tester_replacement_intent": None,
@@ -1938,6 +2522,8 @@ def begin_dispatch(
     owner_session_id: str | None = None,
     native_transport_generation: str | None = None,
     timeout_profile_digest: str | None = None,
+    work_unit_id: str | None = None,
+    context_projection_digest: str | None = None,
     driver_runtime_kind: str = "native",
 ) -> dict[str, Any]:
     repo = resolve_repo(repo_value)
@@ -1975,6 +2561,33 @@ def begin_dispatch(
         current = next_action(repo, run_id)
         if current.get("action_id") != action_id or current.get("action") != action:
             raise AssuranceError("driver action is stale", code="DRIVER_ACTION_STALE", status="FAIL")
+        current_unit = _validate_dispatch_work_unit(
+            ledger,
+            action=action,
+            role=role,
+            work_unit_id=work_unit_id,
+        )
+        if current_unit is not None:
+            work_unit_id = str(current_unit["id"])
+        if context_projection_digest is not None and not re.fullmatch(
+            r"[0-9a-f]{64}", context_projection_digest
+        ):
+            raise AssuranceError(
+                "work unit context projection digest is invalid",
+                code="WORK_UNIT_PROJECTION_DIGEST_INVALID",
+                status="FAIL",
+            )
+        canonical_projection_digest = None
+        if _progress_enabled(ledger):
+            canonical_projection_digest = _validated_projection_digest(
+                ledger,
+                action_id=action_id,
+                action=action,
+                role=role,
+                work_unit_id=work_unit_id,
+                supplied=context_projection_digest,
+                work_unit=current_unit,
+            )
         agent = ledger["facets"]["execution"]["agents"].get(role)
         owner_mode = "native_thread"
         if role == "builder":
@@ -2067,6 +2680,18 @@ def begin_dispatch(
             "interrupted_retry_blocked": False,
             "created_at": now(),
         }
+        if _progress_enabled(ledger):
+            if work_unit_id is not None:
+                dispatch_intent["work_unit_id"] = work_unit_id
+            dispatch_intent["unit_attempt"] = 1
+            dispatch_intent["rehydration_count"] = 0
+            dispatch_intent["context_projection_digest"] = (
+                canonical_projection_digest
+            )
+            dispatch_intent["pre_execution_observation_digest"] = (
+                _progress_side_effect_digest(ledger, role)
+            )
+            dispatch_intent["post_execution_observation_digest"] = None
         if role == "builder" and owner_mode == "root_session":
             dispatch_intent["owner_mode"] = owner_mode
             dispatch_intent["owner_session_id"] = owner_session_id
@@ -3254,6 +3879,12 @@ def retry_dispatch(
             )
         attempt = int(intent.get("attempt", 1))
         generation = int(intent.get("generation", 1))
+        if _progress_enabled(ledger):
+            intent["post_execution_observation_digest"] = digest(
+                _progress_side_effect_observation(
+                    ledger, str(intent.get("role"))
+                )
+            )
         if attempt >= 3:
             deployment = ledger.get("deployment_transaction")
             if isinstance(deployment, dict) and deployment.get("state") == "deployed":
@@ -3328,6 +3959,8 @@ def retry_dispatch(
             },
         )
         intent["attempt"] = next_attempt
+        if _progress_enabled(ledger):
+            intent["unit_attempt"] = int(intent.get("unit_attempt", 1)) + 1
         intent["state"] = "prepared"
         intent["continuity_state"] = "prepared"
         intent["failure_code"] = normalized_failure_code
@@ -3337,6 +3970,1014 @@ def retry_dispatch(
         else:
             intent["retry_not_before"] = retry_not_before
         intent.pop("turn_id", None)
+        save_ledger(repo, ledger)
+    return status(repo, run_id)
+
+
+def begin_dispatch_rehydration(
+    repo_value: str | Path,
+    run_value: str,
+    *,
+    action_id: str,
+    context_projection_digest: str,
+    driver_runtime_kind: str = "native",
+) -> dict[str, Any]:
+    if not re.fullmatch(r"[0-9a-f]{64}", context_projection_digest):
+        raise AssuranceError(
+            "work unit context projection digest is invalid",
+            code="WORK_UNIT_PROJECTION_DIGEST_INVALID",
+            status="FAIL",
+        )
+    repo = resolve_repo(repo_value)
+    run_id = ensure_run_id(run_value)
+    with locked(repo):
+        ledger = read_ledger(repo, run_id)
+        _require_driver_runtime_owner(ledger, driver_runtime_kind)
+        if driver_runtime_kind != "native":
+            raise AssuranceError(
+                "canonical dispatch rehydration is Native Driver only",
+                code="WORK_UNIT_REHYDRATION_RUNTIME_INVALID",
+                status="FAIL",
+            )
+        _assert_no_candidate_residue_intent(ledger)
+        if not _progress_enabled(ledger):
+            raise AssuranceError(
+                "dispatch rehydration requires the bounded progress policy",
+                code="WORK_UNIT_REHYDRATION_UNAVAILABLE",
+                status="NEEDS_USER",
+            )
+        if ledger.get("phase") != "active":
+            raise AssuranceError(
+                "dispatch rehydration requires an active run",
+                code="ASSURANCE_RUN_NOT_ACTIVE",
+                status="NEEDS_USER",
+            )
+        pending = ledger.get("dispatch_intent")
+        if not isinstance(pending, dict) or pending.get("action_id") != action_id:
+            raise AssuranceError(
+                "dispatch action is stale",
+                code="DRIVER_ACTION_STALE",
+                status="FAIL",
+            )
+        existing = ledger.get("dispatch_rehydration_intent")
+        if isinstance(existing, Mapping):
+            if (
+                existing.get("action_id") == action_id
+                and existing.get("context_projection_digest")
+                == context_projection_digest
+            ):
+                return status(repo, run_id)
+            raise AssuranceError(
+                "another dispatch rehydration is already pending",
+                code="WORK_UNIT_REHYDRATION_INTENT_CONFLICT",
+                status="NEEDS_USER",
+            )
+        if pending.get("state") != "exhausted" or int(pending.get("attempt", 1)) < 3:
+            raise AssuranceError(
+                "only an exhausted dispatch can be rehydrated",
+                code="WORK_UNIT_REHYDRATION_STATE_INVALID",
+                status="NEEDS_USER",
+            )
+        if pending.get("failure_code") not in REHYDRATABLE_DISPATCH_FAILURE_CODES:
+            raise AssuranceError(
+                "dispatch failure is not eligible for canonical rehydration",
+                code="WORK_UNIT_REHYDRATION_FAILURE_INELIGIBLE",
+                status="NEEDS_USER",
+                details={"failure_code": pending.get("failure_code")},
+            )
+        work_unit_id = pending.get("work_unit_id")
+        if not isinstance(work_unit_id, str) or not work_unit_id:
+            raise AssuranceError(
+                "exhausted dispatch has no work unit binding",
+                code="WORK_UNIT_REHYDRATION_BINDING_MISSING",
+                status="NEEDS_USER",
+            )
+        if int(pending.get("rehydration_count", 0)) >= 1:
+            raise AssuranceError(
+                "work unit rehydration limit has been reached",
+                code="WORK_UNIT_REHYDRATION_LIMIT_REACHED",
+                status="NEEDS_USER",
+                details={
+                    "work_unit_id": work_unit_id,
+                    "rehydration_count": pending.get("rehydration_count", 0),
+                },
+            )
+        role = pending.get("role")
+        thread_id = pending.get("thread_id")
+        if role not in {"builder", "tester", "reviewer"} or not isinstance(
+            thread_id, str
+        ):
+            raise AssuranceError(
+                "dispatch rehydration requires a Native role thread",
+                code="WORK_UNIT_REHYDRATION_THREAD_REQUIRED",
+                status="NEEDS_USER",
+            )
+        canonical_projection = _validated_projection_digest(
+            ledger,
+            action_id=action_id,
+            action=str(pending.get("action")),
+            role=str(role),
+            work_unit_id=work_unit_id,
+            supplied=context_projection_digest,
+            work_unit=_work_unit_for_id(ledger, work_unit_id),
+        )
+        if pending.get("context_projection_digest") != canonical_projection:
+            raise AssuranceError(
+                "dispatch rehydration source projection is stale",
+                code="WORK_UNIT_PROJECTION_DIGEST_MISMATCH",
+                status="NEEDS_USER",
+                details={
+                    "expected": canonical_projection,
+                    "source": pending.get("context_projection_digest"),
+                },
+            )
+        expected_observation = pending.get("pre_execution_observation_digest")
+        current_observation = _progress_side_effect_digest(ledger, str(role))
+        if (
+            not isinstance(expected_observation, str)
+            or expected_observation != current_observation
+        ):
+            raise AssuranceError(
+                "dispatch rehydration is blocked by an unverified role side effect",
+                code="WORK_UNIT_REHYDRATION_SIDE_EFFECT_BLOCKED",
+                status="NEEDS_USER",
+                details={
+                    "role": role,
+                    "work_unit_id": work_unit_id,
+                    "expected_observation_digest": expected_observation,
+                    "current_observation_digest": current_observation,
+                },
+            )
+        intent = {
+            "state": "prepared",
+            "action_id": action_id,
+            "work_unit_id": work_unit_id,
+            "role": role,
+            "spawn_state": "pending",
+            "spawn_claim_id": None,
+            "source_thread_id": thread_id,
+            "source_generation": int(pending.get("generation", 1)),
+            "source_attempt": int(pending.get("attempt", 1)),
+            "source_dispatch_digest": digest(pending),
+            "source_observation_digest": current_observation,
+            "context_projection_digest": canonical_projection,
+            "rehydration_count": 1,
+            "prepared_at": now(),
+        }
+        ledger["dispatch_rehydration_intent"] = intent
+        append_event(
+            ledger,
+            "dispatch_rehydration_prepared",
+            copy.deepcopy(intent),
+        )
+        save_ledger(repo, ledger)
+    return status(repo, run_id)
+
+
+def claim_dispatch_rehydration(
+    repo_value: str | Path,
+    run_value: str,
+    *,
+    action_id: str,
+    claim_id: str,
+    driver_runtime_kind: str = "native",
+) -> dict[str, Any]:
+    if not re.fullmatch(r"[0-9a-f]{64}", claim_id):
+        raise AssuranceError(
+            "dispatch rehydration claim id is invalid",
+            code="WORK_UNIT_REHYDRATION_CLAIM_INVALID",
+            status="FAIL",
+        )
+    repo = resolve_repo(repo_value)
+    run_id = ensure_run_id(run_value)
+    with locked(repo):
+        ledger = read_ledger(repo, run_id)
+        _require_driver_runtime_owner(ledger, driver_runtime_kind)
+        if driver_runtime_kind != "native":
+            raise AssuranceError(
+                "canonical dispatch rehydration is Native Driver only",
+                code="WORK_UNIT_REHYDRATION_RUNTIME_INVALID",
+                status="FAIL",
+            )
+        _assert_no_candidate_residue_intent(ledger)
+        intent = ledger.get("dispatch_rehydration_intent")
+        pending = ledger.get("dispatch_intent")
+        if (
+            not isinstance(intent, Mapping)
+            or intent.get("action_id") != action_id
+            or not isinstance(pending, Mapping)
+            or pending.get("action_id") != action_id
+        ):
+            raise AssuranceError(
+                "dispatch rehydration intent is stale",
+                code="WORK_UNIT_REHYDRATION_INTENT_STALE",
+                status="FAIL",
+            )
+        if intent.get("spawn_state") == "spawned":
+            if intent.get("spawn_claim_id") == claim_id:
+                return status(repo, run_id)
+            raise AssuranceError(
+                "dispatch rehydration has already recorded another spawn",
+                code="WORK_UNIT_REHYDRATION_SPAWN_CLAIM_CONFLICT",
+                status="NEEDS_USER",
+            )
+        if intent.get("spawn_state") == "claimed":
+            if intent.get("spawn_claim_id") == claim_id:
+                return status(repo, run_id)
+            raise AssuranceError(
+                "dispatch rehydration is claimed by another owner",
+                code="WORK_UNIT_REHYDRATION_SPAWN_CLAIM_CONFLICT",
+                status="NEEDS_USER",
+            )
+        if intent.get("spawn_state") != "pending":
+            raise AssuranceError(
+                "dispatch rehydration spawn state is invalid",
+                code="WORK_UNIT_REHYDRATION_SPAWN_STATE_INVALID",
+                status="NEEDS_USER",
+            )
+        role = str(intent.get("role"))
+        work_unit_id = str(intent.get("work_unit_id"))
+        _validated_projection_digest(
+            ledger,
+            action_id=action_id,
+            action=str(pending.get("action")),
+            role=role,
+            work_unit_id=work_unit_id,
+            supplied=intent.get("context_projection_digest"),
+            work_unit=_work_unit_for_id(ledger, work_unit_id),
+        )
+        intent_value = dict(intent)
+        intent_value["spawn_state"] = "claimed"
+        intent_value["spawn_claim_id"] = claim_id
+        ledger["dispatch_rehydration_intent"] = intent_value
+        append_event(
+            ledger,
+            "dispatch_rehydration_spawn_claimed",
+            {
+                "action_id": action_id,
+                "work_unit_id": work_unit_id,
+                "role": role,
+                "spawn_claim_id": claim_id,
+            },
+        )
+        save_ledger(repo, ledger)
+    return status(repo, run_id)
+
+
+def record_dispatch_rehydration_spawn(
+    repo_value: str | Path,
+    run_value: str,
+    *,
+    action_id: str,
+    claim_id: str,
+    new_agent_id: str,
+    new_thread_id: str,
+    driver_runtime_kind: str = "native",
+) -> dict[str, Any]:
+    normalized_agent = new_agent_id.strip()
+    normalized_thread = new_thread_id.strip()
+    if not re.fullmatch(r"[0-9a-f]{64}", claim_id):
+        raise AssuranceError(
+            "dispatch rehydration claim id is invalid",
+            code="WORK_UNIT_REHYDRATION_CLAIM_INVALID",
+            status="FAIL",
+        )
+    if not normalized_agent or not normalized_thread:
+        raise AssuranceError(
+            "dispatch rehydration spawn identity is required",
+            code="WORK_UNIT_REHYDRATION_IDENTITY_REQUIRED",
+            status="FAIL",
+        )
+    repo = resolve_repo(repo_value)
+    run_id = ensure_run_id(run_value)
+    with locked(repo):
+        ledger = read_ledger(repo, run_id)
+        _require_driver_runtime_owner(ledger, driver_runtime_kind)
+        if driver_runtime_kind != "native":
+            raise AssuranceError(
+                "canonical dispatch rehydration is Native Driver only",
+                code="WORK_UNIT_REHYDRATION_RUNTIME_INVALID",
+                status="FAIL",
+            )
+        _assert_no_candidate_residue_intent(ledger)
+        intent = ledger.get("dispatch_rehydration_intent")
+        pending = ledger.get("dispatch_intent")
+        if (
+            not isinstance(intent, dict)
+            or intent.get("action_id") != action_id
+            or not isinstance(pending, Mapping)
+            or pending.get("action_id") != action_id
+        ):
+            raise AssuranceError(
+                "dispatch rehydration intent is stale",
+                code="WORK_UNIT_REHYDRATION_INTENT_STALE",
+                status="FAIL",
+            )
+        if intent.get("spawn_state") == "spawned":
+            if (
+                intent.get("spawn_claim_id") == claim_id
+                and intent.get("new_agent_id") == normalized_agent
+                and intent.get("new_thread_id") == normalized_thread
+            ):
+                return status(repo, run_id)
+            raise AssuranceError(
+                "dispatch rehydration spawn identity cannot be overwritten",
+                code="WORK_UNIT_REHYDRATION_IDENTITY_DRIFT",
+                status="NEEDS_USER",
+            )
+        if intent.get("spawn_state") != "claimed" or intent.get(
+            "spawn_claim_id"
+        ) != claim_id:
+            raise AssuranceError(
+                "dispatch rehydration spawn was not claimed by this owner",
+                code="WORK_UNIT_REHYDRATION_SPAWN_CLAIM_REQUIRED",
+                status="NEEDS_USER",
+            )
+        if normalized_thread == intent.get("source_thread_id"):
+            raise AssuranceError(
+                "dispatch rehydration must create a new thread",
+                code="WORK_UNIT_REHYDRATION_IDENTITY_DRIFT",
+                status="NEEDS_USER",
+            )
+        intent["spawn_state"] = "spawned"
+        intent["new_agent_id"] = normalized_agent
+        intent["new_thread_id"] = normalized_thread
+        ledger["dispatch_rehydration_intent"] = intent
+        append_event(
+            ledger,
+            "dispatch_rehydration_spawn_recorded",
+            {
+                "action_id": action_id,
+                "work_unit_id": intent["work_unit_id"],
+                "role": intent["role"],
+                "spawn_claim_id": claim_id,
+                "new_agent_id": normalized_agent,
+                "new_thread_id": normalized_thread,
+            },
+        )
+        save_ledger(repo, ledger)
+    return status(repo, run_id)
+
+
+def bind_dispatch_rehydration(
+    repo_value: str | Path,
+    run_value: str,
+    *,
+    action_id: str,
+    new_agent_id: str,
+    new_thread_id: str,
+    prompt_digest: str,
+    driver_runtime_kind: str = "native",
+) -> dict[str, Any]:
+    normalized_agent = new_agent_id.strip()
+    normalized_thread = new_thread_id.strip()
+    if not normalized_agent or not normalized_thread:
+        raise AssuranceError(
+            "rehydrated role identity is required",
+            code="WORK_UNIT_REHYDRATION_IDENTITY_REQUIRED",
+            status="FAIL",
+        )
+    if not re.fullmatch(r"[0-9a-f]{64}", prompt_digest):
+        raise AssuranceError(
+            "rehydrated prompt digest is invalid",
+            code="WORK_UNIT_PROJECTION_DIGEST_INVALID",
+            status="FAIL",
+        )
+    repo = resolve_repo(repo_value)
+    run_id = ensure_run_id(run_value)
+    with locked(repo):
+        ledger = read_ledger(repo, run_id)
+        _require_driver_runtime_owner(ledger, driver_runtime_kind)
+        if driver_runtime_kind != "native":
+            raise AssuranceError(
+                "canonical dispatch rehydration is Native Driver only",
+                code="WORK_UNIT_REHYDRATION_RUNTIME_INVALID",
+                status="FAIL",
+            )
+        intent = ledger.get("dispatch_rehydration_intent")
+        pending = ledger.get("dispatch_intent")
+        if (
+            not isinstance(intent, dict)
+            or intent.get("action_id") != action_id
+            or not isinstance(pending, dict)
+            or pending.get("action_id") != action_id
+        ):
+            raise AssuranceError(
+                "dispatch rehydration intent is stale",
+                code="WORK_UNIT_REHYDRATION_INTENT_STALE",
+                status="FAIL",
+            )
+        if intent.get("state") == "bound":
+            if (
+                intent.get("new_agent_id") == normalized_agent
+                and intent.get("new_thread_id") == normalized_thread
+            ):
+                return status(repo, run_id)
+            raise AssuranceError(
+                "dispatch rehydration identity changed",
+                code="WORK_UNIT_REHYDRATION_IDENTITY_DRIFT",
+                status="NEEDS_USER",
+            )
+        spawn_state = intent.get("spawn_state")
+        if spawn_state in {"pending", "claimed"}:
+            raise AssuranceError(
+                "dispatch rehydration spawn identity is unresolved",
+                code="WORK_UNIT_REHYDRATION_SPAWN_UNRESOLVED",
+                status="NEEDS_USER",
+            )
+        if spawn_state != "spawned":
+            raise AssuranceError(
+                "dispatch rehydration spawn state is invalid",
+                code="WORK_UNIT_REHYDRATION_SPAWN_STATE_INVALID",
+                status="NEEDS_USER",
+            )
+        if (
+            intent.get("new_agent_id") != normalized_agent
+            or intent.get("new_thread_id") != normalized_thread
+        ):
+            raise AssuranceError(
+                "dispatch rehydration identity changed",
+                code="WORK_UNIT_REHYDRATION_IDENTITY_DRIFT",
+                status="NEEDS_USER",
+            )
+        if pending.get("state") != "exhausted":
+            raise AssuranceError(
+                "dispatch rehydration source is no longer exhausted",
+                code="WORK_UNIT_REHYDRATION_SOURCE_DRIFT",
+                status="NEEDS_USER",
+            )
+        if digest(pending) != intent.get("source_dispatch_digest"):
+            raise AssuranceError(
+                "dispatch rehydration source dispatch changed",
+                code="WORK_UNIT_REHYDRATION_SOURCE_DRIFT",
+                status="NEEDS_USER",
+            )
+        role = str(intent["role"])
+        canonical_projection = _validated_projection_digest(
+            ledger,
+            action_id=action_id,
+            action=str(pending.get("action")),
+            role=role,
+            work_unit_id=str(intent["work_unit_id"]),
+            supplied=intent.get("context_projection_digest"),
+            work_unit=_work_unit_for_id(ledger, str(intent["work_unit_id"])),
+        )
+        current_observation = _progress_side_effect_digest(ledger, role)
+        if current_observation != intent.get("source_observation_digest"):
+            raise AssuranceError(
+                "dispatch rehydration source side-effect observation changed",
+                code="WORK_UNIT_REHYDRATION_SIDE_EFFECT_BLOCKED",
+                status="NEEDS_USER",
+            )
+        old_agent = ledger["facets"]["execution"]["agents"].get(role)
+        if not isinstance(old_agent, Mapping):
+            raise AssuranceError(
+                "dispatch rehydration lost the source role identity",
+                code="WORK_UNIT_REHYDRATION_SOURCE_IDENTITY_MISSING",
+                status="NEEDS_USER",
+            )
+        if old_agent.get("thread_id") != intent.get("source_thread_id"):
+            raise AssuranceError(
+                "dispatch rehydration source thread changed",
+                code="WORK_UNIT_REHYDRATION_SOURCE_DRIFT",
+                status="NEEDS_USER",
+            )
+        if role == "builder" and old_agent.get("mode") == "root_session":
+            raise AssuranceError(
+                "root-session Builder cannot be rehydrated as a Native thread",
+                code="NATIVE_ROOT_BUILDER_REHYDRATION_FORBIDDEN",
+                status="NEEDS_USER",
+            )
+        new_agent = {"agent_id": normalized_agent, "thread_id": normalized_thread}
+        execution = ledger["facets"]["execution"]
+        if role == "reviewer":
+            ledger.setdefault("retired_reviewer_agents", []).append(
+                copy.deepcopy(dict(old_agent))
+            )
+        execution["agents"][role] = new_agent
+        if role == "tester" and isinstance(execution.get("tester_source"), Mapping):
+            source = copy.deepcopy(dict(execution["tester_source"]))
+            if source.get("agent") != dict(old_agent):
+                raise AssuranceError(
+                    "Tester source identity changed before rehydration",
+                    code="WORK_UNIT_REHYDRATION_SOURCE_DRIFT",
+                    status="NEEDS_USER",
+                )
+            source["agent"] = copy.deepcopy(new_agent)
+            execution["tester_source"] = source
+        execution["version"] += 1
+        ledger["digests"] = facet_digests(ledger["facets"])
+        previous = copy.deepcopy(pending)
+        previous_digest = digest(previous)
+        new_pending = copy.deepcopy(previous)
+        new_pending["thread_id"] = normalized_thread
+        new_pending["state"] = "prepared"
+        new_pending["continuity_state"] = "prepared"
+        new_pending["attempt"] = 1
+        new_pending["generation"] = int(previous.get("generation", 1)) + 1
+        new_pending["unit_attempt"] = int(previous.get("unit_attempt", 1)) + 1
+        new_pending["rehydration_count"] = 1
+        new_pending["pre_execution_observation_digest"] = current_observation
+        new_pending["post_execution_observation_digest"] = None
+        new_pending["context_projection_digest"] = canonical_projection
+        new_pending["prompt_digest"] = prompt_digest
+        new_pending["renewed_from_digest"] = previous_digest
+        new_pending["renewal_reason"] = "canonical_rehydration"
+        new_pending["created_at"] = now()
+        for key in (
+            "turn_id",
+            "failure_code",
+            "retry_scheduled_at",
+            "retry_not_before",
+            "exhausted_at",
+        ):
+            new_pending.pop(key, None)
+        new_pending["interrupted_retry_used"] = False
+        new_pending["interrupted_retry_blocked"] = False
+        ledger["dispatch_intent"] = new_pending
+        append_event(
+            ledger,
+            "dispatch_rehydrated",
+            {
+                "action_id": action_id,
+                "work_unit_id": intent["work_unit_id"],
+                "role": role,
+                "source_thread_id": intent["source_thread_id"],
+                "new_thread_id": normalized_thread,
+                "source_generation": intent["source_generation"],
+                "generation": new_pending["generation"],
+                "rehydration_count": 1,
+                "context_projection_digest": canonical_projection,
+            },
+        )
+        ledger["dispatch_rehydration_intent"] = None
+        append_event(ledger, "dispatch_prepared", copy.deepcopy(new_pending))
+        save_ledger(repo, ledger)
+    return status(repo, run_id)
+
+
+def begin_context_rotation(
+    repo_value: str | Path,
+    run_value: str,
+    *,
+    role: str,
+    work_unit_id: str,
+    context_projection_digest: str,
+    action_id: str | None = None,
+    action: str = "work_unit",
+    driver_runtime_kind: str = "native",
+) -> dict[str, Any]:
+    if role not in {"builder", "tester", "reviewer"}:
+        raise AssuranceError(
+            "context rotation role is invalid",
+            code="WORK_UNIT_ROTATION_ROLE_INVALID",
+            status="FAIL",
+        )
+    if not re.fullmatch(r"[0-9a-f]{64}", context_projection_digest):
+        raise AssuranceError(
+            "work unit context projection digest is invalid",
+            code="WORK_UNIT_PROJECTION_DIGEST_INVALID",
+            status="FAIL",
+        )
+    repo = resolve_repo(repo_value)
+    run_id = ensure_run_id(run_value)
+    with locked(repo):
+        ledger = read_ledger(repo, run_id)
+        _require_driver_runtime_owner(ledger, driver_runtime_kind)
+        if driver_runtime_kind != "native":
+            raise AssuranceError(
+                "context rotation is Native Driver only",
+                code="WORK_UNIT_ROTATION_RUNTIME_INVALID",
+                status="FAIL",
+            )
+        _assert_no_candidate_residue_intent(ledger)
+        if not _progress_enabled(ledger):
+            raise AssuranceError(
+                "context rotation requires the bounded progress policy",
+                code="WORK_UNIT_REHYDRATION_UNAVAILABLE",
+                status="NEEDS_USER",
+            )
+        if ledger.get("phase") != "active":
+            raise AssuranceError(
+                "context rotation requires an active run",
+                code="ASSURANCE_RUN_NOT_ACTIVE",
+                status="NEEDS_USER",
+            )
+        if ledger.get("dispatch_intent") is not None:
+            raise AssuranceError(
+                "context rotation cannot overlap a dispatch",
+                code="WORK_UNIT_ROTATION_DISPATCH_PENDING",
+                status="NEEDS_USER",
+            )
+        if ledger.get("dispatch_rehydration_intent") is not None:
+            raise AssuranceError(
+                "context rotation cannot overlap dispatch rehydration",
+                code="WORK_UNIT_ROTATION_REHYDRATION_PENDING",
+                status="NEEDS_USER",
+            )
+        rotation_action_id = action_id or digest(
+            {
+                "run_id": run_id,
+                "role": role,
+                "work_unit_id": work_unit_id,
+                "action": action,
+                "operation": "context_rotation",
+            }
+        )
+        current = current_work_unit(ledger, role=role)
+        if not isinstance(current, Mapping) or current.get("id") != work_unit_id:
+            raise AssuranceError(
+                "context rotation work unit is stale",
+                code="WORK_UNIT_ROTATION_UNIT_STALE",
+                status="NEEDS_USER",
+                details={
+                    "expected_work_unit_id": current.get("id")
+                    if isinstance(current, Mapping)
+                    else None,
+                    "actual_work_unit_id": work_unit_id,
+                },
+            )
+        canonical_projection = _validated_projection_digest(
+            ledger,
+            action_id=rotation_action_id,
+            action=action,
+            role=role,
+            work_unit_id=work_unit_id,
+            supplied=context_projection_digest,
+            work_unit=current,
+        )
+        execution = ledger["facets"]["execution"]
+        agent = execution["agents"].get(role)
+        if (
+            not isinstance(agent, Mapping)
+            or not isinstance(agent.get("thread_id"), str)
+            or not agent.get("thread_id")
+        ):
+            raise AssuranceError(
+                "context rotation requires a Native role thread",
+                code="WORK_UNIT_ROTATION_THREAD_REQUIRED",
+                status="NEEDS_USER",
+            )
+        if role == "builder" and agent.get("mode") == "root_session":
+            raise AssuranceError(
+                "root-session Builder does not rotate to a Native thread",
+                code="NATIVE_ROOT_BUILDER_ROTATION_FORBIDDEN",
+                status="NEEDS_USER",
+            )
+        thread_id = str(agent["thread_id"])
+        usage = work_unit_progress(ledger)["thread_usage"].get(thread_id, 0)
+        limit = int(progress_policy(ledger["facets"]).get("max_units_per_thread", 0))
+        if usage < limit:
+            raise AssuranceError(
+                "context rotation is not yet required",
+                code="WORK_UNIT_ROTATION_NOT_DUE",
+                status="FAIL",
+                details={"thread_id": thread_id, "usage": usage, "limit": limit},
+            )
+        existing = ledger.get("context_rotation_intent")
+        if isinstance(existing, Mapping):
+            expected = {
+                "action_id": rotation_action_id,
+                "action": action,
+                "role": role,
+                "work_unit_id": work_unit_id,
+                "source_agent_id": str(agent["agent_id"]),
+                "source_thread_id": thread_id,
+                "context_projection_digest": canonical_projection,
+            }
+            if all(existing.get(key) == value for key, value in expected.items()):
+                return status(repo, run_id)
+            raise AssuranceError(
+                "another context rotation is already pending",
+                code="WORK_UNIT_ROTATION_INTENT_CONFLICT",
+                status="NEEDS_USER",
+            )
+        observation_digest = _progress_side_effect_digest(ledger, role)
+        intent = {
+            "state": "prepared",
+            "action_id": rotation_action_id,
+            "action": action,
+            "role": role,
+            "work_unit_id": work_unit_id,
+            "spawn_state": "pending",
+            "spawn_claim_id": None,
+            "source_agent_id": str(agent["agent_id"]),
+            "source_thread_id": thread_id,
+            "source_observation_digest": observation_digest,
+            "source_execution_digest": digest(execution),
+            "context_projection_digest": canonical_projection,
+            "prepared_at": now(),
+        }
+        ledger["context_rotation_intent"] = intent
+        append_event(ledger, "context_rotation_prepared", copy.deepcopy(intent))
+        save_ledger(repo, ledger)
+    return status(repo, run_id)
+
+
+def claim_context_rotation(
+    repo_value: str | Path,
+    run_value: str,
+    *,
+    action_id: str,
+    claim_id: str,
+    driver_runtime_kind: str = "native",
+) -> dict[str, Any]:
+    if not re.fullmatch(r"[0-9a-f]{64}", claim_id):
+        raise AssuranceError(
+            "context rotation claim id is invalid",
+            code="WORK_UNIT_ROTATION_CLAIM_INVALID",
+            status="FAIL",
+        )
+    repo = resolve_repo(repo_value)
+    run_id = ensure_run_id(run_value)
+    with locked(repo):
+        ledger = read_ledger(repo, run_id)
+        _require_driver_runtime_owner(ledger, driver_runtime_kind)
+        if driver_runtime_kind != "native":
+            raise AssuranceError(
+                "context rotation is Native Driver only",
+                code="WORK_UNIT_ROTATION_RUNTIME_INVALID",
+                status="FAIL",
+            )
+        _assert_no_candidate_residue_intent(ledger)
+        intent = ledger.get("context_rotation_intent")
+        if (
+            not isinstance(intent, dict)
+            or intent.get("action_id") != action_id
+        ):
+            raise AssuranceError(
+                "context rotation intent is stale",
+                code="WORK_UNIT_ROTATION_INTENT_STALE",
+                status="FAIL",
+            )
+        state = intent.get("spawn_state")
+        if state == "spawned":
+            if intent.get("spawn_claim_id") == claim_id:
+                return status(repo, run_id)
+            raise AssuranceError(
+                "context rotation has already recorded another spawn",
+                code="WORK_UNIT_ROTATION_SPAWN_CLAIM_CONFLICT",
+                status="NEEDS_USER",
+            )
+        if state == "claimed":
+            if intent.get("spawn_claim_id") == claim_id:
+                return status(repo, run_id)
+            raise AssuranceError(
+                "context rotation is claimed by another owner",
+                code="WORK_UNIT_ROTATION_SPAWN_CLAIM_CONFLICT",
+                status="NEEDS_USER",
+            )
+        if state != "pending":
+            raise AssuranceError(
+                "context rotation spawn state is invalid",
+                code="WORK_UNIT_ROTATION_SPAWN_STATE_INVALID",
+                status="NEEDS_USER",
+            )
+        _validated_projection_digest(
+            ledger,
+            action_id=action_id,
+            action=str(intent.get("action")),
+            role=str(intent.get("role")),
+            work_unit_id=str(intent.get("work_unit_id")),
+            supplied=intent.get("context_projection_digest"),
+            work_unit=_work_unit_for_id(
+                ledger, str(intent.get("work_unit_id"))
+            ),
+        )
+        intent["spawn_state"] = "claimed"
+        intent["spawn_claim_id"] = claim_id
+        append_event(
+            ledger,
+            "context_rotation_spawn_claimed",
+            {
+                "action_id": action_id,
+                "work_unit_id": intent["work_unit_id"],
+                "role": intent["role"],
+                "spawn_claim_id": claim_id,
+            },
+        )
+        save_ledger(repo, ledger)
+    return status(repo, run_id)
+
+
+def record_context_rotation_spawn(
+    repo_value: str | Path,
+    run_value: str,
+    *,
+    action_id: str,
+    claim_id: str,
+    new_agent_id: str,
+    new_thread_id: str,
+    driver_runtime_kind: str = "native",
+) -> dict[str, Any]:
+    normalized_agent = new_agent_id.strip()
+    normalized_thread = new_thread_id.strip()
+    if not re.fullmatch(r"[0-9a-f]{64}", claim_id):
+        raise AssuranceError(
+            "context rotation claim id is invalid",
+            code="WORK_UNIT_ROTATION_CLAIM_INVALID",
+            status="FAIL",
+        )
+    if not normalized_agent or not normalized_thread:
+        raise AssuranceError(
+            "context rotation spawn identity is required",
+            code="WORK_UNIT_ROTATION_IDENTITY_REQUIRED",
+            status="FAIL",
+        )
+    repo = resolve_repo(repo_value)
+    run_id = ensure_run_id(run_value)
+    with locked(repo):
+        ledger = read_ledger(repo, run_id)
+        _require_driver_runtime_owner(ledger, driver_runtime_kind)
+        if driver_runtime_kind != "native":
+            raise AssuranceError(
+                "context rotation is Native Driver only",
+                code="WORK_UNIT_ROTATION_RUNTIME_INVALID",
+                status="FAIL",
+            )
+        _assert_no_candidate_residue_intent(ledger)
+        intent = ledger.get("context_rotation_intent")
+        if (
+            not isinstance(intent, dict)
+            or intent.get("action_id") != action_id
+        ):
+            raise AssuranceError(
+                "context rotation intent is stale",
+                code="WORK_UNIT_ROTATION_INTENT_STALE",
+                status="FAIL",
+            )
+        if intent.get("spawn_state") == "spawned":
+            if (
+                intent.get("spawn_claim_id") == claim_id
+                and intent.get("new_agent_id") == normalized_agent
+                and intent.get("new_thread_id") == normalized_thread
+            ):
+                return status(repo, run_id)
+            raise AssuranceError(
+                "context rotation spawn identity cannot be overwritten",
+                code="WORK_UNIT_ROTATION_IDENTITY_DRIFT",
+                status="NEEDS_USER",
+            )
+        if (
+            intent.get("spawn_state") != "claimed"
+            or intent.get("spawn_claim_id") != claim_id
+        ):
+            raise AssuranceError(
+                "context rotation spawn was not claimed by this owner",
+                code="WORK_UNIT_ROTATION_SPAWN_CLAIM_REQUIRED",
+                status="NEEDS_USER",
+            )
+        if normalized_thread == intent.get("source_thread_id"):
+            raise AssuranceError(
+                "context rotation must create a new thread",
+                code="WORK_UNIT_ROTATION_IDENTITY_DRIFT",
+                status="NEEDS_USER",
+            )
+        intent["spawn_state"] = "spawned"
+        intent["new_agent_id"] = normalized_agent
+        intent["new_thread_id"] = normalized_thread
+        append_event(
+            ledger,
+            "context_rotation_spawn_recorded",
+            {
+                "action_id": action_id,
+                "work_unit_id": intent["work_unit_id"],
+                "role": intent["role"],
+                "spawn_claim_id": claim_id,
+                "new_agent_id": normalized_agent,
+                "new_thread_id": normalized_thread,
+            },
+        )
+        save_ledger(repo, ledger)
+    return status(repo, run_id)
+
+
+def bind_context_rotation(
+    repo_value: str | Path,
+    run_value: str,
+    *,
+    new_agent_id: str,
+    new_thread_id: str,
+    driver_runtime_kind: str = "native",
+) -> dict[str, Any]:
+    normalized_agent = new_agent_id.strip()
+    normalized_thread = new_thread_id.strip()
+    if not normalized_agent or not normalized_thread:
+        raise AssuranceError(
+            "rotated role identity is required",
+            code="WORK_UNIT_ROTATION_IDENTITY_REQUIRED",
+            status="FAIL",
+        )
+    repo = resolve_repo(repo_value)
+    run_id = ensure_run_id(run_value)
+    with locked(repo):
+        ledger = read_ledger(repo, run_id)
+        _require_driver_runtime_owner(ledger, driver_runtime_kind)
+        if driver_runtime_kind != "native":
+            raise AssuranceError(
+                "context rotation is Native Driver only",
+                code="WORK_UNIT_ROTATION_RUNTIME_INVALID",
+                status="FAIL",
+            )
+        _assert_no_candidate_residue_intent(ledger)
+        intent = ledger.get("context_rotation_intent")
+        if not isinstance(intent, Mapping) or intent.get("state") != "prepared":
+            raise AssuranceError(
+                "context rotation intent is missing",
+                code="WORK_UNIT_ROTATION_INTENT_MISSING",
+                status="FAIL",
+            )
+        if intent.get("spawn_state") in {"pending", "claimed"}:
+            raise AssuranceError(
+                "context rotation spawn identity is unresolved",
+                code="WORK_UNIT_ROTATION_SPAWN_UNRESOLVED",
+                status="NEEDS_USER",
+            )
+        if intent.get("spawn_state") != "spawned":
+            raise AssuranceError(
+                "context rotation spawn state is invalid",
+                code="WORK_UNIT_ROTATION_SPAWN_STATE_INVALID",
+                status="NEEDS_USER",
+            )
+        if (
+            intent.get("new_agent_id") != normalized_agent
+            or intent.get("new_thread_id") != normalized_thread
+        ):
+            raise AssuranceError(
+                "context rotation identity changed",
+                code="WORK_UNIT_ROTATION_IDENTITY_DRIFT",
+                status="NEEDS_USER",
+            )
+        if ledger.get("dispatch_intent") is not None:
+            raise AssuranceError(
+                "context rotation cannot overlap a dispatch",
+                code="WORK_UNIT_ROTATION_DISPATCH_PENDING",
+                status="NEEDS_USER",
+            )
+        role = str(intent["role"])
+        execution = ledger["facets"]["execution"]
+        current = execution["agents"].get(role)
+        if (
+            not isinstance(current, Mapping)
+            or current.get("agent_id") != intent.get("source_agent_id")
+            or current.get("thread_id") != intent.get("source_thread_id")
+            or digest(execution) != intent.get("source_execution_digest")
+            or _progress_side_effect_digest(ledger, role)
+            != intent.get("source_observation_digest")
+        ):
+            raise AssuranceError(
+                "context rotation source drifted",
+                code="WORK_UNIT_ROTATION_SOURCE_DRIFT",
+                status="NEEDS_USER",
+            )
+        _validated_projection_digest(
+            ledger,
+            action_id=str(intent["action_id"]),
+            action=str(intent["action"]),
+            role=role,
+            work_unit_id=str(intent["work_unit_id"]),
+            supplied=intent.get("context_projection_digest"),
+            work_unit=_work_unit_for_id(
+                ledger, str(intent["work_unit_id"])
+            ),
+        )
+        if normalized_thread == intent.get("source_thread_id"):
+            raise AssuranceError(
+                "context rotation must use a new thread",
+                code="WORK_UNIT_ROTATION_IDENTITY_DRIFT",
+                status="NEEDS_USER",
+            )
+        old_agent = copy.deepcopy(dict(current))
+        if role == "reviewer":
+            ledger.setdefault("retired_reviewer_agents", []).append(old_agent)
+        new_agent = {"agent_id": normalized_agent, "thread_id": normalized_thread}
+        execution["agents"][role] = new_agent
+        if role == "tester" and isinstance(execution.get("tester_source"), Mapping):
+            source = copy.deepcopy(dict(execution["tester_source"]))
+            if source.get("agent") != old_agent:
+                raise AssuranceError(
+                    "Tester source identity changed before context rotation",
+                    code="WORK_UNIT_ROTATION_SOURCE_DRIFT",
+                    status="NEEDS_USER",
+                )
+            source["agent"] = copy.deepcopy(new_agent)
+            execution["tester_source"] = source
+        execution["version"] += 1
+        ledger["digests"] = facet_digests(ledger["facets"])
+        append_event(
+            ledger,
+            "context_thread_rotated",
+            {
+                "role": role,
+                "work_unit_id": intent["work_unit_id"],
+                "source_agent_id": intent["source_agent_id"],
+                "source_thread_id": intent["source_thread_id"],
+                "new_agent_id": normalized_agent,
+                "new_thread_id": normalized_thread,
+                "context_projection_digest": intent["context_projection_digest"],
+            },
+        )
+        ledger["context_rotation_intent"] = None
         save_ledger(repo, ledger)
     return status(repo, run_id)
 
@@ -3421,6 +5062,18 @@ def renew_dispatch(
             "action": previous_intent["action"],
             "role": previous_intent["role"],
             "thread_id": previous_intent["thread_id"],
+            "work_unit_id": previous_intent.get("work_unit_id"),
+            "unit_attempt": int(previous_intent.get("unit_attempt", 1)) + 1,
+            "rehydration_count": int(previous_intent.get("rehydration_count", 0)),
+            "context_projection_digest": previous_intent.get(
+                "context_projection_digest"
+            ),
+            "pre_execution_observation_digest": previous_intent.get(
+                "pre_execution_observation_digest"
+            ),
+            "post_execution_observation_digest": previous_intent.get(
+                "post_execution_observation_digest"
+            ),
             "prompt_digest": previous_intent["prompt_digest"],
             "output_schema_digest": previous_intent["output_schema_digest"],
             "dispatch_observation_digest": previous_intent.get(
@@ -3448,6 +5101,16 @@ def renew_dispatch(
             "renewal_reason": normalized_reason,
             "created_at": now(),
         }
+        if not _progress_enabled(ledger):
+            for key in (
+                "work_unit_id",
+                "unit_attempt",
+                "rehydration_count",
+                "context_projection_digest",
+                "pre_execution_observation_digest",
+                "post_execution_observation_digest",
+            ):
+                renewed_intent.pop(key, None)
         if isinstance(previous_intent.get("compaction_recovery"), Mapping):
             renewed_intent["compaction_recovery"] = copy.deepcopy(
                 previous_intent["compaction_recovery"]
@@ -3968,6 +5631,17 @@ def _driver_failure_dispatch(ledger: Mapping[str, Any]) -> dict[str, Any] | None
         value["owner_session_id"] = intent["owner_session_id"]
     if isinstance(intent.get("candidate_manifest_digest"), str):
         value["candidate_manifest_digest"] = intent["candidate_manifest_digest"]
+    if isinstance(intent.get("work_unit_id"), str):
+        value["work_unit_id"] = intent["work_unit_id"]
+    for key in (
+        "unit_attempt",
+        "rehydration_count",
+        "context_projection_digest",
+        "pre_execution_observation_digest",
+        "post_execution_observation_digest",
+    ):
+        if key in intent and intent.get(key) is not None:
+            value[key] = copy.deepcopy(intent[key])
     return value
 
 
@@ -6481,6 +8155,12 @@ def _candidate_residue_pre_mutation_value(
         "problems": copy.deepcopy(ledger.get("problems", [])),
         "driver_failure": copy.deepcopy(ledger.get("driver_failure")),
         "dispatch_intent": copy.deepcopy(ledger.get("dispatch_intent")),
+        "dispatch_rehydration_intent": copy.deepcopy(
+            ledger.get("dispatch_rehydration_intent")
+        ),
+        "context_rotation_intent": copy.deepcopy(
+            ledger.get("context_rotation_intent")
+        ),
         "proof_failure": copy.deepcopy(ledger.get("proof_failure")),
         "machine_failure": copy.deepcopy(ledger.get("machine_failure")),
         "recomposition_intent": copy.deepcopy(ledger.get("recomposition_intent")),
@@ -7309,7 +8989,7 @@ def _seal_replayed_successor_source(
             status="NEEDS_USER",
         )
     expected_candidate = str(supersedes["candidate_head"])
-    expected_facets = validate_contract(copy.deepcopy(dict(contract)))
+    expected_facets = validate_persisted_contract(copy.deepcopy(dict(contract)))
     expected_execution = expected_facets["execution"]
     expected_execution["candidate_head"] = expected_candidate
     expected_execution["dirty_snapshot"] = []
@@ -8073,6 +9753,8 @@ def status(repo_value: str | Path, run_value: str) -> dict[str, Any]:
         "digests": ledger["digests"],
         "mission_revision": ledger["facets"]["mission"]["revision"],
         "recovery_policy": recovery_policy(ledger["facets"]),
+        "progress_policy": progress_policy(ledger["facets"]),
+        "work_unit_progress": work_unit_progress(ledger),
         "builder_checkpointed": ledger.get("builder_checkpointed", False),
         "driver_runtime": copy.deepcopy(ledger.get("driver_runtime")),
         "transport_cleanup_intent": copy.deepcopy(
@@ -8081,6 +9763,12 @@ def status(repo_value: str | Path, run_value: str) -> dict[str, Any]:
         "deferred_wait": copy.deepcopy(ledger.get("deferred_wait")),
         "driver_failure": copy.deepcopy(ledger.get("driver_failure")),
         "dispatch_intent": copy.deepcopy(ledger.get("dispatch_intent")),
+        "dispatch_rehydration_intent": copy.deepcopy(
+            ledger.get("dispatch_rehydration_intent")
+        ),
+        "context_rotation_intent": copy.deepcopy(
+            ledger.get("context_rotation_intent")
+        ),
         "tester_replacement_intent": copy.deepcopy(
             ledger.get("tester_replacement_intent")
         ),
@@ -9141,7 +10829,10 @@ def driver_context(repo_value: str | Path, run_value: str) -> dict[str, Any]:
         "target_contenders": _target_contenders(repo, ledger),
         "candidate_worktree": ledger["candidate_worktree"],
         "facets": copy.deepcopy(ledger["facets"]),
+        "digests": copy.deepcopy(ledger["digests"]),
         "recovery_policy": recovery_policy(ledger["facets"]),
+        "progress_policy": progress_policy(ledger["facets"]),
+        "work_unit_progress": work_unit_progress(ledger),
         "evidence": _driver_evidence_view(ledger),
         "publication": copy.deepcopy(ledger.get("publication")),
         "problems": copy.deepcopy(ledger.get("problems", [])),
@@ -9152,6 +10843,12 @@ def driver_context(repo_value: str | Path, run_value: str) -> dict[str, Any]:
         "deferred_wait": copy.deepcopy(ledger.get("deferred_wait")),
         "driver_failure": copy.deepcopy(ledger.get("driver_failure")),
         "dispatch_intent": copy.deepcopy(ledger.get("dispatch_intent")),
+        "dispatch_rehydration_intent": copy.deepcopy(
+            ledger.get("dispatch_rehydration_intent")
+        ),
+        "context_rotation_intent": copy.deepcopy(
+            ledger.get("context_rotation_intent")
+        ),
         "candidate_observation": candidate_observation,
         "tester_replacement_intent": copy.deepcopy(
             ledger.get("tester_replacement_intent")
@@ -9307,7 +11004,7 @@ def apply_engineering_correction(
         replacement["assurance"] = copy.deepcopy(
             preview["replacement_assurance"]
         )
-        replacement = validate_contract(replacement)
+        replacement = validate_persisted_contract(replacement)
         ledger["facets"] = replacement
         ledger["digests"] = facet_digests(replacement)
         problem_record = matches[0]
@@ -9444,6 +11141,17 @@ def update_facet(
                 "Full Driver execution facts require dedicated transactions",
                 code="DRIVER_EXECUTION_FACET_LOCKED",
             )
+        if facet == "execution" and _progress_enabled(ledger):
+            if (
+                not isinstance(value, Mapping)
+                or value.get("progress_policy") != old.get("progress_policy")
+                or value.get("work_units") != old.get("work_units")
+            ):
+                raise AssuranceError(
+                    "work unit progress policy and graph are immutable for an active run",
+                    code="WORK_UNIT_CONTRACT_IMMUTABLE",
+                    status="NEEDS_USER",
+                )
         if facet == "mission":
             lease = ledger.get("environment_lease")
             if isinstance(lease, dict) and lease.get("state") == "held":
@@ -9493,7 +11201,7 @@ def update_facet(
         candidate[facet] = copy.deepcopy(value)
         if facet == "mission":
             _reject_acceptance_observation_downgrade(old, candidate["mission"])
-        validated = validate_contract(candidate)
+        validated = validate_persisted_contract(candidate)
         if facet == "execution":
             if value.get("dirty_snapshot") != old["dirty_snapshot"]:
                 raise AssuranceError(
@@ -9564,6 +11272,26 @@ def update_facet(
         ledger["facets"] = validated
         if facet == "execution" and validated["execution"].get("candidate_head") is not None:
             ledger["builder_checkpointed"] = True
+            _mark_work_unit_completed(
+                ledger,
+                intent=_progress_intent_for_role(
+                    ledger,
+                    role="builder",
+                    action_id=decision_action_id,
+                    action="update_facet",
+                ),
+                observation="candidate_commit",
+                observation_digest=digest(
+                    {
+                        "candidate_head": validated["execution"].get(
+                            "candidate_head"
+                        ),
+                        "builder_files": validated["execution"].get(
+                            "builder_files", []
+                        ),
+                    }
+                ),
+            )
         ledger["digests"] = facet_digests(validated)
         expected_resolution = f"plan-decision:{facet}:{ledger['digests'][facet]}"
         append_event(
@@ -9701,7 +11429,7 @@ def revise_mission(
         candidate["mission"] = copy.deepcopy(mission_value)
         candidate["execution"]["revision_transition"] = copy.deepcopy(transition_value)
         _reject_acceptance_observation_downgrade(old, candidate["mission"])
-        validated = validate_contract(candidate)
+        validated = validate_persisted_contract(candidate)
         lease = ledger.get("environment_lease")
         if isinstance(lease, dict) and lease.get("state") == "held":
             transaction = ledger.get("deployment_transaction")
@@ -10036,6 +11764,12 @@ def checkpoint_builder(
         if branch_head(repo, ledger["candidate_branch"]) != candidate:
             raise AssuranceError("candidate branch and worktree diverged", code="CANDIDATE_IDENTITY_MISMATCH")
         execution = ledger["facets"]["execution"]
+        progress_intent = _progress_intent_for_role(
+            ledger,
+            role="builder",
+            action_id=action_id,
+            action="checkpoint_builder",
+        )
         if (
             execution.get("candidate_head") is None
             and isinstance(execution.get("cost_ancestry"), Mapping)
@@ -10143,6 +11877,17 @@ def checkpoint_builder(
             and execution.get("builder_files") == builder_files
             and ledger.get("builder_checkpointed") is True
         ):
+            _mark_work_unit_completed(
+                ledger,
+                intent=progress_intent,
+                observation="candidate_commit",
+                observation_digest=digest(
+                    {
+                        "candidate_head": candidate,
+                        "builder_files": builder_files,
+                    }
+                ),
+            )
             if _mark_root_builder_result_applied(
                 ledger, root_dispatch, "checkpoint_builder"
             ):
@@ -10168,6 +11913,17 @@ def checkpoint_builder(
             ledger,
             "builder_checkpointed",
             {"old_head": previous, "candidate_head": candidate, "files": builder_files},
+        )
+        _mark_work_unit_completed(
+            ledger,
+            intent=progress_intent,
+            observation="candidate_commit",
+            observation_digest=digest(
+                {
+                    "candidate_head": candidate,
+                    "builder_files": builder_files,
+                }
+            ),
         )
         _mark_root_builder_result_applied(
             ledger, root_dispatch, "checkpoint_builder"
@@ -11787,6 +13543,12 @@ def integrate_tester(repo_value: str | Path, run_value: str) -> dict[str, Any]:
             raise AssuranceError("run is not active", code="ASSURANCE_RUN_NOT_ACTIVE")
         _assert_no_candidate_residue_intent(ledger)
         execution = ledger["facets"]["execution"]
+        progress_intent = _progress_intent_for_role(
+            ledger,
+            role="tester",
+            action_id=None,
+            action="integrate_tester",
+        )
         source = execution.get("tester_source")
         if not isinstance(source, dict):
             raise AssuranceError("Tester source is not prepared", code="TESTER_SOURCE_NOT_PREPARED")
@@ -11957,6 +13719,18 @@ def integrate_tester(repo_value: str | Path, run_value: str) -> dict[str, Any]:
                 ledger,
                 "tester_source_integrated",
                 {"source_head": source_head, "candidate_head": candidate, "files": tester_files},
+            )
+            _mark_work_unit_completed(
+                ledger,
+                intent=progress_intent,
+                observation="tester_source_commit",
+                observation_digest=digest(
+                    {
+                        "source_head": source_head,
+                        "candidate_head": candidate,
+                        "files": manifest,
+                    }
+                ),
             )
             save_ledger(repo, ledger)
         except Exception:
@@ -12148,6 +13922,41 @@ def record_evidence(
                 "failure_signature": digest(record["details"]) if record["status"] == "fail" else None,
             },
         )
+        reviewer_progress_intent = _progress_intent_for_role(
+            ledger,
+            role="reviewer",
+            action_id=None,
+            action="record_evidence",
+        )
+        if (
+            report["status"] == "pass"
+            and kind in {"reviewer", "doc_review"}
+            and isinstance(reviewer_progress_intent, Mapping)
+        ):
+            required_review_kinds = [
+                name
+                for name in ("reviewer", "doc_review")
+                if name in ledger["facets"]["assurance"].get("required", [])
+            ]
+            if all(
+                isinstance(ledger["evidence"].get(name), Mapping)
+                and ledger["evidence"][name].get("status") == "pass"
+                for name in required_review_kinds
+            ):
+                _mark_work_unit_completed(
+                    ledger,
+                    intent=reviewer_progress_intent,
+                    observation="review_report",
+                    observation_digest=digest(
+                        {
+                            "candidate_head": candidate,
+                            "evidence": {
+                                name: ledger["evidence"].get(name)
+                                for name in required_review_kinds
+                            },
+                        }
+                    ),
+                )
         if report["status"] == "pass" and role in {"tester", "reviewer"}:
             _close_problems(ledger, role, f"evidence:{kind}")
         save_ledger(repo, ledger)
@@ -15290,6 +17099,40 @@ def recompose_candidate(
                 owner_session_id=owner_session_id,
             )
         _advance_recomposition(repo, ledger)
+        dispatch_for_progress = root_dispatch or ledger.get("dispatch_intent")
+        if isinstance(dispatch_for_progress, Mapping):
+            if dispatch_for_progress.get("role") == "builder":
+                _mark_work_unit_completed(
+                    ledger,
+                    intent=dispatch_for_progress,
+                    observation="candidate_commit",
+                    observation_digest=digest(
+                        {
+                            "candidate_head": ledger["facets"]["execution"].get(
+                                "candidate_head"
+                            ),
+                            "recomposition": copy.deepcopy(
+                                ledger.get("recomposition_intent")
+                            ),
+                        }
+                    ),
+                )
+            elif dispatch_for_progress.get("role") == "tester":
+                _mark_work_unit_completed(
+                    ledger,
+                    intent=dispatch_for_progress,
+                    observation="tester_source_commit",
+                    observation_digest=digest(
+                        {
+                            "candidate_head": ledger["facets"]["execution"].get(
+                                "candidate_head"
+                            ),
+                            "tester_source": copy.deepcopy(
+                                ledger["facets"]["execution"].get("tester_source")
+                            ),
+                        }
+                    ),
+                )
         if _mark_root_builder_result_applied(
             ledger, root_dispatch, "recompose_candidate"
         ):
@@ -15389,6 +17232,14 @@ def finalize(repo_value: str | Path, run_value: str, message: str) -> dict[str, 
                 code="ASSURANCE_GATES_INCOMPLETE",
                 status="NEEDS_USER",
                 details=ready,
+            )
+        progress = work_unit_progress(ledger)
+        if progress["enabled"] and progress["pending"]:
+            raise AssuranceError(
+                "all required work units must be completed before finalize",
+                code="WORK_UNIT_PROGRESS_INCOMPLETE",
+                status="NEEDS_USER",
+                details=progress,
             )
         candidate = ledger["facets"]["execution"]["candidate_head"]
         assert isinstance(candidate, str)

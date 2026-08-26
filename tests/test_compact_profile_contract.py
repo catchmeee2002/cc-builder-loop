@@ -7,14 +7,14 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from harness import cleanup_repo, commit_all, init_repo
+from harness import add_v4_progress_contract, cleanup_repo, commit_all, init_repo
 from runtime.codex_builder_loop.assurance_v4 import core
 from runtime.codex_builder_loop.assurance_v4.models import ContractError
 from runtime.codex_builder_loop.assurance_v4.store import read_ledger
 
 
 def compact_contract() -> dict:
-    return {
+    contract = {
         "schema_version": 4,
         "mission": {
             "delivery_kind": "code",
@@ -97,6 +97,7 @@ def compact_contract() -> dict:
             "agents": {},
         },
     }
+    return add_v4_progress_contract(contract)
 
 
 class CompactProfileContractTest(unittest.TestCase):

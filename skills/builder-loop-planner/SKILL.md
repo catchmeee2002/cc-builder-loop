@@ -100,6 +100,14 @@ description: Builder-loop 的执行 adapter：消费通用 Planner 冻结的语�
   `deployment: null`，Authority 的
   `external_targets` 默认空。Agent identity 只能在真实 spawn
   后由专用事务写入，Planner 不预填。
+- 新 v4 contract 还必须提供固定的 `progress_policy` 和 `work_units`。进度策略使用有界重建：
+  当前上下文最多尝试三次，每个工作单元最多重建一次，同一 thread 最多承载三个连续工作单元；
+  上下文来源只能是当前 contract、ledger、Git 和已确认 evidence。
+- 每个工作单元必须声明 `id`、`role`、`objective`、`depends_on`、精确 `scope` 和角色匹配的
+  completion observation。依赖图在启动前冻结，Driver 不得动态拆分、插入或改写。
+- Builder、Tester、Reviewer 的进度只能由 Core 根据 clean commit、source manifest 或正式
+  evidence 观察并写入 ledger event。无副作用断流才沿现有限额 retry；副作用或观察漂移必须
+  进入 reconcile/NEEDS_USER，不得自动 commit、rollback 或退回旧执行语义。
 - successor 的 `execution.carryover` 只记录 source candidate 相对 target 的 exact path/blob；当前 revision 的
   `builder_files` 与 `tester_files` 仍从空集合开始。公开前置文件只有在当前 Builder 实际创建或修改并
   checkpoint 后，或 candidate blob 与 carryover 完全一致时才算 ready，不能把旧角色产出复制成本轮产出。

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Assurance v4 新增有界工作单元进度契约：新任务冻结角色、依赖、精确范围和机械完成观察；Core 从
+  candidate commit、Tester source integration 和正式 Reviewer evidence 派生进度。Native Driver
+  使用 canonical projection 支持每个工作单元一次上下文重建，并在连续三个工作单元后轮换 thread；
+  `parallel_ready` 只记录可独立承载的依赖事实，Native Coordinator 仍以单一 dispatch intent 串行落账；
+  旧 ledger 保持只读兼容。
+
 - Root-session Builder handoff now exposes one idempotent result-application facade that replays the existing
   completion, checkpoint/problem, recomposition, and consumption transactions without switching Builder modes.
   Reviewer transport exhaustion can use a bounded replacement transaction only for a verified empty tail when

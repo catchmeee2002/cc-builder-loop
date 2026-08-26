@@ -21,6 +21,7 @@ for value in (str(TESTS), str(HELPERS)):
 
 from harness import (  # noqa: E402
     CLI,
+    add_v4_progress_contract,
     cleanup_repo,
     commit_all,
     fixture_runtime_env,
@@ -39,7 +40,7 @@ from codex_builder_loop.native_driver.app_server import probe_app_server  # noqa
 
 
 def contract() -> dict[str, Any]:
-    return {
+    value = {
         "schema_version": 4,
         "mission": {
             "revision": 1,
@@ -116,6 +117,7 @@ def contract() -> dict[str, Any]:
             "agents": {},
         },
     }
+    return add_v4_progress_contract(value)
 
 
 def wire_result(result: str, proof_spec: dict[str, Any] | None = None) -> dict[str, Any]:

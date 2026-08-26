@@ -13,6 +13,7 @@ from ..assurance_v4.driver_contract import (
     AGENT_ACTION_CAPABILITIES,
     AgentActionCapability,
 )
+from ..assurance_v4.core import canonical_context_projection
 from ..assurance_v4.models import digest
 from .app_server import AppServerError, AppServerTransport, TurnResult
 from .core_port import CorePort, CorePortError
@@ -232,6 +233,10 @@ class NativeCoordinator:
                 if self.builder_mode == "root_session":
                     args.extend(["--owner-session-id", str(self.root_session_id)])
                 self.core.call("complete-driver-failure", *args)
+            elif name == "rehydrate_dispatch":
+                self._rehydrate_dispatch(action)
+            elif name == "rotate_context":
+                self._rotate_context(action)
             elif name == "finalize":
                 self.core.call(
                     "finalize",
@@ -300,6 +305,15 @@ class NativeCoordinator:
             "action": action.get("action"),
             "action_id": action.get("action_id"),
             "reason": action.get("reason"),
+            "work_unit_id": action.get("work_unit_id"),
+            "work_unit": copy.deepcopy(action.get("work_unit")),
+            "work_unit_progress": copy.deepcopy(
+                action.get("work_unit_progress")
+            ),
+            "parallel_ready": action.get("parallel_ready", False),
+            "parallel_work_units": copy.deepcopy(
+                action.get("parallel_work_units", [])
+            ),
             "builder_owner": owner,
             "candidate_worktree": context.get("candidate_worktree"),
             "target_start_head": context.get("target_start_head"),
@@ -572,7 +586,27 @@ class NativeCoordinator:
         ):
             self._prepare_role(action, capability, context)
             return
+        if self._start_context_rotation(action, role, context):
+            return
+        _projection, projection_digest = self._projection_for_action(
+            action, role, context
+        )
         pending = context.get("dispatch_intent")
+        if (
+            isinstance(pending, dict)
+            and isinstance(pending.get("context_projection_digest"), str)
+            and pending.get("context_projection_digest") != projection_digest
+        ):
+            raise NativeDriverError(
+                "work unit context projection changed before dispatch",
+                code="NATIVE_WORK_UNIT_PROJECTION_DRIFT",
+                status="NEEDS_USER",
+                details={
+                    "expected": pending.get("context_projection_digest"),
+                    "actual": projection_digest,
+                    "work_unit_id": pending.get("work_unit_id"),
+                },
+            )
         if isinstance(pending, dict):
             if (
                 role == "builder"
@@ -626,6 +660,15 @@ class NativeCoordinator:
             "--output-schema-digest",
             self.output_schema_digest,
         ]
+        if isinstance(action.get("work_unit_id"), str):
+            dispatch_args.extend(
+                [
+                    "--work-unit-id",
+                    str(action["work_unit_id"]),
+                    "--context-projection-digest",
+                    projection_digest,
+                ]
+            )
         transport_generation = self._transport_generation()
         if transport_generation is not None:
             dispatch_args.extend(
@@ -851,6 +894,11 @@ class NativeCoordinator:
                 role == "reviewer"
                 and pending.get("action") in {"reviewer_preflight", "reviewer_final"}
                 and self._start_reviewer_replacement(str(pending["action_id"]))
+            ):
+                return None
+            if self._start_canonical_rehydration(
+                str(pending["action_id"]),
+                action_name=str(pending.get("action")),
             ):
                 return None
             raise NativeDriverError(
@@ -1378,6 +1426,524 @@ class NativeCoordinator:
             "driver-context", "--repo", str(self.repo), "--run", self.run_id
         )
 
+    def _canonical_projection(
+        self,
+        action: dict[str, Any],
+        role: str,
+        context: dict[str, Any],
+    ) -> dict[str, Any]:
+        return canonical_context_projection(
+            context,
+            action_id=action.get("action_id"),
+            action=str(action.get("action", "")),
+            role=role,
+            work_unit_id=(
+                str(action["work_unit_id"])
+                if isinstance(action.get("work_unit_id"), str)
+                else None
+            ),
+            work_unit=(
+                action.get("work_unit")
+                if isinstance(action.get("work_unit"), dict)
+                else None
+            ),
+        )
+
+    def _projection_for_action(
+        self,
+        action: dict[str, Any],
+        role: str,
+        context: dict[str, Any],
+    ) -> tuple[dict[str, Any], str]:
+        projection = self._canonical_projection(action, role, context)
+        return projection, digest(projection)
+
+    def _spawn_claim_id(self, operation: str, intent: dict[str, Any]) -> str:
+        return digest(
+            {
+                "operation": operation,
+                "run_id": self.run_id,
+                "action_id": intent.get("action_id"),
+                "work_unit_id": intent.get("work_unit_id"),
+                "source_thread_id": intent.get("source_thread_id"),
+                "source_generation": intent.get("source_generation"),
+                "source_attempt": intent.get("source_attempt"),
+            }
+        )
+
+    def _reconstruct_dispatch_action(
+        self, context: dict[str, Any], pending: dict[str, Any]
+    ) -> dict[str, Any]:
+        from ..assurance_v4.driver import _dispatch_action
+
+        return _dispatch_action(context, self.run_id, pending)
+
+    def _rehydrate_dispatch(self, action: dict[str, Any]) -> None:
+        if self.transport is None:
+            raise NativeDriverError(
+                "Native transport is required for dispatch rehydration",
+                code="NATIVE_REHYDRATION_TRANSPORT_REQUIRED",
+                status="NEEDS_USER",
+            )
+        context = self._context()
+        intent = context.get("dispatch_rehydration_intent")
+        pending = context.get("dispatch_intent")
+        if (
+            not isinstance(intent, dict)
+            or not isinstance(pending, dict)
+            or intent.get("action_id") != action.get("action_id")
+        ):
+            raise NativeDriverError(
+                "dispatch rehydration intent is missing",
+                code="NATIVE_REHYDRATION_INTENT_MISSING",
+                status="NEEDS_USER",
+            )
+        if intent.get("state") != "prepared":
+            raise NativeDriverError(
+                "dispatch rehydration intent is not ready",
+                code="NATIVE_REHYDRATION_INTENT_INVALID",
+                status="NEEDS_USER",
+            )
+        if intent.get("spawn_state") != "spawned":
+            raise NativeDriverError(
+                "dispatch rehydration has an unresolved thread spawn",
+                code="NATIVE_REHYDRATION_SPAWN_UNRESOLVED",
+                status="NEEDS_USER",
+                details={"intent": copy.deepcopy(intent)},
+            )
+        new_thread_id = intent.get("new_thread_id")
+        new_agent_id = intent.get("new_agent_id")
+        if not isinstance(new_thread_id, str) or not isinstance(
+            new_agent_id, str
+        ):
+            raise NativeDriverError(
+                "dispatch rehydration spawn identity is missing",
+                code="NATIVE_REHYDRATION_SPAWN_IDENTITY_MISSING",
+                status="NEEDS_USER",
+            )
+        try:
+            self.transport.read_thread(new_thread_id)
+        except AppServerError as exc:
+            raise NativeDriverError(
+                "recorded rehydration thread cannot be read",
+                code="NATIVE_REHYDRATION_THREAD_UNAVAILABLE",
+                status="NEEDS_USER",
+                details={"thread_id": new_thread_id, "source_code": exc.code},
+            ) from exc
+        role = str(intent["role"])
+        current = self._reconstruct_dispatch_action(context, pending)
+        thread_id = new_thread_id
+        agent_id = new_agent_id
+        prospective = copy.deepcopy(context)
+        prospective_facets = prospective.get("facets")
+        if isinstance(prospective_facets, dict):
+            execution = prospective_facets.get("execution")
+            if isinstance(execution, dict):
+                execution.setdefault("agents", {})[role] = {
+                    "agent_id": agent_id,
+                    "thread_id": thread_id,
+                }
+                source = execution.get("tester_source")
+                if role == "tester" and isinstance(source, dict):
+                    source["agent"] = copy.deepcopy(execution["agents"][role])
+        prospective_action = self._reconstruct_dispatch_action(
+            prospective, pending
+        )
+        new_prompt_digest = digest(
+            self._prompt(prospective_action, role, prospective)
+        )
+        self.core.call(
+            "bind-dispatch-rehydration",
+            "--repo",
+            str(self.repo),
+            "--run",
+            self.run_id,
+            "--action-id",
+            str(intent["action_id"]),
+            "--new-agent-id",
+            agent_id,
+            "--new-thread-id",
+            thread_id,
+            "--prompt-digest",
+            new_prompt_digest,
+            "--driver-runtime-kind",
+            "native",
+        )
+        self._active_threads.add(thread_id)
+
+    def _start_canonical_rehydration(
+        self, action_id: str, action_name: str | None = None
+    ) -> bool:
+        if self.transport is None:
+            return False
+        if not isinstance(self.current_action, dict) or not isinstance(
+            self.current_action.get("work_unit_id"), str
+        ):
+            return False
+        context = self._context()
+        pending = context.get("dispatch_intent")
+        existing_intent = context.get("dispatch_rehydration_intent")
+        if isinstance(existing_intent, dict):
+            if (
+                existing_intent.get("action_id") == action_id
+                and existing_intent.get("spawn_state") == "spawned"
+                and isinstance(pending, dict)
+            ):
+                self._rehydrate_dispatch(
+                    {
+                        "action": pending.get("action"),
+                        "action_id": action_id,
+                        "work_unit_id": pending.get("work_unit_id"),
+                    }
+                )
+                return True
+            return False
+        if (
+            not isinstance(pending, dict)
+            or pending.get("action_id") != action_id
+            or pending.get("state") != "exhausted"
+            or not isinstance(pending.get("work_unit_id"), str)
+        ):
+            return False
+        role = str(pending.get("role"))
+        if role == "builder" and self.builder_mode == "root_session":
+            return False
+        try:
+            thread = self.transport.read_thread(str(pending.get("thread_id")))
+        except AppServerError:
+            return False
+        if not self._empty_rehydratable_tail(pending, thread):
+            return False
+        action = self.current_action
+        if not isinstance(action, dict) or action.get("action_id") != action_id:
+            action = {
+                "action": pending.get("action"),
+                "action_id": action_id,
+                "work_unit_id": pending.get("work_unit_id"),
+            }
+        projection, projection_digest = self._projection_for_action(
+            action, role, context
+        )
+        self.core.call(
+            "begin-dispatch-rehydration",
+            "--repo",
+            str(self.repo),
+            "--run",
+            self.run_id,
+            "--action-id",
+            action_id,
+            "--context-projection-digest",
+            projection_digest,
+            "--driver-runtime-kind",
+            "native",
+        )
+        refreshed = self._context()
+        intent = refreshed.get("dispatch_rehydration_intent")
+        if not isinstance(intent, dict):
+            return True
+        if intent.get("state") != "prepared":
+            raise NativeDriverError(
+                "dispatch rehydration intent is not prepared",
+                code="NATIVE_REHYDRATION_INTENT_INVALID",
+                status="NEEDS_USER",
+                details={"intent": intent},
+            )
+        if intent.get("spawn_state") == "spawned":
+            self._rehydrate_dispatch(
+                {
+                    "action": pending.get("action"),
+                    "action_id": action_id,
+                    "work_unit_id": pending.get("work_unit_id"),
+                }
+            )
+            return True
+        if intent.get("spawn_state") == "claimed":
+            raise NativeDriverError(
+                "dispatch rehydration spawn may have happened before interruption",
+                code="NATIVE_REHYDRATION_SPAWN_UNRESOLVED",
+                status="NEEDS_USER",
+                details={"intent": copy.deepcopy(intent)},
+            )
+        claim_id = self._spawn_claim_id("dispatch_rehydration", intent)
+        self.core.call(
+            "claim-dispatch-rehydration",
+            "--repo",
+            str(self.repo),
+            "--run",
+            self.run_id,
+            "--action-id",
+            action_id,
+            "--claim-id",
+            claim_id,
+            "--driver-runtime-kind",
+            "native",
+        )
+        refreshed = self._context()
+        intent = refreshed.get("dispatch_rehydration_intent")
+        if not isinstance(intent, dict) or intent.get("spawn_state") != "claimed":
+            raise NativeDriverError(
+                "dispatch rehydration spawn claim was not persisted",
+                code="NATIVE_REHYDRATION_SPAWN_CLAIM_MISSING",
+                status="NEEDS_USER",
+            )
+        instructions, _sandbox = self._role_config(role)
+        thread_id = self.transport.start_thread(
+            cwd=self._turn_cwd(action, role, refreshed),
+            developer_instructions=instructions,
+            sandbox="danger-full-access",
+        )
+        agent_id = f"codex-app-server:{thread_id}"
+        self.core.call(
+            "record-dispatch-rehydration-spawn",
+            "--repo",
+            str(self.repo),
+            "--run",
+            self.run_id,
+            "--action-id",
+            action_id,
+            "--claim-id",
+            claim_id,
+            "--new-agent-id",
+            agent_id,
+            "--new-thread-id",
+            thread_id,
+            "--driver-runtime-kind",
+            "native",
+        )
+        refreshed = self._context()
+        prospective = copy.deepcopy(refreshed)
+        prospective_facets = prospective.get("facets")
+        if isinstance(prospective_facets, dict):
+            execution = prospective_facets.get("execution")
+            if isinstance(execution, dict):
+                execution.setdefault("agents", {})[role] = {
+                    "agent_id": agent_id,
+                    "thread_id": thread_id,
+                }
+                source = execution.get("tester_source")
+                if role == "tester" and isinstance(source, dict):
+                    source["agent"] = copy.deepcopy(execution["agents"][role])
+        prospective_action = self._reconstruct_dispatch_action(
+            prospective, pending
+        )
+        new_prompt_digest = digest(
+            self._prompt(prospective_action, role, prospective)
+        )
+        self.core.call(
+            "bind-dispatch-rehydration",
+            "--repo",
+            str(self.repo),
+            "--run",
+            self.run_id,
+            "--action-id",
+            action_id,
+            "--new-agent-id",
+            agent_id,
+            "--new-thread-id",
+            thread_id,
+            "--prompt-digest",
+            new_prompt_digest,
+            "--driver-runtime-kind",
+            "native",
+        )
+        self._active_threads.add(thread_id)
+        return True
+
+    def _rotate_context(self, action: dict[str, Any]) -> None:
+        if self.transport is None:
+            raise NativeDriverError(
+                "Native transport is required for context rotation",
+                code="NATIVE_CONTEXT_ROTATION_TRANSPORT_REQUIRED",
+                status="NEEDS_USER",
+            )
+        context = self._context()
+        intent = context.get("context_rotation_intent")
+        if not isinstance(intent, dict) or intent.get("state") != "prepared":
+            raise NativeDriverError(
+                "context rotation intent is missing",
+                code="NATIVE_CONTEXT_ROTATION_INTENT_MISSING",
+                status="NEEDS_USER",
+            )
+        if intent.get("spawn_state") != "spawned":
+            raise NativeDriverError(
+                "context rotation has an unresolved thread spawn",
+                code="NATIVE_CONTEXT_ROTATION_SPAWN_UNRESOLVED",
+                status="NEEDS_USER",
+                details={"intent": copy.deepcopy(intent)},
+            )
+        thread_id = intent.get("new_thread_id")
+        agent_id = intent.get("new_agent_id")
+        if not isinstance(thread_id, str) or not isinstance(agent_id, str):
+            raise NativeDriverError(
+                "context rotation spawn identity is missing",
+                code="NATIVE_CONTEXT_ROTATION_SPAWN_IDENTITY_MISSING",
+                status="NEEDS_USER",
+            )
+        try:
+            self.transport.read_thread(thread_id)
+        except AppServerError as exc:
+            raise NativeDriverError(
+                "recorded context rotation thread cannot be read",
+                code="NATIVE_CONTEXT_ROTATION_THREAD_UNAVAILABLE",
+                status="NEEDS_USER",
+                details={"thread_id": thread_id, "source_code": exc.code},
+            ) from exc
+        role = str(intent["role"])
+        current = {
+            "action": "work_unit",
+            "action_id": action.get("action_id"),
+            "work_unit_id": intent.get("work_unit_id"),
+        }
+        self.core.call(
+            "bind-context-rotation",
+            "--repo",
+            str(self.repo),
+            "--run",
+            self.run_id,
+            "--new-agent-id",
+            agent_id,
+            "--new-thread-id",
+            thread_id,
+            "--driver-runtime-kind",
+            "native",
+        )
+        self._active_threads.add(thread_id)
+
+    def _start_context_rotation(
+        self, action: dict[str, Any], role: str, context: dict[str, Any]
+    ) -> bool:
+        if (
+            self.transport is None
+            or (self.builder_mode == "root_session" and role == "builder")
+        ):
+            return False
+        if not isinstance(action.get("work_unit_id"), str):
+            return False
+        if context.get("dispatch_intent") is not None:
+            return False
+        progress = context.get("work_unit_progress")
+        if not isinstance(progress, dict):
+            return False
+        agent = (
+            context.get("facets", {})
+            .get("execution", {})
+            .get("agents", {})
+            .get(role)
+        )
+        if not isinstance(agent, dict) or not isinstance(
+            agent.get("thread_id"), str
+        ):
+            return False
+        usage = progress.get("thread_usage", {}).get(agent["thread_id"], 0)
+        limit = (
+            context.get("progress_policy", {}).get("max_units_per_thread")
+            if isinstance(context.get("progress_policy"), dict)
+            else None
+        )
+        if not isinstance(limit, int) or usage < limit:
+            return False
+        _projection, projection_digest = self._projection_for_action(
+            action, role, context
+        )
+        self.core.call(
+            "begin-context-rotation",
+            "--repo",
+            str(self.repo),
+            "--run",
+            self.run_id,
+            "--role",
+            role,
+            "--work-unit-id",
+            str(action["work_unit_id"]),
+            "--action-id",
+            str(action.get("action_id")),
+            "--action",
+            str(action.get("action", "work_unit")),
+            "--context-projection-digest",
+            projection_digest,
+            "--driver-runtime-kind",
+            "native",
+        )
+        refreshed = self._context()
+        intent = refreshed.get("context_rotation_intent")
+        if not isinstance(intent, dict):
+            return True
+        if intent.get("state") != "prepared":
+            raise NativeDriverError(
+                "context rotation intent is invalid",
+                code="NATIVE_CONTEXT_ROTATION_INTENT_INVALID",
+                status="NEEDS_USER",
+                details={"intent": intent},
+            )
+        if intent.get("spawn_state") == "spawned":
+            self._rotate_context(
+                {
+                    "action_id": action.get("action_id"),
+                    "work_unit_id": action.get("work_unit_id"),
+                }
+            )
+            return True
+        if intent.get("spawn_state") == "claimed":
+            raise NativeDriverError(
+                "context rotation spawn may have happened before interruption",
+                code="NATIVE_CONTEXT_ROTATION_SPAWN_UNRESOLVED",
+                status="NEEDS_USER",
+                details={"intent": copy.deepcopy(intent)},
+            )
+        claim_id = self._spawn_claim_id("context_rotation", intent)
+        self.core.call(
+            "claim-context-rotation",
+            "--repo",
+            str(self.repo),
+            "--run",
+            self.run_id,
+            "--action-id",
+            str(intent["action_id"]),
+            "--claim-id",
+            claim_id,
+            "--driver-runtime-kind",
+            "native",
+        )
+        refreshed = self._context()
+        intent = refreshed.get("context_rotation_intent")
+        if not isinstance(intent, dict) or intent.get("spawn_state") != "claimed":
+            raise NativeDriverError(
+                "context rotation spawn claim was not persisted",
+                code="NATIVE_CONTEXT_ROTATION_SPAWN_CLAIM_MISSING",
+                status="NEEDS_USER",
+            )
+        instructions, _sandbox = self._role_config(role)
+        thread_id = self.transport.start_thread(
+            cwd=self._turn_cwd(action, role, refreshed),
+            developer_instructions=instructions,
+            sandbox="danger-full-access",
+        )
+        agent_id = f"codex-app-server:{thread_id}"
+        self.core.call(
+            "record-context-rotation-spawn",
+            "--repo",
+            str(self.repo),
+            "--run",
+            self.run_id,
+            "--action-id",
+            str(intent["action_id"]),
+            "--claim-id",
+            claim_id,
+            "--new-agent-id",
+            agent_id,
+            "--new-thread-id",
+            thread_id,
+            "--driver-runtime-kind",
+            "native",
+        )
+        self._rotate_context(
+            {
+                "action_id": action.get("action_id"),
+                "work_unit_id": action.get("work_unit_id"),
+            }
+        )
+        return True
+
     def _activate_role_thread(
         self,
         action: dict[str, Any],
@@ -1447,6 +2013,21 @@ class NativeCoordinator:
             "problem_report_schema": self.problem_schema,
             "result_field_contract": self._result_field_contract(str(action["action"])),
         }
+        if (
+            isinstance(context.get("progress_policy"), dict)
+            and context["progress_policy"].get("mode") == "bounded_rehydration"
+        ):
+            projection, projection_digest = self._projection_for_action(
+                action, role, context
+            )
+            payload["context_source"] = "canonical"
+            payload["canonical_projection"] = projection
+            payload["context_projection_digest"] = projection_digest
+            payload["work_unit_id"] = action.get("work_unit_id")
+            payload["work_unit"] = copy.deepcopy(action.get("work_unit"))
+            payload["work_unit_progress"] = copy.deepcopy(
+                projection.get("work_unit_progress")
+            )
         if role in {"tester", "reviewer"}:
             payload["evidence_report_schema"] = self.evidence_schema
             payload["blackbox_case_schema"] = self.blackbox_case_schema
@@ -1951,6 +2532,29 @@ class NativeCoordinator:
             return self._turn_failure_code(turn) == failure_code
         return status == "completed" and failure_code == "missingAgentResult"
 
+    def _empty_rehydratable_tail(
+        self, pending: dict[str, Any], thread: dict[str, Any]
+    ) -> bool:
+        turns = self._thread_turns(thread)
+        if not turns:
+            return False
+        turn = turns[-1]
+        if (
+            turn.get("id") != pending.get("turn_id")
+            or self._turn_agent_text(turn) is not None
+            or turn.get("status") not in {"failed", "completed"}
+        ):
+            return False
+        failure_code = pending.get("failure_code")
+        if turn.get("status") == "failed" and self._turn_failure_code(turn) != failure_code:
+            return False
+        if turn.get("status") == "completed" and failure_code != "missingAgentResult":
+            return False
+        return all(
+            isinstance(item, dict) and item.get("type") in {"reasoning"}
+            for item in turn.get("items", [])
+        )
+
     def _complete_reviewer_thread_compaction(
         self, pending: dict[str, Any], thread: dict[str, Any]
     ) -> dict[str, Any]:
@@ -2243,6 +2847,13 @@ class NativeCoordinator:
                 self._dispatch_renewal_reason is None
                 and action_name in {"reviewer_preflight", "reviewer_final"}
                 and self._start_reviewer_replacement(action_id)
+            ):
+                return self._context()
+            if (
+                self._dispatch_renewal_reason is None
+                and self._start_canonical_rehydration(
+                    action_id, action_name=action_name
+                )
             ):
                 return self._context()
             if self._dispatch_renewal_reason is None:

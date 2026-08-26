@@ -13,7 +13,17 @@ from pathlib import Path
 from typing import Any, Mapping
 from unittest.mock import patch
 
-from harness import CLI, ROOT, cleanup_repo, commit_all, git, head, init_repo, run_process
+from harness import (
+    CLI,
+    ROOT,
+    add_v4_progress_contract,
+    cleanup_repo,
+    commit_all,
+    git,
+    head,
+    init_repo,
+    run_process,
+)
 from runtime.codex_builder_loop.assurance_v4 import core, driver
 from runtime.codex_builder_loop.assurance_v4.doc_references import DocReferenceScanError
 
@@ -29,7 +39,7 @@ def compact(value: str) -> str:
 
 
 def contract_for(repo: Path) -> dict[str, Any]:
-    return {
+    contract = {
         "schema_version": 4,
         "mission": {
             "revision": 1,
@@ -97,6 +107,7 @@ def contract_for(repo: Path) -> dict[str, Any]:
             },
         },
     }
+    return add_v4_progress_contract(contract)
 
 
 def blackbox_case_results(
@@ -554,6 +565,8 @@ class FullDriverV4ContractTest(unittest.TestCase):
                 }
                 for behavior_id in behavior_ids
             ]
+            contract["execution"].pop("work_units", None)
+            add_v4_progress_contract(contract)
         data, run_path = self.start(run_id, contract=contract)
         candidate = Path(data["candidate_worktree"])
         (candidate / "src" / "calc.py").write_text(

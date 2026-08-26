@@ -7,7 +7,15 @@ import unittest
 from pathlib import Path
 from typing import Any
 
-from harness import CLI, cleanup_repo, commit_all, git, init_repo, run_process
+from harness import (
+    CLI,
+    add_v4_progress_contract,
+    cleanup_repo,
+    commit_all,
+    git,
+    init_repo,
+    run_process,
+)
 
 
 def canonical_digest(value: Any) -> str:
@@ -22,7 +30,7 @@ def canonical_digest(value: Any) -> str:
 
 
 def base_contract() -> dict[str, Any]:
-    return {
+    contract = {
         "schema_version": 4,
         "mission": {
             "delivery_kind": "code",
@@ -83,6 +91,7 @@ def base_contract() -> dict[str, Any]:
             "agents": {},
         },
     }
+    return add_v4_progress_contract(contract)
 
 
 class V4SupersessionLifecycleContractTest(unittest.TestCase):

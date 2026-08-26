@@ -83,6 +83,18 @@
         {"$ref": "#/$defs/dispatchIntent"}
       ]
     },
+    "dispatch_rehydration_intent": {
+      "oneOf": [
+        {"type": "null"},
+        {"$ref": "#/$defs/dispatchRehydrationIntent"}
+      ]
+    },
+    "context_rotation_intent": {
+      "oneOf": [
+        {"type": "null"},
+        {"$ref": "#/$defs/contextRotationIntent"}
+      ]
+    },
     "tester_replacement_intent": {
       "oneOf": [
         {"type": "null"},
@@ -417,6 +429,18 @@
             "attempt": {"type": "integer", "minimum": 1, "maximum": 3},
             "generation": {"type": "integer", "minimum": 1},
             "turn_id": {"type": "string", "minLength": 1},
+            "work_unit_id": {
+              "$ref": "assurance-v4-contract.schema.json#/$defs/id"
+            },
+            "unit_attempt": {"type": "integer", "minimum": 1},
+            "rehydration_count": {"type": "integer", "minimum": 0, "maximum": 1},
+            "context_projection_digest": {"$ref": "#/$defs/sha256"},
+            "pre_execution_observation_digest": {
+              "oneOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]
+            },
+            "post_execution_observation_digest": {
+              "oneOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]
+            },
             "candidate_manifest_digest": {
               "oneOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]
             }
@@ -561,6 +585,22 @@
         },
         "owner_mode": {"enum": ["root_session", "native_thread"]},
         "owner_session_id": {"type": "string", "minLength": 1},
+        "work_unit_id": {"$ref": "assurance-v4-contract.schema.json#/$defs/id"},
+        "unit_attempt": {"type": "integer", "minimum": 1},
+        "rehydration_count": {"type": "integer", "minimum": 0, "maximum": 1},
+        "context_projection_digest": {"$ref": "#/$defs/sha256"},
+        "pre_execution_observation_digest": {
+          "oneOf": [
+            {"$ref": "#/$defs/sha256"},
+            {"type": "null"}
+          ]
+        },
+        "post_execution_observation_digest": {
+          "oneOf": [
+            {"$ref": "#/$defs/sha256"},
+            {"type": "null"}
+          ]
+        },
         "result_application": {
           "enum": ["checkpoint_builder", "record_problems", "recompose_candidate"]
         },
@@ -598,6 +638,125 @@
         "created_at": {"type": "string", "minLength": 1},
         "completed_at": {"type": "string", "minLength": 1}
       }
+    },
+    "dispatchRehydrationIntent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "state",
+        "action_id",
+        "work_unit_id",
+        "role",
+        "spawn_state",
+        "spawn_claim_id",
+        "source_thread_id",
+        "source_generation",
+        "source_attempt",
+        "source_dispatch_digest",
+        "source_observation_digest",
+        "context_projection_digest",
+        "rehydration_count",
+        "prepared_at"
+      ],
+      "properties": {
+        "state": {"enum": ["prepared", "bound"]},
+        "action_id": {"$ref": "#/$defs/sha256"},
+        "work_unit_id": {
+          "$ref": "assurance-v4-contract.schema.json#/$defs/id"
+        },
+        "role": {"enum": ["builder", "tester", "reviewer"]},
+        "spawn_state": {"enum": ["pending", "claimed", "spawned"]},
+        "spawn_claim_id": {
+          "oneOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]
+        },
+        "source_thread_id": {"type": "string", "minLength": 1},
+        "source_generation": {"type": "integer", "minimum": 1},
+        "source_attempt": {"type": "integer", "minimum": 3},
+        "source_dispatch_digest": {"$ref": "#/$defs/sha256"},
+        "source_observation_digest": {"$ref": "#/$defs/sha256"},
+        "context_projection_digest": {"$ref": "#/$defs/sha256"},
+        "rehydration_count": {"const": 1},
+        "new_agent_id": {"type": "string", "minLength": 1},
+        "new_thread_id": {"type": "string", "minLength": 1},
+        "prepared_at": {"type": "string", "minLength": 1},
+        "bound_at": {"type": "string", "minLength": 1}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"spawn_state": {"const": "claimed"}}},
+          "then": {"required": ["spawn_claim_id"]}
+        },
+        {
+          "if": {"properties": {"spawn_state": {"const": "spawned"}}},
+          "then": {
+            "required": [
+              "spawn_claim_id",
+              "new_agent_id",
+              "new_thread_id"
+            ]
+          }
+        },
+        {
+          "if": {"properties": {"state": {"const": "bound"}}},
+          "then": {"required": ["new_agent_id", "new_thread_id", "bound_at"]}
+        }
+      ]
+    },
+    "contextRotationIntent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "state",
+        "action_id",
+        "action",
+        "role",
+        "work_unit_id",
+        "spawn_state",
+        "spawn_claim_id",
+        "source_agent_id",
+        "source_thread_id",
+        "source_observation_digest",
+        "source_execution_digest",
+        "context_projection_digest",
+        "prepared_at"
+      ],
+      "properties": {
+        "state": {"const": "prepared"},
+        "action_id": {"$ref": "#/$defs/sha256"},
+        "action": {"type": "string", "minLength": 1},
+        "role": {"enum": ["builder", "tester", "reviewer"]},
+        "work_unit_id": {
+          "$ref": "assurance-v4-contract.schema.json#/$defs/id"
+        },
+        "spawn_state": {"enum": ["pending", "claimed", "spawned"]},
+        "spawn_claim_id": {
+          "oneOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]
+        },
+        "source_agent_id": {"type": "string", "minLength": 1},
+        "source_thread_id": {"type": "string", "minLength": 1},
+        "source_observation_digest": {"$ref": "#/$defs/sha256"},
+        "source_execution_digest": {"$ref": "#/$defs/sha256"},
+        "context_projection_digest": {"$ref": "#/$defs/sha256"},
+        "new_agent_id": {"type": "string", "minLength": 1},
+        "new_thread_id": {"type": "string", "minLength": 1},
+        "prepared_at": {"type": "string", "minLength": 1}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"spawn_state": {"const": "claimed"}}},
+          "then": {"required": ["spawn_claim_id"]}
+        },
+        {
+          "if": {"properties": {"spawn_state": {"const": "spawned"}}},
+          "then": {
+            "required": [
+              "spawn_claim_id",
+              "new_agent_id",
+              "new_thread_id"
+            ]
+          }
+        }
+      ]
     },
     "dispatchCompactionRecovery": {
       "type": "object",

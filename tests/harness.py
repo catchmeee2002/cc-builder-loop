@@ -131,6 +131,85 @@ def assert_status_one_of(
         )
 
 
+def add_v4_progress_contract(contract: dict[str, Any]) -> dict[str, Any]:
+    """Attach the minimum bounded-progress contract used by v4 fixtures."""
+
+    execution = contract.setdefault("execution", {})
+    if "progress_policy" not in execution:
+        execution["progress_policy"] = {
+            "schema_version": 1,
+            "mode": "bounded_rehydration",
+            "attempt_limit": 3,
+            "rehydration_limit": 1,
+            "max_units_per_thread": 3,
+            "context_source": "canonical",
+        }
+    if "work_units" in execution:
+        return contract
+    mission = contract.get("mission", {})
+    behaviors = [
+        item["id"]
+        for item in mission.get("behaviors", [])
+        if isinstance(item, Mapping) and isinstance(item.get("id"), str)
+    ]
+    required = set(contract.get("assurance", {}).get("required", []))
+    units: list[dict[str, Any]] = [
+        {
+            "id": "builder-work-unit",
+            "role": "builder",
+            "objective": str(
+                mission.get("objective", "Complete the Builder work unit.")
+            ),
+            "depends_on": [],
+            "scope": {
+                "paths": [],
+                "behavior_ids": behaviors,
+                "command_ids": [],
+            },
+            "completion": {
+                "kind": "candidate_checkpoint",
+                "required_observations": ["candidate_commit"],
+            },
+        }
+    ]
+    units.extend(
+        [
+            {
+                "id": "tester-work-unit",
+                "role": "tester",
+                "objective": "Create and integrate the independently owned Tester source.",
+                "depends_on": [],
+                "scope": {
+                    "paths": [],
+                    "behavior_ids": behaviors,
+                    "command_ids": [],
+                },
+                "completion": {
+                    "kind": "tester_source",
+                    "required_observations": ["tester_source_commit"],
+                },
+            },
+            {
+                "id": "reviewer-work-unit",
+                "role": "reviewer",
+                "objective": "Review the current integrated candidate and evidence.",
+                "depends_on": ["builder-work-unit"],
+                "scope": {
+                    "paths": [],
+                    "behavior_ids": behaviors,
+                    "command_ids": [],
+                },
+                "completion": {
+                    "kind": "review_evidence",
+                    "required_observations": ["review_report"],
+                },
+            },
+        ]
+    )
+    execution["work_units"] = units
+    return contract
+
+
 def git(repo: str | os.PathLike[str], *args: str, check: bool = True) -> str:
     cp = run_process(["git", "-C", repo, *args])
     if check and cp.returncode != 0:

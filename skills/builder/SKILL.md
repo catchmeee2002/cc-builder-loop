@@ -59,6 +59,12 @@ description: 执行已接受的 Builder-loop 实验方案，把同 session 紧�
    `execution.builder_runtime.mode=native_thread` 时继续执行现有 Native Driver Builder/Tester/Reviewer
    thread 路径；该模式只由 Builder-loop Plan 的显式实验选择产生。
 
+新 v4 contract 的角色 dispatch 必须绑定当前 `work_unit_id`（proof、blackbox 等不产生角色进度的
+动作除外）。完成事实只能由 Core 根据候选提交、Tester source manifest 或正式 Reviewer evidence
+确认；Agent 自报和完整 transcript 都不是 checkpoint。重建上下文只接受 canonical projection，
+工作单元变化必须重新规划。`rehydrate_dispatch` / `rotate_context` 仅在对应 Core intent 已持久化后
+创建新 thread；每个工作单元最多自动重建一次。
+
 7. 新 run 看到 `event=native_driver_run_started` 后，或同 run decision 更新成功后，立即输出
    `BUILDER_LOOP_RUN_ID:<run-id>`，持续等待 Native
    Driver 到 `FINALIZED`、`FAILED` 或 `NEEDS_USER`。普通 revision、修复、Agent follow-up、target rematerialize

@@ -12,7 +12,16 @@ from pathlib import Path
 from typing import Any, Mapping
 from unittest.mock import patch
 
-from harness import CLI, cleanup_repo, commit_all, git, head, init_repo, run_process
+from harness import (
+    CLI,
+    add_v4_progress_contract,
+    cleanup_repo,
+    commit_all,
+    git,
+    head,
+    init_repo,
+    run_process,
+)
 from runtime.codex_builder_loop.assurance_v4 import core as assurance_core
 from tests.helpers.rejected_checkpoint_successor_blackbox import (
     REJECTION_VARIANTS,
@@ -40,7 +49,7 @@ def contract_for(
     machine_argv: list[str] | None = None,
 ) -> dict[str, Any]:
     machine_argv = machine_argv or ["bash", "verify.sh"]
-    return {
+    contract = {
         "schema_version": 4,
         "mission": {
             "revision": 1,
@@ -112,6 +121,7 @@ def contract_for(
             },
         },
     }
+    return add_v4_progress_contract(contract)
 
 
 def blackbox_case_results(

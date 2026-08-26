@@ -15,12 +15,14 @@ from .core import (
     _require_admission,
     _validate_revision_transition,
     current_machine_failure,
+    current_work_unit,
     current_proof_failure,
     doc_reference_scan_state,
     ensure_run_id,
     evidence_state,
     readiness,
     runtime_compatibility,
+    work_unit_progress,
 )
 from .models import (
     EVIDENCE_KINDS,
@@ -30,8 +32,10 @@ from .models import (
     digest,
     evidence_dependency,
     facet_digests,
+    progress_policy,
     recovery_policy,
-    validate_contract,
+    validate_persisted_contract,
+    work_units,
 )
 from .store import StoreError, branch_head, dirty_paths, git, read_ledger, resolve_repo
 
@@ -346,7 +350,7 @@ def engineering_correction_preview(
             code="ENGINEERING_CORRECTION_NOOP",
             status="NEEDS_USER",
         )
-    replacement = validate_contract(replacement)
+    replacement = validate_persisted_contract(replacement)
     new = replacement["assurance"]
     for facet in ("mission", "authority", "execution"):
         if replacement[facet] != current_contract[facet]:
@@ -792,7 +796,7 @@ def validate_decision(
                 details={"requested": requested_facet, "provided": facet},
             )
 
-    replacement = validate_contract(replacement_contract)
+    replacement = validate_persisted_contract(replacement_contract)
     current_contract = ledger["facets"]
     for unchanged in {"mission", "authority", "assurance"} - {facet}:
         if replacement[unchanged] != current_contract[unchanged]:
@@ -1033,6 +1037,20 @@ def _dispatch_action(
         "reviewer_final",
     }:
         payload["candidate_worktree"] = ledger["candidate_worktree"]
+    if isinstance(pending.get("work_unit_id"), str):
+        payload["work_unit_id"] = pending["work_unit_id"]
+        unit = current_work_unit(
+            ledger,
+            role=str(pending.get("role")),
+        )
+        if isinstance(unit, dict) and unit.get("id") == pending.get("work_unit_id"):
+            payload["work_unit"] = unit
+        else:
+            for candidate in work_units(ledger["facets"]):
+                if candidate.get("id") == pending.get("work_unit_id"):
+                    payload["work_unit"] = candidate
+                    break
+        payload["work_unit_progress"] = work_unit_progress(ledger)
     if action.startswith("builder_"):
         payload["agent"] = execution["agents"].get("builder")
     if action.startswith("tester_"):
@@ -1115,6 +1133,29 @@ def next_action(
     ledger = read_ledger(repo, run_id) if _ledger is None else _ledger
 
     def decision(status: str, action: str, reason: str, **payload: Any) -> dict[str, Any]:
+        if progress_policy(ledger["facets"]).get("mode") == "bounded_rehydration":
+            role = (
+                "builder"
+                if action.startswith("builder_")
+                else "tester"
+                if action in {"tester_author", "tester_fix", "tester_recompose_fix"}
+                else "reviewer"
+                if action in {"reviewer_preflight", "reviewer_final"}
+                else None
+            )
+            if role is not None and "work_unit_id" not in payload:
+                unit = current_work_unit(ledger, role=role)
+                if unit is not None:
+                    payload["work_unit_id"] = unit["id"]
+                    payload["work_unit"] = unit
+            progress = work_unit_progress(ledger)
+            payload.setdefault("work_unit_progress", progress)
+            if progress.get("parallel_ready"):
+                payload.setdefault("parallel_ready", True)
+                payload.setdefault(
+                    "parallel_work_units",
+                    copy.deepcopy(progress.get("parallel_work_units", [])),
+                )
         return _decision_result(
             ledger, run_id, status, action, reason, **payload
         )
@@ -1335,6 +1376,65 @@ def next_action(
         )
         replacement_action["action_id"] = reviewer_replacement["action_id"]
         return replacement_action
+
+    rehydration = ledger.get("dispatch_rehydration_intent")
+    if isinstance(rehydration, Mapping):
+        if rehydration.get("spawn_state") != "spawned":
+            return decision(
+                "NEEDS_USER",
+                "continuity_decision",
+                "work_unit_rehydration_spawn_unresolved",
+                dispatch_rehydration_intent=copy.deepcopy(dict(rehydration)),
+                work_unit_id=rehydration.get("work_unit_id"),
+            )
+        if rehydration.get("state") != "prepared":
+            return decision(
+                "NEEDS_USER",
+                "continuity_decision",
+                "work_unit_rehydration_intent_invalid",
+                dispatch_rehydration_intent=copy.deepcopy(dict(rehydration)),
+            )
+        rehydration_action = decision(
+            "CONTINUE",
+            "rehydrate_dispatch",
+            "work_unit_rehydration_prepared",
+            dispatch_rehydration_intent=copy.deepcopy(dict(rehydration)),
+            work_unit_id=rehydration.get("work_unit_id"),
+        )
+        rehydration_action["action_id"] = rehydration["action_id"]
+        return rehydration_action
+
+    rotation = ledger.get("context_rotation_intent")
+    if isinstance(rotation, Mapping):
+        if rotation.get("spawn_state") != "spawned":
+            return decision(
+                "NEEDS_USER",
+                "continuity_decision",
+                "context_rotation_spawn_unresolved",
+                context_rotation_intent=copy.deepcopy(dict(rotation)),
+                work_unit_id=rotation.get("work_unit_id"),
+            )
+        if rotation.get("state") != "prepared":
+            return decision(
+                "NEEDS_USER",
+                "continuity_decision",
+                "context_rotation_intent_invalid",
+                context_rotation_intent=copy.deepcopy(dict(rotation)),
+            )
+        rotation_action = decision(
+            "CONTINUE",
+            "rotate_context",
+            "context_rotation_prepared",
+            context_rotation_intent=copy.deepcopy(dict(rotation)),
+            work_unit_id=rotation.get("work_unit_id"),
+        )
+        rotation_action["action_id"] = digest(
+            {
+                "run_id": run_id,
+                "rotation": copy.deepcopy(dict(rotation)),
+            }
+        )
+        return rotation_action
 
     pending_dispatch = ledger.get("dispatch_intent")
     if isinstance(pending_dispatch, dict):
@@ -1680,6 +1780,18 @@ def next_action(
             public_prerequisites=public_classification,
             agent=execution["agents"].get("builder"),
         )
+    if progress_policy(ledger["facets"]).get("mode") == "bounded_rehydration":
+        builder_unit = current_work_unit(ledger, role="builder")
+        if builder_unit is not None:
+            return decision(
+                "CONTINUE",
+                "builder_implement",
+                "work_unit_pending",
+                work_unit_id=builder_unit["id"],
+                work_unit=builder_unit,
+                candidate_worktree=ledger["candidate_worktree"],
+                agent=execution["agents"].get("builder"),
+            )
     if not ledger.get("builder_checkpointed", False):
         return decision(
             "CONTINUE",
@@ -1773,6 +1885,22 @@ def next_action(
     states = readiness(ledger)["states"]
     required = set(ledger["facets"]["assurance"]["required"])
     recovered_external = recovery_state == "pending"
+    if (
+        progress_policy(ledger["facets"]).get("mode") == "bounded_rehydration"
+        and "tester" in required
+    ):
+        tester_unit = current_work_unit(ledger, role="tester")
+        if tester_unit is not None:
+            return decision(
+                "CONTINUE",
+                "tester_author",
+                "work_unit_pending",
+                work_unit_id=tester_unit["id"],
+                work_unit=tester_unit,
+                candidate_worktree=ledger["candidate_worktree"],
+                agent=execution["agents"].get("tester"),
+                tester_source=execution.get("tester_source"),
+            )
     review_failures = [
         (kind, signature, count)
         for (kind, signature), count in repeated.items()
@@ -1873,6 +2001,28 @@ def next_action(
         if action == "reviewer_final":
             payload["agent"] = execution["agents"].get("reviewer")
         return decision("CONTINUE", action, f"{kind}_{state}", **payload)
+    if progress_policy(ledger["facets"]).get("mode") == "bounded_rehydration":
+        reviewer_unit = current_work_unit(ledger, role="reviewer")
+        if reviewer_unit is not None and (
+            "reviewer" in required or "doc_review" in required
+        ):
+            return decision(
+                "CONTINUE",
+                "reviewer_final",
+                "work_unit_pending",
+                work_unit_id=reviewer_unit["id"],
+                work_unit=reviewer_unit,
+                candidate_worktree=ledger["candidate_worktree"],
+                agent=execution["agents"].get("reviewer"),
+            )
+        pending_units = work_unit_progress(ledger)
+        if pending_units["enabled"] and pending_units["pending"] and not pending_units["ready"]:
+            return decision(
+                "NEEDS_USER",
+                "work_unit_dependency_decision",
+                "work_unit_dependencies_blocked",
+                work_unit_progress=pending_units,
+            )
     transaction = ledger.get("deployment_transaction")
     lease = ledger.get("environment_lease")
     if (

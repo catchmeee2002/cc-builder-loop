@@ -16,6 +16,10 @@ else:
 
 sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT / "tests") not in sys.path:
+    sys.path.insert(0, str(ROOT / "tests"))
+
+from harness import add_v4_progress_contract  # noqa: E402
 CANDIDATE_WORKTREE = ROOT
 RUNTIME_FIXTURE = (
     "runtime/codex_builder_loop/assurance_v4/rejected_checkpoint_fixture.py"
@@ -118,7 +122,7 @@ def _base_contract(
     *,
     tester_write: list[str] | None = None,
 ) -> dict[str, Any]:
-    return {
+    value = {
         "schema_version": 4,
         "mission": {
             "delivery_kind": "code",
@@ -197,6 +201,7 @@ def _base_contract(
             "agents": {},
         },
     }
+    return add_v4_progress_contract(value)
 
 
 def _snapshot(repo: Path, source: Mapping[str, Any], target_run: str) -> dict[str, Any]:

@@ -327,6 +327,11 @@ def _reconcile_previous_transport(
 
 
 def _doctor_payload(context: dict[str, Any]) -> dict[str, Any]:
+    unresolved = any(
+        isinstance(context.get(key), dict)
+        and context[key].get("spawn_state") != "spawned"
+        for key in ("dispatch_rehydration_intent", "context_rotation_intent")
+    )
     runtime = context.get("driver_runtime")
     native_transport = (
         runtime.get("native_transport")
@@ -335,16 +340,32 @@ def _doctor_payload(context: dict[str, Any]) -> dict[str, Any]:
     )
     if not isinstance(native_transport, dict):
         return {
-            "status": "READY",
-            "diagnostic_state": "legacy-unbound",
+            "status": "NEEDS_USER" if unresolved else "READY",
+            "diagnostic_state": (
+                "work-unit-spawn-unresolved"
+                if unresolved
+                else "legacy-unbound"
+            ),
             "transport": None,
+            "dispatch_rehydration_intent": context.get(
+                "dispatch_rehydration_intent"
+            ),
+            "context_rotation_intent": context.get("context_rotation_intent"),
         }
     process_identity = native_transport.get("process_identity")
     if not isinstance(process_identity, dict):
         return {
-            "status": "READY",
-            "diagnostic_state": "no-live-process",
+            "status": "NEEDS_USER" if unresolved else "READY",
+            "diagnostic_state": (
+                "work-unit-spawn-unresolved"
+                if unresolved
+                else "no-live-process"
+            ),
             "transport": native_transport,
+            "dispatch_rehydration_intent": context.get(
+                "dispatch_rehydration_intent"
+            ),
+            "context_rotation_intent": context.get("context_rotation_intent"),
         }
     pid = process_identity.get("pid")
     live = read_proc_identity(pid) if isinstance(pid, int) else None
@@ -367,6 +388,8 @@ def _doctor_payload(context: dict[str, Any]) -> dict[str, Any]:
         not identity_match or group_gone is not False
     ):
         state = "needs_user"
+    if unresolved:
+        state = "needs_user"
     return {
         "status": "NEEDS_USER" if state == "needs_user" else "READY",
         "diagnostic_state": state,
@@ -377,6 +400,10 @@ def _doctor_payload(context: dict[str, Any]) -> dict[str, Any]:
             "process_group_gone": group_gone,
         },
         "dispatch_intent": context.get("dispatch_intent"),
+        "dispatch_rehydration_intent": context.get(
+            "dispatch_rehydration_intent"
+        ),
+        "context_rotation_intent": context.get("context_rotation_intent"),
         "transport_cleanup_intent": context.get("transport_cleanup_intent"),
         "deferred_wait": context.get("deferred_wait"),
     }
