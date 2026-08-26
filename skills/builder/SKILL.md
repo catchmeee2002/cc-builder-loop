@@ -47,11 +47,12 @@ description: 执行已接受的 Builder-loop 实验方案，把同 session 紧�
    - 根据 `dispatch_state` 恢复单一 action：`unprepared` 才调用
      `begin-dispatch --owner-session-id`；`in_flight` 续接同一 action；`completed` 读取已绑定的
      result artifact，不重做实现，也不重新 begin；
-   - 新结果用 `complete-dispatch --owner-session-id` 回传。若结果含 `problem_report`，先用同一 action
-     调用 `record-problems`（省略 `--thread-id`，带 `--owner-session-id`）；否则
-     `builder_recompose_fix` 调用 `recompose-candidate`，其他 Builder action 调用
-     `checkpoint-builder`。最后才用原 Builder action id 调用带 owner binding 的
-     `consume-dispatch`；这些事务完成前不得重新读取 `driver-next`；
+   - 新结果通过唯一的
+     `assurance apply-root-builder-result --run <run-id> --action-id <action-id> --owner-session-id <session-id>`
+     提交；该入口按结果类型完成 `complete-dispatch`、`checkpoint-builder` /
+     `record-problems` / `recompose-candidate` 和 `consume-dispatch`，并可在中断后省略
+     `--result` 重放已持久化 artifact。不得在提交门面之外手工交错这些 mutation，也不得在事务完成前
+     重新读取 `driver-next`；
    - 不调用 `thread/start`、不创建 Builder App Server thread，也不把 root session 映射成 thread；
    - 完成当前 Builder action 后调用 `native-driver resume`，把 Tester/Reviewer 和后续 gate 交回
      Native Driver。Builder 中断、dirty side effect 或 owner 漂移不得切换到 `native_thread`。
@@ -63,7 +64,10 @@ description: 执行已接受的 Builder-loop 实验方案，把同 session 紧�
    Driver 到 `FINALIZED`、`FAILED` 或 `NEEDS_USER`。普通 revision、修复、Agent follow-up、target rematerialize
    和 finalize recovery 不交还用户。run 创建后若仅遇到 App Server disconnect/overload，用
    `native-driver resume --repo <repo> --run <run-id>` 自动续接；同一 transport signature 连续三次才按
-   continuity failure 停止，不能改走另一控制器。用户随后显式授权继续同一 dispatch 时，只能使用
+   continuity failure 停止，不能改走另一控制器。Reviewer 只有在 compaction capability 不可用，且
+   exhausted turn 确认无输出、无副作用并仍是 thread 尾部时，才允许建立新的 Reviewer replacement
+   intent；replacement 创建新 thread、退休旧身份并重新获取 Reviewer evidence。Tester 不因空输出
+   exhausted dispatch 自动 replacement。用户随后显式授权继续同一 dispatch 时，只能使用
    `native-driver resume --repo <repo> --run <run-id> --reason <用户决定>` 建立新 generation；Core 必须
    证明 runtime identity、role/thread、action 与 prompt digest 未漂移，旧 generation 的 attempt 不得
    重置。runtime 已变化时停止并重新规划 successor run。未处理 FATAL 必须已由 Native Driver 写成

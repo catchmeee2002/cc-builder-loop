@@ -196,6 +196,8 @@ class NativeCoordinator:
                 self._simple("apply-engineering-correction", action)
             elif name == "replace_tester":
                 self._replace_tester(action)
+            elif name == "replace_reviewer":
+                self._replace_reviewer(action)
             elif name == "publish_prerequisites":
                 self._simple("publish-prerequisites", action)
             elif name == "verify_machine":
@@ -312,6 +314,7 @@ class NativeCoordinator:
             "prompt_digest": digest(prompt),
             "output_schema_digest": self.output_schema_digest,
             "result_schema": self.output_schema,
+            "submit_command": "assurance apply-root-builder-result",
         }
 
     def _simple(self, command: str, action: dict[str, Any]) -> None:
@@ -408,6 +411,64 @@ class NativeCoordinator:
             self._active_threads.add(thread_id)
         self.core.call(
             "complete-tester-replacement",
+            "--repo",
+            str(self.repo),
+            "--run",
+            self.run_id,
+            "--action-id",
+            action_id,
+            "--driver-runtime-kind",
+            "native",
+        )
+
+    def _replace_reviewer(self, action: dict[str, Any]) -> None:
+        if self.transport is None:
+            raise NativeDriverError(
+                "Native transport is required for Reviewer replacement",
+                code="NATIVE_REVIEWER_REPLACEMENT_TRANSPORT_REQUIRED",
+                status="NEEDS_USER",
+            )
+        context = self._context()
+        replacement = context.get("reviewer_replacement_intent")
+        if not isinstance(replacement, dict):
+            raise NativeDriverError(
+                "Reviewer replacement intent was not persisted",
+                code="NATIVE_REVIEWER_REPLACEMENT_INTENT_MISSING",
+                status="NEEDS_USER",
+            )
+        self._assert_reviewer_replacement_source(replacement)
+        action_id = str(replacement["action_id"])
+        new_agent = replacement.get("new_agent")
+        if not isinstance(new_agent, dict):
+            instructions, _sandbox = self._role_config("reviewer")
+            thread_id = self.transport.start_thread(
+                cwd=str(context["candidate_worktree"]),
+                developer_instructions=instructions,
+                sandbox="danger-full-access",
+            )
+            new_agent = {
+                "agent_id": f"codex-app-server:{thread_id}",
+                "thread_id": thread_id,
+            }
+            self.core.call(
+                "bind-reviewer-replacement",
+                "--repo",
+                str(self.repo),
+                "--run",
+                self.run_id,
+                "--action-id",
+                action_id,
+                "--agent-id",
+                new_agent["agent_id"],
+                "--thread-id",
+                thread_id,
+                "--driver-runtime-kind",
+                "native",
+            )
+            self._active_threads.add(thread_id)
+        self._assert_reviewer_replacement_source(replacement)
+        self.core.call(
+            "complete-reviewer-replacement",
             "--repo",
             str(self.repo),
             "--run",
@@ -778,17 +839,19 @@ class NativeCoordinator:
             )
         self._wait_for_retry(pending)
         thread_id = str(pending["thread_id"])
-        instructions, sandbox = self._role_config(role)
-        self.transport.resume_thread(
-            thread_id=thread_id,
-            cwd=self._turn_cwd(current, role, context),
-            developer_instructions=instructions,
-            sandbox="danger-full-access",
-        )
-        thread = self.transport.read_thread(thread_id)
         if pending.get("state") == "exhausted":
+            # An exhausted source only needs read/compaction/replacement
+            # recovery.  Do not resume the old thread before proving its tail;
+            # a closed or otherwise unavailable source must remain diagnosable.
+            thread = self.transport.read_thread(thread_id)
             compacted = self._recover_reviewer_thread_compaction(pending, thread)
             if compacted is not None:
+                return None
+            if (
+                role == "reviewer"
+                and pending.get("action") in {"reviewer_preflight", "reviewer_final"}
+                and self._start_reviewer_replacement(str(pending["action_id"]))
+            ):
                 return None
             raise NativeDriverError(
                 "Native role transport failed three times",
@@ -800,6 +863,14 @@ class NativeCoordinator:
                     "generation": pending.get("generation"),
                 },
             )
+        instructions, sandbox = self._role_config(role)
+        self.transport.resume_thread(
+            thread_id=thread_id,
+            cwd=self._turn_cwd(current, role, context),
+            developer_instructions=instructions,
+            sandbox="danger-full-access",
+        )
+        thread = self.transport.read_thread(thread_id)
         attempt = int(pending.get("attempt", 1))
         client_id = self._dispatch_client_id(pending)
         matches = [
@@ -1868,6 +1939,12 @@ class NativeCoordinator:
             or self._turn_agent_text(turn) is not None
         ):
             return False
+        if any(
+            not isinstance(item, dict)
+            or item.get("type") not in {"reasoning"}
+            for item in turn.get("items", [])
+        ):
+            return False
         status = turn.get("status")
         failure_code = pending.get("failure_code")
         if status == "failed":
@@ -2162,6 +2239,12 @@ class NativeCoordinator:
             if compacted is not None:
                 self._dispatch_renewal_reason = None
                 return compacted
+            if (
+                self._dispatch_renewal_reason is None
+                and action_name in {"reviewer_preflight", "reviewer_final"}
+                and self._start_reviewer_replacement(action_id)
+            ):
+                return self._context()
             if self._dispatch_renewal_reason is None:
                 raise
             context = self._context()
@@ -2225,6 +2308,144 @@ class NativeCoordinator:
                 "candidate_observation": observation,
             },
         )
+
+    def _start_reviewer_replacement(self, action_id: str) -> bool:
+        """Persist replacement only for a pure, empty exhausted Reviewer tail."""
+
+        if self._thread_compaction_available or self.transport is None:
+            return False
+        context = self._context()
+        pending = context.get("dispatch_intent")
+        existing_replacement = context.get("reviewer_replacement_intent")
+        if (
+            isinstance(existing_replacement, dict)
+            and existing_replacement.get("action_id") == action_id
+        ):
+            return True
+        if not (
+            isinstance(pending, dict)
+            and pending.get("action_id") == action_id
+            and pending.get("role") == "reviewer"
+            and pending.get("state") == "exhausted"
+            and pending.get("failure_code") in REVIEWER_COMPACTION_FAILURE_CODES
+        ):
+            return False
+        thread_id = pending.get("thread_id")
+        if not isinstance(thread_id, str):
+            return False
+        try:
+            thread = self.transport.read_thread(thread_id)
+        except AppServerError:
+            return False
+        turns = self._thread_turns(thread)
+        if not turns or not self._empty_exhausted_tail(pending, turns[-1]):
+            return False
+        candidate_head = context["facets"]["execution"].get("candidate_head")
+        if not isinstance(candidate_head, str):
+            return False
+        observation = {
+            "candidate_head": candidate_head,
+            "target_start_head": context.get("target_start_head"),
+            "evidence": context.get("evidence", {}),
+            "publication": context.get("publication"),
+            "deployment_transaction": context.get("deployment_transaction"),
+        }
+        observation_digest = digest(observation)
+        if observation_digest != pending.get("dispatch_observation_digest"):
+            return False
+        try:
+            self.core.call(
+                "begin-reviewer-replacement",
+                "--repo",
+                str(self.repo),
+                "--run",
+                self.run_id,
+                "--action-id",
+                action_id,
+                "--source-generation",
+                str(pending.get("generation")),
+                "--source-attempt",
+                str(pending.get("attempt")),
+                "--failure-code",
+                str(pending.get("failure_code")),
+                "--thread-id",
+                thread_id,
+                "--turn-id",
+                str(pending.get("turn_id")),
+                "--prompt-digest",
+                str(pending.get("prompt_digest")),
+                "--output-schema-digest",
+                str(pending.get("output_schema_digest")),
+                "--dispatch-observation-digest",
+                observation_digest,
+                "--candidate-head",
+                candidate_head,
+                "--thread-observation-digest",
+                digest(turns),
+                "--driver-runtime-kind",
+                "native",
+            )
+        except CorePortError as error:
+            if error.code == "REVIEWER_REPLACEMENT_LIMIT_REACHED":
+                raise NativeDriverError(
+                    "Reviewer replacement limit reached",
+                    code="NATIVE_REVIEWER_REPLACEMENT_LIMIT_REACHED",
+                    status="NEEDS_USER",
+                    details=error.payload,
+                ) from error
+            if error.status == "NEEDS_USER":
+                raise NativeDriverError(
+                    "Reviewer replacement source was no longer eligible",
+                    code=error.code,
+                    status="NEEDS_USER",
+                    details=error.payload,
+                ) from error
+            raise
+        return True
+
+    def _assert_reviewer_replacement_source(
+        self, replacement: dict[str, Any]
+    ) -> dict[str, Any]:
+        if self.transport is None:
+            raise NativeDriverError(
+                "Reviewer replacement source cannot be inspected without transport",
+                code="NATIVE_REVIEWER_REPLACEMENT_TRANSPORT_REQUIRED",
+                status="NEEDS_USER",
+            )
+        thread_id = replacement.get("thread_id")
+        if not isinstance(thread_id, str) or not thread_id:
+            raise NativeDriverError(
+                "Reviewer replacement source thread is missing",
+                code="NATIVE_REVIEWER_REPLACEMENT_SOURCE_INVALID",
+                status="NEEDS_USER",
+            )
+        try:
+            thread = self.transport.read_thread(thread_id)
+        except AppServerError as exc:
+            raise NativeDriverError(
+                "Reviewer replacement source thread could not be read",
+                code="NATIVE_REVIEWER_REPLACEMENT_SOURCE_UNREADABLE",
+                status="NEEDS_USER",
+                details={"source_code": exc.code, "source_details": exc.details},
+            ) from exc
+        turns = self._thread_turns(thread)
+        if digest(turns) != replacement.get("thread_observation_digest"):
+            raise NativeDriverError(
+                "Reviewer replacement source thread changed",
+                code="NATIVE_REVIEWER_REPLACEMENT_SOURCE_DRIFT",
+                status="NEEDS_USER",
+            )
+        pending = {
+            "turn_id": replacement.get("turn_id"),
+            "failure_code": replacement.get("failure_code"),
+        }
+        if not turns or not self._empty_exhausted_tail(pending, turns[-1]):
+            raise NativeDriverError(
+                "Reviewer replacement source is no longer a pure empty tail",
+                code="NATIVE_REVIEWER_REPLACEMENT_SOURCE_INELIGIBLE",
+                status="NEEDS_USER",
+            )
+        return thread
 
     def retry_transport_failure(self, error: AppServerError) -> dict[str, Any] | None:
         failure_code = classify_app_server_failure(error)

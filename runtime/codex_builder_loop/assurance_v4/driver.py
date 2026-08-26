@@ -8,6 +8,7 @@ from typing import Any, Mapping
 from .core import (
     AssuranceError,
     PUBLIC_PREREQUISITE_CLASSIFICATION_PROBLEM_KEY,
+    REVIEWER_REPLACEMENT_MAX,
     RUNTIME_PREPARATION_PROBLEM_KEY,
     _derive_lineage,
     _public_prerequisite_classification,
@@ -36,6 +37,11 @@ from .store import StoreError, branch_head, dirty_paths, git, read_ledger, resol
 
 
 TESTER_CORRECTION_LIMIT = 3
+REVIEWER_REPLACEMENT_FAILURE_CODES = {
+    "responseStreamDisconnected",
+    "missingAgentResult",
+}
+REVIEWER_REPLACEMENT_LIMIT = REVIEWER_REPLACEMENT_MAX
 
 
 def _included_execution_problem_keys(ledger: Mapping[str, Any]) -> set[str]:
@@ -1087,6 +1093,15 @@ def _dispatch_action(
     }
 
 
+def _reviewer_replacement_count(ledger: Mapping[str, Any]) -> int:
+    return sum(
+        1
+        for event in ledger.get("events", [])
+        if isinstance(event, Mapping)
+        and event.get("kind") == "reviewer_replacement_started"
+    )
+
+
 def next_action(
     repo_value: str | Path,
     run_value: str,
@@ -1302,8 +1317,46 @@ def next_action(
             "runtime_identity_not_mutable",
             runtime_compatibility=compatibility,
         )
+    reviewer_replacement = ledger.get("reviewer_replacement_intent")
+    if isinstance(reviewer_replacement, Mapping):
+        if reviewer_replacement.get("stage") not in {"prepared", "identity_bound"}:
+            return decision(
+                "NEEDS_USER",
+                "continuity_decision",
+                "reviewer_replacement_intent_invalid",
+                reviewer_replacement=copy.deepcopy(dict(reviewer_replacement)),
+            )
+        replacement_action = decision(
+            "CONTINUE",
+            "replace_reviewer",
+            f"reviewer_replacement_{reviewer_replacement.get('stage')}",
+            reviewer_replacement=copy.deepcopy(dict(reviewer_replacement)),
+            agent=copy.deepcopy(reviewer_replacement.get("new_agent")),
+        )
+        replacement_action["action_id"] = reviewer_replacement["action_id"]
+        return replacement_action
+
     pending_dispatch = ledger.get("dispatch_intent")
     if isinstance(pending_dispatch, dict):
+        if (
+            pending_dispatch.get("role") == "reviewer"
+            and pending_dispatch.get("state") == "exhausted"
+            and _reviewer_replacement_count(ledger) >= REVIEWER_REPLACEMENT_LIMIT
+        ):
+            return decision(
+                "NEEDS_USER",
+                "architecture_review",
+                "reviewer_replacement_limit_reached",
+                failures=[
+                    {
+                        "kind": "reviewer_identity",
+                        "failure_code": pending_dispatch.get("failure_code"),
+                        "count": _reviewer_replacement_count(ledger),
+                        "limit": REVIEWER_REPLACEMENT_LIMIT,
+                    }
+                ],
+                dispatch=copy.deepcopy(pending_dispatch),
+            )
         return _dispatch_action(ledger, run_id, pending_dispatch)
     replacement = ledger.get("tester_replacement_intent")
     if isinstance(replacement, dict):

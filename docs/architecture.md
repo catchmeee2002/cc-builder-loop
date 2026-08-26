@@ -296,6 +296,16 @@ structured turn error, and cleanup observation. Authorization material and token
 receipt. This diagnostic path does not change the existing timeout values, retry limit, or Reviewer compaction
 exception.
 
+If Reviewer compaction is unavailable, a third exhausted Reviewer dispatch may use a narrower replacement path
+only when the exhausted tail is the exact thread tail, contains no Agent output or tool/file/external side effect,
+and the candidate, prerequisite observation, action, prompt, and output schema remain unchanged. Core first
+persists a replacement intent, then binds a new Reviewer identity, retires the old dispatch and identity with
+an immutable event, and lets the normal Reviewer gate reacquire evidence under the new execution digest. The old
+Reviewer result and evidence are never reused. Tester replacement remains limited to an explicit
+`producer_continuity=invalid` problem; an empty exhausted Tester dispatch is not sufficient. Replacement is
+bounded to three starts per run and otherwise routes to architecture review. Any source-thread, candidate, or
+identity drift preserves the exhausted dispatch and returns `NEEDS_USER`.
+
 Turn waiting keeps the existing initialize/request/idle read limits and adds role-independent total turn and
 compaction deadlines. Machine and deployment commands use the same owned process-group observation boundary.
 `native-driver doctor` is read-only and reports legacy-unbound transport, process identity drift, deferred-wait
@@ -345,7 +355,10 @@ native-thread path; no active run is reinterpreted.
 For a root Builder dispatch, Core also records which result application completed before consumption:
 `checkpoint_builder`, `record_problems`, or `recompose_candidate`. A completed dispatch without its matching
 application remains pending and cannot be consumed, so a resumed root session can finish the exact side effect
-without rerunning the implementation.
+without rerunning the implementation. The user-facing root handoff uses one idempotent
+`apply-root-builder-result` facade that replays these existing transactions in order; it does not introduce a
+second action controller or a large cross-system transaction. A completed and consumed root dispatch can be
+replayed as a no-op only when the ledger contains the matching root dispatch, application, and consumption facts.
 
 就绪标记只在 Builder adapter 的带仓库上下文 plan validator 返回 `READY` 后出现，并位于冻结方案之外。
 原生路线没有该标记，也不创建 Builder ledger；普通 `Implement the plan.` 继续由 Codex 原生能力执行。
@@ -655,7 +668,8 @@ replay 返回已存错误且不追加 event；进程恢复若已看到同 action
 completed dispatch，不再次进入 proof gate。消费后 Driver 才能派生独立的诊断 turn，因此 dispatch intent
 不缓存后续 correction loop 或第二份 evidence。
 `dispatch_consumed.details.consumer_source` 是消费事实的唯一来源，值为 `native_driver`、
-`full_driver_skill` 或 `operator_recovery`；旧事件缺少该字段时只按保守规则推断，不回写历史 ledger。
+`root_session`、`full_driver_skill` 或 `operator_recovery`；旧事件缺少该字段时只按保守规则推断，不回写历史
+ledger。Root Builder 的正常提交使用 `root_session`，不计入人工恢复。
 
 用户批准的 plan decision 复用 `update-facet` 的既有校验与授权参数，并以
 `decision_request` 向用户展示相对 facet 的精确 delta。Planner 的人类正文只重复变化项，但仍生成唯一

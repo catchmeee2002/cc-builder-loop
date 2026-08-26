@@ -88,6 +88,7 @@ NON_SEMANTIC_CONTINUATION_WINDOW = 3
 REVIEWER_COMPACTION_FAILURE_CODES = frozenset(
     {"responseStreamDisconnected", "missingAgentResult"}
 )
+REVIEWER_REPLACEMENT_MAX = 3
 RUNTIME_SUPPORT_MANIFEST_PATH = (
     "runtime/codex_builder_loop/assurance_v4/runtime-support.json"
 )
@@ -135,6 +136,16 @@ _RENAMEAT2 = _LIBC.renameat2
 
 def _builder_mode(ledger: Mapping[str, Any]) -> str:
     return builder_runtime_mode(ledger["facets"])
+
+
+def _dispatch_observation(ledger: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "candidate_head": ledger["facets"]["execution"].get("candidate_head"),
+        "target_start_head": ledger.get("target_start_head"),
+        "evidence": ledger.get("evidence", {}),
+        "publication": ledger.get("publication"),
+        "deployment_transaction": ledger.get("deployment_transaction"),
+    }
 
 
 def _validate_builder_runtime_binding(
@@ -1722,6 +1733,7 @@ def start(
                 "transport_cleanup_intent": None,
                 "deferred_wait": None,
                 "tester_replacement_intent": None,
+                "reviewer_replacement_intent": None,
                 "proof_failure": None,
                 "machine_failure": None,
                 "recomposition_intent": None,
@@ -2023,13 +2035,7 @@ def begin_dispatch(
                     "tester_fix_action_id": action_id,
                 },
             )
-        observation = {
-            "candidate_head": ledger["facets"]["execution"].get("candidate_head"),
-            "target_start_head": ledger.get("target_start_head"),
-            "evidence": ledger.get("evidence", {}),
-            "publication": ledger.get("publication"),
-            "deployment_transaction": ledger.get("deployment_transaction"),
-        }
+        observation = _dispatch_observation(ledger)
         candidate_manifest_digest: str | None = None
         if action in BUILDER_SIDE_EFFECT_ACTIONS:
             try:
@@ -2912,6 +2918,237 @@ def _expected_root_builder_result_application(intent: Mapping[str, Any]) -> str:
     return "checkpoint_builder"
 
 
+def apply_root_builder_result(
+    repo_value: str | Path,
+    run_value: str,
+    *,
+    action_id: str,
+    owner_session_id: str,
+    result_value: Any | None = None,
+) -> dict[str, Any]:
+    """Complete and apply one root-session Builder result.
+
+    The individual Core transactions remain the source of truth.  This
+    facade only makes their ordering replayable for the owning root session.
+    """
+
+    repo = resolve_repo(repo_value)
+    run_id = ensure_run_id(run_value)
+    normalized_session = owner_session_id.strip()
+    if not normalized_session:
+        raise AssuranceError(
+            "root Builder result application requires an owner session",
+            code="BUILDER_OWNER_SESSION_REQUIRED",
+            status="FAIL",
+        )
+
+    already_consumed = False
+    # Validate the frozen owner and dispatch before accepting a caller-supplied
+    # result.  A non-root dispatch must never be partially completed by this
+    # convenience entry point.
+    with locked(repo):
+        ledger = read_ledger(repo, run_id)
+        if _builder_mode(ledger) != "root_session":
+            raise AssuranceError(
+                "root Builder result application requires root-session mode",
+                code="ROOT_BUILDER_MODE_REQUIRED",
+                status="FAIL",
+            )
+        runtime = ledger.get("driver_runtime")
+        if not (
+            isinstance(runtime, Mapping)
+            and runtime.get("kind") == "native"
+            and runtime.get("transport") == "root_session"
+        ):
+            raise AssuranceError(
+                "root Builder result application requires the Native root transport",
+                code="ROOT_BUILDER_RUNTIME_REQUIRED",
+                status="FAIL",
+            )
+        _assert_builder_owner(ledger, owner_session_id=normalized_session)
+        intent = ledger.get("dispatch_intent")
+        if not isinstance(intent, Mapping) or intent.get("action_id") != action_id:
+            if result_value is None and _root_builder_dispatch_consumed(
+                ledger, action_id
+            ):
+                already_consumed = True
+            else:
+                raise AssuranceError(
+                    "root Builder result application action is stale",
+                    code="DRIVER_ACTION_STALE",
+                    status="FAIL",
+                )
+        if already_consumed:
+            pass
+        elif intent.get("role") != "builder" or intent.get("owner_mode") != "root_session":
+            raise AssuranceError(
+                "root Builder result application requires a root Builder dispatch",
+                code="ROOT_BUILDER_MODE_REQUIRED",
+                status="FAIL",
+            )
+    if already_consumed:
+        result = status(repo, run_id)
+        from .driver import next_action
+
+        result["next_action"] = next_action(repo, run_id)
+        return result
+
+    if result_value is not None:
+        complete_dispatch(
+            repo,
+            run_id,
+            action_id=action_id,
+            result_value=result_value,
+            owner_session_id=normalized_session,
+        )
+
+    with locked(repo):
+        ledger = read_ledger(repo, run_id)
+        intent = ledger.get("dispatch_intent")
+        if not isinstance(intent, Mapping) or intent.get("action_id") != action_id:
+            raise AssuranceError(
+                "root Builder result application action is stale",
+                code="DRIVER_ACTION_STALE",
+                status="FAIL",
+            )
+        _assert_builder_owner(ledger, owner_session_id=normalized_session)
+        if intent.get("state") != "completed":
+            raise AssuranceError(
+                "root Builder result must be completed before application",
+                code="ROOT_BUILDER_DISPATCH_NOT_COMPLETE",
+                status="FAIL",
+            )
+        expected_application = _expected_root_builder_result_application(intent)
+        existing_application = intent.get("result_application")
+        if (
+            existing_application is not None
+            and existing_application != expected_application
+        ):
+            raise AssuranceError(
+                "root Builder result application does not match its result",
+                code="ROOT_BUILDER_RESULT_APPLICATION_MISMATCH",
+                status="FAIL",
+                details={
+                    "expected": expected_application,
+                    "actual": existing_application,
+                },
+            )
+        owner = ledger["facets"]["execution"]["agents"].get("builder")
+    if not isinstance(owner, Mapping):
+        raise AssuranceError(
+            "root Builder owner is missing",
+            code="NATIVE_ROOT_BUILDER_OWNER_MISSING",
+            status="NEEDS_USER",
+        )
+
+    if existing_application is None:
+        if expected_application == "record_problems":
+            result = _read_dispatch_result_artifact(intent)
+            report = result.get("problem_report")
+            if not isinstance(report, Mapping):
+                raise AssuranceError(
+                    "root Builder result does not contain a problem report",
+                    code="ROOT_BUILDER_RESULT_APPLICATION_MISMATCH",
+                    status="FAIL",
+                )
+            record_problems(
+                repo,
+                run_id,
+                report,
+                role="builder",
+                agent_id=str(owner["agent_id"]),
+                thread_id=None,
+                action_id=action_id,
+                owner_session_id=normalized_session,
+            )
+        elif expected_application == "recompose_candidate":
+            recompose_candidate(
+                repo,
+                run_id,
+                action_id=action_id,
+                owner_session_id=normalized_session,
+            )
+        else:
+            checkpoint_builder(
+                repo,
+                run_id,
+                action_id=action_id,
+                owner_session_id=normalized_session,
+            )
+
+    consume_dispatch(
+        repo,
+        run_id,
+        action_id=action_id,
+        consumer_source="root_session",
+        owner_session_id=normalized_session,
+    )
+    result = status(repo, run_id)
+    from .driver import next_action
+
+    result["next_action"] = next_action(repo, run_id)
+    return result
+
+
+def _root_builder_dispatch_consumed(
+    ledger: Mapping[str, Any], action_id: str
+) -> bool:
+    prepared = False
+    applied = False
+    consumed = False
+    for event in ledger.get("events", []):
+        if not isinstance(event, Mapping):
+            continue
+        details = event.get("details")
+        details = details if isinstance(details, Mapping) else {}
+        if (
+            event.get("kind") == "dispatch_prepared"
+            and details.get("action_id") == action_id
+            and details.get("role") == "builder"
+            and details.get("owner_mode") == "root_session"
+        ):
+            prepared = True
+        elif (
+            event.get("kind") == "root_builder_result_applied"
+            and details.get("action_id") == action_id
+        ):
+            applied = True
+        elif (
+            event.get("kind") == "dispatch_consumed"
+            and details.get("action_id") == action_id
+        ):
+            consumed = True
+    return prepared and applied and consumed
+
+
+def _read_dispatch_result_artifact(intent: Mapping[str, Any]) -> dict[str, Any]:
+    result_path = intent.get("result_path")
+    if not isinstance(result_path, str) or not result_path:
+        raise AssuranceError(
+            "root Builder result artifact is missing",
+            code="ROOT_BUILDER_RESULT_ARTIFACT_MISSING",
+            status="NEEDS_USER",
+        )
+    try:
+        raw = json.loads(Path(result_path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise AssuranceError(
+            "root Builder result artifact is unreadable",
+            code="ROOT_BUILDER_RESULT_ARTIFACT_INVALID",
+            status="NEEDS_USER",
+            details={"path": result_path, "error": str(exc)},
+        ) from exc
+    result = validate_agent_result(raw)
+    if digest(result) != intent.get("result_digest"):
+        raise AssuranceError(
+            "root Builder result artifact digest changed",
+            code="ROOT_BUILDER_RESULT_ARTIFACT_DRIFT",
+            status="NEEDS_USER",
+            details={"path": result_path},
+        )
+    return result
+
+
 def retry_dispatch(
     repo_value: str | Path,
     run_value: str,
@@ -3579,10 +3816,24 @@ def consume_dispatch(
                 "native": "native_driver",
                 "full_driver_skill": "full_driver_skill",
             }.get(kind)
-        if consumer_source not in {"native_driver", "full_driver_skill", "operator_recovery"}:
+        if consumer_source not in {
+            "native_driver",
+            "root_session",
+            "full_driver_skill",
+            "operator_recovery",
+        }:
             raise AssuranceError(
                 "dispatch consumer source is required",
                 code="DISPATCH_CONSUMER_SOURCE_REQUIRED",
+            )
+        if consumer_source == "root_session" and not (
+            intent.get("role") == "builder"
+            and intent.get("owner_mode") == "root_session"
+        ):
+            raise AssuranceError(
+                "root-session consumer source is only valid for a root Builder dispatch",
+                code="DISPATCH_CONSUMER_SOURCE_MISMATCH",
+                status="FAIL",
             )
         append_event(
             ledger,
@@ -5724,6 +5975,8 @@ def _profile_projection(ledger: Mapping[str, Any]) -> dict[str, Any]:
             "tester_replacement_started",
             "tester_continuity_replaced",
             "reviewer_replaced",
+            "reviewer_replacement_started",
+            "reviewer_replacement_completed",
         }:
             reason = "role-replacement"
         elif kind == "dispatch_renewed":
@@ -5804,6 +6057,7 @@ def telemetry(ledger: Mapping[str, Any]) -> dict[str, Any]:
         "reviewer_preflight_attempts": 0,
         "dispatch_renewals": 0,
         "reviewer_thread_compactions": 0,
+        "reviewer_replacements": 0,
     }
 
     def stage(name: str) -> dict[str, Any]:
@@ -5932,6 +6186,8 @@ def telemetry(ledger: Mapping[str, Any]) -> dict[str, Any]:
             duration = max(0, int(details.get("duration_ms", 0)))
             current["total_duration_ms"] += duration
             agent_turn_ms += duration
+        elif kind == "reviewer_replacement_completed":
+            lifecycle["reviewer_replacements"] += 1
         elif kind == "machine_verified":
             current = stage("verify_machine")
             current["attempts"] += 1
@@ -6947,6 +7203,7 @@ def _candidate_residue_transaction_blockers(
     for field in (
         "driver_failure",
         "recomposition_intent",
+        "reviewer_replacement_intent",
         "deployment_transaction",
         "pending_blackbox",
         "environment_lease",
@@ -7826,6 +8083,9 @@ def status(repo_value: str | Path, run_value: str) -> dict[str, Any]:
         "dispatch_intent": copy.deepcopy(ledger.get("dispatch_intent")),
         "tester_replacement_intent": copy.deepcopy(
             ledger.get("tester_replacement_intent")
+        ),
+        "reviewer_replacement_intent": copy.deepcopy(
+            ledger.get("reviewer_replacement_intent")
         ),
         "proof_failure": copy.deepcopy(ledger.get("proof_failure")),
         "proof_failure_state": proof_failure_state(ledger),
@@ -8895,6 +9155,9 @@ def driver_context(repo_value: str | Path, run_value: str) -> dict[str, Any]:
         "candidate_observation": candidate_observation,
         "tester_replacement_intent": copy.deepcopy(
             ledger.get("tester_replacement_intent")
+        ),
+        "reviewer_replacement_intent": copy.deepcopy(
+            ledger.get("reviewer_replacement_intent")
         ),
         "proof_failure": copy.deepcopy(ledger.get("proof_failure")),
         "proof_failure_state": proof_failure_state(ledger),
@@ -10068,6 +10331,381 @@ def prepare_reviewer(
             ledger,
             "reviewer_replaced" if isinstance(existing, dict) else "reviewer_prepared",
             {"old_agent": existing, "new_agent": agent},
+        )
+        save_ledger(repo, ledger)
+    return status(repo, run_id)
+
+
+def _reviewer_replacement_count(ledger: Mapping[str, Any]) -> int:
+    return sum(
+        1
+        for event in ledger.get("events", [])
+        if isinstance(event, Mapping)
+        and event.get("kind") == "reviewer_replacement_started"
+    )
+
+
+def _reviewer_replacement_dispatch(
+    ledger: Mapping[str, Any],
+    *,
+    action_id: str,
+    source_generation: int,
+    source_attempt: int,
+    failure_code: str,
+    thread_id: str,
+    turn_id: str,
+    prompt_digest: str,
+    output_schema_digest: str,
+    dispatch_observation_digest: str,
+    candidate_head: str,
+) -> dict[str, Any]:
+    intent = ledger.get("dispatch_intent")
+    if (
+        not isinstance(intent, Mapping)
+        or intent.get("action_id") != action_id
+        or intent.get("role") != "reviewer"
+        or intent.get("action") not in {"reviewer_preflight", "reviewer_final"}
+        or intent.get("state") != "exhausted"
+        or int(intent.get("attempt", 0)) != source_attempt
+        or int(intent.get("generation", 0)) != source_generation
+        or intent.get("failure_code") != failure_code
+        or intent.get("thread_id") != thread_id
+        or intent.get("turn_id") != turn_id
+        or intent.get("prompt_digest") != prompt_digest
+        or intent.get("output_schema_digest") != output_schema_digest
+        or intent.get("dispatch_observation_digest")
+        != dispatch_observation_digest
+        or ledger["facets"]["execution"].get("candidate_head") != candidate_head
+        or digest(_dispatch_observation(ledger)) != dispatch_observation_digest
+    ):
+        raise AssuranceError(
+            "Reviewer replacement source dispatch changed",
+            code="REVIEWER_REPLACEMENT_SOURCE_DRIFT",
+            status="NEEDS_USER",
+        )
+    if failure_code not in REVIEWER_COMPACTION_FAILURE_CODES:
+        raise AssuranceError(
+            "Reviewer replacement requires an eligible no-output failure",
+            code="REVIEWER_REPLACEMENT_FAILURE_INELIGIBLE",
+            status="NEEDS_USER",
+        )
+    return dict(intent)
+
+
+def begin_reviewer_replacement(
+    repo_value: str | Path,
+    run_value: str,
+    *,
+    action_id: str,
+    source_generation: int,
+    source_attempt: int,
+    failure_code: str,
+    thread_id: str,
+    turn_id: str,
+    prompt_digest: str,
+    output_schema_digest: str,
+    dispatch_observation_digest: str,
+    candidate_head: str,
+    thread_observation_digest: str,
+    driver_runtime_kind: str = "native",
+) -> dict[str, Any]:
+    repo = resolve_repo(repo_value)
+    run_id = ensure_run_id(run_value)
+    values = (
+        thread_id,
+        turn_id,
+        prompt_digest,
+        output_schema_digest,
+        dispatch_observation_digest,
+        candidate_head,
+        thread_observation_digest,
+    )
+    if not all(isinstance(value, str) and value.strip() for value in values):
+        raise AssuranceError(
+            "Reviewer replacement observation is incomplete",
+            code="REVIEWER_REPLACEMENT_OBSERVATION_INVALID",
+            status="FAIL",
+        )
+    if any(
+        not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value)
+        for value in (
+            prompt_digest,
+            output_schema_digest,
+            dispatch_observation_digest,
+            thread_observation_digest,
+        )
+    ):
+        raise AssuranceError(
+            "Reviewer replacement digest is invalid",
+            code="REVIEWER_REPLACEMENT_OBSERVATION_INVALID",
+            status="FAIL",
+        )
+    with locked(repo):
+        ledger = read_ledger(repo, run_id)
+        _require_driver_runtime_owner(ledger, driver_runtime_kind)
+        if ledger.get("phase") != "active":
+            raise AssuranceError(
+                "Reviewer replacement requires an active run",
+                code="ASSURANCE_RUN_NOT_ACTIVE",
+                status="NEEDS_USER",
+            )
+        existing = ledger.get("reviewer_replacement_intent")
+        if isinstance(existing, Mapping):
+            expected = {
+                "action_id": action_id,
+                "source_generation": source_generation,
+                "source_attempt": source_attempt,
+                "failure_code": failure_code,
+                "thread_id": thread_id,
+                "turn_id": turn_id,
+                "prompt_digest": prompt_digest,
+                "output_schema_digest": output_schema_digest,
+                "dispatch_observation_digest": dispatch_observation_digest,
+                "candidate_head": candidate_head,
+                "thread_observation_digest": thread_observation_digest,
+            }
+            if all(existing.get(key) == value for key, value in expected.items()):
+                return status(repo, run_id)
+            raise AssuranceError(
+                "Reviewer replacement intent replay changed its source",
+                code="REVIEWER_REPLACEMENT_SOURCE_DRIFT",
+                status="NEEDS_USER",
+            )
+        if _reviewer_replacement_count(ledger) >= REVIEWER_REPLACEMENT_MAX:
+            raise AssuranceError(
+                "Reviewer replacement limit reached",
+                code="REVIEWER_REPLACEMENT_LIMIT_REACHED",
+                status="NEEDS_USER",
+                details={"limit": REVIEWER_REPLACEMENT_MAX},
+            )
+        dispatch = _reviewer_replacement_dispatch(
+            ledger,
+            action_id=action_id,
+            source_generation=source_generation,
+            source_attempt=source_attempt,
+            failure_code=failure_code,
+            thread_id=thread_id,
+            turn_id=turn_id,
+            prompt_digest=prompt_digest,
+            output_schema_digest=output_schema_digest,
+            dispatch_observation_digest=dispatch_observation_digest,
+            candidate_head=candidate_head,
+        )
+        old_agent = ledger["facets"]["execution"]["agents"].get("reviewer")
+        if (
+            not isinstance(old_agent, Mapping)
+            or old_agent.get("thread_id") != thread_id
+        ):
+            raise AssuranceError(
+                "Reviewer replacement source identity changed",
+                code="REVIEWER_REPLACEMENT_IDENTITY_DRIFT",
+                status="NEEDS_USER",
+            )
+        created_at = now()
+        ledger["reviewer_replacement_intent"] = {
+            "action_id": action_id,
+            "source_generation": source_generation,
+            "source_attempt": source_attempt,
+            "failure_code": failure_code,
+            "thread_id": thread_id,
+            "turn_id": turn_id,
+            "prompt_digest": prompt_digest,
+            "output_schema_digest": output_schema_digest,
+            "dispatch_observation_digest": dispatch_observation_digest,
+            "candidate_head": candidate_head,
+            "thread_observation_digest": thread_observation_digest,
+            "replacement_attempt": _reviewer_replacement_count(ledger) + 1,
+            "old_agent": copy.deepcopy(dict(old_agent)),
+            "new_agent": None,
+            "stage": "prepared",
+            "created_at": created_at,
+            "updated_at": created_at,
+        }
+        append_event(
+            ledger,
+            "reviewer_replacement_started",
+            {
+                "action_id": action_id,
+                "source_generation": source_generation,
+                "source_attempt": source_attempt,
+                "failure_code": failure_code,
+                "thread_id": thread_id,
+                "turn_id": turn_id,
+                "candidate_head": candidate_head,
+                "dispatch_digest": digest(dispatch),
+                "replacement_attempt": ledger["reviewer_replacement_intent"][
+                    "replacement_attempt"
+                ],
+            },
+        )
+        save_ledger(repo, ledger)
+    return status(repo, run_id)
+
+
+def bind_reviewer_replacement(
+    repo_value: str | Path,
+    run_value: str,
+    *,
+    action_id: str,
+    agent_id: str,
+    thread_id: str,
+    driver_runtime_kind: str = "native",
+) -> dict[str, Any]:
+    repo = resolve_repo(repo_value)
+    run_id = ensure_run_id(run_value)
+    agent = {"agent_id": agent_id.strip(), "thread_id": thread_id.strip()}
+    if not all(agent.values()):
+        raise AssuranceError(
+            "Reviewer replacement identity is required",
+            code="REVIEWER_IDENTITY_REQUIRED",
+            status="FAIL",
+        )
+    with locked(repo):
+        ledger = read_ledger(repo, run_id)
+        _require_driver_runtime_owner(ledger, driver_runtime_kind)
+        intent = ledger.get("reviewer_replacement_intent")
+        if not isinstance(intent, dict) or intent.get("action_id") != action_id:
+            raise AssuranceError(
+                "Reviewer replacement identity bind is stale",
+                code="REVIEWER_REPLACEMENT_ACTION_STALE",
+                status="FAIL",
+            )
+        if intent.get("stage") == "identity_bound":
+            if intent.get("new_agent") == agent:
+                return status(repo, run_id)
+            raise AssuranceError(
+                "Reviewer replacement identity cannot be overwritten",
+                code="REVIEWER_REPLACEMENT_IDENTITY_CONFLICT",
+                status="FAIL",
+            )
+        if agent == intent.get("old_agent"):
+            raise AssuranceError(
+                "Reviewer replacement must create a new identity",
+                code="REVIEWER_REPLACEMENT_IDENTITY_CONFLICT",
+                status="FAIL",
+            )
+        _reviewer_replacement_dispatch(
+            ledger,
+            action_id=action_id,
+            source_generation=int(intent["source_generation"]),
+            source_attempt=int(intent["source_attempt"]),
+            failure_code=str(intent["failure_code"]),
+            thread_id=str(intent["thread_id"]),
+            turn_id=str(intent["turn_id"]),
+            prompt_digest=str(intent["prompt_digest"]),
+            output_schema_digest=str(intent["output_schema_digest"]),
+            dispatch_observation_digest=str(intent["dispatch_observation_digest"]),
+            candidate_head=str(intent["candidate_head"]),
+        )
+        intent["new_agent"] = agent
+        intent["stage"] = "identity_bound"
+        intent["updated_at"] = now()
+        append_event(
+            ledger,
+            "reviewer_replacement_identity_bound",
+            {"action_id": action_id, "old_agent": intent["old_agent"], "new_agent": agent},
+        )
+        save_ledger(repo, ledger)
+    return status(repo, run_id)
+
+
+def complete_reviewer_replacement(
+    repo_value: str | Path,
+    run_value: str,
+    *,
+    action_id: str,
+    driver_runtime_kind: str = "native",
+) -> dict[str, Any]:
+    repo = resolve_repo(repo_value)
+    run_id = ensure_run_id(run_value)
+    with locked(repo):
+        ledger = read_ledger(repo, run_id)
+        _require_driver_runtime_owner(ledger, driver_runtime_kind)
+        intent = ledger.get("reviewer_replacement_intent")
+        if not isinstance(intent, dict) or intent.get("action_id") != action_id:
+            raise AssuranceError(
+                "Reviewer replacement completion is stale",
+                code="REVIEWER_REPLACEMENT_ACTION_STALE",
+                status="FAIL",
+            )
+        new_agent = intent.get("new_agent")
+        if intent.get("stage") != "identity_bound" or not isinstance(new_agent, Mapping):
+            raise AssuranceError(
+                "Reviewer replacement identity is not bound",
+                code="REVIEWER_REPLACEMENT_IDENTITY_MISSING",
+                status="FAIL",
+            )
+        dispatch = _reviewer_replacement_dispatch(
+            ledger,
+            action_id=action_id,
+            source_generation=int(intent["source_generation"]),
+            source_attempt=int(intent["source_attempt"]),
+            failure_code=str(intent["failure_code"]),
+            thread_id=str(intent["thread_id"]),
+            turn_id=str(intent["turn_id"]),
+            prompt_digest=str(intent["prompt_digest"]),
+            output_schema_digest=str(intent["output_schema_digest"]),
+            dispatch_observation_digest=str(intent["dispatch_observation_digest"]),
+            candidate_head=str(intent["candidate_head"]),
+        )
+        current_agent = ledger["facets"]["execution"]["agents"].get("reviewer")
+        if current_agent != intent.get("old_agent"):
+            raise AssuranceError(
+                "Reviewer replacement current identity drifted",
+                code="REVIEWER_REPLACEMENT_IDENTITY_DRIFT",
+                status="NEEDS_USER",
+            )
+        if new_agent == current_agent:
+            raise AssuranceError(
+                "Reviewer replacement did not create a new identity",
+                code="REVIEWER_REPLACEMENT_IDENTITY_CONFLICT",
+                status="FAIL",
+            )
+        ledger.setdefault("retired_reviewer_agents", []).append(
+            copy.deepcopy(dict(current_agent))
+        )
+        execution = ledger["facets"]["execution"]
+        execution["agents"]["reviewer"] = copy.deepcopy(dict(new_agent))
+        execution["version"] += 1
+        ledger["digests"] = facet_digests(ledger["facets"])
+        append_event(
+            ledger,
+            "reviewer_dispatch_retired",
+            {
+                "action_id": action_id,
+                "state": dispatch.get("state"),
+                "generation": dispatch.get("generation"),
+                "attempt": dispatch.get("attempt"),
+                "failure_code": dispatch.get("failure_code"),
+                "turn_id": dispatch.get("turn_id"),
+                "result_digest": dispatch.get("result_digest"),
+                "consumer_source": "reviewer_replacement",
+                "dispatch": copy.deepcopy(dispatch),
+                "thread_observation_digest": intent.get(
+                    "thread_observation_digest"
+                ),
+            },
+        )
+        ledger["dispatch_intent"] = None
+        ledger["reviewer_replacement_intent"] = None
+        append_event(
+            ledger,
+            "reviewer_replacement_completed",
+            {
+                "action_id": action_id,
+                "source_generation": intent["source_generation"],
+                "source_attempt": intent["source_attempt"],
+                "failure_code": intent["failure_code"],
+                "thread_id": intent["thread_id"],
+                "turn_id": intent["turn_id"],
+                "dispatch_digest": digest(dispatch),
+                "source_dispatch": copy.deepcopy(dispatch),
+                "thread_observation_digest": intent[
+                    "thread_observation_digest"
+                ],
+                "old_agent": intent["old_agent"],
+                "new_agent": copy.deepcopy(dict(new_agent)),
+            },
         )
         save_ledger(repo, ledger)
     return status(repo, run_id)

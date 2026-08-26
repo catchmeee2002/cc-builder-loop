@@ -89,6 +89,12 @@
         {"$ref": "#/$defs/testerReplacementIntent"}
       ]
     },
+    "reviewer_replacement_intent": {
+      "oneOf": [
+        {"type": "null"},
+        {"$ref": "#/$defs/reviewerReplacementIntent"}
+      ]
+    },
     "proof_failure": {
       "oneOf": [
         {"type": "null"},
@@ -665,6 +671,43 @@
         "old_source": {"$ref": "assurance-v4-contract.schema.json#/$defs/testerSource"},
         "created_at": {"type": "string", "format": "date-time"},
         "updated_at": {"type": "string", "format": "date-time"}
+      }
+    },
+    "reviewerReplacementIntent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "action_id", "source_generation", "source_attempt", "failure_code",
+        "thread_id", "turn_id", "prompt_digest", "output_schema_digest",
+        "dispatch_observation_digest", "candidate_head",
+        "thread_observation_digest", "replacement_attempt",
+        "old_agent", "new_agent", "stage", "created_at", "updated_at"
+      ],
+      "properties": {
+        "action_id": {"$ref": "#/$defs/sha256"},
+        "source_generation": {"type": "integer", "minimum": 1},
+        "source_attempt": {"type": "integer", "minimum": 3, "maximum": 3},
+        "failure_code": {
+          "enum": ["responseStreamDisconnected", "missingAgentResult"]
+        },
+        "thread_id": {"type": "string", "minLength": 1},
+        "turn_id": {"type": "string", "minLength": 1},
+        "prompt_digest": {"$ref": "#/$defs/sha256"},
+        "output_schema_digest": {"$ref": "#/$defs/sha256"},
+        "dispatch_observation_digest": {"$ref": "#/$defs/sha256"},
+        "candidate_head": {"$ref": "#/$defs/commit"},
+        "thread_observation_digest": {"$ref": "#/$defs/sha256"},
+        "replacement_attempt": {"type": "integer", "minimum": 1, "maximum": 3},
+        "old_agent": {"$ref": "assurance-v4-contract.schema.json#/$defs/agent"},
+        "new_agent": {
+          "oneOf": [
+            {"type": "null"},
+            {"$ref": "assurance-v4-contract.schema.json#/$defs/agent"}
+          ]
+        },
+        "stage": {"enum": ["prepared", "identity_bound"]},
+        "created_at": {"type": "string", "minLength": 1},
+        "updated_at": {"type": "string", "minLength": 1}
       }
     },
     "proofFailure": {

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Root-session Builder handoff now exposes one idempotent result-application facade that replays the existing
+  completion, checkpoint/problem, recomposition, and consumption transactions without switching Builder modes.
+  Reviewer transport exhaustion can use a bounded replacement transaction only for a verified empty tail when
+  compaction is unavailable; the old dispatch and Reviewer identity remain auditable, while Tester replacement
+  stays restricted to explicit continuity invalidation.
+
 - Native Builder failure handling now drains App Server stderr without blocking the protocol reader, stores a
   bounded redacted diagnostic receipt, and records exact candidate dirty manifests with content hashes.
   Builder dispatch retries now fail closed after a durable candidate side effect, while clean retries and the

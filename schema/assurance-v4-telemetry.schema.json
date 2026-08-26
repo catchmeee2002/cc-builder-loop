@@ -124,7 +124,7 @@
       "required": [
         "publication_generations", "target_drifts", "recomposition_attempts",
         "recomposition_restarts", "builder_conflict_repairs", "tester_conflict_repairs",
-        "reviewer_preflight_attempts", "reviewer_thread_compactions"
+        "reviewer_preflight_attempts", "reviewer_thread_compactions", "reviewer_replacements"
       ],
       "properties": {
         "publication_generations": {"type": "integer", "minimum": 0},
@@ -135,7 +135,8 @@
         "tester_conflict_repairs": {"type": "integer", "minimum": 0},
         "reviewer_preflight_attempts": {"type": "integer", "minimum": 0},
         "dispatch_renewals": {"type": "integer", "minimum": 0},
-        "reviewer_thread_compactions": {"type": "integer", "minimum": 0}
+        "reviewer_thread_compactions": {"type": "integer", "minimum": 0},
+        "reviewer_replacements": {"type": "integer", "minimum": 0}
       }
     },
     "expected_stages": {

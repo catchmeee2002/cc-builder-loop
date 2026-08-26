@@ -807,6 +807,7 @@ def validate_ledger(value: Any) -> dict[str, Any]:
     normalized.setdefault("machine_failure", None)
     normalized.setdefault("recomposition_intent", None)
     normalized.setdefault("candidate_residue_intent", None)
+    normalized.setdefault("reviewer_replacement_intent", None)
     normalized.setdefault("transport_cleanup_intent", None)
     normalized.setdefault("deferred_wait", None)
     publication = normalized.get("publication")

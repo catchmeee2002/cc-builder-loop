@@ -155,8 +155,11 @@ dispatch。直到 `finalize` 或明确的决策边界。动作面如下，不能
   `REVIEW_RESULT: pass`、`REVIEW_RESULT: findings` 或 `REVIEW_RESULT: blocked`，并继续返回
   `REVIEW_HEAD` 和 `PROBLEM_REPORT` 唯一终态；主线程只把这些结构字段规范成 v4 evidence report，
   不修改 Reviewer 公共协议。finding 修复后必须 same-thread 续接；不得用
-  fresh Reviewer 把旧 finding 洗掉。需要 replacement 时先调用 `prepare-reviewer --replace`，保留旧
-  identity 并使 review evidence stale。
+  fresh Reviewer 把旧 finding 洗掉。普通审查连续性仍要求 same-thread；只有 compaction capability
+  不可用且第三次 exhausted turn 已由 Native Coordinator 证明是 thread 尾部、无 Agent 输出和无副作用时，
+  才允许进入 `begin-reviewer-replacement` / `bind-reviewer-replacement` /
+  `complete-reviewer-replacement`，退休旧 dispatch/identity 并重新取得 Reviewer evidence。Tester
+  不因空输出 exhausted dispatch 自动 replacement；replacement 每个 run 最多三次，漂移或超限即停止。
 - `tester_fix`：结构化问题 owner=tester 且未声明 `producer_continuity=invalid` 时回到 Tester 同一
   thread；普通测试修正或 fixture 修正不修改 Mission。
 - `replace_tester`：只有当前 Tester producer 自己报告 owner=tester 且
@@ -196,8 +199,9 @@ dispatch。直到 `finalize` 或明确的决策边界。动作面如下，不能
 
 Tester continuity 或 Reviewer continuity 丢失时，优先 same-thread 续接。Tester transport identity
 丢失但 producer 仍可信时沿用既有 `prepare-tester --replace` 边界；Tester 已失去独立 author 资格时只走
-上述 `replace_tester` 持久事务。dirty 或漂移则保留现场并停止。不可恢复的 Agent 连续性不自动改变
-Mission。
+上述 `replace_tester` 持久事务。Reviewer 的受限 replacement 只适用于无输出、无副作用的 exhausted
+尾部，并由 Core 保存旧身份和 source observation。dirty 或漂移则保留现场并停止。不可恢复的 Agent
+连续性不自动改变 Mission。
 
 ## 终态事故与记忆
 

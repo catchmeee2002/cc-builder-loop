@@ -173,6 +173,18 @@ def parser() -> argparse.ArgumentParser:
         required=True,
     )
 
+    apply_root_builder_result = commands.add_parser(
+        "apply-root-builder-result"
+    )
+    apply_root_builder_result.add_argument("--repo", default=".")
+    apply_root_builder_result.add_argument("--run", required=True)
+    apply_root_builder_result.add_argument("--action-id", required=True)
+    apply_root_builder_result.add_argument("--owner-session-id", required=True)
+    apply_root_builder_result.add_argument(
+        "--result",
+        help="completed root Builder result JSON; omit to replay the persisted artifact",
+    )
+
     context = commands.add_parser("driver-context")
     context.add_argument("--repo", default=".")
     context.add_argument("--run", required=True)
@@ -290,6 +302,58 @@ def parser() -> argparse.ArgumentParser:
         "--driver-runtime-kind",
         choices=["native", "full_driver_skill"],
         required=True,
+    )
+
+    begin_reviewer_replacement = commands.add_parser(
+        "begin-reviewer-replacement"
+    )
+    begin_reviewer_replacement.add_argument("--repo", default=".")
+    begin_reviewer_replacement.add_argument("--run", required=True)
+    begin_reviewer_replacement.add_argument("--action-id", required=True)
+    begin_reviewer_replacement.add_argument("--source-generation", type=int, required=True)
+    begin_reviewer_replacement.add_argument("--source-attempt", type=int, required=True)
+    begin_reviewer_replacement.add_argument("--failure-code", required=True)
+    begin_reviewer_replacement.add_argument("--thread-id", required=True)
+    begin_reviewer_replacement.add_argument("--turn-id", required=True)
+    begin_reviewer_replacement.add_argument("--prompt-digest", required=True)
+    begin_reviewer_replacement.add_argument("--output-schema-digest", required=True)
+    begin_reviewer_replacement.add_argument(
+        "--dispatch-observation-digest", required=True
+    )
+    begin_reviewer_replacement.add_argument("--candidate-head", required=True)
+    begin_reviewer_replacement.add_argument(
+        "--thread-observation-digest", required=True
+    )
+    begin_reviewer_replacement.add_argument(
+        "--driver-runtime-kind",
+        choices=["native", "full_driver_skill"],
+        default="native",
+    )
+
+    bind_reviewer_replacement = commands.add_parser(
+        "bind-reviewer-replacement"
+    )
+    bind_reviewer_replacement.add_argument("--repo", default=".")
+    bind_reviewer_replacement.add_argument("--run", required=True)
+    bind_reviewer_replacement.add_argument("--action-id", required=True)
+    bind_reviewer_replacement.add_argument("--agent-id", required=True)
+    bind_reviewer_replacement.add_argument("--thread-id", required=True)
+    bind_reviewer_replacement.add_argument(
+        "--driver-runtime-kind",
+        choices=["native", "full_driver_skill"],
+        default="native",
+    )
+
+    complete_reviewer_replacement = commands.add_parser(
+        "complete-reviewer-replacement"
+    )
+    complete_reviewer_replacement.add_argument("--repo", default=".")
+    complete_reviewer_replacement.add_argument("--run", required=True)
+    complete_reviewer_replacement.add_argument("--action-id", required=True)
+    complete_reviewer_replacement.add_argument(
+        "--driver-runtime-kind",
+        choices=["native", "full_driver_skill"],
+        default="native",
     )
 
     prove = commands.add_parser("prove-tests")
@@ -493,7 +557,12 @@ def parser() -> argparse.ArgumentParser:
     consume_dispatch.add_argument("--owner-session-id")
     consume_dispatch.add_argument(
         "--consumer-source",
-        choices=["native_driver", "full_driver_skill", "operator_recovery"],
+        choices=[
+            "native_driver",
+            "root_session",
+            "full_driver_skill",
+            "operator_recovery",
+        ],
     )
 
     retry_dispatch = commands.add_parser("retry-dispatch")
@@ -747,6 +816,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 action_id=args.action_id,
                 driver_runtime_kind=args.driver_runtime_kind,
             )
+        elif args.command == "apply-root-builder-result":
+            payload = core.apply_root_builder_result(
+                args.repo,
+                args.run,
+                action_id=args.action_id,
+                owner_session_id=args.owner_session_id,
+                result_value=_json(args.result) if args.result else None,
+            )
         elif args.command == "driver-context":
             payload = core.driver_context(args.repo, args.run)
         elif args.command == "checkpoint-builder":
@@ -876,6 +953,39 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         elif args.command == "complete-tester-replacement":
             payload = core.complete_tester_replacement(
+                args.repo,
+                args.run,
+                action_id=args.action_id,
+                driver_runtime_kind=args.driver_runtime_kind,
+            )
+        elif args.command == "begin-reviewer-replacement":
+            payload = core.begin_reviewer_replacement(
+                args.repo,
+                args.run,
+                action_id=args.action_id,
+                source_generation=args.source_generation,
+                source_attempt=args.source_attempt,
+                failure_code=args.failure_code,
+                thread_id=args.thread_id,
+                turn_id=args.turn_id,
+                prompt_digest=args.prompt_digest,
+                output_schema_digest=args.output_schema_digest,
+                dispatch_observation_digest=args.dispatch_observation_digest,
+                candidate_head=args.candidate_head,
+                thread_observation_digest=args.thread_observation_digest,
+                driver_runtime_kind=args.driver_runtime_kind,
+            )
+        elif args.command == "bind-reviewer-replacement":
+            payload = core.bind_reviewer_replacement(
+                args.repo,
+                args.run,
+                action_id=args.action_id,
+                agent_id=args.agent_id,
+                thread_id=args.thread_id,
+                driver_runtime_kind=args.driver_runtime_kind,
+            )
+        elif args.command == "complete-reviewer-replacement":
+            payload = core.complete_reviewer_replacement(
                 args.repo,
                 args.run,
                 action_id=args.action_id,
