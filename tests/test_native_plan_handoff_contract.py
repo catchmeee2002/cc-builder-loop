@@ -104,6 +104,13 @@ class ExperimentalEntryContractTest(unittest.TestCase):
         self.assertIn("`reviewer_preflight:true`", planner)
         self.assertIn("`preflight_before_proof:true`", planner)
         self.assertIn("BUILDER_HANDOFF_READY", planner)
+        admission = native_planner[
+            native_planner.index("## 路线准入") : native_planner.index("## 建立计划")
+        ]
+        self.assertIn("只问这一个路线问题", admission)
+        self.assertIn("不得输出结论", admission)
+        self.assertIn("任何领域取舍", admission)
+        self.assertIn("路线卡失败或用户退出时立即停止", admission)
 
     def test_managed_agents_restore_experimental_route_choice_and_handoff(self) -> None:
         agents = read("agents/AGENTS.md.block")

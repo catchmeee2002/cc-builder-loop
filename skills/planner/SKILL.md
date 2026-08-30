@@ -15,6 +15,12 @@ description: 独立的通用规划层：冻结目标、范围、设计决策、�
 - Builder-loop 需要高保证执行时，由 `$builder-loop-planner` adapter 消费同一份语义计划；
   adapter 可以增加 v4 的 authority、assurance 和 execution 约束，但不能另写第二份产品方案。
 
+## 路线准入
+
+进入 Plan mode 时，若用户尚未明确选择「Planner + Codex 原生执行」或「Builder-loop 实验」，先用
+`request_user_input` 只问这一个路线问题；在选择返回前不得输出结论、范围、成本、退路或任何领域取舍，
+路线卡失败或用户退出时立即停止。
+
 ## 建立计划
 
 1. 读取项目 `AGENTS.md`、适用的设计哲学、文档政策、Git HEAD/branch、测试布局和可复制的验证入口。
