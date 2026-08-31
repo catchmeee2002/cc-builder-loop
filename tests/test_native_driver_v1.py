@@ -3168,6 +3168,147 @@ class NativeDriverCoreContractTest(unittest.TestCase):
         self.assertEqual(payload["status"], "FATAL")
         self.assertEqual(payload["phase"], "failed")
 
+    def test_root_session_handoff_preserves_transport_diagnostics_on_fatal(self) -> None:
+        class FakeCore:
+            def __init__(self) -> None:
+                self.calls: list[tuple[str, object | None]] = []
+                self.failure: dict | None = None
+
+            def call(self, command: str, *args: str, input_value=None):
+                self.calls.append((command, input_value))
+                if command == "driver-context":
+                    return {
+                        "driver_runtime": {
+                            "kind": "native",
+                            "transport": "root_session",
+                            "protocol_version": 1,
+                            "root_session_identity": {
+                                "session_id": "root-transport-session"
+                            },
+                        },
+                        "facets": {"execution": {"agents": {}}},
+                        "dispatch_intent": None,
+                        "transport_cleanup_intent": None,
+                    }
+                if command == "bind-native-transport":
+                    return {"status": "ACTIVE"}
+                if command == "record-transport-cleanup":
+                    return {"status": "ACTIVE"}
+                if command == "record-driver-failure":
+                    self.failure = input_value
+                    return {"status": "ACTIVE"}
+                if command == "complete-driver-failure":
+                    return {
+                        "status": "FATAL",
+                        "phase": "failed",
+                        "driver_failure": {"state": "terminal"},
+                    }
+                raise AssertionError(command)
+
+        class HandoffCoordinator:
+            current_action = None
+
+            def __init__(self, **_kwargs):
+                pass
+
+            def run(self):
+                return {"status": "TRANSPORT_HANDOFF"}
+
+            def retry_transport_failure(self, _exc):
+                return None
+
+        class FailingCoordinator(HandoffCoordinator):
+            def run(self):
+                raise AppServerError(
+                    "Codex App Server closed its output",
+                    code="NATIVE_APP_SERVER_DISCONNECTED",
+                    details={"returncode": None},
+                )
+
+        class FakeTransport:
+            def __init__(self):
+                self.receipt_called = False
+                self.exited = False
+
+            @property
+            def cleanup_observation(self):
+                return {
+                    "state": "cleaned",
+                    "term_attempt": 1,
+                    "kill_attempt": 0,
+                    "returncode": -15,
+                    "process_group_gone": True,
+                }
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                self.exited = True
+                return False
+
+            def runtime_snapshot(self):
+                return {
+                    "generation": "g" * 64,
+                    "process_identity": {
+                        "pid": 123,
+                        "pgid": 123,
+                        "starttime": "1",
+                    },
+                }
+
+            def diagnostic_receipt(self, **_kwargs):
+                self.receipt_called = True
+                return {"receipt_digest": "r" * 64, "stderr_bytes": 7}
+
+        fake_core = FakeCore()
+        fake_transport = FakeTransport()
+        output = StringIO()
+        with (
+            patch.object(native_cli, "CorePort", return_value=fake_core),
+            patch.object(
+                native_cli,
+                "probe_app_server",
+                return_value=SimpleNamespace(
+                    runtime_version="codex-test",
+                    protocol_schema_digest="b" * 64,
+                    executable_identity=None,
+                ),
+            ),
+            patch.object(
+                native_cli,
+                "AppServerTransport",
+                return_value=fake_transport,
+            ),
+            patch.object(
+                native_cli,
+                "NativeCoordinator",
+                side_effect=[HandoffCoordinator(), FailingCoordinator()],
+            ),
+            redirect_stdout(output),
+        ):
+            rc = native_cli.main(
+                [
+                    "resume",
+                    "--repo",
+                    str(self.repo),
+                    "--run",
+                    "root-transport-evidence",
+                ]
+            )
+
+        self.assertEqual(rc, 2)
+        self.assertTrue(fake_transport.exited)
+        self.assertTrue(fake_transport.receipt_called)
+        self.assertIsInstance(fake_core.failure, dict)
+        self.assertIn("diagnostic_receipt", fake_core.failure)
+        self.assertIn(
+            "record-transport-cleanup",
+            [command for command, _input in fake_core.calls],
+        )
+        payload = json.loads(output.getvalue().splitlines()[-1])
+        self.assertEqual(payload["code"], "NATIVE_APP_SERVER_DISCONNECTED")
+
     def test_native_cli_admission_blocker_creates_no_agent_thread_or_turn(self) -> None:
         class BlockedCore:
             def __init__(self) -> None:
@@ -3726,6 +3867,42 @@ for line in sys.stdin:
         self.assertEqual(thread_id, "thr-native")
         self.assertEqual(turn.status, "completed")
         self.assertEqual(json.loads(turn.text)["result"], "implemented")
+
+    def test_thread_resume_accepts_a_json_frame_larger_than_one_read(self) -> None:
+        codex = self.root / "codex-large-frame"
+        codex.write_text(
+            """#!/usr/bin/env python3
+import json, sys
+if sys.argv[1:3] != ['app-server', '--stdio']:
+    raise SystemExit(2)
+for line in sys.stdin:
+    msg = json.loads(line)
+    method = msg.get('method')
+    if method == 'initialize':
+        print(json.dumps({'id': msg['id'], 'result': {}}), flush=True)
+    elif method == 'initialized':
+        pass
+    elif method == 'thread/resume':
+        result = {
+            'thread': {
+                'id': msg['params']['threadId'],
+                'padding': 'x' * 70000,
+            }
+        }
+        print(json.dumps({'id': msg['id'], 'result': result}), flush=True)
+""",
+            encoding="utf-8",
+        )
+        codex.chmod(0o755)
+
+        with AppServerTransport(codex_bin=str(codex), strict_protocol=True) as transport:
+            transport.resume_thread(
+                thread_id="large-frame-thread",
+                cwd=str(self.root),
+                developer_instructions="role",
+                sandbox="danger-full-access",
+            )
+            self.assertEqual(transport.wire_snapshot()["sequence"], 2)
 
     def test_stderr_is_drained_bounded_and_redacted_in_diagnostic_receipt(self) -> None:
         codex = self.root / "codex-stderr"

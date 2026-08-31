@@ -819,33 +819,45 @@ class AppServerTransport:
         stream: IO[Any] | None = process.stdout if process is not None else None
         if stream is None:
             raise AppServerError("App Server is not running", code="NATIVE_APP_SERVER_NOT_RUNNING")
-        if b"\n" in self._read_buffer:
-            ready = []
-        else:
+        deadline = time.monotonic() + timeout
+        while b"\n" not in self._read_buffer:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise AppServerError(
+                    "Codex App Server read timed out",
+                    code="NATIVE_APP_SERVER_TIMEOUT",
+                    details={"timeout_seconds": timeout},
+                )
             try:
-                ready, _, _ = select.select([stream.fileno()], [], [], timeout)
+                ready, _, _ = select.select([stream.fileno()], [], [], remaining)
             except (OSError, ValueError):
                 ready = [stream]
-        if not ready and b"\n" not in self._read_buffer:
-            raise AppServerError(
-                "Codex App Server read timed out",
-                code="NATIVE_APP_SERVER_TIMEOUT",
-                details={"timeout_seconds": timeout},
-            )
-        if ready:
+            if not ready:
+                raise AppServerError(
+                    "Codex App Server read timed out",
+                    code="NATIVE_APP_SERVER_TIMEOUT",
+                    details={"timeout_seconds": timeout},
+                )
             try:
-                self._read_buffer += os.read(stream.fileno(), 65536)
+                chunk = os.read(stream.fileno(), 65536)
             except OSError as exc:
                 raise AppServerError(
                     str(exc), code="NATIVE_APP_SERVER_DISCONNECTED"
                 ) from exc
-        if b"\n" not in self._read_buffer:
-            code = process.poll() if process is not None else None
-            raise AppServerError(
-                "Codex App Server closed its output",
-                code="NATIVE_APP_SERVER_DISCONNECTED",
-                details={"returncode": code},
-            )
+            if not chunk:
+                code = process.poll() if process is not None else None
+                raise AppServerError(
+                    "Codex App Server closed its output",
+                    code="NATIVE_APP_SERVER_DISCONNECTED",
+                    details={
+                        "returncode": code,
+                        "partial_bytes": len(self._read_buffer),
+                        "partial_digest": hashlib.sha256(
+                            self._read_buffer
+                        ).hexdigest(),
+                    },
+                )
+            self._read_buffer += chunk
         line, self._read_buffer = self._read_buffer.split(b"\n", 1)
         try:
             value = json.loads(line.decode("utf-8"))

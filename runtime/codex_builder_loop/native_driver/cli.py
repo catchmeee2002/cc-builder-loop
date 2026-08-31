@@ -521,6 +521,8 @@ def _root_builder_result(
             strict_protocol=True,
             executable_identity=getattr(capability, "executable_identity", None),
         )
+        if runtime_state is not None:
+            runtime_state["transport"] = transport
         with transport:
             core.call(
                 "bind-native-transport",
@@ -841,6 +843,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             candidate_coordinator = root_start_state.get("coordinator")
             if candidate_coordinator is not None:
                 coordinator = candidate_coordinator
+        if transport is None:
+            candidate_transport = root_start_state.get("transport")
+            if candidate_transport is not None:
+                transport = candidate_transport
         if run_may_exist and transport is not None:
             try:
                 _persist_transport_cleanup(

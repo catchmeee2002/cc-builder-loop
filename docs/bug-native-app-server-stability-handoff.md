@@ -43,6 +43,74 @@
 上述内容是触发压测和日志工作的事实，不是根因结论。新的运行必须从当前 process identity、
 generation 和完整 RPC 生命周期重新采集，不能用旧日志或 Agent 自述代替。
 
+## 本轮调查结果：根因已实锤
+
+[保质期: 2026-08-31, owner: Native Driver maintainer, 正向归宿: #217 与仓库外结构化报告]
+
+本轮已把 `NATIVE_APP_SERVER_DISCONNECTED` 的主要原因从“App Server 可能崩溃”
+收敛为 Native transport 的帧读取错误；原始 run 的确切 stderr 仍因旧版
+root-session 收尾缺陷没有保存。原始现场、受控复现和独立压力机制继续分开记录。
+
+### #217 原始现场已确认的事实
+
+- `vehicle-jumpbox-startup-compat-recovery-20260831` 只绑定了一个新的 Native
+  stdio child；ledger 记录其 process identity、generation 和 `tester_author`
+  dispatch。
+- 该 dispatch 的 `activation_state=pending`、`turn_id=null`，说明失败发生在
+  线程激活阶段，而不是 Tester 已经产生结果之后。
+- 既有 Tester thread 是根 session 通过 `spawn_agent` 建立并已经完成过多个 turn
+  的 `01a05860...`；原始 artifact 没有证明“先创建未落盘 thread、关 child、再恢复”
+  这条调查者构造的流程。
+- 原始错误是 `Codex App Server closed its output`；旧收尾路径没有把原始 stderr、
+  child exit code 和 transport cleanup receipt 写回 ledger。
+
+### 主要根因：Native transport 错误地判定 EOF
+
+生产代码 `[app_server.py](../runtime/codex_builder_loop/native_driver/app_server.py:817)`
+原来只调用一次 `os.read(..., 65536)`；只要这次读取没有 `\n`，就直接抛出
+`NATIVE_APP_SERVER_DISCONNECTED`。`thread/resume` 返回的完整 JSON 可以超过 64 KiB，
+所以一次 read 拿到半帧并不代表 child 已关闭。
+
+受控复现使用与事故相同的 `codex-cli 0.145.0`、effective `CODEX_HOME` 和真实
+Tester thread：生产 transport 已发出 `thread/resume`，读到 11 条通知后在 65536
+字节的半帧处报断流；继续读取 25145 字节后，拼出的 90145 字节首帧是合法的
+`id=2`、带 `result`、无 `error` 的 response，且当时 child 仍未退出。临时把读取
+循环改成“在总 timeout 内持续拼帧”后，同一输入连续 2 次成功。
+
+因此，`#217` 的主要 `output closed` 结论是：**Native Driver 把合法的
+大 JSON-RPC response 半帧误报成 App Server 断流，不是已证实的 App Server
+自身崩溃。** 原始 PID 的半帧没有被旧版本保存，因此对原始单进程只能说是
+同版本、同 home、同真实 thread 的高置信复现，而不伪造原始 stderr。
+
+### 独立的次要机制：共享 CODEX_HOME 启动争用
+
+调查者另用生产 `AppServerTransport` 主动启动 12 个同版本 child，全部访问同一
+`CODEX_HOME` 和同一真实 thread：8 个在 `initialize` 阶段以 `returncode=1` 退出，
+stderr 明确为 `failed to initialize sqlite state runtime`；其余 4 个在恢复阶段
+出现 output-closed。该压力批次证明共享状态争用是独立可复现机制，但**不是原始
+run 启动了 12 个 child 的证据**，也没有把它冒充本次主要根因。
+
+### 证据丢失缺陷与当前修复
+
+root-session handoff 在 `[cli.py](../runtime/codex_builder_loop/native_driver/cli.py:519)`
+局部创建 transport；异常离开该函数后，outer fatal 路径拿不到它，导致
+`diagnostic_receipt` 和 `record-transport-cleanup` 都没有执行。当前 candidate 已：
+
+- 在一个总 timeout 内持续读取并拼接 newline-delimited JSON frame；
+- 真正 EOF 时记录 partial frame 的字节数和 digest；
+- 把 root-session transport 交给 outer fatal 收尾，持久化 stderr/cleanup；
+- 增加大于 64 KiB frame 和 root-session fatal receipt 回归测试。
+
+`tests.test_native_driver_v1` 全套 93 项通过。动态日志、PID、frame digest、
+压力矩阵和命令回读保存在：
+`/mnt/hongyu.liao_docker/native-app-server-stability-artifacts/20260831/report-v3-root-cause.json`
+（SHA-256 `dc09cb9f575efd728197c35c3c1c0f16be2ebbfe607cfb9f4ba8282aa0ce3063`）。
+
+这次修正遵循设计哲学：**每个事实只有一个家**，动态数据归报告；
+**改输入条件，不堆输出特判**，修复帧边界而不扩大 timeout/retry；
+**连续性属于 thread 和事务身份**，用真实 thread、process 和 RPC 复现而不臆造流程；
+**独立判据绑定真实输入**，回归测试同时绑定 frame 边界和收尾 receipt。
+
 ## 第一阶段：诊断日志
 
 修改范围优先限制在 Native App Server transport 和其测试 fixture。每个失败至少应能关联：
