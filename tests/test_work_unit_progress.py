@@ -188,6 +188,60 @@ class WorkUnitContractTest(unittest.TestCase):
             ),
         )
 
+    def test_driver_dispatch_replay_reuses_core_projection(self) -> None:
+        run_id = "work-unit-driver-projection-replay"
+        core.start(
+            self.repo,
+            run_id,
+            "work-unit-session",
+            contract_for(self.repo),
+            driver_runtime={
+                "kind": "native",
+                "protocol_version": 1,
+                "transport": "codex_app_server",
+                "runtime_version": "work-unit-test",
+                "protocol_schema_digest": "a" * 64,
+            },
+        )
+        initial = driver.next_action(self.repo, run_id)
+        core.prepare_builder(
+            self.repo,
+            run_id,
+            "builder-agent",
+            "builder-thread",
+            owner_mode="native_thread",
+        )
+        action = driver.next_action(self.repo, run_id)
+        ledger = read_ledger(self.repo, run_id)
+        expected = core.canonical_context_projection(
+            ledger,
+            action_id=action["action_id"],
+            action=action["action"],
+            role="builder",
+            work_unit_id=action["work_unit_id"],
+        )
+        self.assertEqual(action["context_projection"], expected)
+        self.assertEqual(action["context_projection_digest"], digest(expected))
+        self.assertNotEqual(initial["action_id"], action["action_id"])
+
+        core.begin_dispatch(
+            self.repo,
+            run_id,
+            action_id=action["action_id"],
+            action=action["action"],
+            role="builder",
+            thread_id="builder-thread",
+            prompt_digest="b" * 64,
+            output_schema_digest="c" * 64,
+            work_unit_id=action["work_unit_id"],
+            context_projection_digest=action["context_projection_digest"],
+            driver_runtime_kind="native",
+        )
+        replay = driver.next_action(self.repo, run_id)
+        self.assertEqual(replay["action_id"], action["action_id"])
+        self.assertEqual(replay["context_projection"], expected)
+        self.assertEqual(replay["context_projection_digest"], digest(expected))
+
     def test_rotation_mutations_require_native_runtime_owner(self) -> None:
         run_id = "work-unit-rotation-owner"
         core.start(

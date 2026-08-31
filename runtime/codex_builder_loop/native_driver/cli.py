@@ -674,6 +674,28 @@ def main(argv: Sequence[str] | None = None) -> int:
                 dispatch = context.get("dispatch_intent")
                 if (
                     isinstance(dispatch, dict)
+                    and dispatch.get("activation_state") == "unknown"
+                ):
+                    core.call(
+                        "record-dispatch-activation",
+                        "--repo",
+                        str(repo),
+                        "--run",
+                        args.run,
+                        "--action-id",
+                        str(dispatch["action_id"]),
+                        "--state",
+                        "pending",
+                        "--reason",
+                        args.reason,
+                        "--driver-runtime-kind",
+                        "native",
+                    )
+                    resume_context = context = core.call(
+                        "driver-context", "--repo", str(repo), "--run", args.run
+                    )
+                elif (
+                    isinstance(dispatch, dict)
                     and int(dispatch.get("attempt", 1)) >= 3
                     and dispatch.get("state") in {"prepared", "in_flight", "exhausted"}
                 ):

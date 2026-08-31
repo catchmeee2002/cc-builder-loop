@@ -191,6 +191,14 @@ Reviewer prompt contract v2 把 contract、evidence、publication 和 doc-refere
 Core 才归档旧 generation 并在同一 role thread 建立新的 generation；旧 attempt、turn 和 failure 仍保留在
 ledger event 中。runtime identity 漂移、缺少所需理由、无匹配 dispatch、协议错误或未知 failure 均继续
 fail closed；runtime 已升级时必须由新 run 重新绑定执行身份和 evidence。
+Native 非 root role 在调用 `thread/resume` 或 `turn/start` 前，必须先把同一 action 的
+`dispatch_intent` 写成 `activation_state=pending`；线程激活成功后再写成 `activated`，随后才能开始
+turn。激活前的已知 transport failure 复用同一 dispatch 的有界 retry；Tester 首个 turn 前若
+`thread/resume` 返回 no-rollout 且 source、candidate、target 均未产生副作用，则原子转成
+`producer_continuity=invalid` 的 Tester problem，进入既有 replacement 路径。无法证明激活是否产生
+副作用时保留 active dispatch、写入 `activation_state=unknown` 并停止；只有用户显式提供
+`native-driver resume --reason` 才能在不重置 attempt/generation 的前提下重新置为 `pending`。
+旧 ledger 缺少 activation 字段时继续按 legacy recovery 读取。
 App Server turn 使用 host-level `danger-full-access`，因为部分本地环境无法创建 bwrap namespace；这不
 扩大产品信任声明，角色只读/写范围仍由独立 worktree、Git manifest、ownership 和 Core mutation gate
 机械执行，与既有“不提供 filesystem ACL”的边界一致。
@@ -595,6 +603,9 @@ worktree、绑定新 App Server identity、切换 source 并清理未漂移的�
 `tester_author` turn 时才原子解决对应问题并清除 intent；在此之前进程可按 stage 重放。首 turn 前
 `thread/resume` 返回 no-rollout 且新 source 仍为空时可以在同一事务内续换 bootstrap identity，第三次
 失败进入 architecture review；首 turn、commit、dispatch 或 evidence 已出现后禁止换身份。
+Native Coordinator 必须先持久化该 `tester_author` dispatch 的 activation 状态，再执行线程恢复；
+replacement bootstrap 失败时消费这条未绑定 turn 的 dispatch 后才递增 bootstrap attempt，避免丢失
+执行事实或绕过三次上限。
 
 稳定 Python 入口在导入 runtime package 前设置当前解释器及子进程的 no-bytecode 条件，普通 CLI
 调用因此不会向调用方 worktree 写入 runtime `__pycache__`。显式 `py_compile` 与绕过稳定入口的

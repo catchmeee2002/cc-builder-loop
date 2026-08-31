@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Native Driver now persists a pre-dispatch activation state before each non-root role thread is resumed.
+  Known activation transport failures reuse the existing bounded dispatch retry; a Tester no-rollout before
+  the first turn records a continuity-invalid problem or consumes the matching replacement bootstrap
+  dispatch. Activation outcomes that cannot be proven remain active as `unknown` until an explicit
+  `native-driver resume --reason` re-arms the same attempt and generation. Core now supplies the canonical
+  work-unit context projection and digest consumed by Native coordination (#216).
+
 - Assurance v4 新增有界工作单元进度契约：新任务冻结角色、依赖、精确范围和机械完成观察；Core 从
   candidate commit、Tester source integration 和正式 Reviewer evidence 派生进度。Native Driver
   使用 canonical projection 支持每个工作单元一次上下文重建，并在连续三个工作单元后轮换 thread；

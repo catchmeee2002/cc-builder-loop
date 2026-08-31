@@ -620,6 +620,10 @@
         "continuity_state": {
           "enum": ["prepared", "in_flight", "completed", "exhausted", "unknown"]
         },
+        "activation_state": {
+          "enum": ["pending", "activated", "unknown"]
+        },
+        "activation_failure_code": {"type": "string", "minLength": 1},
         "state": {"enum": ["prepared", "in_flight", "completed", "exhausted"]},
         "attempt": {"type": "integer", "minimum": 1, "maximum": 3},
         "generation": {"type": "integer", "minimum": 1},

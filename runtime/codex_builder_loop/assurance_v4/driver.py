@@ -14,6 +14,8 @@ from .core import (
     _public_prerequisite_classification,
     _require_admission,
     _validate_revision_transition,
+    _work_unit_role_for_action,
+    canonical_context_projection,
     current_machine_failure,
     current_work_unit,
     current_proof_failure,
@@ -46,7 +48,6 @@ REVIEWER_REPLACEMENT_FAILURE_CODES = {
     "missingAgentResult",
 }
 REVIEWER_REPLACEMENT_LIMIT = REVIEWER_REPLACEMENT_MAX
-
 
 def _included_execution_problem_keys(ledger: Mapping[str, Any]) -> set[str]:
     return {
@@ -271,7 +272,7 @@ def _decision_result(
             "payload": payload,
         }
     )
-    return {
+    result = {
         "driver_protocol_version": 1,
         "status": status,
         "run_id": run_id,
@@ -284,6 +285,30 @@ def _decision_result(
         else None,
         **payload,
     }
+    role = _work_unit_role_for_action(action)
+    if (
+        role is not None
+        and progress_policy(ledger["facets"]).get("mode") == "bounded_rehydration"
+    ):
+        projection = canonical_context_projection(
+            ledger,
+            action_id=identity,
+            action=action,
+            role=role,
+            work_unit_id=(
+                str(payload["work_unit_id"])
+                if isinstance(payload.get("work_unit_id"), str)
+                else None
+            ),
+            work_unit=(
+                payload.get("work_unit")
+                if isinstance(payload.get("work_unit"), Mapping)
+                else None
+            ),
+        )
+        result["context_projection"] = projection
+        result["context_projection_digest"] = digest(projection)
+    return result
 
 
 def contract_problem_decision(
@@ -1095,7 +1120,7 @@ def _dispatch_action(
                 details={"action": action},
             )
         payload["machine_failure"] = copy.deepcopy(failure)
-    return {
+    result = {
         "driver_protocol_version": 1,
         "status": "CONTINUE",
         "run_id": run_id,
@@ -1109,6 +1134,44 @@ def _dispatch_action(
         "dispatch": copy.deepcopy(pending),
         **payload,
     }
+    role = _work_unit_role_for_action(action)
+    if (
+        role is not None
+        and progress_policy(ledger["facets"]).get("mode") == "bounded_rehydration"
+    ):
+        projection = canonical_context_projection(
+            ledger,
+            action_id=str(pending["action_id"]),
+            action=action,
+            role=role,
+            work_unit_id=(
+                str(pending["work_unit_id"])
+                if isinstance(pending.get("work_unit_id"), str)
+                else None
+            ),
+            work_unit=(
+                payload.get("work_unit")
+                if isinstance(payload.get("work_unit"), Mapping)
+                else None
+            ),
+        )
+        projection_digest = digest(projection)
+        stored_digest = pending.get("context_projection_digest")
+        if isinstance(stored_digest, str) and stored_digest != projection_digest:
+            raise AssuranceError(
+                "pending dispatch context projection is stale",
+                code="WORK_UNIT_PROJECTION_DIGEST_MISMATCH",
+                status="NEEDS_USER",
+                details={
+                    "expected": projection_digest,
+                    "source": stored_digest,
+                    "action_id": pending["action_id"],
+                    "work_unit_id": pending.get("work_unit_id"),
+                },
+            )
+        result["context_projection"] = projection
+        result["context_projection_digest"] = projection_digest
+    return result
 
 
 def _reviewer_replacement_count(ledger: Mapping[str, Any]) -> int:
@@ -1357,6 +1420,17 @@ def next_action(
             "runtime_compatibility_decision",
             "runtime_identity_not_mutable",
             runtime_compatibility=compatibility,
+        )
+    pending_activation = ledger.get("dispatch_intent")
+    if (
+        isinstance(pending_activation, Mapping)
+        and pending_activation.get("activation_state") == "unknown"
+    ):
+        return decision(
+            "NEEDS_USER",
+            "continuity_decision",
+            "dispatch_activation_unknown",
+            dispatch=copy.deepcopy(dict(pending_activation)),
         )
     reviewer_replacement = ledger.get("reviewer_replacement_intent")
     if isinstance(reviewer_replacement, Mapping):

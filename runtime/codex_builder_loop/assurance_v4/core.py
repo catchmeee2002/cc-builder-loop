@@ -2680,6 +2680,8 @@ def begin_dispatch(
             "interrupted_retry_blocked": False,
             "created_at": now(),
         }
+        if driver_runtime_kind == "native" and owner_mode != "root_session":
+            dispatch_intent["activation_state"] = "pending"
         if _progress_enabled(ledger):
             if work_unit_id is not None:
                 dispatch_intent["work_unit_id"] = work_unit_id
@@ -2708,6 +2710,366 @@ def begin_dispatch(
         dispatch_intent["side_effect_observation_digest"] = digest(observation)
         ledger["dispatch_intent"] = dispatch_intent
         append_event(ledger, "dispatch_prepared", copy.deepcopy(ledger["dispatch_intent"]))
+        save_ledger(repo, ledger)
+    return status(repo, run_id)
+
+
+def record_dispatch_activation(
+    repo_value: str | Path,
+    run_value: str,
+    *,
+    action_id: str,
+    activation_state: str,
+    failure_code: str | None = None,
+    failure_details: Any = None,
+    reason: str | None = None,
+    driver_runtime_kind: str = "native",
+) -> dict[str, Any]:
+    """Persist the role-thread activation boundary for a prepared dispatch."""
+
+    if activation_state not in {"pending", "activated", "unknown"}:
+        raise AssuranceError(
+            "dispatch activation state is invalid",
+            code="DISPATCH_ACTIVATION_STATE_INVALID",
+            status="FAIL",
+        )
+    if failure_code is not None and (
+        not isinstance(failure_code, str) or not failure_code.strip()
+    ):
+        raise AssuranceError(
+            "dispatch activation failure code is invalid",
+            code="DISPATCH_ACTIVATION_FAILURE_INVALID",
+            status="FAIL",
+        )
+    if reason is not None and (
+        not isinstance(reason, str) or not reason.strip()
+    ):
+        raise AssuranceError(
+            "dispatch activation reason is invalid",
+            code="DISPATCH_ACTIVATION_REASON_INVALID",
+            status="FAIL",
+        )
+    repo = resolve_repo(repo_value)
+    run_id = ensure_run_id(run_value)
+    with locked(repo):
+        ledger = read_ledger(repo, run_id)
+        _require_driver_runtime_owner(ledger, driver_runtime_kind)
+        _assert_no_candidate_residue_intent(ledger)
+        if ledger.get("phase") != "active":
+            raise AssuranceError(
+                "dispatch activation requires an active run",
+                code="ASSURANCE_RUN_NOT_ACTIVE",
+                status="NEEDS_USER",
+            )
+        pending = ledger.get("dispatch_intent")
+        if not isinstance(pending, dict) or pending.get("action_id") != action_id:
+            raise AssuranceError(
+                "dispatch activation action is stale",
+                code="DRIVER_ACTION_STALE",
+                status="FAIL",
+            )
+        if pending.get("state") not in {"prepared", "in_flight"}:
+            raise AssuranceError(
+                "dispatch activation requires a prepared dispatch",
+                code="DISPATCH_ACTIVATION_STATE_INVALID",
+                status="NEEDS_USER",
+            )
+        if pending.get("role") == "builder" and pending.get("owner_mode") == "root_session":
+            raise AssuranceError(
+                "root-session Builder has no Native thread activation boundary",
+                code="DISPATCH_ACTIVATION_ROOT_BUILDER_INVALID",
+                status="FAIL",
+            )
+        if activation_state == "pending":
+            if pending.get("activation_state") != "unknown":
+                if pending.get("activation_state") == "pending" and not reason:
+                    return status(repo, run_id)
+                raise AssuranceError(
+                    "dispatch activation cannot be rearmed from its current state",
+                    code="DISPATCH_ACTIVATION_REARM_INVALID",
+                    status="NEEDS_USER",
+                    details={
+                        "action_id": action_id,
+                        "activation_state": pending.get("activation_state"),
+                    },
+                )
+            if not reason:
+                raise AssuranceError(
+                    "dispatch activation rearm requires an explicit reason",
+                    code="DISPATCH_ACTIVATION_REASON_REQUIRED",
+                    status="NEEDS_USER",
+                )
+            if pending.get("turn_id") is not None:
+                raise AssuranceError(
+                    "dispatch activation cannot be rearmed after a turn was bound",
+                    code="DISPATCH_ACTIVATION_TURN_ALREADY_BOUND",
+                    status="NEEDS_USER",
+                )
+        elif activation_state == "activated":
+            if pending.get("activation_state") == "activated":
+                return status(repo, run_id)
+            if pending.get("activation_state") == "unknown":
+                raise AssuranceError(
+                    "unknown dispatch activation requires explicit rearm first",
+                    code="DISPATCH_ACTIVATION_REARM_REQUIRED",
+                    status="NEEDS_USER",
+                )
+        else:
+            if not isinstance(failure_code, str) or not failure_code.strip():
+                raise AssuranceError(
+                    "unknown dispatch activation requires a failure code",
+                    code="DISPATCH_ACTIVATION_FAILURE_REQUIRED",
+                    status="FAIL",
+                )
+            if pending.get("turn_id") is not None:
+                raise AssuranceError(
+                    "dispatch activation cannot become unknown after a turn was bound",
+                    code="DISPATCH_ACTIVATION_TURN_ALREADY_BOUND",
+                    status="NEEDS_USER",
+                )
+
+        role = str(pending.get("role"))
+        expected_observation = pending.get("pre_execution_observation_digest")
+        if _progress_enabled(ledger) and isinstance(expected_observation, str):
+            current_observation = _progress_side_effect_digest(ledger, role)
+            if current_observation != expected_observation:
+                raise AssuranceError(
+                    "dispatch activation observation changed",
+                    code="DISPATCH_ACTIVATION_OBSERVATION_DRIFT",
+                    status="NEEDS_USER",
+                    details={
+                        "role": role,
+                        "expected": expected_observation,
+                        "actual": current_observation,
+                    },
+                )
+
+        pending["activation_state"] = activation_state
+        if activation_state == "unknown":
+            pending["activation_failure_code"] = failure_code.strip()
+            pending["continuity_state"] = "unknown"
+            event_kind = "dispatch_activation_unknown"
+            event_details = {
+                "action_id": action_id,
+                "failure_code": failure_code.strip(),
+                "failure_details": copy.deepcopy(failure_details),
+            }
+        elif activation_state == "activated":
+            pending.pop("activation_failure_code", None)
+            if pending.get("state") == "prepared":
+                pending["continuity_state"] = "prepared"
+            event_kind = "dispatch_activation_completed"
+            event_details = {"action_id": action_id}
+        else:
+            pending.pop("activation_failure_code", None)
+            pending["continuity_state"] = "prepared"
+            event_kind = "dispatch_activation_rearmed"
+            event_details = {"action_id": action_id, "reason": reason.strip()}
+        append_event(ledger, event_kind, event_details)
+        save_ledger(repo, ledger)
+    return status(repo, run_id)
+
+
+def record_tester_bootstrap_failure(
+    repo_value: str | Path,
+    run_value: str,
+    *,
+    action_id: str,
+    failure_code: str,
+    failure_message: str,
+    failure_details: Any = None,
+    driver_runtime_kind: str = "native",
+) -> dict[str, Any]:
+    """Transfer a pre-turn Tester dispatch into the existing replacement route."""
+
+    if (
+        not isinstance(failure_code, str)
+        or not isinstance(failure_message, str)
+        or not failure_code.strip()
+        or not failure_message.strip()
+    ):
+        raise AssuranceError(
+            "Tester bootstrap failure identity is required",
+            code="TESTER_BOOTSTRAP_FAILURE_INVALID",
+            status="FAIL",
+        )
+    repo = resolve_repo(repo_value)
+    run_id = ensure_run_id(run_value)
+    problem_key = f"tester-bootstrap-continuity-{action_id}"
+    with locked(repo):
+        ledger = read_ledger(repo, run_id)
+        _require_driver_runtime_owner(ledger, driver_runtime_kind)
+        _assert_no_candidate_residue_intent(ledger)
+        if ledger.get("phase") != "active":
+            raise AssuranceError(
+                "Tester bootstrap failure requires an active run",
+                code="ASSURANCE_RUN_NOT_ACTIVE",
+                status="NEEDS_USER",
+            )
+        pending = ledger.get("dispatch_intent")
+        existing_problem = next(
+            (
+                item
+                for item in ledger.get("problems", [])
+                if isinstance(item, Mapping)
+                and item.get("key") == problem_key
+            ),
+            None,
+        )
+        if pending is None and isinstance(existing_problem, Mapping):
+            if existing_problem.get("status") == "open":
+                return status(repo, run_id)
+            raise AssuranceError(
+                "Tester bootstrap failure problem is no longer open",
+                code="TESTER_BOOTSTRAP_FAILURE_REPLAY_INVALID",
+                status="NEEDS_USER",
+                details={"problem_key": problem_key},
+            )
+        if not isinstance(pending, dict) or pending.get("action_id") != action_id:
+            raise AssuranceError(
+                "Tester bootstrap dispatch is stale",
+                code="DRIVER_ACTION_STALE",
+                status="FAIL",
+            )
+        if (
+            pending.get("action") != "tester_author"
+            or pending.get("role") != "tester"
+            or pending.get("state") != "prepared"
+            or pending.get("turn_id") is not None
+        ):
+            raise AssuranceError(
+                "Tester bootstrap failure requires a prepared pre-turn dispatch",
+                code="TESTER_BOOTSTRAP_FAILURE_STATE_INVALID",
+                status="NEEDS_USER",
+                details={
+                    "action": pending.get("action"),
+                    "role": pending.get("role"),
+                    "state": pending.get("state"),
+                    "turn_id": pending.get("turn_id"),
+                },
+            )
+        activation_state = pending.get("activation_state")
+        if activation_state == "unknown":
+            raise AssuranceError(
+                "Tester bootstrap failure requires explicit activation rearm",
+                code="DISPATCH_ACTIVATION_REARM_REQUIRED",
+                status="NEEDS_USER",
+                details={"action_id": action_id},
+            )
+        if activation_state not in {None, "pending"}:
+            raise AssuranceError(
+                "Tester bootstrap failure arrived after activation",
+                code="TESTER_BOOTSTRAP_FAILURE_ALREADY_ACTIVATED",
+                status="NEEDS_USER",
+            )
+        execution = ledger["facets"]["execution"]
+        tester_agent = execution.get("agents", {}).get("tester")
+        source = execution.get("tester_source")
+        candidate = execution.get("candidate_head")
+        if (
+            not isinstance(tester_agent, Mapping)
+            or not isinstance(source, Mapping)
+            or source.get("agent") != tester_agent
+            or source.get("head") != source.get("base_head")
+            or source.get("files") != []
+            or not isinstance(candidate, str)
+        ):
+            raise AssuranceError(
+                "Tester bootstrap replacement is unsafe after source progress",
+                code="TESTER_BOOTSTRAP_SOURCE_DRIFT",
+                status="NEEDS_USER",
+                details={
+                    "candidate_head": candidate,
+                    "tester_agent": copy.deepcopy(tester_agent),
+                    "tester_source": copy.deepcopy(source),
+                },
+            )
+        _assert_tester_source_exact(repo, source)
+        if branch_head(repo, ledger["target_branch"]) != ledger["target_start_head"]:
+            raise AssuranceError(
+                "Tester bootstrap replacement is unsafe after target drift",
+                code="TESTER_BOOTSTRAP_TARGET_DRIFT",
+                status="NEEDS_USER",
+            )
+        expected_observation = pending.get("pre_execution_observation_digest")
+        if _progress_enabled(ledger) and isinstance(expected_observation, str):
+            current_observation = _progress_side_effect_digest(ledger, "tester")
+            if current_observation != expected_observation:
+                raise AssuranceError(
+                    "Tester bootstrap replacement observed a role side effect",
+                    code="TESTER_BOOTSTRAP_SIDE_EFFECT_DRIFT",
+                    status="NEEDS_USER",
+                    details={
+                        "expected": expected_observation,
+                        "actual": current_observation,
+                    },
+                )
+        problem = {
+            "key": problem_key,
+            "summary": "Tester bootstrap thread continuity was lost before the first turn",
+            "details": json.dumps(
+                {
+                    "action_id": action_id,
+                    "failure_code": failure_code.strip(),
+                    "failure_message": failure_message.strip(),
+                    "failure_details": copy.deepcopy(failure_details),
+                    "dispatch_digest": digest(pending),
+                    "context_projection_digest": pending.get(
+                        "context_projection_digest"
+                    ),
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+            "owner": "tester",
+            "producer_continuity": "invalid",
+            "status": "open",
+            "producer": {"role": "tester", **dict(tester_agent)},
+            "candidate_head": candidate,
+            "recorded_at": now(),
+        }
+        if existing_problem is not None:
+            comparable = {
+                field: existing_problem.get(field)
+                for field in (
+                    "key",
+                    "summary",
+                    "details",
+                    "owner",
+                    "producer_continuity",
+                    "producer",
+                    "candidate_head",
+                )
+            }
+            if comparable != {
+                field: problem.get(field)
+                for field in comparable
+            }:
+                raise AssuranceError(
+                    "Tester bootstrap failure replay changed its problem",
+                    code="TESTER_BOOTSTRAP_FAILURE_REPLAY_CONFLICT",
+                    status="NEEDS_USER",
+                    details={"problem_key": problem_key},
+                )
+        else:
+            ledger.setdefault("problems", []).append(problem)
+            append_event(
+                ledger,
+                "problems_recorded",
+                {"role": "tester", "keys": [problem_key]},
+            )
+        append_event(
+            ledger,
+            "tester_bootstrap_failure_recorded",
+            {
+                "action_id": action_id,
+                "problem_key": problem_key,
+                "failure_code": failure_code.strip(),
+                "dispatch": copy.deepcopy(pending),
+            },
+        )
+        ledger["dispatch_intent"] = None
         save_ledger(repo, ledger)
     return status(repo, run_id)
 
@@ -2885,6 +3247,9 @@ def bind_dispatch_turn(
         intent["turn_id"] = turn_id.strip()
         intent["state"] = "in_flight"
         intent["continuity_state"] = "in_flight"
+        if "activation_state" in intent:
+            intent["activation_state"] = "activated"
+            intent.pop("activation_failure_code", None)
         replacement = ledger.get("tester_replacement_intent")
         if (
             intent.get("action") == "tester_author"
@@ -3799,6 +4164,13 @@ def retry_dispatch(
             raise AssuranceError("dispatch action is stale", code="DRIVER_ACTION_STALE", status="FAIL")
         if intent.get("state") == "completed":
             raise AssuranceError("completed dispatch cannot be retried", code="DISPATCH_ALREADY_COMPLETE")
+        if intent.get("activation_state") == "unknown":
+            raise AssuranceError(
+                "dispatch activation outcome is unknown and requires explicit rearm",
+                code="DISPATCH_ACTIVATION_REARM_REQUIRED",
+                status="NEEDS_USER",
+                details={"action_id": action_id},
+            )
         if (
             intent.get("role") == "builder"
             and intent.get("owner_mode") == "root_session"
@@ -3963,6 +4335,9 @@ def retry_dispatch(
             intent["unit_attempt"] = int(intent.get("unit_attempt", 1)) + 1
         intent["state"] = "prepared"
         intent["continuity_state"] = "prepared"
+        if "activation_state" in intent:
+            intent["activation_state"] = "pending"
+            intent.pop("activation_failure_code", None)
         intent["failure_code"] = normalized_failure_code
         intent["retry_scheduled_at"] = scheduled_at
         if retry_not_before is None:
@@ -12939,12 +13314,25 @@ def begin_tester_replacement(
                     code="TESTER_REPLACEMENT_PROBLEM_MISMATCH",
                     status="FAIL",
                 )
-            if ledger.get("dispatch_intent") is not None:
-                raise AssuranceError(
-                    "Tester bootstrap renewal cannot overlap a dispatch",
-                    code="TESTER_REPLACEMENT_TRANSACTION_CONFLICT",
-                    status="FAIL",
-                )
+            pending_dispatch = ledger.get("dispatch_intent")
+            if pending_dispatch is not None:
+                replacement_agent = existing.get("new_agent")
+                if not (
+                    isinstance(pending_dispatch, Mapping)
+                    and pending_dispatch.get("action") == "tester_author"
+                    and pending_dispatch.get("role") == "tester"
+                    and pending_dispatch.get("state") == "prepared"
+                    and pending_dispatch.get("turn_id") is None
+                    and pending_dispatch.get("activation_state") == "pending"
+                    and isinstance(replacement_agent, Mapping)
+                    and pending_dispatch.get("thread_id")
+                    == replacement_agent.get("thread_id")
+                ):
+                    raise AssuranceError(
+                        "Tester bootstrap renewal cannot overlap an unrelated dispatch",
+                        code="TESTER_REPLACEMENT_TRANSACTION_CONFLICT",
+                        status="FAIL",
+                    )
             candidate = _assert_tester_replacement_candidate(repo, ledger)
             source = ledger["facets"]["execution"].get("tester_source")
             if (
@@ -12961,6 +13349,26 @@ def begin_tester_replacement(
                     status="FAIL",
                 )
             _assert_tester_source_exact(repo, source)
+            if isinstance(pending_dispatch, Mapping):
+                expected_observation = pending_dispatch.get(
+                    "pre_execution_observation_digest"
+                )
+                if _progress_enabled(ledger) and isinstance(
+                    expected_observation, str
+                ):
+                    current_observation = _progress_side_effect_digest(
+                        ledger, "tester"
+                    )
+                    if current_observation != expected_observation:
+                        raise AssuranceError(
+                            "Tester bootstrap renewal observed a role side effect",
+                            code="TESTER_REPLACEMENT_BOOTSTRAP_SIDE_EFFECT_DRIFT",
+                            status="NEEDS_USER",
+                            details={
+                                "expected": expected_observation,
+                                "actual": current_observation,
+                            },
+                        )
             attempt = int(existing.get("bootstrap_attempt", 1))
             append_event(
                 ledger,
@@ -12973,6 +13381,16 @@ def begin_tester_replacement(
                     "exhausted": attempt >= 3,
                 },
             )
+            if isinstance(pending_dispatch, Mapping):
+                ledger["dispatch_intent"] = None
+                append_event(
+                    ledger,
+                    "tester_replacement_bootstrap_dispatch_consumed",
+                    {
+                        "action_id": action_id,
+                        "dispatch_action_id": pending_dispatch.get("action_id"),
+                    },
+                )
             if attempt >= 3:
                 save_ledger(repo, ledger)
                 raise AssuranceError(

@@ -467,6 +467,37 @@ def parser() -> argparse.ArgumentParser:
         default="native",
     )
 
+    activation = commands.add_parser("record-dispatch-activation")
+    activation.add_argument("--repo", default=".")
+    activation.add_argument("--run", required=True)
+    activation.add_argument("--action-id", required=True)
+    activation.add_argument(
+        "--state", choices=["pending", "activated", "unknown"], required=True
+    )
+    activation.add_argument("--failure-code")
+    activation.add_argument("--failure-details")
+    activation.add_argument("--reason")
+    activation.add_argument(
+        "--driver-runtime-kind",
+        choices=["native", "full_driver_skill"],
+        default="native",
+    )
+
+    tester_bootstrap_failure = commands.add_parser(
+        "record-tester-bootstrap-failure"
+    )
+    tester_bootstrap_failure.add_argument("--repo", default=".")
+    tester_bootstrap_failure.add_argument("--run", required=True)
+    tester_bootstrap_failure.add_argument("--action-id", required=True)
+    tester_bootstrap_failure.add_argument("--failure-code", required=True)
+    tester_bootstrap_failure.add_argument("--failure-message", required=True)
+    tester_bootstrap_failure.add_argument("--failure-details")
+    tester_bootstrap_failure.add_argument(
+        "--driver-runtime-kind",
+        choices=["native", "full_driver_skill"],
+        default="native",
+    )
+
     begin_rehydration = commands.add_parser("begin-dispatch-rehydration")
     begin_rehydration.add_argument("--repo", default=".")
     begin_rehydration.add_argument("--run", required=True)
@@ -1180,6 +1211,35 @@ def main(argv: Sequence[str] | None = None) -> int:
                 timeout_profile_digest=args.timeout_profile_digest,
                 work_unit_id=args.work_unit_id,
                 context_projection_digest=args.context_projection_digest,
+                driver_runtime_kind=args.driver_runtime_kind,
+            )
+        elif args.command == "record-dispatch-activation":
+            payload = core.record_dispatch_activation(
+                args.repo,
+                args.run,
+                action_id=args.action_id,
+                activation_state=args.state,
+                failure_code=args.failure_code,
+                failure_details=(
+                    _json(args.failure_details)
+                    if args.failure_details is not None
+                    else None
+                ),
+                reason=args.reason,
+                driver_runtime_kind=args.driver_runtime_kind,
+            )
+        elif args.command == "record-tester-bootstrap-failure":
+            payload = core.record_tester_bootstrap_failure(
+                args.repo,
+                args.run,
+                action_id=args.action_id,
+                failure_code=args.failure_code,
+                failure_message=args.failure_message,
+                failure_details=(
+                    _json(args.failure_details)
+                    if args.failure_details is not None
+                    else None
+                ),
                 driver_runtime_kind=args.driver_runtime_kind,
             )
         elif args.command == "begin-dispatch-rehydration":

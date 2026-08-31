@@ -650,6 +650,201 @@ class NativeDriverCoreContractTest(unittest.TestCase):
         ledger = json.loads((run_path / "ledger.json").read_text())
         return run_path, ledger["facets"]["execution"]["tester_source"], tester_action
 
+    def prepare_tester_author_dispatch_fixture(
+        self, run_id: str
+    ) -> tuple[Path, dict]:
+        started, run_path = self.start_with_contract(
+            run_id, native_contract(self.repo)
+        )
+        candidate = Path(started["candidate_worktree"])
+        builder = self.invoke("driver-next", "--repo", self.repo, "--run", run_id)
+        self.invoke(
+            "prepare-builder",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--agent-id",
+            "bootstrap-builder",
+            "--thread-id",
+            "bootstrap-builder-thread",
+            "--action-id",
+            builder["action_id"],
+            "--driver-runtime-kind",
+            "native",
+        )
+        (candidate / "src" / "bootstrap.py").write_text(
+            "VALUE = 1\n", encoding="utf-8"
+        )
+        commit_all(candidate, "bootstrap candidate")
+        checkpoint = self.invoke("driver-next", "--repo", self.repo, "--run", run_id)
+        self.invoke(
+            "checkpoint-builder",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--action-id",
+            checkpoint["action_id"],
+            "--driver-runtime-kind",
+            "native",
+        )
+        action = self.invoke("driver-next", "--repo", self.repo, "--run", run_id)
+        if action["action"] == "scan_doc_references":
+            self.invoke(
+                "scan-doc-references",
+                "--repo",
+                self.repo,
+                "--run",
+                run_id,
+                "--action-id",
+                action["action_id"],
+                "--driver-runtime-kind",
+                "native",
+            )
+            action = self.invoke("driver-next", "--repo", self.repo, "--run", run_id)
+        self.assertEqual(action["action"], "tester_author")
+        self.invoke(
+            "prepare-tester",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--agent-id",
+            "bootstrap-tester",
+            "--thread-id",
+            "bootstrap-tester-thread",
+            "--action-id",
+            action["action_id"],
+            "--driver-runtime-kind",
+            "native",
+        )
+        action = self.invoke("driver-next", "--repo", self.repo, "--run", run_id)
+        self.assertEqual(action["action"], "tester_author")
+        self.assertIsInstance(action.get("context_projection_digest"), str)
+        self.invoke(
+            "begin-dispatch",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--action-id",
+            action["action_id"],
+            "--action",
+            action["action"],
+            "--role",
+            "tester",
+            "--thread-id",
+            "bootstrap-tester-thread",
+            "--prompt-digest",
+            "b" * 64,
+            "--output-schema-digest",
+            "c" * 64,
+            "--work-unit-id",
+            action["work_unit_id"],
+            "--context-projection-digest",
+            action["context_projection_digest"],
+            "--driver-runtime-kind",
+            "native",
+        )
+        return run_path, action
+
+    def test_pre_turn_no_rollout_records_tester_continuity_problem(self) -> None:
+        run_id = "native-tester-bootstrap-no-rollout"
+        run_path, action = self.prepare_tester_author_dispatch_fixture(run_id)
+        coordinator = NativeCoordinator(
+            repo=self.repo,
+            run_id=run_id,
+            core=CorePort(),
+            transport=object(),
+            project_root=ROOT,
+        )
+        coordinator.current_action = action
+        error = AppServerError(
+            "no rollout found for thread id bootstrap-tester-thread",
+            code="NATIVE_APP_SERVER_REQUEST_FAILED",
+            details={
+                "method": "thread/resume",
+                "error": {
+                    "code": -32600,
+                    "message": "no rollout found for thread id bootstrap-tester-thread",
+                },
+            },
+        )
+
+        payload = coordinator.retry_transport_failure(error)
+
+        self.assertEqual(payload["status"], "ACTIVE")
+        ledger = json.loads((run_path / "ledger.json").read_text())
+        self.assertIsNone(ledger["dispatch_intent"])
+        problem = next(
+            item
+            for item in ledger["problems"]
+            if item["key"].startswith("tester-bootstrap-continuity-")
+        )
+        self.assertEqual(problem["owner"], "tester")
+        self.assertEqual(problem["producer_continuity"], "invalid")
+        self.assertEqual(problem["producer"]["thread_id"], "bootstrap-tester-thread")
+        decision = self.invoke("driver-next", "--repo", self.repo, "--run", run_id)
+        self.assertEqual(decision["action"], "replace_tester")
+
+    def test_unknown_pre_dispatch_activation_stays_active_until_explicit_rearm(
+        self,
+    ) -> None:
+        run_id = "native-tester-bootstrap-unknown"
+        run_path, action = self.prepare_tester_author_dispatch_fixture(run_id)
+        before = json.loads((run_path / "ledger.json").read_text())["dispatch_intent"]
+
+        assurance_core.record_dispatch_activation(
+            self.repo,
+            run_id,
+            action_id=action["action_id"],
+            activation_state="unknown",
+            failure_code="NATIVE_THREAD_RESUME_FAILED",
+            failure_details={"method": "thread/resume"},
+        )
+        unknown = json.loads((run_path / "ledger.json").read_text())["dispatch_intent"]
+        self.assertEqual(unknown["activation_state"], "unknown")
+        self.assertEqual(unknown["attempt"], before["attempt"])
+        self.assertEqual(unknown["state"], "prepared")
+        decision = assurance_core_driver.next_action(self.repo, run_id)
+        self.assertEqual(decision["status"], "NEEDS_USER")
+        self.assertEqual(decision["reason"], "dispatch_activation_unknown")
+        with self.assertRaises(assurance_core.AssuranceError) as retry:
+            assurance_core.retry_dispatch(
+                self.repo,
+                run_id,
+                action_id=action["action_id"],
+                failure_code="responseStreamDisconnected",
+            )
+        self.assertEqual(retry.exception.code, "DISPATCH_ACTIVATION_REARM_REQUIRED")
+        with self.assertRaises(assurance_core.AssuranceError) as bootstrap:
+            assurance_core.record_tester_bootstrap_failure(
+                self.repo,
+                run_id,
+                action_id=action["action_id"],
+                failure_code="NATIVE_APP_SERVER_REQUEST_FAILED",
+                failure_message="activation outcome is unknown",
+            )
+        self.assertEqual(
+            bootstrap.exception.code, "DISPATCH_ACTIVATION_REARM_REQUIRED"
+        )
+
+        assurance_core.record_dispatch_activation(
+            self.repo,
+            run_id,
+            action_id=action["action_id"],
+            activation_state="pending",
+            reason="verified that no turn was started",
+        )
+        rearmed = json.loads((run_path / "ledger.json").read_text())["dispatch_intent"]
+        self.assertEqual(rearmed["activation_state"], "pending")
+        self.assertEqual(rearmed["attempt"], before["attempt"])
+        self.assertEqual(
+            assurance_core_driver.next_action(self.repo, run_id)["reason"],
+            "dispatch_prepared",
+        )
+
     def test_blackbox_only_prepares_tester_identity_without_source_gate(self) -> None:
         run_id = "native-blackbox-only"
         contract = native_contract(self.repo)
@@ -2520,6 +2715,115 @@ class NativeDriverCoreContractTest(unittest.TestCase):
         decision = self.invoke("driver-next", "--repo", self.repo, "--run", run_id)
         self.assertEqual(decision["action"], "architecture_review")
 
+    def test_replacement_bootstrap_failure_consumes_pending_dispatch(self) -> None:
+        run_id = "native-tester-bootstrap-pending-dispatch"
+        run_path, _old_source, _ = self.prepare_replacement_fixture(run_id)
+        assurance_core.record_problems(
+            self.repo,
+            run_id,
+            {
+                "schema_version": 1,
+                "problems": [
+                    {
+                        "key": "tester-bootstrap-pending-dispatch",
+                        "summary": "Tester identity lost independence",
+                        "details": "The replacement bootstrap must own its pending dispatch.",
+                        "owner": "tester",
+                        "producer_continuity": "invalid",
+                    }
+                ],
+            },
+            role="tester",
+            agent_id="tester-old",
+            thread_id="tester-old-thread",
+        )
+        replace = self.invoke("driver-next", "--repo", self.repo, "--run", run_id)
+        self.invoke(
+            "begin-tester-replacement",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--action-id",
+            replace["action_id"],
+            "--problem-key",
+            "tester-bootstrap-pending-dispatch",
+            "--driver-runtime-kind",
+            "native",
+        )
+        self.invoke(
+            "bind-tester-replacement",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--action-id",
+            replace["action_id"],
+            "--agent-id",
+            "tester-replacement",
+            "--thread-id",
+            "tester-replacement-thread",
+            "--driver-runtime-kind",
+            "native",
+        )
+        self.invoke(
+            "complete-tester-replacement",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--action-id",
+            replace["action_id"],
+            "--driver-runtime-kind",
+            "native",
+        )
+        author = self.invoke("driver-next", "--repo", self.repo, "--run", run_id)
+        self.assertEqual(author["action"], "tester_author")
+        self.invoke(
+            "begin-dispatch",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--action-id",
+            author["action_id"],
+            "--action",
+            author["action"],
+            "--role",
+            "tester",
+            "--thread-id",
+            "tester-replacement-thread",
+            "--prompt-digest",
+            "b" * 64,
+            "--output-schema-digest",
+            "c" * 64,
+            "--driver-runtime-kind",
+            "native",
+        )
+
+        assurance_core.begin_tester_replacement(
+            self.repo,
+            run_id,
+            action_id=replace["action_id"],
+            problem_key="tester-bootstrap-pending-dispatch",
+            driver_runtime_kind="native",
+            renew_bootstrap=True,
+        )
+
+        ledger = json.loads((run_path / "ledger.json").read_text())
+        self.assertIsNone(ledger["dispatch_intent"])
+        self.assertEqual(
+            ledger["tester_replacement_intent"]["bootstrap_attempt"], 2
+        )
+        self.assertIsNone(ledger["tester_replacement_intent"]["new_agent"])
+        self.assertTrue(
+            any(
+                event["kind"]
+                == "tester_replacement_bootstrap_dispatch_consumed"
+                for event in ledger["events"]
+            )
+        )
+
     def test_tester_replacement_rejects_bootstrap_renewal_after_first_turn(self) -> None:
         run_id = "native-tester-bootstrap-after-turn"
         run_path, _old_source, _ = self.prepare_replacement_fixture(run_id)
@@ -3122,6 +3426,88 @@ class NativeDriverCoreContractTest(unittest.TestCase):
             captured["dispatch_renewal_reason"],
             "user approved a new dispatch generation",
         )
+
+    def test_native_resume_rearms_unknown_activation_without_new_generation(self) -> None:
+        captured: dict[str, object] = {}
+        calls: list[tuple[str, tuple[str, ...]]] = []
+        action_id = "a" * 64
+
+        class FakeCore:
+            def call(self, command: str, *args: str, input_value=None):
+                calls.append((command, args))
+                if command == "driver-context":
+                    return {
+                        "driver_runtime": {"kind": "native", "protocol_version": 1},
+                        "dispatch_intent": {
+                            "action": "tester_author",
+                            "action_id": action_id,
+                            "attempt": 2,
+                            "generation": 1,
+                            "role": "tester",
+                            "state": "prepared",
+                            "thread_id": "tester-thread",
+                            "activation_state": "unknown",
+                            "activation_failure_code": "NATIVE_THREAD_RESUME_FAILED",
+                        },
+                    }
+                if command == "record-dispatch-activation":
+                    return {"status": "ACTIVE"}
+                raise AssertionError(command)
+
+        class FakeTransport:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+        class FakeCoordinator:
+            current_action = None
+
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+            def run(self):
+                return {"status": "NEEDS_USER", "run_id": "activation-rearmed"}
+
+        output = StringIO()
+        with (
+            patch.object(native_cli, "CorePort", return_value=FakeCore()),
+            patch.object(
+                native_cli,
+                "probe_app_server",
+                return_value=SimpleNamespace(
+                    runtime_version="codex-test",
+                    protocol_schema_digest="b" * 64,
+                ),
+            ),
+            patch.object(native_cli, "AppServerTransport", return_value=FakeTransport()),
+            patch.object(native_cli, "NativeCoordinator", FakeCoordinator),
+            redirect_stdout(output),
+        ):
+            rc = native_cli.main(
+                [
+                    "resume",
+                    "--repo",
+                    str(self.repo),
+                    "--run",
+                    "activation-rearmed",
+                    "--reason",
+                    "verified that no turn was started",
+                ]
+            )
+
+        self.assertEqual(rc, 1)
+        self.assertEqual(captured["dispatch_renewal_reason"], None)
+        self.assertEqual(
+            [command for command, _args in calls],
+            ["driver-context", "record-dispatch-activation", "driver-context"],
+        )
+        activation_args = calls[1][1]
+        self.assertIn("--state", activation_args)
+        self.assertIn("pending", activation_args)
+        self.assertIn("--reason", activation_args)
+        self.assertIn("verified that no turn was started", activation_args)
 
     def test_native_resume_authorizes_tester_architecture_review_without_renewal(
         self,
@@ -3841,6 +4227,388 @@ for line in sys.stdin:
 
 
 class NativeCoordinatorContractTest(unittest.TestCase):
+    def test_agent_dispatch_is_persisted_before_role_activation(self) -> None:
+        action = {
+            "action": "builder_implement",
+            "action_id": "a" * 64,
+            "reason": "builder_missing",
+        }
+        context = {
+            "repo_root": str(ROOT),
+            "target_start_head": "1" * 40,
+            "candidate_worktree": str(ROOT),
+            "publication": None,
+            "evidence": {},
+            "problems": [],
+            "facets": {
+                "execution": {
+                    "agents": {
+                        "builder": {
+                            "agent_id": "builder-agent",
+                            "thread_id": "builder-thread",
+                        }
+                    },
+                    "tester_source": None,
+                }
+            },
+        }
+        events: list[str] = []
+
+        class FakeCore:
+            def call(self, command: str, *args: str, input_value=None):
+                events.append(f"core:{command}")
+                if command == "driver-context":
+                    return context
+                if command == "begin-dispatch":
+                    return {
+                        "dispatch_intent": {
+                            "action_id": action["action_id"],
+                            "activation_state": "pending",
+                        }
+                    }
+                return {"status": "ACTIVE"}
+
+        class FakeTransport:
+            def resume_thread(self, **_kwargs):
+                events.append("transport:resume_thread")
+
+            def run_turn(self, **kwargs):
+                events.append("transport:run_turn")
+                kwargs["on_started"]("turn-1")
+                return TurnResult(
+                    turn_id="turn-1",
+                    status="completed",
+                    text=json.dumps(
+                        {
+                            "result": "implemented",
+                            "evidence_report": None,
+                            "proof_spec": None,
+                            "problem_report": None,
+                        }
+                    ),
+                )
+
+        coordinator = NativeCoordinator(
+            repo=ROOT,
+            run_id="native-dispatch-order",
+            core=FakeCore(),
+            transport=FakeTransport(),
+            project_root=ROOT,
+        )
+        coordinator._prompt = lambda *_args: "prompt"
+        coordinator._apply_agent_result = lambda *_args: None
+
+        coordinator._run_agent_action(
+            action,
+            AGENT_ACTION_CAPABILITIES["builder_implement"],
+        )
+
+        self.assertLess(
+            events.index("core:begin-dispatch"),
+            events.index("transport:resume_thread"),
+        )
+        self.assertLess(
+            events.index("transport:resume_thread"),
+            events.index("transport:run_turn"),
+        )
+        self.assertEqual(events.count("transport:run_turn"), 1)
+
+    def test_pre_dispatch_disconnect_retries_without_starting_a_turn(self) -> None:
+        action = {
+            "action": "builder_implement",
+            "action_id": "a" * 64,
+            "reason": "builder_missing",
+        }
+        context = {
+            "repo_root": str(ROOT),
+            "target_start_head": "1" * 40,
+            "candidate_worktree": str(ROOT),
+            "publication": None,
+            "evidence": {},
+            "problems": [],
+            "facets": {
+                "execution": {
+                    "agents": {
+                        "builder": {
+                            "agent_id": "builder-agent",
+                            "thread_id": "builder-thread",
+                        }
+                    },
+                    "tester_source": None,
+                }
+            },
+        }
+        calls: list[str] = []
+
+        class FakeCore:
+            def call(self, command: str, *args: str, input_value=None):
+                calls.append(command)
+                if command == "driver-context":
+                    return context
+                if command == "begin-dispatch":
+                    context["dispatch_intent"] = {
+                        "action": action["action"],
+                        "action_id": action["action_id"],
+                        "role": "builder",
+                        "thread_id": "builder-thread",
+                        "state": "prepared",
+                        "activation_state": "pending",
+                    }
+                    return {"dispatch_intent": dict(context["dispatch_intent"])}
+                if command == "retry-dispatch":
+                    return {
+                        "status": "ACTIVE",
+                        "dispatch_intent": {"attempt": 2, "state": "prepared"},
+                    }
+                return {"status": "ACTIVE"}
+
+        class DisconnectTransport:
+            def __init__(self) -> None:
+                self.resume_calls = 0
+                self.turn_calls = 0
+                self.start_calls = 0
+
+            def resume_thread(self, **_kwargs):
+                self.resume_calls += 1
+                raise AppServerError(
+                    "Codex App Server closed its output",
+                    code="NATIVE_APP_SERVER_DISCONNECTED",
+                )
+
+            def run_turn(self, **_kwargs):
+                self.turn_calls += 1
+                raise AssertionError("pre-dispatch failure must precede turn/start")
+
+            def start_thread(self, **_kwargs):
+                self.start_calls += 1
+                raise AssertionError("pre-dispatch failure must not create a thread")
+
+        transport = DisconnectTransport()
+        coordinator = NativeCoordinator(
+            repo=ROOT,
+            run_id="native-pre-dispatch-disconnect",
+            core=FakeCore(),
+            transport=transport,
+            project_root=ROOT,
+        )
+        coordinator._prompt = lambda *_args: "prompt"
+        coordinator.current_action = action
+
+        with self.assertRaises(AppServerError) as raised:
+            coordinator._run_agent_action(
+                action,
+                AGENT_ACTION_CAPABILITIES["builder_implement"],
+            )
+        retry = coordinator.retry_transport_failure(raised.exception)
+
+        self.assertEqual(retry["status"], "ACTIVE")
+        self.assertEqual(transport.resume_calls, 1)
+        self.assertEqual(transport.turn_calls, 0)
+        self.assertEqual(transport.start_calls, 0)
+        self.assertEqual(
+            calls,
+            [
+                "driver-context",
+                "begin-dispatch",
+                "driver-context",
+                "driver-context",
+                "retry-dispatch",
+            ],
+        )
+
+    def test_recovered_activated_dispatch_does_not_resume_thread_again(self) -> None:
+        action = {
+            "action": "builder_implement",
+            "action_id": "b" * 64,
+            "reason": "builder_missing",
+        }
+        context = {
+            "repo_root": str(ROOT),
+            "target_start_head": "1" * 40,
+            "candidate_worktree": str(ROOT),
+            "publication": None,
+            "evidence": {},
+            "problems": [],
+            "facets": {
+                "execution": {
+                    "agents": {
+                        "builder": {
+                            "agent_id": "builder-agent",
+                            "thread_id": "builder-thread",
+                        }
+                    },
+                    "tester_source": None,
+                }
+            },
+        }
+        pending = {
+            "action": action["action"],
+            "action_id": action["action_id"],
+            "role": "builder",
+            "thread_id": "builder-thread",
+            "prompt_digest": digest("prompt"),
+            "output_schema_digest": digest(
+                json.loads(
+                    (
+                        ROOT
+                        / "schema"
+                        / "assurance-v4-native-agent-wire-result.schema.json"
+                    ).read_text()
+                )
+            ),
+            "state": "prepared",
+            "attempt": 1,
+            "generation": 1,
+            "activation_state": "activated",
+        }
+        calls: list[str] = []
+
+        class FakeCore:
+            def call(self, command: str, *args: str, input_value=None):
+                calls.append(command)
+                return {"status": "ACTIVE"}
+
+        class NoResumeTransport:
+            def resume_thread(self, **_kwargs):
+                raise AssertionError("activated dispatch must not resume the thread")
+
+            def read_thread(self, _thread_id: str):
+                return {"turns": []}
+
+            def run_turn(self, **kwargs):
+                kwargs["on_started"]("turn-activated")
+                return TurnResult(
+                    turn_id="turn-activated",
+                    status="completed",
+                    text=json.dumps(
+                        {
+                            "result": "implemented",
+                            "evidence_report": None,
+                            "proof_spec": None,
+                            "problem_report": None,
+                        }
+                    ),
+                )
+
+        coordinator = NativeCoordinator(
+            repo=ROOT,
+            run_id="native-dispatch-recovery-activated",
+            core=FakeCore(),
+            transport=NoResumeTransport(),
+            project_root=ROOT,
+        )
+        coordinator._prompt = lambda *_args: "prompt"
+
+        result = coordinator._recover_dispatch(pending, "builder", context, action)
+
+        self.assertEqual(result["result"], "implemented")
+        self.assertEqual(calls, ["bind-dispatch-turn", "complete-dispatch"])
+
+    def test_unknown_pre_dispatch_transport_failure_is_recorded_and_stops(self) -> None:
+        action_id = "c" * 64
+        action = {
+            "action": "builder_implement",
+            "action_id": action_id,
+            "reason": "builder_missing",
+        }
+        context = {
+            "facets": {
+                "execution": {
+                    "agents": {
+                        "builder": {
+                            "agent_id": "builder-agent",
+                            "thread_id": "builder-thread",
+                        }
+                    }
+                }
+            },
+            "dispatch_intent": {
+                "action": action["action"],
+                "action_id": action_id,
+                "role": "builder",
+                "thread_id": "builder-thread",
+                "state": "prepared",
+                "activation_state": "pending",
+            },
+        }
+        calls: list[tuple[str, tuple[str, ...], object]] = []
+
+        class FakeCore:
+            def call(self, command: str, *args: str, input_value=None):
+                calls.append((command, args, input_value))
+                if command == "driver-context":
+                    return context
+                return {"status": "ACTIVE"}
+
+        coordinator = NativeCoordinator(
+            repo=ROOT,
+            run_id="native-dispatch-activation-unknown",
+            core=FakeCore(),
+            transport=object(),
+            project_root=ROOT,
+        )
+        coordinator.current_action = action
+        error = AppServerError(
+            "thread resume returned an unclassified error",
+            code="NATIVE_APP_SERVER_REQUEST_FAILED",
+            details={"method": "thread/resume", "error": {"code": -32000}},
+        )
+
+        with self.assertRaises(NativeDriverError) as raised:
+            coordinator.retry_transport_failure(error)
+
+        self.assertEqual(raised.exception.code, "NATIVE_DISPATCH_ACTIVATION_UNKNOWN")
+        self.assertEqual(
+            [command for command, _args, _input in calls],
+            ["driver-context", "record-dispatch-activation"],
+        )
+        activation = calls[-1]
+        self.assertIn("--state", activation[1])
+        self.assertIn("unknown", activation[1])
+        self.assertEqual(activation[2], error.details)
+
+    def test_projection_prefers_core_payload_and_keeps_legacy_fallback(self) -> None:
+        projection = {"schema_version": 1, "action": "builder_implement"}
+        coordinator = NativeCoordinator(
+            repo=ROOT,
+            run_id="native-projection-preference",
+            core=object(),
+            transport=object(),
+            project_root=ROOT,
+        )
+        action = {
+            "action": "builder_implement",
+            "action_id": "d" * 64,
+            "context_projection": projection,
+            "context_projection_digest": digest(projection),
+        }
+        coordinator._canonical_projection = lambda *_args: {
+            "legacy": "must-not-win"
+        }
+
+        selected, selected_digest = coordinator._projection_for_action(
+            action, "builder", {}
+        )
+
+        self.assertEqual(selected, projection)
+        self.assertEqual(selected_digest, digest(projection))
+        legacy_action = {
+            "action": "builder_implement",
+            "action_id": "e" * 64,
+        }
+        legacy, legacy_digest = coordinator._projection_for_action(
+            legacy_action, "builder", {}
+        )
+        self.assertEqual(legacy, {"legacy": "must-not-win"})
+        self.assertEqual(legacy_digest, digest(legacy))
+
+        action["context_projection_digest"] = "f" * 64
+        with self.assertRaises(NativeDriverError) as raised:
+            coordinator._projection_for_action(action, "builder", {})
+        self.assertEqual(
+            raised.exception.code, "NATIVE_CONTEXT_PROJECTION_DIGEST_MISMATCH"
+        )
+
     def test_blackbox_only_missing_tester_uses_identity_only_preparation(self) -> None:
         action = {
             "action": "tester_blackbox",

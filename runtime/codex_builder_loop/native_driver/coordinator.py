@@ -7,7 +7,7 @@ import time
 import tomllib
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
 from ..assurance_v4.driver_contract import (
     AGENT_ACTION_CAPABILITIES,
@@ -510,7 +510,18 @@ class NativeCoordinator:
             or source.get("agent") != replacement.get("new_agent")
             or source.get("head") != source.get("base_head")
             or source.get("files") != []
-            or context.get("dispatch_intent") is not None
+        ):
+            return False
+        dispatch = context.get("dispatch_intent")
+        if dispatch is not None and not (
+            isinstance(dispatch, dict)
+            and dispatch.get("action") == "tester_author"
+            and dispatch.get("role") == "tester"
+            and dispatch.get("state") == "prepared"
+            and dispatch.get("turn_id") is None
+            and dispatch.get("thread_id")
+            == replacement.get("new_agent", {}).get("thread_id")
+            and dispatch.get("activation_state") == "pending"
         ):
             return False
         replacement_action_id = str(replacement["action_id"])
@@ -635,12 +646,7 @@ class NativeCoordinator:
             self._apply_agent_result(action, role, result, context)
             return
         prompt = self._prompt(action, role, context)
-        try:
-            self._activate_role_thread(action, role, context, str(agent["thread_id"]))
-        except AppServerError as exc:
-            if self._renew_tester_bootstrap_after_missing_rollout(action, context, exc):
-                return
-            raise
+        transport_generation = self._transport_generation()
         dispatch_args = [
             "begin-dispatch",
             "--repo",
@@ -669,7 +675,6 @@ class NativeCoordinator:
                     projection_digest,
                 ]
             )
-        transport_generation = self._transport_generation()
         if transport_generation is not None:
             dispatch_args.extend(
                 [
@@ -679,9 +684,28 @@ class NativeCoordinator:
                     self._timeout_profile_digest(),
                 ]
             )
-        self.core.call(
+        begun = self.core.call(
             *dispatch_args,
         )
+        activation_enabled = (
+            isinstance(begun.get("dispatch_intent"), Mapping)
+            and "activation_state" in begun["dispatch_intent"]
+        )
+        self._activate_role_thread(action, role, context, str(agent["thread_id"]))
+        if activation_enabled:
+            self.core.call(
+                "record-dispatch-activation",
+                "--repo",
+                str(self.repo),
+                "--run",
+                self.run_id,
+                "--action-id",
+                str(action["action_id"]),
+                "--state",
+                "activated",
+                "--driver-runtime-kind",
+                "native",
+            )
         turn = self.transport.run_turn(
             thread_id=agent["thread_id"],
             prompt=prompt,
@@ -882,6 +906,51 @@ class NativeCoordinator:
             )
         self._wait_for_retry(pending)
         thread_id = str(pending["thread_id"])
+        activation_state = pending.get("activation_state")
+        if pending.get("state") != "exhausted":
+            if activation_state == "unknown":
+                raise NativeDriverError(
+                    "dispatch activation outcome is unknown",
+                    code="NATIVE_DISPATCH_ACTIVATION_UNKNOWN",
+                    status="NEEDS_USER",
+                    details={
+                        "action_id": pending.get("action_id"),
+                        "thread_id": thread_id,
+                        "failure_code": pending.get("activation_failure_code"),
+                    },
+                )
+            if activation_state == "pending":
+                if pending.get("turn_id") is not None:
+                    raise NativeDriverError(
+                        "pending dispatch has a bound turn before activation",
+                        code="NATIVE_DISPATCH_ACTIVATION_STATE_INVALID",
+                        status="NEEDS_USER",
+                        details={"action_id": pending.get("action_id")},
+                    )
+                self._activate_role_thread(current, role, context, thread_id)
+                self.core.call(
+                    "record-dispatch-activation",
+                    "--repo",
+                    str(self.repo),
+                    "--run",
+                    self.run_id,
+                    "--action-id",
+                    str(pending["action_id"]),
+                    "--state",
+                    "activated",
+                    "--driver-runtime-kind",
+                    "native",
+                )
+            elif activation_state == "activated":
+                self._active_threads.add(thread_id)
+            else:
+                instructions, sandbox = self._role_config(role)
+                self.transport.resume_thread(
+                    thread_id=thread_id,
+                    cwd=self._turn_cwd(current, role, context),
+                    developer_instructions=instructions,
+                    sandbox="danger-full-access",
+                )
         if pending.get("state") == "exhausted":
             # An exhausted source only needs read/compaction/replacement
             # recovery.  Do not resume the old thread before proving its tail;
@@ -911,13 +980,6 @@ class NativeCoordinator:
                     "generation": pending.get("generation"),
                 },
             )
-        instructions, sandbox = self._role_config(role)
-        self.transport.resume_thread(
-            thread_id=thread_id,
-            cwd=self._turn_cwd(current, role, context),
-            developer_instructions=instructions,
-            sandbox="danger-full-access",
-        )
         thread = self.transport.read_thread(thread_id)
         attempt = int(pending.get("attempt", 1))
         client_id = self._dispatch_client_id(pending)
@@ -1455,6 +1517,36 @@ class NativeCoordinator:
         role: str,
         context: dict[str, Any],
     ) -> tuple[dict[str, Any], str]:
+        projected = action.get("context_projection")
+        projected_digest = action.get("context_projection_digest")
+        if projected is not None or projected_digest is not None:
+            if not isinstance(projected, Mapping) or not isinstance(
+                projected_digest, str
+            ):
+                raise NativeDriverError(
+                    "Core returned an incomplete context projection",
+                    code="NATIVE_CONTEXT_PROJECTION_INVALID",
+                    status="NEEDS_USER",
+                    details={
+                        "action_id": action.get("action_id"),
+                        "has_projection": isinstance(projected, Mapping),
+                        "has_digest": isinstance(projected_digest, str),
+                    },
+                )
+            projection = copy.deepcopy(dict(projected))
+            actual_digest = digest(projection)
+            if actual_digest != projected_digest:
+                raise NativeDriverError(
+                    "Core context projection digest changed on the Native wire",
+                    code="NATIVE_CONTEXT_PROJECTION_DIGEST_MISMATCH",
+                    status="NEEDS_USER",
+                    details={
+                        "action_id": action.get("action_id"),
+                        "expected": projected_digest,
+                        "actual": actual_digest,
+                    },
+                )
+            return projection, projected_digest
         projection = self._canonical_projection(action, role, context)
         return projection, digest(projection)
 
@@ -3059,9 +3151,6 @@ class NativeCoordinator:
         return thread
 
     def retry_transport_failure(self, error: AppServerError) -> dict[str, Any] | None:
-        failure_code = classify_app_server_failure(error)
-        if failure_code is None or not is_retryable_transport_failure(failure_code):
-            return None
         action = self.current_action
         if not isinstance(action, dict):
             action = self.core.call(
@@ -3085,6 +3174,85 @@ class NativeCoordinator:
             and isinstance(agent, dict)
             and intent.get("thread_id") == agent.get("thread_id")
         ):
+            return None
+        pre_activation = (
+            intent.get("state") == "prepared"
+            and intent.get("turn_id") is None
+            and intent.get("activation_state") in {"pending", "unknown"}
+        )
+        if (
+            pre_activation
+            and intent.get("activation_state") == "unknown"
+        ):
+            raise NativeDriverError(
+                "dispatch activation outcome is unknown",
+                code="NATIVE_DISPATCH_ACTIVATION_UNKNOWN",
+                status="NEEDS_USER",
+                details={
+                    "action_id": action_id,
+                    "failure_code": intent.get("activation_failure_code"),
+                },
+            )
+        if pre_activation and is_missing_rollout_failure(error):
+            if (
+                action_name == "tester_author"
+                and self._renew_tester_bootstrap_after_missing_rollout(
+                    action, context, error
+                )
+            ):
+                return self._context()
+            if action_name == "tester_author" and capability.role == "tester":
+                details = error.details
+                args = [
+                    "record-tester-bootstrap-failure",
+                    "--repo",
+                    str(self.repo),
+                    "--run",
+                    self.run_id,
+                    "--action-id",
+                    action_id,
+                    "--failure-code",
+                    error.code,
+                    "--failure-message",
+                    str(error),
+                    "--driver-runtime-kind",
+                    "native",
+                ]
+                if details is not None:
+                    args.extend(["--failure-details", "-"])
+                return self.core.call(*args, input_value=details)
+        failure_code = classify_app_server_failure(error)
+        if failure_code is None or not is_retryable_transport_failure(failure_code):
+            if pre_activation and intent.get("activation_state") == "pending":
+                details = error.details
+                args = [
+                    "record-dispatch-activation",
+                    "--repo",
+                    str(self.repo),
+                    "--run",
+                    self.run_id,
+                    "--action-id",
+                    action_id,
+                    "--state",
+                    "unknown",
+                    "--failure-code",
+                    error.code,
+                    "--driver-runtime-kind",
+                    "native",
+                ]
+                if details is not None:
+                    args.extend(["--failure-details", "-"])
+                self.core.call(*args, input_value=details)
+                raise NativeDriverError(
+                    "Native dispatch activation outcome is unknown",
+                    code="NATIVE_DISPATCH_ACTIVATION_UNKNOWN",
+                    status="NEEDS_USER",
+                    details={
+                        "action_id": action_id,
+                        "failure_code": error.code,
+                        "failure_details": details,
+                    },
+                )
             return None
         try:
             payload = self._schedule_dispatch_retry(
