@@ -104,16 +104,20 @@ class ExperimentalEntryContractTest(unittest.TestCase):
         self.assertIn("`reviewer_preflight:true`", planner)
         self.assertIn("`preflight_before_proof:true`", planner)
         self.assertIn("BUILDER_HANDOFF_READY", planner)
-        admission = native_planner[
-            native_planner.index("## 路线准入") : native_planner.index("## 建立计划")
-        ]
-        self.assertIn("只问这一个路线问题", admission)
-        self.assertIn("不得输出结论", admission)
-        self.assertIn("任何领域取舍", admission)
-        self.assertIn("路线卡失败或用户退出时立即停止", admission)
+        self.assertIn("Plan mode 调用本 Skill 前必须已完成路线选择", native_planner)
+        self.assertIn("未完成时停止", native_planner)
+        self.assertNotIn("## 路线准入", native_planner)
 
     def test_managed_agents_restore_experimental_route_choice_and_handoff(self) -> None:
         agents = read("agents/AGENTS.md.block")
+        self.assertIn("Plan mode 入口规则", agents)
+        self.assertIn("第一条动作必须用 `request_user_input`", agents)
+        self.assertIn("回答前不得读取、分析、输出结论或提出其他问题", agents)
+        self.assertLess(
+            agents.index("Plan mode 入口规则"),
+            agents.index("选择「Planner + Codex 原生执行」"),
+            "入口规则必须先于路线分支规则",
+        )
         self.assertIn("Planner + Codex 原生执行", agents)
         self.assertIn("$planner", agents)
         self.assertIn("Builder-loop 实验", agents)

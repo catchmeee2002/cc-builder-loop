@@ -1,8 +1,8 @@
 <!-- BEGIN cc-builder-loop-codex -->
 ## Codex Builder Loop Experiment
 
-- 每次进入 Plan mode 为代码或文档变更制定方案时，先使用 `request_user_input` 让用户选择
-  「Planner + Codex 原生执行」或「Builder-loop 实验」；不得用纯文本问卷替代。
+- Plan mode 入口规则：涉及代码或文档变更且路线尚未确定时，第一条动作必须用 `request_user_input`
+  只询问「Planner + Codex 原生执行」或「Builder-loop 实验」；回答前不得读取、分析、输出结论或提出其他问题。
 - 选择「Planner + Codex 原生执行」时加载 `$planner`，只产出普通 Codex 实施计划；不得加载
   `$builder-loop-planner`，不得生成 Assurance v4 contract、`BUILDER_HANDOFF_READY` 或启动 run。
 - 选择「Builder-loop 实验」时调用 `$builder-loop-planner` adapter；它消费通用 Planner 的语义计划，
