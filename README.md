@@ -175,11 +175,11 @@ checkout 必须保留在安装时的路径；移动或删除前先运行 `./unin
 hook 内容变化后，需要再次检查并信任新 hash。安装完成会立即回读并打印 installed
 `runtime_identity`；发布验收必须以该输出和 `codex-builder-loop version --json` 的 SemVer/commit 为准。
 
-## 发布 0.1.0
+## 正式发布
 
-发布只有在同一个 clean commit 已 push、以 `v0.1.0` tag 指向、GitHub Release 已发布、安装 checkout
-同步到该 commit、`./install.sh` 成功，且已安装 CLI 回读 `builder_loop_version=0.1.0` 与相同 commit 时
-才完成。缺少任一远端或本机 read-back 都只是候选，不得宣称已发布。
+发布只有在同一个 clean commit 已 push、以对应的 `vX.Y.Z` tag 指向、GitHub Release 已发布、安装
+checkout 同步到该 commit、`./install.sh` 成功，且已安装 CLI 回读相同 SemVer 与 commit 时才完成。
+缺少任一远端或本机 read-back 都只是候选，不得宣称已发布。
 
 ## 项目配置
 

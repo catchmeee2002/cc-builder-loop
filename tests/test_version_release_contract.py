@@ -25,10 +25,10 @@ class VersionReleaseContractTest(unittest.TestCase):
         lines = [line.strip() for line in completed.stdout.splitlines() if line.strip()]
         self.assertTrue(lines, completed.stdout)
         value = json.loads(lines[-1])
-        self.assertEqual(value.get("version") or value.get("builder_loop_version"), "0.1.0")
+        self.assertEqual(value.get("version") or value.get("builder_loop_version"), "0.1.1")
         identity = value.get("runtime_identity")
         self.assertIsInstance(identity, dict, value)
-        self.assertEqual(identity.get("builder_loop_version"), "0.1.0")
+        self.assertEqual(identity.get("builder_loop_version"), "0.1.1")
         self.assertIn(identity.get("capture_status"), {"captured", "partial", "unavailable"})
         self.assertIn("compatibility", value)
 
@@ -40,7 +40,7 @@ class VersionReleaseContractTest(unittest.TestCase):
             compact_contract(),
         )
         identity = started["runtime_identity"]
-        self.assertEqual(identity["builder_loop_version"], "0.1.0")
+        self.assertEqual(identity["builder_loop_version"], "0.1.1")
         self.assertRegex(identity["adapter_commit"], r"^[0-9a-f]{40}$")
 
     def test_version_command_survives_missing_git_metadata(self) -> None:
@@ -58,9 +58,9 @@ class VersionReleaseContractTest(unittest.TestCase):
             )
         self.assertEqual(completed.returncode, 0, completed.stderr)
         value = json.loads([line for line in completed.stdout.splitlines() if line.strip()][-1])
-        self.assertEqual(value.get("version") or value.get("builder_loop_version"), "0.1.0")
+        self.assertEqual(value.get("version") or value.get("builder_loop_version"), "0.1.1")
         identity = value["runtime_identity"]
-        self.assertEqual(identity["builder_loop_version"], "0.1.0")
+        self.assertEqual(identity["builder_loop_version"], "0.1.1")
         self.assertIn(identity["capture_status"], {"partial", "unavailable"})
         self.assertIsNone(identity.get("adapter_commit"))
 
@@ -79,7 +79,7 @@ class VersionReleaseContractTest(unittest.TestCase):
             version = run_process([str(cli), "version", "--json"], env=env)
             self.assertEqual(version.returncode, 0, version.stderr)
             value = json.loads([line for line in version.stdout.splitlines() if line.strip()][-1])
-            self.assertEqual(value.get("version") or value.get("builder_loop_version"), "0.1.0")
+            self.assertEqual(value.get("version") or value.get("builder_loop_version"), "0.1.1")
 
 
 if __name__ == "__main__":

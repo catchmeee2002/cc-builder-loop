@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.1.1 — 2026-09-01
+
+- Native App Server transport now accumulates fragmented newline-delimited frames within the bounded
+  read deadline, distinguishes partial EOF from a real process exit, and preserves the diagnostic
+  cleanup receipt for root-session failures (#217).
+
 - Native Driver now persists a pre-dispatch activation state before each non-root role thread is resumed.
   Known activation transport failures reuse the existing bounded dispatch retry; a Tester no-rollout before
   the first turn records a continuity-invalid problem or consumes the matching replacement bootstrap
@@ -72,7 +78,7 @@
   effective profile 升为 full；telemetry 同时公开 profile、expected stages 与互不重叠的实现、验证、编排、
   等待耗时（#128）。
 
-- Builder-loop 现在从单一 runtime 常量公开正式 SemVer `0.1.0`；`version --json`、新旧 ledger、
+- Builder-loop 现在从单一 runtime 常量公开正式 SemVer `0.1.1`；`version --json`、新旧 ledger、
   retrospective、复制目录和安装回读统一携带 version/commit/dirty/capture status。当前 runtime 只允许当前
   minor 做 active mutation，对上一 minor 仅保留安全终态完成；新 GitHub Issue 改用唯一
   `issue-capture:v2` 嵌套 runtime identity，历史 v1 与 resolution v1 保持只读语义（#147）。
