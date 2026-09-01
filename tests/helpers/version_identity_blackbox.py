@@ -29,10 +29,10 @@ def main() -> int:
         if completed.returncode != 0:
             raise AssertionError(completed.stderr or completed.stdout)
         value = json.loads([line for line in completed.stdout.splitlines() if line.strip()][-1])
-        if (value.get("version") or value.get("builder_loop_version")) != "0.1.1":
+        if (value.get("version") or value.get("builder_loop_version")) != "0.1.2":
             raise AssertionError(value)
         identity = value.get("runtime_identity")
-        if not isinstance(identity, dict) or identity.get("builder_loop_version") != "0.1.1":
+        if not isinstance(identity, dict) or identity.get("builder_loop_version") != "0.1.2":
             raise AssertionError(value)
         if identity.get("capture_status") not in {"partial", "unavailable"}:
             raise AssertionError(value)

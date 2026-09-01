@@ -180,7 +180,7 @@ def _verify_tag(repo: Path, intent: dict[str, Any], remote: str) -> dict[str, An
 
 def _verify_github_release(repo: Path, intent: dict[str, Any]) -> dict[str, Any]:
     result = subprocess.run(
-        ["gh", "release", "view", intent["tag"], "--json", "tagName,targetCommitish,isDraft,isLatest"],
+        ["gh", "release", "view", intent["tag"], "--json", "tagName,targetCommitish,isDraft"],
         cwd=repo, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
     )
     if result.returncode != 0:
