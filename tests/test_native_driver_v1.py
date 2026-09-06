@@ -845,6 +845,53 @@ class NativeDriverCoreContractTest(unittest.TestCase):
             "dispatch_prepared",
         )
 
+    def test_retry_dispatch_preserves_role_result_validation_details(self) -> None:
+        run_id = "native-invalid-evidence-details"
+        run_path, action = self.prepare_tester_author_dispatch_fixture(run_id)
+        details = {"path": "details/files/3/blob"}
+
+        retried = self.invoke(
+            "retry-dispatch",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--action-id",
+            action["action_id"],
+            "--failure-code",
+            "EVIDENCE_REPORT_INVALID",
+            "--failure-details",
+            "-",
+            stdin=details,
+        )
+
+        self.assertEqual(retried["phase"], "active")
+        ledger = json.loads((run_path / "ledger.json").read_text())
+        pending = ledger["dispatch_intent"]
+        self.assertEqual(pending["failure_code"], "EVIDENCE_REPORT_INVALID")
+        self.assertEqual(pending["failure_details"], details)
+        retry_event = next(
+            event
+            for event in reversed(ledger["events"])
+            if event["kind"] == "dispatch_retry_scheduled"
+        )
+        self.assertEqual(retry_event["details"]["failure_details"], details)
+        self.invoke(
+            "retry-dispatch",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--action-id",
+            action["action_id"],
+            "--failure-code",
+            "serverOverloaded",
+        )
+        pending = json.loads((run_path / "ledger.json").read_text())[
+            "dispatch_intent"
+        ]
+        self.assertNotIn("failure_details", pending)
+
     def test_blackbox_only_prepares_tester_identity_without_source_gate(self) -> None:
         run_id = "native-blackbox-only"
         contract = native_contract(self.repo)
@@ -3414,6 +3461,7 @@ class NativeDriverCoreContractTest(unittest.TestCase):
         class FakeCore:
             def __init__(self) -> None:
                 self.calls: list[str] = []
+                self.retry_details = None
 
             def call(self, command: str, *args: str, input_value=None):
                 self.calls.append(command)
@@ -5035,6 +5083,110 @@ class NativeCoordinatorContractTest(unittest.TestCase):
         self.assertIn("retry-dispatch", core.calls)
         self.assertNotIn("complete-dispatch", core.calls)
 
+    def test_completed_invalid_evidence_artifact_stops_needs_user_without_consumption(self) -> None:
+        action = {
+            "action": "tester_fix",
+            "action_id": "e" * 64,
+            "reason": "open_tester_problem",
+        }
+        context = {
+            "target_start_head": "1" * 40,
+            "candidate_worktree": str(ROOT),
+            "publication": None,
+            "evidence": {},
+            "problems": [],
+            "facets": {
+                "mission": {},
+                "authority": {},
+                "assurance": {},
+                "execution": {
+                    "agents": {
+                        "tester": {
+                            "agent_id": "tester-agent",
+                            "thread_id": "tester-thread",
+                        }
+                    },
+                    "tester_source": {
+                        "head": "2" * 40,
+                        "worktree": str(ROOT),
+                        "files": [{"path": "tests/test_example.py", "blob": "3" * 40}],
+                    },
+                },
+            },
+        }
+        artifact_fd, artifact_name = tempfile.mkstemp(
+            prefix="invalid-dispatch-result-"
+        )
+        os.close(artifact_fd)
+        artifact = Path(artifact_name)
+        try:
+            result = {
+                "result": "tests_ready",
+                "evidence_report": {
+                    "schema_version": 1,
+                    "kind": "tester",
+                    "status": "pass",
+                    "candidate_head": "4" * 40,
+                    "producer": {
+                        "role": "tester",
+                        "agent_id": "tester-agent",
+                        "thread_id": "tester-thread",
+                    },
+                    "details": {
+                        "result": "tests_ready",
+                        "source_head": "2" * 40,
+                        "files": [
+                            {
+                                "path": "tests/test_example.py",
+                                "blob": "3" * 33,
+                            }
+                        ],
+                    },
+                },
+                "proof_spec": None,
+                "problem_report": None,
+            }
+            artifact.write_text(json.dumps(result), encoding="utf-8")
+            pending = {
+                "action_id": action["action_id"],
+                "action": action["action"],
+                "role": "tester",
+                "thread_id": "tester-thread",
+                "state": "completed",
+                "result_path": str(artifact),
+                "result_digest": digest(result),
+            }
+
+            class NoMutationCore:
+                def call(self, command: str, *args: str, input_value=None):
+                    raise AssertionError(command)
+
+            coordinator = NativeCoordinator(
+                repo=ROOT,
+                run_id="native-completed-invalid-evidence",
+                core=NoMutationCore(),
+                transport=object(),
+                project_root=ROOT,
+            )
+            with self.assertRaises(NativeDriverError) as raised:
+                coordinator._recover_dispatch(
+                    pending,
+                    "tester",
+                    context,
+                    action,
+                )
+            self.assertEqual(raised.exception.code, "NATIVE_DISPATCH_RESULT_INVALID")
+            self.assertEqual(raised.exception.status, "NEEDS_USER")
+            self.assertEqual(
+                raised.exception.details,
+                {
+                    "validation_code": "EVIDENCE_REPORT_INVALID",
+                    "path": "details/files/0/blob",
+                },
+            )
+        finally:
+            artifact.unlink(missing_ok=True)
+
     def test_invalid_role_json_exhaustion_remains_needs_user(self) -> None:
         class ExhaustingCore:
             def call(self, command: str, *args: str, input_value=None):
@@ -5070,6 +5222,279 @@ class NativeCoordinatorContractTest(unittest.TestCase):
         self.assertEqual(
             raised.exception.payload["code"], "NATIVE_DISPATCH_RETRY_EXHAUSTED"
         )
+
+    def test_invalid_role_shape_uses_bounded_retry(self) -> None:
+        class RetryCore:
+            def __init__(self) -> None:
+                self.failure_code = None
+                self.failure_details = None
+
+            def call(self, command: str, *args: str, input_value=None):
+                if command == "retry-dispatch":
+                    self.failure_code = args[args.index("--failure-code") + 1]
+                    self.failure_details = input_value
+                    return {"status": "ACTIVE"}
+                raise AssertionError(command)
+
+        core = RetryCore()
+        coordinator = NativeCoordinator(
+            repo=ROOT,
+            run_id="native-invalid-role-shape",
+            core=core,
+            transport=object(),
+            project_root=ROOT,
+        )
+
+        recovered = coordinator._parse_action_result_or_retry(
+            "tester_fix",
+            TurnResult(
+                turn_id="turn-invalid-shape",
+                status="completed",
+                text="[]",
+            ),
+            "f" * 64,
+        )
+
+        self.assertIsNone(recovered)
+        self.assertEqual(core.failure_code, "NATIVE_ROLE_RESULT_INVALID")
+        self.assertEqual(
+            core.failure_details,
+            {"path": "$", "actual_type": "list"},
+        )
+
+    def test_invalid_nested_role_shape_uses_bounded_retry(self) -> None:
+        class RetryCore:
+            def __init__(self) -> None:
+                self.failure_code = None
+                self.failure_details = None
+
+            def call(self, command: str, *args: str, input_value=None):
+                if command == "retry-dispatch":
+                    self.failure_code = args[args.index("--failure-code") + 1]
+                    self.failure_details = input_value
+                    return {"status": "ACTIVE"}
+                raise AssertionError(command)
+
+        core = RetryCore()
+        coordinator = NativeCoordinator(
+            repo=ROOT,
+            run_id="native-invalid-nested-role-shape",
+            core=core,
+            transport=object(),
+            project_root=ROOT,
+        )
+
+        recovered = coordinator._parse_action_result_or_retry(
+            "tester_fix",
+            TurnResult(
+                turn_id="turn-invalid-nested-shape",
+                status="completed",
+                text=json.dumps(
+                    {
+                        "result": "tests_ready",
+                        "evidence_report": {},
+                        "proof_spec": None,
+                        "problem_report": None,
+                    }
+                ),
+            ),
+            "g" * 64,
+        )
+
+        self.assertIsNone(recovered)
+        self.assertEqual(core.failure_code, "NATIVE_ROLE_RESULT_INVALID")
+        self.assertEqual(
+            core.failure_details,
+            {"path": "evidence_report", "actual_type": "dict"},
+        )
+
+    def test_invalid_evidence_report_uses_bounded_retry_before_dispatch_completion(self) -> None:
+        action = {
+            "action": "tester_fix",
+            "action_id": "d" * 64,
+            "reason": "open_tester_problem",
+        }
+        source_head = "1" * 40
+        context = {
+            "repo_root": str(ROOT),
+            "target_start_head": "2" * 40,
+            "candidate_worktree": str(ROOT),
+            "publication": None,
+            "evidence": {},
+            "problems": [],
+            "facets": {
+                "mission": {},
+                "authority": {},
+                "assurance": {},
+                "execution": {
+                    "agents": {
+                        "tester": {
+                            "agent_id": "tester-agent",
+                            "thread_id": "tester-thread",
+                        }
+                    },
+                    "tester_source": {
+                        "head": source_head,
+                        "worktree": str(ROOT),
+                        "files": [{"path": "tests/test_example.py", "blob": "3" * 40}],
+                    },
+                },
+            },
+        }
+
+        class FakeCore:
+            def __init__(self) -> None:
+                self.calls: list[str] = []
+
+            def call(self, command: str, *args: str, input_value=None):
+                self.calls.append(command)
+                if command == "driver-context":
+                    return context
+                if command == "begin-dispatch":
+                    return {
+                        "status": "ACTIVE",
+                        "dispatch_intent": {
+                            "action_id": action["action_id"],
+                            "action": action["action"],
+                            "role": "tester",
+                            "thread_id": "tester-thread",
+                            "state": "prepared",
+                        },
+                    }
+                if command == "complete-dispatch":
+                    raise CorePortError(
+                        "invalid evidence report",
+                        payload={
+                            "status": "FATAL",
+                            "code": "EVIDENCE_REPORT_INVALID",
+                            "details": {"path": "details/files/0/blob"},
+                        },
+                        returncode=2,
+                    )
+                if command == "retry-dispatch":
+                    self.retry_details = input_value
+                    return {"status": "ACTIVE"}
+                return {"status": "ACTIVE"}
+
+        class FakeTransport:
+            def resume_thread(self, **_kwargs):
+                return None
+
+            def run_turn(self, **kwargs):
+                kwargs["on_started"]("tester-turn")
+                return TurnResult(
+                    turn_id="tester-turn",
+                    status="completed",
+                    text=json.dumps(
+                        {
+                            "result": "tests_ready",
+                            "evidence_report": json.dumps(
+                                {
+                                    "schema_version": 1,
+                                    "kind": "tester",
+                                    "status": "pass",
+                                    "candidate_head": "4" * 40,
+                                    "producer": {
+                                        "role": "tester",
+                                        "agent_id": "tester-agent",
+                                        "thread_id": "tester-thread",
+                                    },
+                                    "details": {
+                                        "result": "tests_ready",
+                                        "source_head": source_head,
+                                        "files": [
+                                            {
+                                                "path": "tests/test_example.py",
+                                                "blob": "3" * 33,
+                                            }
+                                        ],
+                                    },
+                                }
+                            ),
+                            "proof_spec": None,
+                            "problem_report": None,
+                        }
+                    ),
+                )
+
+        core = FakeCore()
+        coordinator = NativeCoordinator(
+            repo=ROOT,
+            run_id="native-invalid-evidence",
+            core=core,
+            transport=FakeTransport(),
+            project_root=ROOT,
+        )
+        coordinator._prompt = lambda *_args: "prompt"
+
+        coordinator._run_agent_action(
+            action,
+            AGENT_ACTION_CAPABILITIES["tester_fix"],
+        )
+
+        self.assertIn("retry-dispatch", core.calls)
+        self.assertNotIn("record-evidence", core.calls)
+        self.assertEqual(core.calls.count("complete-dispatch"), 0)
+        self.assertEqual(
+            core.retry_details,
+            {"path": "details/files/0/blob"},
+        )
+
+    def test_failure_action_prefers_current_dispatch_identity(self) -> None:
+        class FakeCoordinator:
+            current_action = {
+                "action_id": "a" * 64,
+                "action": "tester_author",
+                "reason": "stale_action",
+            }
+            current_dispatch = {
+                "action_id": "b" * 64,
+                "action": "tester_fix",
+                "state": "in_flight",
+            }
+
+        class FakeCore:
+            def __init__(self) -> None:
+                self.failure = None
+
+            def call(self, command: str, *args: str, input_value=None):
+                if command == "record-driver-failure":
+                    self.failure = input_value
+                    return {"status": "ACTIVE", "phase": "active"}
+                if command == "complete-driver-failure":
+                    return {
+                        "status": "FATAL",
+                        "phase": "failed",
+                        "driver_failure": {"state": "terminal"},
+                    }
+                raise AssertionError(command)
+
+        core = FakeCore()
+        payload, _returncode = native_cli._persist_fatal(
+            core=core,
+            repo=ROOT,
+            run_id="native-failure-dispatch-identity",
+            exc=CorePortError(
+                "invalid evidence report",
+                payload={
+                    "status": "FATAL",
+                    "code": "EVIDENCE_REPORT_INVALID",
+                    "message": "invalid evidence report",
+                },
+                returncode=2,
+            ),
+            coordinator=FakeCoordinator(),
+        )
+
+        self.assertEqual(
+            core.failure["action"],
+            {
+                "action_id": "b" * 64,
+                "action": "tester_fix",
+                "reason": "dispatch_in_flight",
+            },
+        )
+        self.assertEqual(payload["phase"], "failed")
 
     def test_retryable_live_turn_failure_schedules_same_dispatch(self) -> None:
         class FakeCore:

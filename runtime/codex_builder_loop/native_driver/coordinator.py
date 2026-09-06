@@ -14,7 +14,7 @@ from ..assurance_v4.driver_contract import (
     AgentActionCapability,
 )
 from ..assurance_v4.core import canonical_context_projection
-from ..assurance_v4.models import digest
+from ..assurance_v4.models import ContractError, digest, validate_agent_result
 from .app_server import AppServerError, AppServerTransport, TurnResult
 from .core_port import CorePort, CorePortError
 from .transport_failures import (
@@ -29,6 +29,14 @@ REVIEWER_COMPACTION_FAILURE_CODES = {
     "responseStreamDisconnected",
     "missingAgentResult",
 }
+ROLE_RESULT_VALIDATION_FAILURE_CODES = frozenset(
+    {
+        "AGENT_RESULT_INVALID",
+        "EVIDENCE_REPORT_INVALID",
+        "TEST_PROOF_SPEC_INVALID",
+        "PROBLEM_REPORT_INVALID",
+    }
+)
 
 
 class NativeDriverError(RuntimeError):
@@ -75,6 +83,7 @@ class NativeCoordinator:
         self.proof_schema = self._load_schema("codex-test-proof.schema.json")
         self._active_threads: set[str] = set()
         self.current_action: dict[str, Any] | None = None
+        self.current_dispatch: dict[str, Any] | None = None
         self._event_sink = event_sink
         self._now_fn = now_fn or (lambda: datetime.now(timezone.utc))
         self._sleep_fn = sleep_fn or time.sleep
@@ -151,6 +160,7 @@ class NativeCoordinator:
     def run(self) -> dict[str, Any]:
         while True:
             self.current_action = None
+            self.current_dispatch = None
             action = self.core.call(
                 "driver-next", "--repo", str(self.repo), "--run", self.run_id
             )
@@ -578,6 +588,7 @@ class NativeCoordinator:
                 code="NATIVE_ROOT_TRANSPORT_REQUIRED",
                 status="NEEDS_USER",
             )
+        self.current_dispatch = None
         context = self._context()
         role = capability.role
         agent = context["facets"]["execution"]["agents"].get(role)
@@ -617,8 +628,9 @@ class NativeCoordinator:
                     "actual": projection_digest,
                     "work_unit_id": pending.get("work_unit_id"),
                 },
-            )
+        )
         if isinstance(pending, dict):
+            self.current_dispatch = copy.deepcopy(pending)
             if (
                 role == "builder"
                 and pending.get("state") == "completed"
@@ -687,6 +699,18 @@ class NativeCoordinator:
         begun = self.core.call(
             *dispatch_args,
         )
+        begun_dispatch = begun.get("dispatch_intent")
+        self.current_dispatch = (
+            copy.deepcopy(begun_dispatch)
+            if isinstance(begun_dispatch, dict)
+            else {
+                "action_id": str(action["action_id"]),
+                "action": str(action["action"]),
+                "role": role,
+                "thread_id": agent.get("thread_id"),
+                "state": "prepared",
+            }
+        )
         activation_enabled = (
             isinstance(begun.get("dispatch_intent"), Mapping)
             and "activation_state" in begun["dispatch_intent"]
@@ -740,18 +764,12 @@ class NativeCoordinator:
         )
         if result is None:
             return
-        self.core.call(
-            "complete-dispatch",
-            "--repo",
-            str(self.repo),
-            "--run",
-            self.run_id,
-            "--action-id",
+        if not self._complete_dispatch_or_retry(
             str(action["action_id"]),
-            "--result",
-            "-",
-            input_value=result,
-        )
+            str(action["action"]),
+            result,
+        ):
+            return
         self._apply_agent_result(action, role, result, self._context())
 
     @staticmethod
@@ -856,14 +874,33 @@ class NativeCoordinator:
     ) -> dict[str, Any] | None:
         if pending.get("state") == "completed":
             path = Path(str(pending["result_path"]))
-            result = json.loads(path.read_text())
+            try:
+                result = json.loads(path.read_text())
+            except (OSError, json.JSONDecodeError) as exc:
+                raise NativeDriverError(
+                    "persisted dispatch result is unreadable",
+                    code="NATIVE_DISPATCH_RESULT_INVALID",
+                    status="NEEDS_USER",
+                    details={"path": str(path), "error": str(exc)},
+                ) from exc
             if digest(result) != pending.get("result_digest"):
                 raise NativeDriverError(
                     "persisted dispatch result digest changed",
                     code="NATIVE_DISPATCH_RESULT_DRIFT",
                     status="NEEDS_USER",
                 )
-            return result
+            try:
+                return validate_agent_result(result)
+            except ContractError as exc:
+                raise NativeDriverError(
+                    "persisted dispatch result schema is invalid",
+                    code="NATIVE_DISPATCH_RESULT_INVALID",
+                    status="NEEDS_USER",
+                    details={
+                        "validation_code": exc.code,
+                        **copy.deepcopy(exc.details),
+                    },
+                ) from exc
         current = action or self.current_action
         if not isinstance(current, dict):
             raise NativeDriverError(
@@ -1022,18 +1059,12 @@ class NativeCoordinator:
             )
             if result is None:
                 return None
-            self.core.call(
-                "complete-dispatch",
-                "--repo",
-                str(self.repo),
-                "--run",
-                self.run_id,
-                "--action-id",
+            if not self._complete_dispatch_or_retry(
                 str(pending["action_id"]),
-                "--result",
-                "-",
-                input_value=result,
-            )
+                str(pending["action"]),
+                result,
+            ):
+                return None
             return result
         if len(matches) == 1 and matches[0].get("status") == "failed":
             failure_code = self._turn_failure_code(matches[0])
@@ -1074,18 +1105,12 @@ class NativeCoordinator:
             )
             if result is None:
                 return None
-            self.core.call(
-                "complete-dispatch",
-                "--repo",
-                str(self.repo),
-                "--run",
-                self.run_id,
-                "--action-id",
+            if not self._complete_dispatch_or_retry(
                 str(pending["action_id"]),
-                "--result",
-                "-",
-                input_value=result,
-            )
+                str(pending["action"]),
+                result,
+            ):
+                return None
             return result
         if len(matches) != 1 or matches[0].get("status") not in {"completed", "failed", "interrupted"}:
             raise NativeDriverError(
@@ -1123,18 +1148,12 @@ class NativeCoordinator:
                 "--turn-id",
                 str(turn_value["id"]),
             )
-        self.core.call(
-            "complete-dispatch",
-            "--repo",
-            str(self.repo),
-            "--run",
-            self.run_id,
-            "--action-id",
+        if not self._complete_dispatch_or_retry(
             str(pending["action_id"]),
-            "--result",
-            "-",
-            input_value=result,
-        )
+            str(pending["action"]),
+            result,
+        ):
+            return None
         return result
 
     def _apply_agent_result(
@@ -2900,13 +2919,74 @@ class NativeCoordinator:
         try:
             parsed = self._parse_turn(turn)
         except NativeDriverError as exc:
-            if exc.code != "NATIVE_ROLE_RESULT_INVALID_JSON":
+            if exc.code not in {
+                "NATIVE_ROLE_RESULT_INVALID",
+                "NATIVE_ROLE_RESULT_INVALID_JSON",
+            }:
                 raise
             self._schedule_dispatch_retry(
-                action_id, exc.code, action_name=action
+                action_id,
+                exc.code,
+                action_name=action,
+                failure_details=exc.details,
             )
             return None
-        return self._normalize_action_result(action, parsed)
+        normalized = self._normalize_action_result(action, parsed)
+        try:
+            return validate_agent_result(normalized)
+        except ContractError as exc:
+            if exc.code not in ROLE_RESULT_VALIDATION_FAILURE_CODES:
+                raise
+            self._schedule_dispatch_retry(
+                action_id,
+                exc.code,
+                action_name=action,
+                failure_details=exc.details,
+            )
+            return None
+
+    def _complete_dispatch_or_retry(
+        self,
+        action_id: str,
+        action: str,
+        result: dict[str, Any],
+    ) -> bool:
+        try:
+            self.core.call(
+                "complete-dispatch",
+                "--repo",
+                str(self.repo),
+                "--run",
+                self.run_id,
+                "--action-id",
+                action_id,
+                "--result",
+                "-",
+                input_value=result,
+            )
+        except CorePortError as exc:
+            if exc.code not in ROLE_RESULT_VALIDATION_FAILURE_CODES:
+                raise
+            self._schedule_dispatch_retry(
+                action_id,
+                exc.code,
+                action_name=action,
+                failure_details=self._core_error_details(exc),
+            )
+            return False
+        return True
+
+    @staticmethod
+    def _core_error_details(error: CorePortError) -> Any | None:
+        details = error.payload.get("details")
+        if details is not None:
+            return copy.deepcopy(details)
+        value = {
+            key: copy.deepcopy(item)
+            for key, item in error.payload.items()
+            if key not in {"status", "code", "message"}
+        }
+        return value or None
 
     def _schedule_dispatch_retry(
         self,
@@ -2914,10 +2994,11 @@ class NativeCoordinator:
         failure_code: str,
         *,
         action_name: str | None = None,
+        failure_details: Any | None = None,
     ) -> dict[str, Any]:
         self._assert_builder_retry_safe(action_id, action_name=action_name)
         try:
-            return self.core.call(
+            retry_args = [
                 "retry-dispatch",
                 "--repo",
                 str(self.repo),
@@ -2927,6 +3008,12 @@ class NativeCoordinator:
                 action_id,
                 "--failure-code",
                 failure_code,
+            ]
+            if failure_details is not None:
+                retry_args.extend(["--failure-details", "-"])
+            return self.core.call(
+                *retry_args,
+                input_value=failure_details,
             )
         except CorePortError as error:
             if error.code != "NATIVE_DISPATCH_RETRY_EXHAUSTED":
@@ -3292,9 +3379,14 @@ class NativeCoordinator:
             raise NativeDriverError(
                 "Codex role returned invalid structured output",
                 code="NATIVE_ROLE_RESULT_INVALID_JSON",
+                details={"path": "$", "error": str(exc)},
             ) from exc
         if not isinstance(value, dict):
-            raise NativeDriverError("Codex role returned a non-object", code="NATIVE_ROLE_RESULT_INVALID")
+            raise NativeDriverError(
+                "Codex role returned a non-object",
+                code="NATIVE_ROLE_RESULT_INVALID",
+                details={"path": "$", "actual_type": type(value).__name__},
+            )
         normalized = copy.deepcopy(value)
         for field in ("evidence_report", "proof_spec", "problem_report"):
             nested = normalized.get(field)
@@ -3304,6 +3396,10 @@ class NativeCoordinator:
                 raise NativeDriverError(
                     f"Codex role returned non-string {field} on the Native wire",
                     code="NATIVE_ROLE_RESULT_INVALID",
+                    details={
+                        "path": field,
+                        "actual_type": type(nested).__name__,
+                    },
                 )
             try:
                 normalized[field] = json.loads(nested)
@@ -3311,5 +3407,6 @@ class NativeCoordinator:
                 raise NativeDriverError(
                     f"Codex role returned invalid {field} JSON",
                     code="NATIVE_ROLE_RESULT_INVALID_JSON",
+                    details={"path": field, "error": str(exc)},
                 ) from exc
         return normalized

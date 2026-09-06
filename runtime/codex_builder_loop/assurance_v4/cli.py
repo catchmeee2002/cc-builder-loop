@@ -706,6 +706,7 @@ def parser() -> argparse.ArgumentParser:
     retry_dispatch.add_argument("--run", required=True)
     retry_dispatch.add_argument("--action-id", required=True)
     retry_dispatch.add_argument("--failure-code", required=True)
+    retry_dispatch.add_argument("--failure-details")
     retry_dispatch.add_argument("--interrupted-retry", action="store_true")
 
     renew_dispatch = commands.add_parser("renew-dispatch")
@@ -1392,6 +1393,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.run,
                 action_id=args.action_id,
                 failure_code=args.failure_code,
+                failure_details=(
+                    _json(args.failure_details)
+                    if args.failure_details is not None
+                    else None
+                ),
                 interrupted_retry=args.interrupted_retry,
             )
         elif args.command == "renew-dispatch":

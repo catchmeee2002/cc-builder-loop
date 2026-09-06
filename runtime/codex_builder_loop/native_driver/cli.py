@@ -71,6 +71,46 @@ def _exception_payload(exc: CorePortError | NativeDriverError | AppServerError) 
 
 def _failure_action(coordinator: NativeCoordinator | None) -> dict[str, Any] | None:
     action = coordinator.current_action if coordinator is not None else None
+    dispatch = (
+        getattr(coordinator, "current_dispatch", None)
+        if coordinator is not None
+        else None
+    )
+    if isinstance(dispatch, dict):
+        dispatch_action_id = dispatch.get("action_id")
+        dispatch_name = dispatch.get("action")
+        if (
+            isinstance(dispatch_action_id, str)
+            and dispatch_action_id
+            and isinstance(dispatch_name, str)
+            and dispatch_name
+        ):
+            if (
+                isinstance(action, dict)
+                and action.get("action_id") == dispatch_action_id
+                and action.get("action") == dispatch_name
+                and isinstance(action.get("reason"), str)
+                and action["reason"]
+            ):
+                return {
+                    "action_id": dispatch_action_id,
+                    "action": dispatch_name,
+                    "reason": action["reason"],
+                }
+            state = dispatch.get("state")
+            reason = (
+                dispatch.get("reason")
+                if isinstance(dispatch.get("reason"), str)
+                and dispatch["reason"]
+                else f"dispatch_{state}"
+                if isinstance(state, str) and state
+                else "dispatch_failure"
+            )
+            return {
+                "action_id": dispatch_action_id,
+                "action": dispatch_name,
+                "reason": reason,
+            }
     if not isinstance(action, dict):
         return None
     action_id = action.get("action_id")

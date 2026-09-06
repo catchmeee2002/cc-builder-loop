@@ -443,7 +443,8 @@
             },
             "candidate_manifest_digest": {
               "oneOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]
-            }
+            },
+            "failure_details": {}
           }
         }
       ]
@@ -631,6 +632,7 @@
         "interrupted_retry_blocked": {"type": "boolean"},
         "turn_id": {"type": "string", "minLength": 1},
         "failure_code": {"type": "string", "minLength": 1},
+        "failure_details": {},
         "retry_scheduled_at": {"type": "string", "format": "date-time"},
         "retry_not_before": {"type": "string", "format": "date-time"},
         "exhausted_at": {"type": "string", "minLength": 1},

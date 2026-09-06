@@ -4145,6 +4145,7 @@ def retry_dispatch(
     *,
     action_id: str,
     failure_code: str,
+    failure_details: Any | None = None,
     interrupted_retry: bool = False,
 ) -> dict[str, Any]:
     repo = resolve_repo(repo_value)
@@ -4156,6 +4157,16 @@ def retry_dispatch(
             code="DISPATCH_RETRY_FAILURE_CODE_REQUIRED",
             status="FAIL",
         )
+    normalized_failure_details = copy.deepcopy(failure_details)
+    if failure_details is not None:
+        try:
+            digest(failure_details)
+        except (TypeError, ValueError) as exc:
+            raise AssuranceError(
+                "dispatch retry failure details must be canonical JSON",
+                code="DISPATCH_RETRY_FAILURE_DETAILS_INVALID",
+                status="FAIL",
+            ) from exc
     with locked(repo):
         ledger = read_ledger(repo, run_id)
         _assert_no_candidate_residue_intent(ledger)
@@ -4257,21 +4268,28 @@ def retry_dispatch(
                     ledger, str(intent.get("role"))
                 )
             )
+        if normalized_failure_details is None:
+            intent.pop("failure_details", None)
+        else:
+            intent["failure_details"] = normalized_failure_details
         if attempt >= 3:
             deployment = ledger.get("deployment_transaction")
             if isinstance(deployment, dict) and deployment.get("state") == "deployed":
                 deployment["state"] = "restore_required"
                 deployment["failure_code"] = "NATIVE_DISPATCH_RETRY_EXHAUSTED"
+                retry_event = {
+                    "action_id": action_id,
+                    "failure_code": normalized_failure_code,
+                    "attempt": attempt,
+                    "generation": generation,
+                    "turn_id": intent.get("turn_id"),
+                }
+                if normalized_failure_details is not None:
+                    retry_event["failure_details"] = normalized_failure_details
                 append_event(
                     ledger,
                     "dispatch_retry_exhausted_restore_required",
-                    {
-                        "action_id": action_id,
-                        "failure_code": normalized_failure_code,
-                        "attempt": attempt,
-                        "generation": generation,
-                        "turn_id": intent.get("turn_id"),
-                    },
+                    retry_event,
                 )
                 ledger["dispatch_intent"] = None
                 save_ledger(repo, ledger)
@@ -4281,27 +4299,29 @@ def retry_dispatch(
                 intent["continuity_state"] = "exhausted"
                 intent["failure_code"] = normalized_failure_code
                 intent["exhausted_at"] = now()
-                append_event(
-                    ledger,
-                    "dispatch_retry_exhausted",
-                    {
-                        "action_id": action_id,
-                        "attempt": attempt,
-                        "generation": generation,
-                        "turn_id": intent.get("turn_id"),
-                        "failure_code": normalized_failure_code,
-                    },
-                )
+                retry_event = {
+                    "action_id": action_id,
+                    "attempt": attempt,
+                    "generation": generation,
+                    "turn_id": intent.get("turn_id"),
+                    "failure_code": normalized_failure_code,
+                }
+                if normalized_failure_details is not None:
+                    retry_event["failure_details"] = normalized_failure_details
+                append_event(ledger, "dispatch_retry_exhausted", retry_event)
                 save_ledger(repo, ledger)
+            exhausted_details = {
+                "failure_code": intent.get("failure_code", normalized_failure_code),
+                "attempt": attempt,
+                "generation": generation,
+            }
+            if normalized_failure_details is not None:
+                exhausted_details["failure_details"] = normalized_failure_details
             raise AssuranceError(
                 "Native role transport failed three times",
                 code="NATIVE_DISPATCH_RETRY_EXHAUSTED",
                 status="NEEDS_USER",
-                details={
-                    "failure_code": intent.get("failure_code", normalized_failure_code),
-                    "attempt": attempt,
-                    "generation": generation,
-                },
+                details=exhausted_details,
             )
         scheduled_at = now()
         next_attempt = attempt + 1
@@ -4316,20 +4336,19 @@ def retry_dispatch(
             retry_not_before = (
                 datetime.fromisoformat(scheduled_at) + timedelta(seconds=retry_delay)
             ).isoformat()
-        append_event(
-            ledger,
-            "dispatch_retry_scheduled",
-            {
-                "action_id": action_id,
-                "attempt": attempt,
-                "next_attempt": next_attempt,
-                "generation": generation,
-                "turn_id": intent.get("turn_id"),
-                "failure_code": normalized_failure_code,
-                "retry_scheduled_at": scheduled_at,
-                "retry_not_before": retry_not_before,
-            },
-        )
+        retry_event = {
+            "action_id": action_id,
+            "attempt": attempt,
+            "next_attempt": next_attempt,
+            "generation": generation,
+            "turn_id": intent.get("turn_id"),
+            "failure_code": normalized_failure_code,
+            "retry_scheduled_at": scheduled_at,
+            "retry_not_before": retry_not_before,
+        }
+        if normalized_failure_details is not None:
+            retry_event["failure_details"] = normalized_failure_details
+        append_event(ledger, "dispatch_retry_scheduled", retry_event)
         intent["attempt"] = next_attempt
         if _progress_enabled(ledger):
             intent["unit_attempt"] = int(intent.get("unit_attempt", 1)) + 1
@@ -4862,6 +4881,7 @@ def bind_dispatch_rehydration(
         for key in (
             "turn_id",
             "failure_code",
+            "failure_details",
             "retry_scheduled_at",
             "retry_not_before",
             "exhausted_at",
@@ -6006,6 +6026,8 @@ def _driver_failure_dispatch(ledger: Mapping[str, Any]) -> dict[str, Any] | None
         value["owner_session_id"] = intent["owner_session_id"]
     if isinstance(intent.get("candidate_manifest_digest"), str):
         value["candidate_manifest_digest"] = intent["candidate_manifest_digest"]
+    if "failure_details" in intent:
+        value["failure_details"] = copy.deepcopy(intent["failure_details"])
     if isinstance(intent.get("work_unit_id"), str):
         value["work_unit_id"] = intent["work_unit_id"]
     for key in (
