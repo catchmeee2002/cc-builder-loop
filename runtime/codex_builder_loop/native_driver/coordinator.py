@@ -2906,9 +2906,28 @@ class NativeCoordinator:
             else None
         )
         self._schedule_dispatch_retry(
-            action_id, failure_code, action_name=action_name
+            action_id,
+            failure_code,
+            action_name=action_name,
+            failure_details=self._turn_failure_details(turn, failure_code),
         )
         return True
+
+    def _turn_failure_details(
+        self, turn: TurnResult, failure_code: str
+    ) -> Any | None:
+        receipt_fn = getattr(self.transport, "diagnostic_receipt", None)
+        if callable(receipt_fn):
+            try:
+                receipt = receipt_fn(
+                    failure_code=failure_code,
+                    turn_error=turn.error,
+                )
+            except (OSError, TypeError, ValueError):
+                receipt = None
+            if isinstance(receipt, dict):
+                return receipt
+        return copy.deepcopy(turn.error)
 
     def _parse_action_result_or_retry(
         self,

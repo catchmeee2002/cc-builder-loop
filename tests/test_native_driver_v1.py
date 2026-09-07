@@ -5840,6 +5840,79 @@ class NativeCoordinatorContractTest(unittest.TestCase):
         self.assertEqual(stopped["code"], "NATIVE_DISPATCH_RETRY_EXHAUSTED")
         self.assertEqual(stopped["run_id"], "raw-disconnect")
 
+    def test_turn_failure_retry_persists_transport_diagnostic_receipt(self) -> None:
+        action_id = "b" * 64
+        turn_error = {
+            "codexErrorInfo": {"responseStreamDisconnected": {}},
+            "message": "stream disconnected before completion: response.completed",
+        }
+        receipt = {
+            "schema_version": 1,
+            "failure_code": "responseStreamDisconnected",
+            "transport_generation": "transport-generation",
+            "stderr_bytes": 12,
+            "stderr_sha256": "c" * 64,
+            "stderr_summary": "transport warning",
+            "stderr_truncated": False,
+            "redaction_count": 0,
+            "turn_error": turn_error,
+            "cleanup_observation": None,
+            "receipt_digest": "d" * 64,
+        }
+
+        class FakeCore:
+            def __init__(self) -> None:
+                self.failure_details = None
+
+            def call(self, command: str, *args: str, input_value=None):
+                if command == "retry-dispatch":
+                    self.failure_details = input_value
+                    return {
+                        "status": "ACTIVE",
+                        "dispatch_intent": {"attempt": 2, "state": "prepared"},
+                    }
+                raise AssertionError(command)
+
+        class FakeTransport:
+            def __init__(self) -> None:
+                self.failure_code = None
+                self.turn_error = None
+
+            def diagnostic_receipt(self, *, failure_code: str, turn_error):
+                self.failure_code = failure_code
+                self.turn_error = turn_error
+                return receipt
+
+        core = FakeCore()
+        transport = FakeTransport()
+        coordinator = NativeCoordinator(
+            repo=ROOT,
+            run_id="turn-failure-receipt",
+            core=core,
+            transport=transport,
+            project_root=ROOT,
+        )
+        coordinator.current_action = {
+            "action": "tester_author",
+            "action_id": action_id,
+            "reason": "tester_source_missing",
+        }
+
+        retried = coordinator._retry_turn_failure(
+            TurnResult(
+                turn_id="turn-with-disconnect",
+                status="failed",
+                text="",
+                error=turn_error,
+            ),
+            action_id,
+        )
+
+        self.assertTrue(retried)
+        self.assertEqual(transport.failure_code, "responseStreamDisconnected")
+        self.assertEqual(transport.turn_error, turn_error)
+        self.assertEqual(core.failure_details, receipt)
+
     def test_user_reason_creates_new_dispatch_generation_on_same_thread(self) -> None:
         action_id = "a" * 64
 
