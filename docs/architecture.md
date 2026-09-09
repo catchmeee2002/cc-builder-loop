@@ -81,9 +81,12 @@ Builder、Tester、计划、当前项目、builder-loop 或外部平台，三次
 
 Native Driver 使用 App Server 稳定 stdio thread/turn 接口并在启动前检查当前协议 schema；不启用
 `experimentalApi` 字段，也不新增 API Key。Builder、Tester、Reviewer 的唯一 role policy 仍来自
-`agents/*.toml`，App Server `outputSchema` 把终态收敛为公共 v4 JSON。Core 机械核对 thread identity、
-Tester source HEAD/blob manifest、blackbox worktree/HEAD/逐命令结果和 Reviewer candidate。Native
-Driver 能直接观察并恢复真实 thread/turn 生命周期，但不把协调器观察宣称为密码学或平台级防伪。
+`agents/*.toml`，App Server `outputSchema` 传递原生 v4 JSON object，Native Coordinator 再用公共
+schema 做语义校验；wire 层不要求模型把 evidence、proof 或 problem 再序列化成 JSON 字符串。Full
+Driver 的 legacy marker 输出保持在其专属调用路径，不与 Native object contract 混用。Core 机械核对
+thread identity、Tester source HEAD/blob manifest、blackbox worktree/HEAD/逐命令结果和 Reviewer
+candidate。Native Driver 能直接观察并恢复真实 thread/turn 生命周期，但不把协调器观察宣称为密码学或
+平台级防伪。
 Driver action 的 role 与 preparation capability 只有一份 Core-side 契约，Assurance CLI guard 和 Native
 coordinator 共同引用。blackbox-only contract 可只登记 Tester thread identity；它不创建 Tester source
 worktree，不增加 author/tester evidence gate，也不使已绑定同 candidate 的 machine evidence 失效。

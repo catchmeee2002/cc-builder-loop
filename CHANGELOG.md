@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 0.2.0 — 2026-09-09
+
+- Native Driver role results now carry `evidence_report`, `proof_spec`, and `problem_report` as
+  native JSON objects instead of model-generated JSON strings. Public schema validation remains
+  strict, while malformed role output continues through the bounded retry and fail-closed path.
+- Native role prompts now avoid conflicting marker instructions and only include result schemas
+  required by the current action. Existing `0.1` active dispatches are not migrated to the new
+  wire contract; terminal ledgers remain readable for audit.
+
 ## 0.1.2 — 2026-09-01
 
 - GitHub Release read-back now requests only fields supported by the installed `gh` CLI, so the

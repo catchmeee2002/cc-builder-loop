@@ -13,8 +13,20 @@
         "target_change_required"
       ]
     },
-    "evidence_report": {"type": ["string", "null"]},
-    "proof_spec": {"type": ["string", "null"]},
-    "problem_report": {"type": ["string", "null"]}
+    "evidence_report": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "patternProperties": {".*": {}}
+    },
+    "proof_spec": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "patternProperties": {".*": {}}
+    },
+    "problem_report": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "patternProperties": {".*": {}}
+    }
   }
 }

@@ -37,6 +37,18 @@ ROLE_RESULT_VALIDATION_FAILURE_CODES = frozenset(
         "PROBLEM_REPORT_INVALID",
     }
 )
+PROMPT_EVIDENCE_ACTIONS = frozenset(
+    {
+        "tester_author",
+        "tester_fix",
+        "tester_blackbox",
+        "reviewer_preflight",
+        "reviewer_final",
+    }
+)
+PROMPT_BLACKBOX_ACTIONS = frozenset(
+    {"tester_blackbox", "reviewer_preflight", "reviewer_final"}
+)
 
 
 class NativeDriverError(RuntimeError):
@@ -2079,8 +2091,10 @@ class NativeCoordinator:
         instructions += (
             "\nNative Driver transport rule: return the raw JSON object required by the supplied "
             "output schema. Do not add marker lines, Markdown fences, commentary, or extra keys. "
-            "Each non-null evidence_report, proof_spec, or problem_report value must be a compact "
-            "JSON string; the Native Driver normalizes it back to the public object schema."
+            "Each non-null evidence_report, proof_spec, or problem_report value must be a JSON "
+            "object; do not serialize any of them into a string. The Native Driver validates the "
+            "objects against the public schemas. This rule supersedes earlier role-file output "
+            "format instructions for this Native Driver turn."
         )
         instructions += (
             "\nAssurance v4 recovery rule: when the supplied contract enables "
@@ -2139,8 +2153,10 @@ class NativeCoordinator:
             payload["work_unit_progress"] = copy.deepcopy(
                 projection.get("work_unit_progress")
             )
-        if role in {"tester", "reviewer"}:
+        action_name = str(action["action"])
+        if action_name in PROMPT_EVIDENCE_ACTIONS:
             payload["evidence_report_schema"] = self.evidence_schema
+        if action_name in PROMPT_BLACKBOX_ACTIONS:
             payload["blackbox_case_schema"] = self.blackbox_case_schema
         if role == "tester":
             payload["test_identity_contract"] = {
@@ -2161,15 +2177,15 @@ class NativeCoordinator:
             payload["review_input_contract"] = self._review_input_contract(
                 context, phase=str(payload["phase"])
             )
-        if action.get("action") in {"tester_proof", "tester_proof_diagnose"}:
+        if action_name in {"tester_proof", "tester_proof_diagnose"}:
             payload["proof_spec_schema"] = self.proof_schema
             payload["proof_test_id_hints"] = self._proof_test_id_hints(context)
-            if action.get("action") == "tester_proof":
+            if action_name == "tester_proof":
                 payload["proof_execution_rule"] = (
                     "Choose argv that executes exactly the declared canonical test_ids. Do not reuse "
                     "unittest discover -s with ids that include the omitted start-directory prefix."
                 )
-        if action.get("action") == "tester_proof_diagnose":
+        if action_name == "tester_proof_diagnose":
             payload["proof_failure"] = copy.deepcopy(action.get("proof_failure"))
             payload["proof_diagnosis_rule"] = (
                 "Do not edit files or rerun the proof as a replacement for Core. Classify each "
@@ -2180,7 +2196,7 @@ class NativeCoordinator:
                 "owner=tester for Tester-owned source or fixture changes, and owner=plan only when "
                 "the frozen target, authority, or acceptance contract must change."
             )
-        if action.get("action") == "tester_machine_diagnose":
+        if action_name == "tester_machine_diagnose":
             payload["machine_failure"] = copy.deepcopy(action.get("machine_failure"))
             payload["machine_diagnosis_rule"] = (
                 "Do not edit files or rerun the command as a replacement for Core. Classify each "
@@ -2947,7 +2963,11 @@ class NativeCoordinator:
                 action_id,
                 exc.code,
                 action_name=action,
-                failure_details=exc.details,
+                failure_details=self._result_failure_details(
+                    turn,
+                    stage="wire_parse",
+                    details=exc.details,
+                ),
             )
             return None
         normalized = self._normalize_action_result(action, parsed)
@@ -2960,9 +2980,31 @@ class NativeCoordinator:
                 action_id,
                 exc.code,
                 action_name=action,
-                failure_details=exc.details,
+                failure_details=self._result_failure_details(
+                    turn,
+                    stage="public_schema",
+                    details=exc.details,
+                ),
             )
             return None
+
+    @staticmethod
+    def _result_failure_details(
+        turn: TurnResult,
+        *,
+        stage: str,
+        details: Any,
+    ) -> dict[str, Any]:
+        failure: dict[str, Any] = {
+            "stage": stage,
+            "result_bytes": len(turn.text.encode("utf-8")),
+            "result_sha256": hashlib.sha256(turn.text.encode("utf-8")).hexdigest(),
+        }
+        if isinstance(details, dict):
+            failure.update(copy.deepcopy(details))
+        elif details is not None:
+            failure["error"] = str(details)
+        return failure
 
     def _complete_dispatch_or_retry(
         self,
@@ -3411,21 +3453,13 @@ class NativeCoordinator:
             nested = normalized.get(field)
             if nested is None:
                 continue
-            if not isinstance(nested, str):
+            if not isinstance(nested, dict):
                 raise NativeDriverError(
-                    f"Codex role returned non-string {field} on the Native wire",
+                    f"Codex role returned non-object {field} on the Native wire",
                     code="NATIVE_ROLE_RESULT_INVALID",
                     details={
                         "path": field,
                         "actual_type": type(nested).__name__,
                     },
                 )
-            try:
-                normalized[field] = json.loads(nested)
-            except json.JSONDecodeError as exc:
-                raise NativeDriverError(
-                    f"Codex role returned invalid {field} JSON",
-                    code="NATIVE_ROLE_RESULT_INVALID_JSON",
-                    details={"path": field, "error": str(exc)},
-                ) from exc
         return normalized

@@ -4913,7 +4913,7 @@ class NativeCoordinatorContractTest(unittest.TestCase):
 
         self.assertIsNone(coordinator.current_action)
 
-    def test_native_wire_normalizes_nested_json_strings(self) -> None:
+    def test_native_wire_preserves_native_json_objects(self) -> None:
         evidence = {"schema_version": 1, "kind": "reviewer"}
         result = NativeCoordinator._parse_turn(
             TurnResult(
@@ -4922,7 +4922,7 @@ class NativeCoordinatorContractTest(unittest.TestCase):
                 text=json.dumps(
                     {
                         "result": "pass",
-                        "evidence_report": json.dumps(evidence),
+                        "evidence_report": evidence,
                         "proof_spec": None,
                         "problem_report": None,
                     }
@@ -4930,6 +4930,132 @@ class NativeCoordinatorContractTest(unittest.TestCase):
             )
         )
         self.assertEqual(result["evidence_report"], evidence)
+
+    def test_native_wire_rejects_legacy_nested_json_strings(self) -> None:
+        for field in ("evidence_report", "proof_spec", "problem_report"):
+            with self.subTest(field=field):
+                result = {
+                    "result": "fail",
+                    "evidence_report": None,
+                    "proof_spec": None,
+                    "problem_report": None,
+                }
+                result[field] = '{"schema_version":1}'
+                with self.assertRaises(NativeDriverError) as raised:
+                    NativeCoordinator._parse_turn(
+                        TurnResult(
+                            turn_id=f"turn-legacy-wire-{field}",
+                            status="completed",
+                            text=json.dumps(result),
+                        )
+                    )
+                self.assertEqual(raised.exception.code, "NATIVE_ROLE_RESULT_INVALID")
+                self.assertEqual(
+                    raised.exception.details,
+                    {"path": field, "actual_type": "str"},
+                )
+
+    def test_native_wire_rejects_issue_219_malformed_nested_report(self) -> None:
+        malformed_problem = (
+            '{"schema_version":1,"problems":[{"key":"missing-context","summary":"s",'
+            '"details":"d","owner":"plan","decision_request":{"kind":"facet_change",'
+            '"facet":"assurance","changes":[],"question":"q"}]}'
+        )
+        with self.assertRaises(NativeDriverError) as raised:
+            NativeCoordinator._parse_turn(
+                TurnResult(
+                    turn_id="turn-issue-219-wire",
+                    status="completed",
+                    text=json.dumps(
+                        {
+                            "result": "target_change_required",
+                            "evidence_report": None,
+                            "proof_spec": None,
+                            "problem_report": malformed_problem,
+                        }
+                    ),
+                )
+            )
+        self.assertEqual(raised.exception.code, "NATIVE_ROLE_RESULT_INVALID")
+        self.assertEqual(
+            raised.exception.details,
+            {"path": "problem_report", "actual_type": "str"},
+        )
+
+    def test_native_wire_schema_matches_public_result_field_types(self) -> None:
+        wire = json.loads(
+            (
+                ROOT
+                / "schema"
+                / "assurance-v4-native-agent-wire-result.schema.json"
+            ).read_text()
+        )
+        public = json.loads(
+            (ROOT / "schema" / "assurance-v4-agent-result.schema.json").read_text()
+        )
+        self.assertEqual(wire["required"], public["required"])
+        self.assertEqual(
+            wire["properties"]["result"]["enum"],
+            public["properties"]["result"]["enum"],
+        )
+        self.assertEqual(wire["properties"]["result"]["type"], "string")
+        for field in ("evidence_report", "proof_spec", "problem_report"):
+            self.assertEqual(
+                wire["properties"][field]["type"],
+                public["properties"][field]["type"],
+            )
+            self.assertIs(
+                wire["properties"][field]["additionalProperties"],
+                False,
+            )
+            self.assertEqual(
+                wire["properties"][field]["patternProperties"],
+                {".*": {}},
+            )
+
+    def test_old_native_dispatch_schema_drift_is_not_migrated(self) -> None:
+        coordinator = NativeCoordinator(
+            repo=ROOT,
+            run_id="native-old-wire-dispatch",
+            core=object(),
+            transport=object(),
+            project_root=ROOT,
+        )
+        action = {
+            "action": "builder_implement",
+            "action_id": "l" * 64,
+        }
+        context = {
+            "target_start_head": "1" * 40,
+            "candidate_worktree": str(ROOT),
+            "facets": {
+                "execution": {
+                    "agents": {
+                        "builder": {
+                            "agent_id": "builder-agent",
+                            "thread_id": "builder-thread",
+                        }
+                    }
+                }
+            },
+        }
+        with self.assertRaises(NativeDriverError) as raised:
+            coordinator._recover_dispatch(
+                {
+                    "action_id": action["action_id"],
+                    "action": action["action"],
+                    "role": "builder",
+                    "thread_id": "builder-thread",
+                    "prompt_digest": "p" * 64,
+                    "output_schema_digest": "o" * 64,
+                    "state": "prepared",
+                },
+                "builder",
+                context,
+                action,
+            )
+        self.assertEqual(raised.exception.code, "NATIVE_DISPATCH_OUTPUT_SCHEMA_DRIFT")
+        self.assertEqual(raised.exception.status, "NEEDS_USER")
 
     def test_invalid_role_json_uses_bounded_retry_before_dispatch_completion(self) -> None:
         action = {
@@ -5257,10 +5383,11 @@ class NativeCoordinatorContractTest(unittest.TestCase):
 
         self.assertIsNone(recovered)
         self.assertEqual(core.failure_code, "NATIVE_ROLE_RESULT_INVALID")
-        self.assertEqual(
-            core.failure_details,
-            {"path": "$", "actual_type": "list"},
-        )
+        self.assertEqual(core.failure_details["path"], "$")
+        self.assertEqual(core.failure_details["actual_type"], "list")
+        self.assertEqual(core.failure_details["stage"], "wire_parse")
+        self.assertEqual(core.failure_details["result_bytes"], 2)
+        self.assertRegex(core.failure_details["result_sha256"], r"^[0-9a-f]{64}$")
 
     def test_invalid_nested_role_shape_uses_bounded_retry(self) -> None:
         class RetryCore:
@@ -5292,7 +5419,7 @@ class NativeCoordinatorContractTest(unittest.TestCase):
                 text=json.dumps(
                     {
                         "result": "tests_ready",
-                        "evidence_report": {},
+                        "evidence_report": "{}",
                         "proof_spec": None,
                         "problem_report": None,
                     }
@@ -5303,10 +5430,23 @@ class NativeCoordinatorContractTest(unittest.TestCase):
 
         self.assertIsNone(recovered)
         self.assertEqual(core.failure_code, "NATIVE_ROLE_RESULT_INVALID")
+        self.assertEqual(core.failure_details["path"], "evidence_report")
+        self.assertEqual(core.failure_details["actual_type"], "str")
+        self.assertEqual(core.failure_details["stage"], "wire_parse")
         self.assertEqual(
-            core.failure_details,
-            {"path": "evidence_report", "actual_type": "dict"},
+            core.failure_details["result_bytes"],
+            len(
+                json.dumps(
+                    {
+                        "result": "tests_ready",
+                        "evidence_report": "{}",
+                        "proof_spec": None,
+                        "problem_report": None,
+                    }
+                ).encode("utf-8")
+            ),
         )
+        self.assertRegex(core.failure_details["result_sha256"], r"^[0-9a-f]{64}$")
 
     def test_invalid_evidence_report_uses_bounded_retry_before_dispatch_completion(self) -> None:
         action = {
@@ -5388,29 +5528,27 @@ class NativeCoordinatorContractTest(unittest.TestCase):
                     text=json.dumps(
                         {
                             "result": "tests_ready",
-                            "evidence_report": json.dumps(
-                                {
-                                    "schema_version": 1,
-                                    "kind": "tester",
-                                    "status": "pass",
-                                    "candidate_head": "4" * 40,
-                                    "producer": {
-                                        "role": "tester",
-                                        "agent_id": "tester-agent",
-                                        "thread_id": "tester-thread",
-                                    },
-                                    "details": {
-                                        "result": "tests_ready",
-                                        "source_head": source_head,
-                                        "files": [
-                                            {
-                                                "path": "tests/test_example.py",
-                                                "blob": "3" * 33,
-                                            }
-                                        ],
-                                    },
-                                }
-                            ),
+                            "evidence_report": {
+                                "schema_version": 1,
+                                "kind": "tester",
+                                "status": "pass",
+                                "candidate_head": "4" * 40,
+                                "producer": {
+                                    "role": "tester",
+                                    "agent_id": "tester-agent",
+                                    "thread_id": "tester-thread",
+                                },
+                                "details": {
+                                    "result": "tests_ready",
+                                    "source_head": source_head,
+                                    "files": [
+                                        {
+                                            "path": "tests/test_example.py",
+                                            "blob": "3" * 33,
+                                        }
+                                    ],
+                                },
+                            },
                             "proof_spec": None,
                             "problem_report": None,
                         }
@@ -5435,10 +5573,11 @@ class NativeCoordinatorContractTest(unittest.TestCase):
         self.assertIn("retry-dispatch", core.calls)
         self.assertNotIn("record-evidence", core.calls)
         self.assertEqual(core.calls.count("complete-dispatch"), 0)
-        self.assertEqual(
-            core.retry_details,
-            {"path": "details/files/0/blob"},
-        )
+        self.assertEqual(core.retry_details["path"], "details/files/0/blob")
+        self.assertEqual(core.retry_details["stage"], "public_schema")
+        self.assertIsInstance(core.retry_details["result_bytes"], int)
+        self.assertGreater(core.retry_details["result_bytes"], 0)
+        self.assertRegex(core.retry_details["result_sha256"], r"^[0-9a-f]{64}$")
 
     def test_failure_action_prefers_current_dispatch_identity(self) -> None:
         class FakeCoordinator:
@@ -6664,12 +6803,62 @@ class NativeCoordinatorContractTest(unittest.TestCase):
             context,
         )
         payload = json.loads(prompt.split("\n", 1)[1])
-        self.assertIn("boundCaseResult", payload["blackbox_case_schema"]["$defs"])
+        self.assertIn("proof_spec_schema", payload)
+        self.assertNotIn("blackbox_case_schema", payload)
+        self.assertNotIn("evidence_report_schema", payload)
         self.assertIn("tests.test_calc", payload["test_identity_contract"]["unittest"])
         self.assertEqual(
             payload["proof_test_id_hints"][0]["unittest_module"], "tests.test_calc"
         )
         self.assertIn("exactly", payload["proof_execution_rule"])
+
+    def test_native_prompt_has_one_object_output_contract(self) -> None:
+        coordinator = NativeCoordinator(
+            repo=ROOT,
+            run_id="native-object-output-contract",
+            core=object(),
+            transport=object(),
+            project_root=ROOT,
+        )
+        instructions, _sandbox = coordinator._role_config("tester")
+        self.assertIn("JSON object", instructions)
+        self.assertNotIn("JSON string", instructions)
+        self.assertIn("Do not add marker lines", instructions)
+        self.assertIn("supersedes earlier role-file output format instructions", instructions)
+
+    def test_prompt_injects_only_action_relevant_result_schemas(self) -> None:
+        coordinator = NativeCoordinator(
+            repo=ROOT,
+            run_id="native-action-schemas",
+            core=object(),
+            transport=object(),
+            project_root=ROOT,
+        )
+        context = {
+            "target_start_head": "1" * 40,
+            "candidate_worktree": str(ROOT),
+            "facets": native_contract(ROOT),
+            "evidence": {},
+            "publication": None,
+            "problems": [],
+        }
+        expected = {
+            "tester_author": (True, False, False),
+            "tester_proof": (False, False, True),
+            "tester_blackbox": (True, True, False),
+            "tester_machine_diagnose": (False, False, False),
+        }
+        for action, (evidence, blackbox, proof) in expected.items():
+            with self.subTest(action=action):
+                prompt = coordinator._prompt(
+                    {"action": action, "action_id": "a" * 64},
+                    "tester",
+                    context,
+                )
+                payload = json.loads(prompt.split("\n", 1)[1])
+                self.assertEqual("evidence_report_schema" in payload, evidence)
+                self.assertEqual("blackbox_case_schema" in payload, blackbox)
+                self.assertEqual("proof_spec_schema" in payload, proof)
 
     def test_proof_failure_prompt_reuses_tester_thread_for_read_only_diagnosis(self) -> None:
         coordinator = NativeCoordinator(
