@@ -193,6 +193,25 @@ def _progress_side_effect_digest(ledger: Mapping[str, Any], role: str) -> str:
     return digest(_progress_side_effect_observation(ledger, role))
 
 
+def _interrupted_retry_observation(
+    ledger: Mapping[str, Any], intent: Mapping[str, Any]
+) -> tuple[str, str | None, str, dict[str, Any]]:
+    """Return the single observation used to authorize an interrupted retry."""
+
+    role = str(intent.get("role"))
+    expected = intent.get("pre_execution_observation_digest")
+    if _progress_enabled(ledger) and isinstance(expected, str):
+        observation = _progress_side_effect_observation(ledger, role)
+        return "progress_side_effect", expected, digest(observation), observation
+    observation = _dispatch_observation(ledger)
+    return (
+        "dispatch",
+        intent.get("dispatch_observation_digest"),
+        digest(observation),
+        observation,
+    )
+
+
 def _progress_enabled(ledger: Mapping[str, Any]) -> bool:
     return progress_policy(ledger["facets"]).get("mode") == "bounded_rehydration"
 
@@ -4224,6 +4243,13 @@ def retry_dispatch(
                     code="DISPATCH_INTERRUPTED_RETRY_STATE_INVALID",
                     status="NEEDS_USER",
                 )
+            if intent.get("interrupted_retry_blocked"):
+                raise AssuranceError(
+                    "interrupted dispatch retry is blocked by observation drift",
+                    code="NATIVE_DISPATCH_INTERRUPTED_REQUIRES_USER",
+                    status="NEEDS_USER",
+                    details=copy.deepcopy(intent.get("failure_details")),
+                )
             if intent.get("interrupted_retry_used"):
                 intent["interrupted_retry_blocked"] = True
                 append_event(
@@ -4243,6 +4269,76 @@ def retry_dispatch(
                     code="NATIVE_DISPATCH_INTERRUPTED_REQUIRES_USER",
                     status="NEEDS_USER",
                 )
+            observation_scope, expected_observation, actual_observation, observation = (
+                _interrupted_retry_observation(ledger, intent)
+            )
+            if not isinstance(expected_observation, str):
+                drift_details = {
+                    "stage": "interrupted_retry",
+                    "reason": "observation_baseline_missing",
+                    "observation_scope": observation_scope,
+                    "actual_observation_digest": actual_observation,
+                    "actual_observation": copy.deepcopy(observation),
+                }
+                intent["interrupted_retry_blocked"] = True
+                intent["continuity_state"] = "unknown"
+                intent["failure_code"] = "interruptedObservationDrift"
+                intent["failure_details"] = drift_details
+                append_event(
+                    ledger,
+                    "dispatch_interrupted_retry_rejected",
+                    {
+                        "action_id": action_id,
+                        "generation": intent.get("generation"),
+                        "attempt": intent.get("attempt"),
+                        "thread_id": intent.get("thread_id"),
+                        "turn_id": intent.get("turn_id"),
+                        **drift_details,
+                    },
+                )
+                save_ledger(repo, ledger)
+                raise AssuranceError(
+                    "interrupted dispatch retry has no verifiable observation baseline",
+                    code="NATIVE_DISPATCH_INTERRUPTED_REQUIRES_USER",
+                    status="NEEDS_USER",
+                    details=drift_details,
+                )
+            if actual_observation != expected_observation:
+                drift_details = {
+                    "stage": "interrupted_retry",
+                    "reason": "observation_drift",
+                    "observation_scope": observation_scope,
+                    "expected_observation_digest": expected_observation,
+                    "actual_observation_digest": actual_observation,
+                    "actual_observation": copy.deepcopy(observation),
+                }
+                if normalized_failure_details is not None:
+                    drift_details["transport_failure_details"] = (
+                        normalized_failure_details
+                    )
+                intent["interrupted_retry_blocked"] = True
+                intent["continuity_state"] = "unknown"
+                intent["failure_code"] = "interruptedObservationDrift"
+                intent["failure_details"] = drift_details
+                append_event(
+                    ledger,
+                    "dispatch_interrupted_retry_rejected",
+                    {
+                        "action_id": action_id,
+                        "generation": intent.get("generation"),
+                        "attempt": intent.get("attempt"),
+                        "thread_id": intent.get("thread_id"),
+                        "turn_id": intent.get("turn_id"),
+                        **drift_details,
+                    },
+                )
+                save_ledger(repo, ledger)
+                raise AssuranceError(
+                    "interrupted dispatch retry is blocked by observation drift",
+                    code="NATIVE_DISPATCH_INTERRUPTED_REQUIRES_USER",
+                    status="NEEDS_USER",
+                    details=drift_details,
+                )
             intent["interrupted_retry_used"] = True
             append_event(
                 ledger,
@@ -4256,7 +4352,8 @@ def retry_dispatch(
                     "turn_id": intent.get("turn_id"),
                     "prompt_digest": intent.get("prompt_digest"),
                     "output_schema_digest": intent.get("output_schema_digest"),
-                    "observation_digest": intent.get("dispatch_observation_digest"),
+                    "observation_scope": observation_scope,
+                    "observation_digest": actual_observation,
                     "reason": "no_output_no_side_effect",
                 },
             )

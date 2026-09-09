@@ -845,6 +845,115 @@ class NativeDriverCoreContractTest(unittest.TestCase):
             "dispatch_prepared",
         )
 
+    def test_interrupted_retry_uses_progress_observation_and_preserves_generation(
+        self,
+    ) -> None:
+        run_id = "native-interrupted-retry-clean"
+        run_path, action = self.prepare_tester_author_dispatch_fixture(run_id)
+        self.invoke(
+            "bind-dispatch-turn",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--action-id",
+            action["action_id"],
+            "--turn-id",
+            "tester-turn-1",
+        )
+
+        retried = self.invoke(
+            "retry-dispatch",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--action-id",
+            action["action_id"],
+            "--failure-code",
+            "interruptedNoOutput",
+            "--interrupted-retry",
+        )
+
+        self.assertEqual(retried["status"], "ACTIVE")
+        pending = json.loads((run_path / "ledger.json").read_text())[
+            "dispatch_intent"
+        ]
+        self.assertEqual(pending["state"], "prepared")
+        self.assertEqual(pending["attempt"], 2)
+        self.assertEqual(pending["generation"], 1)
+        self.assertIsNone(pending.get("turn_id"))
+        self.assertEqual(pending["activation_state"], "pending")
+        self.assertTrue(pending["interrupted_retry_used"])
+        self.assertFalse(pending["interrupted_retry_blocked"])
+        retry_event = next(
+            event
+            for event in reversed(
+                json.loads((run_path / "ledger.json").read_text())["events"]
+            )
+            if event["kind"] == "dispatch_interrupted_retry"
+        )
+        self.assertEqual(
+            retry_event["details"]["observation_scope"], "progress_side_effect"
+        )
+
+    def test_interrupted_retry_blocks_observation_drift_before_attempt_mutation(
+        self,
+    ) -> None:
+        run_id = "native-interrupted-retry-drift"
+        run_path, action = self.prepare_tester_author_dispatch_fixture(run_id)
+        self.invoke(
+            "bind-dispatch-turn",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--action-id",
+            action["action_id"],
+            "--turn-id",
+            "tester-turn-1",
+        )
+        ledger = json.loads((run_path / "ledger.json").read_text())
+        drift_path = Path(ledger["candidate_worktree"]) / "tests" / "drift.py"
+        drift_path.parent.mkdir(parents=True, exist_ok=True)
+        drift_path.write_text("DRIFT = True\n", encoding="utf-8")
+        try:
+            with self.assertRaises(assurance_core.AssuranceError) as raised:
+                assurance_core.retry_dispatch(
+                    self.repo,
+                    run_id,
+                    action_id=action["action_id"],
+                    failure_code="interruptedNoOutput",
+                    interrupted_retry=True,
+                )
+            self.assertEqual(
+                raised.exception.code,
+                "NATIVE_DISPATCH_INTERRUPTED_REQUIRES_USER",
+            )
+            pending = json.loads((run_path / "ledger.json").read_text())[
+                "dispatch_intent"
+            ]
+            self.assertEqual(pending["state"], "in_flight")
+            self.assertEqual(pending["attempt"], 1)
+            self.assertEqual(pending["generation"], 1)
+            self.assertEqual(pending["turn_id"], "tester-turn-1")
+            self.assertFalse(pending["interrupted_retry_used"])
+            self.assertTrue(pending["interrupted_retry_blocked"])
+            self.assertEqual(pending["continuity_state"], "unknown")
+            self.assertEqual(
+                pending["failure_code"], "interruptedObservationDrift"
+            )
+            self.assertEqual(
+                pending["failure_details"]["reason"], "observation_drift"
+            )
+            decision = assurance_core_driver.next_action(self.repo, run_id)
+            self.assertEqual(decision["status"], "NEEDS_USER")
+            self.assertEqual(
+                decision["reason"], "dispatch_interrupted_observation_drift"
+            )
+        finally:
+            drift_path.unlink(missing_ok=True)
+
     def test_retry_dispatch_preserves_role_result_validation_details(self) -> None:
         run_id = "native-invalid-evidence-details"
         run_path, action = self.prepare_tester_author_dispatch_fixture(run_id)
@@ -4452,6 +4561,63 @@ for line in sys.stdin:
 
 
 class NativeCoordinatorContractTest(unittest.TestCase):
+    def test_interrupted_retry_delegates_observation_authority_to_core(self) -> None:
+        action = {
+            "action": "tester_author",
+            "action_id": "a" * 64,
+            "reason": "tester_source_missing",
+        }
+        calls: list[str] = []
+
+        class FakeCore:
+            def call(self, command: str, *args: str, input_value=None):
+                calls.append(command)
+                if command == "retry-dispatch":
+                    return {
+                        "status": "READY",
+                        "dispatch_intent": {
+                            "action_id": action["action_id"],
+                            "state": "prepared",
+                            "attempt": 2,
+                            "generation": 1,
+                        },
+                    }
+                raise AssertionError(command)
+
+        context = {
+            "dispatch_intent": {
+                "action_id": action["action_id"],
+                "action": action["action"],
+                "role": "tester",
+                "state": "in_flight",
+                "thread_id": "tester-thread",
+                "turn_id": "tester-turn",
+                "dispatch_observation_digest": "b" * 64,
+            },
+            "facets": {"execution": {"candidate_head": "1" * 40}},
+        }
+        coordinator = NativeCoordinator(
+            repo=ROOT,
+            run_id="native-interrupted-observation-authority",
+            core=FakeCore(),
+            transport=object(),
+            project_root=ROOT,
+        )
+
+        retried = coordinator._retry_interrupted_turn(
+            TurnResult(
+                turn_id="tester-turn",
+                status="interrupted",
+                text="",
+                error={"message": "interrupted"},
+            ),
+            action,
+            context,
+        )
+
+        self.assertTrue(retried)
+        self.assertEqual(calls, ["retry-dispatch"])
+
     def test_agent_dispatch_is_persisted_before_role_activation(self) -> None:
         action = {
             "action": "builder_implement",

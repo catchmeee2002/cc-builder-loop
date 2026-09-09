@@ -1424,6 +1424,19 @@ def next_action(
     pending_activation = ledger.get("dispatch_intent")
     if (
         isinstance(pending_activation, Mapping)
+        and pending_activation.get("interrupted_retry_blocked")
+    ):
+        return decision(
+            "NEEDS_USER",
+            "continuity_decision",
+            "dispatch_interrupted_observation_drift",
+            dispatch=copy.deepcopy(dict(pending_activation)),
+            failure_details=copy.deepcopy(
+                pending_activation.get("failure_details")
+            ),
+        )
+    if (
+        isinstance(pending_activation, Mapping)
         and pending_activation.get("activation_state") == "unknown"
     ):
         return decision(

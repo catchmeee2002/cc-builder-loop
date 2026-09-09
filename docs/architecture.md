@@ -194,6 +194,11 @@ Reviewer prompt contract v2 把 contract、evidence、publication 和 doc-refere
 Core 才归档旧 generation 并在同一 role thread 建立新的 generation；旧 attempt、turn 和 failure 仍保留在
 ledger event 中。runtime identity 漂移、缺少所需理由、无匹配 dispatch、协议错误或未知 failure 均继续
 fail closed；runtime 已升级时必须由新 run 重新绑定执行身份和 evidence。
+对于启用 bounded rehydration 的 dispatch，interrupted retry 的 observation 判定唯一由 Core 对
+`pre_execution_observation_digest` 对应的 side-effect observation 执行；Native Coordinator 不得使用更窄的
+旁路摘要提前放行。若 observation 在 retry 前漂移或缺少可验证基线，Core 持久化
+`interrupted_retry_blocked` 与 rejection receipt，保持原 dispatch 的 generation、attempt、turn 和
+`in_flight` 事实不变并返回 `NEEDS_USER`；`resume --reason` 不得刷新 baseline 或绕过该阻断。
 Native 非 root role 在调用 `thread/resume` 或 `turn/start` 前，必须先把同一 action 的
 `dispatch_intent` 写成 `activation_state=pending`；线程激活成功后再写成 `activated`，随后才能开始
 turn。激活前的已知 transport failure 复用同一 dispatch 的有界 retry；Tester 首个 turn 前若

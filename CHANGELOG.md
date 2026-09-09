@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Native interrupted dispatch recovery now validates the bounded-rehydration side-effect observation in Core
+  before consuming a same-generation retry; observation drift persists a blocked `NEEDS_USER` receipt instead
+  of advancing to activation and failing later (#201).
+
 ## 0.2.0 — 2026-09-09
 
 - Native Driver role results now carry `evidence_report`, `proof_spec`, and `problem_report` as

@@ -801,15 +801,6 @@ class NativeCoordinator:
         intent = context.get("dispatch_intent")
         if not isinstance(intent, dict) or intent.get("state") != "in_flight":
             return False
-        observation = {
-            "candidate_head": context["facets"]["execution"].get("candidate_head"),
-            "target_start_head": context.get("target_start_head"),
-            "evidence": context.get("evidence", {}),
-            "publication": context.get("publication"),
-            "deployment_transaction": context.get("deployment_transaction"),
-        }
-        if intent.get("dispatch_observation_digest") != digest(observation):
-            return False
         self._assert_builder_retry_safe(
             str(action["action_id"]), action_name=str(action["action"])
         )
