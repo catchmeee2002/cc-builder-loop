@@ -119,6 +119,16 @@ def _git(repo: Path, *args: str, check: bool = True) -> subprocess.CompletedProc
 
 def _parse_worktrees(raw: str) -> tuple[Worktree, ...]:
     records: list[Worktree] = []
+    if "\0" not in raw:
+        chunks = (chunk for chunk in raw.strip().split("\n\n") if chunk.strip())
+        for chunk in chunks:
+            fields: dict[str, str | bool] = {}
+            for line in chunk.splitlines():
+                key, sep, value = line.partition(" ")
+                fields[key] = value if sep else True
+            if fields:
+                records.append(_record(fields))
+        return tuple(records)
     fields: dict[str, str | bool] = {}
     for token in raw.split("\0"):
         if not token:
@@ -134,6 +144,26 @@ def _parse_worktrees(raw: str) -> tuple[Worktree, ...]:
     if fields:
         records.append(_record(fields))
     return tuple(records)
+
+
+def _worktree_list(repo: Path) -> str:
+    result = _git(repo, "worktree", "list", "--porcelain", "-z", check=False)
+    if result.returncode == 0:
+        return result.stdout
+    if "unknown switch" not in result.stderr or not (
+        "switch `z'" in result.stderr or "switch 'z'" in result.stderr
+    ):
+        raise DevWorktreeError(
+            "Git development-worktree operation failed",
+            "DEV_WORKTREE_GIT_ERROR",
+            {
+                "command": ["git", "-C", str(repo), "worktree", "list", "--porcelain", "-z"],
+                "returncode": result.returncode,
+                "stdout": result.stdout[-4000:],
+                "stderr": result.stderr[-4000:],
+            },
+        )
+    return _git(repo, "worktree", "list", "--porcelain").stdout
 
 
 def _record(fields: Mapping[str, str | bool]) -> Worktree:
@@ -171,7 +201,7 @@ def _context(repo_value: str | Path) -> Context:
     repo = Path(_git(requested, "rev-parse", "--show-toplevel").stdout.strip()).resolve()
     common_raw = Path(_git(repo, "rev-parse", "--git-common-dir").stdout.strip())
     common = (common_raw if common_raw.is_absolute() else repo / common_raw).resolve()
-    worktrees = _parse_worktrees(_git(repo, "worktree", "list", "--porcelain", "-z").stdout)
+    worktrees = _parse_worktrees(_worktree_list(repo))
     if not worktrees or not worktrees[0].path.is_dir():
         raise DevWorktreeError(
             "Repository has no available primary worktree",

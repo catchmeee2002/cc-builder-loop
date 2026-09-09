@@ -476,8 +476,28 @@ def common_git_dir(repo: Path) -> Path:
     return Path(value.stdout.strip()).resolve()
 
 
+def worktree_list(repo: Path) -> CommandResult:
+    result = git(repo, "worktree", "list", "--porcelain", "-z", check=False)
+    if result.returncode == 0:
+        return result
+    if "unknown switch" not in result.stderr or not (
+        "switch `z'" in result.stderr or "switch 'z'" in result.stderr
+    ):
+        raise RuntimeProblem(
+            f"command failed with exit code {result.returncode}",
+            code="COMMAND_ERROR",
+            details={
+                "command": ["worktree", "list", "--porcelain", "-z"],
+                "returncode": result.returncode,
+                "stdout": tail_text(result.stdout),
+                "stderr": tail_text(result.stderr),
+            },
+        )
+    return git(repo, "worktree", "list", "--porcelain", check=True)
+
+
 def repository_worktrees(repo: Path) -> list[Path]:
-    result = git(repo, "worktree", "list", "--porcelain", "-z", check=True)
+    result = worktree_list(repo)
     paths = {
         Path(field[len("worktree ") :]).resolve()
         for field in result.stdout.split("\0")
