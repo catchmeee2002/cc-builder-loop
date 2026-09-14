@@ -63,7 +63,15 @@ TURN_IDLE_TIMEOUT_SECONDS = 120.0
 INITIALIZE_TIMEOUT_SECONDS = 30.0
 REQUEST_TIMEOUT_SECONDS = 30.0
 TURN_TOTAL_TIMEOUT_SECONDS = 3600.0
+LONG_TESTER_TURN_TOTAL_TIMEOUT_SECONDS = 7200.0
 COMPACTION_TOTAL_TIMEOUT_SECONDS = 600.0
+LONG_TESTER_ACTIONS = frozenset(
+    {
+        "tester_author",
+        "tester_fix",
+        "tester_recompose_fix",
+    }
+)
 PROTOCOL_CANARY_ATTEMPTS = 3
 PROTOCOL_CANARY_RETRY_DELAY_SECONDS = 0.5
 PROCESS_CLEANUP_GRACE_SECONDS = 5.0
@@ -84,6 +92,48 @@ _TOKEN_SHAPE_RE = re.compile(
     r"xox[baprs]-[a-z0-9-]{12,}|eyj[a-z0-9_-]{20,}\.[a-z0-9_-]{10,}\."
     r"[a-z0-9_-]{10,})"
 )
+
+
+@dataclass(frozen=True)
+class TurnTimeoutProfile:
+    turn_idle_seconds: float
+    turn_total_seconds: float
+    compaction_total_seconds: float
+
+    def as_dict(self) -> dict[str, float]:
+        return {
+            "turn_idle_seconds": self.turn_idle_seconds,
+            "turn_total_seconds": self.turn_total_seconds,
+            "compaction_total_seconds": self.compaction_total_seconds,
+        }
+
+    @property
+    def profile_digest(self) -> str:
+        return _canonical_digest(self.as_dict())
+
+
+def timeout_profile_for_action(action: str) -> TurnTimeoutProfile:
+    return TurnTimeoutProfile(
+        turn_idle_seconds=TURN_IDLE_TIMEOUT_SECONDS,
+        turn_total_seconds=(
+            LONG_TESTER_TURN_TOTAL_TIMEOUT_SECONDS
+            if action in LONG_TESTER_ACTIONS
+            else TURN_TOTAL_TIMEOUT_SECONDS
+        ),
+        compaction_total_seconds=COMPACTION_TOTAL_TIMEOUT_SECONDS,
+    )
+
+
+def default_timeout_profile() -> TurnTimeoutProfile:
+    return timeout_profile_for_action("")
+
+
+def compaction_timeout_profile() -> TurnTimeoutProfile:
+    return TurnTimeoutProfile(
+        turn_idle_seconds=TURN_IDLE_TIMEOUT_SECONDS,
+        turn_total_seconds=COMPACTION_TOTAL_TIMEOUT_SECONDS,
+        compaction_total_seconds=COMPACTION_TOTAL_TIMEOUT_SECONDS,
+    )
 
 
 def _redact_text(value: str) -> tuple[str, int]:
@@ -610,6 +660,7 @@ class AppServerTransport:
         prompt: str,
         output_schema: dict[str, Any],
         action_id: str,
+        timeout_profile: TurnTimeoutProfile | None = None,
         cwd: str | None = None,
         sandbox_policy: dict[str, Any] | None = None,
         on_started: Callable[[str], None] | None = None,
@@ -631,11 +682,26 @@ class AppServerTransport:
             raise AppServerError("turn/start returned no identity", code="NATIVE_TURN_ID_MISSING")
         if on_started is not None:
             on_started(turn_id)
-        return self.wait_turn(thread_id=thread_id, turn_id=turn_id)
+        return self.wait_turn(
+            thread_id=thread_id,
+            turn_id=turn_id,
+            timeout_profile=timeout_profile,
+        )
 
-    def wait_turn(self, *, thread_id: str, turn_id: str) -> TurnResult:
+    def wait_turn(
+        self,
+        *,
+        thread_id: str,
+        turn_id: str,
+        timeout_profile: TurnTimeoutProfile | None = None,
+    ) -> TurnResult:
+        profile = timeout_profile or TurnTimeoutProfile(
+            turn_idle_seconds=self.turn_idle_timeout,
+            turn_total_seconds=self.turn_total_timeout,
+            compaction_total_seconds=self.compaction_total_timeout,
+        )
         last_text = ""
-        deadline = time.monotonic() + self.turn_total_timeout
+        deadline = time.monotonic() + profile.turn_total_seconds
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -645,12 +711,13 @@ class AppServerTransport:
                     details={
                         "thread_id": thread_id,
                         "turn_id": turn_id,
-                        "timeout_seconds": self.turn_total_timeout,
+                        "timeout_seconds": profile.turn_total_seconds,
+                        "timeout_profile_digest": profile.profile_digest,
                     },
                 )
             try:
                 message = self._next_message(
-                    timeout=min(self.turn_idle_timeout, remaining)
+                    timeout=min(profile.turn_idle_seconds, remaining)
                 )
             except AppServerError as exc:
                 if (
@@ -663,7 +730,8 @@ class AppServerTransport:
                         details={
                             "thread_id": thread_id,
                             "turn_id": turn_id,
-                            "timeout_seconds": self.turn_total_timeout,
+                            "timeout_seconds": profile.turn_total_seconds,
+                            "timeout_profile_digest": profile.profile_digest,
                         },
                     ) from exc
                 raise

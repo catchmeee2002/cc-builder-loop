@@ -324,8 +324,7 @@ a new thread. These operations change execution identity and evidence dependenci
 The Native transport drains App Server stderr independently of the protocol stdout reader. It retains a bounded,
 redacted summary plus total byte count and SHA-256, and binds that diagnostic receipt to the transport generation,
 structured turn error, and cleanup observation. Authorization material and tokens are never persisted in the
-receipt. This diagnostic path does not change the existing timeout values, retry limit, or Reviewer compaction
-exception.
+receipt. This diagnostic path does not change the retry limit or Reviewer compaction exception.
 
 If Reviewer compaction is unavailable, a third exhausted Reviewer dispatch may use a narrower replacement path
 only when the exhausted tail is the exact thread tail, contains no Agent output or tool/file/external side effect,
@@ -337,8 +336,14 @@ Reviewer result and evidence are never reused. Tester replacement remains limite
 bounded to three starts per run and otherwise routes to architecture review. Any source-thread, candidate, or
 identity drift preserves the exhausted dispatch and returns `NEEDS_USER`.
 
-Turn waiting keeps the existing initialize/request/idle read limits and adds role-independent total turn and
-compaction deadlines. Machine and deployment commands use the same owned process-group observation boundary.
+Turn waiting keeps 30-second initialize/request limits, a 120-second idle-read limit, and a 600-second compaction
+deadline. The runtime derives one immutable timeout profile from each dispatch action: Tester author, fix, and
+recomposition-fix turns use a 7200-second total deadline, while Builder, Reviewer, Tester proof/diagnosis, and
+Tester blackbox turns retain 3600 seconds. Coordinator uses the same profile object for the ledger digest and the
+actual `run_turn`/`wait_turn` deadline. Existing active Tester authoring dispatches can move from the known legacy
+profile digest only through the atomic `migrate-dispatch-timeout-profile` transaction; it preserves action,
+thread, generation, attempt, prompt, and evidence identity, records the old/new digest, and rejects unknown
+profiles or uncertain continuity. Machine and deployment commands use the same owned process-group observation boundary.
 `native-driver doctor` is read-only and reports legacy-unbound transport, process identity drift, deferred-wait
 state, and cleanup uncertainty. Deferred wait events describe delivery liveness only; they do not prove that a
 root Agent received a result or authorize replaying a side effect.
@@ -382,6 +387,11 @@ Root mode defers App Server admission and transport binding until a Tester or Re
 keeps the default Builder path independent from child-thread startup while preserving the existing independent
 Tester/Reviewer evidence boundary. Retained contracts and ledgers without `builder_runtime` remain on the legacy
 native-thread path; no active run is reinterpreted.
+
+Root-session resume routing follows the persisted dispatch role, or the current derived action when no dispatch is
+pending. Tester and Reviewer recovery use the normal App Server transport path, while root Builder and
+transport-free deterministic Core actions remain on the root Coordinator. Both paths retain the frozen root
+session identity for later Builder ownership.
 
 For a root Builder dispatch, Core also records which result application completed before consumption:
 `checkpoint_builder`, `record_problems`, or `recompose_candidate`. A completed dispatch without its matching

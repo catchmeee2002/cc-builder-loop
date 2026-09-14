@@ -31,10 +31,13 @@ from codex_builder_loop.native_driver.app_server import (
     AppServerError,
     AppServerTransport,
     INITIALIZE_TIMEOUT_SECONDS,
+    LONG_TESTER_TURN_TOTAL_TIMEOUT_SECONDS,
     REQUEST_TIMEOUT_SECONDS,
     TURN_IDLE_TIMEOUT_SECONDS,
     TurnResult,
+    default_timeout_profile,
     probe_app_server,
+    timeout_profile_for_action,
 )
 from codex_builder_loop.assurance_v4.models import digest, evidence_dependency, facet_digests
 from codex_builder_loop.assurance_v4.driver_contract import AGENT_ACTION_CAPABILITIES
@@ -1566,6 +1569,147 @@ class NativeDriverCoreContractTest(unittest.TestCase):
         ]
         self.assertEqual(telemetry["wire_observation_checkpoints"], 1)
         self.assertEqual(telemetry["deferred_wait_stalls"], 1)
+
+    def test_tester_timeout_profile_migration_is_atomic_and_idempotent(self) -> None:
+        run_id, run_path = self.start()
+        ledger_path = run_path / "ledger.json"
+        ledger = json.loads(ledger_path.read_text())
+        action_id = "a" * 64
+        old_digest = default_timeout_profile().profile_digest
+        new_digest = timeout_profile_for_action("tester_author").profile_digest
+        ledger["facets"]["execution"]["agents"]["tester"] = {
+            "agent_id": "tester-agent",
+            "thread_id": "tester-thread",
+        }
+        ledger["facets"]["execution"]["version"] += 1
+        ledger["digests"] = facet_digests(ledger["facets"])
+        ledger["dispatch_intent"] = {
+            "action_id": action_id,
+            "action": "tester_author",
+            "role": "tester",
+            "thread_id": "tester-thread",
+            "prompt_digest": "b" * 64,
+            "output_schema_digest": "c" * 64,
+            "timeout_profile_digest": old_digest,
+            "state": "prepared",
+            "continuity_state": "prepared",
+            "activation_state": "pending",
+            "attempt": 2,
+            "generation": 3,
+            "interrupted_retry_used": False,
+            "interrupted_retry_blocked": False,
+            "created_at": "2026-09-14T00:00:00+00:00",
+        }
+        ledger_path.write_text(
+            json.dumps(ledger, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        args = (
+            "migrate-dispatch-timeout-profile",
+            "--repo",
+            self.repo,
+            "--run",
+            run_id,
+            "--action-id",
+            action_id,
+            "--generation",
+            "3",
+            "--old-timeout-profile-digest",
+            old_digest,
+            "--new-timeout-profile-digest",
+            new_digest,
+            "--driver-runtime-kind",
+            "native",
+        )
+
+        migrated = self.invoke(*args)
+        self.assertEqual(
+            migrated["dispatch_intent"]["timeout_profile_digest"], new_digest
+        )
+        self.assertEqual(migrated["dispatch_intent"]["attempt"], 2)
+        self.assertEqual(migrated["dispatch_intent"]["generation"], 3)
+        self.assertEqual(migrated["dispatch_intent"]["thread_id"], "tester-thread")
+        replayed = self.invoke(*args)
+        self.assertEqual(
+            replayed["dispatch_intent"]["timeout_profile_digest"], new_digest
+        )
+        persisted = json.loads(ledger_path.read_text())
+        events = [
+            event
+            for event in persisted["events"]
+            if event["kind"] == "dispatch_timeout_profile_migrated"
+        ]
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["details"]["action"], "tester_author")
+        self.assertEqual(events[0]["details"]["generation"], 3)
+        self.assertEqual(
+            events[0]["details"]["old_timeout_profile_digest"], old_digest
+        )
+        self.assertEqual(
+            events[0]["details"]["new_timeout_profile_digest"], new_digest
+        )
+
+    def test_tester_timeout_profile_migration_rejects_unknown_digest(self) -> None:
+        run_id, run_path = self.start()
+        ledger_path = run_path / "ledger.json"
+        ledger = json.loads(ledger_path.read_text())
+        action_id = "d" * 64
+        ledger["facets"]["execution"]["agents"]["tester"] = {
+            "agent_id": "tester-agent",
+            "thread_id": "tester-thread",
+        }
+        ledger["facets"]["execution"]["version"] += 1
+        ledger["digests"] = facet_digests(ledger["facets"])
+        ledger["dispatch_intent"] = {
+            "action_id": action_id,
+            "action": "tester_fix",
+            "role": "tester",
+            "thread_id": "tester-thread",
+            "prompt_digest": "e" * 64,
+            "output_schema_digest": "f" * 64,
+            "timeout_profile_digest": "9" * 64,
+            "state": "prepared",
+            "continuity_state": "prepared",
+            "activation_state": "pending",
+            "attempt": 1,
+            "generation": 1,
+            "interrupted_retry_used": False,
+            "interrupted_retry_blocked": False,
+            "created_at": "2026-09-14T00:00:00+00:00",
+        }
+        ledger_path.write_text(
+            json.dumps(ledger, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+        completed = run_process(
+            [
+                sys.executable,
+                CLI,
+                "assurance",
+                "--experimental-v4",
+                "migrate-dispatch-timeout-profile",
+                "--repo",
+                self.repo,
+                "--run",
+                run_id,
+                "--action-id",
+                action_id,
+                "--generation",
+                "1",
+                "--old-timeout-profile-digest",
+                default_timeout_profile().profile_digest,
+                "--new-timeout-profile-digest",
+                timeout_profile_for_action("tester_fix").profile_digest,
+                "--driver-runtime-kind",
+                "native",
+            ]
+        )
+
+        self.assertNotEqual(completed.returncode, 0)
+        payload = json.loads(completed.stdout.splitlines()[-1])
+        self.assertEqual(payload["status"], "NEEDS_USER")
+        self.assertEqual(payload["code"], "DISPATCH_TIMEOUT_PROFILE_UNKNOWN")
 
     def test_exhausted_dispatch_requires_authorized_new_generation(self) -> None:
         run_id, run_path = self.start()
@@ -3324,7 +3468,9 @@ class NativeDriverCoreContractTest(unittest.TestCase):
         self.assertEqual(payload["status"], "FATAL")
         self.assertEqual(payload["phase"], "failed")
 
-    def test_root_session_handoff_preserves_transport_diagnostics_on_fatal(self) -> None:
+    def test_root_session_native_recovery_preserves_transport_diagnostics_on_fatal(
+        self,
+    ) -> None:
         class FakeCore:
             def __init__(self) -> None:
                 self.calls: list[tuple[str, object | None]] = []
@@ -3345,6 +3491,13 @@ class NativeDriverCoreContractTest(unittest.TestCase):
                         "facets": {"execution": {"agents": {}}},
                         "dispatch_intent": None,
                         "transport_cleanup_intent": None,
+                    }
+                if command == "driver-next":
+                    return {
+                        "driver_protocol_version": 1,
+                        "status": "CONTINUE",
+                        "action": "tester_author",
+                        "action_id": "a" * 64,
                     }
                 if command == "bind-native-transport":
                     return {"status": "ACTIVE"}
@@ -3439,7 +3592,7 @@ class NativeDriverCoreContractTest(unittest.TestCase):
             patch.object(
                 native_cli,
                 "NativeCoordinator",
-                side_effect=[HandoffCoordinator(), FailingCoordinator()],
+                return_value=FailingCoordinator(),
             ),
             redirect_stdout(output),
         ):
@@ -3464,6 +3617,147 @@ class NativeDriverCoreContractTest(unittest.TestCase):
         )
         payload = json.loads(output.getvalue().splitlines()[-1])
         self.assertEqual(payload["code"], "NATIVE_APP_SERVER_DISCONNECTED")
+
+    def test_root_session_tester_resume_uses_native_recovery_with_reason(self) -> None:
+        captured: dict[str, object] = {}
+        calls: list[str] = []
+        context = {
+            "driver_runtime": {
+                "kind": "native",
+                "protocol_version": 1,
+                "transport": "root_session",
+                "root_session_identity": {"session_id": "root-session"},
+                "native_transport": None,
+            },
+            "dispatch_intent": {
+                "action": "tester_author",
+                "action_id": "a" * 64,
+                "attempt": 3,
+                "generation": 1,
+                "role": "tester",
+                "state": "exhausted",
+                "thread_id": "tester-thread",
+            },
+        }
+
+        class FakeCore:
+            def call(self, command: str, *args: str, input_value=None):
+                calls.append(command)
+                if command == "driver-context":
+                    return copy.deepcopy(context)
+                if command == "bind-native-transport":
+                    return {"status": "ACTIVE"}
+                raise AssertionError(command)
+
+        class FakeTransport:
+            cleanup_observation = None
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def runtime_snapshot(self):
+                return {
+                    "contract_version": 2,
+                    "generation": "transport-generation",
+                    "state": "ready",
+                    "executable_identity": {},
+                    "process_identity": None,
+                }
+
+        class FakeCoordinator:
+            current_action = None
+
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+            def run(self):
+                return {"status": "NEEDS_USER", "run_id": "root-tester-resume"}
+
+        output = StringIO()
+        with (
+            patch.object(native_cli, "CorePort", return_value=FakeCore()),
+            patch.object(
+                native_cli,
+                "probe_app_server",
+                return_value=SimpleNamespace(
+                    runtime_version="codex-test",
+                    protocol_schema_digest="b" * 64,
+                    executable_identity=None,
+                    thread_compaction=False,
+                ),
+            ),
+            patch.object(
+                native_cli,
+                "AppServerTransport",
+                return_value=FakeTransport(),
+            ),
+            patch.object(native_cli, "NativeCoordinator", FakeCoordinator),
+            patch.object(
+                native_cli,
+                "_root_builder_result",
+                side_effect=AssertionError(
+                    "Tester recovery must not use root Builder continuation"
+                ),
+            ),
+            redirect_stdout(output),
+        ):
+            rc = native_cli.main(
+                [
+                    "resume",
+                    "--repo",
+                    str(self.repo),
+                    "--run",
+                    "root-tester-resume",
+                    "--reason",
+                    "user approved a new Tester generation",
+                ]
+            )
+
+        self.assertEqual(rc, 1)
+        self.assertEqual(captured["builder_mode"], "root_session")
+        self.assertEqual(captured["root_session_id"], "root-session")
+        self.assertEqual(
+            captured["dispatch_renewal_reason"],
+            "user approved a new Tester generation",
+        )
+        self.assertEqual(calls, ["driver-context", "bind-native-transport"])
+        payload = json.loads(output.getvalue().splitlines()[-1])
+        self.assertEqual(payload["status"], "NEEDS_USER")
+
+    def test_root_session_deterministic_resume_defers_native_transport(self) -> None:
+        class FakeCore:
+            def call(self, command: str, *args: str, input_value=None):
+                self.command = command
+                return {
+                    "driver_protocol_version": 1,
+                    "status": "CONTINUE",
+                    "action": "verify_machine",
+                    "action_id": "a" * 64,
+                }
+
+        core = FakeCore()
+        self.assertTrue(
+            native_cli._root_resume_uses_root_coordinator(
+                core=core,
+                repo=self.repo,
+                run_id="root-deterministic-resume",
+                context={"dispatch_intent": None},
+                reason=None,
+            )
+        )
+        self.assertEqual(core.command, "driver-next")
+        self.assertFalse(
+            native_cli._root_resume_uses_root_coordinator(
+                core=core,
+                repo=self.repo,
+                run_id="root-deterministic-resume",
+                context={"dispatch_intent": None},
+                reason="user supplied a recovery decision",
+            )
+        )
 
     def test_native_cli_admission_blocker_creates_no_agent_thread_or_turn(self) -> None:
         class BlockedCore:
@@ -4131,6 +4425,54 @@ for line in sys.stdin:
         self.assertEqual(transport.turn_total_timeout, 3600.0)
         self.assertEqual(transport.compaction_total_timeout, 600.0)
 
+    def test_action_timeout_profiles_only_extend_tester_authoring(self) -> None:
+        for action in ("tester_author", "tester_fix", "tester_recompose_fix"):
+            profile = timeout_profile_for_action(action)
+            self.assertEqual(
+                profile.turn_total_seconds,
+                LONG_TESTER_TURN_TOTAL_TIMEOUT_SECONDS,
+            )
+            self.assertEqual(profile.turn_idle_seconds, 120.0)
+            self.assertEqual(profile.compaction_total_seconds, 600.0)
+        for action in (
+            "builder_implement",
+            "reviewer_final",
+            "tester_proof",
+            "tester_proof_diagnose",
+            "tester_blackbox",
+        ):
+            self.assertEqual(
+                timeout_profile_for_action(action).turn_total_seconds,
+                3600.0,
+            )
+
+    def test_wait_turn_reports_the_bound_action_timeout_profile(self) -> None:
+        transport = AppServerTransport(codex_bin=str(self.codex))
+        profile = timeout_profile_for_action("tester_author")
+
+        with (
+            patch(
+                "codex_builder_loop.native_driver.app_server.time.monotonic",
+                side_effect=[0.0, profile.turn_total_seconds + 1.0],
+            ),
+            self.assertRaises(AppServerError) as raised,
+        ):
+            transport.wait_turn(
+                thread_id="tester-thread",
+                turn_id="tester-turn",
+                timeout_profile=profile,
+            )
+
+        self.assertEqual(raised.exception.code, "NATIVE_APP_SERVER_TURN_TIMEOUT")
+        self.assertEqual(
+            raised.exception.details["timeout_seconds"],
+            LONG_TESTER_TURN_TOTAL_TIMEOUT_SECONDS,
+        )
+        self.assertEqual(
+            raised.exception.details["timeout_profile_digest"],
+            profile.profile_digest,
+        )
+
     def test_request_uses_longer_initialize_and_control_timeouts(self) -> None:
         transport = AppServerTransport(codex_bin=str(self.codex))
 
@@ -4561,6 +4903,59 @@ for line in sys.stdin:
 
 
 class NativeCoordinatorContractTest(unittest.TestCase):
+    def test_legacy_tester_authoring_profile_is_migrated_before_recovery(
+        self,
+    ) -> None:
+        old_digest = default_timeout_profile().profile_digest
+        new_digest = timeout_profile_for_action("tester_author").profile_digest
+        pending = {
+            "action_id": "a" * 64,
+            "action": "tester_author",
+            "role": "tester",
+            "thread_id": "tester-thread",
+            "state": "prepared",
+            "attempt": 2,
+            "generation": 3,
+            "timeout_profile_digest": old_digest,
+        }
+        context = {"dispatch_intent": copy.deepcopy(pending)}
+        calls: list[tuple[str, tuple[str, ...]]] = []
+
+        class FakeCore:
+            def call(self, command: str, *args: str, input_value=None):
+                calls.append((command, args))
+                migrated = copy.deepcopy(context)
+                migrated["dispatch_intent"]["timeout_profile_digest"] = new_digest
+                return migrated
+
+        coordinator = NativeCoordinator(
+            repo=ROOT,
+            run_id="native-timeout-profile-migration",
+            core=FakeCore(),
+            transport=object(),
+            project_root=ROOT,
+        )
+
+        migrated, migrated_context = coordinator._migrate_pending_timeout_profile(
+            pending,
+            context,
+        )
+
+        self.assertEqual(migrated["timeout_profile_digest"], new_digest)
+        self.assertIs(migrated, migrated_context["dispatch_intent"])
+        self.assertEqual(len(calls), 1)
+        command, args = calls[0]
+        self.assertEqual(command, "migrate-dispatch-timeout-profile")
+        self.assertEqual(args[args.index("--generation") + 1], "3")
+        self.assertEqual(
+            args[args.index("--old-timeout-profile-digest") + 1],
+            old_digest,
+        )
+        self.assertEqual(
+            args[args.index("--new-timeout-profile-digest") + 1],
+            new_digest,
+        )
+
     def test_interrupted_retry_delegates_observation_authority_to_core(self) -> None:
         action = {
             "action": "tester_author",
@@ -4644,6 +5039,8 @@ class NativeCoordinatorContractTest(unittest.TestCase):
             },
         }
         events: list[str] = []
+        dispatch_args: list[str] = []
+        turn_profiles = []
 
         class FakeCore:
             def call(self, command: str, *args: str, input_value=None):
@@ -4651,6 +5048,7 @@ class NativeCoordinatorContractTest(unittest.TestCase):
                 if command == "driver-context":
                     return context
                 if command == "begin-dispatch":
+                    dispatch_args.extend(args)
                     return {
                         "dispatch_intent": {
                             "action_id": action["action_id"],
@@ -4660,11 +5058,14 @@ class NativeCoordinatorContractTest(unittest.TestCase):
                 return {"status": "ACTIVE"}
 
         class FakeTransport:
+            generation = "transport-generation"
+
             def resume_thread(self, **_kwargs):
                 events.append("transport:resume_thread")
 
             def run_turn(self, **kwargs):
                 events.append("transport:run_turn")
+                turn_profiles.append(kwargs["timeout_profile"])
                 kwargs["on_started"]("turn-1")
                 return TurnResult(
                     turn_id="turn-1",
@@ -4703,6 +5104,13 @@ class NativeCoordinatorContractTest(unittest.TestCase):
             events.index("transport:run_turn"),
         )
         self.assertEqual(events.count("transport:run_turn"), 1)
+        self.assertEqual(len(turn_profiles), 1)
+        self.assertEqual(turn_profiles[0].turn_total_seconds, 3600.0)
+        digest_index = dispatch_args.index("--timeout-profile-digest") + 1
+        self.assertEqual(
+            dispatch_args[digest_index],
+            turn_profiles[0].profile_digest,
+        )
 
     def test_pre_dispatch_disconnect_retries_without_starting_a_turn(self) -> None:
         action = {

@@ -619,6 +619,19 @@ def parser() -> argparse.ArgumentParser:
         required=True,
     )
 
+    migrate_timeout = commands.add_parser("migrate-dispatch-timeout-profile")
+    migrate_timeout.add_argument("--repo", default=".")
+    migrate_timeout.add_argument("--run", required=True)
+    migrate_timeout.add_argument("--action-id", required=True)
+    migrate_timeout.add_argument("--generation", type=int, required=True)
+    migrate_timeout.add_argument("--old-timeout-profile-digest", required=True)
+    migrate_timeout.add_argument("--new-timeout-profile-digest", required=True)
+    migrate_timeout.add_argument(
+        "--driver-runtime-kind",
+        choices=["native", "full_driver_skill"],
+        required=True,
+    )
+
     bind_native_transport = commands.add_parser("bind-native-transport")
     bind_native_transport.add_argument("--repo", default=".")
     bind_native_transport.add_argument("--run", required=True)
@@ -1327,6 +1340,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                 action_id=args.action_id,
                 native_transport_generation=args.native_transport_generation,
                 timeout_profile_digest=args.timeout_profile_digest,
+                driver_runtime_kind=args.driver_runtime_kind,
+            )
+        elif args.command == "migrate-dispatch-timeout-profile":
+            payload = core.migrate_dispatch_timeout_profile(
+                args.repo,
+                args.run,
+                action_id=args.action_id,
+                generation=args.generation,
+                old_timeout_profile_digest=args.old_timeout_profile_digest,
+                new_timeout_profile_digest=args.new_timeout_profile_digest,
                 driver_runtime_kind=args.driver_runtime_kind,
             )
         elif args.command == "bind-native-transport":

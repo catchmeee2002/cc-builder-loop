@@ -103,6 +103,13 @@ REHYDRATABLE_DISPATCH_FAILURE_CODES = frozenset(
         "authUnavailable",
     }
 )
+MIGRATABLE_TESTER_TIMEOUT_ACTIONS = frozenset(
+    {
+        "tester_author",
+        "tester_fix",
+        "tester_recompose_fix",
+    }
+)
 RUNTIME_SUPPORT_MANIFEST_PATH = (
     "runtime/codex_builder_loop/assurance_v4/runtime-support.json"
 )
@@ -3418,6 +3425,154 @@ def bind_dispatch_transport(
                 "previous_generation": previous,
                 "generation": generation,
                 "timeout_profile_digest": timeout_profile_digest,
+            },
+        )
+        save_ledger(repo, ledger)
+    return status(repo, run_id)
+
+
+def migrate_dispatch_timeout_profile(
+    repo_value: str | Path,
+    run_value: str,
+    *,
+    action_id: str,
+    generation: int,
+    old_timeout_profile_digest: str,
+    new_timeout_profile_digest: str,
+    driver_runtime_kind: str = "native",
+) -> dict[str, Any]:
+    for name, value in (
+        ("old", old_timeout_profile_digest),
+        ("new", new_timeout_profile_digest),
+    ):
+        if not re.fullmatch(r"[0-9a-f]{64}", value):
+            raise AssuranceError(
+                f"{name} timeout profile digest is invalid",
+                code="DISPATCH_TIMEOUT_PROFILE_INVALID",
+                status="FAIL",
+            )
+    if old_timeout_profile_digest == new_timeout_profile_digest:
+        raise AssuranceError(
+            "timeout profile migration requires different digests",
+            code="DISPATCH_TIMEOUT_PROFILE_MIGRATION_NOOP",
+            status="FAIL",
+        )
+    if generation < 1:
+        raise AssuranceError(
+            "dispatch generation is invalid",
+            code="DISPATCH_TIMEOUT_PROFILE_GENERATION_INVALID",
+            status="FAIL",
+        )
+    repo = resolve_repo(repo_value)
+    run_id = ensure_run_id(run_value)
+    with locked(repo):
+        ledger = read_ledger(repo, run_id)
+        _require_driver_runtime_owner(ledger, driver_runtime_kind)
+        if driver_runtime_kind != "native":
+            raise AssuranceError(
+                "dispatch timeout migration is Native Driver only",
+                code="DISPATCH_TIMEOUT_PROFILE_RUNTIME_INVALID",
+                status="FAIL",
+            )
+        _assert_no_candidate_residue_intent(ledger)
+        if ledger.get("phase") != "active":
+            raise AssuranceError(
+                "dispatch timeout migration requires an active run",
+                code="ASSURANCE_RUN_NOT_ACTIVE",
+                status="NEEDS_USER",
+            )
+        intent = ledger.get("dispatch_intent")
+        if not isinstance(intent, dict) or intent.get("action_id") != action_id:
+            raise AssuranceError(
+                "dispatch action is stale",
+                code="DRIVER_ACTION_STALE",
+                status="FAIL",
+            )
+        if (
+            intent.get("action") not in MIGRATABLE_TESTER_TIMEOUT_ACTIONS
+            or intent.get("role") != "tester"
+        ):
+            raise AssuranceError(
+                "dispatch timeout profile is not migratable",
+                code="DISPATCH_TIMEOUT_PROFILE_MIGRATION_FORBIDDEN",
+                status="NEEDS_USER",
+            )
+        if int(intent.get("generation", 0)) != generation:
+            raise AssuranceError(
+                "dispatch generation changed before timeout migration",
+                code="DISPATCH_TIMEOUT_PROFILE_IDENTITY_DRIFT",
+                status="NEEDS_USER",
+                details={
+                    "expected_generation": generation,
+                    "actual_generation": intent.get("generation"),
+                },
+            )
+        agent = ledger["facets"]["execution"]["agents"].get("tester")
+        if not isinstance(agent, Mapping) or agent.get("thread_id") != intent.get(
+            "thread_id"
+        ):
+            raise AssuranceError(
+                "Tester identity changed before timeout migration",
+                code="DISPATCH_TIMEOUT_PROFILE_IDENTITY_DRIFT",
+                status="NEEDS_USER",
+            )
+        if (
+            intent.get("state") not in {"prepared", "in_flight", "exhausted"}
+            or intent.get("continuity_state") == "unknown"
+            or intent.get("activation_state") == "unknown"
+            or intent.get("interrupted_retry_blocked") is True
+        ):
+            raise AssuranceError(
+                "dispatch continuity is uncertain before timeout migration",
+                code="DISPATCH_TIMEOUT_PROFILE_CONTINUITY_UNKNOWN",
+                status="NEEDS_USER",
+            )
+        if ledger.get("dispatch_rehydration_intent") is not None:
+            raise AssuranceError(
+                "dispatch rehydration must finish before timeout migration",
+                code="DISPATCH_TIMEOUT_PROFILE_RECOVERY_PENDING",
+                status="NEEDS_USER",
+            )
+        recovery = intent.get("compaction_recovery")
+        if isinstance(recovery, Mapping) and recovery.get("state") == "prepared":
+            raise AssuranceError(
+                "dispatch compaction must finish before timeout migration",
+                code="DISPATCH_TIMEOUT_PROFILE_RECOVERY_PENDING",
+                status="NEEDS_USER",
+            )
+        actual = intent.get("timeout_profile_digest")
+        if actual == new_timeout_profile_digest:
+            return status(repo, run_id)
+        if actual != old_timeout_profile_digest:
+            raise AssuranceError(
+                "dispatch timeout profile is unknown",
+                code="DISPATCH_TIMEOUT_PROFILE_UNKNOWN",
+                status="NEEDS_USER",
+                details={
+                    "actual_timeout_profile_digest": actual,
+                    "expected_old_timeout_profile_digest": (
+                        old_timeout_profile_digest
+                    ),
+                    "expected_new_timeout_profile_digest": (
+                        new_timeout_profile_digest
+                    ),
+                },
+            )
+        migrated_at = now()
+        intent["timeout_profile_digest"] = new_timeout_profile_digest
+        append_event(
+            ledger,
+            "dispatch_timeout_profile_migrated",
+            {
+                "action_id": action_id,
+                "action": intent["action"],
+                "role": intent["role"],
+                "thread_id": intent["thread_id"],
+                "generation": generation,
+                "attempt": int(intent.get("attempt", 1)),
+                "old_timeout_profile_digest": old_timeout_profile_digest,
+                "new_timeout_profile_digest": new_timeout_profile_digest,
+                "migrated_at": migrated_at,
             },
         )
         save_ledger(repo, ledger)

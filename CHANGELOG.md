@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Native Driver now gives Tester author/fix/recomposition turns a 7200-second total deadline while preserving
+  3600 seconds for Builder, Reviewer, proof/diagnosis, and blackbox actions. Active legacy Tester authoring
+  dispatches migrate through one digest-bound ledger transaction without resetting continuity facts, and
+  root-session Tester recovery now follows the Native App Server path instead of the Builder continuation path
+  (#216).
+
 - Native interrupted dispatch recovery now validates the bounded-rehydration side-effect observation in Core
   before consuming a same-generation retry; observation drift persists a blocked `NEEDS_USER` receipt instead
   of advancing to activation and failing later (#201).

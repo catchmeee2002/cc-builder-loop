@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Sequence
 
+from ..assurance_v4.driver_contract import AGENT_ACTION_CAPABILITIES
 from ..assurance_v4.models import builder_runtime_mode, digest, load_json_source
 from ..process import process_group_gone, read_proc_identity
 from .app_server import AppServerError, AppServerTransport, probe_app_server
@@ -479,6 +480,24 @@ def _root_runtime(
     }
 
 
+def _root_resume_uses_root_coordinator(
+    *,
+    core: CorePort,
+    repo: Path,
+    run_id: str,
+    context: dict[str, Any],
+    reason: str | None,
+) -> bool:
+    dispatch = context.get("dispatch_intent")
+    if isinstance(dispatch, dict):
+        return dispatch.get("role") == "builder"
+    action = core.call("driver-next", "--repo", str(repo), "--run", run_id)
+    capability = AGENT_ACTION_CAPABILITIES.get(str(action.get("action")))
+    if capability is not None:
+        return capability.role == "builder"
+    return reason is None
+
+
 def _root_builder_result(
     *,
     args: argparse.Namespace,
@@ -611,6 +630,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     transport: Any = None
     resume_context: dict[str, Any] | None = None
     failure_owner_session_id: str | None = None
+    root_resume_session_id: str | None = None
     root_start_state = {"started": False}
     try:
         if args.command in {"status", "doctor"}:
@@ -663,15 +683,23 @@ def main(argv: Sequence[str] | None = None) -> int:
                         status="NEEDS_USER",
                     )
                 failure_owner_session_id = root_session_id
-                result, returncode = _root_builder_result(
-                    args=args,
+                root_resume_session_id = root_session_id
+                if _root_resume_uses_root_coordinator(
                     core=core,
                     repo=repo,
                     run_id=args.run,
-                    root_session_id=root_session_id,
-                    runtime_state=root_start_state,
-                )
-                return emit(result, returncode)
+                    context=resume_context,
+                    reason=args.reason,
+                ):
+                    result, returncode = _root_builder_result(
+                        args=args,
+                        core=core,
+                        repo=repo,
+                        run_id=args.run,
+                        root_session_id=root_session_id,
+                        runtime_state=root_start_state,
+                    )
+                    return emit(result, returncode)
         capability = probe_app_server(args.codex_bin, strict_protocol=True)
         transport = AppServerTransport(
             codex_bin=args.codex_bin,
@@ -785,6 +813,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 thread_compaction_available=getattr(
                     capability, "thread_compaction", False
                 ),
+                builder_mode=(
+                    "root_session"
+                    if root_resume_session_id is not None
+                    else "native_thread"
+                ),
+                root_session_id=root_resume_session_id,
             )
         result_payload: dict[str, Any] | None = None
         result_returncode: int | None = None

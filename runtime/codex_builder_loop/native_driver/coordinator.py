@@ -15,7 +15,16 @@ from ..assurance_v4.driver_contract import (
 )
 from ..assurance_v4.core import canonical_context_projection
 from ..assurance_v4.models import ContractError, digest, validate_agent_result
-from .app_server import AppServerError, AppServerTransport, TurnResult
+from .app_server import (
+    LONG_TESTER_ACTIONS,
+    AppServerError,
+    AppServerTransport,
+    TurnResult,
+    TurnTimeoutProfile,
+    compaction_timeout_profile,
+    default_timeout_profile,
+    timeout_profile_for_action,
+)
 from .core_port import CorePort, CorePortError
 from .transport_failures import (
     classify_app_server_failure,
@@ -112,24 +121,64 @@ class NativeCoordinator:
         value = getattr(self.transport, "generation", None)
         return value if isinstance(value, str) and value else None
 
-    def _timeout_profile_digest(self) -> str:
-        profile = {
-            "turn_idle_seconds": getattr(self.transport, "turn_idle_timeout", 30.0),
-            "turn_total_seconds": getattr(
-                self.transport, "turn_total_timeout", 3600.0
-            ),
-            "compaction_total_seconds": getattr(
-                self.transport, "compaction_total_timeout", 600.0
-            ),
-        }
-        return hashlib.sha256(
-            json.dumps(
-                profile,
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-            ).encode("utf-8")
-        ).hexdigest()
+    @staticmethod
+    def _timeout_profile(action: str) -> TurnTimeoutProfile:
+        return timeout_profile_for_action(action)
+
+    @classmethod
+    def _timeout_profile_digest(cls, action: str) -> str:
+        return cls._timeout_profile(action).profile_digest
+
+    def _migrate_pending_timeout_profile(
+        self,
+        pending: dict[str, Any],
+        context: dict[str, Any],
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        if pending.get("state") == "completed":
+            return pending, context
+        action = str(pending.get("action", ""))
+        expected = self._timeout_profile_digest(action)
+        actual = pending.get("timeout_profile_digest")
+        if actual == expected:
+            return pending, context
+        legacy = default_timeout_profile().profile_digest
+        if action not in LONG_TESTER_ACTIONS or actual != legacy:
+            raise NativeDriverError(
+                "prepared dispatch timeout profile cannot be reconstructed",
+                code="NATIVE_DISPATCH_TIMEOUT_PROFILE_DRIFT",
+                status="NEEDS_USER",
+                details={
+                    "action_id": pending.get("action_id"),
+                    "action": action,
+                    "actual_timeout_profile_digest": actual,
+                    "expected_timeout_profile_digest": expected,
+                },
+            )
+        migrated = self.core.call(
+            "migrate-dispatch-timeout-profile",
+            "--repo",
+            str(self.repo),
+            "--run",
+            self.run_id,
+            "--action-id",
+            str(pending["action_id"]),
+            "--generation",
+            str(int(pending.get("generation", 1))),
+            "--old-timeout-profile-digest",
+            legacy,
+            "--new-timeout-profile-digest",
+            expected,
+            "--driver-runtime-kind",
+            "native",
+        )
+        migrated_pending = migrated.get("dispatch_intent")
+        if not isinstance(migrated_pending, dict):
+            raise NativeDriverError(
+                "dispatch timeout profile migration lost its intent",
+                code="NATIVE_DISPATCH_TIMEOUT_PROFILE_MIGRATION_INVALID",
+                status="NEEDS_USER",
+            )
+        return migrated_pending, migrated
 
     def _checkpoint_wire(
         self, action_id: str, *, expected_generation: str | None = None
@@ -642,6 +691,9 @@ class NativeCoordinator:
                 },
         )
         if isinstance(pending, dict):
+            pending, context = self._migrate_pending_timeout_profile(
+                pending, context
+            )
             self.current_dispatch = copy.deepcopy(pending)
             if (
                 role == "builder"
@@ -705,7 +757,7 @@ class NativeCoordinator:
                     "--native-transport-generation",
                     transport_generation,
                     "--timeout-profile-digest",
-                    self._timeout_profile_digest(),
+                    self._timeout_profile_digest(str(action["action"])),
                 ]
             )
         begun = self.core.call(
@@ -747,6 +799,7 @@ class NativeCoordinator:
             prompt=prompt,
             output_schema=self.output_schema,
             action_id=f"{action['action_id']}:1",
+            timeout_profile=self._timeout_profile(str(action["action"])),
             cwd=self._turn_cwd(action, role, context),
             sandbox_policy=self._sandbox_policy(action, role, context),
             on_started=lambda turn_id: self.core.call(
@@ -1035,6 +1088,9 @@ class NativeCoordinator:
                 prompt=prompt,
                 output_schema=self.output_schema,
                 action_id=client_id,
+                timeout_profile=self._timeout_profile(
+                    str(pending["action"])
+                ),
                 cwd=self._turn_cwd(current, role, context),
                 sandbox_policy=self._sandbox_policy(current, role, context),
                 on_started=lambda turn_id: self.core.call(
@@ -1091,7 +1147,11 @@ class NativeCoordinator:
             return None
         if len(matches) == 1 and matches[0].get("status") in {"inProgress", "in_progress"}:
             turn = self.transport.wait_turn(
-                thread_id=thread_id, turn_id=str(matches[0]["id"])
+                thread_id=thread_id,
+                turn_id=str(matches[0]["id"]),
+                timeout_profile=self._timeout_profile(
+                    str(pending["action"])
+                ),
             )
             self._checkpoint_wire(
                 str(pending["action_id"]),
@@ -2719,6 +2779,7 @@ class NativeCoordinator:
                 turn = self.transport.wait_turn(
                     thread_id=str(recovery["thread_id"]),
                     turn_id=str(appended[0]["id"]),
+                    timeout_profile=compaction_timeout_profile(),
                 )
                 if turn.status != "completed":
                     raise AppServerError(
