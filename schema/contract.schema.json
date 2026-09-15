@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "builder-loop/contract@1",
+  "title": "builder-loop contract",
+  "description": "plan.md 中 <!-- builder-loop-contract --> 标签内的 JSON。三个事实面各自算 canonical digest。",
+  "type": "object",
+  "required": ["schema", "mission", "authority", "assurance"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {"const": "builder-loop/contract@1"},
+    "mission": {
+      "type": "object",
+      "required": ["revision", "slug", "objective", "behaviors"],
+      "properties": {
+        "revision": {"type": "integer", "minimum": 1},
+        "slug": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]{1,48}$"},
+        "objective": {"type": "string"},
+        "behaviors": {
+          "type": "array", "minItems": 1,
+          "items": {"type": "object", "required": ["id", "given", "when", "then"], "properties": {"id": {"type": "string"}, "given": {"type": "string"}, "when": {"type": "string"}, "then": {"type": "string"}}}
+        },
+        "interfaces": {"type": "array", "items": {"type": "string"}},
+        "acceptance_cases": {"type": "array", "description": "blackbox 留位，首版不消费"},
+        "trust_boundaries": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "authority": {
+      "type": "object",
+      "required": ["builder_write"],
+      "properties": {
+        "target_branch": {"type": ["string", "null"], "description": "省略 = start 时的当前分支"},
+        "builder_write": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+        "tester_write": {"type": "array", "items": {"type": "string"}},
+        "protected_paths": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "assurance": {
+      "type": "object",
+      "required": ["required"],
+      "properties": {
+        "required": {"type": "array", "minItems": 1, "items": {"enum": ["machine", "tester", "proof", "reviewer"]}},
+        "proof_kinds": {"type": "array", "items": {"enum": ["baseline-red", "mutation", "reviewed-boundaries"]}},
+        "review_focus": {"type": "array", "items": {"type": "string"}},
+        "machine_commands": {"type": "array", "description": "由 start 从 loop.yml 冻结，planner 不写", "items": {"type": "object", "required": ["stage", "cmd", "timeout"]}},
+        "max_iterations": {"type": "integer", "description": "由 start 从 loop.yml 冻结"}
+      }
+    }
+  }
+}

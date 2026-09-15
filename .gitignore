@@ -1,18 +1,10 @@
-# cc-builder-loop — runtime artifacts
-*.local.md
-loop-runs/
-worktrees/
-*.log
+# builder-loop runtime artifacts
 .claude/builder-loop/
-.claude/loop-trace.jsonl
-.claude/loop-runs/
+__pycache__/
+*.pyc
+*.log
 
 # development artifacts
 .claude/settings.local.json
-.claude/reviewer-diff*.txt
-.claude/review_reports/
 .claude/plans/
-.claude/improvements-archived.md
-improvements.md
-.claude/reviewer-params.json
-.claude/reviewer-diff.txt
+.builder-loop/

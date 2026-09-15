@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "builder-loop/agent-result@1",
+  "title": "builder-loop agent result",
+  "description": "tester / reviewer 在 assistant 消息最后一行输出的 `BUILDER_LOOP_RESULT: {...}`，由 SubagentStop hook 解析。",
+  "oneOf": [
+    {
+      "type": "object",
+      "required": ["role", "status"],
+      "properties": {
+        "role": {"const": "tester"},
+        "status": {"enum": ["pass", "insufficient_spec"]},
+        "files": {"type": "array", "items": {"type": "string"}},
+        "behaviors_covered": {"type": "array", "items": {"type": "string"}},
+        "proof_spec": {"$ref": "proof-spec.schema.json"},
+        "notes": {"type": "string"}
+      }
+    },
+    {
+      "type": "object",
+      "required": ["role", "verdict"],
+      "properties": {
+        "role": {"const": "reviewer"},
+        "verdict": {"enum": ["pass", "changes_requested", "blocked"]},
+        "findings": {
+          "type": "array",
+          "items": {"type": "object", "required": ["severity"], "properties": {"severity": {"enum": ["blocking", "major", "minor"]}, "file": {"type": "string"}, "line": {"type": "integer"}, "summary": {"type": "string"}}}
+        },
+        "behaviors_verified": {"type": "array", "items": {"type": "string"}}
+      }
+    }
+  ]
+}

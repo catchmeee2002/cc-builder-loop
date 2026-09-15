@@ -96,29 +96,12 @@ if layout.get('source_dirs') or layout.get('test_dirs'):
     if layout.get('test_dirs'):
         lines.append(f"  test_dirs: {json.dumps(layout['test_dirs'])}")
 
-# worktree 隔离（T2.3：向导可选；缺省不写 = schema 默认 enabled=false）
+# worktree 根目录（可选；缺省 = 仓库同级 ../builder-loop-worktrees/<repo>）
 wt = cfg.get('worktree') or {}
-if wt:
+if wt.get('root'):
     lines.append("")
     lines.append("worktree:")
-    lines.append(f"  enabled: {str(bool(wt.get('enabled', False))).lower()}")
-    if wt.get('base_dir'):
-        lines.append(f"  base_dir: {yaml_str(wt['base_dir'])}")
-    if wt.get('branch_prefix'):
-        lines.append(f"  branch_prefix: {yaml_str(wt['branch_prefix'])}")
-
-# ---- V1.9 judge agent 提示（默认启用，仅注释形式列出可调参数）----
-lines.append("")
-lines.append("# ---- V1.9 judge agent ----")
-lines.append("# 默认启用，无需配置（凭证缺失会自动降级回 PASS_CMD 二值判据）。")
-lines.append("# 如需自定义，取消下列任一字段注释：")
-lines.append("# judge:")
-lines.append("#   enabled: true                  # false 完全关闭 judge")
-lines.append("#   model: \"\"                      # 留空走 env / 默认 fallback (claude-haiku-4-5)")
-lines.append("#   confidence_threshold: 0.5      # 置信度低于此值降级")
-lines.append("#   max_consecutive_nudges: 2      # 连续 nudge 上限（防 LLM 判据脱缰）")
-lines.append("#   api_timeout_sec: 8")
-lines.append("# 详见 ~/.claude/skills/builder-loop/docs/judge-agent.md")
+    lines.append(f"  root: {yaml_str(wt['root'])}")
 
 with open(yml, 'w') as f:
     f.write('\n'.join(lines) + '\n')
@@ -133,25 +116,6 @@ add_gitignore() {
   fi
 }
 add_gitignore ".claude/builder-loop/"
-add_gitignore ".claude/loop-runs/"
-# V1.5+ 顶层 telemetry 文件 / V1.6+ reviewer 中转文件 — 防 worktree merge ff 撞同路径 untracked
-add_gitignore ".claude/loop-trace.jsonl"
-add_gitignore ".claude/reviewer-params.json"
-add_gitignore ".claude/reviewer-diff.txt"
-
-# T2.8：worktree.enabled=true 时把 base_dir 加进 .gitignore（向导联动）
-WT_BASE_DIR="$(echo "$JSON" | python3 -c "
-import sys, json
-d = json.load(sys.stdin)
-wt = d.get('worktree') or {}
-if wt.get('enabled'):
-    bd = wt.get('base_dir') or '.claude/worktrees'
-    print(bd.rstrip('/') + '/')
-" 2>/dev/null || echo "")"
-if [ -n "$WT_BASE_DIR" ]; then
-  add_gitignore "$WT_BASE_DIR"
-fi
-
 # Bug fix: .claude/* 通配符可能拦住 loop.yml，加例外确保能 git track
 if git -C "$PROJECT_ROOT" check-ignore -q ".claude/loop.yml" 2>/dev/null; then
   add_gitignore "!.claude/loop.yml"

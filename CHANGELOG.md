@@ -1,6 +1,22 @@
 # Changelog — cc-builder-loop 已交付能力
 
-> 从 CLAUDE.md §5 外移。记录各版本交付的能力与关键实现细节。
+## V8.0 Claude Code 原生重写（2026-09-16）
+
+从 `cc-old`（V7.4）分支重写。编排交给 Claude Code 原生能力，runtime 只做判据与 Git 事务。
+
+- runtime 改为 Python 包 `runtime/builder_loop`（stdlib only，约 2.7k 行），CLI `bl`；ledger 单写者，flock + seq。
+- contract 三面（mission / authority / assurance）各算 canonical digest；`assurance.machine_commands` 由 start 从 loop.yml 冻结；mission 变需 revision+1，authority 扩大 / assurance 降级需 `--authorize`。
+- 四道 gate：machine / tester / proof / reviewer。evidence 记按 kind 定制的输入投影 digest，stale 每次重算不落盘；readiness 派生 next_action，不存 phase。
+- proof：候选全绿 → baseline-red / mutation（tester 提供 patch，只能改 builder_write 内已有文件，执行前后比对防篡改）/ reviewed-boundaries；group↔behavior 双射；同签名三次 PROOF_STALL。
+- tester / reviewer 的 evidence 由 SubagentStop hook 按 CC 提供的 `agent_type` / `agent_id` 从 `last_assistant_message` 的 `BUILDER_LOOP_RESULT:` 行写入；只认 SubagentStart 登记过的 agent_id；不合规 exit 2 重发，三次记 fail。
+- Stop hook 只挡门：run 未终态 exit 2 + next_action；AskUserQuestion 挂起（PreToolUse 写 / PostToolUse、UserPromptSubmit 清）放行；连续 3 次 Stop 之间 ledger seq 无变化放行并提示。不跑 pass_cmd、不解析 transcript。
+- 强制 worktree（仓库同级 `../builder-loop-worktrees/<repo>/<run_id>`），删 bare 模式；checkpoint 按角色写边界拒绝越界（protected / tester_owned / builder_owned / outside_authority）。
+- finalize：commit-tree 单亲提交 + 落盘 intent + `update-ref` expected-old CAS + 同步目标 checkout；`--run-commit-hook` 可在临时 worktree 跑 hook 并比对 tree；TARGET_DRIFT → `bl rebase`；DIRTY_OVERLAP 阻止写回；中断后沿 intent 恢复。
+- install.sh 改 python3 主体：软链 agents / skills / bin，注册 8 条 hook，清理旧版断链与 hook，幂等；`bl doctor` 诊断。
+- 退役：judge、arbiter、diff-level-check（L1/L2/L3）、doc_freshness 三层、复盘 5 问、locate-state 六策略、phase 状态机与 L1/L2A/L2B/L3 闸、pause、bare 模式、merge-worktree-back、migrate-state、diagnose-stop-hook、reviewer-timing-check、reward-hacking 关键词黑名单、e2e 沉淀 YAML、全部 bash fixture（判据语义移植为 pytest，35 例）。
+- 保留：`doc-lint.sh` / `doc-reference-check.py`（可选 pass_cmd stage）、`probe-project-stack.sh` / `init-loop-config.sh`（接入向导，已裁掉 judge / worktree 旧字段）。
+- 设计哲学文档采用 codex-new 的 11 条版。
+
 
 ## V7.4 文档失效源码指针机械锚点（2026-07-21）
 

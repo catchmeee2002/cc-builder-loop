@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# builder-loop V8 CLI 入口。install.sh 把它软链到 ~/.claude/bin/bl。
+set -u
+HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+export PYTHONDONTWRITEBYTECODE=1
+PYTHONPATH="${HERE}/../runtime${PYTHONPATH:+:${PYTHONPATH}}" exec python3 -m builder_loop "$@"

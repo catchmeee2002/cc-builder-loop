@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "builder-loop/proof-spec@1",
+  "title": "builder-loop proof spec",
+  "description": "tester 在 BUILDER_LOOP_RESULT 里携带的 proof_spec。groups 与 mission.behaviors 一一对应。",
+  "type": "object",
+  "required": ["groups"],
+  "properties": {
+    "groups": {
+      "type": "array", "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["kind", "behavior_ids", "argv", "test_ids"],
+        "properties": {
+          "kind": {"enum": ["baseline-red", "mutation", "reviewed-boundaries"]},
+          "behavior_ids": {"type": "array", "minItems": 1, "maxItems": 1, "items": {"type": "string"}},
+          "argv": {"type": "array", "minItems": 1, "items": {"type": "string"}, "description": "pytest / python -m pytest|unittest / uv run pytest / go test / cargo test / bazel test"},
+          "test_ids": {"type": "array", "minItems": 1, "items": {"type": "string"}, "description": "pytest 风格 path::name；文件必须在 tester_write 内且存在于候选"},
+          "timeout": {"type": "integer", "minimum": 1, "maximum": 1800, "default": 300},
+          "patch": {"type": "string", "description": "mutation 必填：unified diff，只改 builder_write 内候选上已有的普通文件"},
+          "reviewed_boundaries": {
+            "type": "object",
+            "description": "reviewed-boundaries 必填：四类并集 == test_ids",
+            "properties": {"positive": {"type": "array"}, "negative": {"type": "array"}, "boundary": {"type": "array"}, "invariant": {"type": "array"}}
+          }
+        }
+      }
+    }
+  }
+}

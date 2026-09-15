@@ -1,6 +1,5 @@
 pass_cmd:
-  - stage: smoke
-    cmd: "true"
-    timeout: 10
-worktree:
-  enabled: true
+  - stage: test
+    cmd: "python3 -m pytest -p no:html -p no:cacheprovider -q tests"
+    timeout: 600
+max_iterations: 5
