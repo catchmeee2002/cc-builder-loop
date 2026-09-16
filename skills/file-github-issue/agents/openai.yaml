@@ -1,0 +1,7 @@
+interface:
+  display_name: "File GitHub Issue"
+  short_description: "保留问题现场并由当前 Agent 直接创建 GitHub Issue"
+  default_prompt: "Use $file-github-issue to preserve the live evidence and file this problem as a GitHub Issue."
+
+policy:
+  allow_implicit_invocation: true
