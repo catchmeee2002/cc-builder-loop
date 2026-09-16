@@ -1,19 +1,19 @@
-# Codex Builder Loop 设计哲学
+# builder-loop 设计哲学
 
-本项目不是第二套 Codex runtime，而是 Codex 原生推理和调度之下的独立判据契约层。模型能力越强，越需要一个不能靠语言说服的交付地基。
+本项目不是第二套 Claude Code runtime，而是 Claude Code 原生推理和调度之下的独立判据契约层。模型能力越强，越需要一个不能靠语言说服的交付地基。
 
 ## 零、独立判据编排器
 
-Codex 负责理解、实现和协调；builder-loop 只固定完成条件、角色边界、证据、Git 事务和可靠闭环所需的最低角色工作纪律，不提供完整开发方法论。认知能力可以由原生平台演进，独立判据不能因此消失。
+Claude Code 负责理解、实现和协调；builder-loop 只固定完成条件、角色边界、证据、Git 事务和可靠闭环所需的最低角色工作纪律，不提供完整开发方法论。认知能力可以由原生平台演进，独立判据不能因此消失。
 
-可靠闭环同时要求结论可信和任务可完成。普通实现、测试修正、Agent 调度和上下文推进属于 Codex 的
+可靠闭环同时要求结论可信和任务可完成。普通实现、测试修正、Agent 调度和上下文推进属于 Claude Code 的
 认知与执行责任；builder-loop 不得仅因自身状态机无法表达正常工程活动，就把它升级成用户重新规划的
 产品决策。
 
 ## 一、判据按独立性分层，并绑定真实输入
 
 - 机器判据以命令退出码、文件树和 Git 对象提供最强 ground truth。
-- Tester 依据 Planner 冻结的目标在独立 thread 中写测和黑盒验收。
+- Tester 依据 Planner 冻结的目标在独立 agent 会话中写测和黑盒验收。
 - Reviewer 检查代码、测试、计划和文档语义，但不能覆盖机器或 Tester 失败。
 
 命令退出码、输出、制品和环境状态都是观察事实，不自动等于验收结论。计划必须冻结什么观察结果算
@@ -32,7 +32,7 @@ runtime 可以跳过重复部署，但必须重新执行当前 Revision 的黑�
 前仍必须释放 lease 并确认恢复。项目负责具体构建、部署和恢复方法；builder-loop 只绑定身份、授权、
 观察与事务边界，不成为第二套部署平台。
 
-独立 Tester thread 产出并通过 ownership、Git/source manifest、integration 和 Reviewer 审查绑定的
+独立 Tester 会话产出并通过 ownership、Git/source manifest、integration 和 Reviewer 审查绑定的
 Tester-owned 测试源码，是测试判据的可信输入。这里的独立性来自角色、来源和证据链，不等同于
 操作系统级敌手隔离；runtime 必须抵抗环境、runner、输出和空壳证明的误导，但不承诺在同一解释器内
 隔离任意恶意 Python 测试代码。敌手模型若改变，必须重新冻结产品契约，不能把更多输出特判冒充安全边界。
@@ -78,15 +78,15 @@ Fail-closed 应尽量局部化：先使无法证明的阶段或 evidence 失效�
 
 “最小”同时约束状态空间和用户成本。新增门禁或事务必须说明它降低的交付风险，并衡量由此增加的用户
 中断、Revision、角色重建、evidence 重放和墙钟成本。完整闭环只用于风险足以覆盖这些成本的任务；
-原生 Codex 已能可靠承担的普通执行活动，不进入本地状态机。
+Claude Code 原生已能可靠承担的普通执行活动，不进入本地状态机。
 
 ## 六、同类问题出现三次就是架构缺陷
 
 同一失败在不同候选上反复出现，说明缺少抽象、边界或正确问题定义。runtime 应把重复事实结构化并停止，让用户重新审视架构；不能用更多重试掩盖。
 
-## 七、连续性属于 thread 和事务身份
+## 七、连续性属于 agent 会话和事务身份
 
-同名新 Reviewer 或 Tester 不等于原角色；同名新提交也不等于已审 candidate。Agent 后续 iteration 必须 follow-up 原 thread，Git 恢复必须续接同一个持久化 intent。连续性丢失时保留现场，不伪装续接。
+同名新 Reviewer 或 Tester 不等于原角色；同名新提交也不等于已审 candidate。Agent 后续 iteration 必须续接原 agent 会话（SendMessage 到同一 agent_id），Git 恢复必须续接同一个持久化 intent。连续性丢失时保留现场，不伪装续接。
 
 连续性失败首先是执行事务失败，不自动构成语义契约变化。旧角色、旧 evidence 和旧审查结论不得伪造
 或冒充复用；若冻结语义和授权未变，系统可以建立新的、身份明确的执行事务并重新取得所需独立证据，
@@ -98,7 +98,7 @@ CLI、JSON、计划 marker、ledger、agent 输出和副作用先固定，再写
 
 ## 九、原生能力优先，但替代必须证明等价
 
-Plan mode、Skills、custom agents 和 multi-agent coordination 由 Codex 提供。Git workspace 边界、事务恢复、ownership、evidence、诊断和收尾属于本项目的确定性责任，不能因为原生平台“看起来能做”就删除。
+Plan mode、Skills、custom agents、subagent 调度与续接、向用户提问由 Claude Code 提供。Git workspace 边界、事务恢复、ownership、evidence、诊断和收尾属于本项目的确定性责任，不能因为原生平台“看起来能做”就删除。
 
 删除适配代码前必须列出旧语义、原生覆盖面、剩余确定性责任和迁移测试。原生能力只能替代其真正覆盖的层。
 
@@ -117,6 +117,6 @@ fail-closed 分别解释为成功。
 
 ## 十一、项目自身遵守同一原则
 
-README 解释用户入口，AGENTS.md 提供动手时必须触发的仓库规则，本文保存设计原则，architecture 保存工程推导，ledger/doctor 保存运行事实，历史进入 CHANGELOG。
+README 解释用户入口，CLAUDE.md 提供动手时必须触发的仓库规则，本文保存设计原则，architecture 保存工程推导，ledger/doctor 保存运行事实，历史进入 CHANGELOG。
 
 设计原则、公共契约或角色边界的增删改属于产品决策，必须在计划中单独披露并取得用户接受；不得混在“adapter 简化”“重构”或普通实现细节中。

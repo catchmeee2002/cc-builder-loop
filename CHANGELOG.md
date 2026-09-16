@@ -15,7 +15,8 @@
 - install.sh 改 python3 主体：软链 agents / skills / bin，注册 8 条 hook，清理旧版断链与 hook，幂等；`bl doctor` 诊断。
 - 退役：judge、arbiter、diff-level-check（L1/L2/L3）、doc_freshness 三层、复盘 5 问、locate-state 六策略、phase 状态机与 L1/L2A/L2B/L3 闸、pause、bare 模式、merge-worktree-back、migrate-state、diagnose-stop-hook、reviewer-timing-check、reward-hacking 关键词黑名单、e2e 沉淀 YAML、全部 bash fixture（判据语义移植为 pytest，35 例）。
 - 保留：`doc-lint.sh` / `doc-reference-check.py`（可选 pass_cmd stage）、`probe-project-stack.sh` / `init-loop-config.sh`（接入向导，已裁掉 judge / worktree 旧字段）。
-- 设计哲学文档采用 codex-new 的 11 条版。
+- 角色 evidence 依赖 Claude Code 2.1.272 起 hook stdin 的 `agent_type` 字段（自定义 agent 返回其 frontmatter `name`，matcher 可按它过滤，`last_assistant_message` 完整携带结果标记行）——2026-09-16 实测确认，这是 V8 能成立的硬前提，也是最低 CC 版本要求。
+- 设计哲学文档采用 codex-new 的 11 条版，宿主指称改写为 Claude Code（thread → agent 会话，AGENTS.md → CLAUDE.md）。
 
 
 ## V7.4 文档失效源码指针机械锚点（2026-07-21）
