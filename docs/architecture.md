@@ -68,6 +68,8 @@ blocker：`WAITING_FOR_USER`（AskUserQuestion 挂起）、`MAX_ITERATIONS`（ma
 
 所有 hook 首步 `lookup_session(session_id)`；hook 的 `cwd` 不参与定位。hook 内部错误只写 stderr 并 exit 0。
 
+`agent_type` 对自定义 agent 返回其 frontmatter `name`（2026-09-16 在 CC 2.1.272 实测：matcher 生效、`last_assistant_message` 完整携带标记行），因此角色身份判定无需回退到 PreToolUse(Agent) 预登记。run 绑定时每次 hook 调用记一行 `~/.claude/builder-loop/hook-trace.jsonl` 供排查。
+
 ## 失败路径
 
 | 情况 | 行为 |
