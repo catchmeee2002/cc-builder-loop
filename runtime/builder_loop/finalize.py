@@ -40,7 +40,7 @@ def _make_final_commit(repo_root: Path, lg: dict[str, Any], message: str, run_co
         return gitx.commit_tree(repo_root, cand_tree, target_head, message)
     with worktree.temp_worktree(repo_root, target_head, run_dir / "tmp", "finalize") as wt:
         gitx.git(wt, "read-tree", "--reset", "-u", cand_tree)
-        gitx.git(wt, "-c", "commit.gpgSign=false", "commit", "--quiet", "--allow-empty", "-m", message)
+        gitx.git(wt, "-c", "commit.gpgSign=false", "commit", "--quiet", "--allow-empty", "-m", message, hooks=True)
         final = gitx.head(wt)
         if gitx.tree_of(repo_root, final) != cand_tree:
             raise negative("FINAL_COMMIT_TREE_MISMATCH", "仓库 commit hook 改写了 tree，与已审 candidate 不一致，拒绝写回", candidate_tree=cand_tree, final_tree=gitx.tree_of(repo_root, final))
@@ -49,15 +49,12 @@ def _make_final_commit(repo_root: Path, lg: dict[str, Any], message: str, run_co
 
 def _complete(ledger_path: Path, repo_root: Path, lg: dict[str, Any], final_head: str) -> dict[str, Any]:
     target = lg["repo"]["target_branch"]
-    cand = lg["candidate"]
-    removed = worktree.remove_candidate(repo_root, Path(cand["worktree"]), cand["branch"], delete_branch=True)
+    removed = worktree.remove_run_worktrees(repo_root, lg, delete_branches=True)
     with ledger_mod.mutate(ledger_path) as lg2:
         lg2["finalize_intent"] = None
         lg2["terminal"] = {"status": "finalized", "final_head": final_head, "reason": None, "at": ledger_mod.now_iso()}
-        sid = lg2["session"].get("owner_session_id")
-    if sid:
-        ledger_mod.unbind_session(sid)
-    return {"final_head": final_head, "target_branch": target, "cleanup": removed, "terminal": "finalized"}
+    # session 保持绑定：复盘记录写进 ledger 之前 Stop hook 会拦住（复盘硬闸门）
+    return {"final_head": final_head, "target_branch": target, "cleanup": removed, "terminal": "finalized", "next": "retro"}
 
 
 def _sync_checkout(repo_root: Path, lg: dict[str, Any], old: str, new: str) -> dict[str, Any] | None:

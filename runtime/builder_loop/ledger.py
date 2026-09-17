@@ -1,7 +1,10 @@
 """ledger：run 的唯一事实源。单写者（本模块 mutate），flock 串行化，seq 单调递增。
 
-stale 不落盘（由 evidence 模块每次重算）；ledger 不保存"下一步让谁做"。
-session 索引只是指针：读到后必须回核 ledger.session.owner_session_id。
+stale 不落盘（由 evidence 模块每次重算）；ledger 不保存"下一步让谁做"，也不保存"角色是否在跑"
+（由 events + 心跳租约派生）。session 索引只是指针：读到后必须回核 ledger.session.owner_session_id。
+
+events[] 只记没有别处归属的事实（角色生命周期、被拒的 checkpoint、integrate、用户输入、授权续跑、
+stall 逃生、复盘）；machine / proof 失败、checkpoint、contract 修订各自已有归属，不在这里重复。
 """
 
 from __future__ import annotations
@@ -16,7 +19,8 @@ from typing import Any, Iterator
 from .errors import fatal
 from .jsonutil import atomic_write_json, read_json
 
-LEDGER_SCHEMA = "builder-loop/ledger@1"
+LEDGER_SCHEMA = "builder-loop/ledger@2"
+LEGACY_SCHEMAS = ("builder-loop/ledger@1",)
 RUNS_SUBDIR = Path(".claude") / "builder-loop" / "runs"
 TERMINAL_STATUSES = ("finalized", "abandoned", "finalize_failed")
 
@@ -24,7 +28,8 @@ EVIDENCE_KINDS = ("machine", "tester", "proof", "reviewer")
 
 
 def now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    # 微秒精度：readiness 靠时间戳字符串比较事件先后（固定格式 + UTC，字典序即时间序）
+    return datetime.now(timezone.utc).isoformat(timespec="microseconds")
 
 
 def home_dir() -> Path:
@@ -53,28 +58,38 @@ def new_ledger(**fields: Any) -> dict[str, Any]:
         "seq": 0,
         "created_at": now_iso(),
         "updated_at": now_iso(),
+        "runtime_identity": None,
         "session": {"owner_session_id": None},
         "repo": {"root": None, "target_branch": None, "target_start_head": None},
         "candidate": {"branch": None, "worktree": None, "head": None, "checkpoints": []},
+        "tester": None,
         "contract": None,
         "loop_config": None,
         "agents": {"tester": None, "reviewer": None},
         "evidence": {k: None for k in EVIDENCE_KINDS},
         "proof_spec": None,
         "failures": {"machine": [], "proof": []},
+        "authorizations": [],
+        "events": [],
         "counters": {"machine_iter": 0, "stall": {"seq_seen": 0, "count": 0}},
         "waiting_for_user": None,
         "finalize_intent": None,
         "terminal": None,
+        "retrospective": None,
     }
     base.update(fields)
     return base
 
 
-def validate(ledger: dict[str, Any]) -> None:
-    if ledger.get("schema") != LEDGER_SCHEMA:
-        raise fatal("LEDGER_SCHEMA", f"ledger schema 不匹配: {ledger.get('schema')}")
-    for key in ("run_id", "seq", "session", "repo", "candidate", "contract", "loop_config", "agents", "evidence", "counters"):
+def validate(ledger: dict[str, Any], *, legacy_ok: bool = False) -> None:
+    schema = ledger.get("schema")
+    if schema in LEGACY_SCHEMAS:
+        if legacy_ok:
+            return
+        raise fatal("LEDGER_LEGACY", f"ledger 是旧版 {schema}，本 runtime 只能列出或 abandon 它", schema=schema)
+    if schema != LEDGER_SCHEMA:
+        raise fatal("LEDGER_SCHEMA", f"ledger schema 不匹配: {schema}")
+    for key in ("run_id", "seq", "session", "repo", "candidate", "contract", "loop_config", "agents", "evidence", "counters", "events", "authorizations"):
         if key not in ledger:
             raise fatal("LEDGER_INVALID", f"ledger 缺少字段 {key}")
     if not isinstance(ledger["seq"], int):
@@ -88,16 +103,29 @@ def validate(ledger: dict[str, Any]) -> None:
         raise fatal("LEDGER_INVALID", f"未知终态 {term.get('status')}")
 
 
-def load(path: Path) -> dict[str, Any]:
+def peek(path: Path) -> dict[str, Any] | None:
+    """不校验 schema 的只读读取，给 doctor / runs 列旧版与损坏 ledger 用。"""
+    try:
+        data = read_json(Path(path))
+    except Exception:  # noqa: BLE001
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def load(path: Path, *, legacy_ok: bool = False) -> dict[str, Any]:
     if not Path(path).is_file():
         raise fatal("LEDGER_NOT_FOUND", f"ledger 不存在: {path}", path=str(path))
     ledger = read_json(Path(path))
-    validate(ledger)
+    validate(ledger, legacy_ok=legacy_ok)
     return ledger
 
 
 def is_terminal(ledger: dict[str, Any]) -> bool:
     return ledger.get("terminal") is not None
+
+
+def needs_retro(ledger: dict[str, Any]) -> bool:
+    return is_terminal(ledger) and not ledger.get("retrospective")
 
 
 def create(path: Path, ledger: dict[str, Any]) -> None:
@@ -108,7 +136,7 @@ def create(path: Path, ledger: dict[str, Any]) -> None:
 
 
 @contextmanager
-def mutate(path: Path) -> Iterator[dict[str, Any]]:
+def mutate(path: Path, *, legacy_ok: bool = False) -> Iterator[dict[str, Any]]:
     """独占锁内读-改-写。调用方在 with 体内直接改 dict；退出时校验、seq+1、原子写。"""
     path = Path(path)
     lock_path = path.with_suffix(".lock")
@@ -116,14 +144,25 @@ def mutate(path: Path) -> Iterator[dict[str, Any]]:
     with open(lock_path, "w") as lock_fh:
         fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX)
         try:
-            ledger = load(path)
+            ledger = load(path, legacy_ok=legacy_ok)
             yield ledger
-            ledger["seq"] = int(ledger["seq"]) + 1
+            ledger["seq"] = int(ledger.get("seq", 0)) + 1
             ledger["updated_at"] = now_iso()
-            validate(ledger)
+            validate(ledger, legacy_ok=legacy_ok)
             atomic_write_json(path, ledger)
         finally:
             fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
+
+
+def log_event(ledger: dict[str, Any], kind: str, **data: Any) -> dict[str, Any]:
+    """在 mutate 上下文里调用。"""
+    event = {"at": now_iso(), "kind": kind, **data}
+    ledger.setdefault("events", []).append(event)
+    return event
+
+
+def events_of(ledger: dict[str, Any], *kinds: str) -> list[dict[str, Any]]:
+    return [e for e in ledger.get("events", []) if e.get("kind") in kinds]
 
 
 # ---------------------------------------------------------------- session 索引
@@ -152,7 +191,7 @@ def unbind_session(session_id: str) -> None:
 
 
 def lookup_session(session_id: str | None) -> dict[str, Any] | None:
-    """返回已核对的 {ledger_path, ledger}；指针失效或 owner 不匹配 → None。"""
+    """返回已核对的 {ledger_path, ledger, repo_root}；指针失效、旧版 ledger 或 owner 不匹配 → None。"""
     if not session_id:
         return None
     f = _session_file(session_id)
@@ -182,16 +221,20 @@ def list_runs(repo_root: Path) -> list[dict[str, Any]]:
         return out
     for d in sorted(base.iterdir()):
         lp = d / "ledger.json"
-        if lp.is_file():
-            try:
-                lg = load(lp)
-            except Exception:  # noqa: BLE001
-                continue
-            out.append({
-                "run_id": lg["run_id"],
-                "terminal": (lg.get("terminal") or {}).get("status"),
-                "owner_session_id": lg["session"].get("owner_session_id"),
-                "candidate_head": lg["candidate"].get("head"),
-                "ledger_path": str(lp),
-            })
+        if not lp.is_file():
+            continue
+        lg = peek(lp)
+        if lg is None:
+            out.append({"run_id": d.name, "schema": None, "unreadable": True, "terminal": None, "ledger_path": str(lp)})
+            continue
+        out.append({
+            "run_id": lg.get("run_id") or d.name,
+            "schema": lg.get("schema"),
+            "legacy": lg.get("schema") in LEGACY_SCHEMAS,
+            "terminal": (lg.get("terminal") or {}).get("status"),
+            "retro_pending": bool(lg.get("terminal")) and not lg.get("retrospective") and lg.get("schema") == LEDGER_SCHEMA,
+            "owner_session_id": (lg.get("session") or {}).get("owner_session_id"),
+            "candidate_head": (lg.get("candidate") or {}).get("head"),
+            "ledger_path": str(lp),
+        })
     return out

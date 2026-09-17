@@ -47,19 +47,27 @@ def _check_hooks() -> dict[str, Any]:
 
 def _check_sessions() -> dict[str, Any]:
     d = ledger_mod.sessions_dir()
-    orphans, active = [], []
+    orphans, active, retro_pending = [], [], []
     if d.is_dir():
         for f in d.glob("*.json"):
             try:
                 ptr = read_json(f)
-                lg = ledger_mod.load(Path(ptr["ledger_path"]))
-                if ledger_mod.is_terminal(lg):
-                    orphans.append({"file": str(f), "reason": "run 已终态"})
+                lg = ledger_mod.peek(Path(ptr["ledger_path"]))
+                if lg is None:
+                    orphans.append({"file": str(f), "reason": "ledger 不存在或不可读"})
+                    continue
+                info = {"session_id": ptr["session_id"], "run_id": ptr["run_id"], "repo_root": ptr["repo_root"]}
+                if lg.get("schema") in ledger_mod.LEGACY_SCHEMAS:
+                    orphans.append({"file": str(f), "reason": f"旧版 ledger（{lg.get('schema')}），hook 对它静默；用 `bl abandon --run` 结束它"})
+                elif not lg.get("terminal"):
+                    active.append(info)
+                elif not lg.get("retrospective"):
+                    retro_pending.append(info)  # 终态但未复盘：绑定是有意保留的，不是孤儿
                 else:
-                    active.append({"session_id": ptr["session_id"], "run_id": ptr["run_id"], "repo_root": ptr["repo_root"]})
+                    orphans.append({"file": str(f), "reason": "run 已终态且已复盘"})
             except Exception as exc:  # noqa: BLE001
                 orphans.append({"file": str(f), "reason": str(exc)})
-    return {"dir": str(d), "active": active, "orphans": orphans}
+    return {"dir": str(d), "active": active, "retro_pending": retro_pending, "orphans": orphans}
 
 
 def _check_symlinks() -> list[dict[str, Any]]:
@@ -100,6 +108,8 @@ def doctor(repo_arg: str | None) -> dict[str, Any]:
         problems.append("hook 脚本路径失效")
     if report["sessions"]["orphans"]:
         problems.append("存在孤儿 session 指针（可安全删除）")
+    if report["sessions"]["retro_pending"]:
+        problems.append("有 run 已结束但尚未复盘（`bl retro signals --run <id>`）")
     if report["broken_symlinks"]:
         problems.append("~/.claude 下有断链")
     report["problems"] = problems

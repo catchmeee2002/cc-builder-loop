@@ -22,6 +22,22 @@ FACETS = ("mission", "authority", "assurance")
 EVIDENCE_KINDS = ("machine", "tester", "proof", "reviewer")
 PROOF_KINDS = ("baseline-red", "mutation", "reviewed-boundaries")
 
+# 每个 behavior 的 proof 下限：缺省 strong（只许 baseline-red / mutation）；
+# 只有 contract 在该 behavior 上显式写 "reviewed-boundaries"，tester 才能选最弱的 kind。
+PROOF_FLOOR_STRONG = "strong"
+PROOF_FLOOR_REVIEWED = "reviewed-boundaries"
+PROOF_FLOORS = (PROOF_FLOOR_STRONG, PROOF_FLOOR_REVIEWED)
+
+# runner / 构建控制面：冻结的是「规则」（basename 集合）而不是文件列表——新建的 conftest.py 同样能
+# 劫持测试收集，monorepo 下文件列表还会让 digest 依赖树状态。
+CONTROL_BASENAMES = (
+    "pytest.ini", "pyproject.toml", "setup.cfg", "tox.ini", "noxfile.py", "conftest.py", "Makefile",
+    "package.json", "go.mod", "Cargo.toml", "BUILD", "BUILD.bazel", "WORKSPACE", "loop.yml",
+)
+
+OWNER_BUILDER = "builder"
+OWNER_TESTER = "tester"
+
 CHANGE_MISSION = "MISSION_REVISION"
 CHANGE_AUTHORITY_EXPAND = "AUTHORITY_EXPAND"
 CHANGE_ASSURANCE_DOWNGRADE = "ASSURANCE_DOWNGRADE"
@@ -106,6 +122,14 @@ def validate_contract(contract: dict[str, Any]) -> None:
         for k in ("given", "when", "then"):
             if k not in b or not isinstance(b[k], str):
                 raise fatal("CONTRACT_INVALID", f"mission.behaviors[{i}].{k} 缺失")
+        # tester 从冻结基线盲写测试，contract 是它的唯一输入——边界与不变量写在这里
+        for k in ("boundaries", "invariants"):
+            if k in b and not (isinstance(b[k], list) and all(isinstance(x, str) for x in b[k])):
+                raise fatal("CONTRACT_INVALID", f"mission.behaviors[{i}].{k} 应为字符串数组")
+        if b.get("proof", PROOF_FLOOR_STRONG) not in PROOF_FLOORS:
+            raise fatal("CONTRACT_INVALID", f"mission.behaviors[{i}].proof 必须是 {PROOF_FLOORS}", got=b.get("proof"))
+    if "mock_strategy" in m and not isinstance(m["mock_strategy"], dict):
+        raise fatal("CONTRACT_INVALID", "mission.mock_strategy 应为映射（依赖名 → mock 方式）")
     for k in ("interfaces", "acceptance_cases", "trust_boundaries"):
         m.setdefault(k, [])
         if not isinstance(m[k], list):
@@ -200,6 +224,44 @@ def glob_covers(old_patterns: list[str], new_pattern: str) -> bool:
     return False
 
 
+# ---------------------------------------------------------------- 路径归属（唯一判定入口）
+
+
+def path_owner(authority: dict[str, Any], path: str) -> str | None:
+    """tester_write 优先：两边 glob 都命中时归 tester，写边界在构造上不相交，无需 glob 代数。"""
+    if path_in(authority.get("tester_write", []), path):
+        return OWNER_TESTER
+    if path_in(authority.get("builder_write", []), path):
+        return OWNER_BUILDER
+    return None
+
+
+def _literally_named(authority: dict[str, Any], path: str) -> bool:
+    return any(p == path for key in ("builder_write", "tester_write") for p in authority.get(key, []))
+
+
+def write_rejection(authority: dict[str, Any], role: str, path: str) -> str | None:
+    """role 写 path 被拒的原因；None = 允许。checkpoint / PreToolUse / mutation patch 校验共用。"""
+    if path_in(authority.get("protected_paths", []), path):
+        return "protected"
+    owner = path_owner(authority, path)
+    if owner is None:
+        return "outside_authority"
+    if owner != role:
+        return f"{owner}_owned"
+    # 控制面文件：只拦 builder 靠 glob 顺带命中的情形；字面点名 = 计划明确授权。tester_write 内的归 tester。
+    basename = path.rsplit("/", 1)[-1]
+    if role == OWNER_BUILDER and basename in authority.get("control_basenames", []) and not _literally_named(authority, path):
+        return "control_file"
+    return None
+
+
+def freeze_authority(contract: dict[str, Any]) -> dict[str, Any]:
+    frozen = json.loads(json.dumps(contract))
+    frozen["authority"]["control_basenames"] = list(CONTROL_BASENAMES)
+    return frozen
+
+
 # ---------------------------------------------------------------- digest 与变更分类
 
 
@@ -208,9 +270,10 @@ def facet_digests(contract: dict[str, Any]) -> dict[str, str]:
 
 
 def freeze_assurance(contract: dict[str, Any], loop_config: LoopConfig) -> dict[str, Any]:
-    frozen = json.loads(json.dumps(contract))
+    frozen = freeze_authority(contract)
     frozen["assurance"]["machine_commands"] = [s.to_json() for s in loop_config.pass_cmd]
     frozen["assurance"]["max_iterations"] = loop_config.max_iterations
+    frozen["assurance"]["proof_runner"] = dict(loop_config.proof_runner)
     return frozen
 
 
@@ -227,6 +290,10 @@ def classify_change(old: dict[str, Any], new: dict[str, Any]) -> list[str]:
                 expands = True
     if oa.get("target_branch") != na.get("target_branch"):
         expands = True
+    if set(oa.get("protected_paths", [])) - set(na.get("protected_paths", [])):
+        expands = True  # 保护集缩小 = 写权限扩大
+    if set(oa.get("control_basenames", [])) - set(na.get("control_basenames", [])):
+        expands = True
     if expands:
         kinds.append(CHANGE_AUTHORITY_EXPAND)
 
@@ -239,6 +306,12 @@ def classify_change(old: dict[str, Any], new: dict[str, Any]) -> list[str]:
             downgrade = True
     if set(os_.get("proof_kinds", [])) - set(ns.get("proof_kinds", [])) and "proof" in ns.get("required", []):
         downgrade = True
+    if os_.get("proof_runner") != ns.get("proof_runner"):
+        downgrade = True  # 判据的执行环境变了
+    old_floor = {b["id"]: b.get("proof", PROOF_FLOOR_STRONG) for b in old["mission"]["behaviors"]}
+    for b in new["mission"]["behaviors"]:
+        if old_floor.get(b["id"]) == PROOF_FLOOR_STRONG and b.get("proof", PROOF_FLOOR_STRONG) != PROOF_FLOOR_STRONG:
+            downgrade = True
     if downgrade:
         kinds.append(CHANGE_ASSURANCE_DOWNGRADE)
 

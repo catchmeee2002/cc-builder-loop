@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+import copy
 import json
-import os
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -15,8 +15,9 @@ ROOT = Path(__file__).resolve().parents[1]
 RUNTIME = ROOT / "runtime"
 sys.path.insert(0, str(RUNTIME))
 
+# 本机全局 pytest-html 插件是坏的，所有 pytest 调用都要 -p no:html
 PYTEST_CMD = "python3 -m pytest -p no:html -p no:cacheprovider -q tests"
-PYTEST_ARGV = ["python3", "-m", "pytest", "-p", "no:html", "-p", "no:cacheprovider", "-q"]
+PROOF_RUNNER_CMD = "python3 -m pytest -p no:html"
 
 CONTRACT = {
     "schema": "builder-loop/contract@1",
@@ -24,7 +25,8 @@ CONTRACT = {
         "revision": 1,
         "slug": "add-mul",
         "objective": "Add mul()",
-        "behaviors": [{"id": "B1", "given": "two ints", "when": "mul(a,b)", "then": "returns product"}],
+        "behaviors": [{"id": "B1", "given": "two ints", "when": "mul(a,b)", "then": "returns product", "boundaries": ["a or b is 0"], "invariants": ["add() unchanged"]}],
+        "interfaces": ["src/foo.py::mul(a:int, b:int) -> int"],
     },
     "authority": {"builder_write": ["src/**"], "tester_write": ["tests/**"], "protected_paths": [".claude/loop.yml"]},
     "assurance": {"required": ["machine", "tester", "proof", "reviewer"]},
@@ -32,13 +34,25 @@ CONTRACT = {
 
 
 def git(cwd: Path, *args: str) -> str:
-    return subprocess.run(["git", *args], cwd=str(cwd), check=True, capture_output=True, text=True).stdout.strip()
+    return subprocess.run(["git", "-c", "core.hooksPath=/dev/null", *args], cwd=str(cwd), check=True, capture_output=True, text=True).stdout.strip()
 
 
 def write_plan(repo: Path, contract: dict, name: str = "plan.md") -> Path:
     p = repo / name
     p.write_text("# plan\n<!-- builder-loop-contract -->\n```json\n" + json.dumps(contract) + "\n```\n<!-- /builder-loop-contract -->\n", encoding="utf-8")
     return p
+
+
+def contract_with(**patches) -> dict:
+    """CONTRACT 的深拷贝 + 点路径补丁，如 contract_with(**{"assurance.required": ["machine"]})。"""
+    c = copy.deepcopy(CONTRACT)
+    for dotted, value in patches.items():
+        node = c
+        keys = dotted.split(".")
+        for k in keys[:-1]:
+            node = node[k]
+        node[keys[-1]] = value
+    return c
 
 
 @dataclass
@@ -61,16 +75,15 @@ def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Repo:
     (root / ".claude").mkdir()
     home.mkdir()
     subprocess.run(["git", "init", "-q", "-b", "main", str(root)], check=True)
-    hooks = root / ".git" / "hooks"
-    if hooks.exists():
-        for f in hooks.iterdir():
-            f.unlink()
     git(root, "config", "user.email", "t@t")
     git(root, "config", "user.name", "t")
     (root / "src" / "__init__.py").write_text("")
     (root / "src" / "foo.py").write_text("def add(a, b):\n    return a + b\n")
     (root / "tests" / "test_foo.py").write_text("from src.foo import add\n\n\ndef test_add():\n    assert add(1, 2) == 3\n")
-    (root / ".claude" / "loop.yml").write_text(f"pass_cmd:\n  - stage: test\n    cmd: \"{PYTEST_CMD}\"\n    timeout: 60\nmax_iterations: 3\n")
+    (root / ".claude" / "loop.yml").write_text(
+        f"pass_cmd:\n  - stage: test\n    cmd: \"{PYTEST_CMD}\"\n    timeout: 60\nmax_iterations: 3\n"
+        f"proof_runner:\n  framework: pytest\n  cmd: \"{PROOF_RUNNER_CMD}\"\n"
+    )
     (root / ".gitignore").write_text(".claude/builder-loop/\n__pycache__/\n")
     write_plan(root, CONTRACT)
     git(root, "add", "-A")
@@ -86,8 +99,7 @@ def cli(repo: Repo):
     from builder_loop.errors import Problem
 
     def run(*args: str, expect: int | None = 0):
-        parser = build_parser()
-        ns = parser.parse_args(["--repo", str(repo.root), *args])
+        ns = build_parser().parse_args(["--repo", str(repo.root), *args])
         try:
             out, code = dispatch(ns)
         except Problem as exc:
@@ -113,55 +125,74 @@ def hook(repo: Repo):
 @pytest.fixture
 def started(repo: Repo, cli):
     out = cli("start", "--plan", str(repo.root / "plan.md"), "--session", "S1")
-    return {"repo": repo, "run_id": out["run_id"], "worktree": Path(out["worktree"]), "ledger": Path(out["ledger"]), "target_start_head": out["target_start_head"]}
+    return {
+        "repo": repo, "run_id": out["run_id"], "ledger": Path(out["ledger"]),
+        "worktree": Path(out["worktree"]), "tester_worktree": Path(out["tester_worktree"]),
+        "target_start_head": out["target_start_head"],
+    }
+
+
+# ---------------------------------------------------------------- 场景积木
 
 
 def implement_mul(wt: Path) -> None:
     (wt / "src" / "foo.py").write_text("def add(a, b):\n    return a + b\n\n\ndef mul(a, b):\n    return a * b\n")
 
 
-def write_mul_test(wt: Path) -> None:
-    (wt / "tests" / "test_mul.py").write_text("from src.foo import mul\n\n\ndef test_mul():\n    assert mul(3, 4) == 12\n")
+def write_mul_test(tester_wt: Path, body: str = "assert mul(3, 4) == 12") -> None:
+    (tester_wt / "tests" / "test_mul.py").write_text(f"from src.foo import mul\n\n\ndef test_mul():\n    {body}\n")
 
 
-def mutation_patch(wt: Path) -> str:
-    src = wt / "src" / "foo.py"
+def mutation_patch(candidate_wt: Path) -> str:
+    src = candidate_wt / "src" / "foo.py"
     original = src.read_text()
     src.write_text(original.replace("return a * b", "return a + b"))
-    patch = git(wt, "diff")
+    patch = git(candidate_wt, "diff")
     src.write_text(original)
-    return patch + "\n"
+    return patch  # 故意不带末尾换行：runtime 要能容忍
 
 
-def make_tester_payload(kind: str, patch: str | None = None) -> dict:
-    group = {"kind": kind, "behavior_ids": ["B1"], "argv": [*PYTEST_ARGV, "tests/test_mul.py"], "test_ids": ["tests/test_mul.py::test_mul"], "timeout": 60}
-    if kind == "mutation":
+def make_tester_result(kind: str = "mutation", patch: str | None = None, test_ids: list[str] | None = None, behavior: str = "B1") -> dict:
+    ids = test_ids or ["tests/test_mul.py::test_mul"]
+    group: dict = {"kind": kind, "behavior_ids": [behavior], "test_ids": ids, "timeout": 60}
+    if patch is not None:
         group["patch"] = patch
     if kind == "reviewed-boundaries":
-        group["reviewed_boundaries"] = {"positive": ["tests/test_mul.py::test_mul"], "negative": [], "boundary": [], "invariant": []}
-    return {"role": "tester", "status": "pass", "files": ["tests/test_mul.py"], "behaviors_covered": ["B1"], "proof_spec": {"groups": [group]}}
+        group["reviewed_boundaries"] = {"positive": ids, "negative": [], "boundary": [], "invariant": []}
+    return {"role": "tester", "status": "pass", "behaviors_covered": [behavior], "proof_spec": {"groups": [group]}}
 
 
 def marker(payload: dict) -> str:
     return "done\nBUILDER_LOOP_RESULT: " + json.dumps(payload)
 
 
+def role_turn(hook, role: str, agent_id: str, payload: dict | None, *, start: bool = True, message: str | None = None):
+    """模拟一个角色 turn：SubagentStart（首轮或续接都会触发）+ SubagentStop。"""
+    if start:
+        hook("SubagentStart", {"session_id": "S1", "agent_id": agent_id, "agent_type": role})
+    text = message if message is not None else marker(payload)
+    return hook("SubagentStop", {"session_id": "S1", "agent_id": agent_id, "agent_type": role, "last_assistant_message": text})
+
+
 def drive_to_proof_pass(started: dict, cli, hook) -> None:
-    """builder 实现 → machine → tester(mutation) → machine → proof PASS。"""
-    wt = started["worktree"]
+    """两段式全流程：tester 先后台盲写（patch 留空）→ builder 实现 → integrate → machine → 续接补 patch → proof。"""
+    wt, twt = started["worktree"], started["tester_worktree"]
+    hook("SubagentStart", {"session_id": "S1", "agent_id": "T1", "agent_type": "tester"})
     implement_mul(wt)
     cli("checkpoint", "--session", "S1", "--role", "builder")
-    assert cli("machine", "--session", "S1")["result"] == "PASS"
-    hook("SubagentStart", {"session_id": "S1", "agent_id": "T1", "agent_type": "tester"})
-    write_mul_test(wt)
-    payload = make_tester_payload("mutation", mutation_patch(wt))
-    r = hook("SubagentStop", {"session_id": "S1", "agent_id": "T1", "agent_type": "tester", "last_assistant_message": marker(payload)})
+    write_mul_test(twt)
+    r = role_turn(hook, "tester", "T1", make_tester_result("mutation"), start=False)
     assert r["code"] == 0, r
+    assert cli("status", "--session", "S1")["readiness"]["next_action"] == "integrate"
+    cli("integrate", "--session", "S1")
     assert cli("machine", "--session", "S1")["result"] == "PASS"
-    assert cli("proof", "--session", "S1")["result"] == "PASS"
+    assert cli("status", "--session", "S1")["readiness"]["next_action"] == "resume_tester"  # 缺 patch
+    r = role_turn(hook, "tester", "T1", make_tester_result("mutation", mutation_patch(wt)))
+    assert r["code"] == 0, r
+    out = cli("proof", "--session", "S1")
+    assert out["result"] == "PASS", out
 
 
-def reviewer_pass(hook) -> None:
-    hook("SubagentStart", {"session_id": "S1", "agent_id": "R1", "agent_type": "reviewer"})
-    r = hook("SubagentStop", {"session_id": "S1", "agent_id": "R1", "agent_type": "reviewer", "last_assistant_message": marker({"role": "reviewer", "verdict": "pass", "findings": [], "behaviors_verified": ["B1"]})})
+def reviewer_pass(hook, agent_id: str = "R1") -> None:
+    r = role_turn(hook, "reviewer", agent_id, {"role": "reviewer", "verdict": "pass", "findings": [], "behaviors_verified": ["B1"]})
     assert r["code"] == 0, r

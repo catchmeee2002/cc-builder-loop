@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from . import evidence, gitx, ledger as ledger_mod, worktree
-from .errors import fatal
+from .errors import fatal, needs_user
 from .jsonutil import sha256_bytes
 
 NO_PROGRESS_REPEATS = 3
@@ -66,6 +66,10 @@ def run_machine(ledger_path: Path, repo_root: Path) -> dict[str, Any]:
     cand = lg["candidate"]
     if not cand.get("head") or not cand.get("checkpoints"):
         raise fatal("CANDIDATE_NOT_CHECKPOINTED", "候选还没有 checkpoint，先 `checkpoint --role builder`")
+    blocked = evidence.machine_blocked(lg, repo_root)
+    if blocked:
+        # 上限是真的停止点：越过它需要一次被记录的用户决定（bl resume），不是再跑一次
+        raise needs_user("MACHINE_BLOCKED", "已触发迭代上限或无进展；用 AskUserQuestion 让用户决定，继续则 `bl resume --reason`", blockers=blocked)
     wt = Path(cand["worktree"])
     worktree.assert_candidate_identity(wt, cand["branch"], cand["head"])
     worktree.assert_candidate_clean(wt)
@@ -94,7 +98,9 @@ def run_machine(ledger_path: Path, repo_root: Path) -> dict[str, Any]:
         entry = {"stage": stage["stage"], "returncode": rc, "log": str(log_path), "timed_out": timed_out}
         results.append(entry)
         if rc != 0:
-            failed = dict(entry, signature=failure_signature(text, stage["stage"], rc), tail=text[-4000:])
+            files = evidence.tester_files(lg, repo_root)["present"]
+            mentioned = sorted(f for f in files if f in text)
+            failed = dict(entry, signature=failure_signature(text, stage["stage"], rc), tail=text[-4000:], tester_files_mentioned=mentioned)
             break
 
     mutated = worktree.residue(wt)

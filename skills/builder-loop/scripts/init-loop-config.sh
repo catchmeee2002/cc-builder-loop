@@ -116,10 +116,16 @@ add_gitignore() {
   fi
 }
 add_gitignore ".claude/builder-loop/"
-# Bug fix: .claude/* 通配符可能拦住 loop.yml，加例外确保能 git track
+# loop.yml 被忽略时的处理。git 不会重新纳入「被整目录忽略的父目录」里的文件，
+# 所以父目录 .claude/ 整体被忽略时否定规则是 no-op——那种情况只提示，不替用户改仓库既有约定。
 if git -C "$PROJECT_ROOT" check-ignore -q ".claude/loop.yml" 2>/dev/null; then
-  add_gitignore "!.claude/loop.yml"
-  echo "[init-loop] ⚠️  检测到 .gitignore 会拦 loop.yml，已加 !.claude/loop.yml 例外" >&2
+  if git -C "$PROJECT_ROOT" check-ignore -q ".claude" 2>/dev/null; then
+    echo "[init-loop] ⚠️  .claude/ 整个目录被 .gitignore 忽略，loop.yml 将保持未跟踪。" >&2
+    echo "[init-loop]     若要入库：把忽略规则 '.claude/' 改成 '.claude/*'，再加一行 '!.claude/loop.yml'。" >&2
+  else
+    add_gitignore "!.claude/loop.yml"
+    echo "[init-loop] ⚠️  检测到 .gitignore 会拦 loop.yml，已加 !.claude/loop.yml 例外" >&2
+  fi
 fi
 
 echo "OK $LOOP_YML"

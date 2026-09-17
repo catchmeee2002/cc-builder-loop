@@ -20,9 +20,16 @@ class GitResult:
         return self.returncode == 0
 
 
-def git(cwd: Path | str, *args: str, check: bool = True, input_text: str | None = None) -> GitResult:
+NO_HOOKS = ("-c", "core.hooksPath=/dev/null")
+
+
+def git(cwd: Path | str, *args: str, check: bool = True, input_text: str | None = None, hooks: bool = False) -> GitResult:
+    """内部 git 调用默认禁用目标仓库 hooks：checkpoint / integrate / worktree / rebase 都是 runtime 的
+    事务记录，不是交付提交。`--no-verify` 拦不住 post-commit / post-checkout / pre-rebase，所以用 hooksPath。
+    唯一例外是 `finalize --run-commit-hook`，显式传 hooks=True。"""
+    prefix = () if hooks else NO_HOOKS
     proc = subprocess.run(
-        ["git", *args],
+        ["git", *prefix, *args],
         cwd=str(cwd),
         capture_output=True,
         text=True,

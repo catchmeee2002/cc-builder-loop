@@ -18,6 +18,10 @@ from .jsonutil import sha256_file
 LOOP_YML = Path(".claude") / "loop.yml"
 DEFAULT_MAX_ITERATIONS = 5
 DEFAULT_STAGE_TIMEOUT = 300
+PROOF_FRAMEWORKS = ("pytest", "generic")
+# proof 的测试命令由项目声明、start 时冻结进 assurance 面：环境依赖因此进入 evidence 的输入投影，
+# tester 不再自己写 argv（#229：否则只能把机器侧 venv 的绝对路径藏进 argv）。
+DEFAULT_PROOF_RUNNER = {"framework": "pytest", "cmd": "python3 -m pytest"}
 
 
 @dataclass
@@ -37,6 +41,7 @@ class LoopConfig:
     pass_cmd: list[Stage] = field(default_factory=list)
     max_iterations: int = DEFAULT_MAX_ITERATIONS
     worktree_root: str | None = None
+    proof_runner: dict[str, str] = field(default_factory=lambda: dict(DEFAULT_PROOF_RUNNER))
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -45,6 +50,7 @@ class LoopConfig:
             "pass_cmd": [s.to_json() for s in self.pass_cmd],
             "max_iterations": self.max_iterations,
             "worktree_root": self.worktree_root,
+            "proof_runner": self.proof_runner,
         }
 
 
@@ -253,7 +259,21 @@ def load_loop_config(repo_root: Path) -> LoopConfig:
     if isinstance(wt, dict) and wt.get("root"):
         worktree_root = str(wt["root"])
 
+    runner = dict(DEFAULT_PROOF_RUNNER)
+    raw_runner = data.get("proof_runner")
+    if raw_runner is not None:
+        if not isinstance(raw_runner, dict):
+            raise fatal("CONFIG_PROOF_RUNNER_INVALID", "proof_runner 必须是映射 {framework, cmd}", value=raw_runner)
+        framework = raw_runner.get("framework", "pytest")
+        if framework not in PROOF_FRAMEWORKS:
+            raise fatal("CONFIG_PROOF_RUNNER_INVALID", f"proof_runner.framework 必须是 {PROOF_FRAMEWORKS}", value=framework)
+        cmd = raw_runner.get("cmd") or (DEFAULT_PROOF_RUNNER["cmd"] if framework == "pytest" else None)
+        if not isinstance(cmd, str) or not cmd.strip():
+            raise fatal("CONFIG_PROOF_RUNNER_INVALID", "proof_runner.cmd 不能为空（generic 必须显式给出）")
+        runner = {"framework": framework, "cmd": cmd.strip()}
+
     return LoopConfig(
+        proof_runner=runner,
         path=str(LOOP_YML),
         sha256=sha256_file(path),
         pass_cmd=stages,
