@@ -1,5 +1,18 @@
 # Changelog — cc-builder-loop 已交付能力
 
+> 本文件记 **CC 版**产品线（分支 `v8`）。Codex 版见 `codex-new` 分支。
+
+## V8.2 角色查账本、门禁预检、门禁在跑（2026-09-18）
+
+来由：V8.1 的首个真实业务 run 走到了 finalize，但多花了约 2 轮 tester 续接、2 次用户授权、3 次 Stop 空转，产出 #240–#243。
+
+- **`bl brief --role tester|reviewer`：角色事实的唯一来源（#240 #243）**。写边界、候选可读性、contract 版本、**等你做的事**全部从 ledger 与 git 现算，不落盘。SubagentStart 注入的上下文就是它的文本形态（同一个 `brief.build()`），角色在续接轮、收到自称 Builder 的消息时、对归属存疑时随时自取。builder 经 SendMessage 发的消息降级为门铃：`bl status` 的 `briefs.*` 不再含任何事实。此前 tester 拿到的是一次性文字快照——续接时不送达、与 runtime 的判定各说各话、消息又无从验真。
+- **写边界重叠在规划期就拒（#240）**：`builder_write` 的条目落在 `tester_write` 之内 → `CONTRACT_INVALID`。此前 validate 接受，而 checkpoint 判它归 tester、注入给 tester 的上下文说它归 builder，两个角色都不敢动。给 tester 的 brief 也不再复述 builder 的写边界。
+- **门禁在跑时 Stop 不再催（#242）**：machine / proof / preflight 执行期间各持 `run_dir/gate-<holder>.lock` 的 flock，`next_action` 正是在跑的那个门禁时改判 `awaiting_gate` 并放行。重复启动同一门禁 → `GATE_BUSY`。进程死掉锁自动释放。此前后台跑 machine 时 Stop 反复要求"运行 bl machine"，只能靠无进展放行脱身。
+- **判据本身跑不起来的问题提前到规划期（#241）**：`bl start` 与 `contract validate --check-repo` 先跑一次 `<proof_runner.cmd> --version`，不过就拒绝启动（`PROOF_RUNNER_UNAVAILABLE`）——此时 run 还不存在，改 loop.yml 不需要 revise 与授权。`bl doctor` 也报这项。
+- **`bl preflight`**：在 run 起点的临时 worktree 上跑一遍 pass_cmd，记 event（不动 evidence、不计 machine_iter），之后 machine 失败会标出 `baseline_red` —— 这一段在起点上同样失败，与候选无关。由 builder 在 start 后用后台 Bash 启动，与写实现并行。
+- **proof runner 起不来不再甩给 builder（#241）**：候选阶段 rc≠0 且一条 junit 记录都没有 → `TEST_PROOF_RUNNER_FAILED`，`suggested_owner=contract`。
+
 ## V8.1 tester 独立性、判据加固、复盘闸门（2026-09-17）
 
 来由：对 codex-new 做了全量 parity 审计并逐条评估（取舍与理由见 #233），加上首次真实 dogfood 暴露的 #226–#232。

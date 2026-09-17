@@ -23,7 +23,7 @@ description: "builder-loop 机制说明与接入向导：判据驱动的交付�
    → bl retro signals → bl retro record（复盘硬闸门，之后 session 才解绑）
 ```
 
-Stop hook：run 未终态 → 拦住并给出 `next_action`；等待用户（AskUserQuestion 挂起）或等待在跑的 subagent（`awaiting_*`）→ 放行；终态但未复盘 → 拦住；连续 3 次 Stop 之间 ledger 无进展 → 放行并提示。
+Stop hook：run 未终态 → 拦住并给出 `next_action`；等待用户（AskUserQuestion 挂起）或等待在跑的 subagent / 门禁（`awaiting_*`）→ 放行；终态但未复盘 → 拦住；连续 3 次 Stop 之间 ledger 无进展 → 放行并提示。
 
 ## CLI（`bl`，装在 `~/.claude/bin`）
 
@@ -35,6 +35,8 @@ Stop hook：run 未终态 → 拦住并给出 `next_action`；等待用户（Ask
 | `bl integrate` | tester 分支的测试按路径叠进候选（幂等） | 0 / 1 |
 | `bl machine` | 在候选 worktree 顺序跑 pass_cmd | 0 PASS / 1 FAIL / 2 FATAL / 3 上限或无进展 |
 | `bl proof` | 证明测试有鉴别力 | 0 / 1 / 3 |
+| `bl preflight` | 在 run 起点跑一遍 pass_cmd，标出本来就红的 stage（后台跑，只记 event 不动判据） | 0 |
+| `bl brief --role tester\|reviewer [--json]` | 角色视角的当前事实与待办；角色自取，是它的唯一来源 | 0 |
 | `bl resume --reason R` | 用户授权后解除上限 / 无进展 / proof 反复失败（blocker 之后必须有过用户输入） | 0 / 1 / 3 |
 | `bl finalize [-m] [--run-commit-hook]` | CAS 写回目标分支 | 0 / 1（未就绪 / DRIFT / dirty 重叠） |
 | `bl rebase` | 目标分支前进后把候选 rebase 上去（tester 分支不动） | 0 / 1 冲突 |

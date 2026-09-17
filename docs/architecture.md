@@ -42,12 +42,13 @@ proof 只能证明"测试能抓住偏离当前实现"，证明不了"当前实�
 | `ledger` | schema @2 校验、mutate、events、session 指针（读后回核 owner）、`peek`（不校验 schema，给 doctor / runs / abandon 处理旧版 ledger） |
 | `worktree` | 每个 run 的 `builder/` 与 `tester/` 两个 worktree（创建失败回滚）、临时 worktree（支持叠加与删除）、身份 / clean 断言 |
 | `run` | start / status / checkpoint（分角色、`--dry-run`）/ integrate / resume / abandon / contract validate\|revise |
-| `machine` | pass_cmd 三态、超时、执行后 worktree 变更检测、失败签名、`tester_files_mentioned` |
-| `evidence` | tester 文件与 integrate 需求的 git 派生、投影、`state()`、`role_running()`、blockers（授权窗口）、`readiness()` |
+| `machine` | pass_cmd 三态、超时、执行后 worktree 变更检测、失败签名、`tester_files_mentioned`、基线预跑 `preflight` |
+| `evidence` | tester 文件与 integrate 需求的 git 派生、投影、`state()`、`role_running()` / `gate_running()`、blockers（授权窗口）、`readiness()` |
 | `proof` | spec 结构校验、`build_argv`、junit 解析与 id 映射、候选 / 反例判定、四步执行、失败签名 |
 | `finalize` | 前置检查、commit-tree（可选 `--run-commit-hook`）、intent、CAS、checkout 同步、恢复、rebase |
 | `retro` | 确定性信号派生（只读 ledger）、复盘记录校验、cleanup |
-| `hooks` | 六个 handler、结果标记解析、角色上下文注入、tester 读隔离与角色写边界、心跳续租 |
+| `hooks` | 六个 handler、结果标记解析、tester 读隔离与角色写边界、心跳续租；注入的上下文 = `brief.render()` |
+| `brief` | 角色视角事实的**唯一来源**：写边界、候选可读性、待办；结构化 + 文本两种形态，`bl brief` 与 SubagentStart 同源 |
 | `doctor` | 只读诊断 |
 
 `hooks/bl-hook.sh` 先用纯 bash 从 stdin 抠 `session_id` 并查 session 指针，没有绑定就直接退出、不起 python——PreToolUse 挂在 Read / Bash 上，无绑定 session 的开销必须接近零。
@@ -55,6 +56,8 @@ proof 只能证明"测试能抓住偏离当前实现"，证明不了"当前实�
 ## 写边界
 
 `write_rejection(authority, role, path)` 依次判：`protected_paths` → 归属（**tester_write 优先**：两边 glob 都命中归 tester，构造上不相交，`builder_write:["**"]` 也碰不到测试）→ 角色不符 → 控制面规则。控制面冻结的是**规则**（`authority.control_basenames`：pytest.ini、pyproject.toml、conftest.py、Makefile、package.json、go.mod、Cargo.toml、BUILD、WORKSPACE、loop.yml 等）而不是文件列表：新建的 conftest.py 同样能劫持测试收集。规则只拦「builder 靠 glob 顺带命中」的情形——在写边界里字面点名即视为计划授权；tester_write 内的归 tester。`bl contract validate --check-repo` 在规划期列出会被保护的命中项，让用户中断发生在规划期。
+
+`builder_write` 的条目**不得落在 `tester_write` 之内**（`validate_contract` 直接拒）：否则 checkpoint 判它归 tester、而 builder 以为自己有授权，两个角色都不敢动（#240）。要让测试跟着实现变，在 behavior 里写明，由 tester 改。注入给 tester 的 brief 也只列它自己的写边界，不复述 builder 的。
 
 builder 与 tester 各看各的 worktree，未提交改动互不可见；删除类任务的旧测试由 tester 依据 contract 清理，两个角色不会互相整单拒绝。
 
@@ -79,11 +82,13 @@ pytest 框架下结论取自 junit xml：候选阶段要求 rc==0 且每个声�
 
 ## readiness → next_action
 
-terminal →（无 retrospective `retro`，否则 `done`）；有 blocker → `needs_user`；tester 需要干活且没在跑 → `spawn_tester` / `resume_tester`（**先于** builder 的 `checkpoint`：tester 后台并行，越早放出去越好）；builder 无 checkpoint → `checkpoint`；tester 在跑 → `awaiting_tester`；需要 integrate → `integrate`；`machine`；proof：缺 mutation patch 且 tester 在首次 integrate 后还没答复过 → `resume_tester`，fail 且 owner=tester 且 tester 尚未答复 → `resume_tester`，否则 `proof`；reviewer：在跑 → `awaiting_reviewer`，fail 且有 owner=tester 的 blocking/major 且 tester 尚未答复 → `resume_tester`，否则 spawn / resume；全过 → `finalize`。
+terminal →（无 retrospective `retro`，否则 `done`）；有 blocker → `needs_user`；tester 需要干活且没在跑 → `spawn_tester` / `resume_tester`（**先于** builder 的 `checkpoint`：tester 后台并行，越早放出去越好）；builder 无 checkpoint → `checkpoint`；tester 在跑 → `awaiting_tester`；需要 integrate → `integrate`；`machine`；proof：缺 mutation patch 且 tester 在首次 integrate 后还没答复过 → `resume_tester`，fail 且 owner=tester 且 tester 尚未答复 → `resume_tester`，否则 `proof`；reviewer：在跑 → `awaiting_reviewer`，fail 且有 owner=tester 的 blocking/major 且 tester 尚未答复 → `resume_tester`，否则 spawn / resume；全过 → `finalize`。最后一步：若 `next_action` 正是某个**已在执行**的门禁（machine / proof），改判 `awaiting_gate`。
 
 「tester 尚未答复」用事件时间戳比较（ISO 微秒，UTC，字典序即时间序）：答复过而失败依旧时回到 `proof`，让同签名计数生效，避免无限续接。
 
 **角色是否在跑**不落盘：最近一条生命周期事件是 `role_start`（或要求重发的 `role_malformed`）且 40 分钟租约未过期。该 agent 的每次 PreToolUse 续租，只 touch `run_dir/heartbeat-<role>`，不写 ledger。只用于 `awaiting_*`（抑制 Stop 回拉），不给任何 CLI 加闸；agent 失联则租约到期后回到 resume。
+
+**门禁是否在跑**同样不落盘：machine / proof / preflight 执行期间各持有 `run_dir/gate-<holder>.lock` 的 flock（文件里写 pid，本进程自己持有不算）。进程死掉锁自动释放，没有残留状态要清理。同一门禁重复启动 → `GATE_BUSY`；machine / proof 遇到 preflight 在跑会排队等它（两套全量测试并发会把彼此挤成假超时），排队期间自己的锁已持有，所以 Stop 看得到它在等。
 
 **blocker** 按最近一次用户授权以来的窗口计算：`MAX_ITERATIONS`、`NO_PROGRESS`（machine 同签名 3 次）、`PROOF_STALL`（proof 同签名 3 次）、`REVIEW_CONTRACT`（reviewer 提了 owner=contract 的 blocking/major）、`WAITING_FOR_USER`。前三个激活时 `bl machine` / `bl proof` 直接 exit 3 不执行——上限是真的停止点。`bl resume --reason` 记一条 authorization，但要求 blocker 之后存在 `user_input` 事件：模型不能自己给自己授权。该事件**只由 PostToolUse(AskUserQuestion) 写入**——后台 subagent 结束时唤醒主 session 的任务通知也会触发 UserPromptSubmit，那不是真人。
 
@@ -92,14 +97,14 @@ terminal →（无 retrospective `retro`，否则 `done`）；有 blocker → `n
 | event | matcher | 逻辑 |
 |---|---|---|
 | Stop | — | 终态已复盘 → 解绑放行；waiting → 放行；`awaiting_*` → 放行且不计 stall；其余（含终态未复盘）→ exit 2 + next_action；`stop_hook_active` 且 seq 未变连续 3 次 → 放行并记 `stall_escape` |
-| SubagentStart | tester\|reviewer | 登记 agent_id（保留 turn；换了 agent_id 记 `role_replaced`）、记 `role_start{candidate_head}`、注入上下文（tester 集成前后内容不同） |
+| SubagentStart | tester\|reviewer | 登记 agent_id（保留 turn；换了 agent_id 记 `role_replaced`）、记 `role_start{candidate_head}`、注入上下文（= `brief.render()`；tester 集成前后内容不同） |
 | SubagentStop | tester\|reviewer | 只认登记的 agent_id；标记缺失 / 不合规 → exit 2（≤2 次）→ 第 3 次记 fail；tester：提交 tester worktree + spec 结构校验 + evidence + proof_spec；reviewer：起点 HEAD ≠ 当前候选 HEAD → 本次无效 |
 | PreToolUse | AskUserQuestion / EnterWorktree | 写 waiting / deny |
 | PreToolUse | Read\|Grep\|Glob\|Write\|Edit\|MultiEdit\|NotebookEdit\|Bash | 仅对登记的角色：续租；reviewer 写一律拒；tester 写只许自己 worktree 的 tester_write；集成前 tester 读 / 搜候选拒（先 realpath，Grep/Glob 必须显式 path，Bash 命令串含候选路径或分支名拒——尽力而为） |
 | PostToolUse | AskUserQuestion | 清 waiting、记 `user_input`（授权续跑的唯一依据） |
 | UserPromptSubmit | — | 只清 waiting，不记事件（任务通知也会触发它） |
 
-所有 hook 首步 `lookup_session(session_id)`，stdin 的 `cwd` 不参与定位。matcher 不是身份门禁（`agent_type` 为空的内部 agent 也会被放进来），handler 内复核 `agent_type` 与登记的 `agent_id`。角色 hook 的写入（role_start、要求重发）保持 `stall.seq_seen` 与 seq 的相等关系，不算主 session 的进展。SendMessage 续接会让 Start 与 Stop **都**再次触发，agent_id 不变；但 SubagentStart 的 `additionalContext` **只在首次 spawn 时送达**，被续接的 agent 收不到（均为 CC 2.1.272 实测）。所以注入上下文只承载首轮事实；集成之后"候选现在可读"这类变化由 builder 的消息带过去（`bl status` 的 `briefs.resume_tester` 是现成正文），tester 以 hook 是否放行为准。续接轮里 tester 交 `insufficient_spec` 而测试未变时，原 tester evidence 保留，只记一条 `role_result{status: declined}`。
+所有 hook 首步 `lookup_session(session_id)`，stdin 的 `cwd` 不参与定位。matcher 不是身份门禁（`agent_type` 为空的内部 agent 也会被放进来），handler 内复核 `agent_type` 与登记的 `agent_id`。角色 hook 的写入（role_start、要求重发）保持 `stall.seq_seen` 与 seq 的相等关系，不算主 session 的进展。SendMessage 续接会让 Start 与 Stop **都**再次触发，agent_id 不变；但 SubagentStart 的 `additionalContext` **只在首次 spawn 时送达**，被续接的 agent 收不到（均为 CC 2.1.272 实测）。所以**注入的上下文不是角色的事实来源，`bl brief` 才是**：同一个 `brief.build()` 现算，角色在续接轮、收到自称 Builder 的消息时、或对归属存疑时随时自取。builder 的消息只当门铃（`bl status` 的 `briefs.*` 是现成正文，里面不含任何事实）。续接轮里 tester 交 `insufficient_spec` 而测试未变时，原 tester evidence 保留，只记一条 `role_result{status: declined}`。
 
 ## 复盘闸门
 
@@ -109,8 +114,11 @@ finalize / abandon / finalize_failed 之后 session 不解绑；`start` 遇到�
 
 | 情况 | 行为 |
 |---|---|
+| proof_runner 跑不起来 | `bl start` 与 `contract validate --check-repo` 先跑 `<cmd> --version`，不过就拒绝启动（`PROOF_RUNNER_UNAVAILABLE`）——run 还不存在，改 loop.yml 不需要 revise/授权 |
+| machine FAIL 的 stage 在基线上也红 | 跑过 `bl preflight` 则 `failure.baseline_red=true` 并提示与候选无关；没跑过则提示可以补跑 |
 | machine FAIL | evidence fail + failures 追加；输出 `repeat_count` / `remaining_iterations` / `tester_files_mentioned`；测试写错由 builder SendMessage 给 tester |
 | pass_cmd 改了候选文件 | `failure.worktree_mutated`，视为 FAIL |
+| proof runner 起不来 | 候选阶段 rc≠0 且一条 junit 记录都没有 → `TEST_PROOF_RUNNER_FAILED`，`suggested_owner=contract`（两个角色都改不了，要改 loop.yml）|
 | proof 失败 | `TEST_PROOF_CANDIDATE_FAILED` / `TEST_PROOF_NOT_EXECUTED` / `TEST_BASELINE_RED_NOT_PROVEN` / `TEST_MUTATION_SURVIVED` / `TEST_MUTATION_INVALID` / `TEST_MUTATION_PATCH_MISSING` / `PROOF_WORKTREE_MUTATED`；`suggested_owner` 指向 builder 或 tester |
 | reviewer 未过 | finding 的 owner 决定去向：builder 修 / 回 tester / `REVIEW_CONTRACT` 交还用户 |
 | 目标分支前进 | finalize → TARGET_DRIFT；`bl rebase` 只动候选；成功后 evidence 自然 stale，tester evidence 不受影响 |

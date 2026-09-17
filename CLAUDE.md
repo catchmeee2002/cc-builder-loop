@@ -23,7 +23,7 @@
 
 | 路径 | 职责 |
 |---|---|
-| `runtime/builder_loop/` | Python runtime（stdlib only）。`ledger` 单写者 + events；`contract` 三面 digest 与**唯一的写边界判定** `write_rejection`；`evidence` 投影 / readiness / 角色在跑的派生；`machine` / `proof` / `finalize` 三个判据事务；`run` 生命周期（含 integrate、resume）；`retro` 复盘与 cleanup；`hooks` 六个 CC hook handler；`cli` 入口 |
+| `runtime/builder_loop/` | Python runtime（stdlib only）。`ledger` 单写者 + events；`contract` 三面 digest 与**唯一的写边界判定** `write_rejection`；`brief` **角色事实的唯一来源**；`evidence` 投影 / readiness / 角色与门禁在跑的派生；`machine`（含 preflight）/ `proof` / `finalize` 三个判据事务；`run` 生命周期（含 integrate、resume）；`retro` 复盘与 cleanup；`hooks` 六个 CC hook handler；`cli` 入口 |
 | `hooks/bl-hook.sh` | 唯一 hook 入口；纯 bash 快速路径——session 没绑定 run 就不起 python |
 | `bin/bl` | CLI 入口（install 软链到 `~/.claude/bin/bl`） |
 | `agents/{tester,reviewer}.md` | 角色 subagent 定义；运行时上下文由 SubagentStart hook 注入，文件本身只写硬约束 |
@@ -45,6 +45,7 @@ bl doctor                                                   # hook / 软链 / �
 - 改 runtime 逻辑 → 对应 `tests/test_*.py` 加 case；evidence 投影、readiness 规则、hook 接线变化必须同步 `docs/architecture.md` 的表。
 - 新增 ledger 字段前先过原则五：能从 git / events / evidence 派生的不落盘（`integrated_head`、`running` 都是被这条否掉的）。
 - 涉及路径归属或保护的判断一律调 `contract.write_rejection`，不要在调用点另写一份。
+- 要让 tester / reviewer 知道的事实一律进 `brief.build()`，不在 prompt、hook 或 builder 的消息里另写一份——角色只信 `bl brief`（注入的上下文续接时不送达，SendMessage 的正文角色无从验真）。
 - 改 hook 输入字段假设 → 先用真实会话探针确认（临时 hook 把 stdin 落盘），CC 版本不同字段会变。
 - 改 agent 输出契约（`BUILDER_LOOP_RESULT`）→ 同时改 `hooks.py` 的 `*_RESULT_FORMAT`、`agents/*.md`、`schema/agent-result.schema.json`。
 - 本仓自身用 V8 交付（`.claude/loop.yml` 已配）；dogfood 需新开 session 让 skills 重新发现。
