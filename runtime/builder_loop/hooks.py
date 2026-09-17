@@ -109,6 +109,13 @@ def record_role_result(ledger_path: Path, repo_root: Path, role: str, agent_id: 
 
     if role == "tester":
         cp = checkpoint(ledger_path, repo_root, ROLE_TESTER, message=None)  # 越界 → CHECKPOINT_REJECTED
+        current = ledger_mod.load(ledger_path)
+        if payload["status"] == "insufficient_spec" and cp.get("noop") and evidence.state(current, "tester", repo_root) == evidence.STATE_PASS:
+            # 续接轮里它只是完成不了这次的请求（比如补不出 patch）：测试没变、原证据依然成立，不要覆盖成 fail
+            with ledger_mod.mutate(ledger_path) as lg2:
+                ledger_mod.log_event(lg2, "role_result", role=role, agent_id=agent_id, status="declined", notes=str(payload.get("notes", ""))[:500])
+                readiness = evidence.readiness(lg2, repo_root)
+            return {"recorded": "tester", "status": "declined", "readiness": readiness}
         if payload["status"] == "pass":
             from .proof import validate_spec
 
@@ -181,6 +188,7 @@ def agent_context(lg: dict[str, Any], role: str, repo_root: Path) -> str:
             f"写边界 tester_write: {a['tester_write']}；不要碰 builder_write {a['builder_write']} 与 protected {a.get('protected_paths', [])}",
             f"测试命令由项目冻结，不需要你给 argv：{runner.get('cmd')}（framework={runner.get('framework')}）；proof_spec 每组只给 test_ids（pytest node id，如 tests/test_x.py::test_a）",
         ]
+        lines.append("之后如果你被续接（SendMessage），不会再收到这样一段注入上下文——续接时的新信息都在 Builder 发来的消息里。你的测试集成进候选之后，Builder 会把候选 worktree 的路径发给你，届时 hook 会放行你对它的读取：**以 hook 是否放行为准**，Read 被拦就说明还不允许。")
         if evidence.implementation_readable_by_tester(lg):
             lines += [
                 f"你的测试已集成进候选，现在可以读候选实现: {lg['candidate']['worktree']}（只读）。",
@@ -408,9 +416,14 @@ def _user_input(bound: dict[str, Any], source: str) -> HookReturn:
     lg = bound["ledger"]
     if ledger_mod.is_terminal(lg) and not ledger_mod.needs_retro(lg):
         return _silent()
+    # 只有 AskUserQuestion 的回答算「用户输入」事件（`bl resume` 据此确认授权来自用户）。
+    # UserPromptSubmit 不算：后台 subagent 结束的任务通知也会触发它（CC 2.1.272 实测），那不是真人。
+    if source != "AskUserQuestion" and not lg.get("waiting_for_user"):
+        return _silent()
     with ledger_mod.mutate(bound["ledger_path"]) as lg2:
         lg2["waiting_for_user"] = None
-        ledger_mod.log_event(lg2, "user_input", source=source)  # `bl resume` 据此确认授权来自用户
+        if source == "AskUserQuestion":
+            ledger_mod.log_event(lg2, "user_input", source=source)
     return _silent()
 
 

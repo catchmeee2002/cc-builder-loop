@@ -123,6 +123,31 @@ def test_two_phase_proof_flow(started, cli, hook):
     assert cli("status", "--session", "S1")["readiness"]["next_action"] == "spawn_reviewer"
 
 
+def test_resumed_tester_declining_keeps_valid_evidence(started, cli, hook):
+    """真实 E2E 里抓到的：续接轮 tester 补不出 patch（没拿到候选路径）交了 insufficient_spec，
+    测试没变、原证据依然成立，不能被覆盖成 fail。"""
+    wt, twt = started["worktree"], started["tester_worktree"]
+    hook("SubagentStart", {"session_id": "S1", "agent_id": "T1", "agent_type": "tester"})
+    implement_mul(wt)
+    cli("checkpoint", "--session", "S1", "--role", "builder")
+    write_mul_test(twt)
+    role_turn(hook, "tester", "T1", make_tester_result("mutation"), start=False)
+    cli("integrate", "--session", "S1")
+    cli("machine", "--session", "S1")
+    st = cli("status", "--session", "S1")
+    assert st["readiness"]["next_action"] == "resume_tester" and str(wt) in st["briefs"]["resume_tester"]
+    r = role_turn(hook, "tester", "T1", {"role": "tester", "status": "insufficient_spec", "notes": "没拿到候选路径"})
+    assert r["code"] == 0
+    lg = L.load(started["ledger"])
+    assert lg["evidence"]["tester"]["status"] == "pass" and lg["proof_spec"]
+    assert lg["events"][-1]["status"] == "declined" and "候选路径" in lg["events"][-1]["notes"]
+    # 它答复过了 → 不再无限续接；硬跑 proof 得到「缺 patch，回 tester」并计入 stall 计数
+    assert cli("status", "--session", "S1")["readiness"]["next_action"] == "proof"
+    assert cli("proof", "--session", "S1", expect=1)["failure"]["code"] == "TEST_MUTATION_PATCH_MISSING"
+    # 首轮（还没有通过的证据）交 insufficient_spec 仍然记 fail
+    assert "不会再收到这样一段注入上下文" in hook("SubagentStart", {"session_id": "S1", "agent_id": "T1", "agent_type": "tester"})["json"]["hookSpecificOutput"]["additionalContext"]
+
+
 def test_proof_prerequisites_and_missing_patch(started, cli, hook):
     wt, twt = started["worktree"], started["tester_worktree"]
     hook("SubagentStart", {"session_id": "S1", "agent_id": "T1", "agent_type": "tester"})

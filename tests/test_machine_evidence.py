@@ -46,6 +46,9 @@ def test_iteration_limit_is_a_real_stop_and_needs_user_authorization(repo, cli, 
     assert r["code"] == 2 and "needs_user" in r["stderr"] and "bl resume" in r["stderr"]
     # 模型不能自己给自己授权：blocker 之后必须有过用户输入
     assert cli("resume", "--session", "S1", "--reason", "自己决定继续", expect=3)["code"] == "USER_DECISION_REQUIRED"
+    # 后台 subagent 结束的任务通知也会触发 UserPromptSubmit（CC 实测）——它不是真人，不能当授权依据
+    hook("UserPromptSubmit", {"session_id": "S1", "prompt": "<task-notification>…</task-notification>"})
+    assert cli("resume", "--session", "S1", "--reason", "自己决定继续", expect=3)["code"] == "USER_DECISION_REQUIRED"
     hook("PreToolUse", {"session_id": "S1", "tool_name": "AskUserQuestion", "tool_use_id": "q1"})
     hook("PostToolUse", {"session_id": "S1", "tool_name": "AskUserQuestion"})
     ok = cli("resume", "--session", "S1", "--reason", "用户：已定位根因，再给 3 次")
@@ -124,9 +127,13 @@ def test_stop_hook_stall_waiting_and_awaiting(started, cli, hook):
     # AskUserQuestion 挂起 → 放行；用户回答后恢复
     hook("PreToolUse", {"session_id": "S1", "tool_name": "AskUserQuestion", "tool_use_id": "t1"})
     assert L.load(started["ledger"])["waiting_for_user"]
-    hook("UserPromptSubmit", {"session_id": "S1"})
+    hook("UserPromptSubmit", {"session_id": "S1"})  # 用户没答题直接打字：清等待，但不记为 user_input
     lg = L.load(started["ledger"])
-    assert lg["waiting_for_user"] is None and lg["events"][-1]["kind"] == "user_input"
+    assert lg["waiting_for_user"] is None and lg["events"][-1]["kind"] != "user_input"
+    hook("PreToolUse", {"session_id": "S1", "tool_name": "AskUserQuestion", "tool_use_id": "t2"})
+    hook("PostToolUse", {"session_id": "S1", "tool_name": "AskUserQuestion"})
+    lg = L.load(started["ledger"])
+    assert lg["waiting_for_user"] is None and lg["events"][-1] | {"at": 0} == {"at": 0, "kind": "user_input", "source": "AskUserQuestion"}
     assert hook("Stop", {"session_id": "nobody"})["code"] == 0
     r = hook("PreToolUse", {"session_id": "S1", "tool_name": "EnterWorktree", "tool_input": {}})
     assert r["json"]["hookSpecificOutput"]["permissionDecision"] == "deny"

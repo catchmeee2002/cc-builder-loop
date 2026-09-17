@@ -27,7 +27,7 @@ builder-loop 只负责判据和 Git 事务；调度 subagent、续接、问用�
 | `awaiting_tester` / `awaiting_reviewer` | 对应 agent 正在跑。没有别的事就**直接结束这一轮**——它交卷时你会被唤醒，Stop hook 此时放行。不要空转、不要重复 spawn |
 | `integrate` | `bl integrate`：把 tester 的测试并入候选 |
 | `machine` | `bl machine`。FAIL → Read `failure.log`。是实现的错 → 修 → checkpoint；`failure.tester_files_mentioned` 非空且你判断是**测试写错了** → 你改不了测试，`SendMessage` 给 tester（`status.agents.tester.agent_id`）并附失败日志 |
-| `resume_tester` | `SendMessage` 续接 tester，说清要它做什么。最常见的一次是集成后让它**补 mutation patch**（首轮它看不到实现，写不出来）；其余是 proof 失败 / reviewer 指出的测试问题 |
+| `resume_tester` | `SendMessage` 续接 tester，说清要它做什么。**续接的 agent 收不到 hook 注入的上下文**，它只知道你消息里写的东西：最常见的一次是集成后让它**补 mutation patch**（首轮它看不到实现，写不出来）——直接用 `bl status` 输出里的 `briefs.resume_tester` 作正文（含候选路径与"读隔离已解除"的说明），否则它会守着首轮的边界拒绝去读候选。其余情形是 proof 失败 / reviewer 指出的测试问题，附上失败日志或 finding 原文 |
 | `proof` | `bl proof`。FAIL 看 `failure.suggested_owner`：`tester` → resume_tester；`builder` → 修实现 |
 | `spawn_reviewer` | `Agent(subagent_type: "reviewer", prompt: "builder-loop run <run_id>，按注入的上下文审查")`，同步等 |
 | `resume_reviewer` | 按 owner=builder 的 findings 修 → checkpoint → machine → proof → `SendMessage` 给 reviewer：「已修复 …，请复审」 |

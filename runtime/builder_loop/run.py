@@ -112,8 +112,17 @@ def status(ledger_path: Path, repo_root: Path) -> dict[str, Any]:
     wt = Path(cand["worktree"]) if cand.get("worktree") else None
     dirty = worktree.residue(wt) if wt and wt.is_dir() else []
     tester = lg.get("tester")
+    briefs: dict[str, str] = {}
+    if tester and evidence.implementation_readable_by_tester(lg):
+        # CC 只在首次 spawn 时注入 SubagentStart 的上下文，续接的 agent 收不到；集成后的事实得由 Builder 的消息带过去
+        briefs["resume_tester"] = (
+            f"你的测试已集成进候选。候选 worktree（只读）: {cand['worktree']} —— runtime 已解除你对它的读隔离，"
+            "可以直接 Read 验证（被 hook 拦就说明不允许）。mutation 组请补 patch：`git diff` 格式，只改 builder 拥有的已有文件、"
+            "只破坏对应 behavior，打上后该组测试必须断言失败；不要为迁就实现放宽断言。然后把完整 proof_spec 重新交一遍。"
+        )
     return {
         "run_id": lg["run_id"],
+        "briefs": briefs,
         "seq": lg["seq"],
         "terminal": lg.get("terminal"),
         "retrospective_recorded": bool(lg.get("retrospective")),
@@ -242,7 +251,7 @@ def resume(ledger_path: Path, repo_root: Path, reason: str) -> dict[str, Any]:
             raise negative("NOTHING_TO_RESUME", "当前没有可由授权解除的 blocker")
         # 授权必须来自用户：blocker 出现之后要有一次真实的用户输入（AskUserQuestion 回答或新 prompt）
         since = _blocked_since(lg)
-        if not any(e["at"] >= since for e in ledger_mod.events_of(lg, "user_input")):
+        if not any(e["at"] >= since and e.get("source") == "AskUserQuestion" for e in ledger_mod.events_of(lg, "user_input")):
             raise needs_user("USER_DECISION_REQUIRED", "blocker 触发后还没有用户输入；先用 AskUserQuestion 让用户决定是否继续", blockers=active)
         auth = {
             "at": ledger_mod.now_iso(), "reason": reason, "blockers": [b["code"] for b in active],
