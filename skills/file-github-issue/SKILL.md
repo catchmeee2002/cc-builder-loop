@@ -1,9 +1,9 @@
 ---
 name: file-github-issue
-description: 当用户要求“提 Issue”“开 Issue”“记录 bug”“把这个问题记到 GitHub”，或当前任务明确要求把运行中发现的工程缺陷提交为 GitHub Issue 时使用。保留仍然新鲜的问题现场，查重并区分事实、根因假设与已确认根因，再由当前 Agent 直接调用 gh 创建或补充 Issue；用户已经要求创建时不得再次请求确认。不要用于普通 Issue 查询、根因分析、修复、Planner 分流或影子分流。
+description: 当用户要求“提 Issue”“开 Issue”“记录 bug”“把这个问题记到 GitHub/GitLab”，或当前任务明确要求把运行中发现的工程缺陷提交为 Issue 时使用。保留仍然新鲜的问题现场，查重并区分事实、根因假设与已确认根因，再由当前 Agent 直接调用对应平台 CLI 创建或补充 Issue；用户已经要求创建时不得再次请求确认。不要用于普通 Issue 查询、根因分析、修复、Planner 分流或影子分流。
 ---
 
-# 提交 GitHub Issue
+# 提交 Issue
 
 把仍然新鲜的问题现场保存进责任仓库。不要替后续诊断提前决定修法。
 
@@ -24,7 +24,7 @@ description: 当用户要求“提 Issue”“开 Issue”“记录 bug”“把
 3. 记录能精确定位现场的证据，例如命令及退出码、日志或 run 引用、相关文件、commit、当前
    `HEAD`、branch 和 dirty 状态。只摘取有效片段，不把无关长日志倾倒进 Issue。
 4. 清洗 token、Authorization header、带凭据的 remote URL、个人数据和其他秘密。安全漏洞或无法
-   确认可公开的证据不得发到普通 GitHub Issue。
+   确认可公开的证据不得发到普通 Issue。
 5. 将根因状态明确写成以下一种：
    - `unknown`：尚未诊断；
    - `candidate`：存在能解释现场的假设，但仍有竞争解释或缺少证据；
@@ -34,13 +34,16 @@ description: 当用户要求“提 Issue”“开 Issue”“记录 bug”“把
 
 ## 查重并写入
 
-1. 使用当前仓库的 GitHub remote 确认目标 repository；不要把业务项目、builder-loop 和外部平台
-   缺陷混在同一个 Issue。
-2. 用 `gh issue list --state all --search ...` 搜索相同触发条件、现象和责任边界，不能只按标题查重。
-3. 找到同一原子问题时，用 `gh issue comment` 把新的现场和版本证据追加到原 Issue，并返回该链接。
-   现象相似但根因或责任仓库不同的，分别创建并互相链接。
-4. 没有重复项时，由当前 Agent 直接运行 `gh issue create`。标题描述可观察症状，不把未经确认的根因
-   或修法写进标题。
+1. 使用当前仓库的 remote 确认目标 repository 及其托管平台（GitHub/GitLab/其他），据此选用对应的
+   issue CLI（GitHub 用 `gh`，GitLab 用 `glab`，其余平台按其官方 CLI），不要把业务项目、
+   builder-loop 和外部平台缺陷混在同一个 Issue。
+2. 用该 CLI 的等价命令（如 `gh issue list --state all --search ...` / `glab issue list --all --search ...`）
+   搜索相同触发条件、现象和责任边界，不能只按标题查重。
+3. 找到同一原子问题时，用该 CLI 的评论命令（如 `gh issue comment` / `glab issue note`）把新的现场和
+   版本证据追加到原 Issue，并返回该链接。现象相似但根因或责任仓库不同的，分别创建并互相链接。
+4. 没有重复项时，由当前 Agent 直接运行该 CLI 的创建命令（如 `gh issue create` / `glab issue create`）。
+   标题描述可观察症状，不把未经确认的根因或修法写进标题。若该 CLI 需绕过代理等本机特殊设置，
+   按已知项目约定处理。
 5. 正文按现场实际信息组织，至少让后续 Agent 能分清：
    - 归属与版本；
    - 触发场景和现场过程；
