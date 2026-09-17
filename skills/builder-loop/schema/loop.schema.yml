@@ -1,4 +1,4 @@
-# builder-loop V8 项目层配置 schema — 业务项目在 .claude/loop.yml 里按此填写。
+# builder-loop 项目层配置 schema — 业务项目在 .claude/loop.yml 里按此填写。
 # runtime 只消费下列字段，其余忽略。
 
 pass_cmd:
@@ -13,13 +13,33 @@ pass_cmd:
     timeout: { type: integer, default: 300, unit: seconds }
 
 max_iterations:
-  # machine 尝试次数上限；到达且未 PASS → readiness 报 MAX_ITERATIONS 交还用户。
+  # machine 尝试次数上限；到达且未 PASS → runtime 拒绝再跑，续跑需要用户授权（bl resume）。
   type: integer
   default: 5
 
+proof_runner:
+  # proof 的测试命令前缀，start 时冻结进 contract 的 assurance 面（计入 digest，run 中途变更需用户授权）。
+  # tester 只给 test id，runtime 拼命令；不过 shell（shlex 拆分），只展开 {main_repo} 一个占位符。
+  framework:
+    type: enum
+    values: [pytest, generic]
+    default: pytest
+    description: |
+      pytest  — runtime 追加 `-q -p no:cacheprovider --junitxml=<tmp> <test ids>`，按 junit 逐用例判定；
+                test id 是 pytest node id（tests/test_x.py::test_a、tests/test_x.py::TestC::test_m）。
+      generic — 只看退出码，因此只能做 mutation（不能区分断言失败与启动错误）。test id 原样追加到命令末尾，
+                或替换命令里的 `{tests}` 占位符；含义由项目自己的 runner 决定（如 go 的包路径、cargo 的过滤串）。
+  cmd:
+    type: string
+    default: "python3 -m pytest"
+    examples:
+      - "{main_repo}/.venv/bin/python -m pytest"
+      - "uv run --no-project --with-requirements requirements.txt --with pytest python -m pytest"
+      - "go test {tests} -count=1"
+
 worktree:
   root:
-    # 候选 worktree 根目录；相对路径以项目根解析。默认仓库同级 ../builder-loop-worktrees/<repo>。
+    # worktree 根目录；相对路径以项目根解析。默认仓库同级 ../builder-loop-worktrees/<repo>。
     type: string
     default: ""
 

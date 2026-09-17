@@ -1,5 +1,23 @@
 # Changelog — cc-builder-loop 已交付能力
 
+## V8.1 tester 独立性、判据加固、复盘闸门（2026-09-17）
+
+来由：对 codex-new 做了全量 parity 审计并逐条评估（取舍与理由见 #233），加上首次真实 dogfood 暴露的 #226–#232。
+
+- **tester 从冻结基线盲写测试，与 builder 并行**。每个 run 两个 worktree（`<run_id>/builder`、`<run_id>/tester`），tester 分支从 run 起点长出、永不 rebase；SubagentStart 不再注入候选路径，PreToolUse 在首次 integrate 前拒绝 tester 读 / 搜 / 命令触及候选（realpath 后判断）。两段式：盲写时 mutation patch 可缺省，集成后 readiness 引导续接同一 tester 补 patch。
+- **`bl integrate`**：tester 的测试按路径叠进候选（checkout + rm + 一次普通提交），不用 merge——rebase 会丢 merge commit 并重放 tester 提交，之后必然 add/add 冲突。测试文件集合与"是否需要 integrate"都从 git 派生，不落盘。
+- **proof 重做（#229）**：测试命令由 loop.yml `proof_runner{framework, cmd}` 声明并冻结进 assurance 面，tester 只给 test_ids；pytest 下按 junit 逐用例判定（候选：每个声明 id 出现且 passed；反例：rc==1、无 `<error>`、`<failure>` 的 message 是断言类），替换原来的 stdout 正则；`{main_repo}` 占位符；generic 框架只看退出码、只许 mutation。每个 behavior 的 proof 下限写在 contract，`reviewed-boundaries` 需显式放行。
+- **写边界**：单一判定入口 `contract.write_rejection`；tester_write 优先（构造上不相交）；控制面文件按 basename 规则保护，builder 靠 glob 顺带命中不算授权，需字面点名。checkpoint 分角色看各自 worktree，加 `--dry-run`（#227）。
+- **contract 增量字段**：behavior 的 `boundaries` / `invariants` / `proof`，mission 的 `mock_strategy`；`bl contract validate --check-repo` 在规划期对照仓库。
+- **上限是真的停止点（#231）**：blocker 按最近一次用户授权以来的窗口计算；激活时 `bl machine` / `bl proof` 直接 exit 3；`bl resume --reason` 要求 blocker 之后有过用户输入事件，模型不能自授权。
+- **内部 git 操作不跑目标仓库 hooks（#232）**：统一 `-c core.hooksPath=/dev/null`，仅 `finalize --run-commit-hook` 例外。
+- **Stop hook 不再在等待 subagent 时反复拉回（#228）**：`awaiting_tester` / `awaiting_reviewer` 放行且不计 stall；"角色在跑"由事件流 + 40 分钟心跳租约派生，不落盘。
+- **reviewer**：finding 带 `owner`（builder / tester / contract）并据此路由；审查期间候选变化则本次结论无效。machine 失败输出 `tester_files_mentioned`，测试写错可回到 tester。
+- **复盘硬闸门（#226）**：终态后 session 不解绑；`bl retro signals` 从 ledger 派生确定性信号，`bl retro record` 校验覆盖率后才解绑；未复盘时 Stop 拦住、`bl start` 返回 `RETRO_PENDING`。`bl cleanup` 回收已复盘的 abandoned run。
+- ledger 升 `@2`：`tester`、`events[]`（只记无别处归属的事实）、`authorizations`、`runtime_identity`、`retrospective`；`peek` 让 `bl runs` / `doctor` / `abandon` 能处理 `@1`。时间戳改微秒精度。
+- `hooks/bl-hook.sh` 加纯 bash 快速路径：session 未绑定 run 时不起 python（PreToolUse 现在挂在 Read / Bash 等高频工具上）。
+- #230：`contract validate|revise`、`evidence show`、`retro *` 接受写在子命令之后的 `--session` / `--run`；`init-loop-config.sh` 在 `.claude/` 整目录被忽略时不再写无效的否定规则。
+
 ## V8.0 Claude Code 原生重写（2026-09-16）
 
 从 `cc-old`（V7.4）分支重写。编排交给 Claude Code 原生能力，runtime 只做判据与 Git 事务。

@@ -5,4 +5,4 @@ contract 冻结与 digest、candidate worktree、machine/tester/proof/reviewer �
 的绑定与失效判定、finalize CAS 写回。ledger 的唯一写入者是本包的 CLI。
 """
 
-__version__ = "8.0.0"
+__version__ = "8.1.0"

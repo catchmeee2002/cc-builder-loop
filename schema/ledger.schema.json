@@ -1,58 +1,327 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "builder-loop/ledger@1",
+  "$id": "builder-loop/ledger@2",
   "title": "builder-loop ledger",
-  "description": ".claude/builder-loop/runs/<run_id>/ledger.json。唯一写入者是 bl CLI；stale 不落盘（由 evidence 投影重算）。",
+  "description": ".claude/builder-loop/runs/<run_id>/ledger.json。唯一写入者是 bl CLI；stale、下一步、角色是否在跑都不落盘（由 evidence 每次派生）。",
   "type": "object",
-  "required": ["schema", "run_id", "seq", "session", "repo", "candidate", "contract", "loop_config", "agents", "evidence", "counters"],
+  "required": [
+    "schema",
+    "run_id",
+    "seq",
+    "session",
+    "repo",
+    "candidate",
+    "contract",
+    "loop_config",
+    "agents",
+    "evidence",
+    "counters",
+    "events",
+    "authorizations"
+  ],
   "properties": {
-    "schema": {"const": "builder-loop/ledger@1"},
-    "run_id": {"type": "string"},
-    "seq": {"type": "integer", "description": "每次写入 +1；Stop hook 用它判断两次 Stop 之间是否有进展"},
-    "session": {"type": "object", "properties": {"owner_session_id": {"type": ["string", "null"]}}},
-    "repo": {"type": "object", "properties": {"root": {"type": "string"}, "target_branch": {"type": "string"}, "target_start_head": {"type": "string"}}},
+    "schema": {
+      "const": "builder-loop/ledger@2"
+    },
+    "run_id": {
+      "type": "string"
+    },
+    "seq": {
+      "type": "integer",
+      "description": "每次写入 +1；Stop hook 用它判断两次 Stop 之间是否有进展"
+    },
+    "session": {
+      "type": "object",
+      "properties": {
+        "owner_session_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "repo": {
+      "type": "object",
+      "properties": {
+        "root": {
+          "type": "string"
+        },
+        "target_branch": {
+          "type": "string"
+        },
+        "target_start_head": {
+          "type": "string"
+        }
+      }
+    },
     "candidate": {
       "type": "object",
       "properties": {
-        "branch": {"type": "string"}, "worktree": {"type": "string"}, "head": {"type": ["string", "null"]},
-        "checkpoints": {"type": "array", "items": {"type": "object", "properties": {"head": {"type": "string"}, "at": {"type": "string"}, "role": {"enum": ["builder", "tester", "rebase"]}, "paths": {"type": "array"}}}}
+        "branch": {
+          "type": "string"
+        },
+        "worktree": {
+          "type": "string"
+        },
+        "head": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "checkpoints": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "head": {
+                "type": "string"
+              },
+              "at": {
+                "type": "string"
+              },
+              "role": {
+                "enum": [
+                  "builder",
+                  "tester",
+                  "integrate",
+                  "rebase"
+                ]
+              },
+              "paths": {
+                "type": "array"
+              }
+            }
+          }
+        }
       }
     },
     "contract": {
       "type": "object",
       "properties": {
-        "plan_path": {"type": ["string", "null"]}, "plan_sha256": {"type": ["string", "null"]},
-        "mission": {"type": "object"}, "authority": {"type": "object"}, "assurance": {"type": "object"},
-        "digests": {"type": "object", "properties": {"mission": {"type": "string"}, "authority": {"type": "string"}, "assurance": {"type": "string"}}},
-        "history": {"type": "array"}
+        "plan_path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "plan_sha256": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "mission": {
+          "type": "object"
+        },
+        "authority": {
+          "type": "object"
+        },
+        "assurance": {
+          "type": "object"
+        },
+        "digests": {
+          "type": "object",
+          "properties": {
+            "mission": {
+              "type": "string"
+            },
+            "authority": {
+              "type": "string"
+            },
+            "assurance": {
+              "type": "string"
+            }
+          }
+        },
+        "history": {
+          "type": "array"
+        }
       }
     },
-    "loop_config": {"type": "object"},
-    "agents": {"type": "object", "properties": {"tester": {"type": ["object", "null"]}, "reviewer": {"type": ["object", "null"]}}},
+    "loop_config": {
+      "type": "object"
+    },
+    "agents": {
+      "type": "object",
+      "properties": {
+        "tester": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "reviewer": {
+          "type": [
+            "object",
+            "null"
+          ]
+        }
+      }
+    },
     "evidence": {
       "type": "object",
       "properties": {
-        "machine": {"$ref": "#/$defs/evidence"}, "tester": {"$ref": "#/$defs/evidence"},
-        "proof": {"$ref": "#/$defs/evidence"}, "reviewer": {"$ref": "#/$defs/evidence"}
+        "machine": {
+          "$ref": "#/$defs/evidence"
+        },
+        "tester": {
+          "$ref": "#/$defs/evidence"
+        },
+        "proof": {
+          "$ref": "#/$defs/evidence"
+        },
+        "reviewer": {
+          "$ref": "#/$defs/evidence"
+        }
       }
     },
-    "proof_spec": {"type": ["object", "null"]},
-    "failures": {"type": "object", "properties": {"machine": {"type": "array"}, "proof": {"type": "array"}}},
-    "counters": {"type": "object", "properties": {"machine_iter": {"type": "integer"}, "stall": {"type": "object"}}},
-    "waiting_for_user": {"type": ["object", "null"]},
-    "finalize_intent": {"type": ["object", "null"], "properties": {"expected_target_head": {"type": "string"}, "candidate_head": {"type": "string"}, "final_head": {"type": "string"}}},
-    "terminal": {"type": ["object", "null"], "properties": {"status": {"enum": ["finalized", "abandoned", "finalize_failed"]}}}
+    "proof_spec": {
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "failures": {
+      "type": "object",
+      "properties": {
+        "machine": {
+          "type": "array"
+        },
+        "proof": {
+          "type": "array"
+        }
+      }
+    },
+    "counters": {
+      "type": "object",
+      "properties": {
+        "machine_iter": {
+          "type": "integer"
+        },
+        "stall": {
+          "type": "object"
+        }
+      }
+    },
+    "waiting_for_user": {
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "finalize_intent": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "properties": {
+        "expected_target_head": {
+          "type": "string"
+        },
+        "candidate_head": {
+          "type": "string"
+        },
+        "final_head": {
+          "type": "string"
+        }
+      }
+    },
+    "terminal": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "finalized",
+            "abandoned",
+            "finalize_failed"
+          ]
+        }
+      }
+    },
+    "runtime_identity": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "description": "start 时冻结的 runtime 版本 / commit / dirty，事故归因用"
+    },
+    "tester": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "description": "tester worktree。base 不可变（= start 时的目标 HEAD），分支永不 rebase；测试文件集合 = git diff base..head",
+      "properties": {
+        "branch": {
+          "type": "string"
+        },
+        "worktree": {
+          "type": "string"
+        },
+        "base": {
+          "type": "string"
+        },
+        "head": {
+          "type": "string"
+        }
+      }
+    },
+    "authorizations": {
+      "type": "array",
+      "description": "用户授权续跑的记录；blocker 按最近一次授权以来的窗口计算"
+    },
+    "events": {
+      "type": "array",
+      "description": "只记无别处归属的事实：checkpoint_rejected / role_start / role_result / role_malformed / role_replaced / integrate / resume / user_input / stall_escape / retro"
+    },
+    "retrospective": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "description": "终态复盘记录；写入之前 session 不解绑、Stop hook 拦住"
+    }
   },
   "$defs": {
     "evidence": {
-      "type": ["object", "null"],
+      "type": [
+        "object",
+        "null"
+      ],
       "properties": {
-        "status": {"enum": ["pass", "fail"]},
-        "at": {"type": "string"},
-        "candidate_head": {"type": ["string", "null"]},
-        "agent_id": {"type": ["string", "null"]},
-        "dependency_digest": {"type": "string", "description": "按 kind 定制的输入投影 digest，与重算值不等即 stale"},
-        "details": {"type": "object"}
+        "status": {
+          "enum": [
+            "pass",
+            "fail"
+          ]
+        },
+        "at": {
+          "type": "string"
+        },
+        "candidate_head": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "agent_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "dependency_digest": {
+          "type": "string",
+          "description": "按 kind 定制的输入投影 digest，与重算值不等即 stale"
+        },
+        "details": {
+          "type": "object"
+        }
       }
     }
   }

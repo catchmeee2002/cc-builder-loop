@@ -6,27 +6,92 @@
   "oneOf": [
     {
       "type": "object",
-      "required": ["role", "status"],
+      "required": [
+        "role",
+        "status"
+      ],
       "properties": {
-        "role": {"const": "tester"},
-        "status": {"enum": ["pass", "insufficient_spec"]},
-        "files": {"type": "array", "items": {"type": "string"}},
-        "behaviors_covered": {"type": "array", "items": {"type": "string"}},
-        "proof_spec": {"$ref": "proof-spec.schema.json"},
-        "notes": {"type": "string"}
+        "role": {
+          "const": "tester"
+        },
+        "status": {
+          "enum": [
+            "pass",
+            "insufficient_spec"
+          ]
+        },
+        "behaviors_covered": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "proof_spec": {
+          "$ref": "proof-spec.schema.json"
+        },
+        "notes": {
+          "type": "string"
+        }
       }
     },
     {
       "type": "object",
-      "required": ["role", "verdict"],
+      "required": [
+        "role",
+        "verdict"
+      ],
       "properties": {
-        "role": {"const": "reviewer"},
-        "verdict": {"enum": ["pass", "changes_requested", "blocked"]},
+        "role": {
+          "const": "reviewer"
+        },
+        "verdict": {
+          "enum": [
+            "pass",
+            "changes_requested",
+            "blocked"
+          ]
+        },
         "findings": {
           "type": "array",
-          "items": {"type": "object", "required": ["severity"], "properties": {"severity": {"enum": ["blocking", "major", "minor"]}, "file": {"type": "string"}, "line": {"type": "integer"}, "summary": {"type": "string"}}}
+          "items": {
+            "type": "object",
+            "required": [
+              "severity"
+            ],
+            "properties": {
+              "severity": {
+                "enum": [
+                  "blocking",
+                  "major",
+                  "minor"
+                ]
+              },
+              "file": {
+                "type": "string"
+              },
+              "line": {
+                "type": "integer"
+              },
+              "summary": {
+                "type": "string"
+              },
+              "owner": {
+                "enum": [
+                  "builder",
+                  "tester",
+                  "contract"
+                ],
+                "description": "blocking / major 必填：runtime 据此路由（测试问题回 tester，需改契约的交还用户）"
+              }
+            }
+          }
         },
-        "behaviors_verified": {"type": "array", "items": {"type": "string"}}
+        "behaviors_verified": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
       }
     }
   ]

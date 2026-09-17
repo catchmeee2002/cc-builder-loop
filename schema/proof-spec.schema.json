@@ -2,26 +2,74 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "builder-loop/proof-spec@1",
   "title": "builder-loop proof spec",
-  "description": "tester 在 BUILDER_LOOP_RESULT 里携带的 proof_spec。groups 与 mission.behaviors 一一对应。",
+  "description": "tester 在 BUILDER_LOOP_RESULT 里携带的 proof_spec。groups 与 mission.behaviors 一一对应。测试命令由 loop.yml 的 proof_runner 决定，tester 不给 argv。",
   "type": "object",
-  "required": ["groups"],
+  "required": [
+    "groups"
+  ],
   "properties": {
     "groups": {
-      "type": "array", "minItems": 1,
+      "type": "array",
+      "minItems": 1,
       "items": {
         "type": "object",
-        "required": ["kind", "behavior_ids", "argv", "test_ids"],
+        "required": [
+          "kind",
+          "behavior_ids",
+          "test_ids"
+        ],
         "properties": {
-          "kind": {"enum": ["baseline-red", "mutation", "reviewed-boundaries"]},
-          "behavior_ids": {"type": "array", "minItems": 1, "maxItems": 1, "items": {"type": "string"}},
-          "argv": {"type": "array", "minItems": 1, "items": {"type": "string"}, "description": "pytest / python -m pytest|unittest / uv run pytest / go test / cargo test / bazel test"},
-          "test_ids": {"type": "array", "minItems": 1, "items": {"type": "string"}, "description": "pytest 风格 path::name；文件必须在 tester_write 内且存在于候选"},
-          "timeout": {"type": "integer", "minimum": 1, "maximum": 1800, "default": 300},
-          "patch": {"type": "string", "description": "mutation 必填：unified diff，只改 builder_write 内候选上已有的普通文件"},
+          "kind": {
+            "enum": [
+              "baseline-red",
+              "mutation",
+              "reviewed-boundaries"
+            ]
+          },
+          "behavior_ids": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 1,
+            "items": {
+              "type": "string"
+            }
+          },
+          "test_ids": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string",
+              "pattern": "^[^-]"
+            },
+            "description": "pytest：node id（path::name / path::Class::name / 只给 path = 整个文件），文件必须在 tester_write 内且存在于 tester 分支；不带 [ 时匹配全部参数实例。不支持 -k。"
+          },
+          "timeout": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1800,
+            "default": 300
+          },
+          "patch": {
+            "type": "string",
+            "description": "mutation 的 unified diff：只改 builder 拥有、候选上已存在的普通文件。首轮盲写时可缺省，集成后续接补上"
+          },
           "reviewed_boundaries": {
             "type": "object",
             "description": "reviewed-boundaries 必填：四类并集 == test_ids",
-            "properties": {"positive": {"type": "array"}, "negative": {"type": "array"}, "boundary": {"type": "array"}, "invariant": {"type": "array"}}
+            "properties": {
+              "positive": {
+                "type": "array"
+              },
+              "negative": {
+                "type": "array"
+              },
+              "boundary": {
+                "type": "array"
+              },
+              "invariant": {
+                "type": "array"
+              }
+            }
           }
         }
       }
