@@ -17,7 +17,7 @@
 
 - 两条线都是在役产品，谁也不是谁的旧版或上游。
 - 一条线的做法要进另一条线：先审计、再逐项评估，只取判据 / 证据 / 事务层面的东西，编排交给各自宿主的原生能力（原则九）——不做无脑移植。
-- 提 issue、写 CHANGELOG 时标明属于哪条线。
+- 命名一律带产品线前缀：分支 `cc/<主题>` / `codex/<主题>`（主干为 `cc/main` / `codex/main`，现有 `v8` / `codex-new` 待迁移）；tag `cc-vX.Y.Z` / `codex-vX.Y.Z`（无前缀的老 tag：`v7.x` 属 CC 版，`v0.x` 属 Codex 版）；issue 必带 `line:cc` 或 `line:codex` 标签。
 
 ## Project Map
 
