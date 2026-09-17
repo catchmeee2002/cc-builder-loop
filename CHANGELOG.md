@@ -16,6 +16,7 @@
 - **复盘硬闸门（#226）**：终态后 session 不解绑；`bl retro signals` 从 ledger 派生确定性信号，`bl retro record` 校验覆盖率后才解绑；未复盘时 Stop 拦住、`bl start` 返回 `RETRO_PENDING`。`bl cleanup` 回收已复盘的 abandoned run。
 - ledger 升 `@2`：`tester`、`events[]`（只记无别处归属的事实）、`authorizations`、`runtime_identity`、`retrospective`；`peek` 让 `bl runs` / `doctor` / `abandon` 能处理 `@1`。时间戳改微秒精度。
 - `hooks/bl-hook.sh` 加纯 bash 快速路径：session 未绑定 run 时不起 python（PreToolUse 现在挂在 Read / Bash 等高频工具上）。
+- 首次真实会话 E2E（真 skill + 真 agent + 真 hook）抓到并修复的三处：续接的 subagent 收不到 SubagentStart 的 additionalContext → 集成后的事实改由 builder 消息传递，`bl status` 输出 `briefs.resume_tester`；后台 subagent 的任务通知也会触发 UserPromptSubmit → `bl resume` 的用户输入依据只认 AskUserQuestion 的回答；续接轮 tester 交 `insufficient_spec` 且测试未变时保留原 evidence，记 `declined`。
 - #230：`contract validate|revise`、`evidence show`、`retro *` 接受写在子命令之后的 `--session` / `--run`；`init-loop-config.sh` 在 `.claude/` 整目录被忽略时不再写无效的否定规则。
 
 ## V8.0 Claude Code 原生重写（2026-09-16）

@@ -85,7 +85,7 @@ terminal →（无 retrospective `retro`，否则 `done`）；有 blocker → `n
 
 **角色是否在跑**不落盘：最近一条生命周期事件是 `role_start`（或要求重发的 `role_malformed`）且 40 分钟租约未过期。该 agent 的每次 PreToolUse 续租，只 touch `run_dir/heartbeat-<role>`，不写 ledger。只用于 `awaiting_*`（抑制 Stop 回拉），不给任何 CLI 加闸；agent 失联则租约到期后回到 resume。
 
-**blocker** 按最近一次用户授权以来的窗口计算：`MAX_ITERATIONS`、`NO_PROGRESS`（machine 同签名 3 次）、`PROOF_STALL`（proof 同签名 3 次）、`REVIEW_CONTRACT`（reviewer 提了 owner=contract 的 blocking/major）、`WAITING_FOR_USER`。前三个激活时 `bl machine` / `bl proof` 直接 exit 3 不执行——上限是真的停止点。`bl resume --reason` 记一条 authorization，但要求 blocker 之后存在 `user_input` 事件（PostToolUse(AskUserQuestion) / UserPromptSubmit 写入）：模型不能自己给自己授权。
+**blocker** 按最近一次用户授权以来的窗口计算：`MAX_ITERATIONS`、`NO_PROGRESS`（machine 同签名 3 次）、`PROOF_STALL`（proof 同签名 3 次）、`REVIEW_CONTRACT`（reviewer 提了 owner=contract 的 blocking/major）、`WAITING_FOR_USER`。前三个激活时 `bl machine` / `bl proof` 直接 exit 3 不执行——上限是真的停止点。`bl resume --reason` 记一条 authorization，但要求 blocker 之后存在 `user_input` 事件：模型不能自己给自己授权。该事件**只由 PostToolUse(AskUserQuestion) 写入**——后台 subagent 结束时唤醒主 session 的任务通知也会触发 UserPromptSubmit，那不是真人。
 
 ## hook 接线
 
@@ -96,9 +96,10 @@ terminal →（无 retrospective `retro`，否则 `done`）；有 blocker → `n
 | SubagentStop | tester\|reviewer | 只认登记的 agent_id；标记缺失 / 不合规 → exit 2（≤2 次）→ 第 3 次记 fail；tester：提交 tester worktree + spec 结构校验 + evidence + proof_spec；reviewer：起点 HEAD ≠ 当前候选 HEAD → 本次无效 |
 | PreToolUse | AskUserQuestion / EnterWorktree | 写 waiting / deny |
 | PreToolUse | Read\|Grep\|Glob\|Write\|Edit\|MultiEdit\|NotebookEdit\|Bash | 仅对登记的角色：续租；reviewer 写一律拒；tester 写只许自己 worktree 的 tester_write；集成前 tester 读 / 搜候选拒（先 realpath，Grep/Glob 必须显式 path，Bash 命令串含候选路径或分支名拒——尽力而为） |
-| PostToolUse / UserPromptSubmit | AskUserQuestion / — | 清 waiting、记 `user_input` |
+| PostToolUse | AskUserQuestion | 清 waiting、记 `user_input`（授权续跑的唯一依据） |
+| UserPromptSubmit | — | 只清 waiting，不记事件（任务通知也会触发它） |
 
-所有 hook 首步 `lookup_session(session_id)`，stdin 的 `cwd` 不参与定位。matcher 不是身份门禁（`agent_type` 为空的内部 agent 也会被放进来），handler 内复核 `agent_type` 与登记的 `agent_id`。角色 hook 的写入（role_start、要求重发）保持 `stall.seq_seen` 与 seq 的相等关系，不算主 session 的进展。SendMessage 续接会让 Start 与 Stop **都**再次触发，agent_id 不变（CC 2.1.272 实测）。
+所有 hook 首步 `lookup_session(session_id)`，stdin 的 `cwd` 不参与定位。matcher 不是身份门禁（`agent_type` 为空的内部 agent 也会被放进来），handler 内复核 `agent_type` 与登记的 `agent_id`。角色 hook 的写入（role_start、要求重发）保持 `stall.seq_seen` 与 seq 的相等关系，不算主 session 的进展。SendMessage 续接会让 Start 与 Stop **都**再次触发，agent_id 不变；但 SubagentStart 的 `additionalContext` **只在首次 spawn 时送达**，被续接的 agent 收不到（均为 CC 2.1.272 实测）。所以注入上下文只承载首轮事实；集成之后"候选现在可读"这类变化由 builder 的消息带过去（`bl status` 的 `briefs.resume_tester` 是现成正文），tester 以 hook 是否放行为准。续接轮里 tester 交 `insufficient_spec` 而测试未变时，原 tester evidence 保留，只记一条 `role_result{status: declined}`。
 
 ## 复盘闸门
 
