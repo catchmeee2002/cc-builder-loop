@@ -6,6 +6,19 @@
 
 所有设计决策的判据见 [`docs/design-philosophy.md`](docs/design-philosophy.md)（唯一来源，此处不复制）。动逻辑前先对照：新增状态是否服务判据 / 证据 / Git 事务（原则五）；是否在堆输出特判而不是改输入条件（原则四）。
 
+## 产品线
+
+本仓库承载两条**并行**的产品线：共享同一份设计哲学，不共享代码，互不合并。
+
+| 产品线 | 宿主 | 分支 |
+|---|---|---|
+| CC 版（本文件描述的这一条） | Claude Code | `v8`，由 `main` 线性演进而来 |
+| Codex 版 | Codex | `codex-new` |
+
+- 两条线都是在役产品，谁也不是谁的旧版或上游。
+- 一条线的做法要进另一条线：先审计、再逐项评估，只取判据 / 证据 / 事务层面的东西，编排交给各自宿主的原生能力（原则九）——不做无脑移植。
+- 提 issue、写 CHANGELOG 时标明属于哪条线。
+
 ## Project Map
 
 | 路径 | 职责 |
@@ -53,4 +66,5 @@ commit 格式 `type(scope): [cr_id_skip] Desc`；finalize 默认绕过 commit ho
 
 - 用户入口与安装：[`README.md`](README.md)
 - 版本历史：[`CHANGELOG.md`](CHANGELOG.md)
-- 老版本：`cc-old` 分支（V7.4 bash/prompt 版）、`codex-new` 分支（Codex Assurance v4）
+- CC 版上一代（V7.4 bash/prompt 版）：远端 `main`
+- Codex 版：`codex-new` 分支（Codex Assurance v4）
