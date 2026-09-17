@@ -17,6 +17,7 @@ from __future__ import annotations
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -35,6 +36,8 @@ DEFAULT_TIMEOUT = 300
 MAX_TIMEOUT = 1800
 ASSERTION_PREFIXES = ("AssertionError", "assert ", "Failed:")
 TESTER_OWNED_FAILURES = ("TEST_BASELINE_RED_NOT_PROVEN", "TEST_MUTATION_SURVIVED", "TEST_MUTATION_INVALID", "TEST_MUTATION_PATCH_MISSING", "TEST_PROOF_NOT_EXECUTED")
+# 失败归谁修。缺省 builder（实现没让测试过）；runner 起不来两个角色都改不了，归 contract → 改 loop.yml
+OWNER_BY_FAILURE = {**{c: "tester" for c in TESTER_OWNED_FAILURES}, "TEST_PROOF_RUNNER_FAILED": "contract"}
 
 
 def _spec_error(msg: str, **details: Any) -> Problem:
@@ -142,6 +145,28 @@ def build_argv(runner: dict[str, str], test_ids: list[str], junit_path: Path, ma
         i = base.index("{tests}")
         return base[:i] + list(test_ids) + base[i + 1:]
     return base + list(test_ids)
+
+
+def smoke_runner(runner: dict[str, str], repo_root: Path) -> None:
+    """proof_runner 能不能起来。规划期 / start 时就跑，别等写完实现才在 proof 门禁暴露（#241）。
+    此时 run 还不存在，改 loop.yml 不需要 contract revise，也就不必为「修好它」去要一次授权。"""
+    argv = shlex.split(runner["cmd"].replace("{main_repo}", str(repo_root)))
+    if not argv:
+        raise negative("PROOF_RUNNER_UNAVAILABLE", "proof_runner.cmd 为空", cmd=runner.get("cmd"))
+    if not shutil.which(argv[0], path=os.environ.get("PATH")) and not Path(argv[0]).exists():
+        raise negative("PROOF_RUNNER_UNAVAILABLE", f"proof_runner 的可执行文件找不到: {argv[0]}",
+                       cmd=runner["cmd"], hint="在 .claude/loop.yml 的 proof_runner.cmd 里写项目实际的测试命令；主仓内的解释器用 {main_repo} 引")
+    if runner.get("framework", "pytest") != "pytest":
+        return
+    try:
+        proc = subprocess.run([*argv, "--version"], cwd=str(repo_root), capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise negative("PROOF_RUNNER_UNAVAILABLE", f"proof_runner 起不来: {exc}", cmd=runner["cmd"]) from None
+    if proc.returncode != 0:
+        tail = ((proc.stdout or "") + (proc.stderr or ""))[-500:]
+        raise negative("PROOF_RUNNER_UNAVAILABLE", f"`{runner['cmd']} --version` 退出码 {proc.returncode}",
+                       cmd=runner["cmd"], tail=tail,
+                       hint="pass_cmd 用 uv / poetry / venv 时，proof_runner.cmd 也要用同一套（如 `uv run python -m pytest`）")
 
 
 def parse_junit(path: Path) -> list[dict[str, str]]:
@@ -303,6 +328,8 @@ def run_proof(ledger_path: Path, repo_root: Path, spec_override: dict[str, Any] 
         rc, out = _run(where, build_argv(runner, g["test_ids"], junit, repo_root), g["timeout"], log, env)
         return rc, out, (parse_junit(junit) if framework == "pytest" else []), log
 
+    gate = evidence.gate_lock(lg, evidence.GATE_PROOF)  # 全套测试要跑好几轮，执行期间对外可见（#242）
+    gate.__enter__()
     try:
         for i, g in enumerate(spec["groups"]):
             if g["kind"] == KIND_MUTATION and not (g.get("patch") or "").strip():
@@ -313,6 +340,10 @@ def run_proof(ledger_path: Path, repo_root: Path, spec_override: dict[str, Any] 
             bid = g["behavior_ids"][0]
             rc, out, cases, log = execute(wt, g, "candidate", i)
             tracked, untracked = _restore_worktree(wt)
+            if framework == "pytest" and rc != 0 and not cases:
+                # 一条 junit 记录都没有 = runner 根本没跑起来（收集错误也会写进 junit）。不是实现的锅（#241）
+                raise _Failure("TEST_PROOF_RUNNER_FAILED", f"proof_runner 没能产出测试结果：`{runner['cmd']}` 退出码 {rc}", i, bid,
+                               returncode=rc, log=str(log), tail=out[-3000:], cmd=runner["cmd"])
             verdict = judge_candidate(framework, rc, cases, g["test_ids"])
             groups_out.append({"behavior_id": bid, "kind": g["kind"], "candidate": {"returncode": rc, "per_id": verdict["per_id"], "log": str(log), "residue_cleaned": untracked}})
             if tracked:
@@ -364,13 +395,15 @@ def run_proof(ledger_path: Path, repo_root: Path, spec_override: dict[str, Any] 
                 raise _Failure("TEST_MUTATION_SURVIVED", "破坏实现后测试没有产生断言失败（pass=测试没约束该行为；error=命令或导入出错）", i, bid, classification=cls, returncode=rc, log=str(log), tail=out[-3000:])
     except _Failure as exc:
         failure = exc
+    finally:
+        gate.__exit__(None, None, None)
 
     spec_digest = digest(spec)
     if failure:
         tail = str(failure.details.get("tail", ""))
         sig = failure_signature(f"{failure.code}\n{failure.behavior}\n{failure.details.get('classification', '')}\n{tail}", f"proof-{failure.code}", int(failure.details.get("returncode", -1) or -1))
         fdetails = {k: v for k, v in failure.details.items() if k != "tail"}
-        fdetails["suggested_owner"] = "tester" if failure.code in TESTER_OWNED_FAILURES else "builder"
+        fdetails["suggested_owner"] = OWNER_BY_FAILURE.get(failure.code, "builder")
         with ledger_mod.mutate(ledger_path) as lg2:
             lg2["failures"]["proof"].append({"code": failure.code, "behavior": failure.behavior, "signature": sig, "at": ledger_mod.now_iso(), "attempt": attempt})
             evidence.record(lg2, "proof", "fail", {"attempt": attempt, "spec_digest": spec_digest, "groups": groups_out, "failure": {"code": failure.code, "message": failure.message, "group": failure.group, "behavior": failure.behavior, **fdetails, "signature": sig}}, repo_root)

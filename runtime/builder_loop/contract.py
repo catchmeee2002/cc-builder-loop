@@ -147,6 +147,17 @@ def validate_contract(contract: dict[str, Any]) -> None:
             raise fatal("CONTRACT_INVALID", f"authority.{k} 应为字符串数组")
     if a["target_branch"] is not None and not isinstance(a["target_branch"], str):
         raise fatal("CONTRACT_INVALID", "authority.target_branch 应为字符串")
+    # tester 地盘内的路径永远归 tester（path_owner 的优先级）。builder_write 若在这里点名，
+    # 两个角色会对同一文件得到相反的归属结论，且谁都不敢动（#240）。规划期就拒掉。
+    swallowed = [p for p in bw if glob_covers(a["tester_write"], p)]
+    if swallowed:
+        raise fatal(
+            "CONTRACT_INVALID",
+            "authority.builder_write 的这些条目落在 tester_write 之内：这些路径归 tester，builder 改不了。"
+            "需要它们跟着实现变，就在对应 behavior 里写明要改成什么，由 tester 来改",
+            paths=swallowed,
+            tester_write=a["tester_write"],
+        )
 
     s = contract["assurance"]
     req = _require(s, "required", list, "assurance")

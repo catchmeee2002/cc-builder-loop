@@ -83,6 +83,10 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("cleanup", help="回收已复盘的 abandoned run 的 worktree")
     sp.add_argument("--run")
     sp = sub.add_parser("machine"); add_locators(sp)
+    sp = sub.add_parser("preflight", help="在 run 起点跑一遍 pass_cmd，看哪些 stage 本来就红（后台跑）"); add_locators(sp)
+    sp = sub.add_parser("brief", help="角色视角的当前事实与待办（tester / reviewer 自取，唯一来源）"); add_locators(sp)
+    sp.add_argument("--role", required=True, choices=["tester", "reviewer"])
+    sp.add_argument("--json", action="store_true", help="输出结构化字段而不是文本")
     sp = sub.add_parser("proof"); add_locators(sp)
     sp.add_argument("--spec-file", help="覆盖 ledger.proof_spec（调试用）")
     sp = sub.add_parser("finalize"); add_locators(sp)
@@ -145,6 +149,17 @@ def dispatch(args: argparse.Namespace) -> tuple[Any, int]:
         from . import retro
 
         return retro.cleanup(run_mod.resolve_repo_root(args.repo), args.run), EXIT_OK
+    if cmd == "brief":
+        from . import brief as brief_mod
+
+        lp, root = _locate(args)
+        b = brief_mod.build(ledger_mod.load(lp), root, args.role)
+        return (b if args.json else brief_mod.render(b)), EXIT_OK
+    if cmd == "preflight":
+        from .machine import run_preflight
+
+        lp, root = _locate(args)
+        return run_preflight(lp, root), EXIT_OK  # 基线红是情报不是失败，永远 exit 0
     if cmd == "machine":
         from .machine import run_machine
 
@@ -230,6 +245,9 @@ def main(argv: list[str] | None = None) -> int:
             sys.stdout.write(stdout_text)
         if stderr_text:
             sys.stderr.write(stderr_text)
+        return code
+    if isinstance(out, str):  # brief 的文本形态：直接给角色看，不套 JSON
+        sys.stdout.write(out + "\n")
         return code
     if isinstance(out, dict) and "ok" not in out:
         out = {"ok": code in (EXIT_OK, 1), **out}

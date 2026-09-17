@@ -1,8 +1,10 @@
 import os
+import subprocess
+import sys
 import time
 from pathlib import Path
 
-from builder_loop import evidence, ledger as L
+from builder_loop import evidence, ledger as L, machine
 from conftest import contract_with, implement_mul, role_turn, make_tester_result, write_mul_test, write_plan
 
 
@@ -161,3 +163,78 @@ def test_role_running_is_derived_with_lease(started, cli, hook):
             e["at"] = "2000-01-01T00:00:00.000000+00:00"
     assert not evidence.role_running(L.load(started["ledger"]), "tester")
     assert cli("status", "--session", "S1")["readiness"]["next_action"] == "resume_tester"
+
+
+def _hold_gate(ledger_path: Path, holder: str) -> subprocess.Popen:
+    """另一个进程持有门禁锁（flock 是 per open-file-description，必须真的另起进程）。"""
+    code = (
+        "import fcntl,os,sys,time\n"
+        f"fd=os.open({str(ledger_path.parent / f'gate-{holder}.lock')!r}, os.O_RDWR|os.O_CREAT, 0o644)\n"
+        "fcntl.flock(fd, fcntl.LOCK_EX)\n"
+        "os.ftruncate(fd,0); os.write(fd, str(os.getpid()).encode())\n"
+        "sys.stdout.write('held\\n'); sys.stdout.flush()\n"
+        "time.sleep(60)\n"
+    )
+    proc = subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.PIPE, text=True)
+    assert proc.stdout.readline().strip() == "held"
+    return proc
+
+
+def test_stop_waits_while_machine_gate_runs(repo, cli, hook):
+    """后台跑 machine 时 Stop 不能再催一遍 `bl machine`（#242）。"""
+    wt, lp = _start_lite(repo, cli)
+    implement_mul(wt)
+    cli("checkpoint", "--session", "S1", "--role", "builder")
+    assert cli("status", "--session", "S1")["readiness"]["next_action"] == "machine"
+    assert hook("Stop", {"session_id": "S1"})["code"] == 2  # 没在跑：照常拉回
+
+    proc = _hold_gate(lp, "machine")
+    try:
+        st = cli("status", "--session", "S1")
+        assert st["readiness"]["next_action"] == "awaiting_gate" and st["readiness"]["gate_running"] == "machine"
+        assert hook("Stop", {"session_id": "S1"})["code"] == 0  # 在跑：放行，等后台任务唤醒
+        assert cli("machine", "--session", "S1", expect=1)["code"] == "GATE_BUSY"  # 也不许重复启动
+    finally:
+        proc.kill(); proc.wait()
+    # 进程没了锁自动释放，没有残留状态要清理
+    assert cli("status", "--session", "S1")["readiness"]["next_action"] == "machine"
+
+
+def test_preflight_marks_baseline_red_stage(repo, cli):
+    """基线上就红的 stage 不该让 builder 白查（#241）。"""
+    (repo.root / ".claude" / "loop.yml").write_text(
+        "pass_cmd:\n  - stage: unit\n    cmd: python3 -c \"import sys; sys.exit(0)\"\n"
+        "  - stage: legacy\n    cmd: python3 -c \"import missing_module\"\n", encoding="utf-8")
+    repo.commit_all()
+    wt, lp = _start_lite(repo, cli)
+    assert cli("status", "--session", "S1")["preflight"]["baseline_red"] is None
+
+    out = cli("preflight", "--session", "S1")
+    assert out["result"] == "RED" and out["baseline_red"] == ["legacy"]
+    assert cli("status", "--session", "S1")["preflight"]["baseline_red"] == ["legacy"]
+    lg = L.load(lp)
+    assert not any(lg["evidence"].values()) and lg["counters"]["machine_iter"] == 0  # 只记 event，不碰判据
+
+    implement_mul(wt)
+    cli("checkpoint", "--session", "S1", "--role", "builder")
+    failure = cli("machine", "--session", "S1", expect=1)["failure"]
+    assert failure["stage"] == "legacy" and failure["baseline_red"] is True and "与候选无关" in failure["baseline"]
+
+    # pass_cmd 改了 → 那次预跑的结论作废，不再张冠李戴
+    with L.mutate(lp) as x:
+        x["contract"]["assurance"]["machine_commands"][1]["cmd"] = "python3 -c \"import sys; sys.exit(1)\""
+    assert machine.baseline_red(L.load(lp)) is None
+
+
+def test_start_rejects_unrunnable_proof_runner(repo, cli):
+    """跑不起来的 proof_runner 在 start 就拦住：此时改 loop.yml 不需要 contract revise（#241）。"""
+    cfg = (repo.root / ".claude" / "loop.yml")
+    cfg.write_text(cfg.read_text(encoding="utf-8") + "proof_runner:\n  framework: pytest\n  cmd: definitely-not-here -m pytest\n", encoding="utf-8")
+    repo.commit_all()
+    out = cli("start", "--plan", str(repo.root / "plan.md"), "--session", "S9", expect=1)
+    assert out["code"] == "PROOF_RUNNER_UNAVAILABLE"
+    assert L.list_runs(repo.root) == [] and not (repo.root.parent / "builder-loop-worktrees").exists()
+
+    # 不要 proof 的 run 不受影响
+    write_plan(repo.root, contract_with(**{"assurance.required": ["machine", "reviewer"]}), "lite.md")
+    assert cli("start", "--plan", str(repo.root / "lite.md"), "--session", "S9")["run_id"]

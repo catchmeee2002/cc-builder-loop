@@ -10,11 +10,15 @@ tester 的测试文件集合从 git 派生：`tester.base..tester.head` 的差�
 
 from __future__ import annotations
 
+import fcntl
+import os
 import time
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from . import gitx
+from .errors import negative
 from .jsonutil import digest
 from .ledger import EVIDENCE_KINDS, events_of, now_iso, run_dir
 
@@ -24,6 +28,8 @@ STATE_FAIL = "fail"
 STATE_STALE = "stale"
 
 ROLE_LEASE_SECONDS = 40 * 60
+GATE_MACHINE, GATE_PROOF, GATE_PREFLIGHT = "machine", "proof", "preflight"
+GATES = (GATE_MACHINE, GATE_PROOF, GATE_PREFLIGHT)  # machine / proof 排在前：readiness 只拿它俩与 next_action 对齐
 NO_PROGRESS_REPEATS = 3
 PROOF_STALL_REPEATS = 3
 
@@ -167,7 +173,79 @@ def role_running(ledger: dict[str, Any], role: str) -> bool:
     return (time.time() - beat) < ROLE_LEASE_SECONDS
 
 
-def _last_role_result_at(ledger: dict[str, Any], role: str) -> str:
+# ---------------------------------------------------------------- 门禁是否在跑（派生，不落盘）
+
+
+def _gate_path(ledger: dict[str, Any], holder: str) -> Path:
+    return run_dir(Path(ledger["repo"]["root"]), ledger["run_id"]) / f"gate-{holder}.lock"
+
+
+def _held_by_other(p: Path) -> bool:
+    """p 上的 flock 是否被别的进程持有。本进程自己持有不算——machine 跑完要在锁内算 readiness。"""
+    if not p.exists():
+        return False
+    try:
+        fd = os.open(str(p), os.O_RDWR)
+    except OSError:
+        return False
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            try:
+                return int(p.read_text(encoding="utf-8").strip() or -1) != os.getpid()
+            except (OSError, ValueError):
+                return True
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        return False
+    finally:
+        os.close(fd)
+
+
+def gate_running(ledger: dict[str, Any]) -> str | None:
+    """哪个门禁正在这个 run 上执行。进程死掉锁自动释放，无残留状态可清理。"""
+    for holder in GATES:
+        if _held_by_other(_gate_path(ledger, holder)):
+            return holder
+    return None
+
+
+@contextmanager
+def gate_lock(ledger: dict[str, Any], holder: str) -> Iterator[None]:
+    """门禁执行期间持有。同一门禁重复启动 → GATE_BUSY；基线预跑在跑就排队等它——
+    两套全量测试并发会把彼此挤成假超时。等待期间本门禁的锁已持有，所以 Stop 看得到它在排队。"""
+    p = _gate_path(ledger, holder)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(p), os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            raise negative("GATE_BUSY", f"`bl {holder}` 已经在这个 run 上执行，等它结束（后台任务完成时你会被唤醒）", holder=holder) from None
+        os.ftruncate(fd, 0)
+        os.write(fd, str(os.getpid()).encode())
+        if holder != GATE_PREFLIGHT:
+            _wait_released(_gate_path(ledger, GATE_PREFLIGHT))
+        yield
+    finally:
+        os.close(fd)  # 关闭即释放 flock
+
+
+def _wait_released(p: Path) -> None:
+    if not p.exists():
+        return
+    try:
+        fd = os.open(str(p), os.O_RDWR)
+    except OSError:
+        return
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
+
+
+def last_role_result_at(ledger: dict[str, Any], role: str) -> str:
     res = [e for e in events_of(ledger, "role_result") if e.get("role") == role]
     return res[-1]["at"] if res else ""
 
@@ -237,12 +315,13 @@ ACTION_PROOF = "proof"
 ACTION_SPAWN_REVIEWER = "spawn_reviewer"
 ACTION_RESUME_REVIEWER = "resume_reviewer"
 ACTION_AWAITING_REVIEWER = "awaiting_reviewer"
+ACTION_AWAITING_GATE = "awaiting_gate"
 ACTION_FINALIZE = "finalize"
 ACTION_NEEDS_USER = "needs_user"
-AWAITING_ACTIONS = (ACTION_AWAITING_TESTER, ACTION_AWAITING_REVIEWER)
+AWAITING_ACTIONS = (ACTION_AWAITING_TESTER, ACTION_AWAITING_REVIEWER, ACTION_AWAITING_GATE)
 
 
-def _missing_patch(ledger: dict[str, Any]) -> bool:
+def missing_patch(ledger: dict[str, Any]) -> bool:
     groups = (ledger.get("proof_spec") or {}).get("groups", [])
     return any(g.get("kind") == "mutation" and not (g.get("patch") or "").strip() for g in groups)
 
@@ -294,10 +373,10 @@ def readiness(ledger: dict[str, Any], repo_root: Path) -> dict[str, Any]:
     elif "proof" in required and states["proof"] != STATE_PASS:
         rec = ledger["evidence"].get("proof") or {}
         owner = ((rec.get("details") or {}).get("failure") or {}).get("suggested_owner")
-        replied = _last_role_result_at(ledger, "tester") > rec.get("at", "")
+        replied = last_role_result_at(ledger, "tester") > rec.get("at", "")
         if tester_run:
             action = ACTION_AWAITING_TESTER
-        elif _missing_patch(ledger) and _last_role_result_at(ledger, "tester") <= _first_integrate_at(ledger):
+        elif missing_patch(ledger) and last_role_result_at(ledger, "tester") <= _first_integrate_at(ledger):
             # 两段式：tester 首轮盲写时给不出 mutation patch；集成后实现可读了，续接它补上
             action = ACTION_RESUME_TESTER
         elif states["proof"] == STATE_FAIL and owner == "tester" and not replied:
@@ -310,11 +389,16 @@ def readiness(ledger: dict[str, Any], repo_root: Path) -> dict[str, Any]:
             action = ACTION_AWAITING_REVIEWER
         elif tester_run:
             action = ACTION_AWAITING_TESTER
-        elif states["reviewer"] == STATE_FAIL and _tester_owned_findings(ledger) and _last_role_result_at(ledger, "tester") <= rec.get("at", ""):
+        elif states["reviewer"] == STATE_FAIL and _tester_owned_findings(ledger) and last_role_result_at(ledger, "tester") <= rec.get("at", ""):
             action = ACTION_RESUME_TESTER
         else:
             action = ACTION_RESUME_REVIEWER if ledger["agents"].get("reviewer") else ACTION_SPAWN_REVIEWER
     else:
         action = ACTION_FINALIZE
 
-    return {"required": required, "states": states, "next_action": action, "blockers": found, "integrate_needed": integrate_needed}
+    gate = gate_running(ledger)
+    if gate == action:  # 要跑的门禁已经在跑（多半是后台 Bash）：等它，别再催一遍（#242）
+        action = ACTION_AWAITING_GATE
+
+    return {"required": required, "states": states, "next_action": action, "blockers": found,
+            "integrate_needed": integrate_needed, "gate_running": gate}

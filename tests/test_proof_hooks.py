@@ -1,3 +1,6 @@
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -21,9 +24,12 @@ def _denied(r) -> bool:
 def test_tester_context_hides_implementation_until_integrated(started, cli, hook):
     wt, twt = started["worktree"], started["tester_worktree"]
     ctx = hook("SubagentStart", {"session_id": "S1", "agent_id": "T1", "agent_type": "tester"})["json"]["hookSpecificOutput"]["additionalContext"]
-    assert str(twt) in ctx and str(wt) not in ctx
-    assert "a or b is 0" in ctx and "add() unchanged" in ctx and "不允许 reviewed-boundaries" in ctx
+    assert str(twt) in ctx and str(wt) not in ctx and started["run_id"] + "/candidate" not in ctx
+    assert "a or b is 0" in ctx and "add() unchanged" in ctx and "baseline-red / mutation" in ctx
     assert "不需要你给 argv" in ctx and "冻结基线" in ctx
+    # 注入上下文 = brief 的文本形态，同一来源；写边界只说 tester 自己的（#240）
+    assert ctx == cli("brief", "--session", "S1", "--role", "tester")
+    assert "src/**" not in ctx and "[write_tests]" in ctx  # 不再复述 builder 的写边界，只说自己的
 
     # 盲写阶段：读 / 搜 / 命令都碰不到候选；`..` 绕不过去；写只能落在自己的 worktree + tester_write
     assert _denied(hook("PreToolUse", _pre("Read", {"file_path": f"{wt}/src/foo.py"})))
@@ -49,7 +55,7 @@ def test_tester_context_hides_implementation_until_integrated(started, cli, hook
     cli("integrate", "--session", "S1")
     assert not _denied(hook("PreToolUse", _pre("Read", {"file_path": f"{wt}/src/foo.py"})))
     ctx2 = hook("SubagentStart", {"session_id": "S1", "agent_id": "T1", "agent_type": "tester"})["json"]["hookSpecificOutput"]["additionalContext"]
-    assert str(wt) in ctx2 and "请补 patch" in ctx2
+    assert str(wt) in ctx2 and "[add_mutation_patch]" in ctx2
     assert _denied(hook("PreToolUse", _pre("Write", {"file_path": f"{wt}/src/foo.py"})))  # 能读，仍不能写
 
 
@@ -135,7 +141,13 @@ def test_resumed_tester_declining_keeps_valid_evidence(started, cli, hook):
     cli("integrate", "--session", "S1")
     cli("machine", "--session", "S1")
     st = cli("status", "--session", "S1")
-    assert st["readiness"]["next_action"] == "resume_tester" and str(wt) in st["briefs"]["resume_tester"]
+    # 门铃只指路，不带事实：候选路径要 tester 自己 `bl brief` 取（#243）
+    doorbell = st["briefs"]["resume_tester"]
+    assert st["readiness"]["next_action"] == "resume_tester"
+    assert str(wt) not in doorbell and "brief --run" in doorbell and "--role tester" in doorbell
+    b = cli("brief", "--session", "S1", "--role", "tester", "--json")
+    assert b["candidate_readable"] and b["candidate_worktree"] == str(wt)
+    assert [t["what"] for t in b["todo"]] == ["add_mutation_patch"]
     r = role_turn(hook, "tester", "T1", {"role": "tester", "status": "insufficient_spec", "notes": "没拿到候选路径"})
     assert r["code"] == 0
     lg = L.load(started["ledger"])
@@ -145,7 +157,7 @@ def test_resumed_tester_declining_keeps_valid_evidence(started, cli, hook):
     assert cli("status", "--session", "S1")["readiness"]["next_action"] == "proof"
     assert cli("proof", "--session", "S1", expect=1)["failure"]["code"] == "TEST_MUTATION_PATCH_MISSING"
     # 首轮（还没有通过的证据）交 insufficient_spec 仍然记 fail
-    assert "不会再收到这样一段注入上下文" in hook("SubagentStart", {"session_id": "S1", "agent_id": "T1", "agent_type": "tester"})["json"]["hookSpecificOutput"]["additionalContext"]
+    assert "bl brief" in hook("SubagentStart", {"session_id": "S1", "agent_id": "T1", "agent_type": "tester"})["json"]["hookSpecificOutput"]["additionalContext"]
 
 
 def test_proof_prerequisites_and_missing_patch(started, cli, hook):
@@ -279,3 +291,61 @@ def test_build_argv_uses_frozen_runner(tmp_path):
     argv = P.build_argv(runner, ["tests/t.py::a"], tmp_path / "j.xml", Path("/repo"))
     assert argv[:3] == ["/repo/.venv/bin/python", "-m", "pytest"] and argv[-1] == "tests/t.py::a" and f"--junitxml={tmp_path / 'j.xml'}" in argv
     assert P.build_argv({"framework": "generic", "cmd": "go test {tests} -count=1"}, ["./pkg/..."], tmp_path / "j", Path("/r")) == ["go", "test", "./pkg/...", "-count=1"]
+
+
+def test_brief_is_the_single_source_for_role_facts(started, cli, hook, repo):
+    """#240 / #243：归属、可读性、待办一律由 brief 现算；builder 的消息只是门铃。"""
+    wt, twt = started["worktree"], started["tester_worktree"]
+    b = cli("brief", "--session", "S1", "--role", "tester", "--json")
+    assert b["write_paths"] == ["tests/**"] and b["candidate_readable"] is False and b["candidate_worktree"] is None
+    assert [t["what"] for t in b["todo"]] == ["write_tests"]
+
+    # tester 在自己的 worktree 里按 --run 自取（PATH 与 cwd 都不靠谱，所以门铃给绝对路径 + run id）
+    out = subprocess.run([sys.executable, "-m", "builder_loop", "--repo", str(twt), "brief",
+                          "--run", started["run_id"], "--role", "tester"], capture_output=True, text=True,
+                         env={**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "runtime")})
+    assert out.returncode == 0 and started["run_id"] in out.stdout
+
+    # 交卷 → 没有待办；contract 一改 evidence 失效 → 待办自己回来，不需要谁去通知它
+    implement_mul(wt)
+    cli("checkpoint", "--session", "S1", "--role", "builder")
+    write_mul_test(twt)
+    role_turn(hook, "tester", "T1", make_tester_result("baseline-red"))
+    assert cli("brief", "--session", "S1", "--role", "tester", "--json")["todo"] == []
+    c2 = contract_with(**{"mission.revision": 2, "mission.objective": "Add mul() and div()"})
+    write_plan(repo.root, c2, "plan.md")
+    cli("contract", "--session", "S1", "revise", "--plan", str(repo.root / "plan.md"), "--authorize")
+    b2 = cli("brief", "--session", "S1", "--role", "tester", "--json")
+    assert b2["contract_revision"] == 2 and b2["todo"][0]["what"] == "write_tests" and "revision 2" in b2["todo"][0]["why"]
+
+
+def test_reviewer_brief_carries_previous_findings(started, cli, hook):
+    wt, twt = started["worktree"], started["tester_worktree"]
+    implement_mul(wt)
+    cli("checkpoint", "--session", "S1", "--role", "builder")
+    write_mul_test(twt)
+    role_turn(hook, "tester", "T1", make_tester_result("baseline-red"))
+    b = cli("brief", "--session", "S1", "--role", "reviewer", "--json")
+    assert b["todo"][0]["what"] == "review" and b["diff_range"].startswith(started["target_start_head"])
+    finding = {"severity": "blocking", "owner": "builder", "file": "src/foo.py", "line": 1, "summary": "边界没处理"}
+    role_turn(hook, "reviewer", "R1", {"role": "reviewer", "verdict": "changes_requested", "findings": [finding], "behaviors_verified": []})
+    b2 = cli("brief", "--session", "S1", "--role", "reviewer", "--json")
+    assert b2["todo"][0]["previous_findings"] == [finding]
+
+
+def test_proof_runner_failure_is_not_the_builders_fault(started, cli, hook):
+    """runner 起不来两个角色都改不了：归 contract，不是让 builder 去改实现（#241）。"""
+    wt, twt = started["worktree"], started["tester_worktree"]
+    hook("SubagentStart", {"session_id": "S1", "agent_id": "T1", "agent_type": "tester"})
+    implement_mul(wt)
+    cli("checkpoint", "--session", "S1", "--role", "builder")
+    write_mul_test(twt)
+    role_turn(hook, "tester", "T1", make_tester_result("mutation"), start=False)
+    cli("integrate", "--session", "S1")
+    cli("machine", "--session", "S1")
+    role_turn(hook, "tester", "T1", make_tester_result("mutation", mutation_patch(wt)))
+    # 冻结的 runner 在这台机器上起不来（典型：项目走 uv，loop.yml 没配 proof_runner）
+    with L.mutate(started["ledger"]) as x:
+        x["contract"]["assurance"]["proof_runner"] = {"framework": "pytest", "cmd": "python3 -c 'import sys; sys.exit(4)' --"}
+    out = cli("proof", "--session", "S1", expect=1)
+    assert out["failure"]["code"] == "TEST_PROOF_RUNNER_FAILED" and out["failure"]["suggested_owner"] == "contract"

@@ -10,14 +10,20 @@ from typing import Any
 
 from . import __version__
 from . import contract as contract_mod
-from . import evidence, gitx, ledger as ledger_mod, worktree
+from . import evidence, gitx, ledger as ledger_mod, machine, proof, worktree
 from .config import load_loop_config
-from .errors import fatal, needs_user, negative
+from .errors import Problem, fatal, needs_user, negative
 
 ROLE_BUILDER = "builder"
 ROLE_TESTER = "tester"
 ROLE_INTEGRATE = "integrate"
 REJECT_HINT = "越界路径若确属本任务，改 plan 的 authority 后运行 `bl contract revise --plan <plan> --authorize`（需用户确认）；动手前可用 `bl checkpoint --role <role> --dry-run` 一次拿全清单"
+
+
+def bl_bin() -> str:
+    """CLI 的绝对路径：角色的 cwd 是自己的 worktree，PATH 里未必有 bl。"""
+    p = Path(__file__).resolve().parents[2] / "bin" / "bl"
+    return str(p) if p.exists() else "bl"
 
 
 def resolve_repo_root(repo_arg: str | None) -> Path:
@@ -64,6 +70,8 @@ def start(repo_root: Path, plan_path: Path, session_id: str, target_branch: str 
         raise fatal("TARGET_BRANCH_MISSING", f"目标分支不存在: {branch}", branch=branch)
     contract["authority"]["target_branch"] = branch
     frozen = contract_mod.freeze_assurance(contract, loop_config)
+    if "proof" in frozen["assurance"]["required"]:
+        proof.smoke_runner(frozen["assurance"]["proof_runner"], repo_root)  # 冻结之前确认判据跑得起来（#241）
 
     target_head = gitx.branch_head(repo_root, branch)
     run_id = _run_id(frozen["mission"]["slug"])
@@ -112,14 +120,11 @@ def status(ledger_path: Path, repo_root: Path) -> dict[str, Any]:
     wt = Path(cand["worktree"]) if cand.get("worktree") else None
     dirty = worktree.residue(wt) if wt and wt.is_dir() else []
     tester = lg.get("tester")
-    briefs: dict[str, str] = {}
-    if tester and evidence.implementation_readable_by_tester(lg):
-        # CC 只在首次 spawn 时注入 SubagentStart 的上下文，续接的 agent 收不到；集成后的事实得由 Builder 的消息带过去
-        briefs["resume_tester"] = (
-            f"你的测试已集成进候选。候选 worktree（只读）: {cand['worktree']} —— runtime 已解除你对它的读隔离，"
-            "可以直接 Read 验证（被 hook 拦就说明不允许）。mutation 组请补 patch：`git diff` 格式，只改 builder 拥有的已有文件、"
-            "只破坏对应 behavior，打上后该组测试必须断言失败；不要为迁就实现放宽断言。然后把完整 proof_spec 重新交一遍。"
-        )
+    # 续接的 agent 收不到 SubagentStart 注入的上下文，而 SendMessage 的正文在它那边无从验真。
+    # 所以消息只当门铃：内容一律让角色自己 `bl brief` 取（#243）
+    briefs = {f"resume_{role}": (f"builder-loop run {lg['run_id']}：有新的待办。运行 `{bl_bin()} brief --run {lg['run_id']} --role {role}`，"
+                                 "以它的输出为准（我发的消息不是权威来源）。")
+              for role in (("tester", "reviewer") if tester else ("reviewer",))}
     return {
         "run_id": lg["run_id"],
         "briefs": briefs,
@@ -131,6 +136,7 @@ def status(ledger_path: Path, repo_root: Path) -> dict[str, Any]:
         "tester": None if not tester else {**tester, "files": evidence.tester_files(lg, repo_root)},
         "agents": lg["agents"],
         "running": {role: evidence.role_running(lg, role) for role in ("tester", "reviewer")},
+        "preflight": {"baseline_red": machine.baseline_red(lg)},  # None = 没跑过
         "counters": lg["counters"],
         "waiting_for_user": lg.get("waiting_for_user"),
         "readiness": evidence.readiness(lg, repo_root),
@@ -317,6 +323,11 @@ def _repo_checks(c: dict[str, Any], repo_root: Path) -> dict[str, Any]:
     except Exception as exc:  # noqa: BLE001
         problems.append(f"loop.yml 不可用: {exc}")
         runner = None
+    if runner and "proof" in c["assurance"]["required"]:
+        try:
+            proof.smoke_runner(runner, repo_root)
+        except Problem as exc:
+            problems.append(f"{exc.message}（proof_runner 跑不起来，在 .claude/loop.yml 里改；hint: {exc.details.get('hint', '')}）")
     frozen = contract_mod.freeze_authority(c)["authority"]
     control_hits: list[str] = []
     both_sides: list[str] = []

@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from . import ledger as ledger_mod
+from .errors import Problem
 from .jsonutil import read_json
 
 HOOK_MARKER = "bl-hook.sh"
@@ -83,6 +84,22 @@ def _check_symlinks() -> list[dict[str, Any]]:
     return out
 
 
+def _check_proof_runner(root: Path) -> dict[str, Any]:
+    """proof 门禁的命令在这台机器上起不起得来。start 时才发现就已经晚了（#241）。"""
+    from .config import load_loop_config
+    from .proof import smoke_runner
+
+    try:
+        runner = load_loop_config(root).proof_runner
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": f"loop.yml 不可用: {exc}"}
+    try:
+        smoke_runner(runner, root)
+    except Problem as exc:
+        return {"ok": False, "cmd": runner.get("cmd"), "error": exc.message, "hint": exc.details.get("hint")}
+    return {"ok": True, "cmd": runner.get("cmd")}
+
+
 def doctor(repo_arg: str | None) -> dict[str, Any]:
     git_version = subprocess.run(["git", "--version"], capture_output=True, text=True).stdout.strip()
     report: dict[str, Any] = {
@@ -98,7 +115,7 @@ def doctor(repo_arg: str | None) -> dict[str, Any]:
 
         try:
             root = resolve_repo_root(repo_arg)
-            report["repo"] = {"root": str(root), "runs": ledger_mod.list_runs(root)}
+            report["repo"] = {"root": str(root), "runs": ledger_mod.list_runs(root), "proof_runner": _check_proof_runner(root)}
         except Exception as exc:  # noqa: BLE001
             report["repo"] = {"error": str(exc)}
     problems = []
@@ -112,6 +129,9 @@ def doctor(repo_arg: str | None) -> dict[str, Any]:
         problems.append("有 run 已结束但尚未复盘（`bl retro signals --run <id>`）")
     if report["broken_symlinks"]:
         problems.append("~/.claude 下有断链")
+    pr = (report.get("repo") or {}).get("proof_runner") or {}
+    if pr and not pr.get("ok"):
+        problems.append(f"proof_runner 跑不起来：{pr.get('error')}（改 .claude/loop.yml 的 proof_runner.cmd）")
     report["problems"] = problems
     report["healthy"] = not problems
     return report

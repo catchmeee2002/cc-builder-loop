@@ -14,7 +14,7 @@ from typing import Any
 
 from . import evidence, gitx, ledger as ledger_mod, worktree
 from .errors import fatal, needs_user
-from .jsonutil import sha256_bytes
+from .jsonutil import dumps, sha256_bytes
 
 NO_PROGRESS_REPEATS = 3
 
@@ -59,6 +59,55 @@ def _run_stage(cwd: Path, stage: dict[str, Any], log_path: Path, env: dict[str, 
     return rc, text, timed_out
 
 
+def commands_digest(stages: list[dict[str, Any]]) -> str:
+    return sha256_bytes(dumps([[s["stage"], s["cmd"]] for s in stages]).encode())[:16]
+
+
+def run_preflight(ledger_path: Path, repo_root: Path) -> dict[str, Any]:
+    """在 run 起点的临时 worktree 上把冻结的 pass_cmd 跑一遍：哪些 stage 在基线上本来就红。
+
+    不写 evidence、不计 machine_iter——它证明的是判据本身有效，不是候选达标（原则五）。
+    基线红不拦 run：bug 修复类任务基线红是预期。只在 machine 失败时用来免掉一次白查（#241）。
+    """
+    lg = ledger_mod.load(ledger_path)
+    if ledger_mod.is_terminal(lg):
+        raise fatal("RUN_TERMINAL", "run 已到终态", terminal=lg["terminal"])
+    stages = lg["contract"]["assurance"].get("machine_commands") or []
+    if not stages:
+        raise fatal("MACHINE_NO_STAGES", "assurance.machine_commands 为空，判据未执行")
+
+    log_dir = ledger_path.parent / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    env = dict(os.environ)
+    env.update({"BUILDER_LOOP_RUN_ID": lg["run_id"], "BUILDER_LOOP_MAIN_REPO": str(repo_root), "BUILDER_LOOP_PREFLIGHT": "1"})
+
+    results: list[dict[str, Any]] = []
+    with evidence.gate_lock(lg, evidence.GATE_PREFLIGHT):
+        base = Path(lg["repo"]["root"]).parent / f".bl-preflight-{lg['run_id']}"
+        with worktree.temp_worktree(repo_root, lg["repo"]["target_start_head"], base.parent, base.name) as wt:
+            env["BUILDER_LOOP_CANDIDATE"] = str(wt)
+            for stage in stages:
+                log_path = log_dir / f"preflight-{stage['stage']}.log"
+                rc, _text, timed_out = _run_stage(wt, stage, log_path, env)
+                results.append({"stage": stage["stage"], "returncode": rc, "timed_out": timed_out, "log": str(log_path)})
+
+    red = [r["stage"] for r in results if r["returncode"] != 0]
+    with ledger_mod.mutate(ledger_path) as lg2:
+        ledger_mod.log_event(lg2, "preflight", stages=results, commands_digest=commands_digest(stages), baseline_red=red)
+    return {"result": "RED" if red else "GREEN", "baseline_red": red, "stages": results,
+            "note": "基线上就失败的 stage 与候选无关：要么改 .claude/loop.yml 后 `bl contract revise --authorize`，要么本次任务本就要修好它"}
+
+
+def baseline_red(ledger: dict[str, Any]) -> list[str] | None:
+    """与当前 machine_commands 对得上的那次基线预跑里，哪些 stage 是红的；没跑过 → None。"""
+    stages = ledger["contract"]["assurance"].get("machine_commands") or []
+    want = commands_digest(stages)
+    for ev in reversed(ledger_mod.events_of(ledger, "preflight")):
+        if ev.get("commands_digest") == want:
+            return list(ev.get("baseline_red") or [])
+    return None
+
+
 def run_machine(ledger_path: Path, repo_root: Path) -> dict[str, Any]:
     lg = ledger_mod.load(ledger_path)
     if ledger_mod.is_terminal(lg):
@@ -92,16 +141,25 @@ def run_machine(ledger_path: Path, repo_root: Path) -> dict[str, Any]:
 
     results: list[dict[str, Any]] = []
     failed: dict[str, Any] | None = None
-    for stage in stages:
-        log_path = log_dir / f"iter-{it}-{stage['stage']}.log"
-        rc, text, timed_out = _run_stage(wt, stage, log_path, env)
-        entry = {"stage": stage["stage"], "returncode": rc, "log": str(log_path), "timed_out": timed_out}
-        results.append(entry)
-        if rc != 0:
-            files = evidence.tester_files(lg, repo_root)["present"]
-            mentioned = sorted(f for f in files if f in text)
-            failed = dict(entry, signature=failure_signature(text, stage["stage"], rc), tail=text[-4000:], tester_files_mentioned=mentioned)
-            break
+    with evidence.gate_lock(lg, evidence.GATE_MACHINE):
+        for stage in stages:
+            log_path = log_dir / f"iter-{it}-{stage['stage']}.log"
+            rc, text, timed_out = _run_stage(wt, stage, log_path, env)
+            entry = {"stage": stage["stage"], "returncode": rc, "log": str(log_path), "timed_out": timed_out}
+            results.append(entry)
+            if rc != 0:
+                files = evidence.tester_files(lg, repo_root)["present"]
+                mentioned = sorted(f for f in files if f in text)
+                failed = dict(entry, signature=failure_signature(text, stage["stage"], rc), tail=text[-4000:], tester_files_mentioned=mentioned)
+                break
+
+    red = baseline_red(lg)
+    if failed:
+        if red is None:
+            failed["baseline"] = "未做基线预跑：`bl preflight` 可确认这一段是不是本来就红（后台跑，不占你的时间）"
+        elif failed.get("stage") in red:
+            failed["baseline_red"] = True
+            failed["baseline"] = "这一段在 run 起点（没有你的改动）上同样失败，多半与候选无关：要么改 .claude/loop.yml 后 `bl contract revise --authorize`，要么本次任务本就要修好它"
 
     mutated = worktree.residue(wt)
     head_after = gitx.head(wt)

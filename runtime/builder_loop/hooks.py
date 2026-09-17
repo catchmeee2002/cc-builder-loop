@@ -17,6 +17,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+from . import brief as brief_mod
 from . import contract as contract_mod
 from . import evidence, ledger as ledger_mod
 from .errors import Problem
@@ -63,20 +64,11 @@ def parse_result_marker(text: str | None) -> dict[str, Any] | None:
     return obj if isinstance(obj, dict) else None
 
 
-# ---------------------------------------------------------------- 结果契约
+# ---------------------------------------------------------------- 结果契约（定义在 brief，与注入上下文同源）
 
 
-TESTER_RESULT_FORMAT = (
-    'BUILDER_LOOP_RESULT: {"role":"tester","status":"pass|insufficient_spec","behaviors_covered":["B1"],'
-    '"proof_spec":{"groups":[{"kind":"baseline-red|mutation|reviewed-boundaries","behavior_ids":["B1"],'
-    '"test_ids":["tests/test_x.py::test_a"],"timeout":120,"patch":"<mutation 的 unified diff；首轮看不到实现时可省略>",'
-    '"reviewed_boundaries":{"positive":[],"negative":[],"boundary":[],"invariant":[]}}]},"notes":""}'
-)
-REVIEWER_RESULT_FORMAT = (
-    'BUILDER_LOOP_RESULT: {"role":"reviewer","verdict":"pass|changes_requested|blocked",'
-    '"findings":[{"severity":"blocking|major|minor","owner":"builder|tester|contract","file":"src/x.py","line":10,"summary":"..."}],'
-    '"behaviors_verified":["B1"]}'
-)
+TESTER_RESULT_FORMAT = brief_mod.TESTER_RESULT_FORMAT
+REVIEWER_RESULT_FORMAT = brief_mod.REVIEWER_RESULT_FORMAT
 
 
 def _validate_role_payload(role: str, payload: dict[str, Any]) -> str | None:
@@ -161,59 +153,8 @@ def record_role_result(ledger_path: Path, repo_root: Path, role: str, agent_id: 
 
 
 def agent_context(lg: dict[str, Any], role: str, repo_root: Path) -> str:
-    c = lg["contract"]
-    m, a, s = c["mission"], c["authority"], c["assurance"]
-    lines = [f"[builder-loop] 你是本 run 的 {role}。run_id={lg['run_id']}", f"Mission: {m['objective']}", "Behaviors:"]
-    for b in m["behaviors"]:
-        lines.append(f"  - {b['id']}: given {b['given']} / when {b['when']} / then {b['then']}")
-        for key, label in (("boundaries", "边界"), ("invariants", "不变量")):
-            if b.get(key):
-                lines.append(f"      {label}: " + "; ".join(b[key]))
-        if role == "tester":
-            floor = b.get("proof", contract_mod.PROOF_FLOOR_STRONG)
-            kinds = "baseline-red / mutation / reviewed-boundaries" if floor == contract_mod.PROOF_FLOOR_REVIEWED else "baseline-red / mutation（不允许 reviewed-boundaries）"
-            lines.append(f"      允许的 proof kind: {kinds}")
-    if m.get("interfaces"):
-        lines.append("Interfaces: " + "; ".join(m["interfaces"]))
-    if m.get("mock_strategy"):
-        lines.append("Mock 策略: " + dumps(m["mock_strategy"]))
-    if m.get("trust_boundaries"):
-        lines.append("Trust boundaries: " + "; ".join(m["trust_boundaries"]))
-
-    if role == "tester":
-        t = lg["tester"]
-        runner = s.get("proof_runner", {})
-        lines += [
-            f"你的 worktree（唯一允许读写的位置）: {t['worktree']}",
-            f"写边界 tester_write: {a['tester_write']}；不要碰 builder_write {a['builder_write']} 与 protected {a.get('protected_paths', [])}",
-            f"测试命令由项目冻结，不需要你给 argv：{runner.get('cmd')}（framework={runner.get('framework')}）；proof_spec 每组只给 test_ids（pytest node id，如 tests/test_x.py::test_a）",
-        ]
-        lines.append("之后如果你被续接（SendMessage），不会再收到这样一段注入上下文——续接时的新信息都在 Builder 发来的消息里。你的测试集成进候选之后，Builder 会把候选 worktree 的路径发给你，届时 hook 会放行你对它的读取：**以 hook 是否放行为准**，Read 被拦就说明还不允许。")
-        if evidence.implementation_readable_by_tester(lg):
-            lines += [
-                f"你的测试已集成进候选，现在可以读候选实现: {lg['candidate']['worktree']}（只读）。",
-                "mutation 组请补 patch：一段 `git diff` 格式的 unified diff，只改 builder 拥有的已有文件、只破坏对应 behavior，打上后你的测试必须断言失败。不要为迁就实现去放宽已有断言。",
-            ]
-        else:
-            lines += [
-                "你工作在 run 起点的冻结基线上：这里没有本次的实现，也不要去找它（候选 worktree、其他分支、`git log --all` 都不要碰）。测试只依据上面的 behaviors / interfaces 写。",
-                "新接口在基线上无法 import，所以写完后只需保证语法与收集无误；baseline-red 只用于「起点上会断言失败」的行为（行为变更、bug 修复、功能移除的负向测试），新接口用 mutation 且 patch 先留空，集成后会请你补。",
-            ]
-        lines += ["完成后 assistant 消息最后一行必须是单行：", TESTER_RESULT_FORMAT]
-    else:
-        ev = lg["evidence"]
-        cand = lg["candidate"]
-        summary = {k: (ev[k]["status"] if ev.get(k) else None) for k in ("machine", "tester", "proof")}
-        lines += [
-            f"候选 worktree（只读）: {cand['worktree']}",
-            f"审查范围: 在候选 worktree 内 `git diff {lg['repo']['target_start_head'][:12]}..{(cand['head'] or 'HEAD')[:12]}`",
-            f"前置 evidence: {summary}",
-            f"review_focus: {s.get('review_focus', [])}",
-            "每条 blocking / major finding 写明 owner：实现问题 builder，测试问题 tester，需要改目标/写边界/验收标准的 contract。",
-            "只读审查，不修改任何文件。完成后 assistant 消息最后一行必须是单行：",
-            REVIEWER_RESULT_FORMAT,
-        ]
-    return "\n".join(lines)
+    """首次 spawn 注入的上下文 = brief 的文本形态。续接时 CC 不送达，角色要自己 `bl brief`。"""
+    return brief_mod.render(brief_mod.build(lg, repo_root, role))
 
 
 # ---------------------------------------------------------------- Stop

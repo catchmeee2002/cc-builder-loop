@@ -71,6 +71,10 @@ def test_contract_parse_and_digest_stable():
     lambda c: c["assurance"].update(required=["machine", "proof"]),
     lambda c: c["authority"].update(tester_write=[]),
     lambda c: c.update(schema="nope"),
+    # #240：builder_write 点名 tester 地盘内的文件 / 整段 glob
+    lambda c: c["authority"]["builder_write"].append("tests/unit/test_legacy.py"),
+    lambda c: c["authority"]["builder_write"].append("tests/**"),
+    lambda c: c["authority"].update(tester_write=["**"]),
 ])
 def test_contract_validation_rejects(mutate):
     c = copy.deepcopy(CONTRACT)
@@ -78,6 +82,14 @@ def test_contract_validation_rejects(mutate):
     with pytest.raises(Problem) as ei:
         C.validate_contract(c)
     assert ei.value.code == "CONTRACT_INVALID"
+
+
+def test_builder_write_overlap_allows_broad_glob():
+    """`**` 不被 `tests/**` 吞掉：老 plan 的写法继续可用，重叠处由 path_owner 判给 tester。"""
+    c = contract_with(**{"authority.builder_write": ["**"]})
+    C.validate_contract(c)
+    assert C.path_owner(c["authority"], "tests/unit/test_a.py") == C.OWNER_TESTER
+    assert C.path_owner(c["authority"], "src/foo.py") == C.OWNER_BUILDER
 
 
 def test_duplicate_tag_rejected():

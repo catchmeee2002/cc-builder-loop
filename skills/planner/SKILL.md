@@ -57,7 +57,7 @@ tester 在 run 起点的冻结基线上**盲写测试，看不到实现**。它�
 规则：
 
 - `behaviors` 非空且 id 唯一。每条默认要求**强证明**（baseline-red 或 mutation）；只有确实没法构造反例的 behavior 才加 `"proof":"reviewed-boundaries"` 放行最弱的那种，并在方案里说明原因。
-- 写边界两边 glob 都命中的路径归 tester（`builder_write:["**"]` 也不会让 builder 碰到 `tests/**`）。
+- 写边界两边 glob 都命中的路径归 tester（`builder_write:["**"]` 也不会让 builder 碰到 `tests/**`）。**落在 `tester_write` 之内的路径不能写进 `builder_write`**（字面点名也不行，validate 会拒）——要它跟着实现变，就在对应 behavior 里写明改成什么，由 tester 改。
 - 控制面文件（pytest.ini、pyproject.toml、conftest.py、Makefile、package.json、go.mod、Cargo.toml、BUILD、WORKSPACE、loop.yml 等）builder 靠 glob 顺带命中不算数，要改必须字面点名；`tester_write` 内的 conftest.py 归 tester。
 - `proof` 依赖 `tester`；`machine_commands` 与 `proof_runner` 不写（start 时从 `.claude/loop.yml` 冻结）；`target_branch` 省略 = 当前分支。
 - 项目没有 `.claude/loop.yml` → 先跑 builder-loop 接入向导。
