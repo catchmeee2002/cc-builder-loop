@@ -1,0 +1,7 @@
+interface:
+  display_name: "File Issue"
+  short_description: "保留问题现场并由当前 Agent 直接创建 GitHub 或 GitLab Issue"
+  default_prompt: "Use $file-issue to preserve the live evidence and file this problem as an Issue on the appropriate platform (GitHub via gh, or GitLab via glab)."
+
+policy:
+  allow_implicit_invocation: true
