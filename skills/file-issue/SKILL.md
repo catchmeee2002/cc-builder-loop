@@ -1,6 +1,6 @@
 ---
 name: file-issue
-description: 当用户要求“提 Issue”“开 Issue”“记录 bug”“把这个问题记到 GitHub/GitLab”，或当前任务明确要求把运行中发现的工程缺陷提交为 Issue 时使用。保留仍然新鲜的问题现场，查重并区分事实、根因假设与已确认根因，再由当前 Agent 直接调用 gh 或 glab（依据目标仓库所在平台自动判定）创建或补充 Issue；用户已经要求创建时不得再次请求确认。不要用于普通 Issue 查询、根因分析、修复、Planner 分流或影子分流。
+description: 当用户要求“提 Issue”“开 Issue”“记录 bug”“把这个问题记到 GitHub/GitLab”，或当前任务明确要求把运行中发现的工程缺陷提交为 Issue 时使用。保留仍然新鲜的问题现场，查重并区分事实、根因假设与已确认根因，再由当前 Agent 直接调用对应平台 CLI（GitHub 用 gh，GitLab 用 glab）创建或补充 Issue；用户已经要求创建时不得再次请求确认。不要用于普通 Issue 查询、根因分析、修复、Planner 分流或影子分流。
 ---
 
 # 提交 Issue（GitHub / GitLab）
@@ -55,7 +55,8 @@ description: 当用户要求“提 Issue”“开 Issue”“记录 bug”“把
 4. 没有重复项时，由当前 Agent 直接运行对应平台的创建命令：
    - GitHub：`gh issue create`；
    - GitLab：`glab issue create`（跨仓库场景显式带 `-R <namespace>/<repo>`）。
-   标题描述可观察症状，不把未经确认的根因或修法写进标题。
+   标题描述可观察症状，不把未经确认的根因或修法写进标题。若该 CLI 需绕过代理等本机特殊设置（如内网
+   GitLab 域名应直连、不走通用代理），按已知项目约定处理，不要为了连通而静默切换平台或跳过校验。
 5. 正文按现场实际信息组织，至少让后续 Agent 能分清：
    - 归属与版本；
    - 触发场景和现场过程；
