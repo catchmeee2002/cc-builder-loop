@@ -48,7 +48,7 @@ proof 只能证明"测试能抓住偏离当前实现"，证明不了"当前实�
 | `finalize` | 前置检查、commit-tree（可选 `--run-commit-hook`）、intent、CAS、checkout 同步、恢复、rebase |
 | `retro` | 确定性信号派生（只读 ledger）、复盘记录校验、cleanup |
 | `hooks` | 六个 handler、结果标记解析、tester 读隔离与角色写边界、心跳续租；注入的上下文 = `brief.render()` |
-| `brief` | 角色视角事实的**唯一来源**：写边界、候选可读性、待办；结构化 + 文本两种形态，`bl brief` 与 SubagentStart 同源 |
+| `brief` | 角色视角事实的**唯一来源**：写边界、候选可读性、待办；结构化 + 文本两种形态，`bl brief` 与 SubagentStart 同源；reviewer 另带文档引用线索（`doc_reference_hints`，现算调 `doc-lint.sh`，≤4 秒，失败降级为 `error`，不落盘） |
 | `doctor` | 只读诊断 |
 
 `hooks/bl-hook.sh` 先用纯 bash 从 stdin 抠 `session_id` 并查 session 指针，没有绑定就直接退出、不起 python——PreToolUse 挂在 Read / Bash 上，无绑定 session 的开销必须接近零。

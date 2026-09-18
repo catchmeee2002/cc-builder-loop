@@ -41,6 +41,8 @@ builder-loop 只负责判据和 Git 事务；调度 subagent、续接、问用�
 
 **给角色发消息的两条规矩**：① `status.running.<role>` 为真时**不要发**——消息会夹在它的工具结果里到达，它没法验真，多半会拒绝执行；等它停下再续接。② 消息只当门铃，事实一律让它自己 `bl brief` 取。contract 改了也不用特意通知 tester：它的 evidence 会自动失效，`next_action` 自然变成 `resume_tester`。
 
+**文档同步在 finalize 之前做**：候选 diff 若改了对外行为 / 契约 / 导航，按 `~/.claude/doc-policy.md` 判断哪些文档要改、内容归哪里，需要就改进候选（属于候选 diff，进 checkpoint）。reviewer 的 brief 会附一段启发式的文档引用线索，可能误报，逐条判断；复盘不再审文档。
+
 ## 3. 复盘（硬闸门）
 
 finalize 或 abandon 之后 run 还没完：复盘记录写进 ledger 之前 Stop hook 会一直拦，也开不了下一个 run。
@@ -53,8 +55,8 @@ finalize 或 abandon 之后 run 还没完：复盘记录写进 ledger 之前 Sto
    同一因果链跨两个仓库就拆成两条。
 3. 有要立项的 → AskUserQuestion 多选让用户勾，勾中的用 `file-issue` skill 逐个立项拿到 URL；用户不想立的记 `declined_by_user: true`。
 4. 写 JSON 后 `bl retro record --file <json>`；没有信号也没有观察到问题时 `bl retro record --no-incident`。
-5. 值得长期记住的平台行为 / 隐式约定 → 一句话建议用户 `/memory`。
+5. 值得长期记住的平台行为 / 隐式约定，按 `~/.claude/doc-policy.md` 先判归属：接手的纯人工团队也需要知道的，是项目文档缺口，走 `business_issue` / `builder_loop_issue` 立项；只关乎 AI 协作、无法工程固化的，才一句话建议用户 `/memory`。
 
 ## 4. 汇报
 
-`final_head`、做了哪几件事（1–5 条，一事一句）、tester 覆盖的 behaviors、reviewer 结论、复盘立了哪些 issue。文档是否同步按 `~/.claude/doc-policy.md` 判断，需要就在 finalize 前改（属于候选 diff）。
+`final_head`、做了哪几件事（1–5 条，一事一句）、tester 覆盖的 behaviors、reviewer 结论、复盘立了哪些 issue。

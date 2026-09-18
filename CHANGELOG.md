@@ -2,6 +2,11 @@
 
 > 本文件记 **CC 版**产品线（分支 `cc/main`）。Codex 版见 `codex/main` 分支。
 
+## 文档同步收口（2026-09-19）
+
+- **reviewer brief 带文档引用线索**：`doc_reference_hints{hits,error}` 每次现算（候选 worktree 内以 `.` 为根调 `doc-lint.sh`，基准 `target_start_head`，≤4 秒），文本形态标明「启发式、可能误报」。不进 machine、不写 ledger；算不出来降级为 `error`，brief 照常返回。
+- **builder SKILL**：文档同步提示从 §4 汇报移到 §2（finalize 之前）；复盘第 5 步先按 doc-policy 判断项目文档缺口（走 issue），只关乎 AI 协作的才建议 `/memory`。
+
 ## install.sh 幂等重跑不再堆积 settings.json 备份（#238，2026-09-18）
 
 - 写入顺序改为"算新内容 → 与旧 `settings.json` 逐字节比较 → 不同才备份并写入"，比较对象是与写盘同一套序列化产出的最终文本。内容不变的重跑不再生成 `settings.json.bak.*`。

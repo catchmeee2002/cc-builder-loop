@@ -10,6 +10,9 @@ Builder 的消息只是门铃。
 
 from __future__ import annotations
 
+import os
+import signal
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -79,6 +82,37 @@ def _reviewer_todo(lg: dict[str, Any]) -> list[dict[str, Any]]:
              "previous_findings": prev, "previously_reviewed_head": reviewed}]
 
 
+DOC_LINT = Path(__file__).resolve().parents[2] / "skills" / "builder-loop" / "scripts" / "doc-lint.sh"
+DOC_HINT_TIMEOUT = 4  # SubagentStart hook 超时 10s：线索算不出来只能降级，不能拖垮 brief
+
+
+def _doc_reference_hints(lg: dict[str, Any]) -> dict[str, Any]:
+    """候选删掉了定义而文档仍引用的启发式线索。每次现算，不落盘；任何失败都降级为 error。
+
+    以候选 worktree 为 cwd、扫描根传 `.`：doc-lint 的 find 会排除 */.claude/* 与 */build/*，绝对路径落在这些段下会整体漏扫。
+    """
+    wt = lg["candidate"]["worktree"]
+    if not Path(wt).is_dir():
+        return {"hits": [], "error": f"候选 worktree 不存在: {wt}"}
+    try:
+        proc = subprocess.Popen(["bash", str(DOC_LINT), ".", lg["repo"]["target_start_head"]], cwd=wt,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
+        try:
+            out, err = proc.communicate(timeout=DOC_HINT_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            os.killpg(proc.pid, signal.SIGKILL)
+            proc.communicate()
+            return {"hits": [], "error": f"doc-lint 超过 {DOC_HINT_TIMEOUT} 秒未返回"}
+    except Exception as e:  # noqa: BLE001 — brief 必须照常返回
+        return {"hits": [], "error": f"doc-lint 无法运行: {e}"}
+    if proc.returncode == 0:
+        return {"hits": [], "error": None}
+    if proc.returncode == 1:
+        hits = [ln.strip() for ln in out.splitlines() if ln.startswith((" ", "\t")) and ln.strip()]
+        return {"hits": hits, "error": None}
+    return {"hits": [], "error": f"doc-lint 退出码 {proc.returncode}: {(err or out).strip()[:200]}"}
+
+
 def build(lg: dict[str, Any], repo_root: Path, role: str) -> dict[str, Any]:
     c = lg["contract"]
     m, a, s = c["mission"], c["authority"], c["assurance"]
@@ -125,8 +159,18 @@ def build(lg: dict[str, Any], repo_root: Path, role: str) -> dict[str, Any]:
         out["evidence"] = {k: (ev[k]["status"] if ev.get(k) else None) for k in ("machine", "tester", "proof")}
         out["review_focus"] = s.get("review_focus", [])
         out["todo"] = _reviewer_todo(lg)
+        out["doc_reference_hints"] = _doc_reference_hints(lg)
         out["result_format"] = REVIEWER_RESULT_FORMAT
     return out
+
+
+def _render_doc_hints(h: dict[str, Any]) -> list[str]:
+    head = "文档引用线索（启发式 grep，可能误报；逐条判断，确实失效的按审查清单第 6 条处理）:"
+    if h.get("error"):
+        return [f"文档引用线索不可用: {h['error']}"]
+    if not h["hits"]:
+        return [head + " 无"]
+    return [head, *[f"  - {x}" for x in h["hits"]]]
 
 
 def render(brief: dict[str, Any]) -> str:
@@ -167,6 +211,7 @@ def render(brief: dict[str, Any]) -> str:
             f"审查范围: 在候选 worktree 内 `git diff {brief['diff_range']}`",
             f"前置 evidence: {brief['evidence']}",
             f"review_focus: {brief['review_focus']}",
+            *_render_doc_hints(brief["doc_reference_hints"]),
             "每条 blocking / major finding 写明 owner：实现问题 builder，测试问题 tester，需要改目标/写边界/验收标准的 contract。",
             "只读审查，不修改任何文件。",
         ]
