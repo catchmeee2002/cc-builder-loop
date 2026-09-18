@@ -51,17 +51,34 @@ def _deny(reason: str) -> HookReturn:
     return _json_out({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": f"[builder-loop] {reason}"}})
 
 
-def parse_result_marker(text: str | None) -> dict[str, Any] | None:
-    if not text:
-        return None
+def _excerpt(s: str, center: int | None = None, width: int = 120) -> str:
+    if center is None:
+        return s[-width:] if len(s) > width else s
+    lo = max(0, center - width // 2)
+    return ("…" if lo else "") + s[lo:lo + width] + ("…" if lo + width < len(s) else "")
+
+
+def parse_result_marker(text: str | None) -> tuple[dict[str, Any] | None, str | None]:
+    """(payload, 为什么没拿到)。「没写标记」和「写了但解析不了」必须分开说，并回显原文——
+    否则角色以为自己漏了标记，原样再发一次（#244：反斜杠、字面 TAB、全角冒号肉眼都看不出）。"""
+    if not text or not text.strip():
+        return None, "没有收到任何输出"
     matches = RESULT_MARKER.findall(text)
     if not matches:
-        return None
+        near = [ln for ln in text.splitlines() if "BUILDER_LOOP_RESULT" in ln]
+        if near:
+            return None, (f"找到了 BUILDER_LOOP_RESULT 行但格式不对（冒号须为半角 `:`，JSON 须完整写在同一行、其后不能再有别的字符）："
+                          f"`{_excerpt(near[-1].strip())}`")
+        return None, f"没有找到 BUILDER_LOOP_RESULT 行。你最后输出的是：`{_excerpt(text.strip())}`"
+    raw = matches[-1]
     try:
-        obj = json.loads(matches[-1])
-    except json.JSONDecodeError:
-        return None
-    return obj if isinstance(obj, dict) else None
+        obj = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        return None, (f"BUILDER_LOOP_RESULT 行的 JSON 解析失败：{exc.msg}（第 {exc.pos} 个字符附近：`{_excerpt(raw, exc.pos, 60)}`）。"
+                      "字符串里的反斜杠要写成 `\\\\`，TAB 和换行要转义成 `\\t` / `\\n`")
+    if not isinstance(obj, dict):
+        return None, f"BUILDER_LOOP_RESULT 后面必须是 JSON 对象，收到的是 {type(obj).__name__}"
+    return obj, None
 
 
 # ---------------------------------------------------------------- 结果契约（定义在 brief，与注入上下文同源）
@@ -258,8 +275,7 @@ def handle_subagent_stop(ev: dict[str, Any], bound: dict[str, Any]) -> HookRetur
         return _silent()
     fmt = TESTER_RESULT_FORMAT if role == "tester" else REVIEWER_RESULT_FORMAT
 
-    payload = parse_result_marker(ev.get("last_assistant_message"))
-    err = None if payload else "缺少结果标记"
+    payload, err = parse_result_marker(ev.get("last_assistant_message"))
     if payload:
         err = _validate_role_payload(role, payload)
     if err:

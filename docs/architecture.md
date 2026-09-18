@@ -96,6 +96,7 @@ terminal →（无 retrospective `retro`，否则 `done`）；有 blocker → `n
 
 | event | matcher | 逻辑 |
 |---|---|---|
+| SessionStart | — | 纯 bash、不起 python（每个会话都会触发）：往 `CLAUDE_ENV_FILE` 写 `export PATH=<本仓 bin>:$PATH`。CC 把它注入之后的每条 Bash，主会话与 subagent 都生效，SKILL 与 runtime 提示里的裸 `bl` 因此可直接用 |
 | Stop | — | 终态已复盘 → 解绑放行；waiting → 放行；`awaiting_*` → 放行且不计 stall；其余（含终态未复盘）→ exit 2 + next_action；`stop_hook_active` 且 seq 未变连续 3 次 → 放行并记 `stall_escape` |
 | SubagentStart | tester\|reviewer | 登记 agent_id（保留 turn；换了 agent_id 记 `role_replaced`）、记 `role_start{candidate_head}`、注入上下文（= `brief.render()`；tester 集成前后内容不同） |
 | SubagentStop | tester\|reviewer | 只认登记的 agent_id；标记缺失 / 不合规 → exit 2（≤2 次）→ 第 3 次记 fail；tester：提交 tester worktree + spec 结构校验 + evidence + proof_spec；reviewer：起点 HEAD ≠ 当前候选 HEAD → 本次无效 |

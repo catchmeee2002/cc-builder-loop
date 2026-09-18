@@ -28,7 +28,7 @@ git clone <repo> && cd cc-builder-loop && ./install.sh
 export PATH="$HOME/.claude/bin:$PATH"
 ```
 
-安装器把 `agents/`、`skills/{builder,planner,builder-loop}`、`bin/bl` 软链进 `~/.claude`，在 `settings.json` 注册 8 条 hook（Stop / SubagentStart / SubagentStop / PreToolUse×3 / PostToolUse / UserPromptSubmit），并清理旧版本留下的断链与 hook。幂等；`./uninstall.sh` 逆操作。不触碰 `~/.agents`（可与 Codex 版共存）。安装后新开 Claude Code session。
+安装器把 `agents/`、`skills/{builder,planner,builder-loop}`、`bin/bl` 软链进 `~/.claude`，在 `settings.json` 注册 9 条 hook（SessionStart / Stop / SubagentStart / SubagentStop / PreToolUse×3 / PostToolUse / UserPromptSubmit；SessionStart 把 `bl` 放进会话 PATH），并清理旧版本留下的断链与 hook。幂等；`./uninstall.sh` 逆操作。不触碰 `~/.agents`（可与 Codex 版共存）。安装后新开 Claude Code session。
 
 ## 项目接入
 

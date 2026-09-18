@@ -6,6 +6,11 @@
 
 - 写入顺序改为"算新内容 → 与旧 `settings.json` 逐字节比较 → 不同才备份并写入"，比较对象是与写盘同一套序列化产出的最终文本。内容不变的重跑不再生成 `settings.json.bak.*`。
 
+## V8.2.1 修复自举 dogfood 与另一台机器上报的问题（2026-09-18）
+
+- **`bl` 进会话 PATH（#245）**：新增 SessionStart hook（纯 bash），往 `CLAUDE_ENV_FILE` 写 `export PATH=<本仓 bin>:$PATH`。CC 把它注入之后的每条 Bash，主会话和 subagent 都生效（2.1.272 实测）。SKILL 与 runtime 提示里约 70 处裸 `bl` 因此不用逐处改写。此前每个新会话的第一条 `bl` 都是 command not found；dogfood 里 reviewer 找不到 `bl`，自己搜出并用了候选 worktree 里的 `bin/bl`——那正是被审查的代码。hook 由 8 条变为 9 条。
+- **结果标记解析失败会说明原因（#244）**：此前没写标记、JSON 解析失败、解析结果不是对象，三种情况都报「缺少结果标记」，也不回显原文。反斜杠（`\d`、Windows 路径）、字面 TAB、全角冒号这几种写法肉眼看不出毛病，却都会被这样误判；角色以为自己漏了标记，就会原样再发一次。现在分开报告，回显出错位置并说明正确写法，原因写入 ledger 的 `role_malformed` 事件。
+
 ## V8.2 角色查账本、门禁预检、门禁在跑（2026-09-18）
 
 来由：V8.1 的首个真实业务 run 走到了 finalize，但多花了约 2 轮 tester 续接、2 次用户授权、3 次 Stop 空转，产出 #240–#243。
@@ -17,6 +22,7 @@
 - **`bl preflight`**：在 run 起点的临时 worktree 上跑一遍 pass_cmd，记 event（不动 evidence、不计 machine_iter），之后 machine 失败会标出 `baseline_red` —— 这一段在起点上同样失败，与候选无关。由 builder 在 start 后用后台 Bash 启动，与写实现并行。
 - 快检最初用的是 `<cmd> --version`，交付前在本仓自己身上就发现漏了：pytest 的 `--version` 不加载插件，本机装坏的 pytest-html 照样返回 0。改为对空目录 `--collect-only`、要求退出码 5（完整启动且没收集到用例）。本仓 `loop.yml` 同时补上与 pass_cmd 一致的 `proof_runner`。
 - **proof runner 起不来不再甩给 builder（#241）**：候选阶段 rc≠0 且一条 junit 记录都没有 → `TEST_PROOF_RUNNER_FAILED`，`suggested_owner=contract`。
+- 自举 dogfood（交付 #238）后补：`bl brief` 的重取命令改用已安装 runtime 的绝对路径——dogfood 里 reviewer 找不到裸 `bl`，搜出并用了候选 worktree 里的 `bin/bl`；builder SKILL 去掉当前 CC 已不存在的 `Agent(run_in_background)` 参数（subagent 默认在后台跑）。
 
 ## V8.1 tester 独立性、判据加固、复盘闸门（2026-09-17）
 

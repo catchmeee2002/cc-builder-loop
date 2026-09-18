@@ -2,7 +2,7 @@
 
 B1: 重跑一个已安装过的 CLAUDE_HOME 不产生新备份，settings.json 内容逐字节不变。
 B2: settings.json 内容与 install.sh 将写入的不同时，先生成恰好一份忠实快照备份，
-    再写入含 builder-loop 8 条 hook 注册的新内容，用户自己的 hook 予以保留。
+    再写入含 builder-loop 全部 hook 注册的新内容，用户自己的 hook 予以保留。
 """
 
 from __future__ import annotations
@@ -36,6 +36,9 @@ def _run_install(claude_home: Path) -> subprocess.CompletedProcess:
 
 def _bak_files(claude_home: Path) -> list[Path]:
     return sorted(p for p in claude_home.glob("settings.json.bak.*") if BAK_RE.match(p.name))
+
+
+BL_HOOKS = 9  # install.sh 的 spec 条数；新增 hook 时同步
 
 
 def _bl_hook_count(data: dict) -> int:
@@ -131,7 +134,7 @@ def test_b2_backup_created_when_content_differs(tmp_path: Path) -> None:
     up_hooks = [h for m in data["hooks"].get("UserPromptSubmit", []) for h in m.get("hooks", [])]
     assert any(h.get("command") == "echo user-hook" for h in up_hooks), "用户自己的 hook 必须保留"
     assert data.get("myOwnSetting") is True
-    assert _bl_hook_count(data) == 8
+    assert _bl_hook_count(data) == BL_HOOKS
 
 
 def test_b2_missing_registration_triggers_backup_and_gets_completed(tmp_path: Path) -> None:
@@ -150,7 +153,7 @@ def test_b2_missing_registration_triggers_backup_and_gets_completed(tmp_path: Pa
     assert baks[0].read_bytes() == original_bytes
 
     data = json.loads(settings.read_text(encoding="utf-8"))
-    assert _bl_hook_count(data) == 8
+    assert _bl_hook_count(data) == BL_HOOKS
     assert data.get("other") == 1
 
 
@@ -162,8 +165,26 @@ def test_b2_no_backup_when_settings_missing(tmp_path: Path) -> None:
     settings = home / "settings.json"
     assert settings.is_file()
     data = json.loads(settings.read_text(encoding="utf-8"))
-    assert _bl_hook_count(data) == 8
+    assert _bl_hook_count(data) == BL_HOOKS
 
 
 if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+def test_session_start_puts_bl_on_path(tmp_path):
+    """#245：SKILL 与 runtime 提示都写裸 `bl`。SessionStart 往 CLAUDE_ENV_FILE 写 export，
+    CC 把它注入之后的每条 Bash（主会话与 subagent，2.1.272 实测）。这里验证写出来的那行能用。"""
+    repo = Path(__file__).resolve().parents[1]
+    env_file = tmp_path / "sessionstart-hook-1.sh"
+    env = {"PATH": "/usr/bin:/bin", "HOME": str(tmp_path), "CLAUDE_ENV_FILE": str(env_file)}
+    r = subprocess.run(["bash", str(repo / "hooks" / "bl-hook.sh"), "SessionStart"], input='{"session_id":"unbound"}',
+                       capture_output=True, text=True, env=env)
+    assert r.returncode == 0 and r.stdout == "" and r.stderr == ""
+    found = subprocess.run(["bash", "-c", f"source {env_file}; command -v bl"], capture_output=True, text=True,
+                           env={"PATH": "/usr/bin:/bin", "HOME": str(tmp_path)})
+    assert found.stdout.strip() == str(repo / "bin" / "bl")
+    # 没有 CLAUDE_ENV_FILE（老版本 CC）时安静退出，不报错、不阻塞会话
+    r2 = subprocess.run(["bash", str(repo / "hooks" / "bl-hook.sh"), "SessionStart"], input="{}", capture_output=True, text=True,
+                        env={"PATH": "/usr/bin:/bin", "HOME": str(tmp_path)})
+    assert r2.returncode == 0 and r2.stderr == ""

@@ -353,3 +353,27 @@ def test_proof_runner_failure_is_not_the_builders_fault(started, cli, hook):
         x["contract"]["assurance"]["proof_runner"] = {"framework": "pytest", "cmd": "python3 -c 'import sys; sys.exit(4)' --"}
     out = cli("proof", "--session", "S1", expect=1)
     assert out["failure"]["code"] == "TEST_PROOF_RUNNER_FAILED" and out["failure"]["suggested_owner"] == "contract"
+
+
+@pytest.mark.parametrize("line,needle", [
+    # #244：肉眼看不出毛病、却曾一律被报成「缺少结果标记」的三种写法
+    ('BUILDER_LOOP_RESULT: {"role":"tester","status":"pass","notes":"匹配 \\d+"}', "JSON 解析失败"),
+    ('BUILDER_LOOP_RESULT: {"role":"tester","status":"pass","notes":"a\tb"}', "JSON 解析失败"),
+    ('BUILDER_LOOP_RESULT： {"role":"tester","status":"pass"}', "格式不对"),
+    ("交付完成，测试都写好了。", "没有找到 BUILDER_LOOP_RESULT 行"),
+])
+def test_malformed_marker_says_why(started, hook, line, needle):
+    hook("SubagentStart", {"session_id": "S1", "agent_id": "T1", "agent_type": "tester"})
+    r = role_turn(hook, "tester", "T1", None, start=False, message="## 交付\n说明段落\n" + line)
+    assert r["code"] == 2 and needle in r["stderr"], r["stderr"]
+    # 原因要落进 ledger：builder 看不到 hook 解析的原文，只能从这里对照
+    ev = L.load(started["ledger"])["events"][-1]
+    assert ev["kind"] == "role_malformed" and needle in ev["reason"]
+
+
+def test_parse_result_marker_points_at_the_bad_spot():
+    from builder_loop.hooks import parse_result_marker
+    payload, err = parse_result_marker('BUILDER_LOOP_RESULT: {"role":"tester","notes":"C:\\Users\\x"}')
+    assert payload is None and "C:" in err and "\\\\" in err  # 回显出错位置，并告诉它怎么写
+    payload, err = parse_result_marker('前文\nBUILDER_LOOP_RESULT: {"role":"tester","status":"pass"}\n\n')
+    assert payload == {"role": "tester", "status": "pass"} and err is None  # 标记后的空行不影响

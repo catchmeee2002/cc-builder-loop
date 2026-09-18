@@ -59,6 +59,8 @@ for ev in list(hooks):
 
 script = str(repo / "hooks" / "bl-hook.sh")
 spec = [
+    # 把本仓 bin/ 写进会话 PATH（经 CLAUDE_ENV_FILE），SKILL 与 runtime 提示里的裸 `bl` 才能直接用
+    ("SessionStart", None, 5),
     ("Stop", None, 20),
     ("SubagentStart", "tester|reviewer", 10),
     ("SubagentStop", "tester|reviewer", 120),
