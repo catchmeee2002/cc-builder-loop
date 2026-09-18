@@ -130,4 +130,4 @@ finalize / abandon / finalize_failed 之后 session 不解绑；`start` 遇到�
 
 ## 未做（演进方向）
 
-machine evidence 的 affects / exempt scope（当前每次候选变化全量重跑）；`acceptance_cases` blackbox；reviewer 后台模式；hook 超时导致 tester 结果未入账时的补录入口。评估后明确不做的 codex-new 特性及理由见 issue #233。
+machine evidence 的 affects / exempt scope（当前每次候选变化全量重跑）；`acceptance_cases` blackbox；reviewer 后台模式；hook 超时导致 tester 结果未入账时的补录入口。评估后明确不做的 Codex 版特性及理由见 issue #233。

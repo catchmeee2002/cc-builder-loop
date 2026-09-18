@@ -1,6 +1,6 @@
 # Changelog — cc-builder-loop 已交付能力
 
-> 本文件记 **CC 版**产品线（分支 `cc/main`）。Codex 版见 `codex-new` 分支。
+> 本文件记 **CC 版**产品线（分支 `cc/main`）。Codex 版见 `codex/main` 分支。
 
 ## install.sh 幂等重跑不再堆积 settings.json 备份（#238，2026-09-18）
 
