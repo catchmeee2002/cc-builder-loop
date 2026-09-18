@@ -28,6 +28,7 @@ links = {
     home / "skills" / "builder": repo / "skills" / "builder",
     home / "skills" / "planner": repo / "skills" / "planner",
     home / "skills" / "builder-loop": repo / "skills" / "builder-loop",
+    home / "skills" / "file-issue": repo / "skills" / "file-issue",
     home / "bin" / "bl": repo / "bin" / "bl",
 }
 for dst, src in links.items():
