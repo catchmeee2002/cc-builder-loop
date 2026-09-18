@@ -1,4 +1,4 @@
-"""项目配置 `.claude/loop.yml`（与 cc-old 兼容）。
+"""项目配置 `.claude/loop.yml`（与 V7.4 的格式兼容）。
 
 只消费 pass_cmd[] / max_iterations / proof_runner / worktree.root；其余字段忽略。
 有 PyYAML 用 PyYAML；否则用内置扁平 YAML 子集解析（块映射、块序列、JSON 风格 flow 值）。

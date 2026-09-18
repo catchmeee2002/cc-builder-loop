@@ -53,4 +53,4 @@ proof_runner:                 # 可选；proof 用的测试命令前缀，缺省
 python3 -m pytest -p no:html -p no:cacheprovider -q tests
 ```
 
-模块说明与失败路径见 [docs/architecture.md](docs/architecture.md)；仓库规则见 [CLAUDE.md](CLAUDE.md)；历史见 [CHANGELOG.md](CHANGELOG.md)。老版本保留在 `cc-old`（V7.4）与 `codex-new`（Codex Assurance v4）分支。
+模块说明与失败路径见 [docs/architecture.md](docs/architecture.md)；仓库规则见 [CLAUDE.md](CLAUDE.md)；历史见 [CHANGELOG.md](CHANGELOG.md)。本仓承载两条并行产品线：本页是 CC 版（`cc/main`）；Codex 版在 `codex-new` 分支。CC 版上一代 V7.4 见 tag `v7.4`。

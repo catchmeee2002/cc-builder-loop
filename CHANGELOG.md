@@ -1,6 +1,6 @@
 # Changelog — cc-builder-loop 已交付能力
 
-> 本文件记 **CC 版**产品线（分支 `v8`）。Codex 版见 `codex-new` 分支。
+> 本文件记 **CC 版**产品线（分支 `cc/main`）。Codex 版见 `codex-new` 分支。
 
 ## install.sh 幂等重跑不再堆积 settings.json 备份（#238，2026-09-18）
 
@@ -39,7 +39,7 @@
 
 ## V8.0 Claude Code 原生重写（2026-09-16）
 
-从 `cc-old`（V7.4）分支重写。编排交给 Claude Code 原生能力，runtime 只做判据与 Git 事务。
+从 V7.4（tag `v7.4`）重写。编排交给 Claude Code 原生能力，runtime 只做判据与 Git 事务。
 
 - runtime 改为 Python 包 `runtime/builder_loop`（stdlib only，约 2.7k 行），CLI `bl`；ledger 单写者，flock + seq。
 - contract 三面（mission / authority / assurance）各算 canonical digest；`assurance.machine_commands` 由 start 从 loop.yml 冻结；mission 变需 revision+1，authority 扩大 / assurance 降级需 `--authorize`。
