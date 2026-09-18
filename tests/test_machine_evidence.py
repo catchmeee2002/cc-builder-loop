@@ -238,3 +238,22 @@ def test_start_rejects_unrunnable_proof_runner(repo, cli):
     # 不要 proof 的 run 不受影响
     write_plan(repo.root, contract_with(**{"assurance.required": ["machine", "reviewer"]}), "lite.md")
     assert cli("start", "--plan", str(repo.root / "lite.md"), "--session", "S9")["run_id"]
+
+
+def test_smoke_catches_runner_that_only_answers_version(repo, tmp_path):
+    """本机真实踩到的：插件装坏了，`pytest --version` 不加载插件照样返回 0，真跑才在启动阶段炸。
+    快检必须让 pytest 完整起来一次，--version 不算数。"""
+    from builder_loop.errors import Problem
+    from builder_loop.proof import smoke_runner
+
+    fake = tmp_path / "fake-pytest"
+    fake.write_text('#!/bin/sh\ncase "$*" in *--version*) echo "pytest 8.0"; exit 0;; esac\n'
+                    'echo "ModuleNotFoundError: No module named py.xml" >&2; exit 1\n')
+    fake.chmod(0o755)
+    try:
+        smoke_runner({"framework": "pytest", "cmd": str(fake)}, repo.root)
+    except Problem as exc:
+        assert exc.code == "PROOF_RUNNER_UNAVAILABLE" and "py.xml" in exc.details["tail"]
+    else:
+        raise AssertionError("只会答 --version 的 runner 被放行了")
+    smoke_runner({"framework": "pytest", "cmd": f"{sys.executable} -m pytest -p no:html"}, repo.root)  # 健康的放行

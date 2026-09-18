@@ -33,7 +33,7 @@ proof_runner:
     type: string
     default: "python3 -m pytest"
     # pass_cmd 用 uv / poetry / venv 时这里必须配同一套——缺省值走系统 python，多半没装 pytest。
-    # `bl start` 会先跑一次 `<cmd> --version`，起不来就拒绝启动（此时改本文件不需要 contract revise）。
+    # `bl start` 会先让它对空目录收集一次（要求退出码 5），起不来就拒绝启动（此时改本文件不需要 contract revise）。
     examples:
       - "{main_repo}/.venv/bin/python -m pytest"
       - "uv run --no-project --with-requirements requirements.txt --with pytest python -m pytest"

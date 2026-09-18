@@ -114,7 +114,7 @@ finalize / abandon / finalize_failed 之后 session 不解绑；`start` 遇到�
 
 | 情况 | 行为 |
 |---|---|
-| proof_runner 跑不起来 | `bl start` 与 `contract validate --check-repo` 先跑 `<cmd> --version`，不过就拒绝启动（`PROOF_RUNNER_UNAVAILABLE`）——run 还不存在，改 loop.yml 不需要 revise/授权 |
+| proof_runner 跑不起来 | `bl start` 与 `contract validate --check-repo` 先让它对空目录收集一次（健康时退出码 5；`--version` 不加载插件，不算数），不过就拒绝启动（`PROOF_RUNNER_UNAVAILABLE`）——run 还不存在，改 loop.yml 不需要 revise/授权 |
 | machine FAIL 的 stage 在基线上也红 | 跑过 `bl preflight` 则 `failure.baseline_red=true` 并提示与候选无关；没跑过则提示可以补跑 |
 | machine FAIL | evidence fail + failures 追加；输出 `repeat_count` / `remaining_iterations` / `tester_files_mentioned`；测试写错由 builder SendMessage 给 tester |
 | pass_cmd 改了候选文件 | `failure.worktree_mutated`，视为 FAIL |

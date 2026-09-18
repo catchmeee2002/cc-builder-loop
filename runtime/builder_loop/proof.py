@@ -19,6 +19,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import tempfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
@@ -33,6 +34,7 @@ KIND_BASELINE = "baseline-red"
 KIND_MUTATION = "mutation"
 KIND_REVIEWED = "reviewed-boundaries"
 DEFAULT_TIMEOUT = 300
+PYTEST_NO_TESTS_COLLECTED = 5
 MAX_TIMEOUT = 1800
 ASSERTION_PREFIXES = ("AssertionError", "assert ", "Failed:")
 TESTER_OWNED_FAILURES = ("TEST_BASELINE_RED_NOT_PROVEN", "TEST_MUTATION_SURVIVED", "TEST_MUTATION_INVALID", "TEST_MUTATION_PATCH_MISSING", "TEST_PROOF_NOT_EXECUTED")
@@ -158,15 +160,20 @@ def smoke_runner(runner: dict[str, str], repo_root: Path) -> None:
                        cmd=runner["cmd"], hint="在 .claude/loop.yml 的 proof_runner.cmd 里写项目实际的测试命令；主仓内的解释器用 {main_repo} 引")
     if runner.get("framework", "pytest") != "pytest":
         return
-    try:
-        proc = subprocess.run([*argv, "--version"], cwd=str(repo_root), capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL)
-    except (OSError, subprocess.SubprocessError) as exc:
-        raise negative("PROOF_RUNNER_UNAVAILABLE", f"proof_runner 起不来: {exc}", cmd=runner["cmd"]) from None
-    if proc.returncode != 0:
+    # 对空目录收集：pytest 完整启动（含 entry-point 插件）且没收集到用例 = 退出码 5。
+    # 不能用 --version：它不加载插件，装坏了的插件照样返回 0，要到真跑 proof 才炸。
+    with tempfile.TemporaryDirectory(prefix="bl-smoke-") as empty:
+        try:
+            proc = subprocess.run([*argv, "--collect-only", "-q", "-p", "no:cacheprovider", empty], cwd=str(repo_root),
+                                  capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL)
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise negative("PROOF_RUNNER_UNAVAILABLE", f"proof_runner 起不来: {exc}", cmd=runner["cmd"]) from None
+    if proc.returncode != PYTEST_NO_TESTS_COLLECTED:
         tail = ((proc.stdout or "") + (proc.stderr or ""))[-500:]
-        raise negative("PROOF_RUNNER_UNAVAILABLE", f"`{runner['cmd']} --version` 退出码 {proc.returncode}",
+        raise negative("PROOF_RUNNER_UNAVAILABLE", f"`{runner['cmd']}` 没能完整启动（对空目录收集，退出码 {proc.returncode}，健康时应为 5）",
                        cmd=runner["cmd"], tail=tail,
-                       hint="pass_cmd 用 uv / poetry / venv 时，proof_runner.cmd 也要用同一套（如 `uv run python -m pytest`）")
+                       hint="pass_cmd 用 uv / poetry / venv 时，proof_runner.cmd 也要用同一套（如 `uv run python -m pytest`）；"
+                            "本机插件装坏了就在 cmd 里加 `-p no:<插件名>`")
 
 
 def parse_junit(path: Path) -> list[dict[str, str]]:
