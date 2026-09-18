@@ -41,10 +41,8 @@ for dst, src in links.items():
 
 # 3. hooks
 settings = home / "settings.json"
-data = json.loads(settings.read_text(encoding="utf-8")) if settings.is_file() else {}
-if settings.is_file():
-    backup = settings.with_name(f"settings.json.bak.{time.strftime('%Y%m%d%H%M%S')}")
-    shutil.copy2(settings, backup)
+old_text = settings.read_text(encoding="utf-8") if settings.is_file() else None
+data = json.loads(old_text) if old_text is not None else {}
 hooks = data.setdefault("hooks", {})
 for ev in list(hooks):
     kept = []
@@ -77,11 +75,16 @@ for ev, matcher, timeout in spec:
     hooks.setdefault(ev, []).append(entry)
     report["hooks"].append(f"{ev}{' [' + matcher + ']' if matcher else ''}")
 
-fd, tmp = tempfile.mkstemp(prefix=".settings.", suffix=".tmp", dir=str(home))
-with os.fdopen(fd, "w", encoding="utf-8") as fh:
-    json.dump(data, fh, indent=2, ensure_ascii=False); fh.write("\n")
-json.loads(Path(tmp).read_text(encoding="utf-8"))
-os.replace(tmp, settings)
+new_text = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
+if new_text != old_text:
+    if old_text is not None:
+        backup = settings.with_name(f"settings.json.bak.{time.strftime('%Y%m%d%H%M%S')}")
+        shutil.copy2(settings, backup)
+    fd, tmp = tempfile.mkstemp(prefix=".settings.", suffix=".tmp", dir=str(home))
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(new_text)
+    json.loads(Path(tmp).read_text(encoding="utf-8"))
+    os.replace(tmp, settings)
 print(json.dumps(report, ensure_ascii=False, indent=2))
 PY
 
