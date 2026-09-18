@@ -9,6 +9,10 @@ import json, os, shutil, sys, tempfile, time
 from pathlib import Path
 
 repo = Path(sys.argv[1]); home = Path(sys.argv[2])
+sys.path.insert(0, str(repo / "runtime"))
+from builder_loop.doctor import HOOK_MARKER  # 「哪些 hook 是本版自家的」只有 doctor 这一个判据
+# V7 及更早版本的 hook 命令是 scripts/builder-loop-*.sh，不含 HOOK_MARKER；仅作退役清理，不用于识别本版 hook
+LEGACY_MARKER = "builder-loop"
 home.mkdir(parents=True, exist_ok=True)
 report = {"symlinks": [], "removed_symlinks": [], "removed_hooks": 0, "hooks": []}
 
@@ -48,7 +52,7 @@ hooks = data.setdefault("hooks", {})
 for ev in list(hooks):
     kept = []
     for m in hooks[ev]:
-        hs = [h for h in m.get("hooks", []) if "builder-loop" not in h.get("command", "")]
+        hs = [h for h in m.get("hooks", []) if HOOK_MARKER not in h.get("command", "") and LEGACY_MARKER not in h.get("command", "")]
         report["removed_hooks"] += len(m.get("hooks", [])) - len(hs)
         if hs:
             m["hooks"] = hs; kept.append(m)

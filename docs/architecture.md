@@ -119,6 +119,7 @@ finalize / abandon / finalize_failed 之后 session 不解绑；`start` 遇到�
 | machine FAIL 的 stage 在基线上也红 | 跑过 `bl preflight` 则 `failure.baseline_red=true` 并提示与候选无关；没跑过则提示可以补跑 |
 | machine FAIL | evidence fail + failures 追加；输出 `repeat_count` / `remaining_iterations` / `tester_files_mentioned`；测试写错由 builder SendMessage 给 tester |
 | pass_cmd 改了候选文件 | `failure.worktree_mutated`，视为 FAIL |
+| machine 执行期间 ledger 的 `candidate.head` 前进（builder 并发 checkpoint / integrate） | `MACHINE_INPUT_CHANGED`（negative，exit 1）：本次观察作废，不写 evidence、不追加 failures、不占 `machine_iter`，只记一条 `machine_input_changed` event。判据是 ledger 的 `candidate.head` 而非 git HEAD——pass_cmd 自己 commit 造成的 HEAD 变化仍走 `worktree_mutated` |
 | proof runner 起不来 | 候选阶段 rc≠0 且一条 junit 记录都没有 → `TEST_PROOF_RUNNER_FAILED`，`suggested_owner=contract`（两个角色都改不了，要改 loop.yml）|
 | proof 失败 | `TEST_PROOF_CANDIDATE_FAILED` / `TEST_PROOF_NOT_EXECUTED` / `TEST_BASELINE_RED_NOT_PROVEN` / `TEST_MUTATION_SURVIVED` / `TEST_MUTATION_INVALID` / `TEST_MUTATION_PATCH_MISSING` / `PROOF_WORKTREE_MUTATED`；`suggested_owner` 指向 builder 或 tester |
 | reviewer 未过 | finding 的 owner 决定去向：builder 修 / 回 tester / `REVIEW_CONTRACT` 交还用户 |

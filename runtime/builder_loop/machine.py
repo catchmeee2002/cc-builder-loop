@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from . import evidence, gitx, ledger as ledger_mod, worktree
-from .errors import fatal, needs_user
+from .errors import fatal, needs_user, negative
 from .jsonutil import dumps, sha256_bytes
 
 NO_PROGRESS_REPEATS = 3
@@ -168,14 +168,24 @@ def run_machine(ledger_path: Path, repo_root: Path) -> dict[str, Any]:
         failed["worktree_mutated"] = {"paths": mutated[:50], "head_after": head_after}
 
     status = "fail" if failed else "pass"
+    head_now: str | None = None
     with ledger_mod.mutate(ledger_path) as lg2:
-        lg2["counters"]["machine_iter"] = it
-        details: dict[str, Any] = {"iter": it, "stages": results}
-        if failed:
-            details["failure"] = {k: v for k, v in failed.items() if k != "tail"}
-            lg2["failures"]["machine"].append({"iter": it, "stage": failed.get("stage"), "signature": failed.get("signature"), "log": failed.get("log"), "at": ledger_mod.now_iso()})
-        evidence.record(lg2, "machine", status, details, repo_root)
-        readiness = evidence.readiness(lg2, repo_root)
+        if lg2["candidate"]["head"] != cand["head"]:
+            # 观察期间 bl 自己登记的候选输入变了：这次 stage 结果对应不到任何确定输入，既不是 pass 也不是 fail
+            # （原则一）。判据是 ledger 的 candidate.head 而非 git HEAD——pass_cmd 自己 commit 仍走 worktree_mutated。
+            # 只作废这一次：不写 evidence / failures / machine_iter，只留一条 event
+            head_now = lg2["candidate"]["head"]
+            ledger_mod.log_event(lg2, "machine_input_changed", head_at_start=cand["head"], head_now=head_now, iter=it)
+        else:
+            lg2["counters"]["machine_iter"] = it
+            details: dict[str, Any] = {"iter": it, "stages": results}
+            if failed:
+                details["failure"] = {k: v for k, v in failed.items() if k != "tail"}
+                lg2["failures"]["machine"].append({"iter": it, "stage": failed.get("stage"), "signature": failed.get("signature"), "log": failed.get("log"), "at": ledger_mod.now_iso()})
+            evidence.record(lg2, "machine", status, details, repo_root)
+            readiness = evidence.readiness(lg2, repo_root)
+    if head_now is not None:
+        raise negative("MACHINE_INPUT_CHANGED", "machine 执行期间候选 HEAD 前进（checkpoint / integrate），本次观察作废：不记 evidence、不计失败、不占迭代；在新 HEAD 上直接重跑 `bl machine`", head_at_start=cand["head"], head_now=head_now, stages=results)
 
     out: dict[str, Any] = {"result": "PASS" if status == "pass" else "FAIL", "iter": it, "stages": results, "readiness": readiness}
     if failed:

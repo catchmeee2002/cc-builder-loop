@@ -2,6 +2,11 @@
 
 > 本文件记 **CC 版**产品线（分支 `cc/main`）。Codex 版见 `codex/main` 分支。
 
+## install 去重判据与 machine 观察期间输入变化（#246 #253，2026-09-19）
+
+- **install.sh 按 `HOOK_MARKER` 去重（#246）**：识别本版 hook 改为引用 `doctor.HOOK_MARKER`（`bl-hook.sh`），与 doctor 同一个判据。此前按命令串是否含 `builder-loop` 判断，仓库路径不含该子串时每跑一次就多注册一整套 hook。`builder-loop` 子串条件保留，仅作 V7 及更早版本 hook 的退役清理。
+- **machine 执行期间候选 HEAD 前进不再记成失败（#253）**：ledger 的 `candidate.head` 在 stage 运行期间变了（builder 并发 checkpoint），本次观察对应不到确定输入，返回 `MACHINE_INPUT_CHANGED` 并作废：不写 evidence、不计 failures、不占 `machine_iter`，retro 的 `S-machine-failures` 不再把它算作失败。pass_cmd 自己 commit 造成的变化仍是 `worktree_mutated` FAIL。
+
 ## 文档同步收口（2026-09-19）
 
 - **reviewer brief 带文档引用线索**：`doc_reference_hints{hits,error}` 每次现算（候选 worktree 内以 `.` 为根调 `doc-lint.sh`，基准 `target_start_head`，≤4 秒），文本形态标明「启发式、可能误报」。不进 machine、不写 ledger；算不出来降级为 `error`，brief 照常返回。
