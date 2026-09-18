@@ -3,7 +3,7 @@ name: builder
 description: "进入 Builder 模式：读方案、启动 builder-loop run、在候选 worktree 实现，按 runtime 判据（machine / tester / proof / reviewer）推进到 finalize，最后完成复盘。触发：/builder [plan 路径]。无 contract 的方案不进 loop。"
 ---
 
-> **已进入 Builder 模式**。前序角色约束作废。本 session id：`${CLAUDE_SESSION_ID}`——下文所有 `bl` 命令都带 `--session ${CLAUDE_SESSION_ID}`。
+> **已进入 Builder 模式**。前序角色约束作废。本 session id：`${CLAUDE_SESSION_ID}`——下文所有 `bl` 命令都带 `--session ${CLAUDE_SESSION_ID}`。`bl` 装在 `~/.claude/bin/bl`，PATH 里没有就写这个全路径。
 
 # Builder
 
@@ -13,7 +13,7 @@ builder-loop 只负责判据和 Git 事务；调度 subagent、续接、问用�
 
 1. Read 方案文件。没有 `<!-- builder-loop-contract -->` 标签 → AskUserQuestion：「用 /planner 补 contract」/「不走 loop，直接实现」。后者按普通任务做，完成后 spawn 一次 reviewer 即可。
 2. `bl start --plan <plan> --session ${CLAUDE_SESSION_ID}` → 记下 `run_id`、`worktree`（候选，你的工作目录）。
-3. **立刻后台放出 tester**：`Agent(subagent_type: "tester", run_in_background: true, prompt: "builder-loop run <run_id>，按注入的 brief 写测试")`。它在另一个 worktree 的冻结基线上盲写测试，看不到你的实现——所以不用等它，马上开始写实现。
+3. **立刻放出 tester**：`Agent(subagent_type: "tester", prompt: "builder-loop run <run_id>，按注入的 brief 写测试")`。subagent 在后台跑，交卷时任务通知会唤醒你（Agent 工具若有 `run_in_background` 参数就设为 true）。它在另一个 worktree 的冻结基线上盲写测试，看不到你的实现——所以不用等它，马上开始写实现。
 4. **顺手后台跑一次基线预检**：`bl preflight --session ${CLAUDE_SESSION_ID}`（Bash `run_in_background`）。它在 run 起点上把 pass_cmd 跑一遍，告诉你哪些 stage**本来就红**，省得之后对着与你无关的失败白查。跑的时候你照常写实现。
 5. 之后你的 Write / Edit / Bash 都在候选 `worktree` 下；主仓只读。
 
@@ -30,7 +30,7 @@ builder-loop 只负责判据和 Git 事务；调度 subagent、续接、问用�
 | `machine` | `bl machine`（耗时长就 `run_in_background`，Stop 会放行）。FAIL → 先看 `failure.baseline_red`：为真说明这一段在起点上同样失败，与你无关，改 loop.yml 走 contract revise。否则 Read `failure.log`：实现的错 → 修 → checkpoint；`failure.tester_files_mentioned` 非空且你判断是**测试写错了** → 你改不了测试，转交 tester |
 | `resume_tester` | `SendMessage` 续接 tester（`status.agents.tester.agent_id`），正文直接用 `bl status` 的 `briefs.resume_tester`——**它只是门铃**，事实由 tester 自己 `bl brief` 取。你不需要在消息里复述候选路径、写边界或失败日志；要补充上下文（比如你的判断）可以附在门铃后面，但别指望它照做 brief 里没有的事 |
 | `proof` | `bl proof`。FAIL 看 `failure.suggested_owner`：`tester` → resume_tester；`builder` → 修实现；`contract` → 判据本身跑不起来（如 proof_runner 与项目的 venv 不匹配），改 `.claude/loop.yml` 后 `bl contract revise --authorize` |
-| `spawn_reviewer` | `Agent(subagent_type: "reviewer", prompt: "builder-loop run <run_id>，按注入的 brief 审查")`，同步等 |
+| `spawn_reviewer` | `Agent(subagent_type: "reviewer", prompt: "builder-loop run <run_id>，按注入的 brief 审查")`，然后结束这一轮等它交卷（`awaiting_reviewer`） |
 | `resume_reviewer` | 按 owner=builder 的 findings 修 → checkpoint → machine → proof → `SendMessage` 给 reviewer，正文用 `briefs.resume_reviewer` |
 | `finalize` | `bl finalize -m "type(scope): [cr_id_skip] Desc"`。`TARGET_DRIFT` → `bl rebase`（冲突在候选 worktree 里解，`git rebase --continue` 后再 `bl rebase`）→ 全部重验 |
 | `needs_user` | 看 `blockers`。上限 / 无进展 / proof 反复同样失败：AskUserQuestion 让用户决定；用户说继续 → `bl resume --reason "<用户的原话或决定>"`（runtime 会核实 blocker 之后确有用户输入，你自己决定的不算）；放弃 → `bl abandon --reason`。`REVIEW_CONTRACT` → 需要改目标 / 写边界 / 验收标准，走 contract revise |

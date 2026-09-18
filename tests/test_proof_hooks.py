@@ -305,6 +305,10 @@ def test_brief_is_the_single_source_for_role_facts(started, cli, hook, repo):
                           "--run", started["run_id"], "--role", "tester"], capture_output=True, text=True,
                          env={**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "runtime")})
     assert out.returncode == 0 and started["run_id"] in out.stdout
+    # 重取命令必须是已安装 runtime 的绝对路径：裸 `bl` 在 PATH 缺失时逼角色去搜，
+    # 真实 dogfood 里 reviewer 搜到并用了候选 worktree 里的 bin/bl（正在被审查的那份代码）
+    from builder_loop.run import bl_bin
+    assert f"`{bl_bin()} brief --run" in out.stdout and bl_bin().startswith("/")
 
     # 交卷 → 没有待办；contract 一改 evidence 失效 → 待办自己回来，不需要谁去通知它
     implement_mul(wt)

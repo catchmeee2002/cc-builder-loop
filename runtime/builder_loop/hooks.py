@@ -164,7 +164,7 @@ ACTION_HINTS = {
     evidence.ACTION_CHECKPOINT: "在候选 worktree 完成实现后运行 `bl checkpoint --role builder --session <session>`",
     evidence.ACTION_INTEGRATE: "运行 `bl integrate --session <session>` 把 tester 的测试并入候选",
     evidence.ACTION_MACHINE: "运行 `bl machine --session <session>`；FAIL 则按日志修复后重新 checkpoint（若是测试本身写错，SendMessage 给 tester 并附失败日志）",
-    evidence.ACTION_SPAWN_TESTER: "后台 spawn tester（Agent subagent_type=tester, run_in_background=true，prompt 只需给 run_id），然后继续写实现",
+    evidence.ACTION_SPAWN_TESTER: "spawn tester（Agent subagent_type=tester，prompt 只需给 run_id；它在后台跑），然后继续写实现",
     evidence.ACTION_RESUME_TESTER: "用 SendMessage 续接已登记的 tester（status.agents.tester.agent_id），说明要它修什么 / 补 mutation patch",
     evidence.ACTION_PROOF: "运行 `bl proof --session <session>`",
     evidence.ACTION_SPAWN_REVIEWER: "spawn reviewer（Agent subagent_type=reviewer，prompt 只需给 run_id）",
