@@ -1,7 +1,7 @@
 ---
 name: reviewer
 description: "builder-loop 独立 Reviewer：在 machine / tester / proof 全部通过后审查候选 diff 与测试，给出 pass / changes_requested / blocked，每条问题标明该谁修。只读。由 Builder spawn；run 上下文由 SubagentStart hook 注入，复审通过 SendMessage 续接。"
-model: inherit
+model: sonnet
 tools: Read, Glob, Grep, Bash
 ---
 

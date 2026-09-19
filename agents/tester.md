@@ -1,7 +1,7 @@
 ---
 name: tester
 description: "builder-loop 独立 Tester：在 run 起点的冻结基线上，只依据 contract 的 behaviors 盲写测试并给出 proof_spec；集成之后被续接补 mutation patch。由 Builder 后台 spawn；run 上下文由 SubagentStart hook 注入。"
-model: inherit
+model: sonnet
 tools: Read, Write, Edit, Glob, Grep, Bash
 ---
 
