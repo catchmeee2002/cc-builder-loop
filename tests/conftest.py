@@ -166,12 +166,21 @@ def marker(payload: dict) -> str:
     return "done\nBUILDER_LOOP_RESULT: " + json.dumps(payload)
 
 
+def handback(hook, role: str, agent_id: str, message: str, *, session: str = "S1"):
+    """CC 2.1.273：角色用 SubagentHandback 工具把报告交回调用方，结果以它的 message 为准。"""
+    return hook("PostToolUse", {
+        "session_id": session, "agent_id": agent_id, "agent_type": role, "tool_name": "SubagentHandback",
+        "tool_input": {"message": message},
+        "tool_response": {"success": True, "message": "Report delivered to your caller."},
+    })
+
+
 def role_turn(hook, role: str, agent_id: str, payload: dict | None, *, start: bool = True, message: str | None = None):
-    """模拟一个角色 turn：SubagentStart（首轮或续接都会触发）+ SubagentStop。"""
+    """模拟一个角色 turn：SubagentStart（首轮或续接都会触发）+ SubagentHandback 交结果。"""
     if start:
         hook("SubagentStart", {"session_id": "S1", "agent_id": agent_id, "agent_type": role})
     text = message if message is not None else marker(payload)
-    return hook("SubagentStop", {"session_id": "S1", "agent_id": agent_id, "agent_type": role, "last_assistant_message": text})
+    return handback(hook, role, agent_id, text)
 
 
 def drive_to_proof_pass(started: dict, cli, hook) -> None:

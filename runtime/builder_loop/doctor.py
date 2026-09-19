@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -15,6 +16,25 @@ from .errors import Problem
 from .jsonutil import read_json
 
 HOOK_MARKER = "bl-hook.sh"
+# 角色结果只从 SubagentHandback 登记，这个工具 2.1.273 才有（#257）
+MIN_CLAUDE_VERSION = (2, 1, 273)
+
+
+def _claude_version() -> str | None:
+    """PATH 上 `claude --version` 的版本号；拿不到就是 None（不算 problem：可能只是诊断环境里没有 claude）。"""
+    exe = shutil.which("claude")
+    if not exe:
+        return None
+    try:
+        out = subprocess.run([exe, "--version"], capture_output=True, text=True, timeout=30).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    m = re.search(r"\b(\d+(?:\.\d+)+)\b", out)
+    return m.group(1) if m else None
+
+
+def _version_tuple(v: str) -> tuple[int, ...]:
+    return tuple(int(x) for x in v.split("."))
 
 
 def _claude_home() -> Path:
@@ -106,6 +126,7 @@ def doctor(repo_arg: str | None) -> dict[str, Any]:
         "python": sys.version.split()[0],
         "git": git_version,
         "bl_on_path": shutil.which("bl"),
+        "claude_version": _claude_version(),
         "hooks": _check_hooks(),
         "sessions": _check_sessions(),
         "broken_symlinks": _check_symlinks(),
@@ -129,6 +150,10 @@ def doctor(repo_arg: str | None) -> dict[str, Any]:
         problems.append("有 run 已结束但尚未复盘（`bl retro signals --run <id>`）")
     if report["broken_symlinks"]:
         problems.append("~/.claude 下有断链")
+    cv = report["claude_version"]
+    if cv and _version_tuple(cv) < MIN_CLAUDE_VERSION:
+        need = ".".join(map(str, MIN_CLAUDE_VERSION))
+        problems.append(f"Claude Code {cv} 过旧：角色结果只从 SubagentHandback 登记，需要 ≥ {need}（升级 CC）")
     pr = (report.get("repo") or {}).get("proof_runner") or {}
     if pr and not pr.get("ok"):
         problems.append(f"proof_runner 跑不起来：{pr.get('error')}（改 .claude/loop.yml 的 proof_runner.cmd）")

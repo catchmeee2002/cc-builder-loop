@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "builder-loop/agent-result@1",
   "title": "builder-loop agent result",
-  "description": "tester / reviewer 在 assistant 消息最后一行输出的 `BUILDER_LOOP_RESULT: {...}`，由 SubagentStop hook 解析。",
+  "description": "tester / reviewer 通过 SubagentHandback 交卷时 message 最后一行的 `BUILDER_LOOP_RESULT: {...}`，由 PostToolUse(SubagentHandback) hook 解析。",
   "oneOf": [
     {
       "type": "object",

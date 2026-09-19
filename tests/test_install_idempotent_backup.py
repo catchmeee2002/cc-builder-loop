@@ -38,7 +38,7 @@ def _bak_files(claude_home: Path) -> list[Path]:
     return sorted(p for p in claude_home.glob("settings.json.bak.*") if BAK_RE.match(p.name))
 
 
-BL_HOOKS = 9  # install.sh 的 spec 条数；新增 hook 时同步
+BL_HOOKS = 10  # install.sh 的 spec 条数；新增 hook 时同步
 
 
 def _bl_hook_count(data: dict) -> int:

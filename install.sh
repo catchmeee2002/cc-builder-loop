@@ -73,6 +73,8 @@ spec = [
     # tester 首次 integrate 前的读隔离 + 角色写边界 + 心跳续租。高频工具，靠 bl-hook.sh 的纯 bash 快速路径兜成本
     ("PreToolUse", "Read|Grep|Glob|Write|Edit|MultiEdit|NotebookEdit|Bash", 5),
     ("PostToolUse", "AskUserQuestion", 5),
+    # 角色结果的唯一登记点：tester 登记要提交 worktree + 校验 proof_spec，超时与 SubagentStop 同级
+    ("PostToolUse", "SubagentHandback", 120),
     ("UserPromptSubmit", None, 5),
 ]
 for ev, matcher, timeout in spec:

@@ -202,10 +202,10 @@ def dispatch(args: argparse.Namespace) -> tuple[Any, int]:
 
             lg = ledger_mod.load(lp)
             return {"evidence": lg["evidence"], "readiness": evidence.readiness(lg, root)}, EXIT_OK
-        from .hooks import record_role_result
+        from .hooks import VIA_CLI, record_role_result
 
         payload = json.loads(Path(args.payload_file).read_text(encoding="utf-8"))
-        return record_role_result(lp, root, args.kind, args.agent_id, payload), EXIT_OK
+        return record_role_result(lp, root, args.kind, args.agent_id, payload, via=VIA_CLI), EXIT_OK
     if cmd == "contract":
         if args.contract_cmd == "validate":
             root = run_mod.resolve_repo_root(args.repo) if args.check_repo else None

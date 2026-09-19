@@ -2,6 +2,12 @@
 
 > 本文件记 **CC 版**产品线（分支 `cc/main`）。Codex 版见 `codex/main` 分支。
 
+## 角色结果改由 SubagentHandback 登记（#257 #250，2026-09-19）
+
+- **结论来源换成 handback**：CC 2.1.273 起 subagent 只有经 `SubagentHandback({message})` 交出的内容才送达调用方，最后写的纯文本不送达；一轮还会触发多次 SubagentStop。原来在 SubagentStop 解析 `last_assistant_message`，于是收尾句「已交付。」被判 malformed、同一份报告被记两条 verdict（#257）。现在新增 `PostToolUse[SubagentHandback]` hook 作为角色结果的唯一登记点；SubagentStop 不再解析，只在本轮 handback 不合规又没补交时打回。同轮相同 payload 不重复登记。`role_result` / `role_malformed` 事件新增 `via`，`role_result` 新增 `payload_sha256`。
+- **登记早于 Builder 收到报告（#250）**：handback 当场登记，ledger 不再滞后于 Builder 看到的报告，不会再因此白跑 proof。
+- **不再兼容 < 2.1.273 的 CC**：`bl doctor` 新增 `claude_version`，过旧列为 problem。hook 由 9 条变为 10 条。
+
 ## install 去重判据与 machine 观察期间输入变化（#246 #253，2026-09-19）
 
 - **install.sh 按 `HOOK_MARKER` 去重（#246）**：识别本版 hook 改为引用 `doctor.HOOK_MARKER`（`bl-hook.sh`），与 doctor 同一个判据。此前按命令串是否含 `builder-loop` 判断，仓库路径不含该子串时每跑一次就多注册一整套 hook。`builder-loop` 子串条件保留，仅作 V7 及更早版本 hook 的退役清理。

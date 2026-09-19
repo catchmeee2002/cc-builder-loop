@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-EXPECTED_DIST = {"SessionStart": 1, "Stop": 1, "SubagentStart": 1, "SubagentStop": 1, "PreToolUse": 3, "PostToolUse": 1, "UserPromptSubmit": 1}
+EXPECTED_DIST = {"SessionStart": 1, "Stop": 1, "SubagentStart": 1, "SubagentStop": 1, "PreToolUse": 3, "PostToolUse": 2, "UserPromptSubmit": 1}
 
 
 def _copy_repo(dst: Path) -> Path:
@@ -41,7 +41,7 @@ def _baks(home: Path) -> list[Path]:
 
 def _check_exact(home: Path, clone: Path) -> None:
     hooks = _bl_hooks(home)
-    assert len(hooks) == 9, hooks
+    assert len(hooks) == 10, hooks
     prefix = str(clone / "hooks" / "bl-hook.sh")
     assert all(cmd.startswith(prefix) for _, cmd in hooks), hooks
     assert dict(Counter(ev for ev, _ in hooks)) == EXPECTED_DIST
@@ -113,4 +113,4 @@ def test_b1_doctor_reports_nine(clone: Path, tmp_path: Path) -> None:
     assert _install(clone, home).returncode == 0
     env = dict(os.environ, CLAUDE_HOME=str(home))
     out = subprocess.run([str(clone / "bin" / "bl"), "doctor"], env=env, capture_output=True, text=True, timeout=60).stdout
-    assert len(json.loads(out)["hooks"]["registered"]) == 9
+    assert len(json.loads(out)["hooks"]["registered"]) == 10
