@@ -2,6 +2,12 @@
 
 > 本文件记 **CC 版**产品线（分支 `cc/main`）。Codex 版见 `codex/main` 分支。
 
+## 门禁绑定整份输入投影与 start 暴露冻结缺口（#254 #256 #264，2026-09-20）
+
+- **machine / proof 共用 `evidence.input_changes`（#254）**：门禁起跑与收尾的输入投影不一致就作废本次观察，不再只比 `candidate.head`。proof 新增 `PROOF_INPUT_CHANGED`；machine 的 `MACHINE_INPUT_CHANGED` 覆盖 contract revise，两者的 details / event 追加 `changed_inputs`。此前 proof 跑的过程中 checkpoint / tester 交卷，旧输入上的结论会被记到新输入上。
+- **`assurance.machine_stages`（#256）**：contract 可声明方案依赖的 machine stage 名，`bl start` / `contract revise` 校验 loop.yml 都有，缺了 `MACHINE_STAGE_MISSING`；`validate --check-repo` 同样列出。
+- **`bl start` 输出 `target_uncommitted`（#264）**：主仓停在目标分支时未提交的 tracked 路径，只报告。
+
 ## planner 按任务把文档容器列进写边界（#263，2026-09-20）
 
 - planner SKILL 新增一条写边界规则：任务改变对外行为 / 契约 / 导航，或本身要探查未知的平台行为 / 外部约束时，把 CLAUDE.md、README、`docs/` 下受影响的文件字面列进 `builder_write`（列入只是授权，改不改仍按 doc-policy 判断）；纯内部重构不列。此前 CLAUDE.md 常被漏列，run 内补文档只能打断用户授权并重跑全部 gate。

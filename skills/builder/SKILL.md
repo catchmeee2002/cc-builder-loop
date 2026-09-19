@@ -12,7 +12,7 @@ builder-loop 只负责判据和 Git 事务；调度 subagent、续接、问用�
 ## 1. 启动
 
 1. Read 方案文件。没有 `<!-- builder-loop-contract -->` 标签 → AskUserQuestion：「用 /planner 补 contract」/「不走 loop，直接实现」。后者按普通任务做，完成后 spawn 一次 reviewer 即可。
-2. `bl start --plan <plan> --session ${CLAUDE_SESSION_ID}` → 记下 `run_id`、`worktree`（候选，你的工作目录）。
+2. `bl start --plan <plan> --session ${CLAUDE_SESSION_ID}` → 记下 `run_id`、`worktree`（候选，你的工作目录）。输出的 `target_uncommitted` 非空 = 主仓有未提交的 tracked 改动，它们不在候选基线里；本任务依赖它们就 abandon，让用户先提交。`MACHINE_STAGE_MISSING` = 方案依赖的 stage 不在 loop.yml，补回后再 start。
 3. **立刻放出 tester**：`Agent(subagent_type: "tester", prompt: "builder-loop run <run_id>，按注入的 brief 写测试")`。subagent 在后台跑，交卷时任务通知会唤醒你（Agent 工具若有 `run_in_background` 参数就设为 true）。它在另一个 worktree 的冻结基线上盲写测试，看不到你的实现——所以不用等它，马上开始写实现。
 4. **顺手后台跑一次基线预检**：`bl preflight --session ${CLAUDE_SESSION_ID}`（Bash `run_in_background`）。它在 run 起点上把 pass_cmd 跑一遍，告诉你哪些 stage**本来就红**，省得之后对着与你无关的失败白查。跑的时候你照常写实现。
 5. 之后你的 Write / Edit / Bash 都在候选 `worktree` 下；主仓只读。
@@ -27,9 +27,9 @@ builder-loop 只负责判据和 Git 事务；调度 subagent、续接、问用�
 | `checkpoint` | 实现完成 → `bl checkpoint --role builder`。动手前想知道哪些路径会越界：`--dry-run`。被拒说明碰了不属于你的路径：测试问题交给 tester；确属本任务的实现文件 → 改 plan 的 authority，AskUserQuestion 得到同意后 `bl contract revise --plan <plan> --authorize` |
 | `awaiting_tester` / `awaiting_reviewer` / `awaiting_gate` | 对应 agent 或门禁（后台的 machine / proof）正在跑。没有别的事就**直接结束这一轮**——它结束时你会被唤醒，Stop hook 此时放行。不要空转、不要重复 spawn / 重复启动 |
 | `integrate` | `bl integrate`：把 tester 的测试并入候选 |
-| `machine` | `bl machine`（耗时长就 `run_in_background`，Stop 会放行）。FAIL → 先看 `failure.baseline_red`：为真说明这一段在起点上同样失败，与你无关，改 loop.yml 走 contract revise。否则 Read `failure.log`：实现的错 → 修 → checkpoint；`failure.tester_files_mentioned` 非空且你判断是**测试写错了** → 你改不了测试，转交 tester。`MACHINE_INPUT_CHANGED`（exit 1）= 跑的过程中你 checkpoint 了，这次观察作废、不计失败，直接重跑 |
+| `machine` | `bl machine`（耗时长就 `run_in_background`，Stop 会放行）。FAIL → 先看 `failure.baseline_red`：为真说明这一段在起点上同样失败，与你无关，改 loop.yml 走 contract revise。否则 Read `failure.log`：实现的错 → 修 → checkpoint；`failure.tester_files_mentioned` 非空且你判断是**测试写错了** → 你改不了测试，转交 tester。`MACHINE_INPUT_CHANGED`（exit 1）= 跑的过程中输入变了（你 checkpoint、integrate 或 contract revise），这次观察作废、不计失败，直接重跑 |
 | `resume_tester` | `SendMessage` 续接 tester（`status.agents.tester.agent_id`），正文直接用 `bl status` 的 `briefs.resume_tester`——**它只是门铃**，事实由 tester 自己 `bl brief` 取。你不需要在消息里复述候选路径、写边界或失败日志；要补充上下文（比如你的判断）可以附在门铃后面，但别指望它照做 brief 里没有的事 |
-| `proof` | `bl proof`。FAIL 看 `failure.suggested_owner`：`tester` → resume_tester；`builder` → 修实现；`contract` → 判据本身跑不起来（如 proof_runner 与项目的 venv 不匹配），改 `.claude/loop.yml` 后 `bl contract revise --authorize` |
+| `proof` | `bl proof`。FAIL 看 `failure.suggested_owner`：`tester` → resume_tester；`builder` → 修实现；`contract` → 判据本身跑不起来（如 proof_runner 与项目的 venv 不匹配），改 `.claude/loop.yml` 后 `bl contract revise --authorize`。`PROOF_INPUT_CHANGED`（exit 1）同 machine：跑的过程中输入变了，作废，直接重跑 |
 | `spawn_reviewer` | `Agent(subagent_type: "reviewer", prompt: "builder-loop run <run_id>，按注入的 brief 审查")`，然后结束这一轮等它交卷（`awaiting_reviewer`） |
 | `resume_reviewer` | 按 owner=builder 的 findings 修 → checkpoint → machine → proof → `SendMessage` 给 reviewer，正文用 `briefs.resume_reviewer` |
 | `finalize` | `bl finalize -m "type(scope): [cr_id_skip] Desc"`。`TARGET_DRIFT` → `bl rebase`（冲突在候选 worktree 里解，`git rebase --continue` 后再 `bl rebase`）→ 全部重验 |

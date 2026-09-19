@@ -113,6 +113,13 @@ def dependency_digest(ledger: dict[str, Any], kind: str, repo_root: Path) -> str
     return digest(projection(ledger, kind, repo_root))
 
 
+def input_changes(before: dict[str, Any], after: dict[str, Any], kind: str, repo_root: Path) -> list[str]:
+    """门禁起跑与收尾时，同一 kind 的输入投影里哪些顶层键变了（升序）；空 = 结论对应的输入没变。
+    machine / proof 共用这一条判据：观察期间输入变了，结论就对应不到任何确定输入，不能记成 evidence。"""
+    a, b = projection(before, kind, repo_root), projection(after, kind, repo_root)
+    return sorted(k for k in a.keys() | b.keys() if a.get(k) != b.get(k))
+
+
 def state(ledger: dict[str, Any], kind: str, repo_root: Path) -> str:
     rec = ledger["evidence"].get(kind)
     if not rec:

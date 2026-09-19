@@ -169,13 +169,15 @@ def run_machine(ledger_path: Path, repo_root: Path) -> dict[str, Any]:
 
     status = "fail" if failed else "pass"
     head_now: str | None = None
+    changed: list[str] = []
     with ledger_mod.mutate(ledger_path) as lg2:
-        if lg2["candidate"]["head"] != cand["head"]:
-            # 观察期间 bl 自己登记的候选输入变了：这次 stage 结果对应不到任何确定输入，既不是 pass 也不是 fail
-            # （原则一）。判据是 ledger 的 candidate.head 而非 git HEAD——pass_cmd 自己 commit 仍走 worktree_mutated。
+        changed = evidence.input_changes(lg, lg2, "machine", repo_root)
+        if changed:
+            # 观察期间 bl 自己登记的输入变了（checkpoint / integrate / contract revise）：这次 stage 结果对应不到任何确定输入，
+            # 既不是 pass 也不是 fail（原则一）。判据是输入投影而非 git HEAD——pass_cmd 自己 commit 仍走 worktree_mutated。
             # 只作废这一次：不写 evidence / failures / machine_iter，只留一条 event
             head_now = lg2["candidate"]["head"]
-            ledger_mod.log_event(lg2, "machine_input_changed", head_at_start=cand["head"], head_now=head_now, iter=it)
+            ledger_mod.log_event(lg2, "machine_input_changed", head_at_start=cand["head"], head_now=head_now, iter=it, changed_inputs=changed)
         else:
             lg2["counters"]["machine_iter"] = it
             details: dict[str, Any] = {"iter": it, "stages": results}
@@ -185,7 +187,7 @@ def run_machine(ledger_path: Path, repo_root: Path) -> dict[str, Any]:
             evidence.record(lg2, "machine", status, details, repo_root)
             readiness = evidence.readiness(lg2, repo_root)
     if head_now is not None:
-        raise negative("MACHINE_INPUT_CHANGED", "machine 执行期间候选 HEAD 前进（checkpoint / integrate），本次观察作废：不记 evidence、不计失败、不占迭代；在新 HEAD 上直接重跑 `bl machine`", head_at_start=cand["head"], head_now=head_now, stages=results)
+        raise negative("MACHINE_INPUT_CHANGED", "machine 执行期间输入变化（checkpoint / integrate / contract revise），本次观察作废：不记 evidence、不计失败、不占迭代；在新输入上直接重跑 `bl machine`", head_at_start=cand["head"], head_now=head_now, changed_inputs=changed, stages=results)
 
     out: dict[str, Any] = {"result": "PASS" if status == "pass" else "FAIL", "iter": it, "stages": results, "readiness": readiness}
     if failed:

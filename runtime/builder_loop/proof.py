@@ -406,19 +406,40 @@ def run_proof(ledger_path: Path, repo_root: Path, spec_override: dict[str, Any] 
         gate.__exit__(None, None, None)
 
     spec_digest = digest(spec)
+
+    def void_if_input_changed(lg2: dict[str, Any]) -> Problem | None:
+        """观察期间 proof 投影里的输入变了：结论对应不到确定输入，不能写成 evidence / failures（原则一，与 machine 同一判据）。"""
+        changed = evidence.input_changes(lg, lg2, "proof", repo_root)
+        if not changed:
+            return None
+        head_now = lg2["candidate"]["head"]
+        ledger_mod.log_event(lg2, "proof_input_changed", changed_inputs=changed, attempt=attempt, head_at_start=cand["head"], head_now=head_now)
+        return negative("PROOF_INPUT_CHANGED", "proof 执行期间输入变化（checkpoint / integrate / tester 交卷 / contract revise），本次观察作废：不记 evidence、不计失败；在新输入上直接重跑 `bl proof`",
+                        changed_inputs=changed, head_at_start=cand["head"], head_now=head_now, attempt=attempt)
+
     if failure:
         tail = str(failure.details.get("tail", ""))
         sig = failure_signature(f"{failure.code}\n{failure.behavior}\n{failure.details.get('classification', '')}\n{tail}", f"proof-{failure.code}", int(failure.details.get("returncode", -1) or -1))
         fdetails = {k: v for k, v in failure.details.items() if k != "tail"}
         fdetails["suggested_owner"] = OWNER_BY_FAILURE.get(failure.code, "builder")
+        voided: Problem | None = None
         with ledger_mod.mutate(ledger_path) as lg2:
-            lg2["failures"]["proof"].append({"code": failure.code, "behavior": failure.behavior, "signature": sig, "at": ledger_mod.now_iso(), "attempt": attempt})
-            evidence.record(lg2, "proof", "fail", {"attempt": attempt, "spec_digest": spec_digest, "groups": groups_out, "failure": {"code": failure.code, "message": failure.message, "group": failure.group, "behavior": failure.behavior, **fdetails, "signature": sig}}, repo_root)
-            readiness = evidence.readiness(lg2, repo_root)
+            voided = void_if_input_changed(lg2)
+            if voided is None:
+                lg2["failures"]["proof"].append({"code": failure.code, "behavior": failure.behavior, "signature": sig, "at": ledger_mod.now_iso(), "attempt": attempt})
+                evidence.record(lg2, "proof", "fail", {"attempt": attempt, "spec_digest": spec_digest, "groups": groups_out, "failure": {"code": failure.code, "message": failure.message, "group": failure.group, "behavior": failure.behavior, **fdetails, "signature": sig}}, repo_root)
+                readiness = evidence.readiness(lg2, repo_root)
+        if voided is not None:
+            raise voided
         repeats = sum(1 for f in lg2["failures"]["proof"] if f["signature"] == sig)
         return {"result": "FAIL", "attempt": attempt, "failure": {"code": failure.code, "message": failure.message, "group": failure.group, "behavior": failure.behavior, "signature": sig, "repeat_count": repeats, **fdetails, "tail": tail[-1500:]}, "groups": groups_out, "readiness": readiness}
 
+    voided = None
     with ledger_mod.mutate(ledger_path) as lg2:
-        evidence.record(lg2, "proof", "pass", {"attempt": attempt, "spec_digest": spec_digest, "runner": runner, "groups": groups_out}, repo_root)
-        readiness = evidence.readiness(lg2, repo_root)
+        voided = void_if_input_changed(lg2)
+        if voided is None:
+            evidence.record(lg2, "proof", "pass", {"attempt": attempt, "spec_digest": spec_digest, "runner": runner, "groups": groups_out}, repo_root)
+            readiness = evidence.readiness(lg2, repo_root)
+    if voided is not None:
+        raise voided
     return {"result": "PASS", "attempt": attempt, "groups": groups_out, "readiness": readiness}

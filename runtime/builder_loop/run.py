@@ -74,6 +74,8 @@ def start(repo_root: Path, plan_path: Path, session_id: str, target_branch: str 
         proof.smoke_runner(frozen["assurance"]["proof_runner"], repo_root)  # 冻结之前确认判据跑得起来（#241）
 
     target_head = gitx.branch_head(repo_root, branch)
+    # 候选从目标分支 HEAD 建立，主仓工作区的未提交改动不在基线里：只报告，不拦截、不落盘（原则三、五）
+    uncommitted = sorted({p for xy, p in gitx.status_porcelain(repo_root) if xy != "??"})[:50] if gitx.current_branch(repo_root) == branch else []
     run_id = _run_id(frozen["mission"]["slug"])
     lpath = ledger_mod.ledger_path(repo_root, run_id)
     with_tester = "tester" in frozen["assurance"]["required"]
@@ -106,6 +108,7 @@ def start(repo_root: Path, plan_path: Path, session_id: str, target_branch: str 
         "candidate_branch": wts["candidate"]["branch"],
         "target_branch": branch,
         "target_start_head": target_head,
+        "target_uncommitted": uncommitted,
         "contract_digests": lg["contract"]["digests"],
         "readiness": evidence.readiness(lg, repo_root),
     }
@@ -320,6 +323,10 @@ def _repo_checks(c: dict[str, Any], repo_root: Path) -> dict[str, Any]:
     try:
         cfg = load_loop_config(repo_root)
         runner = cfg.proof_runner
+        contract_mod.check_machine_stages(c, cfg)
+    except Problem as exc:
+        problems.append(f"{exc.message}（{exc.details}）" if exc.code == "MACHINE_STAGE_MISSING" else f"loop.yml 不可用: {exc}")
+        runner = cfg.proof_runner if exc.code == "MACHINE_STAGE_MISSING" else None
     except Exception as exc:  # noqa: BLE001
         problems.append(f"loop.yml 不可用: {exc}")
         runner = None

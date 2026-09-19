@@ -179,6 +179,10 @@ def validate_contract(contract: dict[str, Any]) -> None:
             raise fatal("CONTRACT_INVALID", f"未知 proof kind: {k}", allowed=list(PROOF_KINDS))
     if not isinstance(s["review_focus"], list):
         raise fatal("CONTRACT_INVALID", "assurance.review_focus 应为数组")
+    if "machine_stages" in s:
+        ms = s["machine_stages"]
+        if not isinstance(ms, list) or not ms or not all(isinstance(x, str) and x for x in ms) or len(set(ms)) != len(ms):
+            raise fatal("CONTRACT_INVALID", "assurance.machine_stages 应为非空、不重复的 stage 名数组（只写名字，命令在 loop.yml）")
     if "machine_commands" in s and not isinstance(s["machine_commands"], list):
         raise fatal("CONTRACT_INVALID", "assurance.machine_commands 应为数组（通常由 start 冻结）")
 
@@ -280,7 +284,18 @@ def facet_digests(contract: dict[str, Any]) -> dict[str, str]:
     return {facet: digest(contract[facet]) for facet in FACETS}
 
 
+def check_machine_stages(contract: dict[str, Any], loop_config: LoopConfig) -> None:
+    """方案声明依赖的 machine stage 必须都在 loop.yml 里（原则四：哪些 stage 当门禁是验收强度，写进 contract）。
+    start / revise / validate --check-repo 都走这一处，不在调用点各写一份。"""
+    need = contract["assurance"].get("machine_stages") or []
+    have = [s.stage for s in loop_config.pass_cmd]
+    missing = [n for n in need if n not in have]
+    if missing:
+        raise fatal("MACHINE_STAGE_MISSING", "contract 声明依赖的 machine stage 不在 .claude/loop.yml 的 pass_cmd 里（loop.yml 未纳入版本控制，可能被别的 session 改过）", missing=missing, available=have)
+
+
 def freeze_assurance(contract: dict[str, Any], loop_config: LoopConfig) -> dict[str, Any]:
+    check_machine_stages(contract, loop_config)
     frozen = freeze_authority(contract)
     frozen["assurance"]["machine_commands"] = [s.to_json() for s in loop_config.pass_cmd]
     frozen["assurance"]["max_iterations"] = loop_config.max_iterations
