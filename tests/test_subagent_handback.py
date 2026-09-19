@@ -1,5 +1,5 @@
-"""CC 2.1.273 SubagentHandback：角色结果只认 PostToolUse(SubagentHandback) 的 message；
-SubagentStop 不再解析结果；doctor 报告 CC 版本。"""
+"""CC 2.1.273 SubagentHandback：有 handback 的轮次角色结果只认 PostToolUse(SubagentHandback) 的 message。
+无 handback 时 SubagentStop 的兜底解析与 doctor 去掉版本检查见 test_handback_stop_fallback.py。"""
 
 from __future__ import annotations
 
@@ -299,28 +299,7 @@ def test_b6a_reviewer_stop_after_handback_is_silent(started, cli, hook):
         assert len(L.load(started["ledger"])["events"]) == n
 
 
-def test_b6b_stop_marker_is_not_parsed(started, cli, hook):
-    _tester_ready(started, cli, hook)
-    before = json.dumps(L.load(started["ledger"])["evidence"].get("tester"), sort_keys=True)
-    r = _stop(hook, "tester", "T1", marker(make_tester_result("mutation")))
-    assert r["code"] == 0, r
-    assert _results(started, "tester") == []
-    assert json.dumps(L.load(started["ledger"])["evidence"].get("tester"), sort_keys=True) == before
-
-
-def test_b6b_reviewer_stop_marker_is_not_parsed(started, cli, hook):
-    _reviewer_ready(started, cli, hook)
-    r = _stop(hook, "reviewer", "R1", marker(REVIEW_PASS))
-    assert r["code"] == 0, r
-    assert _results(started, "reviewer") == []
-    assert (L.load(started["ledger"])["evidence"].get("reviewer") or {}).get("status") != "pass"
-
-
-def test_b6c_stop_without_handback_no_malformed(started, cli, hook):
-    _tester_ready(started, cli, hook)
-    r = _stop(hook, "tester", "T1", "已交付。")
-    assert r["code"] == 0, r
-    assert _events(started, "role_malformed") == []
+# 无 handback 时 Stop 兜底解析最后一条消息：见 test_handback_stop_fallback.py（C1/C2）
 
 
 def test_b6d_stop_after_malformed_handback_blocks(started, cli, hook):
@@ -392,55 +371,4 @@ def test_b8_install_registers_handback_hook(tmp_path):
     assert len(json.loads(out)["hooks"]["registered"]) == 10
 
 
-def _git_only_dir(tmp_path: Path) -> Path:
-    d = tmp_path / "gitbin"
-    d.mkdir()
-    os.symlink(shutil.which("git"), d / "git")
-    return d
-
-
-def _doctor_with(tmp_path: Path, monkeypatch, version: str | None) -> dict:
-    from builder_loop.doctor import doctor
-
-    monkeypatch.setenv("CLAUDE_HOME", str(tmp_path / "claude_home"))
-    monkeypatch.setenv("BUILDER_LOOP_HOME", str(tmp_path / "blhome"))
-    base = _git_only_dir(tmp_path)
-    path = str(base)
-    if version is not None:
-        fake = tmp_path / "fakebin"
-        fake.mkdir()
-        exe = fake / "claude"
-        exe.write_text(f"#!/bin/sh\necho '{version} (Claude Code)'\n")
-        exe.chmod(0o755)
-        path = f"{fake}{os.pathsep}{path}"
-    monkeypatch.setenv("PATH", path)
-    return doctor(None)
-
-
-def _problems_for(tmp_path_factory, monkeypatch, version: str | None) -> tuple[dict, list[str]]:
-    rep = _doctor_with(tmp_path_factory.mktemp("doc"), monkeypatch, version)
-    return rep, rep["problems"]
-
-
-@pytest.mark.parametrize("version,expect_problem", [
-    ("2.1.272", True), ("2.1.273", False), ("2.2.0", False),
-    ("2.1.300", False), ("2.1.30", True),  # 按数字逐段比较，不是字符串比较
-])
-def test_b8_doctor_reports_claude_version(tmp_path_factory, monkeypatch, version, expect_problem):
-    rep, problems = _problems_for(tmp_path_factory, monkeypatch, version)
-    assert rep.get("claude_version") == version
-    _, ok_problems = _problems_for(tmp_path_factory, monkeypatch, "2.1.273")
-    extra = [p for p in problems if p not in ok_problems]
-    if expect_problem:
-        assert len(extra) == 1 and "2.1.273" in extra[0], problems
-    else:
-        assert extra == [] and not any("2.1.273" in p for p in problems), problems
-
-
-def test_b8_doctor_without_claude(tmp_path_factory, monkeypatch):
-    rep, problems = _problems_for(tmp_path_factory, monkeypatch, None)
-    assert rep.get("claude_version") is None
-    _, ok_problems = _problems_for(tmp_path_factory, monkeypatch, "2.1.273")
-    assert problems == ok_problems
-    assert not any("2.1.273" in p for p in problems), problems
-    assert "hooks 未注册（运行 install.sh）" in problems  # 既有检查项照旧
+# doctor 的 CC 版本检查已移除：见 test_handback_stop_fallback.py::test_c5_doctor_has_no_claude_version_check

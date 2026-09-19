@@ -8,14 +8,14 @@ Claude Code 原生                        builder-loop runtime（bl）
 主 session（/builder） ──bl start────▶ contract 冻结、候选 + tester 两个 worktree、ledger、session 绑定
    ├─ Agent(tester, 后台) ─SubagentStart▶ 登记 agent_id；只注入 tester worktree / behaviors / 写边界
    │      │  在冻结基线上盲写测试（PreToolUse 拦它读候选）
-   │      └──SubagentHandback(PostToolUse)▶ 提交 tester worktree → 校验 proof_spec 结构 → tester evidence
+   │      └──SubagentHandback / SubagentStop▶ 提交 tester worktree → 校验 proof_spec 结构 → tester evidence
    │ Write/Edit 候选 ──────checkpoint──▶ 按角色写边界校验 + 提交（唯一进入候选的途径）
    │                 ──────integrate───▶ tester 的测试按路径叠进候选（此后 tester 可读实现）
    │                 ──────machine─────▶ pass_cmd 在候选内执行 → machine evidence
-   │  SendMessage(tester) 补 mutation patch ─▶ Start 再次触发（新一轮），handback 后 proof_spec 更新
+   │  SendMessage(tester) 补 mutation patch ─▶ Start 再次触发（新一轮），交卷后 proof_spec 更新
    │                 ──────proof───────▶ 冻结的 proof_runner + junit 逐用例判定 → proof evidence
    ├─ Agent(reviewer) ────SubagentStart▶ 记下审查起点的候选 HEAD；注入 diff 范围与前置 evidence
-   │      └──SubagentHandback(PostToolUse)▶ reviewer evidence（findings 带 owner）
+   │      └──SubagentHandback / SubagentStop▶ reviewer evidence（findings 带 owner）
    ├─ Stop hook ◀─────────────────────── 未终态 → exit 2 + next_action；等用户 / 等在跑的 agent → 放行
    │                 ──────finalize────▶ commit-tree + update-ref CAS → 删两个 worktree → terminal
    └─ Stop hook ◀─────────────────────── 终态未复盘 → exit 2
@@ -99,14 +99,14 @@ terminal →（无 retrospective `retro`，否则 `done`）；有 blocker → `n
 | SessionStart | — | 纯 bash、不起 python（每个会话都会触发）：往 `CLAUDE_ENV_FILE` 写 `export PATH=<本仓 bin>:$PATH`。CC 把它注入之后的每条 Bash，主会话与 subagent 都生效，SKILL 与 runtime 提示里的裸 `bl` 因此可直接用 |
 | Stop | — | 终态已复盘 → 解绑放行；waiting → 放行；`awaiting_*` → 放行且不计 stall；其余（含终态未复盘）→ exit 2 + next_action；`stop_hook_active` 且 seq 未变连续 3 次 → 放行并记 `stall_escape` |
 | SubagentStart | tester\|reviewer | 登记 agent_id（保留 turn；换了 agent_id 记 `role_replaced`）、记 `role_start{candidate_head}`、注入上下文（= `brief.render()`；tester 集成前后内容不同） |
-| SubagentStop | tester\|reviewer | 不解析结果（`last_assistant_message` 调用方收不到，常是收尾句）。只认登记的 agent_id；本轮已有结果或本轮没有 handback → 放行；本轮 handback 不合规且还没交上合规的 → exit 2 要求重新 handback（`role_malformed{via:stop}`，与 handback 共用计数） |
+| SubagentStop | tester\|reviewer | 只认登记的 agent_id。本轮已有结论或已记 fail → 放行；本轮有 handback 尝试（没开 handback 的环境不会有）→ 不解析 `last_assistant_message`（调用方收不到，常是收尾句），只有不合规 handback 时 exit 2 要它重新 handback；本轮没有 handback → **兜底**解析 `last_assistant_message`，登记规则与 handback 相同（`via:stop`），不合规 → exit 2（与 handback 共用计数，第 3 次记 fail） |
 | PreToolUse | AskUserQuestion / EnterWorktree | 写 waiting / deny |
 | PreToolUse | Read\|Grep\|Glob\|Write\|Edit\|MultiEdit\|NotebookEdit\|Bash | 仅对登记的角色：续租；reviewer 写一律拒；tester 写只许自己 worktree 的 tester_write；集成前 tester 读 / 搜候选拒（先 realpath，Grep/Glob 必须显式 path，Bash 命令串含候选路径或分支名拒——尽力而为） |
 | PostToolUse | AskUserQuestion | 清 waiting、记 `user_input`（授权续跑的唯一依据） |
-| PostToolUse | SubagentHandback | **角色结果的唯一登记点**。只认登记的 agent_id；从 `tool_input.message` 取最后一条结果行；不合规 → exit 2 要它重新 handback（≤2 次）→ 第 3 次记 fail；与本轮最后一条结论 payload 相同（`payload_sha256`；tester 还要求 worktree 无未提交改动）→ 放行不重记；登记成功后不合规计数清零；tester：提交 tester worktree + spec 结构校验 + evidence + proof_spec；reviewer：起点 HEAD ≠ 当前候选 HEAD → 本次无效。`role_result` / `role_malformed` 带 `via`（handback / stop / cli） |
+| PostToolUse | SubagentHandback | 开了 handback 的环境里角色结果的登记点。只认登记的 agent_id；从 `tool_input.message` 取最后一条结果行；不合规 → exit 2 要它重新 handback（≤2 次）→ 第 3 次记 fail；与本轮最后一条结论 payload 相同（`payload_sha256`；tester 还要求 worktree 无未提交改动）→ 放行不重记；登记成功后不合规计数清零；tester：提交 tester worktree + spec 结构校验 + evidence + proof_spec；reviewer：起点 HEAD ≠ 当前候选 HEAD → 本次无效。`role_result` / `role_malformed` 带 `via`（handback / stop / cli） |
 | UserPromptSubmit | — | 只清 waiting，不记事件（任务通知也会触发它） |
 
-所有 hook 首步 `lookup_session(session_id)`，stdin 的 `cwd` 不参与定位。matcher 不是身份门禁（`agent_type` 为空的内部 agent 也会被放进来），handler 内复核 `agent_type` 与登记的 `agent_id`。角色 hook 的写入（role_start、要求重发）保持 `stall.seq_seen` 与 seq 的相等关系，不算主 session 的进展。角色结果只从 SubagentHandback 登记：CC 2.1.273 起只有它送达调用方，agent handback 之后常再补一句收尾，且一轮会触发多次 SubagentStop（被 harness `[handback-send-enforce]` 打回一次、收尾一次），调用方收到报告比 Stop 早 8–37 秒（#257 #250）。「本轮」= 该 agent_id 最近一次 `role_start` 之后的事件，只从事件流派生；hook 不读 transcript。SendMessage 续接会让 Start 与 Stop **都**再次触发，agent_id 不变；但 SubagentStart 的 `additionalContext` **只在首次 spawn 时送达**，被续接的 agent 收不到（均为 CC 2.1.272 实测）。所以**注入的上下文不是角色的事实来源，`bl brief` 才是**：同一个 `brief.build()` 现算，角色在续接轮、收到自称 Builder 的消息时、或对归属存疑时随时自取。builder 的消息只当门铃（`bl status` 的 `briefs.*` 是现成正文，里面不含任何事实）。续接轮里 tester 交 `insufficient_spec` 而测试未变时，原 tester evidence 保留，只记一条 `role_result{status: declined}`。
+所有 hook 首步 `lookup_session(session_id)`，stdin 的 `cwd` 不参与定位。matcher 不是身份门禁（`agent_type` 为空的内部 agent 也会被放进来），handler 内复核 `agent_type` 与登记的 `agent_id`。角色 hook 的写入（role_start、要求重发）保持 `stall.seq_seen` 与 seq 的相等关系，不算主 session 的进展。角色结果的来源随「送达调用方的是什么」走：开了 `SubagentHandback` 的环境只有它送达调用方，agent handback 之后常再补一句收尾，一轮还会触发多次 SubagentStop（被 harness `[handback-send-enforce]` 打回一次、收尾一次），调用方收到报告比 Stop 早 8–37 秒（#257 #250）——这时只认 handback。handback **按环境开关、不由 CC 版本号决定**（业务机 2.1.273 开、开发机 2.1.278 没开）；本轮没有 handback 时最后一条消息就是送达的报告，由 SubagentStop 兜底解析。开了 handback 的环境里，被打回的那次 Stop 若带结果行会先登记，随后内容相同的 handback 按同轮去重不重记；若不带结果行会多记一次 `role_malformed{via:stop}`——hook 不读 transcript，区分不了，接受这个代价。「本轮」= 该 agent_id 最近一次 `role_start` 之后的事件，只从事件流派生。SendMessage 续接会让 Start 与 Stop **都**再次触发，agent_id 不变；但 SubagentStart 的 `additionalContext` **只在首次 spawn 时送达**，被续接的 agent 收不到（均为 CC 2.1.272 实测）。所以**注入的上下文不是角色的事实来源，`bl brief` 才是**：同一个 `brief.build()` 现算，角色在续接轮、收到自称 Builder 的消息时、或对归属存疑时随时自取。builder 的消息只当门铃（`bl status` 的 `briefs.*` 是现成正文，里面不含任何事实）。续接轮里 tester 交 `insufficient_spec` 而测试未变时，原 tester evidence 保留，只记一条 `role_result{status: declined}`。
 
 ## 复盘闸门
 

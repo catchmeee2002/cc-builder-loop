@@ -5,9 +5,10 @@
 - matcher 不是身份门禁（agent_type 为空的内部 agent 也会被放进来），handler 内一律复核 agent_type 与登记的 agent_id。
 - Stop：run 未终态 → exit 2 + 下一步；等待用户 / 等待在跑的 subagent → 放行；终态但未复盘 → 拦住（复盘硬闸门）。
   不跑 pass_cmd、不解析 transcript。
-- 角色结果只认 PostToolUse(SubagentHandback) 的 tool_input.message：CC 2.1.273 起只有 handback 送达调用方，
-  最后一条消息常是收尾句，且一轮会触发多次 SubagentStop（#257）。SubagentStop 不解析结果，只在本轮 handback
-  不合规又没补交时打回。「本轮」= 该 agent_id 最近一次 role_start 之后的事件（续接会让 Start 再次触发）。
+- 角色结果：开了 SubagentHandback 的环境只有它送达调用方，最后一条消息常是收尾句，一轮还会触发多次
+  SubagentStop（#257）——本轮有 handback 尝试就只认 PostToolUse(SubagentHandback) 的 tool_input.message。
+  handback 按环境开关、不由版本号决定；本轮没有 handback 时，SubagentStop 解析 last_assistant_message 兜底。
+  「本轮」= 该 agent_id 最近一次 role_start 之后的事件（续接会让 Start 再次触发）。
 - tester 首次 integrate 之前看不到候选：PreToolUse 拒绝它读写候选 worktree（Bash 只能尽力而为）。
 """
 
@@ -299,31 +300,38 @@ def _handback_hint(role: str) -> str:
     return f"重新调用 {HANDBACK_TOOL}({{message: <完整报告>}})，message 最后一行必须是单行：{fmt}"
 
 
+def _stop_hint(role: str) -> str:
+    fmt = TESTER_RESULT_FORMAT if role == "tester" else REVIEWER_RESULT_FORMAT
+    return (f"有 {HANDBACK_TOOL} 工具就调用它交卷（message 最后一行是结果行）；没有就让最后一条消息的最后一行是单行：{fmt}")
+
+
+def _accept(bound: dict[str, Any], role: str, agent_id: str | None, text: Any, via: str, hint: str) -> HookReturn:
+    """解析 → 校验 → 同轮去重 → 登记 → 清零不合规计数。handback 与 Stop 兜底共用，只有来源与提示不同。"""
+    lp, root = bound["ledger_path"], bound["repo_root"]
+    payload, err = parse_result_marker(text if isinstance(text, str) else None)
+    if payload:
+        err = _validate_role_payload(role, payload)
+    if err:
+        return _retry_or_fail(lp, root, role, agent_id, f"{err}。{hint}", via=via)
+    if _already_recorded(bound["ledger"], role, agent_id, payload_sha256(payload)):
+        return _silent()
+    try:
+        record_role_result(lp, root, role, agent_id, payload, via=via)
+    except Problem as exc:
+        return _retry_or_fail(lp, root, role, agent_id,
+                              f"{exc.code}: {exc.message} {dumps(exc.details) if exc.details else ''}。修正后{hint}", via=via)
+    with ledger_mod.mutate(lp) as lg2:
+        lg2["agents"][role]["stops"] = 0  # 交上合规结论，本轮之前的不合规次数不再累计
+        _keep_stall(lg2)
+    return _silent()
+
+
 def handle_handback(ev: dict[str, Any], bound: dict[str, Any]) -> HookReturn:
     """PostToolUse(SubagentHandback)：送达调用方的那份报告就是角色结论，当场登记（早于调用方收到它，#250）。"""
     role = _registered_role(ev, bound)
     if not role:
         return _silent()
-    lp, root = bound["ledger_path"], bound["repo_root"]
-    agent_id = ev.get("agent_id")
-    message = (ev.get("tool_input") or {}).get("message")
-    payload, err = parse_result_marker(message if isinstance(message, str) else None)
-    if payload:
-        err = _validate_role_payload(role, payload)
-    if err:
-        return _retry_or_fail(lp, root, role, agent_id, f"{err}。{_handback_hint(role)}", via=VIA_HANDBACK)
-    if _already_recorded(bound["ledger"], role, agent_id, payload_sha256(payload)):
-        return _silent()
-    try:
-        record_role_result(lp, root, role, agent_id, payload, via=VIA_HANDBACK)
-    except Problem as exc:
-        return _retry_or_fail(lp, root, role, agent_id,
-                              f"{exc.code}: {exc.message} {dumps(exc.details) if exc.details else ''}。修正后{_handback_hint(role)}",
-                              via=VIA_HANDBACK)
-    with ledger_mod.mutate(lp) as lg2:
-        lg2["agents"][role]["stops"] = 0  # 交上合规结论，本轮之前的不合规次数不再累计
-        _keep_stall(lg2)
-    return _silent()
+    return _accept(bound, role, ev.get("agent_id"), (ev.get("tool_input") or {}).get("message"), VIA_HANDBACK, _handback_hint(role))
 
 
 def _already_recorded(lg: dict[str, Any], role: str, agent_id: str | None, sha: str) -> bool:
@@ -336,8 +344,8 @@ def _already_recorded(lg: dict[str, Any], role: str, agent_id: str | None, sha: 
 
 
 def handle_subagent_stop(ev: dict[str, Any], bound: dict[str, Any]) -> HookReturn:
-    """不解析 last_assistant_message（调用方收不到它）。本轮没有 handback：harness 自己会催交；
-    本轮 handback 不合规且还没交上合规的：打回，要它重新 handback。"""
+    """本轮有 handback 尝试：只认 handback，最后一条消息调用方收不到——已有结论放行，只有不合规的就打回重交。
+    本轮没有 handback（该环境没开 handback，按环境开关、不由版本号决定）：最后一条消息就是送达的报告，兜底解析登记。"""
     role = _registered_role(ev, bound)
     if not role:
         return _silent()
@@ -345,12 +353,12 @@ def handle_subagent_stop(ev: dict[str, Any], bound: dict[str, Any]) -> HookRetur
     turn = _turn_events(bound["ledger"], role, agent_id)
     if any(e["kind"] == "role_result" for e in turn):
         return _silent()
-    if not any(e["kind"] == "role_malformed" and e.get("via") == VIA_HANDBACK for e in turn):
-        return _silent()
     if any(e["kind"] == "role_malformed" and e.get("final") for e in turn):
         return _silent()  # 已记 fail，不再打回
-    return _retry_or_fail(bound["ledger_path"], bound["repo_root"], role, agent_id,
-                          f"本轮 {HANDBACK_TOOL} 的结果不合规，还没有登记。{_handback_hint(role)}", via=VIA_STOP)
+    if any(e.get("via") == VIA_HANDBACK for e in turn):
+        return _retry_or_fail(bound["ledger_path"], bound["repo_root"], role, agent_id,
+                              f"本轮 {HANDBACK_TOOL} 的结果不合规，还没有登记。{_handback_hint(role)}", via=VIA_STOP)
+    return _accept(bound, role, agent_id, ev.get("last_assistant_message"), VIA_STOP, _stop_hint(role))
 
 
 def _retry_or_fail(lp: Path, root: Path, role: str, agent_id: str | None, reason: str, *, via: str) -> HookReturn:

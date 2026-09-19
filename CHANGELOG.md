@@ -2,6 +2,12 @@
 
 > 本文件记 **CC 版**产品线（分支 `cc/main`）。Codex 版见 `codex/main` 分支。
 
+## 没开 handback 的环境由 SubagentStop 兜底登记（2026-09-20）
+
+- **handback 按环境开关，不由版本号决定**：上一版假设「CC ≥ 2.1.273 就有 SubagentHandback」，实测不成立（业务机 2.1.273、用户机都有；开发机 2.1.278 前台 / 后台、`-p` / 交互都没有）。上一版在没开 handback 的环境里永远登记不了角色结果。
+- **SubagentStop 兜底**：本轮有 handback 尝试就只认 handback（上一版行为不变）；本轮没有 handback 时，SubagentStop 解析 `last_assistant_message` 登记，事件 `via: stop`，规则与 handback 共用（同轮去重、不合规打回、计数清零）。
+- **`bl doctor` 去掉 CC 版本检查**：版本号判断不了 handback 是否开启，保留会误报。brief 与 agents 的交卷说明改为两种环境都成立的写法。
+
 ## 角色结果改由 SubagentHandback 登记（#257 #250，2026-09-19）
 
 - **结论来源换成 handback**：CC 2.1.273 起 subagent 只有经 `SubagentHandback({message})` 交出的内容才送达调用方，最后写的纯文本不送达；一轮还会触发多次 SubagentStop。原来在 SubagentStop 解析 `last_assistant_message`，于是收尾句「已交付。」被判 malformed、同一份报告被记两条 verdict（#257）。现在新增 `PostToolUse[SubagentHandback]` hook 作为角色结果的唯一登记点；SubagentStop 不再解析，只在本轮 handback 不合规又没补交时打回。同轮相同 payload 不重复登记。`role_result` / `role_malformed` 事件新增 `via`，`role_result` 新增 `payload_sha256`。
