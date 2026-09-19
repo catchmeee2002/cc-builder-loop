@@ -57,6 +57,7 @@ bl doctor                                                   # hook / 软链 / �
 - git init 模板带 commit-msg 门禁：fixture 仓库要 `rm -rf .git/hooks` 或用合规 message。
 - worktree 在仓库同级目录；pass_cmd / proof_runner 里的相对路径以 worktree 为根，主仓的 venv 用 `{main_repo}` 引。
 - hook matcher 不是身份门禁：`agent_type` 为空的内部 agent 也会被 `tester|reviewer` 放进来，handler 内必须复核。
+- 改角色结果登记时两种环境都要覆盖：`SubagentHandback` 按环境开关、不由 CC 版本号决定——有它时只认 handback（最后一条消息常是收尾句），没有时 SubagentStop 解析最后一条消息兜底。
 - readiness 靠事件时间戳的字符串比较判先后（微秒精度、UTC）；构造测试数据时别手写秒级时间戳。
 - pytest 把 `test*` 开头的模块级函数都当用例收集：测试辅助函数别叫 `tester_xxx`。
 
