@@ -2,6 +2,10 @@
 
 > 本文件记 **CC 版**产品线（分支 `cc/main`）。Codex 版见 `codex/main` 分支。
 
+## planner 按任务把文档容器列进写边界（#263，2026-09-20）
+
+- planner SKILL 新增一条写边界规则：任务改变对外行为 / 契约 / 导航，或本身要探查未知的平台行为 / 外部约束时，把 CLAUDE.md、README、`docs/` 下受影响的文件字面列进 `builder_write`（列入只是授权，改不改仍按 doc-policy 判断）；纯内部重构不列。此前 CLAUDE.md 常被漏列，run 内补文档只能打断用户授权并重跑全部 gate。
+
 ## 没开 handback 的环境由 SubagentStop 兜底登记（2026-09-20）
 
 - **handback 按环境开关，不由版本号决定**：上一版假设「CC ≥ 2.1.273 就有 SubagentHandback」，实测不成立（业务机 2.1.273、用户机都有；开发机 2.1.278 前台 / 后台、`-p` / 交互都没有）。上一版在没开 handback 的环境里永远登记不了角色结果。
