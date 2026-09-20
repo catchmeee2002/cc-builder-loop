@@ -2,6 +2,13 @@
 
 > 本文件记 **CC 版**产品线（分支 `cc/main`）。Codex 版见 `codex/main` 分支。
 
+## mutation 反例分类改用 junit 结构位（#255，2026-09-21）
+
+- **判据**：`classify_counterexample` 不再检查失败信息的文本前缀，改为「声明 id 里至少有一个 `<failure>`（call 阶段失败）且全场没有 `<error>`（setup / collection 出错）」。此前要求全部 failure 的 message 都以 `AssertionError` / `assert ` / `Failed:` 开头，同组混有一条 `ValueError` 就整组判 `error`，单独红在 `KeyError` 上同样被判「测试没约束该行为」——该现象出现 3 次，每次让 run 多跑一整轮 tester → integrate → machine → proof。
+- **常量 `ASSERTION_PREFIXES` 退役**：#114（扫 stdout 把 `RuntimeError` 当断言失败）与 #255 是同一判据两个方向的误判，文本判定整体换成 junit 的结构位（原则四）。
+- **保持不变**：`<error>` 仍查全场而非只查声明 id（collection 错误可能挂在别的 node 上）；`rc != 1` 仍判 `error`；generic 框架仍只看退出码；baseline-red 与 mutation 仍共用同一个分类器。
+- **已披露的代价**：「patch 破坏得太狠、测试在函数体内 import 失败」会从 `error` 变成算作反例成立，由 `TEST_MUTATION_INVALID` 的 patch 范围约束与 reviewer 兜底；挽回这点精度只能回到文本判定。
+
 ## planner 追问改为下限加可选并声明取舍（2026-09-20）
 
 - **追问结构**：V7.4 的固定 4~7 轮表格在 V8 重写时被压成 5 个方向，当时没有逐项交代去向。现在分「下限维度」（目标与 behaviors、trust_boundaries、写边界，任何档位不可砍）和「可选维度」（接口、方案对比、风险与退路、判据强度，按任务取舍；任务新增或修改接口时接口升为下限）。

@@ -279,7 +279,9 @@ def test_junit_matching_and_classification():
     f = lambda ids, rc=1, cs=cases: P.classify_counterexample("pytest", rc, cs, ids)  # noqa: E731
     assert f(["tests/test_x.py::TestC::test_m"]) == "assertion-failure"
     assert f(["tests/test_x.py::test_raises"]) == "assertion-failure"  # pytest.raises 未触发：删除类任务的负向断言
-    assert f(["tests/test_x.py::test_imp"]) == "error"  # call 阶段的 ImportError 也是 <failure>，但不是断言失败
+    # call 阶段的 ImportError 也是 <failure>：C1/C3 要求分类不得依赖失败信息文本内容，
+    # 唯一的 declared failure、无 error 条目 → assertion-failure（不再按消息前缀判定）
+    assert f(["tests/test_x.py::test_imp"]) == "assertion-failure"
     assert f(["tests/test_x.py::test_a"]) == "error"  # rc=1 但声明的用例没失败
     assert f(["tests/test_x.py::TestC::test_m"], rc=2) == "error" and f(["tests/test_x.py::test_a"], rc=0) == "pass"
     assert f(["tests/test_x.py::TestC::test_m"], cs=cases + [_case("tests.test_z", "test_c", "error", "fixture boom")]) == "error"

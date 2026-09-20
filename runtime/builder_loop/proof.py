@@ -7,8 +7,8 @@ tester 只给 test_ids，runtime 拼 argv（#229）。pytest 框架下结果取�
 集成之后读隔离解除，由 readiness 引导续接同一 tester 补 patch。
 
 执行顺序：① 所有 group 在候选（clean）上逐 id 全部 passed（skipped / xfail / 缺失都不算）→
-② baseline-red：run 起点 + tester 文件上必须 assertion 失败 → ③ mutation：候选上打 patch（只能破坏
-builder 拥有的已有普通文件）后必须 assertion 失败，执行前后比对 diff 防篡改 →
+② baseline-red：run 起点 + tester 文件上必须在 call 阶段失败 → ③ mutation：候选上打 patch（只能破坏
+builder 拥有的已有普通文件）后必须在 call 阶段失败，执行前后比对 diff 防篡改 →
 ④ reviewed-boundaries：四类 id 并集恰好等于 test_ids，且该 behavior 在 contract 里显式放行了最弱 kind。
 """
 
@@ -36,7 +36,6 @@ KIND_REVIEWED = "reviewed-boundaries"
 DEFAULT_TIMEOUT = 300
 PYTEST_NO_TESTS_COLLECTED = 5
 MAX_TIMEOUT = 1800
-ASSERTION_PREFIXES = ("AssertionError", "assert ", "Failed:")
 TESTER_OWNED_FAILURES = ("TEST_BASELINE_RED_NOT_PROVEN", "TEST_MUTATION_SURVIVED", "TEST_MUTATION_INVALID", "TEST_MUTATION_PATCH_MISSING", "TEST_PROOF_NOT_EXECUTED")
 # 失败归谁修。缺省 builder（实现没让测试过）；runner 起不来两个角色都改不了，归 contract → 改 loop.yml
 OWNER_BY_FAILURE = {**{c: "tester" for c in TESTER_OWNED_FAILURES}, "TEST_PROOF_RUNNER_FAILED": "contract"}
@@ -235,8 +234,10 @@ def judge_candidate(framework: str, rc: int, cases: list[dict[str, str]], test_i
 
 
 def classify_counterexample(framework: str, rc: int, cases: list[dict[str, str]], test_ids: list[str]) -> str:
-    """pass / assertion-failure / error。junit 的 <failure> 涵盖 call 阶段的任意异常，
-    所以还要看 message 前缀；ImportError / AttributeError 不算断言失败。"""
+    """pass / assertion-failure / error。判据取 junit 的结构位，不看失败信息的文本（原则四；#114 #255
+    是同一判据两个方向的误判）：<error> 是 setup / teardown / collection 出错，测试根本没跑起来，没有
+    鉴别力；<failure> 是 call 阶段失败，测试跑到了且被破坏的实现让它红了——KeyError、解包错同样算数。
+    error 的检查范围是全场而非声明 id：collection 错误可能挂在别的 node 上。"""
     if rc == 0:
         return "pass"
     if framework != "pytest":
@@ -244,10 +245,7 @@ def classify_counterexample(framework: str, rc: int, cases: list[dict[str, str]]
     if rc != 1 or any(c["outcome"] == "error" for c in cases):
         return "error"
     declared = [c for t in test_ids for c in match_cases(t, cases)]
-    failures = [c for c in declared if c["outcome"] == "failure"]
-    if not failures:
-        return "error"
-    if all(c["message"].startswith(ASSERTION_PREFIXES) for c in failures):
+    if any(c["outcome"] == "failure" for c in declared):
         return "assertion-failure"
     return "error"
 
@@ -373,7 +371,7 @@ def run_proof(ledger_path: Path, repo_root: Path, spec_override: dict[str, Any] 
                 cls = classify_counterexample(framework, rc, cases, g["test_ids"])
                 groups_out[i]["counterexample"] = {"kind": KIND_BASELINE, "returncode": rc, "classification": cls, "log": str(log)}
                 if cls != "assertion-failure":
-                    raise _Failure("TEST_BASELINE_RED_NOT_PROVEN", "起点 + 你的测试没有产生断言失败（pass=测试没约束行为；error=依赖了起点上不存在的接口，请改用 mutation）", i, bid, classification=cls, returncode=rc, log=str(log), tail=out[-3000:])
+                    raise _Failure("TEST_BASELINE_RED_NOT_PROVEN", "起点 + 你的测试没有在 call 阶段失败（pass=测试没约束行为；error=测试根本没跑起来，多半是依赖了起点上不存在的接口导致收集失败，请改用 mutation）", i, bid, classification=cls, returncode=rc, log=str(log), tail=out[-3000:])
                 continue
             ppaths = patch_paths(g["patch"])
             for p in ppaths:
@@ -399,7 +397,7 @@ def run_proof(ledger_path: Path, repo_root: Path, spec_override: dict[str, Any] 
             cls = classify_counterexample(framework, rc, cases, g["test_ids"])
             groups_out[i]["counterexample"] = {"kind": KIND_MUTATION, "returncode": rc, "classification": cls, "log": str(log), "patch_sha256": sha256_bytes(g["patch"].encode()), "patch_paths": ppaths}
             if cls != "assertion-failure":
-                raise _Failure("TEST_MUTATION_SURVIVED", "破坏实现后测试没有产生断言失败（pass=测试没约束该行为；error=命令或导入出错）", i, bid, classification=cls, returncode=rc, log=str(log), tail=out[-3000:])
+                raise _Failure("TEST_MUTATION_SURVIVED", "破坏实现后测试没有在 call 阶段失败（pass=测试没约束该行为；error=测试根本没跑起来，收集或 setup 阶段就出错）", i, bid, classification=cls, returncode=rc, log=str(log), tail=out[-3000:])
     except _Failure as exc:
         failure = exc
     finally:
