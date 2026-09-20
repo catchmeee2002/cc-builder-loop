@@ -195,7 +195,12 @@ def checkpoint(ledger_path: Path, repo_root: Path, role: str, message: str | Non
 
     n = len(lg["candidate"]["checkpoints"]) + 1
     msg = message or f"builder-loop checkpoint {role} {n}"
-    gitx.git(wt, "add", "-A", "--", *accepted)
+    # `git rm` 过的路径在索引里已经没有了、工作树也没有，拿它当 pathspec 会 fatal: did not match any files（#227）。
+    # 这类改动已经 staged，本来就不需要再 add；只把其余路径交给 add -A
+    staged_deletes = {p for xy, p in gitx.status_porcelain(wt) if xy == "D "}
+    to_add = [p for p in accepted if p not in staged_deletes]
+    if to_add:
+        gitx.git(wt, "add", "-A", "--", *to_add)
     gitx.git(wt, "-c", "commit.gpgSign=false", "commit", "--quiet", "-m", msg)
     new_head = gitx.head(wt)
     with ledger_mod.mutate(ledger_path) as lg2:

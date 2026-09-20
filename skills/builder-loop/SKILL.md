@@ -64,11 +64,15 @@ max_iterations: 5              # machine 尝试上限；到达即停，续跑需
 proof_runner:                  # proof 用的测试命令前缀；runtime 在后面拼 test id
   framework: pytest            # pytest（读 junit 逐用例判定）| generic（只看退出码，只能做 mutation）
   cmd: "{main_repo}/.venv/bin/python -m pytest"   # 缺省 python3 -m pytest；{main_repo} 展开为主仓路径
+evidence_neutral_paths:        # 可选，缺省为空 = 候选任何改动都让 machine / proof 失效
+  - docs/**                    # 判据读不到的路径；只改它们不重跑 machine / proof（reviewer 照常复审）
 worktree:
   root: ../builder-loop-worktrees/<repo>          # 可选，默认仓库同级目录
 ```
 
 pass_cmd 与 proof 都在 worktree 内执行，命令必须能在一个新 checkout 里跑通：venv 在主仓就用 `{main_repo}` 引过去；依赖不在清单里就把 `uv run --with-requirements … python -m pytest` 之类写进 `proof_runner.cmd`。它会被冻结进 contract 的 assurance 面，run 中途改动需要用户授权。`.claude/builder-loop/` 需在 `.gitignore`。
+
+`evidence_neutral_paths` 声明的是「这个项目的 pass_cmd 与 proof_runner 读不到哪些路径」。写宽了等于让判据失效，所以只写确实不被任何测试读取的路径——有测试读 `docs/` 下的文件（快照测试、文档 lint）就不能把它列进去。它同样冻结进 assurance 面并计入 digest，run 中途改动需要用户授权。不确定就别写：缺省行为是候选任何改动都重验。
 
 ## 接入向导（用户说「配置 loop」时）
 

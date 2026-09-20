@@ -6,6 +6,10 @@ readiness 每次从 evidence 派生下一步，ledger 不保存"下一步让谁�
 
 tester 的测试文件集合从 git 派生：`tester.base..tester.head` 的差集（含删除）。
 「候选是否已吸收 tester 的最新测试」同样从 git 派生（blob 比对），不另存 integrated_head。
+
+machine / proof 的候选侧输入绑的是候选树里判据真正读得到的内容，不是候选 HEAD 本身（原则一）：
+项目在 loop.yml 声明 `evidence_neutral_paths`（如 `docs/**`），这些路径从投影里剔除，改它们不让这两项失效。
+没声明时投影与该机制引入之前逐字节相同。Reviewer 不参与：它始终面对完整 integrated HEAD。
 """
 
 from __future__ import annotations
@@ -17,6 +21,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
+from . import contract as contract_mod
 from . import gitx
 from .errors import negative
 from .jsonutil import digest
@@ -83,18 +88,40 @@ def needs_integrate(ledger: dict[str, Any], repo_root: Path) -> bool:
 # ---------------------------------------------------------------- 投影 / 状态
 
 
+_CANDIDATE_INPUTS_CACHE: dict[tuple[str, str, tuple[str, ...]], str] = {}
+
+
+def candidate_facet(ledger: dict[str, Any], repo_root: Path) -> dict[str, Any]:
+    """候选侧真正进入 machine / proof 结论的输入（原则一：绑真实输入，不绑碰巧承载它的 HEAD）。
+
+    没声明中性路径时返回的键名与取值都与本改动之前逐字节相同——升级 runtime 不会让在跑的 run 失效。
+    声明了就换成「候选全树剔除中性路径后的 (mode, path, blob)」的 digest：带 mode，纯 chmod 也算输入变化。
+    git 对象不可变，(head, 中性集合) 定了结果就定了，所以按它缓存；readiness 一轮要算四次投影。
+    """
+    cand = ledger["candidate"].get("head")
+    neutral = ledger["contract"]["assurance"].get("evidence_neutral_paths") or []
+    if not neutral or not cand:
+        return {"candidate_head": cand}
+    key = (str(repo_root), cand, tuple(neutral))
+    got = _CANDIDATE_INPUTS_CACHE.get(key)
+    if got is None:
+        entries = [e for e in gitx.ls_tree_entries(repo_root, cand) if not contract_mod.path_in(neutral, e[1])]
+        got = _CANDIDATE_INPUTS_CACHE[key] = digest(entries)
+    return {"candidate_inputs": got}
+
+
 def projection(ledger: dict[str, Any], kind: str, repo_root: Path) -> dict[str, Any]:
     c = ledger["contract"]
     facets = c["digests"]
     cand = ledger["candidate"].get("head")
     if kind == "machine":
-        return {"kind": kind, "facets": facets, "candidate_head": cand}
+        return {"kind": kind, "facets": facets, **candidate_facet(ledger, repo_root)}
     if kind == "tester":
         return {"kind": kind, "tester_files": tester_blobs(ledger, repo_root), "mission": facets["mission"]}
     if kind == "proof":
         return {
             "kind": kind,
-            "candidate_head": cand,
+            **candidate_facet(ledger, repo_root),
             "tester_files": tester_blobs(ledger, repo_root),
             "behaviors": sorted(b["id"] for b in c["mission"]["behaviors"]),
             "proof_spec": digest(ledger.get("proof_spec")),
@@ -376,7 +403,15 @@ def readiness(ledger: dict[str, Any], repo_root: Path) -> dict[str, Any]:
     elif integrate_needed:
         action = ACTION_INTEGRATE
     elif states["machine"] != STATE_PASS:
-        action = ACTION_MACHINE
+        rec = ledger["evidence"].get("machine") or {}
+        mentioned = ((rec.get("details") or {}).get("failure") or {}).get("tester_files_mentioned")
+        if states["machine"] == STATE_FAIL and "tester" in required and mentioned \
+                and last_role_result_at(ledger, "tester") <= rec.get("at", ""):
+            # 失败日志里出现了归 tester 的路径：builder 改不了 tests/**，这条失败必须有它自己的出口，
+            # 否则只能靠 MISSION_REVISION 绕过（#249）。与下面 proof 的 owner=tester 分支同构
+            action = ACTION_RESUME_TESTER
+        else:
+            action = ACTION_MACHINE
     elif "proof" in required and states["proof"] != STATE_PASS:
         rec = ledger["evidence"].get("proof") or {}
         owner = ((rec.get("details") or {}).get("failure") or {}).get("suggested_owner")
@@ -400,6 +435,11 @@ def readiness(ledger: dict[str, Any], repo_root: Path) -> dict[str, Any]:
             action = ACTION_RESUME_TESTER
         else:
             action = ACTION_RESUME_REVIEWER if ledger["agents"].get("reviewer") else ACTION_SPAWN_REVIEWER
+    elif "reviewer" in required and role_running(ledger, "reviewer"):
+        # reviewer 已 pass 但又被续接（builder 否决了上一轮结论）：上面那条分支进不来，
+        # 没有这一条就直接落到 finalize，复审在 readiness 与 Stop hook 里完全不可见（#269）。
+        # 对称于 tester 的 `elif tester_run`——那条同样不看 tester 自己的 state
+        action = ACTION_AWAITING_REVIEWER
     else:
         action = ACTION_FINALIZE
 

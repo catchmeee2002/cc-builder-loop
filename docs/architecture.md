@@ -65,10 +65,17 @@ builder 与 tester 各看各的 worktree，未提交改动互不可见；删除�
 
 | kind | 投影 | 何时 stale |
 |---|---|---|
-| machine | 三面 digest、候选 HEAD | 任何 checkpoint / integrate / rebase、contract 变化 |
+| machine | 三面 digest、候选输入 | 候选输入或 contract 变化 |
 | tester | tester 分支上测试文件的 `{path, blob}`（删除记 null）、mission digest | tester 再次提交、mission 变 |
-| proof | 候选 HEAD、tester 文件 blob、behavior ids、proof_spec digest、assurance digest | 候选或测试变化、补了 patch、proof_runner 变化 |
-| reviewer | 候选 HEAD、三面 digest、machine / tester / proof 各自 `{status, dependency_digest, state}` | 候选变化、任一前置证据变化或失效 |
+| proof | 候选输入、tester 文件 blob、behavior ids、proof_spec digest、assurance digest | 候选输入或测试变化、补了 patch、proof_runner 变化 |
+| reviewer | 候选 **HEAD**、三面 digest、machine / tester / proof 各自 `{status, dependency_digest, state}` | 候选变化、任一前置证据变化或失效 |
+
+「候选输入」由 `evidence.candidate_facet()` 给出，是 machine / proof 真正读得到的候选内容，不是碰巧承载它的 HEAD（原则一）：
+
+- loop.yml 没声明 `evidence_neutral_paths` 时，它就是 `{"candidate_head": <head>}`——键名与取值都与该机制引入之前逐字节相同，升级 runtime 不会让在跑的 run 失效。
+- 声明了就换成 `{"candidate_inputs": <digest>}`，digest 取候选全树剔除中性路径后的 `(mode, path, blob)` 列表。带 mode，所以纯 `chmod` 也算输入变化。结果按 `(repo, head, 中性集合)` 缓存——git 对象不可变，而一轮 readiness 要算四次投影。
+- reviewer 不参与这套剔除：原则一要求「Reviewer 和文档审查始终面对完整 integrated HEAD」，所以只改文档的 checkpoint 仍让 reviewer stale，只是不再连累 machine 与 proof。
+- 中性路径是项目事实（这个仓库的判据读什么），只在 loop.yml 声明，由 start 冻结进 assurance 面计入 digest，改它需要一次 `contract revise --authorize`；planner 写了也以 loop.yml 为准。
 
 rebase 改的是 `repo.target_start_head` 与候选 HEAD；`tester.base` 不动，所以 tester evidence 不因目标分支漂移而失效，漂移进来的文件也不会被算成测试文件。
 
@@ -82,9 +89,15 @@ pytest 框架下结论取自 junit xml：候选阶段要求 rc==0 且每个声�
 
 ## readiness → next_action
 
-terminal →（无 retrospective `retro`，否则 `done`）；有 blocker → `needs_user`；tester 需要干活且没在跑 → `spawn_tester` / `resume_tester`（**先于** builder 的 `checkpoint`：tester 后台并行，越早放出去越好）；builder 无 checkpoint → `checkpoint`；tester 在跑 → `awaiting_tester`；需要 integrate → `integrate`；`machine`；proof：缺 mutation patch 且 tester 在首次 integrate 后还没答复过 → `resume_tester`，fail 且 owner=tester 且 tester 尚未答复 → `resume_tester`，否则 `proof`；reviewer：在跑 → `awaiting_reviewer`，fail 且有 owner=tester 的 blocking/major 且 tester 尚未答复 → `resume_tester`，否则 spawn / resume；全过 → `finalize`。最后一步：若 `next_action` 正是某个**已在执行**的门禁（machine / proof），改判 `awaiting_gate`。
+terminal →（无 retrospective `retro`，否则 `done`）；有 blocker → `needs_user`；tester 需要干活且没在跑 → `spawn_tester` / `resume_tester`（**先于** builder 的 `checkpoint`：tester 后台并行，越早放出去越好）；builder 无 checkpoint → `checkpoint`；tester 在跑 → `awaiting_tester`；需要 integrate → `integrate`；machine 未过：fail 且失败日志里出现归 tester 的路径且 tester 尚未答复 → `resume_tester`，否则 `machine`；proof：缺 mutation patch 且 tester 在首次 integrate 后还没答复过 → `resume_tester`，fail 且 owner=tester 且 tester 尚未答复 → `resume_tester`，否则 `proof`；reviewer 未过：在跑 → `awaiting_reviewer`，fail 且有 owner=tester 的 blocking/major 且 tester 尚未答复 → `resume_tester`，否则 spawn / resume；reviewer 已过但**又被续接在跑** → `awaiting_reviewer`；全过 → `finalize`。最后一步：若 `next_action` 正是某个**已在执行**的门禁（machine / proof），改判 `awaiting_gate`。
 
 「tester 尚未答复」用事件时间戳比较（ISO 微秒，UTC，字典序即时间序）：答复过而失败依旧时回到 `proof`，让同签名计数生效，避免无限续接。
+
+machine 的 `resume_tester` 出口与 proof 的那条同构：builder 改不了 `tests/**`，归 tester 的 machine 失败若没有出口，就只能靠 `MISSION_REVISION` 绕过（#249）。日志里哪些路径归 tester 由 `contract.path_owner` 裁决，范围是候选树 ∪ tester 分支——不是「tester 本 run 改过的文件」，否则因契约变更而失效的**既有**测试永远匹配不上。
+
+reviewer 已 pass 之后那条兜底对称于 tester 的 `elif tester_run`（它同样不看 tester 自己的 state）：builder 否决上一轮结论、续接同一 reviewer 复审时，没有这条就直接落到 `finalize`，复审在 readiness 与 Stop hook 里完全不可见（#269）。
+
+reviewer 判 pass 时给出的 `owner=tester` 的 finding 不派发（派发会引出复审循环），但会由 `finalize` 在返回里以 `unaddressed_findings` 列出，不让它悄悄消失。
 
 **角色是否在跑**不落盘：最近一条生命周期事件是 `role_start`（或要求重发的 `role_malformed`）且 40 分钟租约未过期。该 agent 的每次 PreToolUse 续租，只 touch `run_dir/heartbeat-<role>`，不写 ledger。只用于 `awaiting_*`（抑制 Stop 回拉），不给任何 CLI 加闸；agent 失联则租约到期后回到 resume。
 

@@ -185,6 +185,10 @@ def validate_contract(contract: dict[str, Any]) -> None:
             raise fatal("CONTRACT_INVALID", "assurance.machine_stages 应为非空、不重复的 stage 名数组（只写名字，命令在 loop.yml）")
     if "machine_commands" in s and not isinstance(s["machine_commands"], list):
         raise fatal("CONTRACT_INVALID", "assurance.machine_commands 应为数组（通常由 start 冻结）")
+    if "evidence_neutral_paths" in s:
+        enp = s["evidence_neutral_paths"]
+        if not isinstance(enp, list) or not all(isinstance(x, str) and x.strip() for x in enp):
+            raise fatal("CONTRACT_INVALID", "assurance.evidence_neutral_paths 应为字符串数组（由 start 从 .claude/loop.yml 冻结，planner 不写）")
 
 
 # ---------------------------------------------------------------- 路径模式
@@ -300,6 +304,9 @@ def freeze_assurance(contract: dict[str, Any], loop_config: LoopConfig) -> dict[
     frozen["assurance"]["machine_commands"] = [s.to_json() for s in loop_config.pass_cmd]
     frozen["assurance"]["max_iterations"] = loop_config.max_iterations
     frozen["assurance"]["proof_runner"] = dict(loop_config.proof_runner)
+    # 与 machine_commands / proof_runner 同构：项目事实由 loop.yml 声明、start 冻结进 assurance 面计入 digest，
+    # 改它需要一次被记录的 contract revise。planner 写了也以 loop.yml 为准（原则二：只有一个来源）。
+    frozen["assurance"]["evidence_neutral_paths"] = list(loop_config.evidence_neutral_paths)
     return frozen
 
 

@@ -42,6 +42,7 @@ class LoopConfig:
     max_iterations: int = DEFAULT_MAX_ITERATIONS
     worktree_root: str | None = None
     proof_runner: dict[str, str] = field(default_factory=lambda: dict(DEFAULT_PROOF_RUNNER))
+    evidence_neutral_paths: list[str] = field(default_factory=list)
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -51,6 +52,7 @@ class LoopConfig:
             "max_iterations": self.max_iterations,
             "worktree_root": self.worktree_root,
             "proof_runner": self.proof_runner,
+            "evidence_neutral_paths": self.evidence_neutral_paths,
         }
 
 
@@ -272,6 +274,17 @@ def load_loop_config(repo_root: Path) -> LoopConfig:
             raise fatal("CONFIG_PROOF_RUNNER_INVALID", "proof_runner.cmd 不能为空（generic 必须显式给出）")
         runner = {"framework": framework, "cmd": cmd.strip()}
 
+    # 对判据中性的路径：pass_cmd / proof_runner 读不到它们，改它们不让 machine / proof 失效。
+    # 是项目事实（这个仓库的判据读什么），不是单次任务事实，所以只在 loop.yml 声明（原则二）。
+    raw_neutral = data.get("evidence_neutral_paths")
+    neutral: list[str] = []
+    if raw_neutral is not None:
+        if not isinstance(raw_neutral, list) or not all(isinstance(p, str) and p.strip() for p in raw_neutral):
+            raise fatal("CONFIG_EVIDENCE_NEUTRAL_PATHS_INVALID",
+                        "evidence_neutral_paths 必须是字符串数组，每个元素都不能是空串（glob，相对仓库根，如 docs/**）；"
+                        "整个数组为空或字段缺失都合法，表示不豁免任何路径", value=raw_neutral)
+        neutral = sorted({p.strip() for p in raw_neutral})
+
     return LoopConfig(
         proof_runner=runner,
         path=str(LOOP_YML),
@@ -279,4 +292,5 @@ def load_loop_config(repo_root: Path) -> LoopConfig:
         pass_cmd=stages,
         max_iterations=max_iter,
         worktree_root=worktree_root,
+        evidence_neutral_paths=neutral,
     )

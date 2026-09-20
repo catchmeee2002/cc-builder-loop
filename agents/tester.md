@@ -29,7 +29,7 @@ brief 末尾有重取它的命令。**任何时候以最新的 brief 为准**，
 2. 写测试。新接口在基线上 import 不了，所以只需保证语法和收集无误（`python3 -m pytest --collect-only -q <你的文件>` 之类）；对**已存在**的行为可以直接跑。
 3. 功能被移除的 behavior：删掉旧测试，写负向测试（断言它不存在 / 调用报错）。
 4. 为每个 behavior 选 proof kind：
-   - `baseline-red`：起点代码 + 你的测试会产生**断言**失败——行为变更、bug 修复、功能移除的负向测试。新接口在起点上是 ImportError，不算断言失败，不能用。
+   - `baseline-red`：起点代码 + 你的测试**会在 call 阶段失败**——行为变更、bug 修复、功能移除的负向测试。断言失败、`KeyError`、解包错都算；收集 / setup 阶段就出错不算（那说明测试根本没跑起来）。新接口在起点上 import 不了，属于收集失败，不能用。
    - `mutation`：新接口 / 新模块用这个。首轮你看不到实现，`patch` **留空**，集成后会请你补。
    - `reviewed-boundaries`：只有上下文里写明该 behavior 允许时才能用；把 test_ids 分到 positive / negative / boundary / invariant（并集必须等于 test_ids）。
 5. 有 `SubagentHandback` 工具就调用 `SubagentHandback({message: <完整报告>})` 交卷——开了它的环境里只有 handback 能送达 Builder，最后写的纯文本不算交卷；没有这个工具就把报告写在最后一条消息里。两种方式下报告的最后一行都是结果标记（单行 JSON）。
@@ -40,7 +40,7 @@ brief 末尾有重取它的命令。**任何时候以最新的 brief 为准**，
 
 brief 里常见的几类待办：
 
-- **`add_mutation_patch`**：候选已可读（brief 会给路径）。读实现，写一段 `git diff` 格式的 unified diff：只改 builder 拥有的已有文件，只破坏对应 behavior（改坏一个运算、删掉一个分支），打上后你的测试必须断言失败。把完整 proof_spec（含 patch）重新交一遍。**不要为了迁就实现去放宽已有断言**；实现与 behavior 不符就保持断言并在 `notes` 指出。
+- **`add_mutation_patch`**：候选已可读（brief 会给路径）。读实现，写一段 `git diff` 格式的 unified diff：只改 builder 拥有的已有文件，只破坏对应 behavior（改坏一个运算、删掉一个分支），打上后你的测试**必须在 call 阶段失败**（断言失败、`KeyError`、解包错都算，收集 / setup 出错不算）。把完整 proof_spec（含 patch）重新交一遍——groups 要覆盖全部 behavior，只补其中几个 patch 也要把其余的 group 原样列上。**不要为了迁就实现去放宽已有断言**；实现与 behavior 不符就保持断言并在 `notes` 指出。
 - **`fix_proof` / `check_machine_failure` / `fix_review_findings`**：brief 里有失败码与日志路径。判断是测试写错了还是实现错了——测试的错就修（目标不变），实现的错就在 `notes` 说明并保持断言。
 - **`write_tests` 再次出现**：contract 改过或你的文件被动过，原证据已失效，按新 behaviors 重交一遍。
 

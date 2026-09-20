@@ -55,7 +55,10 @@ def _tester_todo(lg: dict[str, Any], repo_root: Path) -> list[dict[str, Any]]:
     if proof_rec.get("status") == "fail" and failure.get("suggested_owner") == "tester" \
             and evidence.last_role_result_at(lg, "tester") <= proof_rec.get("at", ""):
         todo.append({"what": "fix_proof", "code": failure.get("code"), "behavior": failure.get("behavior"),
-                     "log": failure.get("log"), "why": failure.get("message")})
+                     "log": failure.get("log"),
+                     # 续接轮只改一个 behavior 时也要交全量 spec：validate_spec 要求 groups 与 behaviors 一一对应（#260）
+                     "why": f"{failure.get('message')} —— 修好后把**完整**的 proof_spec 重新交一遍："
+                            "groups 必须覆盖全部 behavior，只处理其中一个也要把其余的 group 原样列上，少一个就会被判 PROOF_SPEC_INVALID"})
 
     mach = lg["evidence"].get("machine") or {}
     mfail = (mach.get("details") or {}).get("failure") or {}
@@ -200,6 +203,9 @@ def render(brief: dict[str, Any]) -> str:
             f"protected（谁都不能动）: {brief['protected_paths']}",
             f"测试命令由项目冻结，不需要你给 argv：{runner.get('cmd')}（framework={runner.get('framework')}）；proof_spec 每组只给 test_ids（pytest node id，如 tests/test_x.py::test_a）",
             brief["read_rule"] + "。",
+            # 盲写阶段跑不了自己的测试，node id 拼错、断言与真实数据结构不符都要等这一步才暴露（#266）
+            "你交卷后测试会被集成进候选，由 machine 全量跑一遍；那时失败的如果是你的测试，这条失败会回到 tester 手上。"
+            "所以交卷前至少确认语法与收集无误（`--collect-only`），并逐条核对 proof_spec 里的 node id 与文件中的实际定义一致。",
         ]
         if brief["candidate_readable"]:
             lines.append(f"候选 worktree（只读）: {brief['candidate_worktree']}")

@@ -2,6 +2,15 @@
 
 > 本文件记 **CC 版**产品线（分支 `cc/main`）。Codex 版见 `codex/main` 分支。
 
+## 判据只绑真实输入，受限恢复要有出口（#258 #249 #260 #266 #269 #227，2026-09-21）
+
+- **`evidence_neutral_paths`（#258，公共契约新增）**：loop.yml 可声明判据读不到的路径（如 `docs/**`），由 start 冻结进 assurance 面并计入 digest，改动需 `contract revise --authorize`。machine / proof 的候选侧投影随之从「候选 HEAD」换成「候选全树剔除中性路径后的 `(mode, path, blob)` digest」，带 mode 所以纯 chmod 仍算变化。缺省为空时投影键名与取值逐字节不变，升级不让在跑的 run 失效。**reviewer 不豁免**——原则一要求它始终面对完整 integrated HEAD。此前只改一行 `.md` 会让 machine / proof / reviewer 全部 stale，实测重跑约 15 分钟。
+- **machine 失败的 tester 归属与出口（#249）**：`tester_files_mentioned` 改由 `contract.path_owner` 裁决（范围是候选树 ∪ tester 分支），不再只统计 tester 本 run 改动过的文件——因契约变更而失效的**既有**测试此前永远匹配不上。readiness 相应新增与 proof 同构的出口：machine fail 且日志出现归 tester 的路径且 tester 尚未答复 → `resume_tester`。此前这条失败没有归属也没有出口，只能靠 `MISSION_REVISION` 绕过。
+- **reviewer pass 时 owner=tester 的 finding（#249）**：不派发（派发会引出复审循环），但由 `finalize` 在返回里以 `unaddressed_findings` 列出，不再悄悄消失。
+- **pass 后的复审可见（#269）**：reviewer evidence 为 pass 但该角色又被续接时，readiness 给 `awaiting_reviewer` 而不是 `finalize`。对称于 tester 早有的 `elif tester_run`；此前 builder 否决上一轮结论后的复审在 readiness 与 Stop hook 里完全不可见。
+- **角色事实补漏（#260 #266）**：`fix_proof` 待办写明重交必须带覆盖全部 behavior 的完整 proof_spec；tester brief 告知交卷后测试会被 machine 全量跑、失败会回到它手上。`agents/tester.md` 的反例失败形态措辞同步为「call 阶段失败」。
+- **`git rm` 过的路径不再让 checkpoint 失败（#227）**：已暂存的删除不再作为 pathspec 传给 `git add -A`。
+
 ## mutation 反例分类改用 junit 结构位（#255，2026-09-21）
 
 - **判据**：`classify_counterexample` 不再检查失败信息的文本前缀，改为「声明 id 里至少有一个 `<failure>`（call 阶段失败）且全场没有 `<error>`（setup / collection 出错）」。此前要求全部 failure 的 message 都以 `AssertionError` / `assert ` / `Failed:` 开头，同组混有一条 `ValueError` 就整组判 `error`，单独红在 `KeyError` 上同样被判「测试没约束该行为」——该现象出现 3 次，每次让 run 多跑一整轮 tester → integrate → machine → proof。

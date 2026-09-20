@@ -54,7 +54,15 @@ def _complete(ledger_path: Path, repo_root: Path, lg: dict[str, Any], final_head
         lg2["finalize_intent"] = None
         lg2["terminal"] = {"status": "finalized", "final_head": final_head, "reason": None, "at": ledger_mod.now_iso()}
     # session 保持绑定：复盘记录写进 ledger 之前 Stop hook 会拦住（复盘硬闸门）
-    return {"final_head": final_head, "target_branch": target, "cleanup": removed, "terminal": "finalized", "next": "retro"}
+    return {"final_head": final_head, "target_branch": target, "cleanup": removed, "terminal": "finalized", "next": "retro",
+            "unaddressed_findings": _unaddressed_findings(lg)}
+
+
+def _unaddressed_findings(lg: dict[str, Any]) -> list[dict[str, Any]]:
+    """reviewer 判 pass 时给的 owner=tester 的 finding。readiness 只派发 blocking / major 且 reviewer 为 fail 的，
+    其余到这里就没有去向了（#249）——不阻塞 finalize，但必须出现在收尾输出里，不能悄悄消失。"""
+    findings = ((lg["evidence"].get("reviewer") or {}).get("details") or {}).get("findings") or []
+    return [f for f in findings if f.get("owner") == "tester"]
 
 
 def _sync_checkout(repo_root: Path, lg: dict[str, Any], old: str, new: str) -> dict[str, Any] | None:

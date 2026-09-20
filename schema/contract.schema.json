@@ -221,6 +221,14 @@
               "type": "string"
             }
           }
+        },
+        "evidence_neutral_paths": {
+          "type": "array",
+          "description": "对判据中性的路径 glob（pass_cmd / proof_runner 读不到它们）；由 start 从 .claude/loop.yml 冻结，planner 不写",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
         }
       }
     }

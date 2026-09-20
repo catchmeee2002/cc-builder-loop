@@ -12,6 +12,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from . import contract as contract_mod
 from . import evidence, gitx, ledger as ledger_mod, worktree
 from .errors import fatal, needs_user, negative
 from .jsonutil import dumps, sha256_bytes
@@ -98,6 +99,21 @@ def run_preflight(ledger_path: Path, repo_root: Path) -> dict[str, Any]:
             "note": "基线上就失败的 stage 与候选无关：要么改 .claude/loop.yml 后 `bl contract revise --authorize`，要么本次任务本就要修好它"}
 
 
+def _tester_paths_in(ledger: dict[str, Any], repo_root: Path, candidate_head: str, text: str) -> list[str]:
+    """失败日志里出现的、按写边界归 tester 的路径。
+
+    归属只问 `contract.path_owner`（原则二：路径归属只有一个判定入口）。此前取的是
+    `evidence.tester_files()`——tester 本 run 改动过的文件——于是因本次契约变更而失效的**既有**测试
+    永远匹配不上，那条失败在 runtime 里没有归属也没有出口（#249）。
+    候选树 ∪ tester 分支，覆盖 tester 已交卷但还没 integrate 的情形。
+    """
+    auth = ledger["contract"]["authority"]
+    known = set(gitx.ls_tree_blobs(repo_root, candidate_head)) if candidate_head else set()
+    known |= set(evidence.tester_files(ledger, repo_root)["present"])
+    owned = (p for p in known if contract_mod.path_owner(auth, p) == contract_mod.OWNER_TESTER)
+    return sorted(p for p in owned if p in text)
+
+
 def baseline_red(ledger: dict[str, Any]) -> list[str] | None:
     """与当前 machine_commands 对得上的那次基线预跑里，哪些 stage 是红的；没跑过 → None。"""
     stages = ledger["contract"]["assurance"].get("machine_commands") or []
@@ -148,8 +164,7 @@ def run_machine(ledger_path: Path, repo_root: Path) -> dict[str, Any]:
             entry = {"stage": stage["stage"], "returncode": rc, "log": str(log_path), "timed_out": timed_out}
             results.append(entry)
             if rc != 0:
-                files = evidence.tester_files(lg, repo_root)["present"]
-                mentioned = sorted(f for f in files if f in text)
+                mentioned = _tester_paths_in(lg, repo_root, cand["head"], text)
                 failed = dict(entry, signature=failure_signature(text, stage["stage"], rc), tail=text[-4000:], tester_files_mentioned=mentioned)
                 break
 

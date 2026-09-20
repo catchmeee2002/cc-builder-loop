@@ -139,6 +139,20 @@ def ls_tree_blobs(cwd: Path | str, commit: str, paths: list[str] | None = None) 
     return out
 
 
+def ls_tree_entries(cwd: Path | str, commit: str) -> list[tuple[str, str, str]]:
+    """全树的 (mode, path, blob_sha)，按 path 升序。带 mode：纯 chmod 也是输入变化。"""
+    r = git(cwd, "ls-tree", "-r", "-z", commit)
+    out: list[tuple[str, str, str]] = []
+    for entry in r.stdout.split("\0"):
+        if not entry:
+            continue
+        meta, path = entry.split("\t", 1)
+        mode, typ, sha = meta.split()
+        if typ == "blob":
+            out.append((mode, path, sha))
+    return sorted(out, key=lambda e: e[1])
+
+
 def blob_mode(cwd: Path | str, commit: str, path: str) -> str | None:
     r = git(cwd, "ls-tree", "-z", commit, "--", path, check=False)
     if not r.ok or not r.stdout.strip("\0"):
