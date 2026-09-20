@@ -2,6 +2,12 @@
 
 > 本文件记 **CC 版**产品线（分支 `cc/main`）。Codex 版见 `codex/main` 分支。
 
+## planner 追问改为下限加可选并声明取舍（2026-09-20）
+
+- **追问结构**：V7.4 的固定 4~7 轮表格在 V8 重写时被压成 5 个方向，当时没有逐项交代去向。现在分「下限维度」（目标与 behaviors、trust_boundaries、写边界，任何档位不可砍）和「可选维度」（接口、方案对比、风险与退路、判据强度，按任务取舍；任务新增或修改接口时接口升为下限）。
+- **取舍声明**：第一轮提问前在正文末尾用 2~4 行声明档位、要问与跳过的可选维度及依据（引用本任务具体事实），不新增问题；方案文件「背景与目标」留一行「追问范围」。此前 planner 砍哪些维度是用户看不见的黑盒。
+- **V7.4 七问去向**：目标与 GWT 场景、约束与边界 → 等价保留（下限）；方案对比、风险与退路、接口 → 可选维度；演进路径 → 退役（原则五：对未知未来不预置抽象，也没有 gate 消费它）；验收方式与 e2e → 由 tester / proof 两道 gate 替代（原则一、九）；「必须用 AskUserQuestion」→ 归全局配置与 CC 原生提问，不在 skill 里再抄一份（原则二）。
+
 ## 门禁绑定整份输入投影与 start 暴露冻结缺口（#254 #256 #264，2026-09-20）
 
 - **machine / proof 共用 `evidence.input_changes`（#254）**：门禁起跑与收尾的输入投影不一致就作废本次观察，不再只比 `candidate.head`。proof 新增 `PROOF_INPUT_CHANGED`；machine 的 `MACHINE_INPUT_CHANGED` 覆盖 contract revise，两者的 details / event 追加 `changed_inputs`。此前 proof 跑的过程中 checkpoint / tester 交卷，旧输入上的结论会被记到新输入上。
