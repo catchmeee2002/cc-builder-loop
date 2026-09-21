@@ -6,3 +6,10 @@ max_iterations: 5
 proof_runner:
   framework: pytest
   cmd: "python3 -m pytest -p no:html"
+evidence_neutral_paths:
+  # pass_cmd / proof_runner 读不到的路径：只改它们不让 machine / proof 失效（reviewer 照常复审）。
+  # agents/** 与 skills/** 不能列进来——test_tester_agent_md_wording.py 读真实的 agents/tester.md，
+  # test_doc_hints_and_skill_text.py 读真实的 skills/builder/SKILL.md，它们是判据的真实输入。
+  - "docs/**"
+  - "CHANGELOG.md"
+  - "README.md"
