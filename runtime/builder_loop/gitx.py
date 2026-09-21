@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -23,10 +24,11 @@ class GitResult:
 NO_HOOKS = ("-c", "core.hooksPath=/dev/null")
 
 
-def git(cwd: Path | str, *args: str, check: bool = True, input_text: str | None = None, hooks: bool = False) -> GitResult:
+def git(cwd: Path | str, *args: str, check: bool = True, input_text: str | None = None, hooks: bool = False,
+        env: dict[str, str] | None = None) -> GitResult:
     """内部 git 调用默认禁用目标仓库 hooks：checkpoint / integrate / worktree / rebase 都是 runtime 的
     事务记录，不是交付提交。`--no-verify` 拦不住 post-commit / post-checkout / pre-rebase，所以用 hooksPath。
-    唯一例外是 `finalize --run-commit-hook`，显式传 hooks=True。"""
+    唯一例外是 `finalize --run-commit-hook`，显式传 hooks=True。env 叠加在当前环境之上（如临时 GIT_INDEX_FILE）。"""
     prefix = () if hooks else NO_HOOKS
     proc = subprocess.run(
         ["git", *prefix, *args],
@@ -34,6 +36,7 @@ def git(cwd: Path | str, *args: str, check: bool = True, input_text: str | None 
         capture_output=True,
         text=True,
         input=input_text,
+        env={**os.environ, **env} if env else None,
     )
     result = GitResult(proc.returncode, proc.stdout, proc.stderr)
     if check and not result.ok:

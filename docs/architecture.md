@@ -81,11 +81,23 @@ rebase 改的是 `repo.target_start_head` 与候选 HEAD；`tester.base` 不动�
 
 ## proof
 
-命令来自冻结的 `assurance.proof_runner`（loop.yml 声明）：环境依赖因此进入证据输入，tester 不再把机器侧 venv 的绝对路径藏进 argv。`shlex` 拆分、不过 shell，只展开 `{main_repo}`。tester 的 proof_spec 每组只有 `kind / behavior_ids[1] / test_ids / timeout / patch? / reviewed_boundaries?`；test id 以 `-` 开头拒绝，文件部分必须是 tester 拥有且存在于 tester 分支的路径。
+命令来自冻结的 `assurance.proof_runner`（loop.yml 声明）：环境依赖因此进入证据输入，tester 不再把机器侧 venv 的绝对路径藏进 argv。`shlex` 拆分、不过 shell，只展开 `{main_repo}`。tester 的 proof_spec 每组只有 `kind / behavior_ids[1] / test_ids / timeout / patch? / reviewed_boundaries?`；test id 以 `-` 开头拒绝，文件部分必须是 tester 拥有且存在于 tester 分支的路径；framework=pytest 时文件部分必须是 `.py`，否则 `PROOF_SPEC_INVALID`（`suggested_owner=contract`，runner 由 loop.yml 冻结，tester 修不了）。
 
 pytest 框架下结论取自 junit xml：候选阶段要求 rc==0 且每个声明 id 都匹配到用例并全部 passed（skipped / xfail / 未执行都不算）；反例阶段要求 rc==1、全场无 `<error>`、声明 id 里至少一个 `<failure>`。判据只取 junit 的结构位，不看失败信息的文本：`<error>` 是 setup / teardown / collection 出错，测试没跑起来，没有鉴别力；`<failure>` 是 call 阶段失败，测试跑到了且被破坏的实现让它红了，`KeyError`、解包错与 `AssertionError` 同等算数（原则四；#114 与 #255 是同一判据两个方向的误判）。`<error>` 查全场而非只查声明 id——collection 错误可能挂在别的 node 上。代价是「patch 破坏得太狠、测试在函数体内 import 失败」会算作反例成立，由 `TEST_MUTATION_INVALID` 的 patch 约束与 reviewer 兜底。id 映射用 classname 后缀匹配（monorepo 子目录自带 ini 时 rootdir 会变），不带 `[` 的 id 匹配全部参数实例。generic 框架只看退出码，只能做 mutation。
 
-每个 behavior 的 proof 下限写在 contract（缺省 strong）；`reviewed-boundaries` 必须在该 behavior 上显式放行。mutation patch 的路径在执行时用 `write_rejection(…, "builder", path)` 校验，并要求是候选上已存在的普通文件；执行前后比对 diff 防篡改。builder 后来改了实现导致 patch 对不上 → `TEST_MUTATION_INVALID`，owner=tester。
+每个 behavior 的 proof 下限写在 contract（缺省 strong）；`reviewed-boundaries` 必须在该 behavior 上显式放行。
+
+mutation patch 分两处检查，检查对象都是 ledger 实收的那份字节（`normalized_patch` 是两处共用的唯一规范化）：
+
+| 时机 | 检查 | 失败 |
+|---|---|---|
+| tester 交卷（任何一轮）与 proof 入口：`check_structure` | 路径 `write_rejection(…, "builder", path)` | `PROOF_SPEC_INVALID`，当场打回 |
+| tester 交卷且首次 integrate 之后：`validate_spec` 的预检 | 目标是交卷时候选 head 上的普通文件；临时 `GIT_INDEX_FILE` 上 `git apply --cached --check`，不碰候选 worktree | `PROOF_SPEC_INVALID`，当场打回 |
+| proof ③ 段 | 上述全部 + 在临时 worktree 真实 apply、改动路径与声明一致、执行前后 diff 不变 | `TEST_MUTATION_INVALID`，owner=tester |
+
+proof 入口不做可应用性预检：交卷后 builder 又改了实现导致对不上，要落到 ③ 段按 tester 失败记账，而不是以 spec 无效挡在门外。
+
+machine / preflight / proof 的子进程都拿到本次调用独占、结束即删的 `PYTHONPYCACHEPREFIX`（run 目录 `tmp/` 下），不读工作树里的 `__pycache__`：那里的字节码不在任何 digest 里，保持字节数的变异在同一秒内 apply/revert 后会被 CPython 当成新鲜的（原则一）。每次调用新建，因为 proof 的临时 worktree 路径跨调用复用；工作树里的缓存不删（原则三）。
 
 ## readiness → next_action
 

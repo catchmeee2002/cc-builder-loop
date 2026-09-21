@@ -201,17 +201,19 @@ def test_baseline_red_rejects_new_interface_and_weak_mutation_survives(started, 
 
 
 def test_mutation_patch_must_stay_in_builder_territory(started, cli, hook):
-    wt, twt = started["worktree"], started["tester_worktree"]
+    """#proof-input-precheck：归属违规现在在交卷（handback）当场打回，不必等到集成 / `bl proof`
+    才发现（此前只有 `bl proof` 深处的 mutation 执行会报 TEST_MUTATION_INVALID/tester_owned；
+    那条检查仍然保留，见 test_proof_input_precheck.py::test_b2_proof_entry_rechecks_ownership_via_spec_file
+    对 `--spec-file` 直连入口的覆盖）。"""
+    twt = started["tester_worktree"]
     hook("SubagentStart", {"session_id": "S1", "agent_id": "T1", "agent_type": "tester"})
-    implement_mul(wt)
-    cli("checkpoint", "--session", "S1", "--role", "builder")
     write_mul_test(twt)
     bad = "diff --git a/tests/test_mul.py b/tests/test_mul.py\n--- a/tests/test_mul.py\n+++ b/tests/test_mul.py\n@@ -4 +4 @@\n-    assert mul(3, 4) == 12\n+    assert False\n"
-    role_turn(hook, "tester", "T1", make_tester_result("mutation", bad), start=False)
-    cli("integrate", "--session", "S1")
-    cli("machine", "--session", "S1")
-    res = cli("proof", "--session", "S1", expect=1)
-    assert res["failure"]["code"] == "TEST_MUTATION_INVALID" and res["failure"]["reason"] == "tester_owned"
+    r = role_turn(hook, "tester", "T1", make_tester_result("mutation", bad), start=False)
+    assert r["code"] != 0
+    assert "PROOF_SPEC_INVALID" in r["stderr"] and "tests/test_mul.py" in r["stderr"], r["stderr"]
+    lg = L.load(started["ledger"])
+    assert lg["evidence"]["tester"] is None and lg.get("proof_spec") is None
 
 
 def test_deletion_task_flows_without_contract_revision(repo, cli, hook):

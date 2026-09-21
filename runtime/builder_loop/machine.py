@@ -8,9 +8,12 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import subprocess
+import tempfile
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from . import contract as contract_mod
 from . import evidence, gitx, ledger as ledger_mod, worktree
@@ -25,6 +28,21 @@ _TS = re.compile(r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2
 _DURATION = re.compile(r"\b\d+(?:\.\d+)?\s*(?:ms|s|sec|seconds|m|min)\b")
 _TMP = re.compile(r"/(?:tmp|var/folders|private/tmp)/[^\s'\"]+")
 _ADDR = re.compile(r"0x[0-9a-fA-F]+")
+
+
+@contextmanager
+def private_pycache(env: dict[str, str], run_dir: Path) -> Iterator[Path]:
+    """本次调用独占的 PYTHONPYCACHEPREFIX：子进程不读、不写工作树里的 __pycache__（#275）。
+    工作树里遗留的字节码不在任何 digest 里，变异 apply/revert 保持字节数且同秒完成时 CPython 会当它新鲜（原则一）。
+    每次调用新建：proof 的临时 worktree 路径跨调用复用，共用前缀会把上一次的字节码带进来。只删自己建的目录（原则三）。"""
+    base = run_dir / "tmp"
+    base.mkdir(parents=True, exist_ok=True)
+    prefix = Path(tempfile.mkdtemp(prefix="pycache-", dir=str(base)))
+    env["PYTHONPYCACHEPREFIX"] = str(prefix)
+    try:
+        yield prefix
+    finally:
+        shutil.rmtree(prefix, ignore_errors=True)
 
 
 def failure_signature(text: str, stage: str, returncode: int) -> str:
@@ -83,7 +101,7 @@ def run_preflight(ledger_path: Path, repo_root: Path) -> dict[str, Any]:
     env.update({"BUILDER_LOOP_RUN_ID": lg["run_id"], "BUILDER_LOOP_MAIN_REPO": str(repo_root), "BUILDER_LOOP_PREFLIGHT": "1"})
 
     results: list[dict[str, Any]] = []
-    with evidence.gate_lock(lg, evidence.GATE_PREFLIGHT):
+    with evidence.gate_lock(lg, evidence.GATE_PREFLIGHT), private_pycache(env, ledger_path.parent):
         base = Path(lg["repo"]["root"]).parent / f".bl-preflight-{lg['run_id']}"
         with worktree.temp_worktree(repo_root, lg["repo"]["target_start_head"], base.parent, base.name) as wt:
             env["BUILDER_LOOP_CANDIDATE"] = str(wt)
@@ -157,7 +175,7 @@ def run_machine(ledger_path: Path, repo_root: Path) -> dict[str, Any]:
 
     results: list[dict[str, Any]] = []
     failed: dict[str, Any] | None = None
-    with evidence.gate_lock(lg, evidence.GATE_MACHINE):
+    with evidence.gate_lock(lg, evidence.GATE_MACHINE), private_pycache(env, run_dir):
         for stage in stages:
             log_path = log_dir / f"iter-{it}-{stage['stage']}.log"
             rc, text, timed_out = _run_stage(wt, stage, log_path, env)

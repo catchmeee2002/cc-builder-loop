@@ -28,7 +28,7 @@ from . import contract as contract_mod
 from . import evidence, gitx, ledger as ledger_mod, worktree
 from .errors import Problem, fatal, needs_user, negative
 from .jsonutil import digest, sha256_bytes
-from .machine import failure_signature
+from .machine import failure_signature, private_pycache
 
 KIND_BASELINE = "baseline-red"
 KIND_MUTATION = "mutation"
@@ -45,7 +45,7 @@ def _spec_error(msg: str, **details: Any) -> Problem:
     return Problem("PROOF_SPEC_INVALID", msg, details=details, exit_code=1)
 
 
-# ---------------------------------------------------------------- spec 校验（tester 交卷时即可做，不依赖候选）
+# ---------------------------------------------------------------- spec 校验（tester 交卷时做；候选可读后另加 patch 预检）
 
 
 def patch_paths(patch: str) -> list[str]:
@@ -67,7 +67,43 @@ def missing_patch_groups(spec: dict[str, Any] | None) -> list[str]:
     return [g["behavior_ids"][0] for g in spec.get("groups", []) if g.get("kind") == KIND_MUTATION and not (g.get("patch") or "").strip()]
 
 
+def normalized_patch(patch: str) -> str:
+    """交卷预检与 proof ③ 段对同一份 patch 做的唯一规范化：保证末尾换行。"""
+    return patch if patch.endswith("\n") else patch + "\n"
+
+
 def validate_spec(spec: Any, lg: dict[str, Any], repo_root: Path) -> dict[str, Any]:
+    """tester 交卷时的校验：结构 + 候选可读后对 patch 的可应用性预检。
+    预检对象是 ledger 实收的那份字节，不是 tester 手边那份（#274，原则一）。"""
+    spec = check_structure(spec, lg, repo_root)
+    if lg.get("candidate") and evidence.implementation_readable_by_tester(lg):
+        _precheck_patches(spec, lg, repo_root)
+    return spec
+
+
+def _precheck_patches(spec: dict[str, Any], lg: dict[str, Any], repo_root: Path) -> None:
+    """在交卷那一刻的候选 head 上判 patch 能否打上。用临时 index，不碰候选 worktree。
+    之后 builder 再改实现导致对不上，由 proof ③ 段报 TEST_MUTATION_INVALID（owner=tester），所以 proof 入口不做这一步。"""
+    head = lg["candidate"]["head"]
+    for i, g in enumerate(spec["groups"]):
+        if g.get("kind") != KIND_MUTATION or not (g.get("patch") or "").strip():
+            continue
+        where, bid = f"groups[{i}]", g["behavior_ids"][0]
+        for p in patch_paths(g["patch"]):
+            if gitx.blob_mode(repo_root, head, p) not in ("100644", "100755"):
+                raise _spec_error(f"{where}.patch 触及候选上不存在的普通文件 {p}", group=i, behavior=bid, path=p, candidate_head=head)
+        with tempfile.TemporaryDirectory(prefix="bl-patch-check-") as td:
+            env = {"GIT_INDEX_FILE": str(Path(td) / "index")}
+            gitx.git(repo_root, "read-tree", head, env=env)
+            ap = gitx.git(repo_root, "apply", "--cached", "--check", "--whitespace=nowarn", "-", check=False,
+                          input_text=normalized_patch(g["patch"]), env=env)
+        if not ap.ok:
+            raise _spec_error(f"{where}.patch 无法应用到候选 {head[:12]}（校验的是你交上来的这份文本，不是你本地那份）：{ap.stderr.strip()[-1500:]}",
+                              group=i, behavior=bid, stderr=ap.stderr[-2000:], candidate_head=head)
+
+
+def check_structure(spec: Any, lg: dict[str, Any], repo_root: Path) -> dict[str, Any]:
+    """不依赖候选内容的校验：交卷与 proof 入口都做。"""
     if not isinstance(spec, dict) or not isinstance(spec.get("groups"), list) or not spec["groups"]:
         raise _spec_error("proof_spec 必须含非空 groups 数组")
     c = lg["contract"]
@@ -108,6 +144,12 @@ def validate_spec(spec: Any, lg: dict[str, Any], repo_root: Path) -> dict[str, A
         g["timeout"] = timeout
         if framework == "pytest":
             files = sorted({t.split("::", 1)[0] for t in tids})
+            foreign = [f for f in files if not f.endswith(".py")]
+            if foreign:
+                # tester 修不了：runner 是 loop.yml 冻结的（#265）
+                raise _spec_error(f"{where}.test_ids 不是 Python 测试文件，但 proof_runner.framework=pytest：{', '.join(foreign)}。"
+                                  "这不是你能改的——改交 status=insufficient_spec，在 notes 里写明 loop.yml 的 proof_runner 与测试语言不匹配、需要改 loop.yml",
+                                  files=foreign, framework=framework, suggested_owner="contract")
             existing = gitx.ls_tree_blobs(repo_root, tester_head, files) if tester_head else {}
             for f in files:
                 if contract_mod.path_owner(auth, f) != contract_mod.OWNER_TESTER:
@@ -117,6 +159,10 @@ def validate_spec(spec: Any, lg: dict[str, Any], repo_root: Path) -> dict[str, A
         if kind == KIND_MUTATION and (g.get("patch") or "").strip():
             if not isinstance(g["patch"], str) or not patch_paths(g["patch"]):
                 raise _spec_error(f"{where}.patch 无法识别改动路径（需要 `diff --git a/x b/x` 头）")
+            for p in patch_paths(g["patch"]):
+                reason = contract_mod.write_rejection(auth, contract_mod.OWNER_BUILDER, p)
+                if reason:
+                    raise _spec_error(f"{where}.patch 只能改 builder 拥有的文件：{p} → {reason}", behavior=bid, path=p, reason=reason)
         if kind == KIND_REVIEWED:
             rb = g.get("reviewed_boundaries")
             if not isinstance(rb, dict):
@@ -305,7 +351,7 @@ def run_proof(ledger_path: Path, repo_root: Path, spec_override: dict[str, Any] 
     spec = spec_override or lg.get("proof_spec")
     if not spec:
         raise negative("PROOF_SPEC_MISSING", "ledger 没有 proof_spec（tester 结果里应携带）")
-    spec = validate_spec(spec, lg, repo_root)
+    spec = check_structure(spec, lg, repo_root)  # patch 可应用性留给 ③ 段：那里失败归 tester（TEST_MUTATION_INVALID）
 
     cand = lg["candidate"]
     wt = Path(cand["worktree"])
@@ -335,6 +381,8 @@ def run_proof(ledger_path: Path, repo_root: Path, spec_override: dict[str, Any] 
 
     gate = evidence.gate_lock(lg, evidence.GATE_PROOF)  # 全套测试要跑好几轮，执行期间对外可见（#242）
     gate.__enter__()
+    pycache = private_pycache(env, run_dir)
+    pycache.__enter__()
     try:
         for i, g in enumerate(spec["groups"]):
             if g["kind"] == KIND_MUTATION and not (g.get("patch") or "").strip():
@@ -381,7 +429,7 @@ def run_proof(ledger_path: Path, repo_root: Path, spec_override: dict[str, Any] 
                 if gitx.blob_mode(repo_root, cand["head"], p) not in ("100644", "100755"):
                     raise _Failure("TEST_MUTATION_INVALID", f"patch 触及候选上不存在的普通文件 {p}", i, bid, path=p)
             with worktree.temp_worktree(repo_root, cand["head"], tmp_dir, f"mutation-g{i}") as tw:
-                text = g["patch"] if g["patch"].endswith("\n") else g["patch"] + "\n"
+                text = normalized_patch(g["patch"])
                 ap = gitx.git(tw, "apply", "--whitespace=nowarn", "-", check=False, input_text=text)
                 if not ap.ok:
                     raise _Failure("TEST_MUTATION_INVALID", "mutation patch 无法应用到候选", i, bid, stderr=ap.stderr[-2000:])
@@ -401,6 +449,7 @@ def run_proof(ledger_path: Path, repo_root: Path, spec_override: dict[str, Any] 
     except _Failure as exc:
         failure = exc
     finally:
+        pycache.__exit__(None, None, None)
         gate.__exit__(None, None, None)
 
     spec_digest = digest(spec)

@@ -2,6 +2,12 @@
 
 > 本文件记 **CC 版**产品线（分支 `cc/main`）。Codex 版见 `codex/main` 分支。
 
+## proof 输入在交卷时预检，执行不读工作树字节码（#274 #275 #265，2026-09-21）
+
+- **mutation patch 交卷预检（#274，并入 #271）**：tester 交卷时对 ledger 实收的 patch 查路径归属（任何一轮）、目标存在与 `git apply --check`（首次 integrate 之后，基于交卷时的候选 head、临时 index）。此前这些只在 proof ③ 段查，坏 patch 要多跑一整轮 integrate → machine → proof；现场的损坏发生在 JSON 转录，tester 本地自验的那份始终是好的。③ 段的检查保留为最终判据。
+- **私有字节码缓存（#275）**：machine / preflight / proof 的子进程使用本次调用独占的 `PYTHONPYCACHEPREFIX`。此前候选 worktree 里 run 外手工 apply/revert 留下的陈旧 `.pyc`（变异保持字节数且同秒完成）会被当成新鲜的执行，造成假红，也可能造成假绿。
+- **语言与 runner 不匹配当场打回（#265）**：`framework=pytest` 时非 `.py` 的 test_id 在交卷时报 `PROOF_SPEC_INVALID`（`suggested_owner=contract`）。Go framework 未做。
+
 ## 判据只绑真实输入，受限恢复要有出口（#258 #249 #260 #266 #269 #227，2026-09-21）
 
 - **`evidence_neutral_paths`（#258，公共契约新增）**：loop.yml 可声明判据读不到的路径（如 `docs/**`），由 start 冻结进 assurance 面并计入 digest，改动需 `contract revise --authorize`。machine / proof 的候选侧投影随之从「候选 HEAD」换成「候选全树剔除中性路径后的 `(mode, path, blob)` digest」，带 mode 所以纯 chmod 仍算变化。缺省为空时投影键名与取值逐字节不变，升级不让在跑的 run 失效。**reviewer 不豁免**——原则一要求它始终面对完整 integrated HEAD。此前只改一行 `.md` 会让 machine / proof / reviewer 全部 stale，实测重跑约 15 分钟。
