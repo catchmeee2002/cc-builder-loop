@@ -294,14 +294,24 @@ def _window(ledger: dict[str, Any]) -> dict[str, int]:
     return auths[-1]
 
 
+def max_iterations(ledger: dict[str, Any]) -> int:
+    return int(ledger["contract"]["assurance"].get("max_iterations") or ledger["loop_config"]["max_iterations"])
+
+
+def machine_failures_in_window(ledger: dict[str, Any]) -> int:
+    """迭代预算只计窗口内失败的运行（#276）：integrate / rebase / checkpoint 逼出来的重验通过了，
+    不是「反复撞墙」，不该把用户叫来授权（原则十）。machine_iter 仍按运行计，只用于日志编号。"""
+    return len(ledger["failures"]["machine"][_window(ledger)["machine_failures_index"]:])
+
+
 def blockers(ledger: dict[str, Any], states: dict[str, str]) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     if ledger.get("waiting_for_user"):
         out.append({"code": "WAITING_FOR_USER", **ledger["waiting_for_user"]})
     win = _window(ledger)
-    max_iter = ledger["contract"]["assurance"].get("max_iterations") or ledger["loop_config"]["max_iterations"]
+    max_iter = max_iterations(ledger)
     if states.get("machine") != STATE_PASS:
-        used = ledger["counters"]["machine_iter"] - win["machine_iter_at"]
+        used = machine_failures_in_window(ledger)
         if used >= max_iter:
             out.append({"code": "MAX_ITERATIONS", "used_in_window": used, "max_iterations": max_iter})
         fails = ledger["failures"]["machine"][win["machine_failures_index"]:]

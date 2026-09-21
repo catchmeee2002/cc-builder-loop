@@ -115,7 +115,7 @@ reviewer 判 pass 时给出的 `owner=tester` 的 finding 不派发（派发会�
 
 **门禁是否在跑**同样不落盘：machine / proof / preflight 执行期间各持有 `run_dir/gate-<holder>.lock` 的 flock（文件里写 pid，本进程自己持有不算）。进程死掉锁自动释放，没有残留状态要清理。同一门禁重复启动 → `GATE_BUSY`；machine / proof 遇到 preflight 在跑会排队等它（两套全量测试并发会把彼此挤成假超时），排队期间自己的锁已持有，所以 Stop 看得到它在等。
 
-**blocker** 按最近一次用户授权以来的窗口计算：`MAX_ITERATIONS`、`NO_PROGRESS`（machine 同签名 3 次）、`PROOF_STALL`（proof 同签名 3 次）、`REVIEW_CONTRACT`（reviewer 提了 owner=contract 的 blocking/major）、`WAITING_FOR_USER`。前三个激活时 `bl machine` / `bl proof` 直接 exit 3 不执行——上限是真的停止点。`bl resume --reason` 记一条 authorization，但要求 blocker 之后存在 `user_input` 事件：模型不能自己给自己授权。该事件**只由 PostToolUse(AskUserQuestion) 写入**——后台 subagent 结束时唤醒主 session 的任务通知也会触发 UserPromptSubmit，那不是真人。
+**blocker** 按最近一次用户授权以来的窗口计算：`MAX_ITERATIONS`（窗口内 machine **失败**次数达到上限；integrate / rebase / checkpoint 逼出来且通过的重验不计，原则十针对的是反复撞墙）、`NO_PROGRESS`（machine 同签名 3 次）、`PROOF_STALL`（proof 同签名 3 次）、`REVIEW_CONTRACT`（reviewer 提了 owner=contract 的 blocking/major）、`WAITING_FOR_USER`。前三个激活时 `bl machine` / `bl proof` 直接 exit 3 不执行——上限是真的停止点。`bl resume --reason` 记一条 authorization，但要求 blocker 之后存在 `user_input` 事件：模型不能自己给自己授权。该事件**只由 PostToolUse(AskUserQuestion) 写入**——后台 subagent 结束时唤醒主 session 的任务通知也会触发 UserPromptSubmit，那不是真人。
 
 ## hook 接线
 
@@ -142,7 +142,7 @@ finalize / abandon / finalize_failed 之后 session 不解绑；`start` 遇到�
 | 情况 | 行为 |
 |---|---|
 | proof_runner 跑不起来 | `bl start` 与 `contract validate --check-repo` 先让它对空目录收集一次（健康时退出码 5；`--version` 不加载插件，不算数），不过就拒绝启动（`PROOF_RUNNER_UNAVAILABLE`）——run 还不存在，改 loop.yml 不需要 revise/授权 |
-| machine FAIL 的 stage 在基线上也红 | 跑过 `bl preflight` 则 `failure.baseline_red=true` 并提示与候选无关；没跑过则提示可以补跑 |
+| machine FAIL 的 stage 在基线上也红 | 跑过 `bl preflight` 则 `failure.baseline_red=true` 并提示与候选无关；没跑过则提示可以补跑。判定取 machine 收尾时 ledger 里最新一次匹配的 preflight（排队期间写入的也算），并从其 `stages[]` 派生：超时的 stage 不算红，记为 `baseline_timed_out`（超时是没观察到结果，常见于资源争抢），preflight 结果此时为 `INCONCLUSIVE` |
 | machine FAIL | evidence fail + failures 追加；输出 `repeat_count` / `remaining_iterations` / `tester_files_mentioned`；测试写错由 builder SendMessage 给 tester |
 | pass_cmd 改了候选文件 | `failure.worktree_mutated`，视为 FAIL |
 | machine 执行期间输入投影变化（builder 并发 checkpoint / integrate、contract revise 改了 facets） | `MACHINE_INPUT_CHANGED`（negative，exit 1）：本次观察作废，不写 evidence、不追加 failures、不占 `machine_iter`，只记一条 `machine_input_changed` event，`changed_inputs` 列出变了的投影键。判据是 `evidence.input_changes`（起跑与收尾两份 ledger 的投影比较），而非 git HEAD——pass_cmd 自己 commit 造成的 HEAD 变化仍走 `worktree_mutated` |

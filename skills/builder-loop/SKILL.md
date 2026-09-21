@@ -60,7 +60,7 @@ pass_cmd:                      # 顺序执行，任一非 0 即 FAIL；至少 1 
   - stage: test
     cmd: python3 -m pytest -q tests
     timeout: 300
-max_iterations: 5              # machine 尝试上限；到达即停，续跑需用户授权
+max_iterations: 5              # machine 失败上限（通过的重验不计）；到达即停，续跑需用户授权
 proof_runner:                  # proof 用的测试命令前缀；runtime 在后面拼 test id
   framework: pytest            # pytest（读 junit 逐用例判定）| generic（只看退出码，只能做 mutation）
   cmd: "{main_repo}/.venv/bin/python -m pytest"   # 缺省 python3 -m pytest；{main_repo} 展开为主仓路径

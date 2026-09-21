@@ -110,10 +110,11 @@ def run_preflight(ledger_path: Path, repo_root: Path) -> dict[str, Any]:
                 rc, _text, timed_out = _run_stage(wt, stage, log_path, env)
                 results.append({"stage": stage["stage"], "returncode": rc, "timed_out": timed_out, "log": str(log_path)})
 
-    red = [r["stage"] for r in results if r["returncode"] != 0]
+    red = [r["stage"] for r in results if _is_red(r)]
+    timed = [r["stage"] for r in results if r["timed_out"]]
     with ledger_mod.mutate(ledger_path) as lg2:
         ledger_mod.log_event(lg2, "preflight", stages=results, commands_digest=commands_digest(stages), baseline_red=red)
-    return {"result": "RED" if red else "GREEN", "baseline_red": red, "stages": results,
+    return {"result": "RED" if red else ("INCONCLUSIVE" if timed else "GREEN"), "baseline_red": red, "baseline_timed_out": timed, "stages": results,
             "note": "基线上就失败的 stage 与候选无关：要么改 .claude/loop.yml 后 `bl contract revise --authorize`，要么本次任务本就要修好它"}
 
 
@@ -132,14 +133,41 @@ def _tester_paths_in(ledger: dict[str, Any], repo_root: Path, candidate_head: st
     return sorted(p for p in owned if p in text)
 
 
-def baseline_red(ledger: dict[str, Any]) -> list[str] | None:
-    """与当前 machine_commands 对得上的那次基线预跑里，哪些 stage 是红的；没跑过 → None。"""
-    stages = ledger["contract"]["assurance"].get("machine_commands") or []
-    want = commands_digest(stages)
+def _is_red(stage: dict[str, Any]) -> bool:
+    return stage.get("returncode") not in (0, None) and not stage.get("timed_out")
+
+
+def _latest_preflight(ledger: dict[str, Any]) -> dict[str, Any] | None:
+    want = commands_digest(ledger["contract"]["assurance"].get("machine_commands") or [])
     for ev in reversed(ledger_mod.events_of(ledger, "preflight")):
         if ev.get("commands_digest") == want:
-            return list(ev.get("baseline_red") or [])
+            return ev
     return None
+
+
+def baseline_red(ledger: dict[str, Any]) -> list[str] | None:
+    """与当前 machine_commands 对得上的最近一次基线预跑里，真正失败（非 0 且未超时）的 stage；没跑过 → None。
+    从 stages[] 派生而不读 event 的 baseline_red 字段（原则二）：旧 event 把超时也写成了红（#272）。"""
+    ev = _latest_preflight(ledger)
+    return None if ev is None else [s["stage"] for s in ev.get("stages", []) if _is_red(s)]
+
+
+def baseline_timed_out(ledger: dict[str, Any]) -> list[str] | None:
+    """同一次基线预跑里超时的 stage。超时是没观察到结果，不是观察到失败（原则一）：常见于资源争抢。"""
+    ev = _latest_preflight(ledger)
+    return None if ev is None else [s["stage"] for s in ev.get("stages", []) if s.get("timed_out")]
+
+
+def _annotate_baseline(failed: dict[str, Any], ledger: dict[str, Any]) -> None:
+    red, timed = baseline_red(ledger), baseline_timed_out(ledger)
+    if red is None:
+        failed["baseline"] = "未做基线预跑：`bl preflight` 可确认这一段是不是本来就红（后台跑，不占你的时间）"
+    elif failed.get("stage") in red:
+        failed["baseline_red"] = True
+        failed["baseline"] = "这一段在 run 起点（没有你的改动）上同样失败，多半与候选无关：要么改 .claude/loop.yml 后 `bl contract revise --authorize`，要么本次任务本就要修好它"
+    elif failed.get("stage") in (timed or []):
+        failed["baseline_timed_out"] = True
+        failed["baseline"] = "这一段在 run 起点上超时了，可能是资源争抢（有别的全量测试或重负载在跑），不能据此判定失败出在起点；需要时在本机空闲时重跑 `bl preflight`"
 
 
 def run_machine(ledger_path: Path, repo_root: Path) -> dict[str, Any]:
@@ -186,14 +214,6 @@ def run_machine(ledger_path: Path, repo_root: Path) -> dict[str, Any]:
                 failed = dict(entry, signature=failure_signature(text, stage["stage"], rc), tail=text[-4000:], tester_files_mentioned=mentioned)
                 break
 
-    red = baseline_red(lg)
-    if failed:
-        if red is None:
-            failed["baseline"] = "未做基线预跑：`bl preflight` 可确认这一段是不是本来就红（后台跑，不占你的时间）"
-        elif failed.get("stage") in red:
-            failed["baseline_red"] = True
-            failed["baseline"] = "这一段在 run 起点（没有你的改动）上同样失败，多半与候选无关：要么改 .claude/loop.yml 后 `bl contract revise --authorize`，要么本次任务本就要修好它"
-
     mutated = worktree.residue(wt)
     head_after = gitx.head(wt)
     if mutated or head_after != cand["head"]:
@@ -212,6 +232,8 @@ def run_machine(ledger_path: Path, repo_root: Path) -> dict[str, Any]:
             head_now = lg2["candidate"]["head"]
             ledger_mod.log_event(lg2, "machine_input_changed", head_at_start=cand["head"], head_now=head_now, iter=it, changed_inputs=changed)
         else:
+            if failed and failed.get("stage"):
+                _annotate_baseline(failed, lg2)  # 收尾时的 ledger：排队 / 执行期间 preflight 写下的新结论要算数（#270）
             lg2["counters"]["machine_iter"] = it
             details: dict[str, Any] = {"iter": it, "stages": results}
             if failed:
@@ -227,5 +249,5 @@ def run_machine(ledger_path: Path, repo_root: Path) -> dict[str, Any]:
         sig = failed.get("signature")
         out["failure"] = failed
         out["repeat_count"] = sum(1 for f in lg2["failures"]["machine"] if sig and f["signature"] == sig)
-        out["remaining_iterations"] = max(0, int(lg2["contract"]["assurance"].get("max_iterations", lg2["loop_config"]["max_iterations"])) - it)
+        out["remaining_iterations"] = max(0, evidence.max_iterations(lg2) - evidence.machine_failures_in_window(lg2))
     return out

@@ -139,7 +139,7 @@ def status(ledger_path: Path, repo_root: Path) -> dict[str, Any]:
         "tester": None if not tester else {**tester, "files": evidence.tester_files(lg, repo_root)},
         "agents": lg["agents"],
         "running": {role: evidence.role_running(lg, role) for role in ("tester", "reviewer")},
-        "preflight": {"baseline_red": machine.baseline_red(lg)},  # None = 没跑过
+        "preflight": {"baseline_red": machine.baseline_red(lg), "baseline_timed_out": machine.baseline_timed_out(lg)},  # None = 没跑过
         "counters": lg["counters"],
         "waiting_for_user": lg.get("waiting_for_user"),
         "readiness": evidence.readiness(lg, repo_root),

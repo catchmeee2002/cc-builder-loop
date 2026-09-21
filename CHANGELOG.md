@@ -2,6 +2,12 @@
 
 > 本文件记 **CC 版**产品线（分支 `cc/main`）。Codex 版见 `codex/main` 分支。
 
+## machine 预算只计失败，基线提示读最新且不把超时当红（#276 #270 #272，2026-09-21）
+
+- **迭代预算口径（#276）**：`MAX_ITERATIONS` 与 `remaining_iterations` 改为统计窗口内 machine 失败的次数。此前按运行次数计，integrate / rebase / checkpoint 逼出来的、已经通过的重验也占预算，并行开发下一个只失败 1 次的 run 就会触顶。`machine_iter` 仍然按运行计，只用于日志编号。
+- **基线提示读收尾时的 ledger（#270）**：此前用排队前加载的快照，读不到排队期间 preflight 写入的新结论，会给出「起点上同样失败，与你无关」的假提示。
+- **超时不算基线红（#272）**：`baseline_red` 改为从 preflight event 的 `stages[]` 派生，超时的 stage 另记为 `baseline_timed_out`，preflight 结果新增 `INCONCLUSIVE`。旧 event 同样按新规则判定。builder skill 写明门禁运行期间不要在本机另起重负载（兼 #23）。
+
 ## proof 输入在交卷时预检，执行不读工作树字节码（#274 #275 #265，2026-09-21）
 
 - **mutation patch 交卷预检（#274，并入 #271）**：tester 交卷时对 ledger 实收的 patch 查路径归属（任何一轮）、目标存在与 `git apply --check`（首次 integrate 之后，基于交卷时的候选 head、临时 index）。此前这些只在 proof ③ 段查，坏 patch 要多跑一整轮 integrate → machine → proof；现场的损坏发生在 JSON 转录，tester 本地自验的那份始终是好的。③ 段的检查保留为最终判据。
