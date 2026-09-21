@@ -34,6 +34,7 @@ links = {
     home / "skills" / "builder-loop": repo / "skills" / "builder-loop",
     home / "skills" / "file-issue": repo / "skills" / "file-issue",
     home / "bin" / "bl": repo / "bin" / "bl",
+    home / "doc-policy.md": repo / "docs" / "doc-policy.md",
 }
 for dst, src in links.items():
     dst.parent.mkdir(parents=True, exist_ok=True)

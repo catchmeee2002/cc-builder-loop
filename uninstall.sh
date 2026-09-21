@@ -19,6 +19,9 @@ for sub in ("agents", "skills", "commands", "bin", "scripts"):
             target = os.readlink(entry)
             if str(repo) in target or (not entry.exists() and "builder-loop" in target):
                 entry.unlink(); removed.append(str(entry))
+policy = home / "doc-policy.md"
+if policy.is_symlink() and str(repo) in os.readlink(policy):
+    policy.unlink(); removed.append(str(policy))
 
 settings = home / "settings.json"
 n = 0

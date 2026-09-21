@@ -32,6 +32,7 @@
 | `schema/` | contract / proof-spec / agent-result / ledger 的 JSON schema（文档级，runtime 用手写校验） |
 | `tests/` | pytest；`conftest.py` 提供临时 git 仓、CLI、hook 三个 fixture |
 | `docs/architecture.md` | 工程推导：模块边界、evidence 投影、hook 接线、失败路径 |
+| `docs/doc-policy.md` | 全局文档维护原则（install 软链到 `~/.claude/doc-policy.md`，builder / reviewer / planner 按它判断文档改动） |
 
 ## Commands
 
