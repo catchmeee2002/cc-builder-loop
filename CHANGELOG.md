@@ -2,6 +2,10 @@
 
 > 本文件记 **CC 版**产品线（分支 `cc/main`）。Codex 版见 `codex/main` 分支。
 
+## 角色结果登记的两条既有行为补上测试（#259，2026-09-22）
+
+- `hooks.py` 已交付的「同一轮 A→B→A 时第三次的 A 照常登记」与「登记成功后不合规计数清零」此前没有用例守住，现在各有测试，handback 与 stop 兜底两条来源都覆盖，并用 mutation 证明测试有鉴别力。runtime 行为不变。
+
 ## machine 预算只计失败，基线提示读最新且不把超时当红（#276 #270 #272，2026-09-21）
 
 - **迭代预算口径（#276）**：`MAX_ITERATIONS` 与 `remaining_iterations` 改为统计窗口内 machine 失败的次数。此前按运行次数计，integrate / rebase / checkpoint 逼出来的、已经通过的重验也占预算，并行开发下一个只失败 1 次的 run 就会触顶。`machine_iter` 仍然按运行计，只用于日志编号。
