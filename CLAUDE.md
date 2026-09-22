@@ -24,7 +24,7 @@
 
 | 路径 | 职责 |
 |---|---|
-| `runtime/builder_loop/` | Python runtime（stdlib only）。`ledger` 单写者 + events；`contract` 三面 digest 与**唯一的写边界判定** `write_rejection`；`brief` **角色事实的唯一来源**；`evidence` 投影 / readiness / 角色与门禁在跑的派生；`machine`（含 preflight）/ `proof` / `finalize` 三个判据事务；`run` 生命周期（含 integrate、resume）；`retro` 复盘与 cleanup；`hooks` 六个 CC hook handler；`cli` 入口 |
+| `runtime/builder_loop/` | Python runtime（stdlib only）。`ledger` 单写者 + events；`contract` 三面 digest 与**唯一的写边界判定** `write_rejection`；`brief` **角色事实的唯一来源**；`evidence` 投影 / readiness / 角色与门禁在跑的派生；`machine`（含 preflight）/ `proof` / `finalize` 三个判据事务；`run` 生命周期（含 integrate、resume、hold）；`retro` 复盘与 cleanup；`hooks` 六个 CC hook handler；`cli` 入口 |
 | `hooks/bl-hook.sh` | 唯一 hook 入口；纯 bash 快速路径——session 没绑定 run 就不起 python |
 | `bin/bl` | CLI 入口（install 软链到 `~/.claude/bin/bl`） |
 | `agents/{tester,reviewer}.md` | 角色 subagent 定义；运行时上下文由 SubagentStart hook 注入，文件本身只写硬约束 |

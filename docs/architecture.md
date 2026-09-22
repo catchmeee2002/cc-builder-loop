@@ -41,7 +41,7 @@ proof 只能证明"测试能抓住偏离当前实现"，证明不了"当前实�
 | `contract` | 标签提取、校验、三面 digest、`classify_change`、glob 匹配；**`write_rejection()` 是路径归属与保护的唯一判定入口**（checkpoint / PreToolUse / mutation patch 共用） |
 | `ledger` | schema @2 校验、mutate、events、session 指针（读后回核 owner）、`peek`（不校验 schema，给 doctor / runs / abandon 处理旧版 ledger） |
 | `worktree` | 每个 run 的 `builder/` 与 `tester/` 两个 worktree（创建失败回滚）、临时 worktree（支持叠加与删除）、身份 / clean 断言 |
-| `run` | start / status / checkpoint（分角色、`--dry-run`）/ integrate / resume / abandon / contract validate\|revise |
+| `run` | start / status / checkpoint（分角色、`--dry-run`）/ integrate / resume / hold（`--reason` / `--release`）/ abandon / contract validate\|revise |
 | `machine` | pass_cmd 三态、超时、执行后 worktree 变更检测、失败签名、`tester_files_mentioned`、基线预跑 `preflight` |
 | `evidence` | tester 文件与 integrate 需求的 git 派生、投影、`state()`、`role_running()` / `gate_running()`、blockers（授权窗口）、`readiness()` |
 | `proof` | spec 结构校验、`build_argv`、junit 解析与 id 映射、候选 / 反例判定、四步执行、失败签名 |
