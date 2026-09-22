@@ -2,6 +2,11 @@
 
 > 本文件记 **CC 版**产品线（分支 `cc/main`）。Codex 版见 `codex/main` 分支。
 
+## finalize 前的用户授权 hold，mutation 归属指向 contract（#291 #277 #286，2026-09-22）
+
+- **`bl hold` / `bl hold --release`（#291 #277，公共 CLI 新增）**：gate 全过后按用户决定暂缓 finalize，例如多会话按顺序发版时要等前面的批次发完。只在 `next_action=finalize` 时可用，并要求 gate 全过之后有 AskUserQuestion 的回答；held 期间 Stop 放行、不计 stall，`finalize` 报 `HOLD_ACTIVE`。状态从 `hold` / `hold_release` 事件派生，不新增 ledger 字段。此前三次现场都靠挂问题或手改 ledger 的 `waiting_for_user` 绕过；stall 逃生只统计一次没被打断的 Stop 链，等待期间有用户交互就会反复清零（`bl status` 是纯读的，issue 中这条归因不成立）。stall 逃生的提示也改为指向 `bl hold`。
+- **mutation patch 被 contract 层面原因拒绝时归属改为 contract（#286）**：路径因 `protected` / `outside_authority` / `control_file` 被拒时，交卷与 `bl proof` 入口的 `PROOF_SPEC_INVALID` 都带 `suggested_owner=contract`，并提示 tester 改交 `insufficient_spec`（入口已拦下这类 patch，③ 段走不到）。修复了 `a7cbeea` 把归属检查提前到交卷后带来的回归：tester 无路可走，原地重交 3 次后被记为 fail。planner skill 写明，要锁住现役行为的文件列进 `builder_write` 并由 reviewer 看住零改动，而不是列 protected。
+
 ## 删除类与文本类 behavior 的写法规则（#267 #273，2026-09-22）
 
 - **删除类（#267）**：planner skill 写明「旧测试文件被删除」不写成 behavior。它不是可观察行为，proof 构造不出反例；由 tester 的删除、integrate 与 machine 全量通过保证。此前这类 behavior 在 baseline-red 与 mutation 下都无法证明。

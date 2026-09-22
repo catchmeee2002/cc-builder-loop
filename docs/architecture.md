@@ -91,7 +91,7 @@ mutation patch 分两处检查，检查对象都是 ledger 实收的那份字节
 
 | 时机 | 检查 | 失败 |
 |---|---|---|
-| tester 交卷（任何一轮）与 proof 入口：`check_structure` | 路径 `write_rejection(…, "builder", path)` | `PROOF_SPEC_INVALID`，当场打回 |
+| tester 交卷（任何一轮）与 proof 入口：`check_structure` | 路径 `write_rejection(…, "builder", path)` | `PROOF_SPEC_INVALID`，当场打回；原因是 `protected` / `outside_authority` / `control_file` 时 details 带 `suggested_owner=contract` 并提示 tester 改交 `insufficient_spec`（contract 没把行为所在文件交给 builder，tester 改 patch 解决不了，#286）|
 | tester 交卷且首次 integrate 之后：`validate_spec` 的预检 | 目标是交卷时候选 head 上的普通文件；临时 `GIT_INDEX_FILE` 上 `git apply --cached --check`，不碰候选 worktree | `PROOF_SPEC_INVALID`，当场打回 |
 | proof ③ 段 | 上述全部 + 在临时 worktree 真实 apply、改动路径与声明一致、执行前后 diff 不变 | `TEST_MUTATION_INVALID`，owner=tester |
 
@@ -115,6 +115,8 @@ reviewer 判 pass 时给出的 `owner=tester` 的 finding 不派发（派发会�
 
 **门禁是否在跑**同样不落盘：machine / proof / preflight 执行期间各持有 `run_dir/gate-<holder>.lock` 的 flock（文件里写 pid，本进程自己持有不算）。进程死掉锁自动释放，没有残留状态要清理。同一门禁重复启动 → `GATE_BUSY`；machine / proof 遇到 preflight 在跑会排队等它（两套全量测试并发会把彼此挤成假超时），排队期间自己的锁已持有，所以 Stop 看得到它在等。
 
+**hold**（#291）：多会话按顺序发版时，finalize 的时机由外部条件决定，不由 gate 决定。`bl hold --reason` 只在 `next_action=finalize` 时可用，并要求 gate 全过（required 各项 evidence 的最大 `at`）之后有一次 AskUserQuestion 的回答，与 `resume` 同样不接受模型自授权；成功后 readiness 给 `held`，Stop 放行、`finalize` 报 `HOLD_ACTIVE`。hold 从 `hold` / `hold_release` 事件派生，不落 ledger 字段（原则五）；只在本来就是 finalize 时表现为 held，证据失效或出现 blocker 时照常给真实动作。`bl hold --release` 不需要授权，只是回到正常流程，目标分支前进了照常 `TARGET_DRIFT` → rebase。
+
 **blocker** 按最近一次用户授权以来的窗口计算：`MAX_ITERATIONS`（窗口内 machine **失败**次数达到上限；integrate / rebase / checkpoint 逼出来且通过的重验不计，原则十针对的是反复撞墙）、`NO_PROGRESS`（machine 同签名 3 次）、`PROOF_STALL`（proof 同签名 3 次）、`REVIEW_CONTRACT`（reviewer 提了 owner=contract 的 blocking/major）、`WAITING_FOR_USER`。前三个激活时 `bl machine` / `bl proof` 直接 exit 3 不执行——上限是真的停止点。`bl resume --reason` 记一条 authorization，但要求 blocker 之后存在 `user_input` 事件：模型不能自己给自己授权。该事件**只由 PostToolUse(AskUserQuestion) 写入**——后台 subagent 结束时唤醒主 session 的任务通知也会触发 UserPromptSubmit，那不是真人。
 
 ## hook 接线
@@ -122,7 +124,7 @@ reviewer 判 pass 时给出的 `owner=tester` 的 finding 不派发（派发会�
 | event | matcher | 逻辑 |
 |---|---|---|
 | SessionStart | — | 纯 bash、不起 python（每个会话都会触发）：往 `CLAUDE_ENV_FILE` 写 `export PATH=<本仓 bin>:$PATH`。CC 把它注入之后的每条 Bash，主会话与 subagent 都生效，SKILL 与 runtime 提示里的裸 `bl` 因此可直接用 |
-| Stop | — | 终态已复盘 → 解绑放行；waiting → 放行；`awaiting_*` → 放行且不计 stall；其余（含终态未复盘）→ exit 2 + next_action；`stop_hook_active` 且 seq 未变连续 3 次 → 放行并记 `stall_escape` |
+| Stop | — | 终态已复盘 → 解绑放行；waiting → 放行；`awaiting_*` 与 `held` → 放行且不计 stall；其余（含终态未复盘）→ exit 2 + next_action；`stop_hook_active` 且 seq 未变连续 3 次 → 放行并记 `stall_escape` |
 | SubagentStart | tester\|reviewer | 登记 agent_id（保留 turn；换了 agent_id 记 `role_replaced`）、记 `role_start{candidate_head}`、注入上下文（= `brief.render()`；tester 集成前后内容不同） |
 | SubagentStop | tester\|reviewer | 只认登记的 agent_id。本轮已有结论或已记 fail → 放行；本轮有 handback 尝试（没开 handback 的环境不会有）→ 不解析 `last_assistant_message`（调用方收不到，常是收尾句），只有不合规 handback 时 exit 2 要它重新 handback；本轮没有 handback → **兜底**解析 `last_assistant_message`，登记规则与 handback 相同（`via:stop`），不合规 → exit 2（与 handback 共用计数，第 3 次记 fail） |
 | PreToolUse | AskUserQuestion / EnterWorktree | 写 waiting / deny |

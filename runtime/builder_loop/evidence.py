@@ -362,7 +362,23 @@ ACTION_AWAITING_REVIEWER = "awaiting_reviewer"
 ACTION_AWAITING_GATE = "awaiting_gate"
 ACTION_FINALIZE = "finalize"
 ACTION_NEEDS_USER = "needs_user"
+ACTION_HELD = "held"
 AWAITING_ACTIONS = (ACTION_AWAITING_TESTER, ACTION_AWAITING_REVIEWER, ACTION_AWAITING_GATE)
+
+
+def hold_state(ledger: dict[str, Any]) -> dict[str, Any] | None:
+    """用户授权的「gate 全过、等外部条件再 finalize」（#291）。从 hold / hold_release 事件派生，不落 ledger 字段（原则五）。
+    只在本来就是 finalize 时才表现为 held：证据失效或出现 blocker 时 readiness 照常给真实动作。"""
+    evs = events_of(ledger, "hold", "hold_release")
+    if not evs or evs[-1]["kind"] != "hold":
+        return None
+    return {"at": evs[-1]["at"], "reason": evs[-1].get("reason", "")}
+
+
+def gates_passed_at(ledger: dict[str, Any]) -> str:
+    """required 各项 evidence 最后一次记录的时刻：hold 的授权必须晚于它（用户是在看到全绿之后做的决定）。"""
+    required = ledger["contract"]["assurance"]["required"]
+    return max(((ledger["evidence"].get(k) or {}).get("at", "") for k in required), default="")
 
 
 def missing_patch(ledger: dict[str, Any]) -> bool:
@@ -451,7 +467,7 @@ def readiness(ledger: dict[str, Any], repo_root: Path) -> dict[str, Any]:
         # 对称于 tester 的 `elif tester_run`——那条同样不看 tester 自己的 state
         action = ACTION_AWAITING_REVIEWER
     else:
-        action = ACTION_FINALIZE
+        action = ACTION_HELD if hold_state(ledger) else ACTION_FINALIZE
 
     gate = gate_running(ledger)
     if gate == action:  # 要跑的门禁已经在跑（多半是后台 Bash）：等它，别再催一遍（#242）

@@ -71,5 +71,6 @@ tester 在 run 起点的冻结基线上**盲写测试，看不到实现**。它�
 - 文档随交付走：任务会改变对外行为 / 契约 / 导航，或本身就要探查未知的平台行为 / 外部约束时，把会受影响的文档容器（CLAUDE.md、README、`docs/` 下对应文件）字面列进 `builder_write`，具体哪些按 `~/.claude/doc-policy.md` 判断（只关乎 AI 协作的坑归 memory，不是列 CLAUDE.md 的理由）。列进写边界只是授权，改不改仍由 builder 按 doc-policy §0 判断，不找补。漏列的代价是 run 内打断用户授权、已有 evidence 全部重跑。纯内部重构不触及文档面，不列。
 - `proof` 依赖 `tester`；`machine_commands` 与 `proof_runner` 不写（start 时从 `.claude/loop.yml` 冻结）；方案新增或依赖 loop.yml 里的 machine stage 时，把 stage 名写进 `assurance.machine_stages`（只写名字），start 会校验它们都在；`target_branch` 省略 = 当前分支。
 - 项目没有 `.claude/loop.yml` → 先跑 builder-loop 接入向导。
+- 要锁住「现役行为不变」的文件不列进 `protected_paths`：mutation 证明必须改它，而 patch 只能改 builder 拥有的文件；把它字面列进 `builder_write`，并在 `review_focus` 里要求候选对它零改动。
 
 同一 run 内改 contract：mission 变 → `revision` +1；写边界扩大、保护集缩小、判据减弱都需要用户确认（`bl contract revise --plan <path> --authorize`）。run 内不能增删 tester gate。

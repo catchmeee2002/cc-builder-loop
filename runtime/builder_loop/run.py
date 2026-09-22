@@ -142,6 +142,7 @@ def status(ledger_path: Path, repo_root: Path) -> dict[str, Any]:
         "preflight": {"baseline_red": machine.baseline_red(lg), "baseline_timed_out": machine.baseline_timed_out(lg)},  # None = 没跑过
         "counters": lg["counters"],
         "waiting_for_user": lg.get("waiting_for_user"),
+        "hold": evidence.hold_state(lg),
         "readiness": evidence.readiness(lg, repo_root),
     }
 
@@ -277,6 +278,32 @@ def resume(ledger_path: Path, repo_root: Path, reason: str) -> dict[str, Any]:
         ledger_mod.log_event(lg, "resume", reason=reason, blockers=auth["blockers"])
         readiness = evidence.readiness(lg, repo_root)
     return {"authorized": auth, "readiness": readiness}
+
+
+def hold(ledger_path: Path, repo_root: Path, reason: str, *, release: bool = False) -> dict[str, Any]:
+    """gate 全过后按用户决定暂缓 finalize（多会话顺序发版：合入时机由发版顺序决定，不由 gate 决定，#291）。
+    hold 需要用户授权（同 resume：gate 全过之后要有一次 AskUserQuestion 的回答）；release 不需要，它只是回到正常流程。"""
+    if not release and not reason.strip():
+        raise fatal("REASON_REQUIRED", "hold 必须给出 --reason（用户为什么要等、等什么）")
+    with ledger_mod.mutate(ledger_path) as lg:
+        if ledger_mod.is_terminal(lg):
+            raise fatal("RUN_TERMINAL", "run 已到终态", terminal=lg["terminal"])
+        if release:
+            if not evidence.hold_state(lg):
+                raise negative("NOTHING_TO_RELEASE", "当前没有 hold")
+            ledger_mod.log_event(lg, "hold_release")
+        else:
+            act = evidence.readiness(lg, repo_root)["next_action"]
+            if act == evidence.ACTION_HELD:
+                raise negative("ALREADY_HELD", "已经在 hold 中", hold=evidence.hold_state(lg))
+            if act != evidence.ACTION_FINALIZE:
+                raise negative("HOLD_NOT_READY", "只有四项 evidence 全过、等 finalize 时才能 hold", next_action=act)
+            since = evidence.gates_passed_at(lg)
+            if not any(e["at"] >= since and e.get("source") == "AskUserQuestion" for e in ledger_mod.events_of(lg, "user_input")):
+                raise needs_user("USER_DECISION_REQUIRED", "gate 全过之后还没有用户输入；先用 AskUserQuestion 让用户决定是否暂缓合入")
+            ledger_mod.log_event(lg, "hold", reason=reason)
+        readiness = evidence.readiness(lg, repo_root)
+    return {"hold": evidence.hold_state(lg), "readiness": readiness}
 
 
 def _blocked_since(lg: dict[str, Any]) -> str:

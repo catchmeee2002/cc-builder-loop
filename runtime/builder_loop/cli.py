@@ -74,6 +74,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("integrate", help="把 tester 分支的测试按路径叠进候选"); add_locators(sp)
     sp = sub.add_parser("resume", help="用户授权后解除迭代上限 / 无进展 blocker"); add_locators(sp)
     sp.add_argument("--reason", required=True)
+    sp = sub.add_parser("hold", help="gate 全过后按用户决定暂缓 finalize；--release 解除"); add_locators(sp)
+    sp.add_argument("--reason", default="")
+    sp.add_argument("--release", action="store_true")
     rt = sub.add_parser("retro", help="终态复盘"); add_locators(rt)
     rts = rt.add_subparsers(dest="retro_cmd", required=True)
     r1 = rts.add_parser("signals"); add_locators(r1, nested=True)
@@ -134,6 +137,9 @@ def dispatch(args: argparse.Namespace) -> tuple[Any, int]:
     if cmd == "integrate":
         lp, root = _locate(args)
         return run_mod.integrate(lp, root), EXIT_OK
+    if cmd == "hold":
+        lp, root = _locate(args)
+        return run_mod.hold(lp, root, args.reason, release=args.release), EXIT_OK
     if cmd == "resume":
         lp, root = _locate(args)
         return run_mod.resume(lp, root, args.reason), EXIT_OK

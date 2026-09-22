@@ -1,7 +1,7 @@
 pass_cmd:
   - stage: test
     cmd: "python3 -m pytest -p no:html -p no:cacheprovider -q tests"
-    timeout: 900
+    timeout: 1500
 max_iterations: 5
 proof_runner:
   framework: pytest

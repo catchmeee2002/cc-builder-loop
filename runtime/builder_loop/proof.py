@@ -37,6 +37,8 @@ DEFAULT_TIMEOUT = 300
 PYTEST_NO_TESTS_COLLECTED = 5
 MAX_TIMEOUT = 1800
 TESTER_OWNED_FAILURES = ("TEST_BASELINE_RED_NOT_PROVEN", "TEST_MUTATION_SURVIVED", "TEST_MUTATION_INVALID", "TEST_MUTATION_PATCH_MISSING", "TEST_PROOF_NOT_EXECUTED")
+# patch 路径被这几类原因拒绝时，是 contract 没把要破坏的行为所在文件交给 builder：tester 改 patch 解决不了（#286）
+CONTRACT_REJECTIONS = ("protected", "outside_authority", "control_file")
 # 失败归谁修。缺省 builder（实现没让测试过）；runner 起不来两个角色都改不了，归 contract → 改 loop.yml
 OWNER_BY_FAILURE = {**{c: "tester" for c in TESTER_OWNED_FAILURES}, "TEST_PROOF_RUNNER_FAILED": "contract"}
 
@@ -162,6 +164,10 @@ def check_structure(spec: Any, lg: dict[str, Any], repo_root: Path) -> dict[str,
             for p in patch_paths(g["patch"]):
                 reason = contract_mod.write_rejection(auth, contract_mod.OWNER_BUILDER, p)
                 if reason:
+                    if reason in CONTRACT_REJECTIONS:
+                        raise _spec_error(f"{where}.patch 只能改 builder 拥有的文件：{p} → {reason}。这不是你能改的：contract 没把这个行为所在的文件交给 builder——"
+                                          "改交 status=insufficient_spec，在 notes 里写明需要把该文件列进 builder_write（并由 reviewer 看住零改动）",
+                                          behavior=bid, path=p, reason=reason, suggested_owner="contract")
                     raise _spec_error(f"{where}.patch 只能改 builder 拥有的文件：{p} → {reason}", behavior=bid, path=p, reason=reason)
         if kind == KIND_REVIEWED:
             rb = g.get("reviewed_boundaries")

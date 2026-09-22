@@ -19,7 +19,7 @@ tester 看不到实现是刻意的：看着实现写的测试只能证明"实现
                           → tester 补 mutation patch → proof → reviewer → finalize → 复盘
 ```
 
-Builder 只需跟着 `bl status` 的 `next_action` 走；Stop hook 会在 run 未完成时把会话拉回来，等用户或等后台 subagent 时放行。迭代上限与"同一失败三次"是真的停止点，续跑需要一次被记录的用户决定（`bl resume`）；reviewer 要求改契约、目标分支漂移冲突同样以 AskUserQuestion 交还用户。
+Builder 只需跟着 `bl status` 的 `next_action` 走；Stop hook 会在 run 未完成时把会话拉回来，等用户或等后台 subagent 时放行。迭代上限与"同一失败三次"是真的停止点，续跑需要一次被记录的用户决定（`bl resume`）；reviewer 要求改契约、目标分支漂移冲突同样以 AskUserQuestion 交还用户。gate 全过但要按外部条件（例如发版顺序）延后合入时，经用户确认后 `bl hold --reason` 暂缓 finalize，`bl hold --release` 解除。
 
 ## 安装
 

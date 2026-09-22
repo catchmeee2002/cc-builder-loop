@@ -32,7 +32,8 @@ builder-loop 只负责判据和 Git 事务；调度 subagent、续接、问用�
 | `proof` | `bl proof`。FAIL 看 `failure.suggested_owner`：`tester` → resume_tester；`builder` → 修实现；`contract` → 判据本身跑不起来（如 proof_runner 与项目的 venv 不匹配），改 `.claude/loop.yml` 后 `bl contract revise --authorize`。`PROOF_INPUT_CHANGED`（exit 1）同 machine：跑的过程中输入变了，作废，直接重跑 |
 | `spawn_reviewer` | `Agent(subagent_type: "reviewer", prompt: "builder-loop run <run_id>，按注入的 brief 审查")`，然后结束这一轮等它交卷（`awaiting_reviewer`） |
 | `resume_reviewer` | 按 owner=builder 的 findings 修 → checkpoint → machine → proof → `SendMessage` 给 reviewer，正文用 `briefs.resume_reviewer` |
-| `finalize` | `bl finalize -m "type(scope): [cr_id_skip] Desc"`。`TARGET_DRIFT` → `bl rebase`（冲突在候选 worktree 里解，`git rebase --continue` 后再 `bl rebase`）→ 全部重验 |
+| `finalize` | `bl finalize -m "type(scope): [cr_id_skip] Desc"`。`TARGET_DRIFT` → `bl rebase`（冲突在候选 worktree 里解，`git rebase --continue` 后再 `bl rebase`）→ 全部重验。合入时机由外部条件决定（例如多会话按顺序发版，要等前面的批次发完）→ AskUserQuestion 让用户确认要等，再 `bl hold --reason "<等什么>"` |
+| `held` | 已按用户决定暂缓 finalize，Stop 放行，直接结束这一轮。外部条件满足（用户或集成方通知）后 `bl hold --release`，再按 `next_action` 走（目标分支前进了会报 `TARGET_DRIFT`，照常 rebase 重验） |
 | `needs_user` | 看 `blockers`。上限 / 无进展 / proof 反复同样失败：AskUserQuestion 让用户决定；用户说继续 → `bl resume --reason "<用户的原话或决定>"`（runtime 会核实 blocker 之后确有用户输入，你自己决定的不算）；放弃 → `bl abandon --reason`。`REVIEW_CONTRACT` → 需要改目标 / 写边界 / 验收标准，走 contract revise |
 | `retro` | 见下一节 |
 | `done` | 汇报 |

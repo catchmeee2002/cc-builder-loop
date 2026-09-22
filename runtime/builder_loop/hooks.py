@@ -197,7 +197,8 @@ ACTION_HINTS = {
     evidence.ACTION_PROOF: "运行 `bl proof --session <session>`",
     evidence.ACTION_SPAWN_REVIEWER: "spawn reviewer（Agent subagent_type=reviewer，prompt 只需给 run_id）",
     evidence.ACTION_RESUME_REVIEWER: "修复后重新 checkpoint / machine / proof，再 SendMessage 续接已登记的 reviewer 复审",
-    evidence.ACTION_FINALIZE: "运行 `bl finalize --session <session> -m '<commit message>'`",
+    evidence.ACTION_FINALIZE: "运行 `bl finalize --session <session> -m '<commit message>'`；用户决定等外部条件（如发版顺序）再合入 → `bl hold --session <session> --reason '<等什么>'`",
+    evidence.ACTION_HELD: "已按用户决定暂缓 finalize；外部条件满足后 `bl hold --session <session> --release` 再 finalize",
     evidence.ACTION_NEEDS_USER: "存在 blocker：用 AskUserQuestion 让用户决定；继续则 `bl resume --session <session> --reason '<用户的决定>'`，放弃则 `bl abandon --reason`",
     evidence.ACTION_RETRO: "run 已结束但还没复盘：`bl retro signals --session <session>` 看信号，逐条给去向后 `bl retro record --session <session> --file <json>`",
 }
@@ -229,11 +230,14 @@ def handle_stop(ev: dict[str, Any], bound: dict[str, Any]) -> HookReturn:
     act = readiness["next_action"]
     if act in evidence.AWAITING_ACTIONS:
         return _silent()  # 后台 subagent 结束时主 session 会被唤醒；这期间拉回只会产生无进展往返（#228）
+    if act == evidence.ACTION_HELD:
+        return _silent()  # 用户授权的等待：合入时机由外部条件决定，不是没有进展（#291）
 
     with ledger_mod.mutate(lp) as lg2:
         stalled = _stall_tick(lg2, ev)
     if stalled:
-        return ("", f"[builder-loop] run {lg['run_id']} 连续 {STALL_LIMIT} 次 Stop 之间没有任何 runtime 进展，停止续接；请用 AskUserQuestion 让用户决定。\n"), 0
+        return ("", f"[builder-loop] run {lg['run_id']} 连续 {STALL_LIMIT} 次 Stop 之间没有任何 runtime 进展，停止续接；请用 AskUserQuestion 让用户决定。"
+                    f"若 gate 已全过、是按用户决定等外部条件再合入，用 `bl hold --reason` 记录，Stop 会放行。\n"), 0
 
     hint = ACTION_HINTS.get(act, "").replace("<session>", str(sid))
     head = "已结束但尚未复盘，不能就此收工" if act == evidence.ACTION_RETRO else "未完成，不能结束"
