@@ -48,7 +48,10 @@ def _tester_todo(lg: dict[str, Any], repo_root: Path) -> list[dict[str, Any]]:
         groups = [g["behavior_ids"][0] for g in (lg.get("proof_spec") or {}).get("groups", [])
                   if g.get("kind") == "mutation" and not (g.get("patch") or "").strip()]
         todo.append({"what": "add_mutation_patch", "behaviors": groups,
-                     "why": "这些 mutation 组还缺 patch：候选实现现在可读了，补一段只破坏该 behavior 的 unified diff，然后把完整 proof_spec 重新交一遍"})
+                     "why": "这些 mutation 组还缺 patch：候选实现现在可读了，补一段只破坏该 behavior 的 unified diff，然后把完整 proof_spec 重新交一遍。"
+                            "生成 patch 时不要改候选 worktree 里的文件，也不要在里面跑命令：在你的 worktree 之外建一个临时目录并 git init，"
+                            "用 git show <候选分支>:<路径> 按原相对路径取出文件并提交，改完后 git diff 即得 patch。",
+                     "candidate_branch": lg["candidate"]["branch"]})
 
     proof_rec = lg["evidence"].get("proof") or {}
     failure = (proof_rec.get("details") or {}).get("failure") or {}

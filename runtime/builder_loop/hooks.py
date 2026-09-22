@@ -390,6 +390,17 @@ def _under(path: str, root: str) -> bool:
     return real == base or real.startswith(base.rstrip("/") + "/")
 
 
+def _mentions_path(cmd: str, root: str) -> bool:
+    """命令串里出现 root：原样、realpath，或某个路径样的词经 `..` 归一后落在 root 下。只做路径子串判断，不解析命令语义。"""
+    if root in cmd or os.path.realpath(root) in cmd:
+        return True
+    for word in cmd.replace("=", " ").split():
+        word = word.strip("'\"")
+        if "/" in word and word.startswith(("/", "~")) and _under(os.path.expanduser(word), root):
+            return True
+    return False
+
+
 def _guard_tester(ev: dict[str, Any], lg: dict[str, Any]) -> str | None:
     tool, ti = ev.get("tool_name"), (ev.get("tool_input") or {})
     t, cand = lg.get("tester") or {}, lg["candidate"]
@@ -403,6 +414,14 @@ def _guard_tester(ev: dict[str, Any], lg: dict[str, Any]) -> str | None:
         rel = os.path.relpath(os.path.realpath(path), os.path.realpath(t["worktree"]))
         reason = contract_mod.write_rejection(auth, contract_mod.OWNER_TESTER, rel)
         return f"tester 不能写 {rel}（{reason}）；写边界 tester_write={auth['tester_write']}" if reason else None
+    if tool == "Bash":
+        cmd = str(ti.get("command") or "")
+        if _mentions_path(cmd, cand["worktree"]):
+            # 集成后读候选走 Read / Grep / Glob 或 `git show <分支>:<路径>`；在候选里改文件或跑命令会污染 builder 的现场（#234 #275）
+            return "tester 的命令不能触及候选 worktree：读候选用 Read / Grep / Glob；生成 patch 按 brief 的办法用 git show 取出到临时目录"
+        if blind and cand["branch"] in cmd:
+            return "集成之前 tester 的命令不能触及候选 worktree 或候选分支"
+        return None
     if not blind:
         return None
     if tool == "Read":
@@ -413,10 +432,6 @@ def _guard_tester(ev: dict[str, Any], lg: dict[str, Any]) -> str | None:
         if not path:
             return f"请显式给出 path（你的 worktree：{t.get('worktree')}）；缺省目录可能落到候选实现上"
         return "集成之前 tester 不能搜索候选实现" if _under(str(path), cand["worktree"]) else None
-    if tool == "Bash":
-        cmd = str(ti.get("command") or "")
-        if cand["worktree"] in cmd or os.path.realpath(cand["worktree"]) in cmd or cand["branch"] in cmd:
-            return "集成之前 tester 的命令不能触及候选 worktree 或候选分支"
     return None
 
 
@@ -434,6 +449,9 @@ def handle_pre_tool_use(ev: dict[str, Any], bound: dict[str, Any]) -> HookReturn
         reg = lg["agents"].get(role) or {}
         if reg.get("agent_id") == ev.get("agent_id"):
             evidence.touch_heartbeat(lg, role)  # 续租只碰心跳文件，不写 ledger
+        if tool == "Bash" and (ev.get("tool_input") or {}).get("run_in_background"):
+            # 角色的后台进程活过交卷，结束时的任务通知会把它反复唤醒（#283）；只看结构化字段，不解析命令
+            return _deny("角色不能用 run_in_background 起后台任务：交卷后它会把你反复唤醒。需要跑久的命令就前台执行并给足 timeout，只跑与你的结论有关的测试文件")
         if role == "reviewer":
             return _deny("reviewer 只读，不允许写文件") if tool in WRITE_TOOLS else _silent()
         reason = _guard_tester(ev, lg)

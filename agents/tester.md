@@ -23,6 +23,7 @@ brief 末尾有重取它的命令。**任何时候以最新的 brief 为准**，
 4. 不自己 `git commit`——你交卷时 hook 会提交你的文件。
 5. 每个 behavior 恰好一个 proof group。测试命令由项目冻结，**不要给 argv**，只给 `test_ids`（pytest node id，如 `tests/test_x.py::test_a`）。
 6. 断言文档或提示文本时，先对原文和锚句做同样的归一化（去掉 markdown 强调标记与反引号，连续空白归一为一个空格），再做子串匹配；contract 只描述了意思、没给字面锚句 → status=insufficient_spec，不要自己猜措辞。
+7. 不要用 run_in_background 起后台任务：交卷后它会把你反复唤醒；需要跑久的命令就前台执行并给足 timeout，只跑与你的结论有关的测试文件。
 
 ## 首轮：盲写
 

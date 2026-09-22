@@ -2,6 +2,11 @@
 
 > 本文件记 **CC 版**产品线（分支 `cc/main`）。Codex 版见 `codex/main` 分支。
 
+## 角色不起后台任务、不碰候选 worktree（#283 #234，2026-09-22）
+
+- **角色的后台 Bash 被拒（#283）**：tester / reviewer 调用 Bash 时带 `run_in_background: true`，PreToolUse 直接拒绝（CC 2.1.278 探针确认 subagent 的 tool_input 带这个字段）。此前角色审查时在后台起全量测试，交卷后被自己的后台任务反复唤醒，挂成「半死不活」的 subagent（一个 session 里出现 4 次，最久 22 小时），retro 还把这些唤醒计成「被续接」；有一次 reviewer 用 `pkill` 按模式清理，可能误杀别的 session 的进程。两份 agent 定义也写明了这条约束。
+- **tester 的命令集成后仍不能触及候选 worktree（#234）**：此前集成后 Bash 不受限，tester 会直接在候选里改代码生成 mutation patch，这正是 #275 陈旧 `.pyc` 的来源形态。现在路径判断覆盖原样、realpath 与 `..` 归一；读候选走 Read / Grep / Glob，取文件走 `git show <候选分支>:<路径>`。brief 的 `add_mutation_patch` 待办写明在临时目录里生成 patch 的办法，并给出候选分支名。
+
 ## finalize 前的用户授权 hold，mutation 归属指向 contract（#291 #277 #286，2026-09-22）
 
 - **`bl hold` / `bl hold --release`（#291 #277，公共 CLI 新增）**：gate 全过后按用户决定暂缓 finalize，例如多会话按顺序发版时要等前面的批次发完。只在 `next_action=finalize` 时可用，并要求 gate 全过之后有 AskUserQuestion 的回答；held 期间 Stop 放行、不计 stall，`finalize` 报 `HOLD_ACTIVE`。状态从 `hold` / `hold_release` 事件派生，不新增 ledger 字段。此前三次现场都靠挂问题或手改 ledger 的 `waiting_for_user` 绕过；stall 逃生只统计一次没被打断的 Stop 链，等待期间有用户交互就会反复清零（`bl status` 是纯读的，issue 中这条归因不成立）。stall 逃生的提示也改为指向 `bl hold`。
