@@ -37,7 +37,7 @@
 ## Commands
 
 ```bash
-python3 -m pytest -p no:html -p no:cacheprovider -q tests   # 全量测试（本机 pytest-html 插件损坏，必须 -p no:html）
+python3 -m pytest -p no:html -p no:cacheprovider -q -n 16 tests   # 全量测试，并行需 pytest-xdist（串行要 17 分钟）；本机 pytest-html 插件损坏，必须 -p no:html
 ./install.sh                                                # 软链 + 注册 10 条 hook（幂等，会清旧版断链）
 bl doctor                                                   # hook / 软链 / 孤儿 session 诊断
 ```

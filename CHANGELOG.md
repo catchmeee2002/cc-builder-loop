@@ -2,6 +2,11 @@
 
 > 本文件记 **CC 版**产品线（分支 `cc/main`）。Codex 版见 `codex/main` 分支。
 
+## 本仓测试套件并行执行（#284，2026-09-22）
+
+- **machine 的 test stage 改为 `pytest -n 16`，超时 600s**：串行全量已涨到 1019s（303 个用例，低负载），超时一路从 600s 调到 900s 再到 1500s；并行后 310 个用例 64–133s，实测 4 次全部通过。依赖 pytest-xdist。
+- **#284 的拆解结论**：私有 `PYTHONPYCACHEPREFIX` 的冷编译确实让测试慢约 25%（同一批 proof 相关测试 191s 对 144s）：fixture 设了 `PYTHONDONTWRITEBYTECODE=1`，加上前缀后每个子进程都要重编标准库。但在真实 run 里每个 proof 组只多约 0.5s，可以忽略；「不读工作树遗留字节码」是证据的前提（原则一），所以不动，大头在串行执行。
+
 ## 角色不起后台任务、不碰候选 worktree（#283 #234，2026-09-22）
 
 - **角色的后台 Bash 被拒（#283）**：tester / reviewer 调用 Bash 时带 `run_in_background: true`，PreToolUse 直接拒绝（CC 2.1.278 探针确认 subagent 的 tool_input 带这个字段）。此前角色审查时在后台起全量测试，交卷后被自己的后台任务反复唤醒，挂成「半死不活」的 subagent（一个 session 里出现 4 次，最久 22 小时），retro 还把这些唤醒计成「被续接」；有一次 reviewer 用 `pkill` 按模式清理，可能误杀别的 session 的进程。两份 agent 定义也写明了这条约束。
