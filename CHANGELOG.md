@@ -2,6 +2,11 @@
 
 > 本文件记 **CC 版**产品线（分支 `cc/main`）。Codex 版见 `codex/main` 分支。
 
+## 删除类与文本类 behavior 的写法规则（#267 #273，2026-09-22）
+
+- **删除类（#267）**：planner skill 写明「旧测试文件被删除」不写成 behavior。它不是可观察行为，proof 构造不出反例；由 tester 的删除、integrate 与 machine 全量通过保证。此前这类 behavior 在 baseline-red 与 mutation 下都无法证明。
+- **文本类（#273）**：planner skill 要求在 `then` 里冻结字面锚句及其位置；`agents/tester.md` 硬约束第 6 条规定，断言前对原文与锚句做同样的归一化（去强调标记与反引号、合并空白），没有锚句就交 `insufficient_spec`。此前 contract 只写意思，tester 猜关键词，实现换个说法或 `**` 把连续文字隔开，测试就会红。
+
 ## 角色结果登记的两条既有行为补上测试（#259，2026-09-22）
 
 - `hooks.py` 已交付的「同一轮 A→B→A 时第三次的 A 照常登记」与「登记成功后不合规计数清零」此前没有用例守住，现在各有测试，handback 与 stop 兜底两条来源都覆盖，并用 mutation 证明测试有鉴别力。runtime 行为不变。

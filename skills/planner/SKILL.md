@@ -37,7 +37,9 @@ tester 在 run 起点的冻结基线上**盲写测试，看不到实现**。它�
 - 新接口的签名写进 `interfaces`（`路径::函数(参数:类型) -> 返回`），tester 据此 import。
 - 外部依赖怎么 mock 写进 `mock_strategy`。
 
-**删除 / 移除类任务**：behavior 写成「X 不再存在 / 调用 X 得到 Y 错误」，tester 会据此删掉旧测试并写负向测试。旧测试归 tester，不要为了让 builder 能删它而把测试路径划进 `builder_write`。
+**删除 / 移除类任务**：behavior 写成「X 不再存在 / 调用 X 得到 Y 错误」，tester 会据此删掉旧测试并写负向测试。旧测试归 tester，不要为了让 builder 能删它而把测试路径划进 `builder_write`。「旧测试文件被删除」不写成 behavior：它不是可观察行为，proof 也构造不出反例；tester 删除旧测试、integrate 把删除带进候选、machine 全量通过，已经保证了这一点。
+
+**文本类任务**：文本本身就是交付物的 behavior（文档、prompt、提示语要让读者知道某件事），在 then 里冻结要验证的字面锚句，并写明它在哪个文件的哪一节；tester 按这句原文断言，实现逐字写入这句原文。
 
 ## 方案文件结构
 
