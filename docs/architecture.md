@@ -85,7 +85,7 @@ rebase 改的是 `repo.target_start_head` 与候选 HEAD；`tester.base` 不动�
 
 pytest 框架下结论取自 junit xml：候选阶段要求 rc==0 且每个声明 id 都匹配到用例并全部 passed（skipped / xfail / 未执行都不算）；反例阶段要求 rc==1、全场无 `<error>`、声明 id 里至少一个 `<failure>`。判据只取 junit 的结构位，不看失败信息的文本：`<error>` 是 setup / teardown / collection 出错，测试没跑起来，没有鉴别力；`<failure>` 是 call 阶段失败，测试跑到了且被破坏的实现让它红了，`KeyError`、解包错与 `AssertionError` 同等算数（原则四；#114 与 #255 是同一判据两个方向的误判）。`<error>` 查全场而非只查声明 id——collection 错误可能挂在别的 node 上。代价是「patch 破坏得太狠、测试在函数体内 import 失败」会算作反例成立，由 `TEST_MUTATION_INVALID` 的 patch 约束与 reviewer 兜底。id 映射用 classname 后缀匹配（monorepo 子目录自带 ini 时 rootdir 会变），不带 `[` 的 id 匹配全部参数实例。generic 框架只看退出码，只能做 mutation。
 
-每个 behavior 的 proof 下限写在 contract（缺省 strong）；`reviewed-boundaries` 必须在该 behavior 上显式放行。
+每个 behavior 的 proof 下限写在 contract（缺省 strong）；`reviewed-boundaries` 必须在该 behavior 上显式放行。反例阶段另记 `counterexample.per_id`：每条声明 id 是 `red`（自己在 call 阶段失败过）/ `green`（跑了没红）/ `missing`（没跑到）。通过条件不变（组内有一条红即可），但 green / missing 的那些没有被证明有鉴别力——reviewer 的 brief 会点名它们，用来发现「断言条件在本设计下恒真」的空壳边界（#285，原则一）。
 
 mutation patch 分两处检查，检查对象都是 ledger 实收的那份字节（`normalized_patch` 是两处共用的唯一规范化）：
 

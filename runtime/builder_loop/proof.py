@@ -285,6 +285,20 @@ def judge_candidate(framework: str, rc: int, cases: list[dict[str, str]], test_i
     return {"ok": ok, "per_id": per_id, "reason": None if ok else "声明的用例没有全部 passed（skipped / xfail / 未执行都不算）"}
 
 
+def discrimination(cases: list[dict[str, str]], test_ids: list[str]) -> dict[str, str]:
+    """反例下每条声明 id 的鉴别力：red = 它自己在 call 阶段失败过；green = 跑了但没红；missing = 没跑到。
+    组内只要有一条红就算证明成立，所以 green / missing 的那些是搭了便车——可能断言的条件在本设计下恒真（#285）。
+    只看 junit 的结构位，与 classify_counterexample 同源；generic 框架没有 junit，调用方不记这一项。"""
+    out: dict[str, str] = {}
+    for t in test_ids:
+        matched = match_cases(t, cases)
+        if not matched:
+            out[t] = "missing"
+        else:
+            out[t] = "red" if any(c["outcome"] == "failure" for c in matched) else "green"
+    return out
+
+
 def classify_counterexample(framework: str, rc: int, cases: list[dict[str, str]], test_ids: list[str]) -> str:
     """pass / assertion-failure / error。判据取 junit 的结构位，不看失败信息的文本（原则四；#114 #255
     是同一判据两个方向的误判）：<error> 是 setup / teardown / collection 出错，测试根本没跑起来，没有
@@ -423,7 +437,7 @@ def run_proof(ledger_path: Path, repo_root: Path, spec_override: dict[str, Any] 
                 with worktree.temp_worktree(repo_root, lg["repo"]["target_start_head"], tmp_dir, f"baseline-g{i}", overlay=overlay) as tw:
                     rc, out, cases, log = execute(tw, g, "baseline", i)
                 cls = classify_counterexample(framework, rc, cases, g["test_ids"])
-                groups_out[i]["counterexample"] = {"kind": KIND_BASELINE, "returncode": rc, "classification": cls, "log": str(log)}
+                groups_out[i]["counterexample"] = {"kind": KIND_BASELINE, "returncode": rc, "classification": cls, "log": str(log), "per_id": (discrimination(cases, g["test_ids"]) if framework == "pytest" else {})}
                 if cls != "assertion-failure":
                     raise _Failure("TEST_BASELINE_RED_NOT_PROVEN", "起点 + 你的测试没有在 call 阶段失败（pass=测试没约束行为；error=测试根本没跑起来，多半是依赖了起点上不存在的接口导致收集失败，请改用 mutation）", i, bid, classification=cls, returncode=rc, log=str(log), tail=out[-3000:])
                 continue
@@ -449,7 +463,7 @@ def run_proof(ledger_path: Path, repo_root: Path, spec_override: dict[str, Any] 
                 if after != before or gitx.head(tw) != cand["head"] or extra:
                     raise _Failure("TEST_MUTATION_INVALID", "执行期间 mutation 现场被改动", i, bid, extra_paths=extra)
             cls = classify_counterexample(framework, rc, cases, g["test_ids"])
-            groups_out[i]["counterexample"] = {"kind": KIND_MUTATION, "returncode": rc, "classification": cls, "log": str(log), "patch_sha256": sha256_bytes(g["patch"].encode()), "patch_paths": ppaths}
+            groups_out[i]["counterexample"] = {"kind": KIND_MUTATION, "returncode": rc, "classification": cls, "log": str(log), "patch_sha256": sha256_bytes(g["patch"].encode()), "patch_paths": ppaths, "per_id": (discrimination(cases, g["test_ids"]) if framework == "pytest" else {})}
             if cls != "assertion-failure":
                 raise _Failure("TEST_MUTATION_SURVIVED", "破坏实现后测试没有在 call 阶段失败（pass=测试没约束该行为；error=测试根本没跑起来，收集或 setup 阶段就出错）", i, bid, classification=cls, returncode=rc, log=str(log), tail=out[-3000:])
     except _Failure as exc:

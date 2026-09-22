@@ -77,6 +77,23 @@ def _tester_todo(lg: dict[str, Any], repo_root: Path) -> list[dict[str, Any]]:
     return todo
 
 
+UNDISCRIMINATED_HINT = ("下面这些 test_id 在反例下从未变红：它们没有被证明有鉴别力，可能是断言的条件在本设计下恒真。"
+                        "逐条判断它是真的在约束 behavior，还是搭了同组其它测试的便车。")
+
+
+def _undiscriminated(lg: dict[str, Any]) -> list[dict[str, str]]:
+    """proof 证据里在反例下没红过的声明 id（#285）。只读 evidence，不另算一份事实（原则二）；
+    旧 evidence 没有 per_id 就当没有这类信息。reviewed-boundaries 组不跑反例，不在此列。"""
+    groups = ((lg["evidence"].get("proof") or {}).get("details") or {}).get("groups", [])
+    out: list[dict[str, str]] = []
+    for g in groups:
+        ce = g.get("counterexample") or {}
+        for tid, verdict in (ce.get("per_id") or {}).items():
+            if verdict != "red":
+                out.append({"behavior_id": g.get("behavior_id", ""), "test_id": tid, "counterexample": verdict})
+    return out
+
+
 def _reviewer_todo(lg: dict[str, Any]) -> list[dict[str, Any]]:
     rec = lg["evidence"].get("reviewer") or {}
     if not rec:
@@ -166,6 +183,7 @@ def build(lg: dict[str, Any], repo_root: Path, role: str) -> dict[str, Any]:
         out["review_focus"] = s.get("review_focus", [])
         out["todo"] = _reviewer_todo(lg)
         out["doc_reference_hints"] = _doc_reference_hints(lg)
+        out["undiscriminated"] = _undiscriminated(lg)
         out["result_format"] = REVIEWER_RESULT_FORMAT
     return out
 
@@ -225,6 +243,10 @@ def render(brief: dict[str, Any]) -> str:
             "只读审查，不修改任何文件。",
         ]
 
+    if brief.get("undiscriminated"):
+        lines.append(UNDISCRIMINATED_HINT)
+        for u in brief["undiscriminated"]:
+            lines.append(f"  - {u['behavior_id']}: {u['test_id']}（反例下 {u['counterexample']}）")
     lines.append("等你做的事（这就是全部；这里没有的事不做）:")
     if brief["todo"]:
         for t in brief["todo"]:
