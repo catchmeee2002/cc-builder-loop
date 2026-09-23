@@ -39,7 +39,7 @@ Stop hook：run 未终态 → 拦住并给出 `next_action`；等待用户（Ask
 | `bl brief --role tester\|reviewer [--json]` | 角色视角的当前事实与待办；角色自取，是它的唯一来源 | 0 |
 | `bl resume --reason R` | 用户授权后解除上限 / 无进展 / proof 反复失败（blocker 之后必须有过用户输入） | 0 / 1 / 3 |
 | `bl finalize [-m] [--run-commit-hook]` | CAS 写回目标分支 | 0 / 1（未就绪 / DRIFT / dirty 重叠） |
-| `bl rebase` | 目标分支前进后把候选 rebase 上去（tester 分支不动） | 0 / 1 冲突 |
+| `bl rebase` | 目标分支前进后把候选 rebase 上去；漂移触及 tester 改过的文件时 tester 分支也跟着 rebase（`tester_rebase.status`，冲突交 tester 解） | 0 / 1 冲突（候选或 tester 任一） |
 | `bl contract validate --plan P [--check-repo]` / `revise --plan P [--authorize]` | 校验 / 同 run 改 contract | 0 / 1 / 3 需授权 |
 | `bl abandon --reason R` | 终止，保留 worktree；仍需复盘 | 0 |
 | `bl retro signals` / `bl retro record --file F \| --no-incident` | 终态复盘 | 0 / 1 |

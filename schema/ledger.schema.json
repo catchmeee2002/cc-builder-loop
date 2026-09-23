@@ -255,7 +255,7 @@
         "object",
         "null"
       ],
-      "description": "tester worktree。base 不可变（= start 时的目标 HEAD），分支永不 rebase；测试文件集合 = git diff base..head",
+      "description": "tester worktree。base 起始 = start 时的目标 HEAD；只有目标分支漂移触及 tester 文件时 bl rebase 才把分支 rebase 到 target_start_head 并更新 base / head；测试文件集合 = git diff base..head",
       "properties": {
         "branch": {
           "type": "string"
