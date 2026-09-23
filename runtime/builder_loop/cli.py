@@ -197,7 +197,8 @@ def dispatch(args: argparse.Namespace) -> tuple[Any, int]:
 
         lp, root = _locate(args)
         out = rebase_candidate(lp, root)
-        return out, (EXIT_OK if not out.get("conflicts") else 1)
+        conflicted = out.get("conflicts") or (out.get("tester_rebase") or {}).get("status") == "conflict"
+        return out, (1 if conflicted else EXIT_OK)
     if cmd == "abandon":
         lp, _ = _locate(args)
         return run_mod.abandon(lp, args.reason), EXIT_OK

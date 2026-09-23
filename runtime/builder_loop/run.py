@@ -11,7 +11,7 @@ from typing import Any
 from . import __version__
 from . import contract as contract_mod
 from . import evidence, gitx, ledger as ledger_mod, machine, proof, worktree
-from .config import load_loop_config
+from .config import load_loop_config, load_loop_config_at
 from .errors import Problem, fatal, needs_user, negative
 
 ROLE_BUILDER = "builder"
@@ -180,6 +180,15 @@ def checkpoint(ledger_path: Path, repo_root: Path, role: str, message: str | Non
     lg = ledger_mod.load(ledger_path)
     if ledger_mod.is_terminal(lg):
         raise fatal("RUN_TERMINAL", "run 已到终态", terminal=lg["terminal"])
+    if role == ROLE_TESTER and not dry_run:
+        from .finalize import sync_tester_rebase
+
+        # tester 解完 runtime 起的 rebase 冲突后直接交卷：先采纳它 rebase 出来的 HEAD，再做身份校验（#298）
+        tr = sync_tester_rebase(ledger_path, repo_root, start=False)
+        if tr["status"] == "conflict":
+            raise negative("TESTER_REBASE_IN_PROGRESS", "tester worktree 里的 rebase 还没完成：解完冲突、`git add` 后 `git -c core.editor=true rebase --continue`，再交卷", paths=tr["paths"])
+        if tr["status"] == "rebased":
+            lg = ledger_mod.load(ledger_path)
     wt, branch, head, label = _role_worktree(lg, role)
     worktree.assert_identity(wt, branch, head, label)
 
@@ -228,6 +237,10 @@ def integrate(ledger_path: Path, repo_root: Path) -> dict[str, Any]:
         raise fatal("TESTER_NOT_REQUIRED", "本 run 没有 tester")
     if evidence.state(lg, "tester", repo_root) != evidence.STATE_PASS:
         raise negative("INTEGRATE_PREREQ_TESTER", "tester evidence 不是 fresh pass，不能集成", state=evidence.state(lg, "tester", repo_root))
+    drift = evidence.tester_drift_overlap(lg, repo_root)
+    if drift:
+        # 目标分支改过 tester 的这些文件，而 tester 分支还在旧基线上：按路径叠加会抹掉目标分支的改动（#298）
+        raise negative("INTEGRATE_TESTER_BASE_STALE", "tester 分支落后于目标分支，且目标分支改过它的测试文件；先 `bl rebase` 把 tester 分支挪过去（冲突由 tester 解）", paths=drift)
     if not evidence.needs_integrate(lg, repo_root):
         return {"noop": True, "head": lg["candidate"]["head"], "readiness": evidence.readiness(lg, repo_root)}
 
@@ -281,8 +294,10 @@ def resume(ledger_path: Path, repo_root: Path, reason: str) -> dict[str, Any]:
 
 
 def hold(ledger_path: Path, repo_root: Path, reason: str, *, release: bool = False) -> dict[str, Any]:
-    """gate 全过后按用户决定暂缓 finalize（多会话顺序发版：合入时机由发版顺序决定，不由 gate 决定，#291）。
-    hold 需要用户授权（同 resume：gate 全过之后要有一次 AskUserQuestion 的回答）；release 不需要，它只是回到正常流程。"""
+    """按用户决定暂缓合入（多会话顺序发版：合入时机由发版顺序决定，不由 gate 决定，#291）。
+    本 run 的 gate 全过过一次就能 hold，不要求此刻全绿：rebase 之后、重验之前集成方要的正是「先别重验」（#299）。
+    hold 不削弱判据——finalize 仍只认四项 fresh pass。授权：锚点（gate 首次全过 / 最近一次 release）之后要有一次
+    AskUserQuestion 的回答；release 不需要授权，它只是回到正常流程。"""
     if not release and not reason.strip():
         raise fatal("REASON_REQUIRED", "hold 必须给出 --reason（用户为什么要等、等什么）")
     with ledger_mod.mutate(ledger_path) as lg:
@@ -293,14 +308,14 @@ def hold(ledger_path: Path, repo_root: Path, reason: str, *, release: bool = Fal
                 raise negative("NOTHING_TO_RELEASE", "当前没有 hold")
             ledger_mod.log_event(lg, "hold_release")
         else:
-            act = evidence.readiness(lg, repo_root)["next_action"]
-            if act == evidence.ACTION_HELD:
+            if evidence.hold_state(lg):
                 raise negative("ALREADY_HELD", "已经在 hold 中", hold=evidence.hold_state(lg))
-            if act != evidence.ACTION_FINALIZE:
-                raise negative("HOLD_NOT_READY", "只有四项 evidence 全过、等 finalize 时才能 hold", next_action=act)
-            since = evidence.gates_passed_at(lg)
+            since = evidence.hold_anchor(lg, repo_root)
+            if since is None:
+                raise negative("HOLD_NOT_READY", "本 run 的 gate 还没有全部通过过；hold 用于 gate 全过之后按外部顺序延后合入",
+                               next_action=evidence.readiness(lg, repo_root)["next_action"])
             if not any(e["at"] >= since and e.get("source") == "AskUserQuestion" for e in ledger_mod.events_of(lg, "user_input")):
-                raise needs_user("USER_DECISION_REQUIRED", "gate 全过之后还没有用户输入；先用 AskUserQuestion 让用户决定是否暂缓合入")
+                raise needs_user("USER_DECISION_REQUIRED", "gate 全过（或上次 release）之后还没有用户输入；先用 AskUserQuestion 让用户决定是否暂缓合入")
             ledger_mod.log_event(lg, "hold", reason=reason)
         readiness = evidence.readiness(lg, repo_root)
     return {"hold": evidence.hold_state(lg), "readiness": readiness}
@@ -391,7 +406,10 @@ def contract_revise(ledger_path: Path, repo_root: Path, plan_path: Path, authori
     old = {k: lg["contract"][k] for k in contract_mod.FACETS}
     new = contract_mod.parse_contract_file(plan_path)
     new["authority"]["target_branch"] = lg["repo"]["target_branch"]
-    new = contract_mod.freeze_assurance(new, load_loop_config(repo_root))
+    # run 内改判据参数只有一个家：候选 HEAD 里已提交的 loop.yml（它就是随交付进目标分支的那份，#282）。
+    # 项目不跟踪 loop.yml 时候选里没有它，才退回主仓工作区（与 start 同源）
+    cfg = load_loop_config_at(repo_root, lg["candidate"]["head"]) if lg["candidate"].get("head") else None
+    new = contract_mod.freeze_assurance(new, cfg or load_loop_config(repo_root))
     if ("tester" in new["assurance"]["required"]) != bool(lg.get("tester")):
         raise fatal("TESTER_REQUIREMENT_FIXED", "run 内不能增删 tester gate（涉及 worktree 布局）；abandon 后用新 contract 重新 start")
     changes = contract_mod.classify_change(old, new)

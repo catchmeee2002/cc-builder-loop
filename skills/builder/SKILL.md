@@ -7,7 +7,7 @@ description: "进入 Builder 模式：读方案、启动 builder-loop run、在�
 
 # Builder
 
-builder-loop 只负责判据和 Git 事务；调度 subagent、续接、问用户是你的事。**ledger 只能通过 `bl` 改**：不要手工 `git commit`（用 `checkpoint`）、不要 `EnterWorktree`、不要改 `.claude/loop.yml`、不要碰测试文件（那是 tester 的地盘）。
+builder-loop 只负责判据和 Git 事务；调度 subagent、续接、问用户是你的事。**ledger 只能通过 `bl` 改**：不要手工 `git commit`（用 `checkpoint`）、不要 `EnterWorktree`、不要改主仓的 `.claude/loop.yml`、不要碰测试文件（那是 tester 的地盘）。run 内要改判据参数，只改候选里那份 loop.yml（contract 的 `builder_write` 要字面列出它）→ checkpoint → `bl contract revise --authorize`：revise 读的是候选 HEAD 里已提交的那份，它也就是随交付合入的那份。
 
 ## 1. 启动
 
@@ -27,13 +27,14 @@ builder-loop 只负责判据和 Git 事务；调度 subagent、续接、问用�
 | `checkpoint` | 实现完成 → `bl checkpoint --role builder`。动手前想知道哪些路径会越界：`--dry-run`。被拒说明碰了不属于你的路径：测试问题交给 tester；确属本任务的实现文件 → 改 plan 的 authority，AskUserQuestion 得到同意后 `bl contract revise --plan <plan> --authorize` |
 | `awaiting_tester` / `awaiting_reviewer` / `awaiting_gate` | 对应 agent 或门禁（后台的 machine / proof）正在跑。没有别的事就**直接结束这一轮**——它结束时你会被唤醒，Stop hook 此时放行。不要空转、不要重复 spawn / 重复启动 |
 | `integrate` | `bl integrate`：把 tester 的测试并入候选 |
-| `machine` | `bl machine`（耗时长就 `run_in_background`，Stop 会放行）。FAIL → 先看 `failure.baseline_red`：为真说明这一段在起点上同样失败，与你无关，改 loop.yml 走 contract revise；`failure.baseline_timed_out` 为真只说明起点上这一段超时了，不能据此判定与你无关。否则 Read `failure.log`：实现的错 → 修 → checkpoint；`failure.tester_files_mentioned` 非空且你判断是**测试写错了** → 你改不了测试，转交 tester。`MACHINE_INPUT_CHANGED`（exit 1）= 跑的过程中输入变了（你 checkpoint、integrate 或 contract revise），这次观察作废、不计失败，直接重跑 |
+| `machine` | `bl machine`（耗时长就 `run_in_background`，Stop 会放行）。FAIL → 先看 `failure.baseline_red`：为真说明这一段在起点上同样失败，与你无关，改候选里的 loop.yml 走 contract revise；`failure.baseline_timed_out` 为真只说明起点上这一段超时了，不能据此判定与你无关。否则 Read `failure.log`：实现的错 → 修 → checkpoint；`failure.tester_files_mentioned` 非空且你判断是**测试写错了** → 你改不了测试，转交 tester。`MACHINE_INPUT_CHANGED`（exit 1）= 跑的过程中输入变了（你 checkpoint、integrate 或 contract revise），这次观察作废、不计失败，直接重跑 |
 | `resume_tester` | `SendMessage` 续接 tester（`status.agents.tester.agent_id`），正文直接用 `bl status` 的 `briefs.resume_tester`——**它只是门铃**，事实由 tester 自己 `bl brief` 取。你不需要在消息里复述候选路径、写边界或失败日志；要补充上下文（比如你的判断）可以附在门铃后面，但别指望它照做 brief 里没有的事 |
-| `proof` | `bl proof`。FAIL 看 `failure.suggested_owner`：`tester` → resume_tester；`builder` → 修实现；`contract` → 判据本身跑不起来（如 proof_runner 与项目的 venv 不匹配），改 `.claude/loop.yml` 后 `bl contract revise --authorize`。`PROOF_INPUT_CHANGED`（exit 1）同 machine：跑的过程中输入变了，作废，直接重跑 |
+| `proof` | `bl proof`。FAIL 看 `failure.suggested_owner`：`tester` → resume_tester；`builder` → 修实现；`contract` → 判据本身跑不起来（如 proof_runner 与项目的 venv 不匹配），改候选里的 `.claude/loop.yml` 并 checkpoint 后 `bl contract revise --authorize`。`PROOF_INPUT_CHANGED`（exit 1）同 machine：跑的过程中输入变了，作废，直接重跑 |
 | `spawn_reviewer` | `Agent(subagent_type: "reviewer", prompt: "builder-loop run <run_id>，按注入的 brief 审查")`，然后结束这一轮等它交卷（`awaiting_reviewer`） |
 | `resume_reviewer` | 按 owner=builder 的 findings 修 → checkpoint → machine → proof → `SendMessage` 给 reviewer，正文用 `briefs.resume_reviewer` |
-| `finalize` | `bl finalize -m "type(scope): [cr_id_skip] Desc"`。`TARGET_DRIFT` → `bl rebase`（冲突在候选 worktree 里解，`git rebase --continue` 后再 `bl rebase`）→ 全部重验。合入时机由外部条件决定（例如多会话按顺序发版，要等前面的批次发完）→ AskUserQuestion 让用户确认要等，再 `bl hold --reason "<等什么>"` |
-| `held` | 已按用户决定暂缓 finalize，Stop 放行，直接结束这一轮。外部条件满足（用户或集成方通知）后 `bl hold --release`，再按 `next_action` 走（目标分支前进了会报 `TARGET_DRIFT`，照常 rebase 重验） |
+| `finalize` | `bl finalize -m "type(scope): [cr_id_skip] Desc"`。`TARGET_DRIFT` → `bl rebase`（冲突在候选 worktree 里解，`git rebase --continue` 后再 `bl rebase`）→ 全部重验。合入时机由外部条件决定（例如多会话按顺序发版，要等前面的批次发完）→ AskUserQuestion 让用户确认要等，再 `bl hold --reason "<等什么>"`。gate 全过过一次之后，rebase 后重验途中也可以 hold；本 run 内 gate 首次全过（或上次 release）之后用户已经就合入时机回答过，就不必再问 |
+| `held` | 已按用户决定暂缓合入，Stop 放行，直接结束这一轮（期间不必重验）。外部条件满足（用户或集成方通知）后 `bl hold --release`，再按 `next_action` 走（目标分支前进了会报 `TARGET_DRIFT`，照常 rebase 重验） |
+| `rebase` | 目标分支改过 tester 的测试文件，而 tester 分支还在旧基线上：`bl rebase`。输出的 `tester_rebase.status` 为 `conflict` 时续接 tester 去解，它交卷后再 `bl rebase`；为 `deferred` 时等 tester 交卷后再跑 |
 | `needs_user` | 看 `blockers`。上限 / 无进展 / proof 反复同样失败：AskUserQuestion 让用户决定；用户说继续 → `bl resume --reason "<用户的原话或决定>"`（runtime 会核实 blocker 之后确有用户输入，你自己决定的不算）；放弃 → `bl abandon --reason`。`REVIEW_CONTRACT` → 需要改目标 / 写边界 / 验收标准，走 contract revise |
 | `retro` | 见下一节 |
 | `done` | 汇报 |

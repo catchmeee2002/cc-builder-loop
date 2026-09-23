@@ -25,7 +25,7 @@ from . import contract as contract_mod
 from . import gitx
 from .errors import negative
 from .jsonutil import digest
-from .ledger import EVIDENCE_KINDS, events_of, now_iso, run_dir
+from .ledger import EVIDENCE_KINDS, events_of, log_event, now_iso, run_dir
 
 STATE_MISSING = "missing"
 STATE_PASS = "pass"
@@ -83,6 +83,20 @@ def needs_integrate(ledger: dict[str, Any], repo_root: Path) -> bool:
     want.update({p: None for p in files["deleted"]})
     have = _blobs(repo_root, ledger["candidate"].get("head"), paths)
     return any(want.get(p) != have.get(p) for p in paths)
+
+
+def tester_drift_overlap(ledger: dict[str, Any], repo_root: Path) -> list[str]:
+    """目标分支在 tester.base 之后改过、tester 也改过的路径（#298）。非空 = tester 的测试相对一个过期基线定义：
+    此时按路径叠加会用旧基线的整文件抹掉目标分支的改动，必须先把 tester 分支 rebase 到 target_start_head。"""
+    t = ledger.get("tester")
+    onto = ledger["repo"]["target_start_head"]
+    if not t or not t.get("base") or t["base"] == onto:
+        return []
+    files = tester_files(ledger, repo_root)
+    mine = set(files["present"] + files["deleted"])
+    if not mine:
+        return []
+    return sorted(mine.intersection(gitx.changed_paths(repo_root, t["base"], onto)))
 
 
 # ---------------------------------------------------------------- 投影 / 状态
@@ -168,6 +182,11 @@ def record(ledger: dict[str, Any], kind: str, status: str, details: dict[str, An
     }
     ledger["evidence"][kind] = rec
     rec["dependency_digest"] = dependency_digest(ledger, kind, repo_root)
+    if status == "pass" and not events_of(ledger, "gates_passed"):
+        required = ledger["contract"]["assurance"]["required"]
+        if all(state(ledger, k, repo_root) == STATE_PASS for k in required):
+            # hold 的授权锚点要用「gate 首次全过」：之后的 rebase 会让 evidence 重记，最后一次记录的时刻不再代表它（#299）
+            log_event(ledger, "gates_passed")
     return rec
 
 
@@ -363,27 +382,45 @@ ACTION_AWAITING_GATE = "awaiting_gate"
 ACTION_FINALIZE = "finalize"
 ACTION_NEEDS_USER = "needs_user"
 ACTION_HELD = "held"
+ACTION_REBASE = "rebase"
 AWAITING_ACTIONS = (ACTION_AWAITING_TESTER, ACTION_AWAITING_REVIEWER, ACTION_AWAITING_GATE)
 
 
 def hold_state(ledger: dict[str, Any]) -> dict[str, Any] | None:
-    """用户授权的「gate 全过、等外部条件再 finalize」（#291）。从 hold / hold_release 事件派生，不落 ledger 字段（原则五）。
-    只在本来就是 finalize 时才表现为 held：证据失效或出现 blocker 时 readiness 照常给真实动作。"""
+    """用户授权的「按外部顺序延后合入」（#291）。从 hold / hold_release 事件派生，不落 ledger 字段（原则五）。
+    生效期间、只要候选在 hold 之后没再变，readiness 就是 held（证据 stale 也一样：集成方要的就是「先别重验」，#299）；
+    finalize 仍只认四项 fresh pass。"""
     evs = events_of(ledger, "hold", "hold_release")
     if not evs or evs[-1]["kind"] != "hold":
         return None
     return {"at": evs[-1]["at"], "reason": evs[-1].get("reason", "")}
 
 
-def gates_passed_at(ledger: dict[str, Any]) -> str:
-    """required 各项 evidence 最后一次记录的时刻：hold 的授权必须晚于它（用户是在看到全绿之后做的决定）。"""
-    required = ledger["contract"]["assurance"]["required"]
-    return max(((ledger["evidence"].get(k) or {}).get("at", "") for k in required), default="")
+def hold_anchor(ledger: dict[str, Any], repo_root: Path) -> str | None:
+    """hold 的授权锚点 = max(gate 首次全过, 最近一次 hold_release)；gate 从未全过 → None（#299）。
+    rebase 后重新全绿不重置锚点：用户在这一轮基线内已经就合入时机做过决定。"""
+    first = events_of(ledger, "gates_passed")
+    if first:
+        passed = first[0]["at"]
+    else:
+        # 该事件引入之前开始的 run：此刻全绿就以最后一次记录为准（旧行为）
+        required = ledger["contract"]["assurance"]["required"]
+        if not all(state(ledger, k, repo_root) == STATE_PASS for k in required):
+            return None
+        passed = max(((ledger["evidence"].get(k) or {}).get("at", "") for k in required), default="")
+    released = [e["at"] for e in events_of(ledger, "hold_release")]
+    return max([passed, *released])
 
 
 def missing_patch(ledger: dict[str, Any]) -> bool:
     groups = (ledger.get("proof_spec") or {}).get("groups", [])
     return any(g.get("kind") == "mutation" and not (g.get("patch") or "").strip() for g in groups)
+
+
+def tester_rebase_conflicted(ledger: dict[str, Any]) -> bool:
+    """tester worktree 里停着 runtime 起的、有冲突的 rebase。"""
+    t = ledger.get("tester")
+    return bool(t) and gitx.rebase_in_progress(Path(t["worktree"]))
 
 
 def _first_integrate_at(ledger: dict[str, Any]) -> str:
@@ -408,7 +445,8 @@ def readiness(ledger: dict[str, Any], repo_root: Path) -> dict[str, Any]:
     has_builder_cp = any(cp.get("role") == "builder" for cp in ledger["candidate"]["checkpoints"])
     tester_run = "tester" in required and role_running(ledger, "tester")
     tester_known = bool(ledger["agents"].get("tester"))
-    integrate_needed = "tester" in required and states["tester"] == STATE_PASS and needs_integrate(ledger, repo_root)
+    drift = tester_drift_overlap(ledger, repo_root) if "tester" in required else []
+    integrate_needed = not drift and "tester" in required and states["tester"] == STATE_PASS and needs_integrate(ledger, repo_root)
 
     def tester_action() -> str:
         if tester_run:
@@ -419,6 +457,14 @@ def readiness(ledger: dict[str, Any], repo_root: Path) -> dict[str, Any]:
         action = ACTION_DONE if ledger.get("retrospective") else ACTION_RETRO
     elif found:
         action = ACTION_NEEDS_USER
+    elif drift:
+        # tester 分支还在旧基线上而目标分支改过它的文件（#298）：先把它 rebase 过去，冲突归 tester 解
+        if tester_run:
+            action = ACTION_AWAITING_TESTER
+        elif tester_rebase_conflicted(ledger):
+            action = ACTION_RESUME_TESTER
+        else:
+            action = ACTION_REBASE
     elif "tester" in required and states["tester"] != STATE_PASS and not tester_run:
         action = tester_action()  # 先把 tester 放出去（后台），builder 再干自己的活
     elif not has_builder_cp:
@@ -467,11 +513,17 @@ def readiness(ledger: dict[str, Any], repo_root: Path) -> dict[str, Any]:
         # 对称于 tester 的 `elif tester_run`——那条同样不看 tester 自己的 state
         action = ACTION_AWAITING_REVIEWER
     else:
-        action = ACTION_HELD if hold_state(ledger) else ACTION_FINALIZE
+        action = ACTION_FINALIZE
+    held = hold_state(ledger)
+    if held and action not in (ACTION_DONE, ACTION_RETRO, ACTION_NEEDS_USER) \
+            and (action == ACTION_FINALIZE or not any(cp["at"] > held["at"] for cp in ledger["candidate"]["checkpoints"])):
+        # hold 冻结的是「此刻的候选先别动、先别重验」（#299）：hold 之后候选又变了（builder 自己 checkpoint），
+        # 说明工作已经恢复，照常给真实动作；等到重新全绿、本该 finalize 时再表现为 held
+        action = ACTION_HELD
 
     gate = gate_running(ledger)
     if gate == action:  # 要跑的门禁已经在跑（多半是后台 Bash）：等它，别再催一遍（#242）
         action = ACTION_AWAITING_GATE
 
     return {"required": required, "states": states, "next_action": action, "blockers": found,
-            "integrate_needed": integrate_needed, "gate_running": gate}
+            "integrate_needed": integrate_needed, "tester_drift": drift, "gate_running": gate}

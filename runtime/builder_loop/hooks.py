@@ -198,7 +198,8 @@ ACTION_HINTS = {
     evidence.ACTION_SPAWN_REVIEWER: "spawn reviewer（Agent subagent_type=reviewer，prompt 只需给 run_id）",
     evidence.ACTION_RESUME_REVIEWER: "修复后重新 checkpoint / machine / proof，再 SendMessage 续接已登记的 reviewer 复审",
     evidence.ACTION_FINALIZE: "运行 `bl finalize --session <session> -m '<commit message>'`；用户决定等外部条件（如发版顺序）再合入 → `bl hold --session <session> --reason '<等什么>'`",
-    evidence.ACTION_HELD: "已按用户决定暂缓 finalize；外部条件满足后 `bl hold --session <session> --release` 再 finalize",
+    evidence.ACTION_HELD: "已按用户决定暂缓合入（期间不必重验）；外部条件满足后 `bl hold --session <session> --release`，再按 next_action 走",
+    evidence.ACTION_REBASE: "目标分支改过 tester 的测试文件而 tester 分支还在旧基线上：运行 `bl rebase --session <session>` 把它挪过去（冲突会交给 tester 解）",
     evidence.ACTION_NEEDS_USER: "存在 blocker：用 AskUserQuestion 让用户决定；继续则 `bl resume --session <session> --reason '<用户的决定>'`，放弃则 `bl abandon --reason`",
     evidence.ACTION_RETRO: "run 已结束但还没复盘：`bl retro signals --session <session>` 看信号，逐条给去向后 `bl retro record --session <session> --file <json>`",
 }

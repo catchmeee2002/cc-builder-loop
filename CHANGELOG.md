@@ -2,6 +2,14 @@
 
 > 本文件记 **CC 版**产品线（分支 `cc/main`）。Codex 版见 `codex/main` 分支。
 
+## 目标分支漂移时不丢改动、复审有的放矢、可以按外部顺序暂停（#298 #280 #299 #282，2026-09-23）
+
+- **tester 分支跟着 rebase（#298）**：目标分支改过 tester 改过的测试文件时，`bl rebase` 在候选之后把 tester 分支也 rebase 过去（输出 `tester_rebase.status`：`not_needed` / `rebased` / `conflict` / `deferred`）；零冲突时重叠文件内容变了，tester evidence 变为 stale，续接 tester 确认（brief 待办 `confirm_rebased_tests`）；冲突时 rebase 停在 tester worktree 里由 tester 解（待办 `resolve_rebase_conflict`）。只要 tester 分支还落后且有重叠，`bl integrate` 就报 `INTEGRATE_TESTER_BASE_STALE`，readiness 新增 `rebase` 动作。此前 tester 分支永远停在 run 起点，rebase 后 integrate 用旧基线的整文件覆盖候选，静默抹掉了目标分支对同一测试文件的 33 行改动。漂移不碰 tester 文件时 tester 分支照旧不动。
+- **候选 rebase 冲突解完后可以续上**：冲突时记一条 intent 事件，`git rebase --continue` 之后再 `bl rebase` 按 intent 采纳新 HEAD。此前文档写的这条流程会报 `WORKTREE_HEAD_MISMATCH`（没有测试覆盖到解完冲突这一步）。候选里 tester 拥有的文件冲突时直接取目标分支一侧继续：它们只是 integrate 派生的副本，真正的合并交给 tester 分支，builder 也无权写它们。
+- **reviewer 复审看漂入变更（#280）**：reviewer evidence 仍随候选 HEAD 作废（原则一不放宽）；brief 新增 `target_drift`（漂入的提交与路径、与候选改动相交的路径、patch 是否未变），审查清单加第 7 条，设计哲学原则一补一句「复审对象是漂入的变更与候选的交互；patch 未变不构成沿用依据」。此前两轮复审都只比了 patch 就沿用结论，漂入的提交没人看。
+- **hold 在重验途中也能用（#299）**：本 run 的 gate 全过过一次就能 hold，不要求此刻全绿；授权锚点改为 max(gate 首次全过, 最近一次 release)，rebase 后重新全绿不再要求重问；hold 之后候选没再变就一直给 `held`（证据 stale 也一样）。finalize 仍只认四项 fresh pass。
+- **run 内的判据参数只有一个家（#282）**：`contract revise` 从候选 HEAD 读 `.claude/loop.yml`，只改候选一份、checkpoint 后 revise 即可，finalize 不再因主仓那份报 `DIRTY_OVERLAP`；不跟踪 loop.yml 的项目行为不变。
+
 ## proof 逐条报告测试的鉴别力（#285，2026-09-23）
 
 - **`counterexample.per_id`**：反例阶段为每条声明 test_id 记 `red` / `green` / `missing`；reviewer 的 brief 列出从未变红的那些，`agents/reviewer.md` 审查清单增加对应的固定项。此前鉴别力按**组**判定，组内有一条红就算证明成立，一条在被测设计下恒真的边界所对应的测试从未红过也从未被提出来，带着四道门禁的背书上线并造成生产缺陷（#285）。

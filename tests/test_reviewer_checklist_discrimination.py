@@ -46,9 +46,11 @@ def test_discrimination_guidance_lives_inside_checklist_section_not_elsewhere():
 
 
 def test_checklist_keeps_existing_six_items():
+    # rebase-integrate-evidence run（B11）往清单里加了第 7 条（目标分支漂移的复审提醒）；这里只断言
+    # 原有 6 条都还在，不再断言恰好 6 条——新增条目不是删减，不该被这条测试拦住。
     section = _checklist_section()
     numbered = re.findall(r"^\d+\.", section, flags=re.MULTILINE)
-    assert len(numbered) == 6
+    assert len(numbered) >= 6
     assert "mutation patch 是否真的破坏了对应 behavior" in section
 
 

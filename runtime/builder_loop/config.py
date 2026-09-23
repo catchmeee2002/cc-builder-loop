@@ -6,14 +6,15 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
+import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from .errors import fatal
-from .jsonutil import sha256_file
 
 LOOP_YML = Path(".claude") / "loop.yml"
 DEFAULT_MAX_ITERATIONS = 5
@@ -217,7 +218,10 @@ def parse_yaml_subset(text: str) -> Any:
 
 
 def load_yaml(path: Path) -> Any:
-    text = path.read_text(encoding="utf-8")
+    return load_yaml_text(path.read_text(encoding="utf-8"))
+
+
+def load_yaml_text(text: str) -> Any:
     try:
         import yaml  # type: ignore
 
@@ -233,16 +237,30 @@ def load_loop_config(repo_root: Path) -> LoopConfig:
     path = repo_root / LOOP_YML
     if not path.is_file():
         raise fatal("CONFIG_MISSING", f"缺少 {LOOP_YML}；先运行接入向导生成", path=str(path))
+    return _parse_loop_config(path.read_bytes(), str(path))
+
+
+def load_loop_config_at(repo_root: Path, commit: str) -> LoopConfig | None:
+    """某个提交里跟踪的 loop.yml；该提交没有跟踪它时返回 None（项目不把 loop.yml 纳入版本控制）。"""
+    from . import gitx
+
+    if not gitx.ls_tree_blobs(repo_root, commit, [LOOP_YML.as_posix()]):
+        return None
+    r = subprocess.run(["git", "cat-file", "blob", f"{commit}:{LOOP_YML.as_posix()}"], cwd=str(repo_root), capture_output=True, check=True)
+    return _parse_loop_config(r.stdout, f"{commit[:12]}:{LOOP_YML.as_posix()}")
+
+
+def _parse_loop_config(raw: bytes, path: str) -> LoopConfig:
     try:
-        data = load_yaml(path)
+        data = load_yaml_text(raw.decode("utf-8"))
     except Exception as exc:  # noqa: BLE001 — 解析失败统一归 FATAL
-        raise fatal("CONFIG_PARSE", f"{LOOP_YML} 解析失败: {exc}", path=str(path))
+        raise fatal("CONFIG_PARSE", f"{LOOP_YML} 解析失败: {exc}", path=path)
     if not isinstance(data, dict):
-        raise fatal("CONFIG_PARSE", f"{LOOP_YML} 顶层必须是映射", path=str(path))
+        raise fatal("CONFIG_PARSE", f"{LOOP_YML} 顶层必须是映射", path=path)
 
     raw_stages = data.get("pass_cmd")
     if not isinstance(raw_stages, list) or not raw_stages:
-        raise fatal("CONFIG_PASS_CMD_EMPTY", "pass_cmd 必须是非空数组", path=str(path))
+        raise fatal("CONFIG_PASS_CMD_EMPTY", "pass_cmd 必须是非空数组", path=path)
     stages: list[Stage] = []
     for idx, item in enumerate(raw_stages):
         if not isinstance(item, dict) or not item.get("stage") or not item.get("cmd"):
@@ -288,7 +306,7 @@ def load_loop_config(repo_root: Path) -> LoopConfig:
     return LoopConfig(
         proof_runner=runner,
         path=str(LOOP_YML),
-        sha256=sha256_file(path),
+        sha256=hashlib.sha256(raw).hexdigest(),
         pass_cmd=stages,
         max_iterations=max_iter,
         worktree_root=worktree_root,

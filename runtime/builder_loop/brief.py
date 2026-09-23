@@ -17,8 +17,9 @@ from pathlib import Path
 from typing import Any
 
 from . import contract as contract_mod
-from . import evidence
+from . import evidence, gitx
 from .jsonutil import dumps
+from .ledger import events_of
 from .run import bl_bin
 
 TESTER_RESULT_FORMAT = (
@@ -39,8 +40,20 @@ def _tester_todo(lg: dict[str, Any], repo_root: Path) -> list[dict[str, Any]]:
     todo: list[dict[str, Any]] = []
     st = evidence.state(lg, "tester", repo_root)
     rev = lg["contract"]["mission"].get("revision")
-    if st == evidence.STATE_MISSING:
+    rebased = _rebased_tester_files(lg, repo_root) if st == evidence.STATE_STALE else []
+    if evidence.tester_rebase_conflicted(lg):
+        t = lg["tester"]
+        todo.append({"what": "resolve_rebase_conflict", "worktree": t["worktree"], "onto": lg["repo"]["target_start_head"],
+                     "paths": gitx.unmerged_paths(Path(t["worktree"])),
+                     "why": "目标分支改过你的测试文件，runtime 把你的分支 rebase 到新的目标分支 HEAD 时冲突了（rebase 停在你的 worktree 里）。"
+                            "在你的 worktree 里逐个解冲突：保留目标分支的改动，再叠上你自己的改动；`git add` 后 `git -c core.editor=true rebase --continue`，"
+                            "然后照常交卷（proof_spec 完整重交一遍）。"})
+    elif st == evidence.STATE_MISSING:
         todo.append({"what": "write_tests", "why": "还没有 tester evidence：按 behaviors 写测试并交 proof_spec"})
+    elif rebased:
+        todo.append({"what": "confirm_rebased_tests", "paths": rebased,
+                     "why": "目标分支改过这些测试文件，runtime 已把你的分支零冲突 rebase 过去，文件内容因此变了（你的改动叠在目标分支的新版本上）。"
+                            "读一遍合并结果，确认你的测试仍然成立；需要就改，然后把完整 proof_spec 重新交一遍。"})
     elif st == evidence.STATE_STALE:
         todo.append({"what": "write_tests", "why": f"你交的 evidence 已失效（mission 现在是 revision {rev}，或测试文件被改过）：重新对着下面的 behaviors 交一遍"})
 
@@ -75,6 +88,55 @@ def _tester_todo(lg: dict[str, Any], repo_root: Path) -> list[dict[str, Any]]:
     if mine and evidence.last_role_result_at(lg, "tester") <= (lg["evidence"].get("reviewer") or {}).get("at", ""):
         todo.append({"what": "fix_review_findings", "findings": mine, "why": "reviewer 把这些问题判给了 tester"})
     return todo
+
+
+def _rebased_tester_files(lg: dict[str, Any], repo_root: Path) -> list[str]:
+    """最近一次零冲突 rebase 让哪些 tester 文件内容变了（只在它之后 tester 还没交过卷时才算数）。"""
+    evs = [e for e in events_of(lg, "tester_rebase") if e.get("status") == "rebased"]
+    if not evs or evidence.last_role_result_at(lg, "tester") > evs[-1]["at"]:
+        return []
+    files = evidence.tester_files(lg, repo_root)
+    paths = files["present"] + files["deleted"]
+    if not paths:
+        return []
+    before = gitx.ls_tree_blobs(repo_root, evs[-1]["from_head"], paths)
+    after = gitx.ls_tree_blobs(repo_root, evs[-1]["tester_head"], paths)
+    return sorted(p for p in paths if before.get(p) != after.get(p))
+
+
+TARGET_DRIFT_HINT = ("目标分支在你上次审查后前进了。patch 未变不构成沿用上次结论的依据：本轮复审漂入的提交与候选的交互——"
+                     "候选改过契约的函数是否有了新的调用方、漂入的文档是否引用了候选删改的东西、是否出现了重复实现。")
+
+
+def _patch_id(repo_root: Path, base: str, head: str) -> str:
+    diff = gitx.git(repo_root, "diff", "--no-color", base, head, check=False).stdout
+    if not diff:
+        return ""
+    return gitx.git(repo_root, "patch-id", "--stable", check=False, input_text=diff).stdout.split(" ")[0].strip()
+
+
+def _target_drift(lg: dict[str, Any], repo_root: Path) -> dict[str, Any] | None:
+    """上次审查之后目标分支漂进来的东西（#280）。reviewer evidence 照常作废（原则一），这里只给复审要看的事实：
+    旧基线 = merge-base(上次审过的候选, 当前 target_start_head)；全部从 git 与 evidence 派生，不落盘。"""
+    reviewed = (((lg["evidence"].get("reviewer") or {}).get("details") or {}).get("reviewed_head"))
+    to = lg["repo"]["target_start_head"]
+    cand = lg["candidate"].get("head")
+    if not reviewed or not cand:
+        return None
+    r = gitx.git(repo_root, "merge-base", reviewed, to, check=False)
+    frm = r.stdout.strip()
+    if not r.ok or not frm or frm == to:
+        return None
+    log = gitx.git(repo_root, "log", "--format=%h %s", f"{frm}..{to}", check=False).stdout
+    paths = gitx.changed_paths(repo_root, frm, to)
+    mine = set(gitx.changed_paths(repo_root, to, cand))
+    return {
+        "from": frm, "to": to,
+        "commits": [line for line in log.splitlines() if line.strip()][:50],
+        "paths": paths[:200],
+        "intersecting_paths": sorted(mine.intersection(paths)),
+        "patch_unchanged": _patch_id(repo_root, frm, reviewed) == _patch_id(repo_root, to, cand),
+    }
 
 
 UNDISCRIMINATED_HINT = ("下面这些 test_id 在反例下从未变红：它们没有被证明有鉴别力，可能是断言的条件在本设计下恒真。"
@@ -184,6 +246,9 @@ def build(lg: dict[str, Any], repo_root: Path, role: str) -> dict[str, Any]:
         out["todo"] = _reviewer_todo(lg)
         out["doc_reference_hints"] = _doc_reference_hints(lg)
         out["undiscriminated"] = _undiscriminated(lg)
+        drift = _target_drift(lg, repo_root)
+        if drift:
+            out["target_drift"] = drift
         out["result_format"] = REVIEWER_RESULT_FORMAT
     return out
 
@@ -195,6 +260,16 @@ def _render_doc_hints(h: dict[str, Any]) -> list[str]:
     if not h["hits"]:
         return [head + " 无"]
     return [head, *[f"  - {x}" for x in h["hits"]]]
+
+
+def _render_target_drift(d: dict[str, Any] | None) -> list[str]:
+    if not d:
+        return []
+    return [TARGET_DRIFT_HINT,
+            f"  漂入范围: {d['from'][:12]}..{d['to'][:12]}；候选 patch 与上次审过的{'相同' if d['patch_unchanged'] else '不同'}",
+            f"  与候选改动相交的路径: {d['intersecting_paths'] or '无'}",
+            "  漂入的提交: " + ("; ".join(d["commits"]) or "无"),
+            "  漂入的路径: " + (", ".join(d["paths"]) or "无")]
 
 
 def render(brief: dict[str, Any]) -> str:
@@ -239,6 +314,7 @@ def render(brief: dict[str, Any]) -> str:
             f"前置 evidence: {brief['evidence']}",
             f"review_focus: {brief['review_focus']}",
             *_render_doc_hints(brief["doc_reference_hints"]),
+            *_render_target_drift(brief.get("target_drift")),
             "每条 blocking / major finding 写明 owner：实现问题 builder，测试问题 tester，需要改目标/写边界/验收标准的 contract。",
             "只读审查，不修改任何文件。",
         ]

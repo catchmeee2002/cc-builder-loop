@@ -197,12 +197,21 @@ def test_hold_release_then_target_drift(started, cli, hook):
     assert err["code"] == "TARGET_DRIFT"
 
 
-def test_hold_release_then_hold_again_reuses_prior_answer(started, cli, hook):
+def test_hold_release_then_hold_again_requires_new_answer(started, cli, hook):
+    """授权锚点 = max(最近一次 hold_release 事件的时刻, 本 run 内 gate 首次全部 pass 的时刻)：
+    release 会把锚点推到 release 那一刻，release 之前的回答不再够用（rebase-integrate-evidence
+    run，B8）。这取代了旧版「reuse 上一次回答」的假设——那是这次要改的行为，不是要保留的不变量。"""
     _ready_to_finalize(started, cli, hook)
     _answer_askuserquestion(hook)
     cli("hold", "--session", "S1", "--reason", "第一次")
     cli("hold", "--session", "S1", "--release")
 
+    n_events = len(L.load(started["ledger"])["events"])
+    out = cli("hold", "--session", "S1", "--reason", "第二次", expect=3)
+    assert out["code"] == "USER_DECISION_REQUIRED"
+    assert len(L.load(started["ledger"])["events"]) == n_events
+
+    _answer_askuserquestion(hook)
     out = cli("hold", "--session", "S1", "--reason", "第二次")
     assert out.get("ok", True) is not False
     assert L.load(started["ledger"])["events"][-1]["kind"] == "hold"

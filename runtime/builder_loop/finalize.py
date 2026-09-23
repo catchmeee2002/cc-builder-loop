@@ -10,6 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from . import contract as contract_mod
 from . import evidence, gitx, ledger as ledger_mod, worktree
 from .errors import fatal, negative
 
@@ -155,6 +156,8 @@ def finalize(ledger_path: Path, repo_root: Path, message: str | None, *, run_com
 
 
 def rebase_candidate(ledger_path: Path, repo_root: Path) -> dict[str, Any]:
+    """先 rebase 候选，再在目标分支改过 tester 文件时把 tester 分支也 rebase 过去（#298）。
+    两半各自可以停在冲突上；再次 `bl rebase` 从停下的那一半继续。"""
     lg = ledger_mod.load(ledger_path)
     if ledger_mod.is_terminal(lg):
         raise fatal("RUN_TERMINAL", "run 已到终态", terminal=lg["terminal"])
@@ -162,32 +165,138 @@ def rebase_candidate(ledger_path: Path, repo_root: Path) -> dict[str, Any]:
     wt = Path(cand["worktree"])
     target = lg["repo"]["target_branch"]
     live = gitx.branch_head(repo_root, target)
-    gitdir = Path(gitx.git(wt, "rev-parse", "--git-dir").stdout.strip())
-    if not gitdir.is_absolute():
-        gitdir = wt / gitdir
-    in_progress = (gitdir / "rebase-merge").exists() or (gitdir / "rebase-apply").exists()
 
-    if not in_progress:
+    onto = live
+    resumed = _resumed_candidate_rebase(lg, repo_root, wt)
+    if resumed:
+        onto = resumed  # 冲突解完、`git rebase --continue` 之后：采纳的是当初起的那次 rebase，不是此刻的目标分支（原则七）
+    elif not gitx.rebase_in_progress(wt):
         worktree.assert_candidate_identity(wt, cand["branch"], cand["head"])
         if live == lg["repo"]["target_start_head"]:
-            return {"rebased": False, "reason": "目标分支未前进", "conflicts": []}
+            tester = sync_tester_rebase(ledger_path, repo_root, start=True)
+            out: dict[str, Any] = {"rebased": False, "reason": "目标分支未前进", "conflicts": [], "tester_rebase": tester}
+            if tester["status"] != "not_needed":
+                out["readiness"] = evidence.readiness(ledger_mod.load(ledger_path), repo_root)
+            return out
         worktree.assert_candidate_clean(wt)
         r = gitx.git(wt, "rebase", live, check=False)
         if not r.ok:
-            conflicts = [p for xy, p in gitx.status_porcelain(wt) if "U" in xy]
-            return {"rebased": False, "conflicts": conflicts, "hint": "在候选 worktree 内解决冲突后 `git add` + `git rebase --continue`，再运行 `bl rebase`", "stderr": r.stderr[-2000:]}
+            if not gitx.rebase_in_progress(wt):
+                raise fatal("GIT_COMMAND_FAILED", f"候选 rebase 失败: {r.stderr.strip()[-500:]}", worktree=str(wt))
+            with ledger_mod.mutate(ledger_path) as lg2:
+                ledger_mod.log_event(lg2, "candidate_rebase", status="conflict", onto=live, from_head=cand["head"])
+            conflicts = _settle_tester_owned_conflicts(lg, wt)
+            if conflicts:
+                return {"rebased": False, "conflicts": conflicts, "hint": "在候选 worktree 内解决冲突后 `git add` + `git rebase --continue`，再运行 `bl rebase`", "stderr": r.stderr[-2000:]}
+            onto = live
     else:
-        conflicts = [p for xy, p in gitx.status_porcelain(wt) if "U" in xy]
+        conflicts = _settle_tester_owned_conflicts(lg, wt)
         if conflicts:
             return {"rebased": False, "conflicts": conflicts, "hint": "仍有冲突未解决"}
-        raise negative("REBASE_IN_PROGRESS", "rebase 尚未完成，先 `git rebase --continue`")
+        if gitx.rebase_in_progress(wt):
+            raise negative("REBASE_IN_PROGRESS", "rebase 尚未完成，先 `git rebase --continue`")
+        onto = _resumed_candidate_rebase(lg, repo_root, wt) or live
 
     new_head = gitx.head(wt)
-    if not gitx.is_ancestor(repo_root, live, new_head):
-        raise fatal("REBASE_RESULT_INVALID", "候选 HEAD 不在新目标 HEAD 之后", head=new_head, live=live)
+    if not gitx.is_ancestor(repo_root, onto, new_head):
+        raise fatal("REBASE_RESULT_INVALID", "候选 HEAD 不在新目标 HEAD 之后", head=new_head, live=onto)
     with ledger_mod.mutate(ledger_path) as lg2:
-        lg2["repo"]["target_start_head"] = live
+        lg2["repo"]["target_start_head"] = onto
         lg2["candidate"]["head"] = new_head
         lg2["candidate"]["checkpoints"].append({"head": new_head, "at": ledger_mod.now_iso(), "role": "rebase", "paths": []})
-        readiness = evidence.readiness(lg2, repo_root)
-    return {"rebased": True, "new_target_start_head": live, "candidate_head": new_head, "conflicts": [], "readiness": readiness}
+    tester = sync_tester_rebase(ledger_path, repo_root, start=True)
+    readiness = evidence.readiness(ledger_mod.load(ledger_path), repo_root)
+    return {"rebased": True, "new_target_start_head": onto, "candidate_head": new_head, "conflicts": [], "tester_rebase": tester, "readiness": readiness}
+
+
+def _settle_tester_owned_conflicts(lg: dict[str, Any], wt: Path) -> list[str]:
+    """候选 rebase 停在冲突上时，tester 拥有的路径直接取目标分支一侧并继续，只把 builder 的冲突留给 builder。
+
+    候选里的测试文件只是 integrate 从 tester 分支派生的副本（原则二：测试实现的家是 tester 分支）；
+    真正的合并由 tester 分支的 rebase 完成（冲突归 tester 解），之后 integrate 再按路径叠回来。
+    builder 本来就不能写这些路径，让它解冲突既越权又会造出第二份测试事实。返回剩下的冲突（空 = rebase 已走完）。"""
+    auth = lg["contract"]["authority"]
+    while gitx.rebase_in_progress(wt):
+        conflicts = gitx.unmerged_paths(wt)
+        if not conflicts:
+            return []  # 已由人解完、等 `git rebase --continue`：交还调用方判断
+        mine = [p for p in conflicts if contract_mod.path_owner(auth, p) == contract_mod.OWNER_TESTER]
+        if len(mine) != len(conflicts):
+            return sorted(set(conflicts) - set(mine))
+        for p in mine:
+            # rebase 中 --ours 是目标分支一侧；目标分支上没有它（被删了）就跟着删
+            if gitx.git(wt, "checkout", "--ours", "--", p, check=False).ok:
+                gitx.git(wt, "add", "--", p)
+            else:
+                gitx.git(wt, "rm", "--quiet", "--", p)
+        r = gitx.git(wt, "-c", "core.editor=true", "rebase", "--continue", check=False)
+        if not r.ok and not gitx.rebase_in_progress(wt):
+            raise fatal("GIT_COMMAND_FAILED", f"候选 rebase --continue 失败: {r.stderr.strip()[-500:]}", worktree=str(wt))
+    return []
+
+
+def _resumed_candidate_rebase(lg: dict[str, Any], repo_root: Path, wt: Path) -> str | None:
+    """候选 worktree 里那次有冲突的 rebase 已经被 `git rebase --continue` 完成：返回它的 onto，否则 None。
+    只认 runtime 自己起的那次（事件里的 from_head 就是 ledger 的候选 HEAD），且结果落在 onto 之上。"""
+    cand = lg["candidate"]
+    if gitx.rebase_in_progress(wt) or not wt.is_dir():
+        return None
+    cur = gitx.head(wt)
+    if cur == cand["head"]:
+        return None
+    started = [e for e in ledger_mod.events_of(lg, "candidate_rebase") if e.get("status") == "conflict"]
+    if not started or started[-1].get("from_head") != cand["head"]:
+        return None
+    onto = started[-1]["onto"]
+    if gitx.current_branch(wt) != cand["branch"] or not gitx.is_ancestor(repo_root, onto, cur):
+        return None
+    worktree.assert_candidate_clean(wt)
+    return onto
+
+
+def sync_tester_rebase(ledger_path: Path, repo_root: Path, *, start: bool) -> dict[str, Any]:
+    """让 tester 分支跟上 target_start_head——只在目标分支改过 tester 文件时（没有重叠就不动，tester evidence 不受漂移影响）。
+
+    status：not_needed / rebased / conflict（停在 tester worktree 里等 tester 解）/ deferred（tester 在跑或 worktree 不干净）/
+    pending（start=False 时只报告不动手）。tester 解完冲突 `git rebase --continue` 后 HEAD 已经前进：只有它确实是
+    runtime 起的那次 rebase（事件里的 from_head / onto 对得上）且落在 onto 之上，才采纳为新的 tester.base / head（原则七）。
+    tester 的 checkpoint 先调这里（start=False），所以它解完冲突直接交卷也能登记。"""
+    lg = ledger_mod.load(ledger_path)
+    t = lg.get("tester")
+    overlap = evidence.tester_drift_overlap(lg, repo_root)
+    if not t or not overlap:
+        return {"status": "not_needed", "paths": []}
+    onto = lg["repo"]["target_start_head"]
+    wt = Path(t["worktree"])
+    if gitx.rebase_in_progress(wt):
+        return {"status": "conflict", "paths": gitx.unmerged_paths(wt) or overlap, "worktree": str(wt)}
+    cur = gitx.head(wt)
+    if cur != t["head"]:
+        started = [e for e in ledger_mod.events_of(lg, "tester_rebase") if e.get("status") == "conflict"]
+        ours = bool(started) and started[-1].get("onto") == onto and started[-1].get("from_head") == t["head"]
+        if not (ours and gitx.current_branch(wt) == t["branch"] and gitx.is_ancestor(repo_root, onto, cur)):
+            worktree.assert_identity(wt, t["branch"], t["head"], "tester")  # → WORKTREE_HEAD_MISMATCH
+        return _adopt_tester_rebase(ledger_path, onto, t["head"], cur)
+    if not start:
+        return {"status": "pending", "paths": overlap}
+    if evidence.role_running(lg, "tester") or not gitx.is_clean(wt):
+        return {"status": "deferred", "paths": overlap, "hint": "tester 在跑或它的 worktree 有未提交改动；它交卷后再运行 `bl rebase`"}
+    worktree.assert_identity(wt, t["branch"], t["head"], "tester")
+    r = gitx.git(wt, "-c", "core.editor=true", "rebase", onto, check=False)
+    if not r.ok:
+        if not gitx.rebase_in_progress(wt):
+            raise fatal("GIT_COMMAND_FAILED", f"tester 分支 rebase 失败: {r.stderr.strip()[-500:]}", worktree=str(wt))
+        paths = gitx.unmerged_paths(wt) or overlap
+        with ledger_mod.mutate(ledger_path) as lg2:
+            ledger_mod.log_event(lg2, "tester_rebase", status="conflict", onto=onto, from_head=t["head"], paths=paths)
+        return {"status": "conflict", "paths": paths, "worktree": str(wt),
+                "hint": "续接 tester：它在自己的 worktree 里解冲突、`git -c core.editor=true rebase --continue`，交卷后再运行 `bl rebase`"}
+    return _adopt_tester_rebase(ledger_path, onto, t["head"], gitx.head(wt), paths=overlap)
+
+
+def _adopt_tester_rebase(ledger_path: Path, onto: str, from_head: str, new_head: str, paths: list[str] | None = None) -> dict[str, Any]:
+    with ledger_mod.mutate(ledger_path) as lg2:
+        lg2["tester"]["base"] = onto
+        lg2["tester"]["head"] = new_head
+        ledger_mod.log_event(lg2, "tester_rebase", status="rebased", onto=onto, from_head=from_head, tester_head=new_head)
+    return {"status": "rebased", "paths": paths or [], "tester_head": new_head}

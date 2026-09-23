@@ -16,11 +16,17 @@ PASS_STAGE = 'python3 -c "import sys; sys.exit(0)"'
 def _start_lite(repo, cli, revising_stage: bool = False):
     if revising_stage:
         # revise 会按 loop.yml 重新冻结 machine_commands：要让它只差 review_focus（neutral），
-        # 执行 revise 的那条命令本身就得是 loop.yml 里 pass_cmd 的 stage
+        # 执行 revise 的那条命令本身就得是 loop.yml 里 pass_cmd 的 stage。
+        # `contract revise` 现在只有一个家：候选 HEAD 里已提交的 .claude/loop.yml（#282）——候选从
+        # start 时的目标分支 HEAD 起，所以要在 start 之前就把这份提交到主仓，候选才会带着它一起来，
+        # revise 重新冻结出来的 machine_commands 才不会意外变化，测试才能干净地只观察 review_focus
+        # 这个 neutral 差异（不能等 start 之后再直接往候选分支塞提交：那样候选 worktree 的 HEAD 会
+        # 跟 ledger 记录的对不上，checkpoint 会报 WORKTREE_HEAD_MISMATCH）。
         cmd = f"{BL} --repo {repo.root} contract revise --session S1 --plan {repo.root / 'lite2.md'}"
         (repo.root / ".claude" / "loop.yml").write_text(
             f'pass_cmd:\n  - stage: test\n    cmd: "{cmd}"\n    timeout: 60\nmax_iterations: 3\n'
             'proof_runner:\n  framework: pytest\n  cmd: "python3 -m pytest -p no:html"\n')
+        repo.commit_all("chore(fixture): [cr_id_skip] Self-referential revise loop.yml")
     write_plan(repo.root, contract_with(**{"assurance.required": ["machine", "reviewer"]}), "lite.md")
     write_plan(repo.root, contract_with(**{"assurance.required": ["machine", "reviewer"], "assurance.review_focus": ["look here"]}), "lite2.md")
     out = cli("start", "--plan", str(repo.root / "lite.md"), "--session", "S1")

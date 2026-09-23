@@ -97,6 +97,23 @@ def is_ancestor(cwd: Path | str, ancestor: str, descendant: str) -> bool:
     return git(cwd, "merge-base", "--is-ancestor", ancestor, descendant, check=False).returncode == 0
 
 
+def rebase_in_progress(wt: Path) -> bool:
+    """wt 里有没完成的 rebase（冲突等人解）。worktree 不存在时为 False。"""
+    if not wt.is_dir():
+        return False
+    r = git(wt, "rev-parse", "--git-dir", check=False)
+    if not r.ok:
+        return False
+    gitdir = Path(r.stdout.strip())
+    if not gitdir.is_absolute():
+        gitdir = wt / gitdir
+    return (gitdir / "rebase-merge").exists() or (gitdir / "rebase-apply").exists()
+
+
+def unmerged_paths(wt: Path) -> list[str]:
+    return [p for xy, p in status_porcelain(wt) if "U" in xy or xy in ("AA", "DD")]
+
+
 def status_porcelain(cwd: Path | str) -> list[tuple[str, str]]:
     """返回 [(XY, path)]，不含 ignored 文件。"""
     r = git(cwd, "status", "--porcelain=v1", "--untracked-files=all", "-z")

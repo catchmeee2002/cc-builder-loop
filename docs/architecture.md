@@ -28,7 +28,7 @@ runtime 不保存"下一步让谁做"，也不保存"角色是否在跑"：`read
 
 proof 只能证明"测试能抓住偏离当前实现"，证明不了"当前实现符合 behavior"：看着实现写的测试会把实现的 bug 一起抄进断言，mutation 照样通过。独立性必须来自信息隔离（原则一）。做法：
 
-- tester 有自己的 worktree，分支从 run 起点（`tester.base`，不可变）长出，**永不 rebase**；contract 是它唯一的输入，所以 behaviors 带 `boundaries` / `invariants`，接口签名写进 `interfaces`。
+- tester 有自己的 worktree，分支从 run 起点（`tester.base`）长出；只有目标分支改过 tester 的测试文件时才 rebase（见下文 rebase 一段）；contract 是它唯一的输入，所以 behaviors 带 `boundaries` / `invariants`，接口签名写进 `interfaces`。
 - 两段式：盲写阶段新接口写不出 mutation patch（看不到要破坏什么），`patch` 可缺省；首次 integrate 后读隔离解除，readiness 给 `resume_tester` 让同一 agent 补 patch。是否已 integrate 由 `candidate.checkpoints` 里有没有 `role=integrate` 派生。
 - integrate 用**路径叠加**而不是 merge：`git checkout <tester.head> -- <存在的文件>` + `git rm <被删的文件>` + 一次普通提交。`git rebase` 会丢 merge commit 并重放 tester 的提交，之后再合同一文件必然 add/add 冲突；叠加让候选历史保持线性、重复执行幂等。一律用 ledger 里的 SHA 而非分支名（tester 的 handback 登记可能正在提交）。
 - 测试文件集合 = `git diff --name-status tester.base..tester.head`（含删除）；"候选是否需要 integrate" = 这些路径在两边的 blob 是否一致。两者都不落盘。
@@ -37,7 +37,7 @@ proof 只能证明"测试能抓住偏离当前实现"，证明不了"当前实�
 
 | 模块 | 职责 |
 |---|---|
-| `config` | `.claude/loop.yml` → `pass_cmd[] / max_iterations / proof_runner / worktree.root`；PyYAML 缺席时用内置子集解析 |
+| `config` | `.claude/loop.yml` → `pass_cmd[] / max_iterations / proof_runner / worktree.root`；PyYAML 缺席时用内置子集解析。`start` 读主仓工作区；`contract revise` 读候选 HEAD 里已提交的那份（run 内的判据参数只有一个家，就是随交付合入的那份，#282），候选里没有被跟踪的 loop.yml 时才退回主仓工作区 |
 | `contract` | 标签提取、校验、三面 digest、`classify_change`、glob 匹配；**`write_rejection()` 是路径归属与保护的唯一判定入口**（checkpoint / PreToolUse / mutation patch 共用） |
 | `ledger` | schema @2 校验、mutate、events、session 指针（读后回核 owner）、`peek`（不校验 schema，给 doctor / runs / abandon 处理旧版 ledger） |
 | `worktree` | 每个 run 的 `builder/` 与 `tester/` 两个 worktree（创建失败回滚）、临时 worktree（支持叠加与删除）、身份 / clean 断言 |
@@ -77,7 +77,13 @@ builder 与 tester 各看各的 worktree，未提交改动互不可见；删除�
 - reviewer 不参与这套剔除：原则一要求「Reviewer 和文档审查始终面对完整 integrated HEAD」，所以只改文档的 checkpoint 仍让 reviewer stale，只是不再连累 machine 与 proof。
 - 中性路径是项目事实（这个仓库的判据读什么），只在 loop.yml 声明，由 start 冻结进 assurance 面计入 digest，改它需要一次 `contract revise --authorize`；planner 写了也以 loop.yml 为准。
 
-rebase 改的是 `repo.target_start_head` 与候选 HEAD；`tester.base` 不动，所以 tester evidence 不因目标分支漂移而失效，漂移进来的文件也不会被算成测试文件。
+rebase 改的是 `repo.target_start_head` 与候选 HEAD。漂移路径（`tester.base..target_start_head`）与 tester 文件**不相交**时 `tester.base` 不动，tester evidence 不因漂移而失效，漂移进来的文件也不会被算成测试文件。**相交**时（#298）tester 的测试是相对过期基线定义的：此时按路径叠加会用旧基线的整文件抹掉目标分支的改动，所以 `bl rebase` 在候选之后把 tester 分支也 rebase 到 `target_start_head`，更新 `tester.base` / `tester.head`（输出 `tester_rebase.status`：`not_needed` / `rebased` / `conflict` / `deferred`）。零冲突时重叠文件内容变了，tester evidence 自然 stale，续接 tester 确认；冲突时 rebase 停在 tester worktree 里由 tester 解；tester 在跑或 worktree 不干净则推迟。只要还相交，integrate 就报 `INTEGRATE_TESTER_BASE_STALE`，readiness 给 `rebase` 或 `resume_tester`。
+
+候选里的测试文件只是 integrate 从 tester 分支派生的副本（原则二），所以候选 rebase 停在冲突上时，tester 拥有的路径直接取目标分支一侧并继续，只把 builder 的冲突留给 builder；那些文件真正的合并由 tester 分支的 rebase 完成，integrate 再叠回来。builder 本来就不能写这些路径。
+
+两处 rebase 停在冲突上时都记一条 intent 事件（`candidate_rebase` / `tester_rebase`，含 `from_head` 与 `onto`）。冲突解完、`git rebase --continue` 之后 HEAD 已经前进：只有事件对得上（`from_head` 就是 ledger 的 HEAD）且结果落在 `onto` 之上，才采纳为新 HEAD（原则七），否则照常 `WORKTREE_HEAD_MISMATCH`。tester 的 checkpoint（含交卷登记）先做这一步，所以 tester 解完冲突可以直接交卷。
+
+reviewer evidence 照常随候选 HEAD 作废（原则一）；brief 的 `target_drift` 从上次审过的 `reviewed_head` 派生漂入的提交与路径、与候选改动相交的路径、patch 是否未变（`git patch-id --stable`），让复审直接看漂入变更与候选的交互。
 
 ## proof
 
@@ -115,7 +121,7 @@ reviewer 判 pass 时给出的 `owner=tester` 的 finding 不派发（派发会�
 
 **门禁是否在跑**同样不落盘：machine / proof / preflight 执行期间各持有 `run_dir/gate-<holder>.lock` 的 flock（文件里写 pid，本进程自己持有不算）。进程死掉锁自动释放，没有残留状态要清理。同一门禁重复启动 → `GATE_BUSY`；machine / proof 遇到 preflight 在跑会排队等它（两套全量测试并发会把彼此挤成假超时），排队期间自己的锁已持有，所以 Stop 看得到它在等。
 
-**hold**（#291）：多会话按顺序发版时，finalize 的时机由外部条件决定，不由 gate 决定。`bl hold --reason` 只在 `next_action=finalize` 时可用，并要求 gate 全过（required 各项 evidence 的最大 `at`）之后有一次 AskUserQuestion 的回答，与 `resume` 同样不接受模型自授权；成功后 readiness 给 `held`，Stop 放行、`finalize` 报 `HOLD_ACTIVE`。hold 从 `hold` / `hold_release` 事件派生，不落 ledger 字段（原则五）；只在本来就是 finalize 时表现为 held，证据失效或出现 blocker 时照常给真实动作。`bl hold --release` 不需要授权，只是回到正常流程，目标分支前进了照常 `TARGET_DRIFT` → rebase。
+**hold**（#291 #299）：多会话按顺序发版时，合入时机由外部条件决定，不由 gate 决定。`bl hold --reason` 要求本 run 的 gate 全过过一次（首次全过时记一条 `gates_passed` 事件），不要求此刻全绿——rebase 之后、重验之前集成方要的正是「先别重验」；hold 不削弱判据，finalize 仍只认四项 fresh pass。授权锚点 = max(gate 首次全过, 最近一次 `hold_release`)，锚点之后要有一次 AskUserQuestion 的回答，与 `resume` 同样不接受模型自授权；rebase 后重新全绿不重置锚点。成功后只要候选在 hold 之后没再变，readiness 就给 `held`（证据 stale 也一样；builder 自己 checkpoint 了说明工作已恢复，照常给真实动作，重新全绿后再表现为 held），Stop 放行、`finalize` 报 `HOLD_ACTIVE`。hold 从 `hold` / `hold_release` 事件派生，不落 ledger 字段（原则五）。`bl hold --release` 不需要授权，只是回到正常流程，目标分支前进了照常 `TARGET_DRIFT` → rebase。
 
 **blocker** 按最近一次用户授权以来的窗口计算：`MAX_ITERATIONS`（窗口内 machine **失败**次数达到上限；integrate / rebase / checkpoint 逼出来且通过的重验不计，原则十针对的是反复撞墙）、`NO_PROGRESS`（machine 同签名 3 次）、`PROOF_STALL`（proof 同签名 3 次）、`REVIEW_CONTRACT`（reviewer 提了 owner=contract 的 blocking/major）、`WAITING_FOR_USER`。前三个激活时 `bl machine` / `bl proof` 直接 exit 3 不执行——上限是真的停止点。`bl resume --reason` 记一条 authorization，但要求 blocker 之后存在 `user_input` 事件：模型不能自己给自己授权。该事件**只由 PostToolUse(AskUserQuestion) 写入**——后台 subagent 结束时唤醒主 session 的任务通知也会触发 UserPromptSubmit，那不是真人。
 
@@ -154,7 +160,8 @@ finalize / abandon / finalize_failed 之后 session 不解绑；`start` 遇到�
 | proof runner 起不来 | 候选阶段 rc≠0 且一条 junit 记录都没有 → `TEST_PROOF_RUNNER_FAILED`，`suggested_owner=contract`（两个角色都改不了，要改 loop.yml）|
 | proof 失败 | `TEST_PROOF_CANDIDATE_FAILED` / `TEST_PROOF_NOT_EXECUTED` / `TEST_BASELINE_RED_NOT_PROVEN` / `TEST_MUTATION_SURVIVED` / `TEST_MUTATION_INVALID` / `TEST_MUTATION_PATCH_MISSING` / `PROOF_WORKTREE_MUTATED`；`suggested_owner` 指向 builder 或 tester |
 | reviewer 未过 | finding 的 owner 决定去向：builder 修 / 回 tester / `REVIEW_CONTRACT` 交还用户 |
-| 目标分支前进 | finalize → TARGET_DRIFT；`bl rebase` 只动候选；成功后 evidence 自然 stale，tester evidence 不受影响 |
+| 目标分支前进 | finalize → TARGET_DRIFT；`bl rebase` 先动候选，漂移触及 tester 文件时再动 tester 分支；成功后 evidence 自然 stale，tester evidence 只在重叠文件内容变了时 stale |
+| tester 分支落后且漂移触及它的文件 | integrate → `INTEGRATE_TESTER_BASE_STALE`（negative，details.paths），不提交；readiness 给 `rebase`（tester 冲突时给 `resume_tester`） |
 | 主仓 dirty 与变更路径重叠 | finalize → DIRTY_OVERLAP，不写回 |
 | finalize CAS 后中断 | ledger 留 `finalize_intent`；再次 finalize 按目标分支当前 HEAD 恢复 |
 | commit hook 改写 tree | `--run-commit-hook` 模式下 FINAL_COMMIT_TREE_MISMATCH，目标分支不动 |

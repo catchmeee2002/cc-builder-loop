@@ -131,8 +131,13 @@ def test_legacy_ledger_can_be_listed_and_abandoned(repo, cli):
     assert not (repo.home / "sessions" / "OLD.json").exists()
 
 
-def test_contract_revise_requires_authorization(started, cli):
-    repo = started["repo"]
+def test_contract_revise_requires_authorization(repo, cli):
+    # 这段测的是「run 中途改判据要授权」这条主仓工作区路径（B9 边界 3：候选 HEAD 没跟踪 loop.yml 时
+    # revise 照旧读主仓工作区）；候选从 start 起就不跟踪它，所以改主仓这份、不需要碰候选分支。
+    git(repo.root, "rm", "--cached", ".claude/loop.yml")
+    (repo.root / ".gitignore").write_text((repo.root / ".gitignore").read_text() + ".claude/loop.yml\n")
+    repo.commit_all("chore(fixture): [cr_id_skip] Untrack loop.yml so revise reads main repo")
+    cli("start", "--plan", str(repo.root / "plan.md"), "--session", "S1")
     c = json.loads(json.dumps(CONTRACT))
     c["authority"]["builder_write"].append("lib/**")
     write_plan(repo.root, c, "plan2.md")
@@ -148,7 +153,9 @@ def test_contract_revise_requires_authorization(started, cli):
     c["mission"]["revision"] = 2
     write_plan(repo.root, c, "plan3.md")
     assert "MISSION_REVISION" in cli("contract", "revise", "--session", "S1", "--plan", str(repo.root / "plan3.md"), "--authorize")["changes"]
-    (repo.root / ".claude" / "loop.yml").write_text("pass_cmd:\n  - stage: test\n    cmd: \"true\"\n    timeout: 5\n")
+    # 候选 HEAD 没跟踪 loop.yml（上面已经 untrack）：`contract revise` 照旧读主仓工作区这份（B9 边界 3）。
+    new_loop_yml = "pass_cmd:\n  - stage: test\n    cmd: \"true\"\n    timeout: 5\n"
+    (repo.root / ".claude" / "loop.yml").write_text(new_loop_yml)
     err = cli("contract", "revise", "--session", "S1", "--plan", str(repo.root / "plan3.md"), expect=3)
     assert "ASSURANCE_DOWNGRADE" in err["details"]["changes"]
     c["assurance"]["required"] = ["machine", "reviewer"]
