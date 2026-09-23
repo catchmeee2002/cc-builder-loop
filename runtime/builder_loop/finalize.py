@@ -235,22 +235,28 @@ def _settle_tester_owned_conflicts(lg: dict[str, Any], wt: Path) -> list[str]:
     return []
 
 
-def _resumed_candidate_rebase(lg: dict[str, Any], repo_root: Path, wt: Path) -> str | None:
-    """候选 worktree 里那次有冲突的 rebase 已经被 `git rebase --continue` 完成：返回它的 onto，否则 None。
-    只认 runtime 自己起的那次（事件里的 from_head 就是 ledger 的候选 HEAD），且结果落在 onto 之上。"""
-    cand = lg["candidate"]
-    if gitx.rebase_in_progress(wt) or not wt.is_dir():
+def _resumed_rebase(lg: dict[str, Any], repo_root: Path, wt: Path, kind: str, branch: str, head: str) -> str | None:
+    """wt 里那次有冲突的 rebase 已经被 `git rebase --continue` 完成：返回它的 onto，否则 None。
+    只认 runtime 自己起的那次（最近一条 kind 冲突事件的 from_head 就是 ledger 记录的 HEAD），且结果落在 onto 之上（原则七）。"""
+    if not wt.is_dir() or gitx.rebase_in_progress(wt):
         return None
     cur = gitx.head(wt)
-    if cur == cand["head"]:
+    if cur == head:
         return None
-    started = [e for e in ledger_mod.events_of(lg, "candidate_rebase") if e.get("status") == "conflict"]
-    if not started or started[-1].get("from_head") != cand["head"]:
+    started = [e for e in ledger_mod.events_of(lg, kind) if e.get("status") == "conflict"]
+    if not started or started[-1].get("from_head") != head:
         return None
     onto = started[-1]["onto"]
-    if gitx.current_branch(wt) != cand["branch"] or not gitx.is_ancestor(repo_root, onto, cur):
+    if gitx.current_branch(wt) != branch or not gitx.is_ancestor(repo_root, onto, cur):
         return None
-    worktree.assert_candidate_clean(wt)
+    return onto
+
+
+def _resumed_candidate_rebase(lg: dict[str, Any], repo_root: Path, wt: Path) -> str | None:
+    cand = lg["candidate"]
+    onto = _resumed_rebase(lg, repo_root, wt, "candidate_rebase", cand["branch"], cand["head"])
+    if onto:
+        worktree.assert_candidate_clean(wt)
     return onto
 
 
@@ -272,9 +278,7 @@ def sync_tester_rebase(ledger_path: Path, repo_root: Path, *, start: bool) -> di
         return {"status": "conflict", "paths": gitx.unmerged_paths(wt) or overlap, "worktree": str(wt)}
     cur = gitx.head(wt)
     if cur != t["head"]:
-        started = [e for e in ledger_mod.events_of(lg, "tester_rebase") if e.get("status") == "conflict"]
-        ours = bool(started) and started[-1].get("onto") == onto and started[-1].get("from_head") == t["head"]
-        if not (ours and gitx.current_branch(wt) == t["branch"] and gitx.is_ancestor(repo_root, onto, cur)):
+        if _resumed_rebase(lg, repo_root, wt, "tester_rebase", t["branch"], t["head"]) != onto:
             worktree.assert_identity(wt, t["branch"], t["head"], "tester")  # → WORKTREE_HEAD_MISMATCH
         return _adopt_tester_rebase(ledger_path, onto, t["head"], cur)
     if not start:
