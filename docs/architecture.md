@@ -29,7 +29,7 @@ runtime 不保存"下一步让谁做"，也不保存"角色是否在跑"：`read
 proof 只能证明"测试能抓住偏离当前实现"，证明不了"当前实现符合 behavior"：看着实现写的测试会把实现的 bug 一起抄进断言，mutation 照样通过。独立性必须来自信息隔离（原则一）。做法：
 
 - tester 有自己的 worktree，分支从 run 起点（`tester.base`）长出；只有目标分支改过 tester 的测试文件时才 rebase（见下文 rebase 一段）；contract 是它唯一的输入，所以 behaviors 带 `boundaries` / `invariants`，接口签名写进 `interfaces`。
-- 两段式：盲写阶段新接口写不出 mutation patch（看不到要破坏什么），`patch` 可缺省；首次 integrate 后读隔离解除，readiness 给 `resume_tester` 让同一 agent 补 patch。是否已 integrate 由 `candidate.checkpoints` 里有没有 `role=integrate` 派生。
+- 两段式：盲写阶段新接口写不出 mutation patch（看不到要破坏什么），`patch_file` 可缺省；首次 integrate 后读隔离解除，readiness 给 `resume_tester` 让同一 agent 补 patch。是否已 integrate 由 `candidate.checkpoints` 里有没有 `role=integrate` 派生。
 - integrate 用**路径叠加**而不是 merge：`git checkout <tester.head> -- <存在的文件>` + `git rm <被删的文件>` + 一次普通提交。`git rebase` 会丢 merge commit 并重放 tester 的提交，之后再合同一文件必然 add/add 冲突；叠加让候选历史保持线性、重复执行幂等。一律用 ledger 里的 SHA 而非分支名（tester 的 handback 登记可能正在提交）。
 - 测试文件集合 = `git diff --name-status tester.base..tester.head`（含删除）；"候选是否需要 integrate" = 这些路径在两边的 blob 是否一致。两者都不落盘。
 
