@@ -4,7 +4,7 @@ settings.json 里 PreToolUse 的 matcher 去掉 SubagentHandback 后运行 `bl d
 输出中点名 SubagentHandback。PostToolUse 的 SubagentHandback|Bash|TaskStop matcher 与其余
 hook 不变。
 
-覆盖对象：install.sh 的 PreToolUse builder-loop matcher 列表、doctor.py::REQUIRED_MATCHERS——
+覆盖对象：install.sh 的 PreToolUse builder-loop matcher 列表、doctor.py::missing_hooks（按 hookspec.HOOK_SPEC 逐项检查）——
 冻结基线上 install.sh 的 PreToolUse matcher 缺 SubagentHandback，下面的断言在起点代码上会在
 call 阶段直接失败（baseline-red：真实运行 install.sh / bl doctor，不需要 import 新符号）。
 """

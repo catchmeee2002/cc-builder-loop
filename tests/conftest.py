@@ -38,21 +38,8 @@ def git(cwd: Path, *args: str) -> str:
     return subprocess.run(["git", "-c", "core.hooksPath=/dev/null", *args], cwd=str(cwd), check=True, capture_output=True, text=True).stdout.strip()
 
 
-# 镜像 install.sh 里的 hook 注册表（B3/B4/B5）：这里刻意不 import runtime.builder_loop.hookspec——
-# hookspec.py 在起点上还不存在，conftest 是全体测试的收集入口，import 失败会打断整个 tests/ 的收集。
-# 内容与 install.sh 的 spec 列表、B5 的 given 逐条对应。
-HOOK_SPEC: tuple[tuple[str, str | None, int], ...] = (
-    ("SessionStart", None, 5),
-    ("Stop", None, 20),
-    ("SubagentStart", "tester|reviewer", 10),
-    ("SubagentStop", "tester|reviewer", 120),
-    ("PreToolUse", "AskUserQuestion", 5),
-    ("PreToolUse", "EnterWorktree|SubagentHandback", 120),
-    ("PreToolUse", "Read|Grep|Glob|Write|Edit|MultiEdit|NotebookEdit|Bash|SendMessage", 5),
-    ("PostToolUse", "AskUserQuestion", 5),
-    ("PostToolUse", "SubagentHandback|Bash|TaskStop", 120),
-    ("UserPromptSubmit", None, 5),
-)
+# hook 注册表只有一份（原则二）：直接用 runtime 的定义。B5 的字面期望由 test_doctor_hook_spec 另行冻结
+from builder_loop.hookspec import HOOK_SPEC  # noqa: E402
 
 
 def write_full_claude_home(claude_home: Path, *, script: Path | None = None) -> None:
