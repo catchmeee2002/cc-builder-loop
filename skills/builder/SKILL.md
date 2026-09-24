@@ -14,7 +14,7 @@ builder-loop 只负责判据和 Git 事务；调度 subagent、续接、问用�
 1. Read 方案文件。没有 `<!-- builder-loop-contract -->` 标签 → AskUserQuestion：「用 /planner 补 contract」/「不走 loop，直接实现」。后者按普通任务做，完成后 spawn 一次 reviewer 即可。
 2. `bl start --plan <plan> --session ${CLAUDE_SESSION_ID}` → 记下 `run_id`、`worktree`（候选，你的工作目录）。输出的 `target_uncommitted` 非空 = 主仓有未提交的 tracked 改动，它们不在候选基线里；本任务依赖它们就 abandon，让用户先提交。`MACHINE_STAGE_MISSING` = 方案依赖的 stage 不在 loop.yml，补回后再 start。`HOOKS_OUTDATED`（exit 3）= hook 注册不完整（多半是只 pull 没重跑 install.sh），开 run 会让角色续接全部失效：把 `details.missing` 告诉用户，请用户重跑 `details.install` 后再 start。
 3. **立刻放出 tester**：`Agent(subagent_type: "tester", prompt: "builder-loop run <run_id>，按注入的 brief 写测试")`。subagent 在后台跑，交卷时任务通知会唤醒你（Agent 工具若有 `run_in_background` 参数就设为 true）。它在另一个 worktree 的冻结基线上盲写测试，看不到你的实现——所以不用等它，马上开始写实现。
-4. **顺手后台跑一次基线预检**：`bl preflight --session ${CLAUDE_SESSION_ID}`（Bash `run_in_background`）。它在 run 起点上把 pass_cmd 跑一遍，告诉你哪些 stage**本来就红**，省得之后对着与你无关的失败白查。跑的时候你照常写实现。preflight、machine、proof 运行期间，不要在本机另起全量测试或长时间占用 CPU / IO 的后台任务：它们会把门禁挤成假超时。
+4. **顺手后台跑一次基线预检**：`bl preflight --session ${CLAUDE_SESSION_ID}`（Bash `run_in_background`）。它在 run 起点上把 pass_cmd 跑一遍，告诉你哪些 stage**本来就红**，省得之后对着与你无关的失败白查。跑的时候你照常写实现。preflight、machine、proof 运行期间，不要在本机另起全量测试或长时间占用 CPU / IO 的后台任务：它们会把门禁挤成假超时。这条纪律只约束你手工起的测试命令和其他重负载任务：`bl machine` / `bl proof` 遇到 preflight 在跑会自动排队等它跑完，`next_action` 给出它们时照常后台跑。
 5. 之后你的 Write / Edit / Bash 都在候选 `worktree` 下；主仓只读。
 
 ## 2. 推进：跟着 `next_action` 走

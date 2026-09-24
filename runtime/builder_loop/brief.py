@@ -118,6 +118,8 @@ def _rebased_tester_files(lg: dict[str, Any], repo_root: Path) -> list[str]:
 
 
 LEDGER_HINT = "要看 evidence 细节就只读这个 ledger，不要在文件系统里搜索它。"
+# 角色与 preflight / machine / proof 并行（#289）：builder 的同一条纪律在 SKILL 里，角色只读得到 brief
+GATE_LOAD_RULE = "本机只跑与你这一轮相关的测试文件，不要跑全量测试套件：全量由 machine 跑，与门禁并发会把它挤成假超时。"
 TARGET_DRIFT_HINT = ("目标分支在你上次审查后前进了。patch 未变不构成沿用上次结论的依据：本轮复审漂入的提交与候选的交互——"
                      "候选改过契约的函数是否有了新的调用方、漂入的文档是否引用了候选删改的东西、是否出现了重复实现。")
 
@@ -307,6 +309,7 @@ def render(brief: dict[str, Any]) -> str:
     if brief["mission"].get("trust_boundaries"):
         lines.append("Trust boundaries: " + "; ".join(brief["mission"]["trust_boundaries"]))
     lines.append(f"本 run 的 ledger（只读）: {brief['ledger']}。{LEDGER_HINT}")
+    lines.append(GATE_LOAD_RULE)
 
     if role == "tester":
         runner = brief["proof_runner"]

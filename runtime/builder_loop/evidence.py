@@ -34,7 +34,7 @@ STATE_STALE = "stale"
 
 ROLE_LEASE_SECONDS = 40 * 60
 GATE_MACHINE, GATE_PROOF, GATE_PREFLIGHT = "machine", "proof", "preflight"
-GATES = (GATE_MACHINE, GATE_PROOF, GATE_PREFLIGHT)  # machine / proof 排在前：readiness 只拿它俩与 next_action 对齐
+GATES = (GATE_MACHINE, GATE_PROOF, GATE_PREFLIGHT)  # machine / proof 排在前：readiness 的 machine / proof 分支只认它俩
 NO_PROGRESS_REPEATS = 3
 PROOF_STALL_REPEATS = 3
 
@@ -454,6 +454,7 @@ def readiness(ledger: dict[str, Any], repo_root: Path) -> dict[str, Any]:
     has_builder_cp = any(cp.get("role") == "builder" for cp in ledger["candidate"]["checkpoints"])
     tester_run = "tester" in required and role_running(ledger, "tester")
     tester_known = bool(ledger["agents"].get("tester"))
+    gate = gate_running(ledger)
     drift = tester_drift_overlap(ledger, repo_root) if "tester" in required else []
     integrate_needed = not drift and "tester" in required and states["tester"] == STATE_PASS and needs_integrate(ledger, repo_root)
 
@@ -486,7 +487,10 @@ def readiness(ledger: dict[str, Any], repo_root: Path) -> dict[str, Any]:
     elif states["machine"] != STATE_PASS:
         rec = ledger["evidence"].get("machine") or {}
         mentioned = ((rec.get("details") or {}).get("failure") or {}).get("tester_files_mentioned")
-        if states["machine"] == STATE_FAIL and "tester" in required and mentioned \
+        if gate == GATE_MACHINE:
+            # machine 在跑（多半是后台 Bash）：下一步取决于它的新结论，别再按旧结论催（#242 #279）
+            action = ACTION_AWAITING_GATE
+        elif states["machine"] == STATE_FAIL and "tester" in required and mentioned \
                 and last_role_result_at(ledger, "tester") <= rec.get("at", ""):
             # 失败日志里出现了归 tester 的路径：builder 改不了 tests/**，这条失败必须有它自己的出口，
             # 否则只能靠 MISSION_REVISION 绕过（#249）。与下面 proof 的 owner=tester 分支同构
@@ -499,6 +503,8 @@ def readiness(ledger: dict[str, Any], repo_root: Path) -> dict[str, Any]:
         replied = last_role_result_at(ledger, "tester") > rec.get("at", "")
         if tester_run:
             action = ACTION_AWAITING_TESTER
+        elif gate == GATE_PROOF:
+            action = ACTION_AWAITING_GATE  # 同 machine：proof 在跑，等它的新结论（#279）
         elif missing_patch(ledger) and last_role_result_at(ledger, "tester") <= _first_integrate_at(ledger):
             # 两段式：tester 首轮盲写时给不出 mutation patch；集成后实现可读了，续接它补上
             action = ACTION_RESUME_TESTER
@@ -529,10 +535,6 @@ def readiness(ledger: dict[str, Any], repo_root: Path) -> dict[str, Any]:
         # hold 冻结的是「此刻的候选先别动、先别重验」（#299）：hold 之后候选又变了（builder 自己 checkpoint），
         # 说明工作已经恢复，照常给真实动作；等到重新全绿、本该 finalize 时再表现为 held
         action = ACTION_HELD
-
-    gate = gate_running(ledger)
-    if gate == action:  # 要跑的门禁已经在跑（多半是后台 Bash）：等它，别再催一遍（#242）
-        action = ACTION_AWAITING_GATE
 
     return {"required": required, "states": states, "next_action": action, "blockers": found,
             "integrate_needed": integrate_needed, "tester_drift": drift, "gate_running": gate}

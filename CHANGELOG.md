@@ -2,6 +2,12 @@
 
 > 本文件记 **CC 版**产品线（分支 `cc/main`）。Codex 版见 `codex/main` 分支。
 
+## 门禁在跑时的路标（#279 #301 #289，2026-09-25）
+
+- **门禁在跑时不按旧结论催（#279）**：machine / proof 分支先看本门禁是否在跑，在跑就给 `awaiting_gate`，Stop 放行。此前只在 `next_action` 恰好等于在跑的门禁时才等待；machine 失败后后台重跑期间，Stop 仍按旧失败反复要求续接 tester，只能靠无进展放行脱身。
+- **SKILL 写明 machine / proof 会排队等 preflight（#301）**：「门禁运行期间不起重负载」只约束手工起的命令；preflight 在跑时 `next_action=machine` 照常后台跑。
+- **角色 brief 加上同一条纪律（#289）**：tester / reviewer 本机只跑与这一轮相关的测试文件，不跑全量套件。
+
 ## 判据不误判：参数化 id、基线红的措辞、hook 注册前置检查（#310 #300 #309，2026-09-25）
 
 - **参数 id 里含 `::` 的用例能被匹配（#310）**：`match_cases` 改用与 pytest 写 junit 相同的切分（先在第一个 `[` 处切开，只切前半段的 `::`）。此前 `test_x[tests/a.py::test_y]` 这类已跑过且通过的用例被判 `missing`，proof 把归属甩给 tester，多花一轮。
