@@ -11,6 +11,7 @@ from pathlib import Path
 repo = Path(sys.argv[1]); home = Path(sys.argv[2])
 sys.path.insert(0, str(repo / "runtime"))
 from builder_loop.doctor import HOOK_MARKER  # 「哪些 hook 是本版自家的」只有 doctor 这一个判据
+from builder_loop.hookspec import HOOK_SPEC  # 注册什么只有这一份定义，doctor 与 bl start 按它检查（#309）
 # V7 及更早版本的 hook 命令是 scripts/builder-loop-*.sh，不含 HOOK_MARKER；仅作退役清理，不用于识别本版 hook
 LEGACY_MARKER = "builder-loop"
 home.mkdir(parents=True, exist_ok=True)
@@ -63,25 +64,7 @@ for ev in list(hooks):
         del hooks[ev]
 
 script = str(repo / "hooks" / "bl-hook.sh")
-spec = [
-    # 把本仓 bin/ 写进会话 PATH（经 CLAUDE_ENV_FILE），SKILL 与 runtime 提示里的裸 `bl` 才能直接用
-    ("SessionStart", None, 5),
-    ("Stop", None, 20),
-    ("SubagentStart", "tester|reviewer", 10),
-    ("SubagentStop", "tester|reviewer", 120),
-    ("PreToolUse", "AskUserQuestion", 5),
-    # SubagentHandback：角色交卷投递前的校验，不合规就 deny（#303）；要校验 proof_spec 与 patch，超时放宽
-    ("PreToolUse", "EnterWorktree|SubagentHandback", 120),
-    # tester 首次 integrate 前的读隔离 + 角色写边界 + 心跳续租；SendMessage = builder 续接角色的 intent（#306）。
-    # 高频工具，靠 bl-hook.sh 的纯 bash 快速路径兜成本
-    ("PreToolUse", "Read|Grep|Glob|Write|Edit|MultiEdit|NotebookEdit|Bash|SendMessage", 5),
-    ("PostToolUse", "AskUserQuestion", 5),
-    # 角色结果的唯一登记点：tester 登记要提交 worktree + 校验 proof_spec，超时与 SubagentStop 同级。
-    # Bash：角色前台命令超时被转后台（backgroundTaskId）；TaskStop：builder 停掉它（#283 #308）
-    ("PostToolUse", "SubagentHandback|Bash|TaskStop", 120),
-    ("UserPromptSubmit", None, 5),
-]
-for ev, matcher, timeout in spec:
+for ev, matcher, timeout in HOOK_SPEC:
     entry = {"hooks": [{"type": "command", "command": f"{script} {ev}", "timeout": timeout}]}
     if matcher:
         entry["matcher"] = matcher

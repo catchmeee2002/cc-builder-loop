@@ -49,6 +49,7 @@ bl doctor                                                   # hook / 软链 / �
 - 新增 ledger 字段前先过原则五：能从 git / events / evidence 派生的不落盘（`integrated_head`、`running` 都是被这条否掉的）。
 - 涉及路径归属或保护的判断一律调 `contract.write_rejection`，不要在调用点另写一份。
 - 要让 tester / reviewer 知道的事实一律进 `brief.build()`，不在 prompt、hook 或 builder 的消息里另写一份——角色只信 `bl brief`（注入的上下文续接时不送达，SendMessage 的正文角色无从验真）。
+- 改 hook 注册（事件 / matcher / timeout）→ 只改 `runtime/builder_loop/hookspec.py::HOOK_SPEC`；install.sh、`bl doctor`、`bl start` 都从它派生，改完重跑 `./install.sh`。
 - 改 hook 输入字段假设 → 先用真实会话探针确认（临时 hook 把 stdin 落盘），CC 版本不同字段会变。
 - 改 agent 输出契约（`BUILDER_LOOP_RESULT`）→ 同时改 `hooks.py` 的 `*_RESULT_FORMAT`、`agents/*.md`、`schema/agent-result.schema.json`。
 - 本仓自身用 V8 交付（`.claude/loop.yml` 已配）；dogfood 需新开 session 让 skills 重新发现。

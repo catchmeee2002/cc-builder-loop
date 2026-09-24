@@ -49,7 +49,8 @@ proof 只能证明"测试能抓住偏离当前实现"，证明不了"当前实�
 | `retro` | 确定性信号派生（只读 ledger）、复盘记录校验、cleanup |
 | `hooks` | 六个 handler、结果标记解析、tester 读隔离与角色写边界、心跳续租；注入的上下文 = `brief.render()` |
 | `brief` | 角色视角事实的**唯一来源**：写边界、候选可读性、待办；结构化 + 文本两种形态，`bl brief` 与 SubagentStart 同源；reviewer 另带文档引用线索（`doc_reference_hints`，现算调 `doc-lint.sh`，≤4 秒，失败降级为 `error`，不落盘） |
-| `doctor` | 只读诊断 |
+| `doctor` | 只读诊断；`missing_hooks()` 按 `HOOK_SPEC` 逐项核对 settings.json，doctor 与 `bl start` 共用 |
+| `hookspec` | `HOOK_SPEC`：要注册哪些 hook 的唯一定义，install.sh 按它注册（#309） |
 
 `hooks/bl-hook.sh` 先用纯 bash 从 stdin 抠 `session_id` 并查 session 指针，没有绑定就直接退出、不起 python——PreToolUse 挂在 Read / Bash 上，无绑定 session 的开销必须接近零。
 
@@ -151,8 +152,9 @@ finalize / abandon / finalize_failed 之后 session 不解绑；`start` 遇到�
 
 | 情况 | 行为 |
 |---|---|
+| hook 注册缺项或断链（只 pull 没重跑 install.sh） | `bl start` 在创建 worktree 之前按 `HOOK_SPEC` 核对，缺任何一项就 `HOOKS_OUTDATED`（exit 3，`details.missing` / `details.install`），不留 run 目录、worktree 与 session 绑定。缺了 matcher，对应 hook 根本不触发：例如缺 SendMessage 时每次续接都被判成唤醒，run 确定卡死（#309）。重跑 install.sh 改的是用户级 settings.json，交给用户；已在跑的 run 不检查 |
 | proof_runner 跑不起来 | `bl start` 与 `contract validate --check-repo` 先让它对空目录收集一次（健康时退出码 5；`--version` 不加载插件，不算数），不过就拒绝启动（`PROOF_RUNNER_UNAVAILABLE`）——run 还不存在，改 loop.yml 不需要 revise/授权 |
-| machine FAIL 的 stage 在基线上也红 | 跑过 `bl preflight` 则 `failure.baseline_red=true` 并提示与候选无关；没跑过则提示可以补跑。判定取 machine 收尾时 ledger 里最新一次匹配的 preflight（排队期间写入的也算），并从其 `stages[]` 派生：超时的 stage 不算红，记为 `baseline_timed_out`（超时是没观察到结果，常见于资源争抢），preflight 结果此时为 `INCONCLUSIVE` |
+| machine FAIL 的 stage 在基线上也红 | 跑过 `bl preflight` 则 `failure.baseline_red=true`，附上该 stage 的预跑日志 `failure.baseline_log`，提示失败原因未必相同、由 builder 对照两份日志判断（预跑只观察到 stage 粒度的红，推不出「与候选无关」；不比对日志文本，#300）；没跑过则提示可以补跑。判定取 machine 收尾时 ledger 里最新一次匹配的 preflight（排队期间写入的也算），并从其 `stages[]` 派生：超时的 stage 不算红，记为 `baseline_timed_out`（超时是没观察到结果，常见于资源争抢），preflight 结果此时为 `INCONCLUSIVE` |
 | machine FAIL | evidence fail + failures 追加；输出 `repeat_count` / `remaining_iterations` / `tester_files_mentioned`；测试写错由 builder SendMessage 给 tester |
 | pass_cmd 改了候选文件 | `failure.worktree_mutated`，视为 FAIL |
 | machine 执行期间输入投影变化（builder 并发 checkpoint / integrate、contract revise 改了 facets） | `MACHINE_INPUT_CHANGED`（negative，exit 1）：本次观察作废，不写 evidence、不追加 failures、不占 `machine_iter`，只记一条 `machine_input_changed` event，`changed_inputs` 列出变了的投影键。判据是 `evidence.input_changes`（起跑与收尾两份 ledger 的投影比较），而非 git HEAD——pass_cmd 自己 commit 造成的 HEAD 变化仍走 `worktree_mutated` |

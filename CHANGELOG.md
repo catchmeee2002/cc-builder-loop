@@ -2,6 +2,13 @@
 
 > 本文件记 **CC 版**产品线（分支 `cc/main`）。Codex 版见 `codex/main` 分支。
 
+## 判据不误判：参数化 id、基线红的措辞、hook 注册前置检查（#310 #300 #309，2026-09-25）
+
+- **参数 id 里含 `::` 的用例能被匹配（#310）**：`match_cases` 改用与 pytest 写 junit 相同的切分（先在第一个 `[` 处切开，只切前半段的 `::`）。此前 `test_x[tests/a.py::test_y]` 这类已跑过且通过的用例被判 `missing`，proof 把归属甩给 tester，多花一轮。
+- **基线红不再断言「与候选无关」（#300）**：`failure.baseline_red` 的取值不变，新增 `failure.baseline_log`（该 stage 的预跑日志），提示改为「失败原因未必相同，对照两份日志再判断」。预跑只观察到 stage 粒度的红，一个 stage 打包多个步骤时，候选引起的真实失败也曾被标成基线噪音。
+- **行为变更：hook 注册不完整时 `bl start` 拒绝启动（#309）**：返回 `HOOKS_OUTDATED`（exit 3），列出缺项与 install.sh 路径，不留任何现场。此前只 pull 不重跑 `./install.sh` 时新 runtime 配旧 matcher，每次续接都被当成唤醒、run 卡死，只有手动跑 `bl doctor` 才看得出。旧安装的机器必须先重跑 install.sh 才能开 run。
+- **hook 注册表只有一份**：`runtime/builder_loop/hookspec.py::HOOK_SPEC`，install.sh 按它注册（结果逐字节不变，仍 10 条），`bl doctor` 与 `bl start` 按它逐项检查；doctor 此前只查 4 个 matcher（`REQUIRED_MATCHERS`，已删除）。
+
 ## 角色交卷通道：patch 走文件、不合规的 handback 在投递前被拦（#281 #303 #250 #305 #302，2026-09-24）
 
 - **契约变更：mutation patch 改用 `patch_file`（#281）**：tester 用 `git diff > <临时目录>/x.patch` 生成，结果行里只给绝对路径，runtime 交卷时读原始字节写进 ledger 的 `patch`。结果行里给非空的 inline `patch` 会被 `PROOF_SPEC_INVALID` 拒绝；`bl proof --spec-file` 的调试入口不变。此前 patch 由模型在一行 JSON 里转述，尾部空白上下文行丢失、字符走样的同一失败在不同候选上出现 7 次（原则六），交卷预检只能拦下，拦不住。

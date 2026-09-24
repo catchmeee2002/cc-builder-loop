@@ -38,6 +38,38 @@ def git(cwd: Path, *args: str) -> str:
     return subprocess.run(["git", "-c", "core.hooksPath=/dev/null", *args], cwd=str(cwd), check=True, capture_output=True, text=True).stdout.strip()
 
 
+# 镜像 install.sh 里的 hook 注册表（B3/B4/B5）：这里刻意不 import runtime.builder_loop.hookspec——
+# hookspec.py 在起点上还不存在，conftest 是全体测试的收集入口，import 失败会打断整个 tests/ 的收集。
+# 内容与 install.sh 的 spec 列表、B5 的 given 逐条对应。
+HOOK_SPEC: tuple[tuple[str, str | None, int], ...] = (
+    ("SessionStart", None, 5),
+    ("Stop", None, 20),
+    ("SubagentStart", "tester|reviewer", 10),
+    ("SubagentStop", "tester|reviewer", 120),
+    ("PreToolUse", "AskUserQuestion", 5),
+    ("PreToolUse", "EnterWorktree|SubagentHandback", 120),
+    ("PreToolUse", "Read|Grep|Glob|Write|Edit|MultiEdit|NotebookEdit|Bash|SendMessage", 5),
+    ("PostToolUse", "AskUserQuestion", 5),
+    ("PostToolUse", "SubagentHandback|Bash|TaskStop", 120),
+    ("UserPromptSubmit", None, 5),
+)
+
+
+def write_full_claude_home(claude_home: Path, *, script: Path | None = None) -> None:
+    """在 claude_home 里生成一份注册完整（覆盖 HOOK_SPEC 全部 10 条）的 settings.json，
+    命令指向本 checkout 的 hooks/bl-hook.sh。默认给所有既有测试用，让新增的 HOOKS_OUTDATED /
+    missing_hooks 检查不干扰它们；B3/B4 的负向用例在各自测试里再从这份基础上删条目。"""
+    claude_home.mkdir(parents=True, exist_ok=True)
+    hook_script = str(script or (ROOT / "hooks" / "bl-hook.sh"))
+    hooks: dict[str, list[dict]] = {}
+    for ev, matcher, timeout in HOOK_SPEC:
+        entry: dict = {"hooks": [{"type": "command", "command": f"{hook_script} {ev}", "timeout": timeout}]}
+        if matcher:
+            entry["matcher"] = matcher
+        hooks.setdefault(ev, []).append(entry)
+    (claude_home / "settings.json").write_text(json.dumps({"hooks": hooks}, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
 def write_plan(repo: Path, contract: dict, name: str = "plan.md") -> Path:
     p = repo / name
     p.write_text("# plan\n<!-- builder-loop-contract -->\n```json\n" + json.dumps(contract) + "\n```\n<!-- /builder-loop-contract -->\n", encoding="utf-8")
@@ -60,6 +92,7 @@ def contract_with(**patches) -> dict:
 class Repo:
     root: Path
     home: Path
+    claude_home: Path
 
     def commit_all(self, msg: str = "chore(fixture): [cr_id_skip] Commit") -> str:
         git(self.root, "add", "-A")
@@ -71,6 +104,7 @@ class Repo:
 def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Repo:
     root = tmp_path / "repo"
     home = tmp_path / "home"
+    claude_home = tmp_path / "claude_home"
     (root / "src").mkdir(parents=True)
     (root / "tests").mkdir()
     (root / ".claude").mkdir()
@@ -91,7 +125,11 @@ def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Repo:
     git(root, "commit", "-q", "-m", "chore(fixture): [cr_id_skip] Init")
     monkeypatch.setenv("BUILDER_LOOP_HOME", str(home))
     monkeypatch.setenv("PYTHONDONTWRITEBYTECODE", "1")
-    return Repo(root=root, home=home)
+    # 隔离 CLAUDE_HOME：不读宿主 ~/.claude；默认注册齐全（HOOK_SPEC 全部 10 条），
+    # 让既有测试与本契约新增的 HOOKS_OUTDATED / missing_hooks 检查互不干扰。
+    write_full_claude_home(claude_home)
+    monkeypatch.setenv("CLAUDE_HOME", str(claude_home))
+    return Repo(root=root, home=home, claude_home=claude_home)
 
 
 @pytest.fixture

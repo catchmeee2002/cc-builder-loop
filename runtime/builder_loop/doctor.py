@@ -11,6 +11,7 @@ from typing import Any
 
 from . import ledger as ledger_mod
 from .errors import Problem
+from .hookspec import required_pairs
 from .jsonutil import read_json
 
 HOOK_MARKER = "bl-hook.sh"
@@ -45,15 +46,22 @@ def _check_hooks() -> dict[str, Any]:
     return {"settings": str(p), "registered": registered, "broken": broken}
 
 
-# 角色生命周期依赖的 matcher（#306 #283 #308）：缺了 SendMessage，每次续接都会被当成唤醒、结论不登记
-REQUIRED_MATCHERS = (("PreToolUse", "SendMessage"), ("PreToolUse", "SubagentHandback"), ("PostToolUse", "Bash"), ("PostToolUse", "TaskStop"))
+def missing_hooks() -> list[str]:
+    """按 HOOK_SPEC 逐项核对 settings.json 里 bl-hook.sh 的注册；空列表 = 完整。
 
-
-def _missing_matchers(registered: list[dict[str, Any]]) -> list[str]:
-    if not registered:
-        return []
-    have = {(r["event"], tool) for r in registered for tool in (r.get("matcher") or "").split("|")}
-    return [f"{event} 的 hook matcher 缺少 {tool}（旧版安装；重新运行 install.sh）" for event, tool in REQUIRED_MATCHERS if (event, tool) not in have]
+    缺任何一项，对应事件的 hook 就不触发，角色生命周期会确定地坏掉（#309：缺 SendMessage 时每次续接都被当成唤醒）。
+    断链的注册不算数。doctor 与 `bl start` 共用这一个判定（原则二）。"""
+    rep = _check_hooks()
+    broken = set(rep.get("broken") or [])
+    have = {(r["event"], tool or None) for r in rep["registered"] if r["command"] not in broken
+            for tool in (r.get("matcher") or "").split("|")}
+    out = [f"hook 脚本路径失效：{cmd}（重新运行 install.sh）" for cmd in sorted(broken)]
+    for event, tool in required_pairs():
+        if (event, tool) in have:
+            continue
+        what = f"{event} 的 hook matcher 缺少 {tool}" if tool else f"{event} 的 hook 未注册"
+        out.append(f"{what}（旧版安装或未安装；重新运行 install.sh）")
+    return out
 
 
 def _check_sessions() -> dict[str, Any]:
@@ -133,7 +141,7 @@ def doctor(repo_arg: str | None) -> dict[str, Any]:
         problems.append("hooks 未注册（运行 install.sh）")
     if report["hooks"].get("broken"):
         problems.append("hook 脚本路径失效")
-    problems += _missing_matchers(report["hooks"].get("registered") or [])
+    problems += missing_hooks()
     if report["sessions"]["orphans"]:
         problems.append("存在孤儿 session 指针（可安全删除）")
     if report["sessions"]["retro_pending"]:

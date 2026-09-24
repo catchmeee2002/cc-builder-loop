@@ -163,8 +163,11 @@ def _annotate_baseline(failed: dict[str, Any], ledger: dict[str, Any]) -> None:
     if red is None:
         failed["baseline"] = "未做基线预跑：`bl preflight` 可确认这一段是不是本来就红（后台跑，不占你的时间）"
     elif failed.get("stage") in red:
+        # 预跑只在 stage 粒度上观察到「这一段红过」，观察不到红的是不是同一个原因，结论只能停在这一层（原则一，#300）；
+        # 不比对两份日志的文本（原则四），把日志交给 builder 自己对照
         failed["baseline_red"] = True
-        failed["baseline"] = "这一段在 run 起点（没有你的改动）上同样失败，多半与候选无关：要么改 .claude/loop.yml 后 `bl contract revise --authorize`，要么本次任务本就要修好它"
+        failed["baseline_log"] = next(s["log"] for s in _latest_preflight(ledger)["stages"] if s["stage"] == failed["stage"])
+        failed["baseline"] = "这一段在 run 起点（没有你的改动）上也失败过，但失败原因未必相同：对照 baseline_log 与本次的 log 再判断是否与候选有关"
     elif failed.get("stage") in (timed or []):
         failed["baseline_timed_out"] = True
         failed["baseline"] = "这一段在 run 起点上超时了，可能是资源争抢（有别的全量测试或重负载在跑），不能据此判定失败出在起点；需要时在本机空闲时重跑 `bl preflight`"

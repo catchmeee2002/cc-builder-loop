@@ -10,7 +10,7 @@ from typing import Any
 
 from . import __version__
 from . import contract as contract_mod
-from . import evidence, gitx, ledger as ledger_mod, machine, proof, worktree
+from . import doctor, evidence, gitx, ledger as ledger_mod, machine, proof, worktree
 from .config import load_loop_config, load_loop_config_at
 from .errors import Problem, fatal, needs_user, negative
 
@@ -60,6 +60,12 @@ def start(repo_root: Path, plan_path: Path, session_id: str, target_branch: str 
             raise needs_user("RUN_ALREADY_ACTIVE", "当前 session 已绑定一个未完成的 run；先 finalize 或 abandon", run_id=bound["ledger"]["run_id"])
         if ledger_mod.needs_retro(bound["ledger"]):
             raise needs_user("RETRO_PENDING", "上一个 run 已结束但还没复盘；先 `bl retro signals` → `bl retro record`", run_id=bound["ledger"]["run_id"])
+    # hook 注册缺项时角色生命周期确定会坏（#309），开 run 之前拒绝，不留 run 目录 / worktree / session 绑定（原则三）。
+    # 重跑 install.sh 会改用户级 settings.json，交给用户决定
+    missing = doctor.missing_hooks()
+    if missing:
+        raise needs_user("HOOKS_OUTDATED", "hook 注册不完整（只 pull 没重跑 install.sh？）：用户重跑 install.sh 后再 start",
+                         missing=missing, install=str(Path(__file__).resolve().parents[2] / "install.sh"))
 
     loop_config = load_loop_config(repo_root)
     contract = contract_mod.parse_contract_file(plan_path)

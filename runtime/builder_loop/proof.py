@@ -325,11 +325,16 @@ def parse_junit(path: Path) -> list[dict[str, str]]:
 
 def match_cases(test_id: str, cases: list[dict[str, str]]) -> list[dict[str, str]]:
     """pytest node id → junit 用例。classname 用后缀匹配（monorepo 子目录自带 ini 时 rootdir 会变）；
-    声明的 id 不带 `[` 时匹配该用例的全部参数实例。只给文件路径则匹配该文件的全部用例。"""
-    file_part, _, rest = test_id.partition("::")
+    声明的 id 不带 `[` 时匹配该用例的全部参数实例。只给文件路径则匹配该文件的全部用例。
+    切分与 pytest 写 junit 时的 `mangle_test_address` 一致：先在第一个 `[` 处切开，只把前半段按 `::` 切分，
+    参数部分原样接回 name——参数 id 里可以有 `::`（#310）。"""
+    path, bracket, params = test_id.partition("[")
+    file_part, _, rest = path.partition("::")
     module = file_part[:-3] if file_part.endswith(".py") else file_part
     module = module.replace("/", ".")
     parts = rest.split("::") if rest else []
+    if parts:
+        parts[-1] += bracket + params
     name = parts[-1] if parts else None
     expected = ".".join([module, *parts[:-1]])
 

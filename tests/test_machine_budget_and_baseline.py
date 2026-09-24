@@ -16,6 +16,26 @@ from conftest import ROOT, RUNTIME, contract_with, git, write_plan
 
 SKILL = ROOT / "skills" / "builder" / "SKILL.md"
 
+# B2 锚句 C：baseline_red 为真时 failure.baseline 的措辞不再断言「与候选无关」，
+# 而是提示对照 baseline_log 与本次 log 自行判断。
+ANCHOR_C = "这一段在 run 起点（没有你的改动）上也失败过，但失败原因未必相同：对照 baseline_log 与本次的 log 再判断是否与候选有关"
+
+
+def _norm_doc(s: str) -> str:
+    """断言文档/提示文本前的归一化：去掉 markdown 强调标记与反引号，连续空白归一为一个空格。"""
+    s = re.sub(r"[`*_]", "", s)
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def _skill_section_2_row(next_action: str) -> str:
+    text = SKILL.read_text(encoding="utf-8")
+    m = re.search(r"(?m)^## 2\. .*?\n(.*?)(?=\n## 3\.|\Z)", text, flags=re.S)
+    assert m, "找不到 SKILL.md 的 ## 2. 推进 一节"
+    body = m.group(1)
+    row = re.search(rf"(?m)^\|\s*`{re.escape(next_action)}`\s*\|.*\|\s*$", body)
+    assert row, f"表格里没有 next_action={next_action} 的行"
+    return row.group(0)
+
 
 def _start_lite(repo, cli, session="S1"):
     write_plan(repo.root, contract_with(**{"assurance.required": ["machine", "reviewer"]}), "lite.md")
@@ -138,7 +158,8 @@ def test_b2_reverse_new_event_marks_truly_red(repo, cli, monkeypatch):
     out = cli("machine", "--session", "S1", expect=1)
     failure = out["failure"]
     assert failure.get("baseline_red") is True, failure
-    assert "与候选无关" in (failure.get("baseline") or ""), failure
+    assert failure.get("baseline") == ANCHOR_C, failure
+    assert "与候选无关" not in (failure.get("baseline") or ""), failure
 
 
 def test_b2_no_new_event_keeps_existing_match(repo, cli):
@@ -162,7 +183,8 @@ def test_b2_no_new_event_keeps_existing_match(repo, cli):
     cli("checkpoint", "--session", "S1", "--role", "builder")
     out = cli("machine", "--session", "S1", expect=1)
     assert out["failure"].get("baseline_red") is True
-    assert "与候选无关" in (out["failure"].get("baseline") or "")
+    assert out["failure"].get("baseline") == ANCHOR_C
+    assert out["failure"].get("baseline_log") == "/dev/null"  # 与手写 event 里 stage `test` 的 log 一致
 
 
 def test_b2_commands_digest_mismatch_still_none(repo, cli):
@@ -271,7 +293,80 @@ def test_b3_real_failure_still_marks_baseline_red(repo, cli):
     (wt / "src" / "foo.py").write_text((wt / "src" / "foo.py").read_text() + "\n# c\n")
     cli("checkpoint", "--session", "S1", "--role", "builder")
     failure = cli("machine", "--session", "S1", expect=1)["failure"]
-    assert failure["stage"] == "legacy" and failure["baseline_red"] is True and "与候选无关" in failure["baseline"]
+    assert failure["stage"] == "legacy" and failure["baseline_red"] is True
+    assert failure["baseline"] == ANCHOR_C
+    assert "与候选无关" not in failure["baseline"]
+    expected_log = next(s["log"] for s in out["stages"] if s["stage"] == "legacy")
+    assert failure["baseline_log"] == expected_log
+
+
+def test_b2_baseline_log_matches_preflight_log_path(repo, cli):
+    """given：preflight 对得上当前 machine_commands，stage `test` 真失败，日志路径为
+    <run_dir>/logs/preflight-test.log；候选上同一 stage 也失败 → failure.baseline_log 等于该路径。"""
+    (repo.root / ".claude" / "loop.yml").write_text(
+        "pass_cmd:\n  - stage: test\n    cmd: python3 -c \"import sys; sys.exit(1)\"\n    timeout: 5\n",
+        encoding="utf-8")
+    repo.commit_all()
+    wt, lp = _start_lite(repo, cli)
+    out = cli("preflight", "--session", "S1")
+    assert out["result"] == "RED" and out["baseline_red"] == ["test"]
+    expected_log = str(lp.parent / "logs" / "preflight-test.log")
+    assert out["stages"][0]["log"] == expected_log
+
+    (wt / "src" / "foo.py").write_text((wt / "src" / "foo.py").read_text() + "\n# c\n")
+    cli("checkpoint", "--session", "S1", "--role", "builder")
+    failure = cli("machine", "--session", "S1", expect=1)["failure"]
+    assert failure["stage"] == "test"
+    assert failure["baseline_red"] is True
+    assert failure["baseline_log"] == expected_log
+    assert failure["baseline"] == ANCHOR_C
+    assert "与候选无关" not in failure["baseline"]
+
+
+def test_b2_boundary_timed_out_stage_has_no_baseline_log(repo, cli):
+    """边界：preflight 上该 stage 超时 → baseline_red 不出现，baseline_timed_out 为 true，
+    提示仍含「超时」且不含「与候选无关」，不给 baseline_log。"""
+    (repo.root / ".claude" / "loop.yml").write_text(_slow_loop_yml(), encoding="utf-8")
+    repo.commit_all()
+    wt, lp = _start_lite(repo, cli)
+    cli("preflight", "--session", "S1")
+    (wt / "src" / "foo.py").write_text((wt / "src" / "foo.py").read_text() + "\n# c\n")
+    cli("checkpoint", "--session", "S1", "--role", "builder")
+    failure = cli("machine", "--session", "S1", expect=1)["failure"]
+    assert failure["stage"] == "slow"
+    assert "baseline_red" not in failure
+    assert "baseline_log" not in failure
+    assert "超时" in (failure.get("baseline") or "")
+    assert "与候选无关" not in (failure.get("baseline") or "")
+
+
+def test_b2_boundary_no_preflight_has_no_baseline_log(repo, cli):
+    """边界：没跑过 preflight → 不出现 baseline_red / baseline_log，提示照旧建议补跑 bl preflight。"""
+    wt, lp = _start_lite(repo, cli)
+    (wt / "src" / "foo.py").write_text("def add(a, b):\n    return a + b + 1\n")  # 让 test 阶段失败
+    cli("checkpoint", "--session", "S1", "--role", "builder")
+    failure = cli("machine", "--session", "S1", expect=1)["failure"]
+    assert "baseline_red" not in failure
+    assert "baseline_log" not in failure
+    assert "bl preflight" in (failure.get("baseline") or "")
+
+
+def test_b2_boundary_passing_preflight_stage_has_no_baseline_log(repo, cli):
+    """边界：preflight 上该 stage 通过时不出现 baseline_red / baseline_log。"""
+    wt, lp = _start_lite(repo, cli)
+    cli("preflight", "--session", "S1")  # 默认 pass_cmd 在基线上是绿的
+    (wt / "src" / "foo.py").write_text("def add(a, b):\n    return a + b + 1\n")  # 让候选上 test 阶段变红
+    cli("checkpoint", "--session", "S1", "--role", "builder")
+    failure = cli("machine", "--session", "S1", expect=1)["failure"]
+    assert "baseline_red" not in failure
+    assert "baseline_log" not in failure
+
+
+def test_b2_skill_machine_row_has_anchor_d():
+    """skills/builder/SKILL.md 第 2 节表格 machine 一行含锚句 D。"""
+    row = _skill_section_2_row("machine")
+    anchor_d = "`failure.baseline_red` 为真只说明这一段在起点上也失败过，原因未必相同：对照 `failure.baseline_log` 与 `failure.log` 再判断"
+    assert _norm_doc(anchor_d) in _norm_doc(row)
 
 
 # ---------------------------------------------------------------- B4

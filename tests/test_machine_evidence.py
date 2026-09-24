@@ -7,6 +7,8 @@ from pathlib import Path
 from builder_loop import evidence, ledger as L, machine
 from conftest import contract_with, implement_mul, role_turn, make_tester_result, send_message, write_mul_test, write_plan
 
+ANCHOR_C = "这一段在 run 起点（没有你的改动）上也失败过，但失败原因未必相同：对照 baseline_log 与本次的 log 再判断是否与候选有关"
+
 
 def _start_lite(repo, cli, session="S1"):
     """只要 machine + reviewer 的 run：测 machine 自身行为时不需要 tester。"""
@@ -219,7 +221,11 @@ def test_preflight_marks_baseline_red_stage(repo, cli):
     implement_mul(wt)
     cli("checkpoint", "--session", "S1", "--role", "builder")
     failure = cli("machine", "--session", "S1", expect=1)["failure"]
-    assert failure["stage"] == "legacy" and failure["baseline_red"] is True and "与候选无关" in failure["baseline"]
+    assert failure["stage"] == "legacy" and failure["baseline_red"] is True
+    assert failure["baseline"] == ANCHOR_C
+    assert "与候选无关" not in failure["baseline"]
+    expected_log = next(s["log"] for s in out["stages"] if s["stage"] == "legacy")
+    assert failure["baseline_log"] == expected_log
 
     # pass_cmd 改了 → 那次预跑的结论作废，不再张冠李戴
     with L.mutate(lp) as x:
