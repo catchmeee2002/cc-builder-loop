@@ -5,7 +5,7 @@ import time
 from pathlib import Path
 
 from builder_loop import evidence, ledger as L, machine
-from conftest import contract_with, implement_mul, role_turn, make_tester_result, write_mul_test, write_plan
+from conftest import contract_with, implement_mul, role_turn, make_tester_result, send_message, write_mul_test, write_plan
 
 
 def _start_lite(repo, cli, session="S1"):
@@ -96,6 +96,7 @@ def test_machine_failure_points_at_tester_files(started, cli, hook):
     res = cli("machine", "--session", "S1", expect=1)
     assert res["failure"]["tester_files_mentioned"] == ["tests/test_mul.py"]
     # builder SendMessage 续接 tester → 在跑期间 next_action 是 awaiting，不是 machine
+    send_message(hook, "T1")
     hook("SubagentStart", {"session_id": "S1", "agent_id": "T1", "agent_type": "tester"})
     assert cli("status", "--session", "S1")["readiness"]["next_action"] == "awaiting_tester"
     write_mul_test(twt)

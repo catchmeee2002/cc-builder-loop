@@ -277,7 +277,7 @@
     },
     "events": {
       "type": "array",
-      "description": "只记无别处归属的事实：checkpoint_rejected / role_start / role_result / role_malformed / role_replaced / integrate / preflight / resume / user_input / stall_escape / retro"
+      "description": "只记无别处归属的事实：checkpoint_rejected / role_start / role_wake / resume_request / role_result / role_malformed / role_replaced / role_background / role_background_stopped / integrate / preflight / resume / user_input / stall_escape / retro"
     },
     "retrospective": {
       "type": [

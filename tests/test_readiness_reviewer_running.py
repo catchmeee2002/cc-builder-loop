@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from builder_loop import evidence
 from builder_loop import ledger as L
-from conftest import drive_to_proof_pass, reviewer_pass
+from conftest import drive_to_proof_pass, reviewer_pass, send_message
 
 
 def test_b14_reviewer_pass_but_running_blocks_finalize(started, cli, hook):
@@ -15,7 +15,9 @@ def test_b14_reviewer_pass_but_running_blocks_finalize(started, cli, hook):
     reviewer_pass(hook, "R1")
     assert cli("status", "--session", "S1")["readiness"]["next_action"] == "finalize"  # 边界：pass 且不在跑 → finalize
 
-    # 续接/再次 SubagentStart：按生命周期事件判定 reviewer 仍在跑，evidence 仍是 fresh pass
+    # 真续接：主会话先 SendMessage 再触发 SubagentStart，才按生命周期事件判定 reviewer 仍在跑
+    # （没有 SendMessage 的重复 SubagentStart 是唤醒，不冒充续接，见 test_role_wake_and_resume.py）
+    send_message(hook, "R1")
     hook("SubagentStart", {"session_id": "S1", "agent_id": "R1", "agent_type": "reviewer"})
     lg = L.load(started["ledger"])
     assert evidence.state(lg, "reviewer", started["repo"].root) == evidence.STATE_PASS
@@ -31,6 +33,7 @@ def test_b14_boundary_reviewer_fail_and_running_stays_awaiting(started, cli, hoo
     from conftest import role_turn
 
     role_turn(hook, "reviewer", "R1", {"role": "reviewer", "verdict": "changes_requested", "findings": [finding], "behaviors_verified": []}, start=False)
+    send_message(hook, "R1")  # 真续接：先 SendMessage 再 SubagentStart
     hook("SubagentStart", {"session_id": "S1", "agent_id": "R1", "agent_type": "reviewer"})
     lg = L.load(started["ledger"])
     assert evidence.state(lg, "reviewer", started["repo"].root) == evidence.STATE_FAIL

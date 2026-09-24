@@ -7,7 +7,7 @@ import pytest
 
 from builder_loop import ledger as L
 from builder_loop import proof as P
-from conftest import contract_with, drive_to_proof_pass, git, implement_mul, mutation_patch, role_turn, make_tester_result, write_mul_test, write_plan
+from conftest import contract_with, drive_to_proof_pass, git, implement_mul, mutation_patch, role_turn, make_tester_result, send_message, write_mul_test, write_plan
 
 
 def _pre(tool: str, tool_input: dict, role: str = "tester", agent: str = "T1") -> dict:
@@ -54,6 +54,7 @@ def test_tester_context_hides_implementation_until_integrated(started, cli, hook
     role_turn(hook, "tester", "T1", make_tester_result("mutation"), start=False)
     cli("integrate", "--session", "S1")
     assert not _denied(hook("PreToolUse", _pre("Read", {"file_path": f"{wt}/src/foo.py"})))
+    send_message(hook, "T1")  # builder SendMessage 续接 tester 补 mutation patch：真续接，不是唤醒
     ctx2 = hook("SubagentStart", {"session_id": "S1", "agent_id": "T1", "agent_type": "tester"})["json"]["hookSpecificOutput"]["additionalContext"]
     assert str(wt) in ctx2 and "[add_mutation_patch]" in ctx2
     assert _denied(hook("PreToolUse", _pre("Write", {"file_path": f"{wt}/src/foo.py"})))  # 能读，仍不能写
@@ -156,7 +157,8 @@ def test_resumed_tester_declining_keeps_valid_evidence(started, cli, hook):
     # 它答复过了 → 不再无限续接；硬跑 proof 得到「缺 patch，回 tester」并计入 stall 计数
     assert cli("status", "--session", "S1")["readiness"]["next_action"] == "proof"
     assert cli("proof", "--session", "S1", expect=1)["failure"]["code"] == "TEST_MUTATION_PATCH_MISSING"
-    # 首轮（还没有通过的证据）交 insufficient_spec 仍然记 fail
+    # 首轮（还没有通过的证据）交 insufficient_spec 仍然记 fail；再次续接时上下文仍能取到
+    send_message(hook, "T1")
     assert "bl brief" in hook("SubagentStart", {"session_id": "S1", "agent_id": "T1", "agent_type": "tester"})["json"]["hookSpecificOutput"]["additionalContext"]
 
 

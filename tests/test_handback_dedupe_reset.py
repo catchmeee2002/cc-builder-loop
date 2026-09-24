@@ -12,7 +12,7 @@ test_handback_stop_fallback.py::test_c1_second_stop_same_turn_adds_nothing 锁�
 from __future__ import annotations
 
 import builder_loop.ledger as L
-from conftest import handback, implement_mul, make_tester_result, marker, write_mul_test
+from conftest import handback, implement_mul, make_tester_result, marker, send_message, write_mul_test
 
 REVIEW_A = {  # changes_requested
     "role": "reviewer", "verdict": "changes_requested",
@@ -110,6 +110,7 @@ def test_b1_invariant_new_turn_after_aba_records_same_payload_again(started, cli
     assert handback(hook, "reviewer", "R1", marker(REVIEW_A))["code"] == 0
     assert len(_results(started, "reviewer")) == 1
 
+    send_message(hook, "R1")  # 主会话续接 R1：resume_request，SubagentStart 才会开新 turn（而不是 role_wake）
     _start(hook, "reviewer", "R1")  # 续接 = 新一轮
     r2 = handback(hook, "reviewer", "R1", marker(REVIEW_A))
     assert r2["code"] == 0, r2

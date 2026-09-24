@@ -29,6 +29,7 @@ from conftest import (
     mutation_patch,
     reviewer_pass,
     role_turn,
+    send_message,
     write_mul_test,
     write_plan,
 )
@@ -342,7 +343,8 @@ def test_b6_rebase_defers_when_tester_still_running(repo, cli, hook):
     _tester_append_test_foo(started, hook)
     cli("integrate", "--session", "S1")
 
-    # tester 被续接（比如要求它确认 rebase 后的测试），SubagentStart 已发但还没登记结果
+    # tester 被续接（比如要求它确认 rebase 后的测试）：先 SendMessage 再 SubagentStart，已发但还没登记结果
+    send_message(hook, "T1")
     hook("SubagentStart", {"session_id": "S1", "agent_id": "T1", "agent_type": "tester"})
 
     _advance_target_top_comment(repo)  # 与 tester 改过的 tests/test_foo.py 重叠

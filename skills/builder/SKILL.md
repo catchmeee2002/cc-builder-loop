@@ -41,6 +41,8 @@ builder-loop 只负责判据和 Git 事务；调度 subagent、续接、问用�
 
 任何 `bl` 命令 exit 3 = 需要用户决定。Stop hook 在 run 未完成时会把你拉回来，属正常，按 stderr 提示继续。
 
+**角色的后台残留**：status 的 role_background_tasks 非空时，逐个用 TaskStop 停掉这些角色后台任务；续接角色一律用 agent_id 作为 SendMessage 的 to。前者是角色前台命令超时后被转到后台留下的，交卷后结束时会把角色再唤醒；后者是 runtime 区分「续接」与「唤醒」的唯一依据，用别的名字续接会被当成唤醒、结论不登记。
+
 **给角色发消息的两条规矩**：① `status.running.<role>` 为真时**不要发**——消息会夹在它的工具结果里到达，它没法验真，多半会拒绝执行；等它停下再续接。② 消息只当门铃，事实一律让它自己 `bl brief` 取。contract 改了也不用特意通知 tester：它的 evidence 会自动失效，`next_action` 自然变成 `resume_tester`。
 
 **文档同步在 finalize 之前做**：候选 diff 若改了对外行为 / 契约 / 导航，按 `~/.claude/doc-policy.md` 判断哪些文档要改、内容归哪里，需要就改进候选（属于候选 diff，进 checkpoint）。reviewer 的 brief 会附一段启发式的文档引用线索，可能误报，逐条判断；复盘不再审文档。

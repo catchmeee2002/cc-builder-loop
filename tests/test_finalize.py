@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 
 from builder_loop import ledger as L
-from conftest import drive_to_proof_pass, git, implement_mul, mutation_patch, reviewer_pass, role_turn, make_tester_result, write_mul_test
+from conftest import drive_to_proof_pass, git, implement_mul, mutation_patch, reviewer_pass, role_turn, make_tester_result, send_message, write_mul_test
 
 
 def _finalize(cli, *extra):
@@ -81,7 +81,8 @@ def test_reviewer_findings_route_by_owner_and_candidate_move(started, cli, hook)
     cli("machine", "--session", "S1")
     cli("proof", "--session", "S1")
     assert cli("status", "--session", "S1")["readiness"]["next_action"] == "resume_reviewer"
-    # 审查期间候选变了 → 本次结论无效
+    # 审查期间候选变了 → 本次结论无效（真续接：先 SendMessage 再 SubagentStart）
+    send_message(hook, "R1")
     hook("SubagentStart", {"session_id": "S1", "agent_id": "R1", "agent_type": "reviewer"})
     wt = started["worktree"]
     (wt / "src" / "foo.py").write_text((wt / "src" / "foo.py").read_text() + "\n# late edit\n")

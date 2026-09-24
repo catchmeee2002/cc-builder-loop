@@ -10,7 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from . import gitx, ledger as ledger_mod, worktree
+from . import evidence, gitx, ledger as ledger_mod, worktree
 from .errors import fatal, negative
 
 ROUTES = ("business_issue", "builder_loop_issue", "not_incident")
@@ -53,6 +53,12 @@ def derive_signals(lg: dict[str, Any]) -> list[dict[str, Any]]:
     replaced = ev("role_replaced")
     if replaced:
         out.append(_signal("S-role-replaced", f"角色 agent 被重新 spawn 顶替 {len(replaced)} 次", roles=[e["role"] for e in replaced]))
+    wakes = ev("role_wake")
+    if wakes:
+        out.append(_signal("S-role-wake", f"角色交卷后被残留后台任务再唤醒 {len(wakes)} 次（唤醒轮次的结论未登记）", count=len(wakes), roles=sorted({e["role"] for e in wakes})))
+    leftover = evidence.role_background_tasks(lg)
+    if leftover:
+        out.append(_signal("S-role-background", f"角色留下 {len(leftover)} 个还没被 TaskStop 停掉的后台任务", tasks=leftover))
     review_fail = [e for e in ev("role_result") if e.get("role") == "reviewer" and e.get("status") == "fail"]
     if review_fail:
         out.append(_signal("S-review-rejected", f"reviewer 未通过 {len(review_fail)} 次", verdicts=[e.get("verdict") for e in review_fail], candidate_moved=any(e.get("candidate_moved") for e in review_fail)))

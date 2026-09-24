@@ -166,6 +166,12 @@ def marker(payload: dict) -> str:
     return "done\nBUILDER_LOOP_RESULT: " + json.dumps(payload)
 
 
+def send_message(hook, to_agent_id: str, *, session: str = "S1"):
+    """主会话（无 agent_id）发出的 PreToolUse(SendMessage)，用于续接已登记角色 to_agent_id。
+    B2：SubagentStart 之前先喂这一条，续接才会记 resume_request + role_start（而不是 role_wake）。"""
+    return hook("PreToolUse", {"session_id": session, "tool_name": "SendMessage", "tool_input": {"to": to_agent_id}})
+
+
 def handback(hook, role: str, agent_id: str, message: str, *, session: str = "S1"):
     """CC 2.1.273：角色用 SubagentHandback 工具把报告交回调用方，结果以它的 message 为准。"""
     return hook("PostToolUse", {
@@ -176,8 +182,13 @@ def handback(hook, role: str, agent_id: str, message: str, *, session: str = "S1
 
 
 def role_turn(hook, role: str, agent_id: str, payload: dict | None, *, start: bool = True, message: str | None = None):
-    """模拟一个角色 turn：SubagentStart（首轮或续接都会触发）+ SubagentHandback 交结果。"""
+    """模拟一个角色 turn：SubagentStart（首轮或续接都会触发）+ SubagentHandback 交结果。
+
+    真实续接是主会话先 SendMessage 再触发 SubagentStart（B2）；这里在 start=True 时无条件先发一条
+    send_message：agent_id 还没登记过（真正的首次 spawn）时它是没有效果的 no-op（B2 边界：to 不是已登记
+    agent_id 不记 resume_request），已登记时它才会让随后的 SubagentStart 记成新一轮而不是 role_wake。"""
     if start:
+        send_message(hook, agent_id)
         hook("SubagentStart", {"session_id": "S1", "agent_id": agent_id, "agent_type": role})
     text = message if message is not None else marker(payload)
     return handback(hook, role, agent_id, text)

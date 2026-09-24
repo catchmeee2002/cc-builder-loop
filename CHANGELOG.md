@@ -2,6 +2,14 @@
 
 > 本文件记 **CC 版**产品线（分支 `cc/main`）。Codex 版见 `codex/main` 分支。
 
+## 角色被残留后台任务唤醒时不冒充续接，残留可见可收（#306 #283 #308 #304，2026-09-24）
+
+- **唤醒不再产生 evidence（#306）**：builder 的 SendMessage 由 PreToolUse 记为 `resume_request`；已登记角色没有对应请求的 SubagentStart 判为唤醒（`role_wake`），这一轮的结论不登记、不计不合规、不计轮次。此前后台任务结束把已交卷的角色唤醒后，它重发的旧结论会被登记成当前候选 HEAD 上的 evidence（探针实测唤醒与续接的 SubagentStart 字段完全相同）。
+- **超时转后台的角色命令可见并由 builder 回收（#283 #308）**：PostToolUse(Bash) 的 `backgroundTaskId` 记为 `role_background`，并当场提示角色；builder 用 TaskStop 停掉后记 `role_background_stopped`。未停的任务列在 `bl status`、Stop 拉回消息、finalize / abandon 输出与 retro 信号里，不拦 finalize。此前 `60395a4` 只拦显式的 `run_in_background`，前台命令超时被转后台会绕过它。
+- **brief 给出 ledger 路径（#304）**：此前 reviewer 为核对 evidence 在整个文件系统里 `find`，在 NFS 上跑了近 3 小时，正是上面那种残留任务。
+- **hook 接线**：PreToolUse matcher 追加 `SendMessage`，PostToolUse 扩为 `SubagentHandback|Bash|TaskStop`，总数仍 10 条；`bl doctor` 检查这些 matcher，旧安装要重新 `./install.sh`，否则每次续接都会被当成唤醒。
+- **#307 关闭**：Bash 前台 timeout 上限 10 分钟、超时即转后台，而心跳每次 PreToolUse 续期，「单次调用超过 40 分钟租约」构造不出来。
+
 ## 目标分支漂移时不丢改动、复审有的放矢、可以按外部顺序暂停（#298 #280 #299 #282，2026-09-23）
 
 - **tester 分支跟着 rebase（#298）**：目标分支改过 tester 改过的测试文件时，`bl rebase` 在候选之后把 tester 分支也 rebase 过去（输出 `tester_rebase.status`：`not_needed` / `rebased` / `conflict` / `deferred`）；零冲突时重叠文件内容变了，tester evidence 变为 stale，续接 tester 确认（brief 待办 `confirm_rebased_tests`）；冲突时 rebase 停在 tester worktree 里由 tester 解（待办 `resolve_rebase_conflict`）。只要 tester 分支还落后且有重叠，`bl integrate` 就报 `INTEGRATE_TESTER_BASE_STALE`，readiness 新增 `rebase` 动作。此前 tester 分支永远停在 run 起点，rebase 后 integrate 用旧基线的整文件覆盖候选，静默抹掉了目标分支对同一测试文件的 33 行改动。漂移不碰 tester 文件时 tester 分支照旧不动。

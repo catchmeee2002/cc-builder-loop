@@ -143,6 +143,7 @@ def status(ledger_path: Path, repo_root: Path) -> dict[str, Any]:
         "counters": lg["counters"],
         "waiting_for_user": lg.get("waiting_for_user"),
         "hold": evidence.hold_state(lg),
+        "role_background_tasks": evidence.role_background_tasks(lg),
         "readiness": evidence.readiness(lg, repo_root),
     }
 
@@ -342,7 +343,8 @@ def abandon(ledger_path: Path, reason: str) -> dict[str, Any]:
         cand = lg.get("candidate") or {}
     if legacy and sid:
         ledger_mod.unbind_session(sid)  # 旧版 ledger 没有复盘环节
-    return {"run_id": lg.get("run_id"), "terminal": lg["terminal"], "worktree_kept": cand.get("worktree"), "branch_kept": cand.get("branch"), "next": None if legacy else "retro"}
+    return {"run_id": lg.get("run_id"), "terminal": lg["terminal"], "worktree_kept": cand.get("worktree"), "branch_kept": cand.get("branch"), "next": None if legacy else "retro",
+            "role_background_tasks": evidence.role_background_tasks(lg)}
 
 
 # ---------------------------------------------------------------- contract

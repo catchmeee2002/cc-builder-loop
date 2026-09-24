@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from conftest import drive_to_proof_pass, implement_mul, make_tester_result, role_turn, write_mul_test
+from conftest import drive_to_proof_pass, implement_mul, make_tester_result, role_turn, send_message, write_mul_test
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -139,7 +139,8 @@ def test_add_mutation_patch_todo_explains_how_to_build_patch_without_touching_ca
     # 不变量：原有的「只破坏该 behavior 的 unified diff」说明保留
     assert "只破坏该 behavior 的 unified diff" in todo["why"]
 
-    # SubagentStart 注入的上下文与 brief 同源，同样含这句
+    # SubagentStart 注入的上下文与 brief 同源，同样含这句（真续接：先 SendMessage）
+    send_message(hook, "T1")
     ctx = hook("SubagentStart", {"session_id": "S1", "agent_id": "T1", "agent_type": "tester"})["json"]["hookSpecificOutput"]["additionalContext"]
     assert normalize(ADD_MUTATION_PATCH_ANCHOR) in normalize(ctx)
 

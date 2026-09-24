@@ -15,7 +15,7 @@ import pytest
 
 import builder_loop.ledger as L
 from conftest import (
-    drive_to_proof_pass, handback, implement_mul, make_tester_result, marker, write_mul_test,
+    drive_to_proof_pass, handback, implement_mul, make_tester_result, marker, send_message, write_mul_test,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -93,6 +93,7 @@ def test_b1_declined_via_handback(started, cli, hook):
     assert handback(hook, "tester", "T1", marker(make_tester_result("mutation")))["code"] == 0
     cli("integrate", "--session", "S1")
     assert cli("machine", "--session", "S1")["result"] == "PASS"
+    send_message(hook, "T1")
     _start(hook, "tester", "T1")  # 续接
     r = handback(hook, "tester", "T1", marker({"role": "tester", "status": "insufficient_spec", "notes": "补不出 patch"}))
     assert r["code"] == 0, r
@@ -270,6 +271,7 @@ def test_b5b_different_payload_same_turn_is_recorded(started, cli, hook):
 
 def test_b5c_same_payload_new_turn_is_recorded(started, cli, hook):
     _reviewer_changes_requested(started, cli, hook)
+    send_message(hook, "R1")  # 主会话续接 R1：resume_request，SubagentStart 才会开新 turn（而不是 role_wake）
     _start(hook, "reviewer", "R1")  # 续接 = 新一轮
     r = handback(hook, "reviewer", "R1", "第一版报告\n" + "BUILDER_LOOP_RESULT: " + json.dumps(REVIEW_CHANGES))
     assert r["code"] == 0, r
@@ -365,7 +367,8 @@ def test_b8_install_registers_handback_hook(tmp_path):
         entries = _bl_entries(home)
         assert len(entries) == 10, entries
         assert dict(Counter(ev for ev, _ in entries)) == EXPECTED_DIST
-        assert ("PostToolUse", "SubagentHandback") in entries
+        # PostToolUse 的 SubagentHandback 现在与 Bash / TaskStop 合在同一条 matcher 里（#308）：按 `|` 拆开找它
+        assert any("SubagentHandback" in (m or "").split("|") for ev, m in entries if ev == "PostToolUse"), entries
     env = dict(os.environ, CLAUDE_HOME=str(home), BUILDER_LOOP_HOME=str(tmp_path / "blhome"))
     out = subprocess.run([str(clone / "bin" / "bl"), "doctor"], env=env, capture_output=True, text=True, timeout=60).stdout
     assert len(json.loads(out)["hooks"]["registered"]) == 10

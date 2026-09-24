@@ -45,6 +45,17 @@ def _check_hooks() -> dict[str, Any]:
     return {"settings": str(p), "registered": registered, "broken": broken}
 
 
+# 角色生命周期依赖的 matcher（#306 #283 #308）：缺了 SendMessage，每次续接都会被当成唤醒、结论不登记
+REQUIRED_MATCHERS = (("PreToolUse", "SendMessage"), ("PostToolUse", "Bash"), ("PostToolUse", "TaskStop"))
+
+
+def _missing_matchers(registered: list[dict[str, Any]]) -> list[str]:
+    if not registered:
+        return []
+    have = {(r["event"], tool) for r in registered for tool in (r.get("matcher") or "").split("|")}
+    return [f"{event} 的 hook matcher 缺少 {tool}（旧版安装；重新运行 install.sh）" for event, tool in REQUIRED_MATCHERS if (event, tool) not in have]
+
+
 def _check_sessions() -> dict[str, Any]:
     d = ledger_mod.sessions_dir()
     orphans, active, retro_pending = [], [], []
@@ -122,6 +133,7 @@ def doctor(repo_arg: str | None) -> dict[str, Any]:
         problems.append("hooks 未注册（运行 install.sh）")
     if report["hooks"].get("broken"):
         problems.append("hook 脚本路径失效")
+    problems += _missing_matchers(report["hooks"].get("registered") or [])
     if report["sessions"]["orphans"]:
         problems.append("存在孤儿 session 指针（可安全删除）")
     if report["sessions"]["retro_pending"]:

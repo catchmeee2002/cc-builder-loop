@@ -245,6 +245,10 @@ def handle_stop(ev: dict[str, Any], bound: dict[str, Any]) -> HookReturn:
     msg = f"[builder-loop] run {lg['run_id']} {head}。\nevidence: {readiness['states']}\nnext_action={act}: {hint}\n"
     if readiness["blockers"]:
         msg += f"blockers: {dumps(readiness['blockers'])}\n"
+    leftover = evidence.role_background_tasks(lg)
+    if leftover:
+        msg += ("角色留下了后台任务（交卷后会把它再唤醒）：逐个用 TaskStop 停掉 "
+                + ", ".join(f"{t['task_id']}（{t['role']}）" for t in leftover) + "\n")
     return _block(msg)
 
 
@@ -268,6 +272,12 @@ def handle_subagent_start(ev: dict[str, Any], bound: dict[str, Any]) -> HookRetu
         if role == "tester" and not lg.get("tester"):
             return _silent()
         prev = lg["agents"].get(role) or {}
+        if prev.get("agent_id") == agent_id and not _resume_requested(lg, role, agent_id):
+            # 已登记的角色、builder 没发过续接：是它残留的后台任务结束把它唤醒了（#306）。这一轮不是续接，
+            # 不记 role_start、不注入上下文，它这一轮里说的结论一律不登记（原则七：续接只认持久化的 intent）
+            ledger_mod.log_event(lg, "role_wake", role=role, agent_id=agent_id, candidate_head=lg["candidate"]["head"])
+            _keep_stall(lg)
+            return _silent()
         if prev and prev.get("agent_id") != agent_id:
             ledger_mod.log_event(lg, "role_replaced", role=role, old_agent_id=prev.get("agent_id"), new_agent_id=agent_id)
             prev = {}
@@ -290,6 +300,21 @@ def _registered_role(ev: dict[str, Any], bound: dict[str, Any]) -> str | None:
     if ledger_mod.is_terminal(lg) or not reg or reg.get("agent_id") != ev.get("agent_id"):
         return None
     return role
+
+
+def _resume_requested(lg: dict[str, Any], role: str, agent_id: str | None) -> bool:
+    """最近一次 resume_request（builder 的 SendMessage）晚于该 agent 最近一次开轮 / 唤醒 / 登记：这次 SubagentStart 是续接。
+    一条请求只对应一次开轮；请求之后角色又交了结论（消息夹在它的运行中到达，没有开新一轮）也就作废。"""
+    life = [e for e in ledger_mod.events_of(lg, "resume_request", "role_start", "role_wake", "role_result")
+            if e.get("role") == role and e.get("agent_id") == agent_id]
+    return bool(life) and life[-1]["kind"] == "resume_request"
+
+
+def _in_wake_turn(lg: dict[str, Any], role: str, agent_id: str | None) -> bool:
+    """该 agent 当前这一轮是被残留后台任务唤醒的（最近一次开轮事件是 role_wake）。"""
+    opens = [e for e in ledger_mod.events_of(lg, "role_start", "role_wake")
+             if e.get("role") == role and e.get("agent_id") == agent_id]
+    return bool(opens) and opens[-1]["kind"] == "role_wake"
 
 
 def _turn_events(lg: dict[str, Any], role: str, agent_id: str | None) -> list[dict[str, Any]]:
@@ -334,7 +359,7 @@ def _accept(bound: dict[str, Any], role: str, agent_id: str | None, text: Any, v
 def handle_handback(ev: dict[str, Any], bound: dict[str, Any]) -> HookReturn:
     """PostToolUse(SubagentHandback)：送达调用方的那份报告就是角色结论，当场登记（早于调用方收到它，#250）。"""
     role = _registered_role(ev, bound)
-    if not role:
+    if not role or _in_wake_turn(bound["ledger"], role, ev.get("agent_id")):
         return _silent()
     return _accept(bound, role, ev.get("agent_id"), (ev.get("tool_input") or {}).get("message"), VIA_HANDBACK, _handback_hint(role))
 
@@ -355,6 +380,8 @@ def handle_subagent_stop(ev: dict[str, Any], bound: dict[str, Any]) -> HookRetur
     if not role:
         return _silent()
     agent_id = ev.get("agent_id")
+    if _in_wake_turn(bound["ledger"], role, agent_id):
+        return _silent()  # 唤醒轮次：它重发的旧结论不登记，也不算不合规（#306）
     turn = _turn_events(bound["ledger"], role, agent_id)
     if any(e["kind"] == "role_result" for e in turn):
         return _silent()
@@ -461,6 +488,14 @@ def handle_pre_tool_use(ev: dict[str, Any], bound: dict[str, Any]) -> HookReturn
         with ledger_mod.mutate(bound["ledger_path"]) as lg2:
             lg2["waiting_for_user"] = {"since": ledger_mod.now_iso(), "reason": "AskUserQuestion", "tool_use_id": ev.get("tool_use_id")}
         return _silent()
+    if tool == "SendMessage" and not ev.get("agent_id"):
+        # builder 续接角色的持久化 intent（#306）：SubagentStart 本身分不出续接与唤醒，只有这里看得到 to
+        to = (ev.get("tool_input") or {}).get("to")
+        for r in ROLES:
+            if to and (lg["agents"].get(r) or {}).get("agent_id") == to:
+                with ledger_mod.mutate(bound["ledger_path"]) as lg2:
+                    ledger_mod.log_event(lg2, "resume_request", role=r, agent_id=to)
+        return _silent()
     if tool == "EnterWorktree":
         return _deny(f"run {lg['run_id']} 进行中：worktree 由 runtime 管理（{lg['candidate']['worktree']}），禁止 EnterWorktree。")
     return _silent()
@@ -481,9 +516,53 @@ def _user_input(bound: dict[str, Any], source: str) -> HookReturn:
     return _silent()
 
 
+ROLE_BACKGROUND_HINT = ("这条命令超时后被转到了后台，交卷后它会把你再唤醒。以后给足 timeout 或缩小命令范围；"
+                        "这个后台任务会由 builder 停掉。")
+
+
+def _tool_response(ev: dict[str, Any]) -> dict[str, Any]:
+    r = ev.get("tool_response")
+    if isinstance(r, str):
+        try:
+            r = json.loads(r)
+        except ValueError:
+            return {}
+    return r if isinstance(r, dict) else {}
+
+
+def _role_background(ev: dict[str, Any], bound: dict[str, Any]) -> HookReturn:
+    """角色的前台 Bash 超时后被 CC 转到后台（PreToolUse 的 run_in_background 拦截看不到，#283）：
+    PostToolUse 的 tool_response 带 backgroundTaskId。记下来交给 builder 停，并当场告诉角色。"""
+    role = _registered_role(ev, bound)
+    task_id = _tool_response(ev).get("backgroundTaskId")
+    if not role or not task_id:
+        return _silent()
+    with ledger_mod.mutate(bound["ledger_path"]) as lg2:
+        ledger_mod.log_event(lg2, "role_background", role=role, agent_id=ev.get("agent_id"), task_id=str(task_id),
+                             command=str((ev.get("tool_input") or {}).get("command", ""))[:200])
+        _keep_stall(lg2)
+    return _json_out({"hookSpecificOutput": {"hookEventName": "PostToolUse",
+                                             "additionalContext": f"[builder-loop] {ROLE_BACKGROUND_HINT}（任务 {task_id}）"}})
+
+
+def _role_background_stopped(ev: dict[str, Any], bound: dict[str, Any]) -> HookReturn:
+    ti = ev.get("tool_input") or {}
+    task_id = ti.get("task_id") or ti.get("shell_id")
+    if ev.get("agent_id") or not task_id:
+        return _silent()
+    if any(t["task_id"] == task_id for t in evidence.role_background_tasks(bound["ledger"])):
+        with ledger_mod.mutate(bound["ledger_path"]) as lg2:
+            ledger_mod.log_event(lg2, "role_background_stopped", task_id=str(task_id))
+    return _silent()
+
+
 def handle_post_tool_use(ev: dict[str, Any], bound: dict[str, Any]) -> HookReturn:
     if ev.get("tool_name") == HANDBACK_TOOL:
         return handle_handback(ev, bound)
+    if ev.get("tool_name") == "Bash" and ev.get("agent_id"):
+        return _role_background(ev, bound)
+    if ev.get("tool_name") == "TaskStop":
+        return _role_background_stopped(ev, bound)
     if ev.get("tool_name") == "AskUserQuestion" and ev.get("agent_type") not in ROLES:
         return _user_input(bound, "AskUserQuestion")
     return _silent()

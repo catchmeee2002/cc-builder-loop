@@ -298,6 +298,14 @@ def _wait_released(p: Path) -> None:
         os.close(fd)
 
 
+def role_background_tasks(ledger: dict[str, Any]) -> list[dict[str, Any]]:
+    """角色留下、还没被 builder 用 TaskStop 停掉的后台任务（#283 #308）。从事件派生，不落盘（原则五）。
+    来源是前台 Bash 超时后被 CC 转到后台：交卷后它结束时会把角色再唤醒（#306）。"""
+    stopped = {e.get("task_id") for e in events_of(ledger, "role_background_stopped")}
+    return [{k: e.get(k) for k in ("task_id", "role", "agent_id", "at", "command")}
+            for e in events_of(ledger, "role_background") if e.get("task_id") not in stopped]
+
+
 def last_role_result_at(ledger: dict[str, Any], role: str) -> str:
     res = [e for e in events_of(ledger, "role_result") if e.get("role") == role]
     return res[-1]["at"] if res else ""
