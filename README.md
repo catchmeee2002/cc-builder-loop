@@ -30,6 +30,8 @@ export PATH="$HOME/.claude/bin:$PATH"
 
 安装器把 `agents/`、`skills/{builder,planner,builder-loop}`、`bin/bl` 软链进 `~/.claude`，在 `settings.json` 注册 10 条 hook（SessionStart / Stop / SubagentStart / SubagentStop / PreToolUse×3 / PostToolUse×2 / UserPromptSubmit；SessionStart 把 `bl` 放进会话 PATH），并清理旧版本留下的断链与 hook。幂等；`./uninstall.sh` 逆操作。不触碰 `~/.agents`（可与 Codex 版共存）。安装后新开 Claude Code session。
 
+升级：`git pull` 之后重跑 `./install.sh`。hook 注册随版本变化，没重跑的话 `bl start` 会返回 `HOOKS_OUTDATED` 并列出缺项，不会开 run。
+
 ## 项目接入
 
 项目根放 `.claude/loop.yml`（或对 Claude 说「配置 loop」走向导）：
