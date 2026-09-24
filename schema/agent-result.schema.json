@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "builder-loop/agent-result@1",
   "title": "builder-loop agent result",
-  "description": "tester / reviewer 交卷报告最后一行的 `BUILDER_LOOP_RESULT: {...}`：有 SubagentHandback 时由 PostToolUse(SubagentHandback) hook 从 handback message 解析，没有时由 SubagentStop hook 从 last_assistant_message 解析。",
+  "description": "tester / reviewer 交卷报告最后一行的 `BUILDER_LOOP_RESULT: {...}`：有 SubagentHandback（只在 auto 权限模式下开启）时投递前由 PreToolUse 校验、不合规即 deny，再由 PostToolUse(SubagentHandback) hook 从 handback message 解析登记，没有时由 SubagentStop hook 从 last_assistant_message 解析。",
   "oneOf": [
     {
       "type": "object",

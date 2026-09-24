@@ -48,7 +48,7 @@ Stop hook：run 未终态 → 拦住并给出 `next_action`；等待用户（Ask
 
 定位 run：`--session <id>` 或 `--run <run_id>`（写在子命令前后都行）；仓库只有一个活跃 run 时可省略。
 
-事实都在 `.claude/builder-loop/runs/<run_id>/ledger.json`，唯一写入者是 `bl`。tester / reviewer 的结论从送达调用方的报告里的 `BUILDER_LOOP_RESULT:` 行解析后写入：本轮有 SubagentHandback 就由 PostToolUse(SubagentHandback) hook 读 handback message，没有（该环境没开 handback）就由 SubagentStop hook 读 `last_assistant_message`，只认 SubagentStart 登记过的 agent_id；已登记的角色在 builder 没有 SendMessage 续接时再次启动，是它残留的后台任务把它唤醒了，这一轮的结论不登记。runtime 的内部提交不跑目标仓库的 git hooks；只有 `finalize --run-commit-hook` 那一次交付提交会跑。
+事实都在 `.claude/builder-loop/runs/<run_id>/ledger.json`，唯一写入者是 `bl`。tester / reviewer 的结论从送达调用方的报告里的 `BUILDER_LOOP_RESULT:` 行解析后写入：本轮有 SubagentHandback（只在 auto 权限模式下开启）就由 PostToolUse(SubagentHandback) hook 读 handback message，投递前 PreToolUse 先做同一套校验、不合规就 deny（被拒的报告不会送到你这里），没有（该环境没开 handback）就由 SubagentStop hook 读 `last_assistant_message`，只认 SubagentStart 登记过的 agent_id；已登记的角色在 builder 没有 SendMessage 续接时再次启动，是它残留的后台任务把它唤醒了，这一轮的结论不登记。runtime 的内部提交不跑目标仓库的 git hooks；只有 `finalize --run-commit-hook` 那一次交付提交会跑。
 
 ## 项目配置 `.claude/loop.yml`
 

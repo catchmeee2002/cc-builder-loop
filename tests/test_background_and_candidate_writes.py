@@ -118,9 +118,12 @@ def test_tester_bash_branch_name_blocked_before_integration(started, hook):
 # ---------------------------------------------------------------- B3
 
 
+# result-channel run（B1）之后：mutation patch 改走 patch_file 交付，措辞相应更新为
+# "git diff 重定向到文件 + 交文件绝对路径"，不再是旧版"git diff 即得 patch"（inline 交付）。
 ADD_MUTATION_PATCH_ANCHOR = (
     "生成 patch 时不要改候选 worktree 里的文件，也不要在里面跑命令：在你的 worktree 之外建一个临时目录并 "
-    "git init，用 git show <候选分支>:<路径> 按原相对路径取出文件并提交，改完后 git diff 即得 patch。"
+    "git init，用 git show <候选分支>:<路径> 按原相对路径取出文件并提交，改完后 git diff > <临时目录>/<behavior>.patch，"
+    "把这个文件的绝对路径填进该组的 patch_file。"
 )
 
 

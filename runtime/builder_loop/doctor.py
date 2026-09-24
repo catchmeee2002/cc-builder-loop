@@ -46,7 +46,7 @@ def _check_hooks() -> dict[str, Any]:
 
 
 # 角色生命周期依赖的 matcher（#306 #283 #308）：缺了 SendMessage，每次续接都会被当成唤醒、结论不登记
-REQUIRED_MATCHERS = (("PreToolUse", "SendMessage"), ("PostToolUse", "Bash"), ("PostToolUse", "TaskStop"))
+REQUIRED_MATCHERS = (("PreToolUse", "SendMessage"), ("PreToolUse", "SubagentHandback"), ("PostToolUse", "Bash"), ("PostToolUse", "TaskStop"))
 
 
 def _missing_matchers(registered: list[dict[str, Any]]) -> list[str]:

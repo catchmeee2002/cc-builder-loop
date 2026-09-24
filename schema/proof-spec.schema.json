@@ -49,9 +49,13 @@
             "maximum": 1800,
             "default": 300
           },
+          "patch_file": {
+            "type": "string",
+            "description": "mutation 组：git diff 重定向生成的 patch 文件的绝对路径（UTF-8、≤256 KiB，不能在候选 / tester worktree / 主仓之内）。runtime 交卷时读取原始字节，写进 ledger 的 patch；tester 不再在结果行里给 patch 正文（#281）。patch 只改 builder 拥有、候选上已存在的普通文件。首轮盲写时省略，集成后续接补上"
+          },
           "patch": {
             "type": "string",
-            "description": "mutation 的 unified diff：只改 builder 拥有、候选上已存在的普通文件。首轮盲写时可缺省，集成后续接补上"
+            "description": "只出现在 ledger 与 `bl proof --spec-file`（调试）里：runtime 从 patch_file 读到的字节。tester 结果行里给非空 patch 会被 PROOF_SPEC_INVALID 拒绝"
           },
           "reviewed_boundaries": {
             "type": "object",

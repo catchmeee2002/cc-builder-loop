@@ -20,14 +20,20 @@ from . import contract as contract_mod
 from . import evidence, gitx
 from .jsonutil import dumps
 from .ledger import events_of, ledger_path
+from .proof import stale_patch_groups
 from .run import bl_bin
 
 TESTER_RESULT_FORMAT = (
     'BUILDER_LOOP_RESULT: {"role":"tester","status":"pass|insufficient_spec","behaviors_covered":["B1"],'
     '"proof_spec":{"groups":[{"kind":"baseline-red|mutation|reviewed-boundaries","behavior_ids":["B1"],'
-    '"test_ids":["tests/test_x.py::test_a"],"timeout":120,"patch":"<mutation 的 unified diff；首轮看不到实现时可省略>",'
+    '"test_ids":["tests/test_x.py::test_a"],"timeout":120,"patch_file":"<mutation 组：git diff 重定向生成的 patch 文件绝对路径；首轮看不到实现时省略>",'
     '"reviewed_boundaries":{"positive":[],"negative":[],"boundary":[],"invariant":[]}}]},"notes":""}'
 )
+# 每组 1 个 behavior 是 check_structure 的硬规则（#303）；patch 走文件是因为模型转述长 patch 会走样（#281）
+RESULT_RULE = "proof_spec 每组的 behavior_ids 恰好 1 个；mutation 组用 patch_file 交 patch 文件的绝对路径（git diff 重定向生成），不要把 patch 正文抄进结果行。"
+PATCH_HOWTO = ("生成 patch 时不要改候选 worktree 里的文件，也不要在里面跑命令：在你的 worktree 之外建一个临时目录并 git init，"
+               "用 git show <候选分支>:<路径> 按原相对路径取出文件并提交，改完后 `git diff > <临时目录>/<behavior>.patch`，"
+               "把这个文件的绝对路径填进该组的 patch_file。")
 REVIEWER_RESULT_FORMAT = (
     'BUILDER_LOOP_RESULT: {"role":"reviewer","verdict":"pass|changes_requested|blocked",'
     '"findings":[{"severity":"blocking|major|minor","owner":"builder|tester|contract","file":"src/x.py","line":10,"summary":"..."}],'
@@ -62,9 +68,16 @@ def _tester_todo(lg: dict[str, Any], repo_root: Path) -> list[dict[str, Any]]:
                   if g.get("kind") == "mutation" and not (g.get("patch") or "").strip()]
         todo.append({"what": "add_mutation_patch", "behaviors": groups,
                      "why": "这些 mutation 组还缺 patch：候选实现现在可读了，补一段只破坏该 behavior 的 unified diff，然后把完整 proof_spec 重新交一遍。"
-                            "生成 patch 时不要改候选 worktree 里的文件，也不要在里面跑命令：在你的 worktree 之外建一个临时目录并 git init，"
-                            "用 git show <候选分支>:<路径> 按原相对路径取出文件并提交，改完后 git diff 即得 patch。",
+                            + PATCH_HOWTO,
                      "candidate_branch": lg["candidate"]["branch"]})
+    if evidence.implementation_readable_by_tester(lg):
+        stale = stale_patch_groups(lg, repo_root)
+        if stale:
+            # rebase 或 builder 改实现之后，旧 patch 的上下文对不上了：原样重交必被拒（#305）
+            todo.append({"what": "stale_mutation_patch", "behaviors": stale, "candidate_head": lg["candidate"]["head"],
+                         "why": "这些 mutation 组的 patch 已打不到当前候选 HEAD 上（上下文变了）：对着当前候选重新生成，再把完整 proof_spec 重新交一遍。"
+                                + PATCH_HOWTO,
+                         "candidate_branch": lg["candidate"]["branch"]})
 
     proof_rec = lg["evidence"].get("proof") or {}
     failure = (proof_rec.get("details") or {}).get("failure") or {}
@@ -302,6 +315,7 @@ def render(brief: dict[str, Any]) -> str:
             f"写边界 tester_write: {brief['write_paths']}；{brief['write_rule']}",
             f"protected（谁都不能动）: {brief['protected_paths']}",
             f"测试命令由项目冻结，不需要你给 argv：{runner.get('cmd')}（framework={runner.get('framework')}）；proof_spec 每组只给 test_ids（pytest node id，如 tests/test_x.py::test_a）",
+            RESULT_RULE,
             brief["read_rule"] + "。",
             # 盲写阶段跑不了自己的测试，node id 拼错、断言与真实数据结构不符都要等这一步才暴露（#266）
             "你交卷后测试会被集成进候选，由 machine 全量跑一遍；那时失败的如果是你的测试，这条失败会回到 tester 手上。"
@@ -310,7 +324,7 @@ def render(brief: dict[str, Any]) -> str:
         if brief["candidate_readable"]:
             lines.append(f"候选 worktree（只读）: {brief['candidate_worktree']}")
         else:
-            lines.append("新接口在基线上无法 import，所以写完后只需保证语法与收集无误；baseline-red 只用于「起点上会断言失败」的行为（行为变更、bug 修复、功能移除的负向测试），新接口用 mutation 且 patch 先留空，集成后会请你补。")
+            lines.append("新接口在基线上无法 import，所以写完后只需保证语法与收集无误；baseline-red 只用于「起点上会断言失败」的行为（行为变更、bug 修复、功能移除的负向测试），新接口用 mutation 且先不给 patch_file，集成后会请你补。")
     else:
         lines += [
             f"候选 worktree（只读）: {brief['candidate_worktree']}",

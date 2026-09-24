@@ -6,6 +6,7 @@ import copy
 import json
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -152,11 +153,29 @@ def mutation_patch(candidate_wt: Path) -> str:
     return patch  # 故意不带末尾换行：runtime 要能容忍
 
 
-def make_tester_result(kind: str = "mutation", patch: str | None = None, test_ids: list[str] | None = None, behavior: str = "B1") -> dict:
+def write_patch_file(patch: str, directory: Path | None = None, name: str = "mutation.patch") -> Path:
+    """把 patch 文本原样（不追加/改动任何字节）写到 run 外的临时目录，返回绝对路径。
+    result-channel run：mutation 组用 patch_file 交付大段 diff，不把正文塞进 handback 消息。"""
+    d = directory or Path(tempfile.mkdtemp(prefix="bl-patch-"))
+    d.mkdir(parents=True, exist_ok=True)
+    p = d / name
+    p.write_bytes(patch.encode("utf-8"))
+    return p
+
+
+def make_tester_result(kind: str = "mutation", patch: str | None = None, test_ids: list[str] | None = None,
+                       behavior: str = "B1", patch_file: str | None = None) -> dict:
+    """result-channel run（B1/B2）：候选可读之后 mutation 的 patch 只能走 patch_file 交付，inline
+    "patch" 字段会被 PreToolUse 拒。非空 patch 一律落成 run 外的临时文件、以 patch_file 交付，
+    与老调用方（直接传一段 patch 文本）保持源码兼容；显式传 patch_file 时优先于 patch。"""
     ids = test_ids or ["tests/test_mul.py::test_mul"]
     group: dict = {"kind": kind, "behavior_ids": [behavior], "test_ids": ids, "timeout": 60}
-    if patch is not None:
-        group["patch"] = patch
+    if patch_file is not None:
+        group["patch_file"] = patch_file
+    elif patch:
+        group["patch_file"] = str(write_patch_file(patch))
+    elif patch is not None:
+        group["patch"] = patch  # 空字符串：保留原样，等价于缺省 patch
     if kind == "reviewed-boundaries":
         group["reviewed_boundaries"] = {"positive": ids, "negative": [], "boundary": [], "invariant": []}
     return {"role": "tester", "status": "pass", "behaviors_covered": [behavior], "proof_spec": {"groups": [group]}}
@@ -170,6 +189,13 @@ def send_message(hook, to_agent_id: str, *, session: str = "S1"):
     """主会话（无 agent_id）发出的 PreToolUse(SendMessage)，用于续接已登记角色 to_agent_id。
     B2：SubagentStart 之前先喂这一条，续接才会记 resume_request + role_start（而不是 role_wake）。"""
     return hook("PreToolUse", {"session_id": session, "tool_name": "SendMessage", "tool_input": {"to": to_agent_id}})
+
+
+def pre_handback(hook, role: str, agent_id: str, message: str, *, session: str = "S1"):
+    """result-channel run：SubagentHandback 现在也走 PreToolUse（投递前的 gate），与 PostToolUse 的
+    handback() 成对使用——先 Pre 再 Post，Pre deny 时不应再有 Post 登记。"""
+    return hook("PreToolUse", {"session_id": session, "agent_id": agent_id, "agent_type": role,
+                               "tool_name": "SubagentHandback", "tool_input": {"message": message}})
 
 
 def handback(hook, role: str, agent_id: str, message: str, *, session: str = "S1"):

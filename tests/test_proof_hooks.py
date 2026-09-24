@@ -7,7 +7,8 @@ import pytest
 
 from builder_loop import ledger as L
 from builder_loop import proof as P
-from conftest import contract_with, drive_to_proof_pass, git, implement_mul, mutation_patch, role_turn, make_tester_result, send_message, write_mul_test, write_plan
+from conftest import (contract_with, drive_to_proof_pass, git, implement_mul, mutation_patch, role_turn,
+                      make_tester_result, send_message, write_mul_test, write_patch_file, write_plan)
 
 
 def _pre(tool: str, tool_input: dict, role: str = "tester", agent: str = "T1") -> dict:
@@ -95,7 +96,10 @@ def test_tester_result_lifecycle(started, cli, hook):
     (lambda p: p["proof_spec"]["groups"][0].update(test_ids=["tests/test_missing.py::t"]), "不存在"),
     (lambda p: p["proof_spec"]["groups"].append(dict(p["proof_spec"]["groups"][0])), "一一对应"),
     (lambda p: p["proof_spec"]["groups"][0].update(kind="reviewed-boundaries", reviewed_boundaries={"positive": ["tests/test_mul.py::test_mul"]}), "没有放行"),
-    (lambda p: p["proof_spec"]["groups"][0].update(patch="not a diff"), "无法识别"),
+    # mutation 组现在只接受 patch_file（inline "patch" 字段本身会被别的检查先打回，见
+    # test_mutation_patch_file_rejection.py），garbage 内容要通过 patch_file 交付才能测到
+    # "无法识别改动路径" 这条内容级校验
+    (lambda p: p["proof_spec"]["groups"][0].update(patch_file=str(write_patch_file("not a diff"))), "无法识别"),
 ])
 def test_proof_spec_validation(started, hook, mutate, needle):
     hook("SubagentStart", {"session_id": "S1", "agent_id": "T1", "agent_type": "tester"})
@@ -163,11 +167,14 @@ def test_resumed_tester_declining_keeps_valid_evidence(started, cli, hook):
 
 
 def test_proof_prerequisites_and_missing_patch(started, cli, hook):
+    """result-channel run（B6）之后：registering the tester（SubagentStart，无结果）本身就算它在
+    "跑"，此时硬跑 proof 会先被 PROOF_TESTER_RUNNING 挡下——这一步不再 register tester，直接以
+    "tester 从未交过卷"这个更干净的场景测 PROOF_PREREQ_TESTER。"""
     wt, twt = started["worktree"], started["tester_worktree"]
-    hook("SubagentStart", {"session_id": "S1", "agent_id": "T1", "agent_type": "tester"})
     implement_mul(wt)
     cli("checkpoint", "--session", "S1", "--role", "builder")
     assert cli("proof", "--session", "S1", expect=1)["code"] == "PROOF_PREREQ_TESTER"
+    hook("SubagentStart", {"session_id": "S1", "agent_id": "T1", "agent_type": "tester"})
     write_mul_test(twt)
     role_turn(hook, "tester", "T1", make_tester_result("mutation"), start=False)
     assert cli("proof", "--session", "S1", expect=1)["code"] == "PROOF_PREREQ_INTEGRATE"

@@ -2,6 +2,15 @@
 
 > 本文件记 **CC 版**产品线（分支 `cc/main`）。Codex 版见 `codex/main` 分支。
 
+## 角色交卷通道：patch 走文件、不合规的 handback 在投递前被拦（#281 #303 #250 #305 #302，2026-09-24）
+
+- **契约变更：mutation patch 改用 `patch_file`（#281）**：tester 用 `git diff > <临时目录>/x.patch` 生成，结果行里只给绝对路径，runtime 交卷时读原始字节写进 ledger 的 `patch`。结果行里给非空的 inline `patch` 会被 `PROOF_SPEC_INVALID` 拒绝；`bl proof --spec-file` 的调试入口不变。此前 patch 由模型在一行 JSON 里转述，尾部空白上下文行丢失、字符走样的同一失败在不同候选上出现 7 次（原则六），交卷预检只能拦下，拦不住。
+- **不合规的 handback 在投递前被 deny（#303）**：PreToolUse(SubagentHandback) 做与登记相同的校验，不合规就 deny，被拒的报告不会送到 builder；登记仍在 PostToolUse。到重试上限记 fail 并放行。此前被拒的报告照常送达、还写着 `status:pass`，`bl status` 却只显示 missing。探针确认（CC 2.1.280）：handback 只在 auto 权限模式下开启，deny 能拦住投递，subagent 能收到原因并重交。
+- **tester 在跑时拒绝 `bl proof`（#250）**：返回 `PROOF_TESTER_RUNNING`（exit 1），不写 evidence、不计 repeat。此前 builder 按先到的报告跑 proof，读到的是上一轮的 proof_spec，白跑一次还计入「同样失败」。
+- **brief 列出打不上的旧 patch（#305）**：tester 待办 `stale_mutation_patch`。此前 rebase 后 tester 原样重交旧 patch，被拒后才知道要重生成。
+- **后台提醒不再暗示「等唤醒」（#302）**：唤醒那一轮交的结论不登记（#306），提示改为「别等它，这一轮就交卷」。
+- **hook 接线**：PreToolUse 的 `EnterWorktree` matcher 扩为 `EnterWorktree|SubagentHandback`（超时 120s），总数仍 10 条；`bl doctor` 检查它，旧安装要重新 `./install.sh`。
+
 ## 角色被残留后台任务唤醒时不冒充续接，残留可见可收（#306 #283 #308 #304，2026-09-24）
 
 - **唤醒不再产生 evidence（#306）**：builder 的 SendMessage 由 PreToolUse 记为 `resume_request`；已登记角色没有对应请求的 SubagentStart 判为唤醒（`role_wake`），这一轮的结论不登记、不计不合规、不计轮次。此前后台任务结束把已交卷的角色唤醒后，它重发的旧结论会被登记成当前候选 HEAD 上的 evidence（探针实测唤醒与续接的 SubagentStart 字段完全相同）。

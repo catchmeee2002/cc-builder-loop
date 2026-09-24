@@ -7,7 +7,8 @@
   不跑 pass_cmd、不解析 transcript。
 - 角色结果：开了 SubagentHandback 的环境只有它送达调用方，最后一条消息常是收尾句，一轮还会触发多次
   SubagentStop（#257）——本轮有 handback 尝试就只认 PostToolUse(SubagentHandback) 的 tool_input.message。
-  handback 按环境开关、不由版本号决定；本轮没有 handback 时，SubagentStop 解析 last_assistant_message 兜底。
+  handback 只在 auto 权限模式开启（CC 2.1.280）；本轮没有 handback 时，SubagentStop 解析 last_assistant_message 兜底。
+  PreToolUse(SubagentHandback) 先做同一套校验，不合规就 deny：被拒的报告不会送达 builder（#303）。
   「本轮」= 该 agent_id 最近一次 role_start 之后的事件（续接会让 Start 再次触发）。
 - tester 首次 integrate 之前看不到候选：PreToolUse 拒绝它读写候选 worktree（Bash 只能尽力而为）。
 """
@@ -139,7 +140,7 @@ def record_role_result(ledger_path: Path, repo_root: Path, role: str, agent_id: 
         if payload["status"] == "pass":
             from .proof import validate_spec
 
-            validate_spec(payload["proof_spec"], ledger_mod.load(ledger_path), repo_root)  # → PROOF_SPEC_INVALID
+            spec = validate_spec(payload["proof_spec"], ledger_mod.load(ledger_path), repo_root)  # → PROOF_SPEC_INVALID
         with ledger_mod.mutate(ledger_path) as lg2:
             files = evidence.tester_files(lg2, repo_root)
             has_files = bool(files["present"] or files["deleted"])
@@ -152,7 +153,7 @@ def record_role_result(ledger_path: Path, repo_root: Path, role: str, agent_id: 
             if payload["status"] == "pass" and not has_files:
                 details["reason"] = "tester 没有提交任何测试改动"
             if status == "pass":
-                lg2["proof_spec"] = payload["proof_spec"]
+                lg2["proof_spec"] = spec  # patch_file 已换成 runtime 读到的字节（#281）
             rec = evidence.record(lg2, "tester", status, details, repo_root, agent_id=agent_id)
             ledger_mod.log_event(lg2, "role_result", role=role, agent_id=agent_id, status=status, tester_head=cp["head"], **src)
             readiness = evidence.readiness(lg2, repo_root)
@@ -356,10 +357,45 @@ def _accept(bound: dict[str, Any], role: str, agent_id: str | None, text: Any, v
     return _silent()
 
 
-def handle_handback(ev: dict[str, Any], bound: dict[str, Any]) -> HookReturn:
-    """PostToolUse(SubagentHandback)：送达调用方的那份报告就是角色结论，当场登记（早于调用方收到它，#250）。"""
+def _turn_failed(lg: dict[str, Any], role: str, agent_id: str | None) -> bool:
+    return any(e["kind"] == "role_malformed" and e.get("final") for e in _turn_events(lg, role, agent_id))
+
+
+def _precheck_result(bound: dict[str, Any], role: str, text: Any) -> str | None:
+    """登记前会做的校验，不提交、不写 ledger。test_ids 查 tester worktree 的工作树（登记时才提交）。"""
+    payload, err = parse_result_marker(text if isinstance(text, str) else None)
+    if payload:
+        err = _validate_role_payload(role, payload)
+    if err or role != "tester" or payload["status"] != "pass":
+        return err
+    from .proof import validate_spec
+
+    try:
+        validate_spec(payload["proof_spec"], bound["ledger"], bound["repo_root"], worktree_files=True)
+    except Problem as exc:
+        return f"{exc.code}: {exc.message} {dumps(exc.details) if exc.details else ''}"
+    return None
+
+
+def handle_handback_pre(ev: dict[str, Any], bound: dict[str, Any]) -> HookReturn:
+    """PreToolUse(SubagentHandback)：投递前校验，不合规就 deny——被拒的报告到不了 builder（#303，原则二）。
+    只校验不登记：deny 之后工具不执行，登记仍在 PostToolUse。超过重试上限记 fail 并放行，不把角色困死（原则三）。"""
     role = _registered_role(ev, bound)
-    if not role or _in_wake_turn(bound["ledger"], role, ev.get("agent_id")):
+    agent_id = ev.get("agent_id")
+    if not role or _in_wake_turn(bound["ledger"], role, agent_id) or _turn_failed(bound["ledger"], role, agent_id):
+        return _silent()
+    err = _precheck_result(bound, role, (ev.get("tool_input") or {}).get("message"))
+    if not err:
+        return _silent()
+    return _retry_or_fail(bound["ledger_path"], bound["repo_root"], role, agent_id, f"{err}。{_handback_hint(role)}",
+                          via=VIA_HANDBACK, deny=True)
+
+
+def handle_handback(ev: dict[str, Any], bound: dict[str, Any]) -> HookReturn:
+    """PostToolUse(SubagentHandback)：送达调用方的那份报告就是角色结论，当场登记（早于调用方收到它，#250）。
+    本轮已记 final fail（PreToolUse 到上限后放行的那份）就不再登记。"""
+    role = _registered_role(ev, bound)
+    if not role or _in_wake_turn(bound["ledger"], role, ev.get("agent_id")) or _turn_failed(bound["ledger"], role, ev.get("agent_id")):
         return _silent()
     return _accept(bound, role, ev.get("agent_id"), (ev.get("tool_input") or {}).get("message"), VIA_HANDBACK, _handback_hint(role))
 
@@ -385,7 +421,7 @@ def handle_subagent_stop(ev: dict[str, Any], bound: dict[str, Any]) -> HookRetur
     turn = _turn_events(bound["ledger"], role, agent_id)
     if any(e["kind"] == "role_result" for e in turn):
         return _silent()
-    if any(e["kind"] == "role_malformed" and e.get("final") for e in turn):
+    if _turn_failed(bound["ledger"], role, agent_id):
         return _silent()  # 已记 fail，不再打回
     if any(e.get("via") == VIA_HANDBACK for e in turn):
         return _retry_or_fail(bound["ledger_path"], bound["repo_root"], role, agent_id,
@@ -393,7 +429,8 @@ def handle_subagent_stop(ev: dict[str, Any], bound: dict[str, Any]) -> HookRetur
     return _accept(bound, role, agent_id, ev.get("last_assistant_message"), VIA_STOP, _stop_hint(role))
 
 
-def _retry_or_fail(lp: Path, root: Path, role: str, agent_id: str | None, reason: str, *, via: str) -> HookReturn:
+def _retry_or_fail(lp: Path, root: Path, role: str, agent_id: str | None, reason: str, *, via: str, deny: bool = False) -> HookReturn:
+    """不合规计一次；未到上限就打回（Stop / PostToolUse 用 exit 2，PreToolUse 用 deny），到上限记 fail 放行。"""
     with ledger_mod.mutate(lp) as lg:
         reg = lg["agents"][role]
         reg["stops"] = int(reg.get("stops", 0)) + 1
@@ -406,6 +443,8 @@ def _retry_or_fail(lp: Path, root: Path, role: str, agent_id: str | None, reason
             _keep_stall(lg)
     if final:
         return ("", f"[builder-loop] {role} 结果连续 {stops} 次不合规，已记为 fail：{reason}\n"), 0
+    if deny:
+        return _deny(f"{role} 结果不合规（第 {stops} 次），这份报告没有送出：{reason}")
     return _block(f"[builder-loop] {role} 结果不合规（第 {stops} 次）：{reason}")
 
 
@@ -472,6 +511,8 @@ def handle_pre_tool_use(ev: dict[str, Any], bound: dict[str, Any]) -> HookReturn
             with ledger_mod.mutate(bound["ledger_path"]) as lg2:
                 lg2["waiting_for_user"] = {"since": ledger_mod.now_iso(), "reason": "AskUserQuestion", "tool_use_id": ev.get("tool_use_id")}
         return _silent()
+    if tool == HANDBACK_TOOL:
+        return handle_handback_pre(ev, bound)
     role = ev.get("agent_type") if ev.get("agent_type") in ROLES else None
     if role:
         reg = lg["agents"].get(role) or {}
@@ -516,8 +557,9 @@ def _user_input(bound: dict[str, Any], source: str) -> HookReturn:
     return _silent()
 
 
-ROLE_BACKGROUND_HINT = ("这条命令超时后被转到了后台，交卷后它会把你再唤醒。以后给足 timeout 或缩小命令范围；"
-                        "这个后台任务会由 builder 停掉。")
+# 唤醒轮次里交的结论不登记（#306），所以不能让角色停下来等它（#302）
+ROLE_BACKGROUND_HINT = ("这条命令超时后被转到了后台。别等它：这一轮就把结论交上来，等它结束时唤醒你的那一轮里交的结论不会被登记。"
+                        "需要它的结果就给足 timeout 在前台重跑，或缩小命令范围；这个后台任务会由 builder 停掉。")
 
 
 def _tool_response(ev: dict[str, Any]) -> dict[str, Any]:

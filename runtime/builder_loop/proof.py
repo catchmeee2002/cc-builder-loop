@@ -36,6 +36,7 @@ KIND_REVIEWED = "reviewed-boundaries"
 DEFAULT_TIMEOUT = 300
 PYTEST_NO_TESTS_COLLECTED = 5
 MAX_TIMEOUT = 1800
+PATCH_FILE_MAX_BYTES = 256 * 1024
 TESTER_OWNED_FAILURES = ("TEST_BASELINE_RED_NOT_PROVEN", "TEST_MUTATION_SURVIVED", "TEST_MUTATION_INVALID", "TEST_MUTATION_PATCH_MISSING", "TEST_PROOF_NOT_EXECUTED")
 # patch 路径被这几类原因拒绝时，是 contract 没把要破坏的行为所在文件交给 builder：tester 改 patch 解决不了（#286）
 CONTRACT_REJECTIONS = ("protected", "outside_authority", "control_file")
@@ -74,17 +75,93 @@ def normalized_patch(patch: str) -> str:
     return patch if patch.endswith("\n") else patch + "\n"
 
 
-def validate_spec(spec: Any, lg: dict[str, Any], repo_root: Path) -> dict[str, Any]:
-    """tester 交卷时的校验：结构 + 候选可读后对 patch 的可应用性预检。
-    预检对象是 ledger 实收的那份字节，不是 tester 手边那份（#274，原则一）。"""
-    spec = check_structure(spec, lg, repo_root)
+def validate_spec(spec: Any, lg: dict[str, Any], repo_root: Path, *, worktree_files: bool = False) -> dict[str, Any]:
+    """tester 交卷时的校验：patch_file 取字节 + 结构 + 候选可读后对 patch 的可应用性预检。返回要登记的那份 spec。
+    预检对象是 runtime 自己从文件读到的字节，不是模型转述的文本（#274 #281，原则一）。
+    worktree_files：test_ids 的文件查 tester worktree 的工作树而不是提交——PreToolUse 时还没提交（登记时才提交）。"""
+    spec = check_structure(resolve_patch_files(spec, lg, repo_root), lg, repo_root, worktree_files=worktree_files)
     if lg.get("candidate") and evidence.implementation_readable_by_tester(lg):
         _precheck_patches(spec, lg, repo_root)
     return spec
 
 
+def resolve_patch_files(spec: Any, lg: dict[str, Any], repo_root: Path) -> Any:
+    """mutation 组的 patch 只从 patch_file 读原始字节（#281）：模型转述长 patch 会丢空白上下文行、字符走样，
+    这个输入条件不改，交卷预检只能拦下、拦不住。返回副本：patch_file 换成读到的 patch，ledger 只存字节。"""
+    if not isinstance(spec, dict) or not isinstance(spec.get("groups"), list):
+        return spec  # 结构错误留给 check_structure 报
+    roots = [Path(repo_root)] + [Path(x["worktree"]) for x in (lg.get("candidate"), lg.get("tester")) if x and x.get("worktree")]
+    out = {**spec, "groups": []}
+    for i, g in enumerate(spec["groups"]):
+        if not isinstance(g, dict) or ("patch_file" not in g and not (g.get("patch") or "").strip()):
+            out["groups"].append(g)
+            continue
+        where = f"groups[{i}]"
+        if "patch_file" not in g:
+            raise _spec_error(f"{where}.patch 不再接受 patch 正文：用 git diff 把 patch 重定向到你 worktree 之外的文件，"
+                              "把它的绝对路径填进 patch_file（runtime 读原始字节，避免转述走样）", group=i)
+        if "patch" in g:
+            raise _spec_error(f"{where} 不能同时给 patch 和 patch_file：只给 patch_file", group=i)
+        if g.get("kind") != KIND_MUTATION:
+            raise _spec_error(f"{where}.patch_file 只用于 mutation 组", group=i)
+        g2 = {k: v for k, v in g.items() if k != "patch_file"}
+        g2["patch"] = _read_patch_file(g["patch_file"], roots, where)
+        out["groups"].append(g2)
+    return out
+
+
+def _read_patch_file(pf: Any, roots: list[Path], where: str) -> str:
+    if not isinstance(pf, str) or not os.path.isabs(pf):
+        raise _spec_error(f"{where}.patch_file 必须是绝对路径", patch_file=pf)
+    real = os.path.realpath(pf)
+    if not os.path.isfile(real):
+        raise _spec_error(f"{where}.patch_file 不存在或不是普通文件: {pf}", patch_file=pf)
+    for r in roots:
+        base = os.path.realpath(r)
+        if real == base or real.startswith(base.rstrip("/") + "/"):
+            # tester worktree 里的会被当成测试提交进候选；候选与主仓不归 tester 写
+            raise _spec_error(f"{where}.patch_file 不能放在候选 / tester worktree / 主仓之内: {pf}（放到你自己建的临时目录）", patch_file=pf, root=str(r))
+    size = os.path.getsize(real)
+    if size > PATCH_FILE_MAX_BYTES:
+        raise _spec_error(f"{where}.patch_file 超过 {PATCH_FILE_MAX_BYTES} 字节（{size}）：mutation 只需破坏一处", patch_file=pf, size=size)
+    try:
+        return Path(real).read_bytes().decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise _spec_error(f"{where}.patch_file 不是 UTF-8 文本: {exc}", patch_file=pf) from exc
+
+
+def patch_applies(repo_root: Path, head: str, patch: str) -> tuple[bool, str]:
+    """patch 能否打到 head 上：临时 index，不碰任何 worktree。"""
+    for p in patch_paths(patch):
+        if gitx.blob_mode(repo_root, head, p) not in ("100644", "100755"):
+            return False, f"触及 {head[:12]} 上不存在的普通文件 {p}"
+    with tempfile.TemporaryDirectory(prefix="bl-patch-check-") as td:
+        env = {"GIT_INDEX_FILE": str(Path(td) / "index")}
+        gitx.git(repo_root, "read-tree", head, env=env)
+        ap = gitx.git(repo_root, "apply", "--cached", "--check", "--whitespace=nowarn", "-", check=False,
+                      input_text=normalized_patch(patch), env=env)
+    return ap.ok, ap.stderr
+
+
+def stale_patch_groups(lg: dict[str, Any], repo_root: Path) -> list[str]:
+    """ledger 里已有 patch、但打不到当前候选 HEAD 上的 mutation 组（#305：rebase 或 builder 改实现之后）。"""
+    head = (lg.get("candidate") or {}).get("head")
+    if not head:
+        return []
+    out = []
+    for g in (lg.get("proof_spec") or {}).get("groups", []):
+        if g.get("kind") == KIND_MUTATION and (g.get("patch") or "").strip():
+            try:
+                ok = patch_applies(repo_root, head, g["patch"])[0]
+            except Problem:
+                ok = False  # patch 头本身不合法（如重命名）也是要重新生成
+            if not ok:
+                out.append(g["behavior_ids"][0])
+    return out
+
+
 def _precheck_patches(spec: dict[str, Any], lg: dict[str, Any], repo_root: Path) -> None:
-    """在交卷那一刻的候选 head 上判 patch 能否打上。用临时 index，不碰候选 worktree。
+    """在交卷那一刻的候选 head 上判 patch 能否打上。
     之后 builder 再改实现导致对不上，由 proof ③ 段报 TEST_MUTATION_INVALID（owner=tester），所以 proof 入口不做这一步。"""
     head = lg["candidate"]["head"]
     for i, g in enumerate(spec["groups"]):
@@ -94,17 +171,13 @@ def _precheck_patches(spec: dict[str, Any], lg: dict[str, Any], repo_root: Path)
         for p in patch_paths(g["patch"]):
             if gitx.blob_mode(repo_root, head, p) not in ("100644", "100755"):
                 raise _spec_error(f"{where}.patch 触及候选上不存在的普通文件 {p}", group=i, behavior=bid, path=p, candidate_head=head)
-        with tempfile.TemporaryDirectory(prefix="bl-patch-check-") as td:
-            env = {"GIT_INDEX_FILE": str(Path(td) / "index")}
-            gitx.git(repo_root, "read-tree", head, env=env)
-            ap = gitx.git(repo_root, "apply", "--cached", "--check", "--whitespace=nowarn", "-", check=False,
-                          input_text=normalized_patch(g["patch"]), env=env)
-        if not ap.ok:
-            raise _spec_error(f"{where}.patch 无法应用到候选 {head[:12]}（校验的是你交上来的这份文本，不是你本地那份）：{ap.stderr.strip()[-1500:]}",
-                              group=i, behavior=bid, stderr=ap.stderr[-2000:], candidate_head=head)
+        ok, stderr = patch_applies(repo_root, head, g["patch"])
+        if not ok:
+            raise _spec_error(f"{where}.patch 无法应用到候选 {head[:12]}：{stderr.strip()[-1500:]}",
+                              group=i, behavior=bid, stderr=stderr[-2000:], candidate_head=head)
 
 
-def check_structure(spec: Any, lg: dict[str, Any], repo_root: Path) -> dict[str, Any]:
+def check_structure(spec: Any, lg: dict[str, Any], repo_root: Path, *, worktree_files: bool = False) -> dict[str, Any]:
     """不依赖候选内容的校验：交卷与 proof 入口都做。"""
     if not isinstance(spec, dict) or not isinstance(spec.get("groups"), list) or not spec["groups"]:
         raise _spec_error("proof_spec 必须含非空 groups 数组")
@@ -152,12 +225,16 @@ def check_structure(spec: Any, lg: dict[str, Any], repo_root: Path) -> dict[str,
                 raise _spec_error(f"{where}.test_ids 不是 Python 测试文件，但 proof_runner.framework=pytest：{', '.join(foreign)}。"
                                   "这不是你能改的——改交 status=insufficient_spec，在 notes 里写明 loop.yml 的 proof_runner 与测试语言不匹配、需要改 loop.yml",
                                   files=foreign, framework=framework, suggested_owner="contract")
-            existing = gitx.ls_tree_blobs(repo_root, tester_head, files) if tester_head else {}
+            if worktree_files:
+                twt = Path((lg.get("tester") or {}).get("worktree") or "")
+                existing = {f: True for f in files if (twt / f).is_file()}
+            else:
+                existing = gitx.ls_tree_blobs(repo_root, tester_head, files) if tester_head else {}
             for f in files:
                 if contract_mod.path_owner(auth, f) != contract_mod.OWNER_TESTER:
                     raise _spec_error(f"{where}.test_ids 的文件部分必须是 tester_write 内的路径: {f}")
                 if f not in existing:
-                    raise _spec_error(f"{where}.test_ids 引用的文件在你的 worktree 提交里不存在: {f}")
+                    raise _spec_error(f"{where}.test_ids 引用的文件在你的 worktree 里不存在: {f}")
         if kind == KIND_MUTATION and (g.get("patch") or "").strip():
             if not isinstance(g["patch"], str) or not patch_paths(g["patch"]):
                 raise _spec_error(f"{where}.patch 无法识别改动路径（需要 `diff --git a/x b/x` 头）")
@@ -361,6 +438,9 @@ def run_proof(ledger_path: Path, repo_root: Path, spec_override: dict[str, Any] 
     lg = ledger_mod.load(ledger_path)
     if ledger_mod.is_terminal(lg):
         raise fatal("RUN_TERMINAL", "run 已到终态", terminal=lg["terminal"])
+    if evidence.role_running(lg, "tester"):
+        # tester 在交卷途中：ledger 里的 proof_spec 可能还是上一轮的，按它判出的失败是白跑（#250，原则一）
+        raise negative("PROOF_TESTER_RUNNING", "tester 还在运行，proof_spec 可能尚未登记；等它交卷后再跑 proof")
     blocked = evidence.proof_blocked(lg, repo_root)
     if blocked:
         raise needs_user("PROOF_BLOCKED", "同一 proof 失败已重复出现；用 AskUserQuestion 让用户决定，继续则 `bl resume --reason`", blockers=blocked)

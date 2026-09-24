@@ -2,8 +2,13 @@
 一条 role_background 事件、`bl status` 的 role_background_tasks 里能看到它，并提醒角色以后给足
 timeout；主会话用 PostToolUse(TaskStop) 显式停掉后，任务从列表里消失。
 
+result-channel run 的 B8：提醒措辞改成冻结锚句——不再说「交卷后它会把你再唤醒」（这句话在
+handback 环境下不成立：等它结束时唤醒你的那一轮里交的结论根本不会被登记），改为明确告诉角色
+别等它、这一轮就把结论交上来。role_background 事件的记录与 TaskStop 标记停止的行为不变。
+
 覆盖对象：runtime/builder_loop/hooks.py 的 handle_post_tool_use 新增 Bash / TaskStop 分支，
-runtime/builder_loop/evidence.py::role_background_tasks，`bl status` 的 role_background_tasks 字段。
+runtime/builder_loop/evidence.py::role_background_tasks，`bl status` 的 role_background_tasks 字段，
+以及 ROLE_BACKGROUND_HINT 的措辞（B8）。
 """
 
 from __future__ import annotations
@@ -11,7 +16,9 @@ from __future__ import annotations
 import builder_loop.ledger as L
 from conftest import implement_mul
 
-BG_SENTENCE = "这条命令超时后被转到了后台，交卷后它会把你再唤醒。以后给足 timeout 或缩小命令范围；这个后台任务会由 builder 停掉。"
+BG_SENTENCE = ("这条命令超时后被转到了后台。别等它：这一轮就把结论交上来，等它结束时唤醒你的那一轮里交的结论不会被登记。"
+              "需要它的结果就给足 timeout 在前台重跑，或缩小命令范围；这个后台任务会由 builder 停掉。")
+OLD_BG_PHRASE = "交卷后它会把你再唤醒"
 
 
 def _reviewer_ready(started, cli, hook, agent_id: str = "R1") -> None:
@@ -56,6 +63,15 @@ def test_b3_reviewer_background_task_recorded_and_surfaced(started, cli, hook):
     out = r["json"] or {}
     ctx = (out.get("hookSpecificOutput") or {}).get("additionalContext") or ""
     assert BG_SENTENCE in ctx, ctx
+
+
+def test_b8_boundary_old_you_will_be_rewoken_phrase_gone(started, cli, hook):
+    """B8 边界：不再含「交卷后它会把你再唤醒」——handback 环境下这句话不成立。"""
+    _reviewer_ready(started, cli, hook)
+    r = _bg_bash(hook, "reviewer", "R1")
+    out = r["json"] or {}
+    ctx = (out.get("hookSpecificOutput") or {}).get("additionalContext") or ""
+    assert OLD_BG_PHRASE not in ctx, ctx
 
 
 def test_b3_boundary_no_background_task_id_is_silent(started, cli, hook):

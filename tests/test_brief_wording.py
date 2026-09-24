@@ -10,18 +10,21 @@ from conftest import drive_to_proof_pass, implement_mul, make_tester_result, rol
 
 
 def test_b10_fix_proof_todo_requires_full_proof_spec_covering_all_behaviors(started, cli, hook):
+    """result-channel run（B6）之后：非 final 的不合规 handback 之后 tester 仍算"在跑"（心跳未过期），
+    紧接着硬跑 `bl proof` 现在会先被 PROOF_TESTER_RUNNING 挡住——这是新增的、正确的行为，不是这条
+    behavior 的负责范围。为了单纯测 fix_proof 待办的措辞，不再额外交一次会被拒的 bogus 补丁：
+    首轮盲写留空 patch 本身，集成后硬跑 proof 就已经是 TEST_MUTATION_PATCH_MISSING（owner=tester），
+    足以触发 fix_proof 待办。"""
     wt, twt = started["worktree"], started["tester_worktree"]
     hook("SubagentStart", {"session_id": "S1", "agent_id": "T1", "agent_type": "tester"})
     implement_mul(wt)
     cli("checkpoint", "--session", "S1", "--role", "builder")
-    # tester 故意用错误的 mutation patch：proof 会判给 tester
     write_mul_test(twt)
-    role_turn(hook, "tester", "T1", make_tester_result("mutation"), start=False)
+    role_turn(hook, "tester", "T1", make_tester_result("mutation"), start=False)  # patch 留空
     cli("integrate", "--session", "S1")
     assert cli("machine", "--session", "S1")["result"] == "PASS"
-    bogus_patch = "not a real diff\n"
-    role_turn(hook, "tester", "T1", make_tester_result("mutation", bogus_patch), start=False)
-    proof_out = cli("proof", "--session", "S1", expect=1)
+    proof_out = cli("proof", "--session", "S1", expect=1)  # 缺 patch → TEST_MUTATION_PATCH_MISSING，owner=tester
+    assert proof_out["failure"]["code"] == "TEST_MUTATION_PATCH_MISSING"
     lg = L.load(started["ledger"])
     b = brief.build(lg, started["repo"].root, "tester")
     text = brief.render(b)

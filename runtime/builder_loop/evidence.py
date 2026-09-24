@@ -207,7 +207,8 @@ def touch_heartbeat(ledger: dict[str, Any], role: str) -> None:
 
 
 def role_running(ledger: dict[str, Any], role: str) -> bool:
-    """最近一条生命周期事件是 start（或要求重发的 malformed）且租约未过期。只用于抑制 Stop 回拉。"""
+    """最近一条生命周期事件是 start（或要求重发的 malformed）且租约未过期。
+    用于抑制 Stop 回拉，以及 tester 交卷途中拒绝 `bl proof`（#250）。"""
     life = [e for e in events_of(ledger, "role_start", "role_result", "role_malformed") if e.get("role") == role]
     if not life:
         return False

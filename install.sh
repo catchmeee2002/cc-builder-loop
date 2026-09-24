@@ -70,7 +70,8 @@ spec = [
     ("SubagentStart", "tester|reviewer", 10),
     ("SubagentStop", "tester|reviewer", 120),
     ("PreToolUse", "AskUserQuestion", 5),
-    ("PreToolUse", "EnterWorktree", 5),
+    # SubagentHandback：角色交卷投递前的校验，不合规就 deny（#303）；要校验 proof_spec 与 patch，超时放宽
+    ("PreToolUse", "EnterWorktree|SubagentHandback", 120),
     # tester 首次 integrate 前的读隔离 + 角色写边界 + 心跳续租；SendMessage = builder 续接角色的 intent（#306）。
     # 高频工具，靠 bl-hook.sh 的纯 bash 快速路径兜成本
     ("PreToolUse", "Read|Grep|Glob|Write|Edit|MultiEdit|NotebookEdit|Bash|SendMessage", 5),
