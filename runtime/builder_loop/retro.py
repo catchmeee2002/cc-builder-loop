@@ -59,6 +59,10 @@ def derive_signals(lg: dict[str, Any]) -> list[dict[str, Any]]:
     leftover = evidence.role_background_tasks(lg)
     if leftover:
         out.append(_signal("S-role-background", f"角色留下 {len(leftover)} 个还没被 TaskStop 停掉的后台任务", tasks=leftover))
+    tampered = ev("role_candidate_changed")
+    if tampered:
+        out.append(_signal("S-role-candidate-changed", f"角色这一轮里候选 worktree 的 git 状态变了 {len(tampered)} 次（结论记为 fail）",
+                           roles=sorted({e["role"] for e in tampered}), paths=sorted({p for e in tampered for p in e.get("paths", [])})[:30]))
     review_fail = [e for e in ev("role_result") if e.get("role") == "reviewer" and e.get("status") == "fail"]
     if review_fail:
         out.append(_signal("S-review-rejected", f"reviewer 未通过 {len(review_fail)} 次", verdicts=[e.get("verdict") for e in review_fail], candidate_moved=any(e.get("candidate_moved") for e in review_fail)))

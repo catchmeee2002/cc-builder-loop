@@ -15,8 +15,9 @@ HOOK_SPEC: tuple[tuple[str, str | None, int], ...] = (
     # SubagentHandback：角色交卷投递前的校验，不合规就 deny（#303）；要校验 proof_spec 与 patch，超时放宽
     ("PreToolUse", "EnterWorktree|SubagentHandback", 120),
     # tester 首次 integrate 前的读隔离 + 角色写边界 + 心跳续租；SendMessage = builder 续接角色的 intent（#306）。
+    # TaskStop = builder 停掉角色后台任务的 intent，任务早已结束时只有这里看得到（#308）。
     # 高频工具，靠 bl-hook.sh 的纯 bash 快速路径兜成本
-    ("PreToolUse", "Read|Grep|Glob|Write|Edit|MultiEdit|NotebookEdit|Bash|SendMessage", 5),
+    ("PreToolUse", "Read|Grep|Glob|Write|Edit|MultiEdit|NotebookEdit|Bash|SendMessage|TaskStop", 5),
     ("PostToolUse", "AskUserQuestion", 5),
     # 角色结果的唯一登记点：tester 登记要提交 worktree + 校验 proof_spec，超时与 SubagentStop 同级。
     # Bash：角色前台命令超时被转后台（backgroundTaskId）；TaskStop：builder 停掉它（#283 #308）

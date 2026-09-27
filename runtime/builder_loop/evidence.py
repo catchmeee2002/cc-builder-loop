@@ -182,12 +182,23 @@ def record(ledger: dict[str, Any], kind: str, status: str, details: dict[str, An
     }
     ledger["evidence"][kind] = rec
     rec["dependency_digest"] = dependency_digest(ledger, kind, repo_root)
-    if status == "pass" and not events_of(ledger, "gates_passed"):
+    rev = _mission_revision(ledger)
+    if status == "pass" and not _gates_passed(ledger, rev):
         required = ledger["contract"]["assurance"]["required"]
         if all(state(ledger, k, repo_root) == STATE_PASS for k in required):
-            # hold 的授权锚点要用「gate 首次全过」：之后的 rebase 会让 evidence 重记，最后一次记录的时刻不再代表它（#299）
-            log_event(ledger, "gates_passed")
+            # hold 的授权锚点要用「本 mission revision 下 gate 首次全过」：之后的 rebase 会让 evidence 重记，
+            # 最后一次记录的时刻不再代表它；mission 修订后要在新目标下重新全过（#299）
+            log_event(ledger, "gates_passed", revision=rev)
     return rec
+
+
+def _mission_revision(ledger: dict[str, Any]) -> int:
+    return int(ledger["contract"]["mission"].get("revision") or 1)
+
+
+def _gates_passed(ledger: dict[str, Any], revision: int) -> list[dict[str, Any]]:
+    """该 mission revision 下的 gates_passed 事件；旧 run 的事件没有 revision 字段，视作 revision 1。"""
+    return [e for e in events_of(ledger, "gates_passed") if int(e.get("revision") or 1) == revision]
 
 
 # ---------------------------------------------------------------- 角色是否在跑（派生，不落盘）
@@ -406,19 +417,19 @@ def hold_state(ledger: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def hold_anchor(ledger: dict[str, Any], repo_root: Path) -> str | None:
-    """hold 的授权锚点 = max(gate 首次全过, 最近一次 hold_release)；gate 从未全过 → None（#299）。
-    rebase 后重新全绿不重置锚点：用户在这一轮基线内已经就合入时机做过决定。"""
-    first = events_of(ledger, "gates_passed")
+    """hold 的授权锚点 = 当前 mission revision 下 gate 首次全过；这个 revision 下从未全过 → None（#299）。
+    release 与 rebase 都不重置锚点：用户就「等外部放行」做的决定跨 release 有效，同一个外部条件不必一问再问；
+    只有 mission 修订（目标变了）才要在新目标下重新全过、重新问。"""
+    first = _gates_passed(ledger, _mission_revision(ledger))
     if first:
-        passed = first[0]["at"]
-    else:
-        # 该事件引入之前开始的 run：此刻全绿就以最后一次记录为准（旧行为）
-        required = ledger["contract"]["assurance"]["required"]
-        if not all(state(ledger, k, repo_root) == STATE_PASS for k in required):
-            return None
-        passed = max(((ledger["evidence"].get(k) or {}).get("at", "") for k in required), default="")
-    released = [e["at"] for e in events_of(ledger, "hold_release")]
-    return max([passed, *released])
+        return first[0]["at"]
+    if events_of(ledger, "gates_passed"):
+        return None  # 只在旧 revision 下全过过
+    # 该事件引入之前开始的 run：此刻全绿就以最后一次记录为准（旧行为）
+    required = ledger["contract"]["assurance"]["required"]
+    if not all(state(ledger, k, repo_root) == STATE_PASS for k in required):
+        return None
+    return max(((ledger["evidence"].get(k) or {}).get("at", "") for k in required), default="")
 
 
 def missing_patch(ledger: dict[str, Any]) -> bool:

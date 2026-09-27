@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from .errors import fatal
 
@@ -135,6 +137,21 @@ def status_porcelain(cwd: Path | str) -> list[tuple[str, str]]:
 
 def is_clean(cwd: Path | str) -> bool:
     return not status_porcelain(cwd)
+
+
+def worktree_fingerprint(cwd: Path | str) -> dict[str, Any]:
+    """worktree 的 git 状态指纹（#312）：HEAD、index（`ls-files -s` 的 sha256）、status（'XY path'，已排序，不含 ignored），
+    外加 dirty 路径的内容摘要 worktree——起点已 dirty 的文件被再次改写时 status 不变，靠它看出来。"""
+    head = git(cwd, "rev-parse", "HEAD").stdout.strip()
+    index = hashlib.sha256(git(cwd, "ls-files", "-s", "-z").stdout.encode()).hexdigest()
+    entries = sorted(status_porcelain(cwd), key=lambda e: e[1])
+    h = hashlib.sha256()
+    for _, p in entries:
+        f = Path(cwd) / p
+        h.update(p.encode() + b"\0")
+        if f.is_file():
+            h.update(hashlib.sha256(f.read_bytes()).digest())
+    return {"head": head, "index": index, "status": [f"{xy} {p}" for xy, p in entries], "worktree": h.hexdigest()}
 
 
 def changed_paths(cwd: Path | str, base: str, target: str) -> list[str]:

@@ -163,8 +163,11 @@ def record_role_result(ledger_path: Path, repo_root: Path, role: str, agent_id: 
         starts = [e for e in ledger_mod.events_of(lg2, "role_start") if e.get("role") == "reviewer" and e.get("agent_id") == agent_id]
         started_head = starts[-1].get("candidate_head") if starts else None
         moved = bool(started_head) and started_head != lg2["candidate"]["head"]
+        # HEAD 变了归 candidate_moved：checkpoint 顺带改写了 index，再比指纹只会把真实原因盖掉
+        changed = None if moved else _candidate_changes(starts[-1].get("candidate_fingerprint") if starts else None,
+                                                        _candidate_fingerprint(lg2))
         blocking = [f for f in payload.get("findings", []) if f.get("severity") == "blocking"]
-        status = "pass" if payload["verdict"] == "pass" and not blocking and not moved else "fail"
+        status = "pass" if payload["verdict"] == "pass" and not blocking and not moved and changed is None else "fail"
         details = {
             "verdict": payload["verdict"], "findings": payload.get("findings", []),
             "behaviors_verified": payload.get("behaviors_verified", []),
@@ -172,10 +175,39 @@ def record_role_result(ledger_path: Path, repo_root: Path, role: str, agent_id: 
         }
         if moved:
             details["reason"] = "候选在审查期间发生了变化，本次结论无效，需要复审"
+        if changed is not None:
+            # 原则一：审查期间候选的 git 状态变了，结论对应不到确定输入；不论是谁改的（#312）
+            details["reason"] = ("候选 worktree 的 git 状态（index / 工作区）在审查这一轮里变了，本次结论无效："
+                                 "builder 核对并恢复候选后续接 reviewer 复审")
+            details["candidate_changed"] = changed["paths"]
+            details["index_changed"] = changed["index_changed"]
+            ledger_mod.log_event(lg2, "role_candidate_changed", role=role, agent_id=agent_id, **changed)
         rec = evidence.record(lg2, "reviewer", status, details, repo_root, agent_id=agent_id)
         ledger_mod.log_event(lg2, "role_result", role=role, agent_id=agent_id, status=status, verdict=payload["verdict"], candidate_moved=moved, **src)
         readiness = evidence.readiness(lg2, repo_root)
     return {"recorded": "reviewer", "status": rec["status"], "readiness": readiness}
+
+
+def _candidate_fingerprint(lg: dict[str, Any]) -> dict[str, Any] | None:
+    """候选 worktree 的 git 状态指纹；取不到（worktree 不在、git 出错）就降级为 None，不拖垮 hook（#312）。"""
+    try:
+        return gitx.worktree_fingerprint(lg["candidate"]["worktree"])
+    except Exception:  # noqa: BLE001 — 指纹只是旁证，不能让 SubagentStart / 登记失败
+        return None
+
+
+def _candidate_changes(before: dict[str, Any] | None, after: dict[str, Any] | None) -> dict[str, Any] | None:
+    """两次指纹之间 index / 工作区的变化；任一侧缺失就不比对。HEAD 的变化归 candidate_moved，不在这里重复。"""
+    if not before or not after:
+        return None
+    same = all(before.get(k) == after.get(k) for k in ("index", "status", "worktree"))
+    if same:
+        return None
+    b, a = set(before.get("status") or []), set(after.get("status") or [])
+    paths = sorted({e[3:] for e in b.symmetric_difference(a)})
+    if not paths and before.get("worktree") != after.get("worktree"):
+        paths = sorted({e[3:] for e in a})  # 起点已 dirty 的文件被再次改写：status 行不变，只能列出 dirty 路径
+    return {"paths": paths, "index_changed": before.get("index") != after.get("index")}
 
 
 # ---------------------------------------------------------------- 上下文注入
@@ -284,7 +316,8 @@ def handle_subagent_start(ev: dict[str, Any], bound: dict[str, Any]) -> HookRetu
             prev = {}
         turn = int(prev.get("turn", 0)) + 1
         lg["agents"][role] = {"agent_id": agent_id, "started_at": prev.get("started_at") or ledger_mod.now_iso(), "turn": turn, "stops": 0}
-        ledger_mod.log_event(lg, "role_start", role=role, agent_id=agent_id, turn=turn, candidate_head=lg["candidate"]["head"])
+        extra = {"candidate_fingerprint": _candidate_fingerprint(lg)} if role == "reviewer" else {}
+        ledger_mod.log_event(lg, "role_start", role=role, agent_id=agent_id, turn=turn, candidate_head=lg["candidate"]["head"], **extra)
         _keep_stall(lg)
         ctx = agent_context(lg, role, root)
     evidence.touch_heartbeat(bound["ledger"], role)
@@ -537,6 +570,9 @@ def handle_pre_tool_use(ev: dict[str, Any], bound: dict[str, Any]) -> HookReturn
                 with ledger_mod.mutate(bound["ledger_path"]) as lg2:
                     ledger_mod.log_event(lg2, "resume_request", role=r, agent_id=to)
         return _silent()
+    if tool == "TaskStop":
+        # 在 PreToolUse 就登记：任务早已自己结束时 CC 报 No task found，PostToolUse 不来，它会永远显示未停（#308）
+        return _role_background_stopped(ev, bound)
     if tool == "EnterWorktree":
         return _deny(f"run {lg['run_id']} 进行中：worktree 由 runtime 管理（{lg['candidate']['worktree']}），禁止 EnterWorktree。")
     return _silent()
@@ -588,6 +624,8 @@ def _role_background(ev: dict[str, Any], bound: dict[str, Any]) -> HookReturn:
 
 
 def _role_background_stopped(ev: dict[str, Any], bound: dict[str, Any]) -> HookReturn:
+    """builder 的 TaskStop 意图：PreToolUse 与 PostToolUse 都走这里，任务一旦登记为已停就不在剩余列表里，不会记两次。
+    不论任务是被它停掉还是早已自己结束，之后都不在跑了。"""
     ti = ev.get("tool_input") or {}
     task_id = ti.get("task_id") or ti.get("shell_id")
     if ev.get("agent_id") or not task_id:

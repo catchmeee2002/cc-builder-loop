@@ -40,6 +40,8 @@ PATCH_FILE_MAX_BYTES = 256 * 1024
 TESTER_OWNED_FAILURES = ("TEST_BASELINE_RED_NOT_PROVEN", "TEST_MUTATION_SURVIVED", "TEST_MUTATION_INVALID", "TEST_MUTATION_PATCH_MISSING", "TEST_PROOF_NOT_EXECUTED")
 # patch 路径被这几类原因拒绝时，是 contract 没把要破坏的行为所在文件交给 builder：tester 改 patch 解决不了（#286）
 CONTRACT_REJECTIONS = ("protected", "outside_authority", "control_file")
+ISOLATION_HINT = ("全量 machine 在同一候选上通过、单独跑声明的用例却失败：先查测试隔离（导入顺序、fixture 替换模块）；"
+                  "确认是 machine 没跑到它、或确实是实现的问题，就在 notes 里说明")
 # 失败归谁修。缺省 builder（实现没让测试过）；runner 起不来两个角色都改不了，归 contract → 改 loop.yml
 OWNER_BY_FAILURE = {**{c: "tester" for c in TESTER_OWNED_FAILURES}, "TEST_PROOF_RUNNER_FAILED": "contract"}
 
@@ -449,6 +451,7 @@ def run_proof(ledger_path: Path, repo_root: Path, spec_override: dict[str, Any] 
     blocked = evidence.proof_blocked(lg, repo_root)
     if blocked:
         raise needs_user("PROOF_BLOCKED", "同一 proof 失败已重复出现；用 AskUserQuestion 让用户决定，继续则 `bl resume --reason`", blockers=blocked)
+    machine_passed = evidence.state(lg, "machine", repo_root) == evidence.STATE_PASS
     if evidence.state(lg, "tester", repo_root) != evidence.STATE_PASS:
         raise negative("PROOF_PREREQ_TESTER", "tester evidence 不是 fresh pass，先完成 tester", state=evidence.state(lg, "tester", repo_root))
     if evidence.needs_integrate(lg, repo_root):
@@ -574,6 +577,11 @@ def run_proof(ledger_path: Path, repo_root: Path, spec_override: dict[str, Any] 
         sig = failure_signature(f"{failure.code}\n{failure.behavior}\n{failure.details.get('classification', '')}\n{tail}", f"proof-{failure.code}", int(failure.details.get("returncode", -1) or -1))
         fdetails = {k: v for k, v in failure.details.items() if k != "tail"}
         fdetails["suggested_owner"] = OWNER_BY_FAILURE.get(failure.code, "builder")
+        if failure.code == "TEST_PROOF_CANDIDATE_FAILED" and machine_passed:
+            # 全量 machine 在同一候选上通过、单跑声明的用例却失败：最可能是测试依赖了全量顺序（#313）。
+            # 判据是 machine evidence 的状态，不解析日志（原则四）
+            fdetails["suggested_owner"] = "tester"
+            fdetails["isolation_hint"] = ISOLATION_HINT
         voided: Problem | None = None
         with ledger_mod.mutate(ledger_path) as lg2:
             voided = void_if_input_changed(lg2)

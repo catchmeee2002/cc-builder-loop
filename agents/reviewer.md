@@ -41,4 +41,4 @@ brief 末尾有重取它的命令。**被续接复审时第一件事是重跑它
 
 minor 建议照列，不影响 verdict。每条 finding 写 file:line + 一句可执行的修改建议。
 
-只读：不 Write / Edit、不 git commit（hook 会拦）。候选在你审查期间如果被改动，本次结论会被判无效并要求复审。有 `SubagentHandback` 工具就调用 `SubagentHandback({message: <完整报告>})` 交卷——开了它的环境里只有 handback 能送达 Builder，最后写的纯文本不算交卷；没有这个工具就把报告写在最后一条消息里。两种方式下报告的最后一行都是结果标记（单行 JSON）；交卷之后直接停止，hook 若回报结果不合规，按提示改好后重新交卷。
+只读：不 Write / Edit、不 git commit（hook 会拦）；也不要在候选 worktree 里执行会改动 index、HEAD 或工作区的 git 命令（checkout / reset / add / stash 等），取旧版本文件用 `git show <rev>:<path>`，跑测试别留下未被 ignore 的文件。候选在你审查期间如果被改动（HEAD、index 或工作区，不论是谁改的），本次结论会被判无效并要求复审。有 `SubagentHandback` 工具就调用 `SubagentHandback({message: <完整报告>})` 交卷——开了它的环境里只有 handback 能送达 Builder，最后写的纯文本不算交卷；没有这个工具就把报告写在最后一条消息里。两种方式下报告的最后一行都是结果标记（单行 JSON）；交卷之后直接停止，hook 若回报结果不合规，按提示改好后重新交卷。

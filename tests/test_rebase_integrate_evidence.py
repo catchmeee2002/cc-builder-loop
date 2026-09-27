@@ -460,15 +460,18 @@ def test_b8_answer_before_full_pass_and_before_rebase_still_counts(repo, cli, ho
     assert out.get("ok", True) is not False
 
 
-def test_b8_boundary_release_then_hold_needs_new_answer(repo, cli, hook):
+def test_b8_boundary_release_then_hold_reuses_prior_answer_within_same_revision(repo, cli, hook):
+    """integrity-brief-hold run 的 B5：hold 授权在同一 mission revision 内跨 release 保持有效——
+    release 不推移锚点，取代了旧版「release 会让上次回答失效」的假设。"""
     started = _start(repo, cli)
     _ready_to_finalize(started, cli, hook)
     _answer_askuserquestion(hook)
     cli("hold", "--session", "S1", "--reason", "第一次")
     cli("hold", "--session", "S1", "--release")
 
-    out = cli("hold", "--session", "S1", "--reason", "第二次", expect=3)
-    assert out["code"] == "USER_DECISION_REQUIRED"
+    out = cli("hold", "--session", "S1", "--reason", "第二次")
+    assert out.get("ok", True) is not False
+    assert cli("status", "--session", "S1")["readiness"]["next_action"] == "held"
 
 
 def test_b8_boundary_task_notification_is_not_an_answer(repo, cli, hook):

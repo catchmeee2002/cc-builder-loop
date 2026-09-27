@@ -97,9 +97,15 @@ def _tester_todo(lg: dict[str, Any], repo_root: Path) -> list[dict[str, Any]]:
                      "why": "machine 失败的日志里出现了你的测试文件；是测试本身写错就改，不是就在 notes 里说明"})
 
     findings = ((lg["evidence"].get("reviewer") or {}).get("details") or {}).get("findings", [])
+    unanswered = evidence.last_role_result_at(lg, "tester") <= (lg["evidence"].get("reviewer") or {}).get("at", "")
     mine = [f for f in findings if f.get("owner") == "tester" and f.get("severity") in ("blocking", "major")]
-    if mine and evidence.last_role_result_at(lg, "tester") <= (lg["evidence"].get("reviewer") or {}).get("at", ""):
+    if mine and unanswered:
         todo.append({"what": "fix_review_findings", "findings": mine, "why": "reviewer 把这些问题判给了 tester"})
+    minor = [f for f in findings if f.get("owner") == "tester" and f.get("severity") == "minor"]
+    if minor and unanswered:
+        # 只有 brief 里的事 tester 才做，builder 门铃里的转述它无从验真（#290）；可选，不影响 readiness
+        todo.append({"what": "consider_minor_findings", "optional": True, "findings": minor,
+                     "why": "reviewer 判给 tester 的非阻塞建议；builder 续接你时顺手处理，改了测试会让 reviewer 复审"})
     return todo
 
 
@@ -117,6 +123,7 @@ def _rebased_tester_files(lg: dict[str, Any], repo_root: Path) -> list[str]:
     return sorted(p for p in paths if before.get(p) != after.get(p))
 
 
+REVIEWER_TEST_HINT = "复跑测试：在候选 worktree 里用冻结的测试命令"
 LEDGER_HINT = "要看 evidence 细节就只读这个 ledger，不要在文件系统里搜索它。"
 # 角色与 preflight / machine / proof 并行（#289）：builder 的同一条纪律在 SKILL 里，角色只读得到 brief
 GATE_LOAD_RULE = "本机只跑与你这一轮相关的测试文件，不要跑全量测试套件：全量由 machine 跑，与门禁并发会把它挤成假超时。"
@@ -261,6 +268,8 @@ def build(lg: dict[str, Any], repo_root: Path, role: str) -> dict[str, Any]:
         out["diff_range"] = f"{lg['repo']['target_start_head']}..{cand['head'] or 'HEAD'}"
         out["evidence"] = {k: (ev[k]["status"] if ev.get(k) else None) for k in ("machine", "tester", "proof")}
         out["review_focus"] = s.get("review_focus", [])
+        # 复跑测试用项目冻结的命令，否则 reviewer 会自己找解释器、找不到就放弃复跑（#252）
+        out["test_command"] = (s.get("proof_runner") or {}).get("cmd") or None
         out["todo"] = _reviewer_todo(lg)
         out["doc_reference_hints"] = _doc_reference_hints(lg)
         out["undiscriminated"] = _undiscriminated(lg)
@@ -334,6 +343,8 @@ def render(brief: dict[str, Any]) -> str:
             f"审查范围: 在候选 worktree 内 `git diff {brief['diff_range']}`",
             f"前置 evidence: {brief['evidence']}",
             f"review_focus: {brief['review_focus']}",
+            *([f"{REVIEWER_TEST_HINT} `{brief['test_command']}` 加上测试文件路径，只跑与本次改动相关的文件"]
+              if brief.get("test_command") else []),
             *_render_doc_hints(brief["doc_reference_hints"]),
             *_render_target_drift(brief.get("target_drift")),
             "每条 blocking / major finding 写明 owner：实现问题 builder，测试问题 tester，需要改目标/写边界/验收标准的 contract。",

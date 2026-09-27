@@ -39,7 +39,7 @@ tester 在 run 起点的冻结基线上**盲写测试，看不到实现**。它�
 
 **删除 / 移除类任务**：behavior 写成「X 不再存在 / 调用 X 得到 Y 错误」，tester 会据此删掉旧测试并写负向测试。旧测试归 tester，不要为了让 builder 能删它而把测试路径划进 `builder_write`。「旧测试文件被删除」不写成 behavior：它不是可观察行为，proof 也构造不出反例；tester 删除旧测试、integrate 把删除带进候选、machine 全量通过，已经保证了这一点。
 
-**文本类任务**：文本本身就是交付物的 behavior（文档、prompt、提示语要让读者知道某件事），在 then 里冻结要验证的字面锚句，并写明它在哪个文件的哪一节；tester 按这句原文断言，实现逐字写入这句原文。
+**文本类任务**：文本本身就是交付物的 behavior（文档、prompt、提示语要让读者知道某件事），在 then 里冻结要验证的字面锚句，并写明它在哪个文件的哪一节；tester 按这句原文断言，实现逐字写入这句原文。字面锚句一律用反引号包住；反引号之外的引号（「」“”）只是行文里的术语引用，不要求出现在产物里。
 
 ## 方案文件结构
 
@@ -73,4 +73,4 @@ tester 在 run 起点的冻结基线上**盲写测试，看不到实现**。它�
 - 项目没有 `.claude/loop.yml` → 先跑 builder-loop 接入向导。
 - 要锁住「现役行为不变」的文件不列进 `protected_paths`：mutation 证明必须改它，而 patch 只能改 builder 拥有的文件；把它字面列进 `builder_write`，并在 `review_focus` 里要求候选对它零改动。
 
-同一 run 内改 contract：mission 变 → `revision` +1；写边界扩大、保护集缩小、判据减弱都需要用户确认（`bl contract revise --plan <path> --authorize`）。run 内不能增删 tester gate。
+同一 run 内改 contract：mission 修订（revision +1）、写边界扩大、保护集缩小、判据减弱都需要用户确认（`bl contract revise --plan <path> --authorize`）。run 内不能增删 tester gate。

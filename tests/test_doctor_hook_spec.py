@@ -67,12 +67,14 @@ def test_b4_boundary_fresh_install_is_healthy(repo, cli):
 
 
 def test_b4_boundary_hook_spec_has_ten_events_matching_b5():
+    """integrity-brief-hold run 的 B6：主会话的 PreToolUse(TaskStop) 也要能停掉角色的后台任务，
+    所以高频 PreToolUse matcher 里新增了 TaskStop（不是新增一整条注册——事件总数仍是 10 条）。"""
     assert len(HOOK_SPEC) == 10
     expected = {
         ("SessionStart", None, 5), ("Stop", None, 20),
         ("SubagentStart", "tester|reviewer", 10), ("SubagentStop", "tester|reviewer", 120),
         ("PreToolUse", "AskUserQuestion", 5), ("PreToolUse", "EnterWorktree|SubagentHandback", 120),
-        ("PreToolUse", "Read|Grep|Glob|Write|Edit|MultiEdit|NotebookEdit|Bash|SendMessage", 5),
+        ("PreToolUse", "Read|Grep|Glob|Write|Edit|MultiEdit|NotebookEdit|Bash|SendMessage|TaskStop", 5),
         ("PostToolUse", "AskUserQuestion", 5), ("PostToolUse", "SubagentHandback|Bash|TaskStop", 120),
         ("UserPromptSubmit", None, 5),
     }

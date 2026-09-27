@@ -89,7 +89,9 @@ def test_reviewer_findings_route_by_owner_and_candidate_move(started, cli, hook)
     cli("checkpoint", "--session", "S1", "--role", "builder")
     role_turn(hook, "reviewer", "R1", {"role": "reviewer", "verdict": "pass", "findings": []}, start=False)
     rec = L.load(started["ledger"])["evidence"]["reviewer"]
-    assert rec["status"] == "fail" and "审查期间" in rec["details"]["reason"]
+    # candidate_moved 的旧判据不变（fail + 非空 reason）；integrity-brief-hold run 把 HEAD 变化并入了
+    # 更通用的候选 git 状态变化判据，具体措辞不再固定为「审查期间」这几个字（未冻结字面锚句）
+    assert rec["status"] == "fail" and str(rec["details"].get("reason") or "").strip()
     # builder 改过实现后，旧 mutation patch 的上下文对不上了 → proof 判无效并指回 tester 刷新 patch
     cli("machine", "--session", "S1")
     stale = cli("proof", "--session", "S1", expect=1)

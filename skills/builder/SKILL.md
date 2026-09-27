@@ -29,10 +29,10 @@ builder-loop 只负责判据和 Git 事务；调度 subagent、续接、问用�
 | `integrate` | `bl integrate`：把 tester 的测试并入候选 |
 | `machine` | `bl machine`（耗时长就 `run_in_background`，Stop 会放行）。FAIL → 先看 `failure.baseline_red`：`failure.baseline_red` 为真只说明这一段在起点上也失败过，原因未必相同：对照 `failure.baseline_log` 与 `failure.log` 再判断——确是起点上的同一个失败、本任务不负责修它，就改候选里的 loop.yml 走 contract revise；`failure.baseline_timed_out` 为真只说明起点上这一段超时了，不能据此判定与你无关。否则 Read `failure.log`：实现的错 → 修 → checkpoint；`failure.tester_files_mentioned` 非空且你判断是**测试写错了** → 你改不了测试，转交 tester。`MACHINE_INPUT_CHANGED`（exit 1）= 跑的过程中输入变了（你 checkpoint、integrate 或 contract revise），这次观察作废、不计失败，直接重跑 |
 | `resume_tester` | `SendMessage` 续接 tester（`status.agents.tester.agent_id`），正文直接用 `bl status` 的 `briefs.resume_tester`——**它只是门铃**，事实由 tester 自己 `bl brief` 取。你不需要在消息里复述候选路径、写边界或失败日志；要补充上下文（比如你的判断）可以附在门铃后面，但别指望它照做 brief 里没有的事 |
-| `proof` | `bl proof`。FAIL 看 `failure.suggested_owner`：`tester` → resume_tester；`builder` → 修实现；`contract` → 判据本身跑不起来（如 proof_runner 与项目的 venv 不匹配），改候选里的 `.claude/loop.yml` 并 checkpoint 后 `bl contract revise --authorize`。`PROOF_INPUT_CHANGED`（exit 1）同 machine：跑的过程中输入变了，作废，直接重跑。`PROOF_TESTER_RUNNING`（exit 1）= tester 还没交完卷，ledger 里的 proof_spec 可能是上一轮的：结束这一轮，等它交卷后再跑 |
+| `proof` | `bl proof`。FAIL 看 `failure.suggested_owner`：`tester` → resume_tester（带 `isolation_hint` 时是全量 machine 过了、单跑失败，多半是测试隔离问题）；`builder` → 修实现；`contract` → 判据本身跑不起来（如 proof_runner 与项目的 venv 不匹配），改候选里的 `.claude/loop.yml` 并 checkpoint 后 `bl contract revise --authorize`。`PROOF_INPUT_CHANGED`（exit 1）同 machine：跑的过程中输入变了，作废，直接重跑。`PROOF_TESTER_RUNNING`（exit 1）= tester 还没交完卷，ledger 里的 proof_spec 可能是上一轮的：结束这一轮，等它交卷后再跑 |
 | `spawn_reviewer` | `Agent(subagent_type: "reviewer", prompt: "builder-loop run <run_id>，按注入的 brief 审查")`，然后结束这一轮等它交卷（`awaiting_reviewer`） |
-| `resume_reviewer` | 按 owner=builder 的 findings 修 → checkpoint → machine → proof → `SendMessage` 给 reviewer，正文用 `briefs.resume_reviewer` |
-| `finalize` | `bl finalize -m "type(scope): [cr_id_skip] Desc"`。`TARGET_DRIFT` → `bl rebase`（冲突在候选 worktree 里解，`git rebase --continue` 后再 `bl rebase`）→ 全部重验。合入时机由外部条件决定（例如多会话按顺序发版，要等前面的批次发完）→ AskUserQuestion 让用户确认要等，再 `bl hold --reason "<等什么>"`。gate 全过过一次之后，rebase 后重验途中也可以 hold；本 run 内 gate 首次全过（或上次 release）之后用户已经就合入时机回答过，就不必再问 |
+| `resume_reviewer` | 按 owner=builder 的 findings 修 → checkpoint → machine → proof → `SendMessage` 给 reviewer，正文用 `briefs.resume_reviewer`。reviewer 结论因「候选 git 状态在审查期间变了」被判 fail（evidence 的 `details.candidate_changed`）→ 先核对候选 worktree，把不属于你的改动恢复掉，再续接复审 |
+| `finalize` | `bl finalize -m "type(scope): [cr_id_skip] Desc"`。`TARGET_DRIFT` → `bl rebase`（冲突在候选 worktree 里解，`git rebase --continue` 后再 `bl rebase`）→ 全部重验。合入时机由外部条件决定（例如多会话按顺序发版，要等前面的批次发完）→ AskUserQuestion 让用户确认要等，再 `bl hold --reason "<等什么>"`。gate 全过过一次之后，rebase 后重验途中也可以 hold。授权锚点是当前 mission revision 下 gate 首次全过：锚点之后用户已经就合入时机回答过，就不必再问——release 不会作废用户已经给过的回答；只有 mission 修订之后才要重新问 |
 | `held` | 已按用户决定暂缓合入，Stop 放行，直接结束这一轮（期间不必重验）。外部条件满足（用户或集成方通知）后 `bl hold --release`，再按 `next_action` 走（目标分支前进了会报 `TARGET_DRIFT`，照常 rebase 重验） |
 | `rebase` | 目标分支改过 tester 的测试文件，而 tester 分支还在旧基线上：`bl rebase`。输出的 `tester_rebase.status` 为 `conflict` 时续接 tester 去解，它交卷后再 `bl rebase`；为 `deferred` 时等 tester 交卷后再跑 |
 | `needs_user` | 看 `blockers`。上限 / 无进展 / proof 反复同样失败：AskUserQuestion 让用户决定；用户说继续 → `bl resume --reason "<用户的原话或决定>"`（runtime 会核实 blocker 之后确有用户输入，你自己决定的不算）；放弃 → `bl abandon --reason`。`REVIEW_CONTRACT` → 需要改目标 / 写边界 / 验收标准，走 contract revise |
@@ -42,6 +42,8 @@ builder-loop 只负责判据和 Git 事务；调度 subagent、续接、问用�
 任何 `bl` 命令 exit 3 = 需要用户决定。Stop hook 在 run 未完成时会把你拉回来，属正常，按 stderr 提示继续。
 
 **角色的后台残留**：status 的 role_background_tasks 非空时，逐个用 TaskStop 停掉这些角色后台任务；续接角色一律用 agent_id 作为 SendMessage 的 to。前者是角色前台命令超时后被转到后台留下的，交卷后结束时会把角色再唤醒；后者是 runtime 区分「续接」与「唤醒」的唯一依据，用别的名字续接会被当成唤醒、结论不登记。
+
+**reviewer 判给 tester 的 minor**：已作为可选待办 `consider_minor_findings` 进了 tester 的 brief，不影响 readiness（只有 minor 时照常 finalize）。要不要续接 tester 去改由你决定：改了测试，reviewer 要复审。
 
 **给角色发消息的两条规矩**：① `status.running.<role>` 为真时**不要发**——消息会夹在它的工具结果里到达，它没法验真，多半会拒绝执行；等它停下再续接。② 消息只当门铃，事实一律让它自己 `bl brief` 取。contract 改了也不用特意通知 tester：它的 evidence 会自动失效，`next_action` 自然变成 `resume_tester`。
 

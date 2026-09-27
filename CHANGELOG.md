@@ -2,6 +2,16 @@
 
 > 本文件记 **CC 版**产品线（分支 `cc/main`）。Codex 版见 `codex/main` 分支。
 
+## 候选完整性、角色事实补全与 hold 授权锚点（#312 #290 #252 #313 #299 #308 #288 #296，2026-09-27）
+
+- **reviewer 这一轮里候选的 git 状态变了，结论记 fail（#312）**：SubagentStart 在 reviewer 的 `role_start` 里记候选指纹（HEAD、index、status、dirty 内容摘要），登记结论时再取一次，index / 工作区有变化（不论谁改的）就记 fail，`details.candidate_changed` 列出路径，记 `role_candidate_changed`，retro 信号 `S-role-candidate-changed`。此前 reviewer 在候选里 `git --work-tree=<tmp> checkout` 改了 index，没有任何守卫察觉。取指纹失败只降级，不比对。
+- **reviewer 判给 tester 的 minor 进 tester brief（#290）**：可选待办 `consider_minor_findings`，readiness 不变；此前 tester 只认 brief，builder 门铃里的转述它按规矩不执行，minor 只能留到 `unaddressed_findings`。
+- **reviewer brief 给出冻结的测试命令（#252）**：`test_command` = `proof_runner.cmd`，reviewer 不再因找不到装了 pytest 的解释器而放弃复跑。
+- **全量 machine 过、proof 单跑失败时归 tester（#313）**：`TEST_PROOF_CANDIDATE_FAILED` 发生时 machine evidence 对当前候选是 fresh pass → `suggested_owner=tester` 并带 `isolation_hint`，tester brief 出现 `fix_proof`。
+- **行为变更：hold 授权跨 release 有效（#299）**：锚点改为当前 mission revision 下 gate 首次全过；release → rebase → 重验之后再 hold 不必重问，只有 mission 修订才重置。`gates_passed` 事件每个 revision 记一次并带 `revision`。builder SKILL 的 finalize 行同步改写（此前与 runtime 说法不一致）。
+- **TaskStop 在 PreToolUse 登记（#308）**：任务早已自己结束时 CC 报 No task found、PostToolUse 不来，它此前会一直显示「未停」。`HOOK_SPEC` 的 PreToolUse 高频 matcher 加了 `TaskStop`，**升级后必须重跑 `./install.sh`**（否则 `bl start` 报 `HOOKS_OUTDATED`）。
+- **文档措辞（#288 #296）**：planner SKILL 写明 mission 修订同样需要用户确认；字面锚句一律用反引号包住，「」“”只是术语引用（planner SKILL 与 tester.md 同步）。
+
 ## 门禁在跑时的路标（#279 #301 #289，2026-09-25）
 
 - **门禁在跑时不按旧结论催（#279）**：machine / proof 分支先看本门禁是否在跑，在跑就给 `awaiting_gate`，Stop 放行。此前只在 `next_action` 恰好等于在跑的门禁时才等待；machine 失败后后台重跑期间，Stop 仍按旧失败反复要求续接 tester，只能靠无进展放行脱身。

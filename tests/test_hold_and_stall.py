@@ -197,21 +197,39 @@ def test_hold_release_then_target_drift(started, cli, hook):
     assert err["code"] == "TARGET_DRIFT"
 
 
-def test_hold_release_then_hold_again_requires_new_answer(started, cli, hook):
-    """授权锚点 = max(最近一次 hold_release 事件的时刻, 本 run 内 gate 首次全部 pass 的时刻)：
-    release 会把锚点推到 release 那一刻，release 之前的回答不再够用（rebase-integrate-evidence
-    run，B8）。这取代了旧版「reuse 上一次回答」的假设——那是这次要改的行为，不是要保留的不变量。"""
+def test_hold_release_then_hold_again_reuses_prior_answer_within_same_revision(started, cli, hook):
+    """B5：授权锚点 = 本 run 内、当前 mission revision 下 gate 首次全部 pass 的时刻；`bl hold --release`
+    不推移它——hold 授权在同一 mission revision 内跨 release 保持有效。这取代了旧版「release 会让上次
+    回答失效」的假设：那是这次要改的行为，不是要保留的不变量（新 revision 下才需要新回答，见
+    test_hold_mission_revision_anchor.py）。"""
     _ready_to_finalize(started, cli, hook)
     _answer_askuserquestion(hook)
     cli("hold", "--session", "S1", "--reason", "第一次")
     cli("hold", "--session", "S1", "--release")
 
-    n_events = len(L.load(started["ledger"])["events"])
-    out = cli("hold", "--session", "S1", "--reason", "第二次", expect=3)
-    assert out["code"] == "USER_DECISION_REQUIRED"
-    assert len(L.load(started["ledger"])["events"]) == n_events
+    # release 之后没有补新的 AskUserQuestion，直接再 hold：同一 revision 内沿用第一次的回答
+    out = cli("hold", "--session", "S1", "--reason", "第二次")
+    assert out.get("ok", True) is not False
+    assert L.load(started["ledger"])["events"][-1]["kind"] == "hold"
+    assert cli("status", "--session", "S1")["readiness"]["next_action"] == "held"
 
+
+def test_hold_release_then_reverify_then_hold_again_still_reuses_prior_answer(started, cli, hook):
+    """release 之后候选又变了、重验通过（rebase 之类的场景，不是 builder 自己恢复工作）：同一
+    revision 内锚点仍然是原来 gate 首次全过的时刻，release 之前的回答依旧够用。"""
+    _ready_to_finalize(started, cli, hook)
     _answer_askuserquestion(hook)
+    cli("hold", "--session", "S1", "--reason", "第一次")
+    cli("hold", "--session", "S1", "--release")
+
+    wt = started["worktree"]
+    (wt / "src" / "extra_touch.py").write_text("# rebase-like touch, unrelated to mul()\n")
+    cli("checkpoint", "--session", "S1", "--role", "builder")
+    assert cli("machine", "--session", "S1")["result"] == "PASS"
+    assert cli("proof", "--session", "S1")["result"] == "PASS"
+    reviewer_pass(hook, agent_id="R2")
+    assert cli("status", "--session", "S1")["readiness"]["next_action"] == "finalize"
+
     out = cli("hold", "--session", "S1", "--reason", "第二次")
     assert out.get("ok", True) is not False
     assert L.load(started["ledger"])["events"][-1]["kind"] == "hold"
