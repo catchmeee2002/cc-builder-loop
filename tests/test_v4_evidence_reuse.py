@@ -84,3 +84,39 @@ class EvidenceReuseTest(unittest.TestCase):
         self.assertEqual(updated['evidence']['proof'], original)
         self.assertNotEqual(original['candidate_head'], updated['facets']['execution']['candidate_head'])
         self.assertEqual(core.evidence_state(updated, 'reviewer'), 'missing')
+
+    def test_tree_cache_is_commit_bound_and_does_not_cache_authority(self):
+        from unittest.mock import patch
+        from runtime.codex_builder_loop.assurance_v4 import models
+        models._candidate_tree_entries.cache_clear()
+        original_run = models.subprocess.run
+        with patch.object(models.subprocess, 'run', wraps=original_run) as run:
+            first = candidate_input_identity(self.ledger, 'machine')
+            self.assertEqual(candidate_input_identity(self.ledger, 'machine'), first)
+            scans = lambda: sum('ls-tree' in call.args[0] for call in run.call_args_list)
+            self.assertEqual(scans(), 1)
+            self.ledger['facets']['authority']['protected_support_paths'].append('README.md')
+            with self.assertRaises(ContractError):
+                candidate_input_identity(self.ledger, 'machine')
+            self.assertEqual(scans(), 1)
+            self.ledger['facets']['authority']['protected_support_paths'].remove('README.md')
+            (self.repo / 'src/calc.py').write_text('def add(a,b): return a-b\n')
+            self.ledger['facets']['execution']['candidate_head'] = commit_all(self.repo, 'changed')
+            self.assertNotEqual(candidate_input_identity(self.ledger, 'machine'), first)
+            self.assertEqual(scans(), 2)
+            other = init_repo()
+            self.addCleanup(cleanup_repo, other)
+            other_ledger = copy.deepcopy(self.ledger)
+            other_ledger['repo_root'] = str(other)
+            other_ledger['facets']['execution']['candidate_head'] = head(other)
+            candidate_input_identity(other_ledger, 'machine')
+            self.assertEqual(scans(), 3)
+
+    def test_only_added_exemptions_are_downgrades(self):
+        old = copy.deepcopy(self.ledger['facets']['assurance'])
+        old['evidence_neutral_paths']['machine'] = ['README.md', 'CHANGELOG.md']
+        for neutral in ({}, {'machine': []}, {'machine': ['README.md']}, {'machine': ['CHANGELOG.md', 'README.md']}):
+            changed = {**old, 'evidence_neutral_paths': neutral}
+            self.assertFalse(assurance_downgrades(old, changed))
+        changed = {**old, 'evidence_neutral_paths': {'proof': ['README.md']}}
+        self.assertTrue(assurance_downgrades(old, changed))

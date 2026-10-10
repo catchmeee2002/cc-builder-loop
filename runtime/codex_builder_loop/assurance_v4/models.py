@@ -1352,6 +1352,15 @@ def tester_source_dependency(execution: Mapping[str, Any]) -> Any:
     }
 
 
+@lru_cache(maxsize=8)
+def _candidate_tree_entries(repo_root: str, commit: str) -> bytes:
+    """Cache immutable tree bytes only; scope and authority are checked by each caller."""
+    return subprocess.run(
+        ["git", "-C", repo_root, "ls-tree", "-rz", "--full-tree", commit],
+        capture_output=True, check=True,
+    ).stdout
+
+
 def candidate_input_identity(ledger: Mapping[str, Any], kind: str, head: str | None = None) -> Any:
     contract = ledger["facets"]
     candidate = head or contract["execution"].get("candidate_head")
@@ -1381,7 +1390,14 @@ def candidate_input_identity(ledger: Mapping[str, Any], kind: str, head: str | N
                     pass
     protected_patterns = (contract["authority"]["tester_write"] + contract["authority"].get("public_prerequisites", [])
                           + contract["authority"].get("protected_support_paths", []))
-    entries = subprocess.run(["git", "-C", str(ledger["repo_root"]), "ls-tree", "-rz", "--full-tree", candidate], capture_output=True, check=True).stdout
+    repo_root = str(Path(ledger["repo_root"]).resolve())
+    # Ledger candidates are full object ids. Resolve any external symbolic input before caching.
+    if len(candidate) != 40 or any(c not in "0123456789abcdef" for c in candidate):
+        candidate = subprocess.run(
+            ["git", "-C", repo_root, "rev-parse", "--verify", candidate + "^{commit}"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+    entries = _candidate_tree_entries(repo_root, candidate)
     selected = []
     for entry in entries.split(b"\0"):
         if not entry:
@@ -1535,7 +1551,9 @@ def authority_expands(old: Mapping[str, Any], new: Mapping[str, Any]) -> bool:
 def assurance_downgrades(old: Mapping[str, Any], new: Mapping[str, Any]) -> bool:
     if old.get("proof_runners", []) != new.get("proof_runners", []):
         return True
-    if old.get("evidence_neutral_paths", {}) != new.get("evidence_neutral_paths", {}):
+    old_neutral = old.get("evidence_neutral_paths", {})
+    new_neutral = new.get("evidence_neutral_paths", {})
+    if any(not set(paths).issubset(old_neutral.get(gate, [])) for gate, paths in new_neutral.items()):
         return True
     if not set(old["required"]).issubset(set(new["required"])):
         return True
