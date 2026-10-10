@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import concurrent.futures
 import json
 import os
@@ -42,12 +43,19 @@ def main(argv=None):
     parser.add_argument("--list-json", action="store_true")
     parser.add_argument("--worker")
     parser.add_argument("--report", type=Path)
+    parser.add_argument("--inventory", type=Path)
     args = parser.parse_args(argv)
     if args.jobs < 1:
         parser.error("--jobs must be positive")
     directory = args.start_dir.resolve()
     if args.worker:
-        suite = collect(directory, args.worker)
+        sys.path.insert(0, str(directory))
+        sys.path.insert(0, str(ROOT))
+        requested = json.loads(args.inventory.read_text())[args.worker]
+        loader = unittest.TestLoader()
+        suite = loader.loadTestsFromNames(requested)
+        if loader.errors:
+            raise RuntimeError("\n".join(loader.errors))
         ids = list(test_ids(suite))
         result = unittest.TextTestRunner(verbosity=1).run(suite)
         if args.report:
@@ -60,16 +68,23 @@ def main(argv=None):
     if args.list_json:
         print(json.dumps(sorted(expected)))
         return 0
-    modules = sorted(p.name for p in directory.glob("test_*.py"))
+    inventory = {}
+    for test_id in expected:
+        module = test_id.rsplit(".", 2)[0]
+        inventory.setdefault(module, []).append(test_id)
+    modules = sorted(inventory)
+    serial_modules = {Path(name).stem for name in SERIAL_MODULES}
     with tempfile.TemporaryDirectory(prefix="codex-fixtures-") as raw:
         root = Path(raw)
+        inventory_path = root / "inventory.json"
+        inventory_path.write_text(json.dumps(inventory))
         def run(module):
-            report = root / (module + ".json")
-            command = [sys.executable, str(Path(__file__).resolve()), "--start-dir", str(directory), "--worker", module, "--report", str(report)]
+            report = root / (hashlib.sha256(module.encode()).hexdigest() + ".json")
+            command = [sys.executable, str(Path(__file__).resolve()), "--start-dir", str(directory), "--worker", module, "--inventory", str(inventory_path), "--report", str(report)]
             completed = subprocess.run(command, cwd=ROOT, env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
             value = json.loads(report.read_text()) if report.is_file() else {}
             return module, completed.returncode, completed.stdout, value
-        parallel = [module for module in modules if module not in SERIAL_MODULES]
+        parallel = [module for module in modules if module not in serial_modules]
         with concurrent.futures.ThreadPoolExecutor(max_workers=args.jobs) as pool:
             results = []
             futures = {pool.submit(run, module): module for module in parallel}
@@ -78,7 +93,7 @@ def main(argv=None):
                 results.append(result)
                 print(f"Completed {result[0]}: {result[3].get('ran', 0)} tests", flush=True)
         for module in modules:
-            if module in SERIAL_MODULES:
+            if module in serial_modules:
                 result = run(module)
                 results.append(result)
                 print(f"Completed {module}: {result[3].get('ran', 0)} tests", flush=True)
