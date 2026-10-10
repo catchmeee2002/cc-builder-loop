@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Proof v2 can reference frozen runners; startup probes are deduplicated within each proof call while
+  legacy command inputs retain the same execution and replay checks. Prepared patch version 0.3.2.
+- Cached immutable candidate trees without caching authority or evidence decisions, and classified
+  removed neutral-path exemptions as stronger assurance rather than downgrades.
+- Unified fixture discovery and worker dispatch so nested and same-named test modules execute consistently.
+
 - Removed the host read-only sandbox prerequisite for Native Driver startup. Reviewer turns now use the
   configured execution permissions while candidate integrity checks continue to reject modified review inputs.
   Prepared patch version 0.3.1.

@@ -111,6 +111,16 @@ class LegacyParityContractTest(unittest.TestCase):
         self.assertEqual(assertion_count, 824)
         self.assertEqual(status_counts, {"covered": 138, "rescue": 42, "retired": 72})
 
+    def test_optimization_parity_references_existing_coverage(self) -> None:
+        rows = load_corpus()["optimization_parity"]
+        self.assertEqual(len(rows), 3)
+        for row in rows:
+            self.assertEqual(row["status"], "covered")
+            self.assertTrue(row["behavior"])
+            self.assertTrue(row["replacement"])
+            for test_id in row["test_ids"]:
+                self.assertTrue(test_method_exists(test_id), test_id)
+
     def test_issue_82_cases_are_rescued_by_the_v4_reference_scan(self) -> None:
         corpus = load_corpus()
         expected = {

@@ -3446,5 +3446,33 @@
         }
       ]
     }
+  ],
+  "optimization_parity": [
+    {
+      "behavior": "Existing proof command inputs and real framework execution",
+      "status": "covered",
+      "replacement": "Shared proof execution with optional frozen runner references",
+      "test_ids": [
+        "tests.test_v4_proof_runner_binding.ProofRunnerBindingTest.test_real_multi_group_proof_preflights_once_and_replays_both_frameworks"
+      ]
+    },
+    {
+      "behavior": "Evidence reuse retains provenance and rejects changed inputs",
+      "status": "covered",
+      "replacement": "Cached immutable trees with live scope and authority checks",
+      "test_ids": [
+        "tests.test_v4_evidence_reuse.EvidenceReuseTest.test_reuse_requires_receipt_and_preserves_execution_head",
+        "tests.test_v4_evidence_reuse.EvidenceReuseTest.test_tree_cache_is_commit_bound_and_does_not_cache_authority"
+      ]
+    },
+    {
+      "behavior": "Serial and parallel fixture inventory and failure propagation",
+      "status": "covered",
+      "replacement": "Dispatch from the full discovered test inventory",
+      "test_ids": [
+        "tests.test_fixture_parallel_runner.ParallelFixturesTest.test_serial_and_parallel_have_same_tests_and_propagate_failure",
+        "tests.test_fixture_parallel_runner.ParallelFixturesTest.test_nested_same_named_modules_share_one_inventory"
+      ]
+    }
   ]
 }
