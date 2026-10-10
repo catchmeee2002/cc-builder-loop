@@ -207,9 +207,9 @@ turn。激活前的已知 transport failure 复用同一 dispatch 的有界 retr
 副作用时保留 active dispatch、写入 `activation_state=unknown` 并停止；只有用户显式提供
 `native-driver resume --reason` 才能在不重置 attempt/generation 的前提下重新置为 `pending`。
 旧 ledger 缺少 activation 字段时继续按 legacy recovery 读取。
-Builder 与 Tester 的 App Server turn 保持既有 host-level `danger-full-access`，其写入范围继续由独立
-worktree、Git manifest、ownership 和 Core mutation gate 约束。Reviewer 的线程创建、续接、替换与 turn
-均使用真实只读沙箱；宿主不能提供该权限时阻塞，不能降级到全权限。候选指纹是结果接收前的额外完整性检查。
+App Server 的线程创建、续接、替换和 turn 使用同一角色配置的执行权限。默认沿用现有宿主执行环境，
+写入范围由独立 worktree、Git manifest、ownership 和 Core mutation gate 约束。Reviewer 只审查，
+结果接收前必须比较候选指纹；候选被改动就拒收结果。角色只读职责不等同于操作系统写入隔离。
 
 现有 Full Driver Skill 保留为协议不兼容时的 run 前回退和 parity oracle。ledger 一旦冻结
 `driver_runtime.kind=native`，Skill 不得接管；旧 ledger 缺少该字段时继续由原承载恢复，Native Driver
@@ -987,7 +987,7 @@ runtime 不自动 push、开 PR、解决冲突、adopt 未知 orphan 或恢复�
 
 ## 输入身份、审查隔离与显式等待
 
-Reviewer 在线程创建、续接和替换时均采用只读权限。Native 启动前验证宿主能读取探针文件并拒绝写入；候选指纹同时覆盖 HEAD、索引、工作区状态、内容和模式，在审查结果接收与证据落库前重新比较。权限不可用或指纹不一致不能形成审查通过证据。
+Reviewer 沿用现有执行环境，以只读职责指令约束审查行为。候选指纹覆盖 HEAD、索引、工作区状态、内容和模式，在审查结果接收与证据落库前重新比较；指纹不一致不能形成审查通过证据。按最小充分原则，这里检测并拒收被改动污染的结果，不要求宿主额外提供操作系统沙箱。
 
 Tester 的反例文件由当前 dispatch 收录为不可变内容。完成记录绑定提交结果与规范化制品，恢复消费该制品，不重新读取原路径。测试删除是带基线来源的显式操作，参与发布、重组与冲突判断；缺失文件不自动成为删除授权。
 

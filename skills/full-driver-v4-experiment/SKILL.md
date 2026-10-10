@@ -242,4 +242,4 @@ active-to-superseded 交接。这些边界之外不得因 revision、普通修�
 
 `FULL_DRIVER_V4_RESULT: needs_user`
 
-Reviewer 必须运行在真实只读沙箱；不支持时阻塞，不用全权限替代。Tester 可在当前 dispatch 的 proof_patch_directory 写 patch 制品，complete-dispatch 收录后从持久化结果继续 prove-tests；不得重新读取原文件替换已收录内容。HELD 时保留现场等待明确 release。
+Reviewer 沿用角色配置的执行权限，只读职责由指令约束，审查前后由 Core 检查候选完整性；候选被改动时不得接受审查结果。Tester 可在当前 dispatch 的 proof_patch_directory 写 patch 制品，complete-dispatch 收录后从持久化结果继续 prove-tests；不得重新读取原文件替换已收录内容。HELD 时保留现场等待明确 release。

@@ -4227,9 +4227,6 @@ class AppServerTransportContractTest(unittest.TestCase):
         self.codex.write_text(
             """#!/usr/bin/env python3
 import json, os, sys
-if sys.argv[1:2] == ['sandbox']:
-    print('READ_OK_WRITE_DENIED')
-    raise SystemExit(0)
 if sys.argv[1:] == ['--version']:
     print('codex-cli fake-native')
     raise SystemExit(0)
@@ -4304,6 +4301,17 @@ for line in sys.stdin:
         self.assertEqual(payload["diagnostic_state"], "legacy-unbound")
         self.assertEqual(fake_core.command, "driver-context")
 
+    def test_protocol_probe_does_not_require_host_sandbox(self) -> None:
+        from runtime.codex_builder_loop.native_driver import app_server
+        real_run = app_server.subprocess.run
+        def run_without_sandbox(argv, *args, **kwargs):
+            if len(argv) > 1 and argv[1] == 'sandbox':
+                raise AssertionError('Protocol admission must not require an OS sandbox')
+            return real_run(argv, *args, **kwargs)
+        with patch.object(app_server.subprocess, 'run', side_effect=run_without_sandbox):
+            capability = probe_app_server(str(self.codex))
+        self.assertEqual(capability.runtime_version, 'codex-cli fake-native')
+
     def test_probe_and_thread_turn_use_versioned_native_protocol(self) -> None:
         capability = probe_app_server(str(self.codex))
         self.assertEqual(capability.runtime_version, "codex-cli fake-native")
@@ -4363,9 +4371,6 @@ for line in sys.stdin:
         codex.write_text(
             """#!/usr/bin/env python3
 import json, os, sys
-if sys.argv[1:2] == ['sandbox']:
-    print('READ_OK_WRITE_DENIED')
-    raise SystemExit(0)
 if sys.argv[1:] == ['--version']:
     print('codex-cli fake-stderr')
     raise SystemExit(0)
@@ -4614,9 +4619,6 @@ for line in sys.stdin:
             f"""#!/usr/bin/env python3
 import json, os, sys
 state = {str(state)!r}
-if sys.argv[1:2] == ['sandbox']:
-    print('READ_OK_WRITE_DENIED')
-    raise SystemExit(0)
 if sys.argv[1:] == ['--version']:
     print('codex-cli fake-disconnect')
     raise SystemExit(0)
@@ -4764,9 +4766,6 @@ for line in sys.stdin:
 import json, os, sys
 state = {str(state)!r}
 trace = {str(trace)!r}
-if sys.argv[1:2] == ['sandbox']:
-    print('READ_OK_WRITE_DENIED')
-    raise SystemExit(0)
 if sys.argv[1:] == ['--version']:
     print('codex-cli fake-auth')
     raise SystemExit(0)

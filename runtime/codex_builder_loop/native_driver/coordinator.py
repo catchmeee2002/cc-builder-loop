@@ -2596,7 +2596,8 @@ class NativeCoordinator:
     def _sandbox_policy(
         self, action: dict[str, Any], role: str, context: dict[str, Any]
     ) -> dict[str, Any]:
-        return {"type": "readOnly"} if role == "reviewer" else {"type": "dangerFullAccess"}
+        _instructions, sandbox = self._role_config(role)
+        return {"type": "readOnly"} if sandbox == "read-only" else {"type": "dangerFullAccess"}
 
     def _start_reviewer_thread_compaction(
         self, action_id: str

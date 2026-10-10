@@ -95,4 +95,4 @@ finalized target 或原失败事实。`FINALIZED` 只有在复盘确认无事故
 最终用户消息逐字包含 `retrospective-status.required_user_block`；完整 `required_block` 只留在结构化
 审计结果，不复制到用户消息。
 
-运行返回 HELD 时保留现场并停止自动推进；只有用户明确要求继续，才绑定当前 hold identity 与 reason 执行 release。Reviewer 沙箱不可用不得改用全权限路径。
+运行返回 HELD 时保留现场并停止自动推进；只有用户明确要求继续，才绑定当前 hold identity 与 reason 执行 release。Reviewer 只审查，候选完整性检查失败时不得接受审查结果。

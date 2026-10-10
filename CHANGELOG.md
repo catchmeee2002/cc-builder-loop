@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Removed the host read-only sandbox prerequisite for Native Driver startup. Reviewer turns now use the
+  configured execution permissions while candidate integrity checks continue to reject modified review inputs.
+  Prepared patch version 0.3.1.
+
 - Added read-only Reviewer enforcement and candidate integrity checks, dispatch-bound proof patch files,
   per-test discrimination observations, and explicit Tester deletion/recomposition support (#322).
 - Added frozen proof runner preflight, input-equivalent machine/proof evidence reuse with original execution

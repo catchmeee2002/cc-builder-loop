@@ -21,5 +21,6 @@
 [保质期: Codex read-only sandbox 在受限容器通过 live smoke, owner: codex-builder-loop, 正向归宿: tests/live/sandbox-doctor 报告]
 
 部分容器内核不允许 bubblewrap 创建 user namespace，Codex read-only sandbox 会在读取 worktree
-元数据时失败。live smoke 应先运行 `codex doctor`；不满足 sandbox 前提时标记环境阻塞，不降低
-权限后静默重试。
+元数据时失败。只有显式配置 OS read-only sandbox 的角色才依赖这一宿主能力；该配置失败时应
+报告环境阻塞，不静默改变权限。默认 Reviewer 使用既有执行权限，以角色只读指令和候选完整性
+检查约束审查，不依赖宿主提供 OS 只读沙箱。

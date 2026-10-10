@@ -12,9 +12,11 @@ class ReviewerIntegrityTest(unittest.TestCase):
         self.ledger = {"candidate_worktree": str(self.repo), "facets": {"execution": {"candidate_head": head(self.repo)}}}
         self.ledger["reviewer_observation"] = core._reviewer_manifest(self.ledger)
 
-    def test_read_only_policy_is_applied_to_reviewer_only(self):
+    def test_reviewer_uses_configured_execution_permissions(self):
         driver = object.__new__(NativeCoordinator)
-        self.assertEqual(driver._sandbox_policy({}, "reviewer", {}), {"type": "readOnly"})
+        driver.project_root = Path(__file__).resolve().parents[1]
+        self.assertEqual(driver._role_config("reviewer")[1], "danger-full-access")
+        self.assertEqual(driver._sandbox_policy({}, "reviewer", {}), {"type": "dangerFullAccess"})
         self.assertEqual(driver._sandbox_policy({}, "builder", {}), {"type": "dangerFullAccess"})
 
     def test_worktree_and_index_only_changes_are_rejected(self):
@@ -42,11 +44,8 @@ class ReviewerIntegrityTest(unittest.TestCase):
         with self.assertRaises(core.AssuranceError):
             core._assert_reviewer_integrity(self.ledger)
 
-    def test_unavailable_sandbox_never_reports_capability(self):
+    def test_role_permission_override_is_used_consistently(self):
         from unittest.mock import patch
-        import subprocess
-        from runtime.codex_builder_loop.native_driver.app_server import probe_read_only_sandbox, AppServerError
-        with patch('runtime.codex_builder_loop.native_driver.app_server.subprocess.run', return_value=subprocess.CompletedProcess([], 1, '', 'namespace unavailable')):
-            with self.assertRaises(AppServerError) as raised:
-                probe_read_only_sandbox('codex')
-        self.assertEqual(raised.exception.code, 'NATIVE_REVIEWER_SANDBOX_UNAVAILABLE')
+        driver = object.__new__(NativeCoordinator)
+        with patch.object(driver, '_role_config', return_value=('review only', 'read-only')):
+            self.assertEqual(driver._sandbox_policy({}, 'reviewer', {}), {'type': 'readOnly'})

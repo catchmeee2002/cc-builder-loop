@@ -270,5 +270,5 @@ bash scripts/verify-all.sh
 返回 `HELD` 后，使用 `native-driver release --repo <repo> --run <run> --session-id <owner> --hold-id <id> --reason <reason>` 解除暂停，再续接原 Driver。
 释放不会跳过目标漂移检查和验收，也不取消正在恢复的事务。
 
-Reviewer 需要可用的只读沙箱。启动探针无法证明读取成功且写入被拒时阻塞，不能切换全权限规避。
+Reviewer 只负责审查，沿用现有执行环境；审查前后检查候选内容、索引与 HEAD，发现改动便拒收结果。该检查不提供操作系统级写入隔离，启动不要求额外沙箱能力。
 仓库 fixtures 默认串行；可用 `CODEX_FIXTURE_JOBS=2 bash scripts/verify-all.sh` 启用受控并行，测试集合与串行入口保持一致。
