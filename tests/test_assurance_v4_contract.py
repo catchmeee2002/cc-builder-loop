@@ -465,8 +465,8 @@ class AssuranceV4ContractTest(unittest.TestCase):
         )
         return run_path, candidate, before
 
-    def test_tester_source_deletion_is_rejected_before_candidate_integration(self) -> None:
-        run_id = "tester-deletion-rejected"
+    def test_tester_source_deletion_records_baseline_and_invalidates_candidate(self) -> None:
+        run_id = "tester-deletion-integrated"
         _started, run_path = self.start(run_id)
         ledger = self.load_ledger(run_path)
         execution = ledger["facets"]["execution"]
@@ -495,9 +495,16 @@ class AssuranceV4ContractTest(unittest.TestCase):
             "integrate-tester", "--repo", self.repo, "--run", run_id
         )
 
-        self.assertEqual(rc, 2, rejected)
-        self.assertEqual(rejected.get("code"), "TESTER_SOURCE_ENTRY_UNSUPPORTED")
-        self.assertEqual(head(Path(ledger["candidate_worktree"])), candidate_before)
+        self.assertEqual(rc, 0, rejected)
+        self.assertNotEqual(head(Path(ledger["candidate_worktree"])), candidate_before)
+        self.assertFalse((Path(ledger["candidate_worktree"]) / "tests/test_calc.py").exists())
+        integrated = self.load_ledger(run_path)
+        entry = integrated["facets"]["execution"]["tester_source"]["files"][0]
+        self.assertEqual(entry["operation"], "delete")
+        self.assertIsNone(entry["blob"])
+        self.assertRegex(entry["base_blob"], r"^[0-9a-f]{40}$")
+        self.assertFalse(rejected["readiness"]["ready"])
+        self.assertIn("reviewer", rejected["readiness"]["missing"])
 
     def test_tester_manifest_shrink_restores_prior_path_to_source_base(self) -> None:
         run_id = "tester-manifest-shrink-restores-base"

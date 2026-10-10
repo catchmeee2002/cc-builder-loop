@@ -595,6 +595,7 @@ def canonical_context_projection(
             ledger.get("recomposition_intent")
         ),
         "work_unit_progress": _canonical_progress_projection(ledger),
+        "role_observations": role_observations(ledger),
     }
 
 
@@ -1086,6 +1087,26 @@ def _regular_blob_sha256_at(repo: Path, head: str, path: str) -> tuple[str, str]
     return blob, hashlib.sha256(result.stdout).hexdigest()
 
 
+def _tester_entry(repo: Path, base: str, head: str, path: str) -> dict[str, Any]:
+    blob = _regular_blob_at(repo, head, path)
+    if blob is not None:
+        return {"path": path, "blob": blob}
+    entry = git(repo, "ls-tree", "-z", head, "--", f":(literal){path}")
+    original = git(repo, "ls-tree", "-z", base, "--", f":(literal){path}")
+    base_blob = _regular_blob_at(repo, base, path)
+    if entry.stdout or base_blob is None:
+        raise AssuranceError("Tester entry must be a regular file or an explicit deletion of one",
+                             code="TESTER_SOURCE_ENTRY_UNSUPPORTED", details={"path": path})
+    return {"path": path, "blob": None, "operation": "delete", "base_blob": base_blob,
+            "base_mode": original.stdout.split()[0]}
+
+
+def _tester_entry_matches(repo: Path, head: str, item: Mapping[str, Any]) -> bool:
+    if item.get("operation") == "delete":
+        return item.get("blob") is None and not git(repo, "ls-tree", "-z", head, "--", f":(literal){item['path']}").stdout
+    return _regular_blob_at(repo, head, str(item["path"])) == item.get("blob") and item.get("blob") is not None
+
+
 def _candidate_manifest(repo: Path, base: str, candidate: str) -> list[dict[str, str]]:
     manifest: list[dict[str, str]] = []
     for path in changed_files(repo, base, candidate):
@@ -1167,6 +1188,36 @@ def _candidate_worktree_manifest(worktree: Path) -> dict[str, Any]:
     }
     manifest["manifest_digest"] = digest(manifest)
     return manifest
+
+
+def _reviewer_manifest(ledger: Mapping[str, Any]) -> dict[str, Any]:
+    worktree = Path(str(ledger["candidate_worktree"]))
+    manifest = _candidate_worktree_manifest(worktree)
+    manifest["index"] = git(worktree, "ls-files", "--stage", "-z").stdout
+    manifest["status"] = git(worktree, "status", "--porcelain=v1", "-z", "--untracked-files=all").stdout
+    for entry in manifest["entries"]:
+        if entry["status"] == "present":
+            entry["mode"] = stat.S_IMODE((worktree / entry["path"]).lstat().st_mode)
+    manifest.pop("manifest_digest")
+    manifest["manifest_digest"] = digest(manifest)
+    if not isinstance(manifest["head"], str) or manifest["head"] != ledger["facets"]["execution"].get("candidate_head") or any(
+        entry["status"] == "unreadable" for entry in manifest["entries"]
+    ):
+        raise AssuranceError("Reviewer candidate observation is unavailable or drifted",
+                             code="REVIEWER_CANDIDATE_OBSERVATION_INVALID", status="NEEDS_USER")
+    return manifest
+
+
+def _assert_reviewer_integrity(ledger: Mapping[str, Any]) -> None:
+    intent = ledger.get("dispatch_intent")
+    if isinstance(intent, Mapping) and intent.get("role") == "reviewer":
+        expected = intent.get("candidate_manifest_digest")
+    else:
+        expected = (ledger.get("reviewer_observation") or {}).get("manifest_digest")
+    observed = _reviewer_manifest(ledger)
+    if not expected or expected != observed["manifest_digest"]:
+        raise AssuranceError("Reviewer candidate changed or has no pre-review observation",
+                             code="REVIEWER_CANDIDATE_INTEGRITY_FAILED", status="NEEDS_USER")
 
 
 def _candidate_manifest_for_ledger(ledger: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -1456,6 +1507,7 @@ def _contract_command_surfaces(
         ("execution.commands", "complete_blackbox", command)
         for command in contract["execution"]["commands"]
     )
+    commands.extend(("assurance.proof_runners", "prove_tests", command) for command in contract["assurance"].get("proof_runners", []))
     deployment = contract["execution"].get("deployment")
     if isinstance(deployment, Mapping):
         for field, latest_check_stage in (
@@ -1540,6 +1592,23 @@ def _prospective_admission_execution(
     return execution, candidate
 
 
+def _probe_proof_runner(worktree: Path, command: Mapping[str, Any], executable: str) -> bool:
+    from ..core import run_proof_argv
+    argv = [executable, *command["argv"][1:]]
+    framework = _proof_framework(argv)
+    with tempfile.TemporaryDirectory(prefix="proof-runner-probe-") as raw:
+        root = Path(raw)
+        empty = root / "empty"
+        empty.mkdir()
+        suffix = [str(empty), "-q", "-p", "no:cacheprovider"] if framework == "pytest" else ["discover", "-s", str(empty)]
+        observed = run_proof_argv(argv + suffix, framework=framework, test_ids=[], worktree=worktree,
+                                  timeout=command["timeout_seconds"], log_path=root / "probe.log",
+                                  cache_path=root / "cache", include_supervisor_observation=True)
+        observation = observed.get("supervisor_observation") or {}
+        return (not observed["timed_out"] and observed["returncode"] == (5 if framework == "pytest" else 0)
+                and observation.get("framework") == framework and observation.get("tests") == [])
+
+
 def _admission_report(
     repo: Path,
     contract: Mapping[str, Any],
@@ -1589,6 +1658,13 @@ def _admission_report(
             )
             continue
         status_value = "ready" if _executable is not None else "blocked"
+        probe_reason = None
+        if _executable is not None and surface == "assurance.proof_runners":
+            try:
+                if not _probe_proof_runner(repo, command, _executable):
+                    status_value, probe_reason = "blocked", "proof_runner_startup_failed"
+            except (AssuranceError, OSError, ValueError):
+                status_value, probe_reason = "blocked", "proof_runner_startup_failed"
         command_admission.append(
             {
                 "surface": surface,
@@ -1596,7 +1672,7 @@ def _admission_report(
                 "requested_executable": requested,
                 "status": status_value,
                 "identity": identity,
-                "reason": None if status_value == "ready" else identity.get("reason"),
+                "reason": None if status_value == "ready" else (probe_reason or identity.get("reason")),
                 "latest_check_stage": latest_check_stage,
             }
         )
@@ -2676,14 +2752,15 @@ def begin_dispatch(
             )
         observation = _dispatch_observation(ledger)
         candidate_manifest_digest: str | None = None
-        if action in BUILDER_SIDE_EFFECT_ACTIONS:
+        if action in BUILDER_SIDE_EFFECT_ACTIONS or role == "reviewer":
             try:
-                candidate_manifest_digest = _candidate_worktree_manifest(
-                    Path(str(ledger["candidate_worktree"]))
+                candidate_manifest_digest = (
+                    _reviewer_manifest(ledger) if role == "reviewer" else
+                    _candidate_worktree_manifest(Path(str(ledger["candidate_worktree"])))
                 )["manifest_digest"]
             except (OSError, StoreError) as exc:
                 raise AssuranceError(
-                    "Builder dispatch requires a readable candidate manifest",
+                    "Role dispatch requires a readable candidate manifest",
                     code="DISPATCH_CANDIDATE_OBSERVATION_UNAVAILABLE",
                     status="NEEDS_USER",
                     details={"error": str(exc)},
@@ -2734,6 +2811,8 @@ def begin_dispatch(
         if timeout_profile_digest:
             dispatch_intent["timeout_profile_digest"] = timeout_profile_digest
         dispatch_intent["side_effect_observation_digest"] = digest(observation)
+        if action in {"tester_proof", "tester_proof_diagnose"}:
+            (run_dir(repo, run_id) / "artifacts" / f"patches-{action_id}").mkdir(parents=True, exist_ok=True)
         ledger["dispatch_intent"] = dispatch_intent
         append_event(ledger, "dispatch_prepared", copy.deepcopy(ledger["dispatch_intent"]))
         save_ledger(repo, ledger)
@@ -3933,6 +4012,48 @@ def record_transport_cleanup(
     return status(repo, run_id)
 
 
+def _intake_proof_files(repo: Path, ledger: Mapping[str, Any], intent: Mapping[str, Any], result: dict[str, Any]) -> dict[str, Any]:
+    spec = result.get("proof_spec")
+    if not isinstance(spec, dict) or not any("patch_file" in g for g in spec["groups"]):
+        return result
+    if intent.get("role") != "tester" or intent.get("action") not in {"tester_proof", "tester_proof_diagnose"}:
+        raise AssuranceError("Patch artifacts require a Tester proof dispatch", code="TEST_PROOF_PATCH_OWNER_INVALID")
+    root = run_dir(repo, str(ledger["run_id"])) / "artifacts" / ("patches-" + str(intent["action_id"]))
+    value = copy.deepcopy(result)
+    for group in value["proof_spec"]["groups"]:
+        if "patch_file" not in group:
+            continue
+        path = Path(group.pop("patch_file"))
+        try:
+            if not path.is_absolute() or path.parent.resolve(strict=True) != root.resolve(strict=True) or root.is_symlink():
+                raise ValueError("patch file must be directly inside the dispatch artifact directory")
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            with os.fdopen(fd, "rb") as stream:
+                info = os.fstat(stream.fileno())
+                if not stat.S_ISREG(info.st_mode) or not 0 < info.st_size <= 4 * 1024 * 1024:
+                    raise ValueError("patch must be a regular file of at most 4 MiB")
+                raw = stream.read(4 * 1024 * 1024 + 1)
+                after = os.fstat(stream.fileno())
+                if len(raw) != info.st_size or (info.st_size, info.st_mtime_ns, info.st_ctime_ns) != (after.st_size, after.st_mtime_ns, after.st_ctime_ns):
+                    raise ValueError("patch changed during intake")
+            patch = raw.decode("utf-8", errors="strict")
+        except (OSError, ValueError) as exc:
+            raise AssuranceError("Patch artifact cannot be safely ingested", code="TEST_PROOF_PATCH_FILE_INVALID", details={"error": str(exc)}) from exc
+        worktree = str(ledger["candidate_worktree"])
+        check = subprocess.run(["git", "-C", worktree, "apply", "--check", "-"], input=raw, capture_output=True)
+        paths = subprocess.run(["git", "-C", worktree, "apply", "--numstat", "-z", "-"], input=raw, capture_output=True)
+        names = [entry.split(b"\t", 2)[-1].decode("utf-8", "strict") for entry in paths.stdout.split(b"\0") if entry]
+        authority = ledger["facets"]["authority"]
+        if check.returncode or paths.returncode or not names or any(
+            not _matches(name, authority["builder_write"]) or _matches(name, authority["tester_write"])
+            for name in names
+        ):
+            raise AssuranceError("Patch is not applicable within Builder authority", code="TEST_PROOF_MUTATION_INVALID")
+        group["patch"] = patch
+        group["patch_source"] = {"path": str(path), "sha256": hashlib.sha256(raw).hexdigest(), "bytes": len(raw)}
+    return validate_agent_result(value)
+
+
 def complete_dispatch(
     repo_value: str | Path,
     run_value: str,
@@ -3964,12 +4085,17 @@ def complete_dispatch(
                 },
             )
         if intent.get("state") == "completed":
-            if intent.get("result_digest") != digest(result):
+            if digest(result) not in {intent.get("result_digest"), intent.get("submitted_result_digest")}:
                 raise AssuranceError(
                     "completed dispatch result cannot be replaced",
                     code="DISPATCH_RESULT_MISMATCH",
                 )
             return status(repo, run_id)
+        if intent.get("role") == "reviewer":
+            _assert_reviewer_integrity(ledger)
+        submitted_digest = digest(result)
+        result = _intake_proof_files(repo, ledger, intent, result)
+        intent["submitted_result_digest"] = submitted_digest
         artifact = run_dir(repo, run_id) / "artifacts" / f"dispatch-{action_id}.json"
         atomic_write_json(artifact, result)
         intent["state"] = "completed"
@@ -7815,6 +7941,7 @@ def retrospective_status(repo_value: str | Path, session_id: str) -> dict[str, A
         }
     terminal_facts: dict[str, dict[str, Any]] = {}
     active: list[str] = []
+    held: list[str] = []
     for ledger, _ledger_digest in ledgers:
         run_id = str(ledger["run_id"])
         phase = str(ledger["phase"])
@@ -7868,10 +7995,12 @@ def retrospective_status(repo_value: str | Path, session_id: str) -> dict[str, A
             }
         else:
             active.append(run_id)
+            if decision.get("status") == "HELD":
+                held.append(run_id)
     active.sort()
     if active:
         return {
-            "status": "ACTIVE",
+            "status": "HELD" if sorted(held) == active else "ACTIVE",
             "owner_session_id": owner_session_id,
             "message": "Assurance v4 run remains active",
             "active_runs": active,
@@ -8115,10 +8244,48 @@ def _proof_tester_scope(
     return scope
 
 
+def _evidence_reuse_binding(ledger: Mapping[str, Any], kind: str) -> dict[str, Any] | None:
+    from .models import candidate_input_identity
+    record = ledger.get("evidence", {}).get(kind)
+    candidate = ledger["facets"]["execution"].get("candidate_head")
+    if not isinstance(record, Mapping) or record.get("status") != "pass" or record.get("candidate_head") == candidate:
+        return None
+    if kind not in {"machine", "preflight", "proof"}:
+        return None
+    try:
+        old = candidate_input_identity(ledger, kind, record.get("candidate_head"))
+        current = candidate_input_identity(ledger, kind)
+        if not isinstance(current, dict) or current != old:
+            return None
+        if record.get("dependency_digest") != evidence_dependency(ledger, kind, evidence=record if kind == "machine" else None):
+            return None
+        if kind == "proof":
+            neutral = set(ledger["facets"]["assurance"].get("evidence_neutral_paths", {}).get("proof", []))
+            if any(neutral.intersection(group.get("mutation", {}).get("changed_paths", [])) for group in record.get("details", {}).get("results", [])):
+                return None
+        return {"kind": kind, "source_record_digest": digest(record), "observed_head": record["candidate_head"],
+                "accepted_head": candidate, **current, "dependency_digest": record["dependency_digest"]}
+    except (ContractError, OSError, subprocess.SubprocessError):
+        return None
+
+
+def _record_evidence_reuse(ledger: dict[str, Any]) -> None:
+    for kind in ("preflight", "machine", "proof"):
+        binding = _evidence_reuse_binding(ledger, kind)
+        if binding and not any(event.get("kind") == "evidence_reused" and event.get("details") == binding for event in ledger.get("events", [])):
+            append_event(ledger, "evidence_reused", binding)
+
+
 def evidence_state(ledger: Mapping[str, Any], kind: str) -> str:
     record = ledger.get("evidence", {}).get(kind)
     if not isinstance(record, dict):
         return "missing"
+    observed_candidate = record.get("candidate_head")
+    current_candidate = ledger["facets"]["execution"].get("candidate_head")
+    if kind in {"machine", "preflight", "proof"} and observed_candidate != current_candidate:
+        binding = _evidence_reuse_binding(ledger, kind)
+        if not binding or not any(event.get("kind") == "evidence_reused" and event.get("details") == binding for event in ledger.get("events", [])):
+            return "stale"
     dependency_evidence = record if kind == "machine" else None
     if record.get("dependency_digest") != evidence_dependency(
         ledger, kind, evidence=dependency_evidence
@@ -8192,7 +8359,7 @@ def evidence_state(ledger: Mapping[str, Any], kind: str) -> str:
         if not _proof_record_replayable(
             record,
             expected_behaviors=expected_behaviors,
-            expected_candidate_head=candidate_head,
+            expected_candidate_head=observed_candidate,
             expected_producer=expected_producer,
             expected_source_head=expected_source_head,
             tester_paths=tester_paths,
@@ -10374,11 +10541,51 @@ def _target_contenders(repo: Path, ledger: Mapping[str, Any]) -> list[dict[str, 
     return values
 
 
+def hold_ready(ledger: Mapping[str, Any]) -> bool:
+    hold = ledger.get("hold")
+    if not isinstance(hold, Mapping) or ledger["phase"] != "active":
+        return False
+    if any(ledger.get(key) is not None for key in ("dispatch_intent", "recomposition_intent", "finalize_intent", "candidate_residue_intent", "pending_blackbox")):
+        return False
+    transaction = ledger.get("deployment_transaction")
+    if isinstance(transaction, Mapping) and transaction.get("state") != "restored":
+        return False
+    lease = ledger.get("environment_lease")
+    if isinstance(lease, Mapping) and lease.get("state") != "released":
+        return False
+    return hold["when"] == "now" or readiness(ledger)["ready"]
+
+
+def hold_run(repo_value: str | Path, run_value: str, *, session_id: str, reason: str, when: str = "now", release_id: str | None = None) -> dict[str, Any]:
+    repo, run_id = resolve_repo(repo_value), ensure_run_id(run_value)
+    with locked(repo):
+        ledger = read_ledger(repo, run_id)
+        if ledger["phase"] != "active" or ledger.get("finalize_intent") is not None:
+            raise AssuranceError("Hold decisions require an active run before finalize", code="HOLD_PHASE_INVALID")
+        if session_id != ledger["owner_session_id"] or not reason.strip() or when not in {"now", "ready"}:
+            raise AssuranceError("Hold decision requires the owner session and a reason", code="HOLD_AUTHORITY_INVALID")
+        existing = ledger.get("hold")
+        if release_id is not None:
+            if not isinstance(existing, dict) or existing["id"] != release_id or existing["mission_digest"] != ledger["digests"]["mission"]:
+                raise AssuranceError("Hold release identity or Mission changed", code="HOLD_RELEASE_STALE")
+            append_event(ledger, "hold_released", {"hold_id": release_id, "session_id": session_id, "reason": reason.strip(), "candidate_head": ledger["facets"]["execution"].get("candidate_head")})
+            ledger["hold"] = None
+        else:
+            if existing is not None:
+                raise AssuranceError("Release the existing hold explicitly before replacing it", code="HOLD_ALREADY_REQUESTED")
+            observation = {"session_id": session_id, "reason": reason.strip(), "when": when, "mission_digest": ledger["digests"]["mission"], "requested_at": now()}
+            ledger["hold"] = {"id": digest({**observation, "event_count": len(ledger.get("events", []))}), **observation}
+            append_event(ledger, "hold_requested", copy.deepcopy(ledger["hold"]))
+        save_ledger(repo, ledger)
+    return status(repo, run_id)
+
+
 def status(repo_value: str | Path, run_value: str) -> dict[str, Any]:
     repo = resolve_repo(repo_value)
     run_id = ensure_run_id(run_value)
     ledger = read_ledger(repo, run_id)
     public_status = (
+        "HELD" if hold_ready(ledger) else
         "FATAL"
         if ledger["phase"] == "failed"
         else "READY"
@@ -10388,9 +10595,11 @@ def status(repo_value: str | Path, run_value: str) -> dict[str, Any]:
     telemetry_value = telemetry(ledger)
     return {
         "status": public_status,
+        "hold": copy.deepcopy(ledger.get("hold")),
         "run_id": run_id,
         "runtime_identity": copy.deepcopy(ledger["runtime_identity"]),
         "runtime_compatibility": runtime_compatibility(ledger),
+        "artifact_root": str(run_dir(repo, run_id) / "artifacts"),
         "runtime_support": copy.deepcopy(ledger["runtime_support"]),
         "phase": ledger["phase"],
         "repo_root": ledger["repo_root"],
@@ -11394,6 +11603,43 @@ def _proof_group_evidence_view(
     return None
 
 
+def role_observations(ledger: Mapping[str, Any]) -> dict[str, Any]:
+    """Read-only projections; never become a second evidence store."""
+    proof = ledger.get("evidence", {}).get("proof") or {}
+    details = proof.get("details") or {}
+    rows = []
+    for group in details.get("results", []):
+        method = group.get("method")
+        counterexample = group.get("mutation" if method == "mutation" else "baseline") or group.get("counterexample") or {}
+        records = {item["id"]: item for item in (counterexample.get("supervisor_observation") or {}).get("tests", [])}
+        for test_id in group.get("test_ids", []):
+            item = records.get(test_id, {})
+            state = "not_applicable" if method == "reviewed-boundaries" else "missing"
+            if item.get("outcome") == "failed" and item.get("failure_kind") == "assertion":
+                state = "discriminates"
+            elif item.get("outcome") == "passed":
+                state = "does_not_discriminate"
+            elif item:
+                state = "invalid_observation"
+            rows.append({"behavior_ids": group.get("behavior_ids", []), "test_id": test_id, "state": state})
+    drifts = []
+    for event in ledger.get("events", []):
+        value = event.get("details", {})
+        old, new = value.get("old_target_head"), value.get("new_target_head")
+        if old and new and old != new:
+            repo = Path(str(ledger["repo_root"]))
+            paths = changed_files(repo, old, new)
+            candidate = ledger["facets"]["execution"].get("candidate_head")
+            candidate_paths = changed_files(repo, new, candidate) if candidate else []
+            drifts.append({"old_target_head": old, "new_target_head": new, "incoming_paths": paths,
+                           "candidate_overlap": sorted(set(paths).intersection(candidate_paths))})
+    candidate = ledger["facets"]["execution"].get("candidate_head")
+    reuse = [copy.deepcopy(event["details"]) for event in ledger.get("events", [])
+             if event.get("kind") == "evidence_reused" and event["details"].get("accepted_head") == candidate]
+    return {"proof_discrimination": rows, "target_drift": drifts, "evidence_reuse": reuse,
+            "hold": copy.deepcopy(ledger.get("hold"))}
+
+
 def _driver_evidence_view(ledger: Mapping[str, Any]) -> dict[str, Any]:
     evidence = copy.deepcopy(ledger.get("evidence", {}))
     proof = evidence.get("proof")
@@ -11471,7 +11717,9 @@ def driver_context(repo_value: str | Path, run_value: str) -> dict[str, Any]:
         "run_id": run_id,
         "runtime_identity": copy.deepcopy(ledger["runtime_identity"]),
         "runtime_compatibility": runtime_compatibility(ledger),
+        "artifact_root": str(run_dir(repo, run_id) / "artifacts"),
         "runtime_support": copy.deepcopy(ledger["runtime_support"]),
+        "hold": copy.deepcopy(ledger.get("hold")),
         "phase": ledger["phase"],
         "repo_root": ledger["repo_root"],
         "target_start_head": ledger["target_start_head"],
@@ -11482,6 +11730,7 @@ def driver_context(repo_value: str | Path, run_value: str) -> dict[str, Any]:
         "recovery_policy": recovery_policy(ledger["facets"]),
         "progress_policy": progress_policy(ledger["facets"]),
         "work_unit_progress": work_unit_progress(ledger),
+        "role_observations": role_observations(ledger),
         "evidence": _driver_evidence_view(ledger),
         "publication": copy.deepcopy(ledger.get("publication")),
         "problems": copy.deepcopy(ledger.get("problems", [])),
@@ -11802,6 +12051,8 @@ def update_facet(
                     status="NEEDS_USER",
                 )
         if facet == "mission":
+            if ledger.get("hold"):
+                raise AssuranceError("release the current hold before revising Mission", code="HOLD_MISSION_REVISION_BLOCKED", status="NEEDS_USER")
             lease = ledger.get("environment_lease")
             if isinstance(lease, dict) and lease.get("state") == "held":
                 raise AssuranceError(
@@ -11990,6 +12241,8 @@ def revise_mission(
         ledger = read_ledger(repo, run_id)
         if ledger["phase"] != "active":
             raise AssuranceError("run is not active", code="ASSURANCE_RUN_NOT_ACTIVE")
+        if ledger.get("hold") is not None:
+            raise AssuranceError("Release the current hold before revising Mission", code="HOLD_MISSION_REVISION_BLOCKED", status="NEEDS_USER")
         _assert_no_candidate_residue_intent(ledger)
         _assert_plan_decision_mutation_binding(
             repo,
@@ -12328,7 +12581,7 @@ def _validated_builder_files(
     if trusted_tester_manifest is not None:
         tester_manifest.update(
             {
-                str(path): str(blob)
+                str(path): blob
                 for path, blob in trusted_tester_manifest.items()
             }
         )
@@ -12446,6 +12699,7 @@ def checkpoint_builder(
                     candidate_head=candidate,
                     error=exc,
                 )
+                _record_evidence_reuse(ledger)
                 save_ledger(repo, ledger)
             raise
         builder_files = _validated_builder_files(
@@ -12472,6 +12726,7 @@ def checkpoint_builder(
             if previous != candidate or execution.get("builder_files") != builder_files:
                 execution["version"] += 1
             execution["candidate_head"] = candidate
+            ledger["reviewer_observation"] = _reviewer_manifest(ledger)
             execution["builder_files"] = builder_files
             ledger["builder_checkpointed"] = False
             ledger["digests"] = facet_digests(ledger["facets"])
@@ -12500,6 +12755,7 @@ def checkpoint_builder(
             _mark_root_builder_result_applied(
                 ledger, root_dispatch, "checkpoint_builder"
             )
+            _record_evidence_reuse(ledger)
             save_ledger(repo, ledger)
             return status(repo, run_id)
         publication = ledger.get("publication")
@@ -12540,10 +12796,12 @@ def checkpoint_builder(
             if _mark_root_builder_result_applied(
                 ledger, root_dispatch, "checkpoint_builder"
             ):
+                _record_evidence_reuse(ledger)
                 save_ledger(repo, ledger)
             return status(repo, run_id)
         execution["version"] += 1
         execution["candidate_head"] = candidate
+        ledger["reviewer_observation"] = _reviewer_manifest(ledger)
         execution["builder_files"] = builder_files
         ledger["builder_checkpointed"] = True
         ledger["digests"] = facet_digests(ledger["facets"])
@@ -12577,6 +12835,7 @@ def checkpoint_builder(
         _mark_root_builder_result_applied(
             ledger, root_dispatch, "checkpoint_builder"
         )
+        _record_evidence_reuse(ledger)
         save_ledger(repo, ledger)
     return status(repo, run_id)
 
@@ -12720,6 +12979,9 @@ def prepare_reviewer(
         execution = ledger["facets"]["execution"]
         existing = execution["agents"].get("reviewer")
         if existing == agent:
+            if ledger.get("reviewer_observation") is None:
+                ledger["reviewer_observation"] = _reviewer_manifest(ledger)
+                save_ledger(repo, ledger)
             return status(repo, run_id)
         if isinstance(existing, dict) and not replace:
             raise AssuranceError(
@@ -12730,6 +12992,7 @@ def prepare_reviewer(
         if isinstance(existing, dict):
             ledger.setdefault("retired_reviewer_agents", []).append(copy.deepcopy(existing))
         execution["agents"]["reviewer"] = agent
+        ledger["reviewer_observation"] = _reviewer_manifest(ledger)
         execution["version"] += 1
         ledger["digests"] = facet_digests(ledger["facets"])
         append_event(
@@ -14270,21 +14533,13 @@ def integrate_tester(repo_value: str | Path, run_value: str) -> dict[str, Any]:
                 code="TESTER_SOURCE_AUTHORITY_VIOLATION",
                 details={"paths": invalid},
             )
-        manifest: list[dict[str, str]] = []
-        for path in tester_files:
-            blob = _blob_at(repo, source_head, path)
-            if blob is None:
-                raise AssuranceError(
-                    "Tester source deletion or non-file entry is unsupported in v4 first scope",
-                    code="TESTER_SOURCE_ENTRY_UNSUPPORTED",
-                    details={"path": path},
-                )
-            manifest.append({"path": path, "blob": blob})
+        manifest = [_tester_entry(repo, source_base, source_head, path) for path in tester_files]
+        deleted_paths = {item["path"] for item in manifest if item.get("operation") == "delete"}
         from ..core import python_test_role_boundary_marker
 
         role_boundary_findings: list[dict[str, str]] = []
         for path in tester_files:
-            if not path.endswith(".py"):
+            if not path.endswith(".py") or path in deleted_paths:
                 continue
             source_text = git(repo, "show", f"{source_head}:{path}", check=False)
             if source_text.returncode != 0:
@@ -14364,7 +14619,10 @@ def integrate_tester(repo_value: str | Path, run_value: str) -> dict[str, Any]:
                         details={"path": path, "stderr": restored.stderr[-8000:]},
                     )
             for path in tester_files:
-                checked_out = git(candidate_worktree, "checkout", source_head, "--", path, check=False)
+                if path in deleted_paths:
+                    checked_out = git(candidate_worktree, "rm", "--ignore-unmatch", "--", path, check=False)
+                else:
+                    checked_out = git(candidate_worktree, "checkout", source_head, "--", path, check=False)
                 if checked_out.returncode != 0:
                     raise AssuranceError(
                         "Tester source could not be materialized into candidate",
@@ -14394,6 +14652,7 @@ def integrate_tester(repo_value: str | Path, run_value: str) -> dict[str, Any]:
             candidate = git(candidate_worktree, "rev-parse", "HEAD").stdout.strip()
             execution["version"] += 1
             execution["candidate_head"] = candidate
+            ledger["reviewer_observation"] = _reviewer_manifest(ledger)
             execution["tester_files"] = tester_files
             execution["tester_source"] = {
                 **source,
@@ -14424,6 +14683,7 @@ def integrate_tester(repo_value: str | Path, run_value: str) -> dict[str, Any]:
                     }
                 ),
             )
+            _record_evidence_reuse(ledger)
             save_ledger(repo, ledger)
         except Exception:
             git(candidate_worktree, "reset", "--hard", candidate_before, check=False)
@@ -14482,6 +14742,8 @@ def record_evidence(
                 "evidence producer does not match the execution manifest",
                 code="EVIDENCE_PRODUCER_MISMATCH",
             )
+        if role == "reviewer":
+            _assert_reviewer_integrity(ledger)
         details = report["details"]
         if kind == "tester":
             if (report["status"] == "pass") != (details["result"] == "tests_ready"):
@@ -14491,6 +14753,8 @@ def record_evidence(
                 raise AssuranceError("Tester source head does not match Execution", code="TESTER_SOURCE_HEAD_MISMATCH")
             manifest = {item["path"]: item["blob"] for item in details["files"]}
             expected_manifest = {item["path"]: item["blob"] for item in tester_source["files"]}
+            if sorted(details["files"], key=lambda item: item["path"]) != sorted(tester_source["files"], key=lambda item: item["path"]):
+                raise AssuranceError("Tester operation provenance differs from integration", code="TESTER_SOURCE_MANIFEST_MISMATCH")
             if manifest != expected_manifest:
                 raise AssuranceError(
                     "Tester source manifest must exactly cover execution tester files",
@@ -15067,6 +15331,8 @@ def prove_tests(
     action_id: str | None = None,
 ) -> dict[str, Any]:
     spec = validate_test_proof_spec(spec_value)
+    if any("patch_file" in group for group in spec["groups"]):
+        raise AssuranceError("Complete the Tester dispatch to ingest patch files before prove-tests", code="TEST_PROOF_PATCH_INTAKE_REQUIRED")
     repo = resolve_repo(repo_value)
     run_id = ensure_run_id(run_value)
     started_at = time.monotonic()
@@ -15224,6 +15490,16 @@ def prove_tests(
                     details={"tests": unbound_tests},
                 )
             )
+        runners = ledger["facets"]["assurance"].get("proof_runners", [])
+        if runners:
+            for group in spec["groups"]:
+                matching = [runner for runner in runners if group["argv"][:len(runner["argv"])] == runner["argv"]]
+                if len(matching) != 1:
+                    fail(AssuranceError("Proof command must match one frozen runner", code="TEST_PROOF_RUNNER_UNBOUND", status="FAIL"))
+                runner = matching[0]
+                executable, _identity = _resolve_machine_executable(repo, Path(ledger["candidate_worktree"]), candidate, runner["argv"][0])
+                if executable is None or not _probe_proof_runner(Path(ledger["candidate_worktree"]), runner, executable):
+                    fail(AssuranceError("Proof runner startup failed", code="TEST_PROOF_RUNNER_STARTUP_FAILED", status="FAIL"))
         launcher_identities: list[dict[str, Any] | None] = []
         candidate_worktree_path = Path(ledger["candidate_worktree"])
         for group in spec["groups"]:
@@ -16881,6 +17157,36 @@ def _apply_recomposition_delta(
         )
     if not unique_paths:
         return live_head, []
+    deletion_conflicts: list[str] = []
+    apply_paths: list[str] = []
+    index_records: list[str] = []
+    for path in unique_paths:
+        def entry(head: str) -> tuple[str, str] | None:
+            value = git(repo, "ls-tree", "-z", head, "--", f":(literal){path}").stdout
+            if not value:
+                return None
+            fields = value.split("\t", 1)[0].split()
+            return (fields[0], fields[2]) if fields[1] == "blob" else None
+        base_entry, source_entry, target_entry = entry(source_base), entry(source_head), entry(staging_base)
+        if source_entry == target_entry:
+            continue
+        delete_modify = base_entry is not None and ((source_entry is None and target_entry != base_entry) or (target_entry is None and source_entry != base_entry))
+        if delete_modify:
+            deletion_conflicts.append(path)
+            index_records.append("0 " + "0" * 40 + "\t" + path + "\0")
+            for stage, value in ((1, base_entry), (2, target_entry), (3, source_entry)):
+                if value is not None:
+                    index_records.append(f"{value[0]} {value[1]} {stage}\t{path}\0")
+            if target_entry is None and source_entry is not None:
+                git(worktree, "checkout", source_head, "--", f":(literal){path}")
+        else:
+            apply_paths.append(path)
+    if index_records:
+        staged = subprocess.run(["git", "-C", str(worktree), "update-index", "-z", "--index-info"], input="".join(index_records), text=True, capture_output=True)
+        if staged.returncode:
+            raise AssuranceError("Could not stage deletion conflict", code="RECOMPOSITION_PATCH_FAILED")
+    if not apply_paths:
+        return (None, deletion_conflicts) if deletion_conflicts else (live_head, [])
     diff = git(
         repo,
         "diff",
@@ -16890,7 +17196,7 @@ def _apply_recomposition_delta(
         source_base,
         source_head,
         "--",
-        *unique_paths,
+        *apply_paths,
         check=False,
     )
     if diff.returncode != 0:
@@ -16899,7 +17205,7 @@ def _apply_recomposition_delta(
             code="RECOMPOSITION_SOURCE_DIFF_FAILED",
         )
     if not diff.stdout:
-        return git(worktree, "rev-parse", "HEAD").stdout.strip(), []
+        return (None, deletion_conflicts) if deletion_conflicts else (git(worktree, "rev-parse", "HEAD").stdout.strip(), [])
     patch_path.parent.mkdir(parents=True, exist_ok=True)
     patch_path.write_text(diff.stdout, encoding="utf-8")
     applied = subprocess.run(
@@ -16924,6 +17230,8 @@ def _apply_recomposition_delta(
             code="RECOMPOSITION_PATCH_FAILED",
             details={"paths": unique_paths},
         )
+    if deletion_conflicts:
+        return None, deletion_conflicts
     if dirty_paths(worktree):
         committed = git(
             worktree,
@@ -17129,7 +17437,7 @@ def _validate_recomposition_tester_inputs(
     source = execution.get("tester_source")
     source_manifest = (
         {
-            str(item["path"]): str(item["blob"])
+            str(item["path"]): item["blob"]
             for item in source.get("files", [])
         }
         if isinstance(source, Mapping)
@@ -17138,7 +17446,7 @@ def _validate_recomposition_tester_inputs(
     carryover = execution.get("carryover")
     carryover_manifest = (
         {
-            str(item["path"]): str(item["blob"])
+            str(item["path"]): item["blob"]
             for item in carryover.get("files", [])
         }
         if isinstance(carryover, Mapping)
@@ -17149,13 +17457,14 @@ def _validate_recomposition_tester_inputs(
     unbound: list[str] = []
     for path in paths:
         blob = _blob_at(repo, source_head, path)
-        if blob is None:
+        if blob is None and git(repo, "ls-tree", "-z", source_head, "--", f":(literal){path}").stdout:
             unsupported.append(path)
             continue
         expected = {
             value
-            for value in (source_manifest.get(path), carryover_manifest.get(path))
-            if isinstance(value, str)
+            for manifest in (source_manifest, carryover_manifest)
+            if path in manifest
+            for value in [manifest[path]]
         }
         if blob not in expected:
             unbound.append(path)
@@ -17194,7 +17503,7 @@ def _recomposition_target_tester_manifest(
     unsupported: list[str] = []
     for path in paths:
         blob = _regular_blob_at(repo, str(intent["new_target_head"]), path)
-        if blob is None:
+        if blob is None and git(repo, "ls-tree", "-z", str(intent["new_target_head"]), "--", f":(literal){path}").stdout:
             unsupported.append(path)
         else:
             manifest[path] = blob
@@ -17228,8 +17537,8 @@ def _recomposition_tester_manifest(
         source_head = str(source["head"])
         for item in source.get("files", []):
             path = str(item["path"])
-            blob = str(item["blob"])
-            if _regular_blob_at(repo, source_head, path) != blob:
+            blob = item["blob"]
+            if not _tester_entry_matches(repo, source_head, item):
                 raise AssuranceError(
                     "recomposition Tester source manifest drifted",
                     code="RECOMPOSITION_TESTER_INPUT_UNBOUND",
@@ -17242,10 +17551,10 @@ def _recomposition_tester_manifest(
         carryover_head = str(carryover["source_candidate_head"])
         for item in carryover.get("files", []):
             path = str(item["path"])
-            blob = str(item["blob"])
+            blob = item["blob"]
             if not _matches(path, authority["tester_write"]):
                 continue
-            if _regular_blob_at(repo, carryover_head, path) != blob:
+            if not _tester_entry_matches(repo, carryover_head, item):
                 raise AssuranceError(
                     "recomposition Tester carryover manifest drifted",
                     code="RECOMPOSITION_TESTER_INPUT_UNBOUND",
@@ -17261,9 +17570,9 @@ def _recomposition_tester_manifest(
     unbound_delta: list[str] = []
     for path in _recomposition_tester_paths(repo, ledger, intent):
         blob = _regular_blob_at(repo, tester_head, path)
-        if blob is None:
+        if blob is None and git(repo, "ls-tree", "-z", tester_head, "--", f":(literal){path}").stdout:
             raise AssuranceError(
-                "recomposed Tester source lost a regular file",
+                "recomposed Tester source contains a non-file entry",
                 code="RECOMPOSITION_TESTER_ENTRY_UNSUPPORTED",
                 details={"paths": [path]},
             )
@@ -17281,14 +17590,19 @@ def _recomposition_tester_manifest(
     unsupported: list[str] = []
     for path in sorted(expected):
         blob = _regular_blob_at(repo, tester_head, path)
-        if blob is None:
+        if blob is None and git(repo, "ls-tree", "-z", tester_head, "--", f":(literal){path}").stdout:
             unsupported.append(path)
             continue
         expected_blobs = expected[path]
         if len(expected_blobs) == 1 and blob not in expected_blobs:
             drifted.append(path)
             continue
-        manifest.append({"path": path, "blob": blob})
+        if blob is None:
+            # Carry the original deletion provenance when the new target already lacks it.
+            previous = next((item for item in (source or {}).get("files", []) if item["path"] == path and item.get("operation") == "delete"), None)
+            manifest.append(copy.deepcopy(previous) if previous else _tester_entry(repo, str(intent["old_target_head"]), tester_head, path))
+        else:
+            manifest.append({"path": path, "blob": blob})
     if unsupported:
         raise AssuranceError(
             "recomposed Tester manifest contains a deletion or non-file entry",
@@ -17350,6 +17664,7 @@ def _commit_recomposition(repo: Path, ledger: dict[str, Any], intent: dict[str, 
     if already_committed:
         _cleanup_recomposition_staging(repo, intent)
         ledger["recomposition_intent"] = None
+        _record_evidence_reuse(ledger)
         save_ledger(repo, ledger)
         return
     execution = ledger["facets"]["execution"]
@@ -17423,7 +17738,7 @@ def _commit_recomposition(repo: Path, ledger: dict[str, Any], intent: dict[str, 
         execution["tester_files"] = sorted(target_tester_manifest)
 
     final_tester_manifest = {
-        str(item["path"]): str(item["blob"])
+        str(item["path"]): item["blob"]
         for item in (
             execution.get("tester_source", {}).get("files", [])
             if isinstance(execution.get("tester_source"), Mapping)
@@ -17451,6 +17766,7 @@ def _commit_recomposition(repo: Path, ledger: dict[str, Any], intent: dict[str, 
             details={"paths": overlap},
         )
     execution["candidate_head"] = candidate_head
+    ledger["reviewer_observation"] = _reviewer_manifest(ledger)
     execution["version"] += 1
     ledger["target_start_head"] = intent["new_target_head"]
     publication = ledger.get("publication")
@@ -17492,9 +17808,11 @@ def _commit_recomposition(repo: Path, ledger: dict[str, Any], intent: dict[str, 
             "target_restart_count": intent["target_restart_count"],
         },
     )
+    _record_evidence_reuse(ledger)
     save_ledger(repo, ledger)
     _cleanup_recomposition_staging(repo, intent)
     ledger["recomposition_intent"] = None
+    _record_evidence_reuse(ledger)
     save_ledger(repo, ledger)
 
 
@@ -17894,6 +18212,8 @@ def finalize(repo_value: str | Path, run_value: str, message: str) -> dict[str, 
             return status(repo, run_id)
         if ledger["phase"] != "active":
             raise AssuranceError("run is not active", code="ASSURANCE_RUN_NOT_ACTIVE")
+        if ledger.get("hold") is not None:
+            raise AssuranceError("Explicitly release the hold before finalize", code="FINALIZE_HELD", status="NEEDS_USER")
         deployment = ledger["facets"]["execution"].get("deployment")
         if isinstance(deployment, dict):
             transaction = ledger.get("deployment_transaction")

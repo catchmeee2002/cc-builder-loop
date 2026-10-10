@@ -4,6 +4,7 @@ import copy
 import hashlib
 import fnmatch
 import json
+import subprocess
 from functools import lru_cache
 from pathlib import Path, PurePosixPath
 from typing import Any, Mapping
@@ -264,6 +265,12 @@ def validate_contract(value: Any) -> dict[str, Any]:
     contract["execution"].setdefault("driver_enforced", False)
     contract["execution"].setdefault("revision_transition", None)
     contract["execution"].setdefault("prior_problem_dispositions", None)
+    for gate, paths in contract["assurance"].get("evidence_neutral_paths", {}).items():
+        for path in paths:
+            forbidden = contract["authority"]["tester_write"] + contract["authority"]["protected_support_paths"] + contract["authority"]["public_prerequisites"]
+            if (str(PurePosixPath(path)) != path or "\\" in path or path.startswith((".git/", ".codex/", ".agents/"))
+                or any(fnmatch.fnmatchcase(path, pattern) for pattern in forbidden)):
+                raise ContractError("Evidence-neutral paths must be canonical and outside protected inputs", code="EVIDENCE_SCOPE_PROTECTED_INPUT", details={"path": path, "gate": gate})
     all_commands = list(contract["assurance"]["machine_commands"]) + list(
         contract["execution"]["commands"]
     )
@@ -1022,6 +1029,14 @@ def validate_agent_result(value: Any) -> dict[str, Any]:
     return result
 
 
+def proof_semantic_digest(spec: Mapping[str, Any]) -> str:
+    value = copy.deepcopy(dict(spec))
+    value.pop("schema_version", None)
+    for group in value.get("groups", []):
+        group.pop("patch_source", None)
+    return digest(value)
+
+
 def validate_test_proof_spec(value: Any) -> dict[str, Any]:
     try:
         jsonschema.Draft202012Validator(_schema("codex-test-proof.schema.json")).validate(value)
@@ -1334,17 +1349,66 @@ def tester_source_dependency(execution: Mapping[str, Any]) -> Any:
     }
 
 
+def candidate_input_identity(ledger: Mapping[str, Any], kind: str, head: str | None = None) -> Any:
+    contract = ledger["facets"]
+    candidate = head or contract["execution"].get("candidate_head")
+    gate = "machine" if kind == "preflight" else kind
+    neutral = contract["assurance"].get("evidence_neutral_paths", {}).get(gate, [])
+    if not neutral or gate not in {"machine", "proof"}:
+        return candidate
+    if not candidate or not ledger.get("repo_root"):
+        raise ContractError("Evidence scope requires a Git candidate", code="EVIDENCE_SCOPE_INPUT_UNAVAILABLE")
+    protected: set[str] = set()
+    roots = [Path(str(ledger["repo_root"])).resolve()]
+    if ledger.get("candidate_worktree"):
+        roots.append(Path(str(ledger["candidate_worktree"])).resolve())
+    commands = contract["assurance"]["machine_commands"] + contract["execution"].get("commands", []) + contract["assurance"].get("proof_runners", [])
+    for command in commands:
+        for argument in command.get("argv", []):
+            value = argument.split("=", 1)[-1] if argument.startswith("-") and "=" in argument else argument
+            if not value or value.startswith("-"):
+                continue
+            path_value = Path(value)
+            if not path_value.is_absolute():
+                path_value = roots[0] / path_value
+            for root in roots:
+                try:
+                    protected.add(path_value.resolve().relative_to(root).as_posix())
+                except ValueError:
+                    pass
+    protected_patterns = (contract["authority"]["tester_write"] + contract["authority"].get("public_prerequisites", [])
+                          + contract["authority"].get("protected_support_paths", []))
+    entries = subprocess.run(["git", "-C", str(ledger["repo_root"]), "ls-tree", "-rz", "--full-tree", candidate], capture_output=True, check=True).stdout
+    selected = []
+    for entry in entries.split(b"\0"):
+        if not entry:
+            continue
+        metadata, raw_path = entry.split(b"\t", 1)
+        path = raw_path.decode("utf-8", "surrogateescape")
+        mode, kind_name, oid = metadata.decode("ascii").split()
+        if path in neutral:
+            if (any(fnmatch.fnmatchcase(path, pattern) for pattern in protected_patterns)
+                or path in protected or mode != "100644"
+                or Path(path).name in {"pyproject.toml", "uv.lock", "poetry.lock", "package.json", "package-lock.json", "conftest.py", "pytest.ini", "setup.cfg", "Makefile"}
+                or Path(path).suffix in {".py", ".sh", ".lock"}):
+                raise ContractError("Executable, test or runner input cannot be evidence-neutral", code="EVIDENCE_SCOPE_PROTECTED_INPUT", details={"path": path})
+            continue
+        selected.append([mode, kind_name, path, oid])
+    return {"scope_digest": digest(neutral), "input_digest": digest(selected), "runtime_identity": ledger.get("runtime_identity")}
+
+
 def evidence_dependency(
     ledger: Mapping[str, Any], kind: str, *, evidence: Mapping[str, Any] | None = None
 ) -> str:
     contract = ledger["facets"]
     execution = contract["execution"]
-    candidate = execution.get("candidate_head")
+    candidate = candidate_input_identity(ledger, kind)
     base: dict[str, Any] = {
         "kind": kind,
         "mission": ledger["digests"]["mission"],
         "authority": ledger["digests"]["authority"],
         "requirement": requirement(contract, kind),
+        **({"proof_runners": contract["assurance"]["proof_runners"]} if kind == "proof" and contract["assurance"].get("proof_runners") else {}),
     }
     publication = ledger.get("publication")
     publication_identity = (
@@ -1466,6 +1530,10 @@ def authority_expands(old: Mapping[str, Any], new: Mapping[str, Any]) -> bool:
 
 
 def assurance_downgrades(old: Mapping[str, Any], new: Mapping[str, Any]) -> bool:
+    if old.get("proof_runners", []) != new.get("proof_runners", []):
+        return True
+    if old.get("evidence_neutral_paths", {}) != new.get("evidence_neutral_paths", {}):
+        return True
     if not set(old["required"]).issubset(set(new["required"])):
         return True
     old_commands = {item["id"]: item for item in old["machine_commands"]}

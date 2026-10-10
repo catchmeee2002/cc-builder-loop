@@ -73,8 +73,70 @@
                   "required": ["path", "blob"],
                   "properties": {
                     "path": {"type": "string", "minLength": 1},
-                    "blob": {"type": "string", "pattern": "^[0-9a-f]{40}$"}
-                  }
+                    "blob": {
+                      "oneOf": [
+                        {
+                          "type": "string",
+                          "pattern": "^[0-9a-f]{40}$"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "operation": {
+                      "const": "delete"
+                    },
+                    "base_blob": {
+                      "type": "string",
+                      "pattern": "^[0-9a-f]{40}$"
+                    },
+                    "base_mode": {
+                      "enum": [
+                        "100644",
+                        "100755"
+                      ]
+                    }
+                  },
+                  "allOf": [
+                    {
+                      "if": {
+                        "properties": {
+                          "blob": {
+                            "type": "null"
+                          }
+                        }
+                      },
+                      "then": {
+                        "required": [
+                          "operation",
+                          "base_blob",
+                          "base_mode"
+                        ]
+                      },
+                      "else": {
+                        "not": {
+                          "anyOf": [
+                            {
+                              "required": [
+                                "operation"
+                              ]
+                            },
+                            {
+                              "required": [
+                                "base_blob"
+                              ]
+                            },
+                            {
+                              "required": [
+                                "base_mode"
+                              ]
+                            }
+                          ]
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }

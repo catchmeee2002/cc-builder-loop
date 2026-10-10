@@ -4227,6 +4227,9 @@ class AppServerTransportContractTest(unittest.TestCase):
         self.codex.write_text(
             """#!/usr/bin/env python3
 import json, os, sys
+if sys.argv[1:2] == ['sandbox']:
+    print('READ_OK_WRITE_DENIED')
+    raise SystemExit(0)
 if sys.argv[1:] == ['--version']:
     print('codex-cli fake-native')
     raise SystemExit(0)
@@ -4360,6 +4363,9 @@ for line in sys.stdin:
         codex.write_text(
             """#!/usr/bin/env python3
 import json, os, sys
+if sys.argv[1:2] == ['sandbox']:
+    print('READ_OK_WRITE_DENIED')
+    raise SystemExit(0)
 if sys.argv[1:] == ['--version']:
     print('codex-cli fake-stderr')
     raise SystemExit(0)
@@ -4608,6 +4614,9 @@ for line in sys.stdin:
             f"""#!/usr/bin/env python3
 import json, os, sys
 state = {str(state)!r}
+if sys.argv[1:2] == ['sandbox']:
+    print('READ_OK_WRITE_DENIED')
+    raise SystemExit(0)
 if sys.argv[1:] == ['--version']:
     print('codex-cli fake-disconnect')
     raise SystemExit(0)
@@ -4755,6 +4764,9 @@ for line in sys.stdin:
 import json, os, sys
 state = {str(state)!r}
 trace = {str(trace)!r}
+if sys.argv[1:2] == ['sandbox']:
+    print('READ_OK_WRITE_DENIED')
+    raise SystemExit(0)
 if sys.argv[1:] == ['--version']:
     print('codex-cli fake-auth')
     raise SystemExit(0)

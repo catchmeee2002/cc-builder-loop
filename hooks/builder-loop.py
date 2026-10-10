@@ -231,6 +231,9 @@ def stop(event: dict[str, Any]) -> None:
     ) or bool(str(retrospective.get("code") or "").strip())
     if is_retrospective_payload and retrospective_status != "NOOP":
         message = str(retrospective.get("message") or retrospective_status)
+        if retrospective_status == "HELD":
+            emit({"systemMessage": "Builder-loop 已按用户要求暂停，现场已保留。"})
+            return
         if retrospective_status == "ACTIVE":
             run_id = str(retrospective.get("run_id") or "")
             input_marker = f"BUILDER_INPUT_REQUIRED:{run_id}" if run_id else ""
@@ -315,6 +318,9 @@ def stop(event: dict[str, Any]) -> None:
     waiting_for_user = bool(input_marker) and any(
         line.strip() == input_marker for line in last_message.splitlines()
     )
+    if status == "HELD":
+        emit({"systemMessage": "Builder-loop 已按用户要求暂停，现场已保留。"})
+        return
     if status == "ACTIVE" and waiting_for_user:
         emit({"systemMessage": "Builder-loop 正在等待用户决定，已保留 active run 并放行本轮停止。"})
         return

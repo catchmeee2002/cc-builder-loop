@@ -304,7 +304,8 @@
           "replacement": "isolated reviewer prerequisite gate",
           "rationale": "Reviewer evidence is bound to an isolated integrated candidate.",
           "test_ids": [
-            "tests.test_reviewer_prerequisite_order.ReviewerPrerequisiteOrderTest.test_review_completion_must_still_see_verified_candidate"
+            "tests.test_reviewer_prerequisite_order.ReviewerPrerequisiteOrderTest.test_review_completion_must_still_see_verified_candidate",
+            "tests.test_v4_reviewer_integrity.ReviewerIntegrityTest.test_worktree_and_index_only_changes_are_rejected"
           ]
         },
         {
@@ -316,7 +317,8 @@
           "replacement": "isolated reviewer prerequisite gate",
           "rationale": "Reviewer evidence is bound to an isolated integrated candidate.",
           "test_ids": [
-            "tests.test_reviewer_prerequisite_order.ReviewerPrerequisiteOrderTest.test_review_completion_must_still_see_verified_candidate"
+            "tests.test_reviewer_prerequisite_order.ReviewerPrerequisiteOrderTest.test_review_completion_must_still_see_verified_candidate",
+            "tests.test_v4_reviewer_integrity.ReviewerIntegrityTest.test_worktree_and_index_only_changes_are_rejected"
           ]
         },
         {
@@ -328,7 +330,8 @@
           "replacement": "isolated reviewer prerequisite gate",
           "rationale": "Reviewer evidence is bound to an isolated integrated candidate.",
           "test_ids": [
-            "tests.test_reviewer_prerequisite_order.ReviewerPrerequisiteOrderTest.test_review_completion_must_still_see_verified_candidate"
+            "tests.test_reviewer_prerequisite_order.ReviewerPrerequisiteOrderTest.test_review_completion_must_still_see_verified_candidate",
+            "tests.test_v4_reviewer_integrity.ReviewerIntegrityTest.test_worktree_and_index_only_changes_are_rejected"
           ]
         },
         {
@@ -340,7 +343,8 @@
           "replacement": "isolated reviewer prerequisite gate",
           "rationale": "Reviewer evidence is bound to an isolated integrated candidate.",
           "test_ids": [
-            "tests.test_reviewer_prerequisite_order.ReviewerPrerequisiteOrderTest.test_review_completion_must_still_see_verified_candidate"
+            "tests.test_reviewer_prerequisite_order.ReviewerPrerequisiteOrderTest.test_review_completion_must_still_see_verified_candidate",
+            "tests.test_v4_reviewer_integrity.ReviewerIntegrityTest.test_worktree_and_index_only_changes_are_rejected"
           ]
         }
       ]

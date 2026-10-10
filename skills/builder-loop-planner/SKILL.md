@@ -194,3 +194,5 @@ description: Builder-loop 的执行 adapter：消费通用 Planner 冻结的语�
 
 验证失败、用户选择原生 Plan、任务超出实验范围、方案仍有未决产品取舍时不得输出该标记，也不得创建
 或启动 run。
+
+新增 proof 计划声明实际 runner 的启动前缀与超时；仅在输入确实不影响判据时声明 evidence neutral paths，测试、runner 和依赖不得排除。需要完成后等待时使用显式 hold，不减少验收 gate。字段以公共 schema 为准。

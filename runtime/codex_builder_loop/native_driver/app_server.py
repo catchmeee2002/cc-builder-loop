@@ -7,6 +7,7 @@ import re
 import shutil
 import stat
 import subprocess
+import sys
 import tempfile
 import select
 import threading
@@ -227,9 +228,33 @@ def _trusted_cache_parent() -> Path:
     )
 
 
+def probe_read_only_sandbox(codex_bin: str) -> str:
+    """Prove read access and write denial before creating a delivery run."""
+    with tempfile.TemporaryDirectory(prefix="codex-reviewer-sandbox-") as raw:
+        root = Path(raw)
+        (root / "readable").write_text("probe", encoding="utf-8")
+        program = (
+            "from pathlib import Path; p=Path(" + repr(raw) + "); "
+            "assert (p/'readable').read_text()=='probe'\n"
+            "try: (p/'forbidden').write_text('unexpected')\n"
+            "except PermissionError: print('READ_OK_WRITE_DENIED')\n"
+            "else: raise SystemExit(42)\n"
+        )
+        try:
+            observed = subprocess.run([codex_bin, "sandbox", "-c", 'sandbox_mode="read-only"', "--", sys.executable, "-c", program],
+                                      capture_output=True, text=True, timeout=30)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise AppServerError("Reviewer read-only sandbox is unavailable", code="NATIVE_REVIEWER_SANDBOX_UNAVAILABLE") from exc
+        if observed.returncode != 0 or observed.stdout.strip() != "READ_OK_WRITE_DENIED" or (root / "forbidden").exists():
+            raise AppServerError("Reviewer read-only sandbox did not prove read access and write denial; no full-access fallback is allowed",
+                                 code="NATIVE_REVIEWER_SANDBOX_UNAVAILABLE", details={"returncode": observed.returncode, "stderr": observed.stderr[-2000:]})
+        return hashlib.sha256(observed.stdout.encode()).hexdigest()
+
+
 def probe_app_server(
     codex_bin: str = "codex", *, strict_protocol: bool = False
 ) -> AppServerCapability:
+    probe_read_only_sandbox(codex_bin)
     version = subprocess.run(
         [codex_bin, "--version"],
         text=True,
@@ -278,7 +303,7 @@ def probe_app_server(
                         thread_id = transport.start_thread(
                             cwd=canary_cwd,
                             developer_instructions="protocol canary",
-                            sandbox="danger-full-access",
+                            sandbox="read-only",
                         )
                         canary_digest = hashlib.sha256(
                             json.dumps(

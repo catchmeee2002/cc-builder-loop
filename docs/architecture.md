@@ -65,8 +65,8 @@ Core 在隔离 worktree 先证明 candidate tests 通过，再执行 baseline-re
 `proof_failure`，绑定 candidate、Tester source、原 spec、结构化错误、artifact 和 dependency digest；它
 是当前失败尝试的恢复事实，不是 proof evidence，不能满足 readiness 或 Reviewer prerequisite。candidate、
 counterexample、coverage、test-id、command 和 mutation 输入类失败由 Driver 续接原 Tester thread 执行
-只读 `tester_proof_diagnose`。若 candidate、Tester source 和冻结语义均未变化，Tester 可返回 digest 已
-变化的 replacement proof spec，Coordinator 以 diagnosis action 直接重进 Core proof transaction，不走
+`tester_proof_diagnose`：源码保持只读，只允许写入当前 dispatch 的 patch 制品目录。若 candidate、
+Tester source 和冻结语义均未变化，Tester 可返回语义 digest 已变化的 replacement proof spec，Coordinator 以 diagnosis action 直接重进 Core proof transaction，不走
 Tester source integration，也不新增第二份 problem；需要修改 candidate、Tester source 或 contract 时才
 按非空 problem owner 路由 Builder、Tester 或 plan。环境、身份完整性及未知错误返回
 `proof_failure_decision / NEEDS_USER`，runtime 不猜修复者。Native Coordinator 只有在 Core error 与同
@@ -75,8 +75,8 @@ action 的 current failure 精确匹配后才消费 completed dispatch；进程�
 仍是唯一 PASS 来源，并清除当前 failure。
 
 focused preflight 和完整 machine failure 同样先写 ledger。`run_before_full_suite` 命令可在 Tester
-integration 后、proof 与完整 suite 前执行；最终 machine gate 只复用同 candidate、同 dependency 的
-真实结果。失败保存结构化 command result 与 signature，并续接原 Tester thread 做只读归因；归属可为
+integration 后、proof 与完整 suite 前执行；最终 machine gate 默认只复用同 candidate、同 dependency
+的真实结果。已冻结 scope 且输入等价、接受记录完整时允许跨 HEAD 复用，原执行 HEAD 保持不变。失败保存结构化 command result 与 signature，并续接原 Tester thread 做只读归因；归属可为
 Builder、Tester、计划、当前项目、builder-loop 或外部平台，三次同 signature 才进入架构复核。
 
 Native Driver 使用 App Server 稳定 stdio thread/turn 接口并在启动前检查当前协议 schema；不启用
@@ -207,9 +207,9 @@ turn。激活前的已知 transport failure 复用同一 dispatch 的有界 retr
 副作用时保留 active dispatch、写入 `activation_state=unknown` 并停止；只有用户显式提供
 `native-driver resume --reason` 才能在不重置 attempt/generation 的前提下重新置为 `pending`。
 旧 ledger 缺少 activation 字段时继续按 legacy recovery 读取。
-App Server turn 使用 host-level `danger-full-access`，因为部分本地环境无法创建 bwrap namespace；这不
-扩大产品信任声明，角色只读/写范围仍由独立 worktree、Git manifest、ownership 和 Core mutation gate
-机械执行，与既有“不提供 filesystem ACL”的边界一致。
+Builder 与 Tester 的 App Server turn 保持既有 host-level `danger-full-access`，其写入范围继续由独立
+worktree、Git manifest、ownership 和 Core mutation gate 约束。Reviewer 的线程创建、续接、替换与 turn
+均使用真实只读沙箱；宿主不能提供该权限时阻塞，不能降级到全权限。候选指纹是结果接收前的额外完整性检查。
 
 现有 Full Driver Skill 保留为协议不兼容时的 run 前回退和 parity oracle。ledger 一旦冻结
 `driver_runtime.kind=native`，Skill 不得接管；旧 ledger 缺少该字段时继续由原承载恢复，Native Driver
@@ -984,3 +984,13 @@ checkpoint 与 integration commit 继续跳过 hooks 和 GPG signing。
   adapter 版本必须由 start 冻结，剩余隐含知识才交给原生 memory skill。
 
 runtime 不自动 push、开 PR、解决冲突、adopt 未知 orphan 或恢复丢失的 subagent context。
+
+## 输入身份、审查隔离与显式等待
+
+Reviewer 在线程创建、续接和替换时均采用只读权限。Native 启动前验证宿主能读取探针文件并拒绝写入；候选指纹同时覆盖 HEAD、索引、工作区状态、内容和模式，在审查结果接收与证据落库前重新比较。权限不可用或指纹不一致不能形成审查通过证据。
+
+Tester 的反例文件由当前 dispatch 收录为不可变内容。完成记录绑定提交结果与规范化制品，恢复消费该制品，不重新读取原路径。测试删除是带基线来源的显式操作，参与发布、重组与冲突判断；缺失文件不自动成为删除授权。
+
+machine/proof 的跨候选复用要求冻结的相关输入、执行身份及其他依赖保持一致。原执行记录保持原 HEAD，接受新候选的等价依据写入 ledger 事件；角色摘要从这些事实派生。Reviewer 和文档审查仍绑定完整候选。逐测试辨别力只展示实际结构化观察，不将缺失记录或普通异常解释为有效反例。
+
+用户请求 hold 后，Driver 在安全事务边界停止推进；环境恢复与 lease 释放优先。完成后等待可提前请求，避免自动 finalize 抢先发生。release 绑定原暂停身份与当前 Mission，随后重新判断门禁；显式等待不构成失败或交付完成。

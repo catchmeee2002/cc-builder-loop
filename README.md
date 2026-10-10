@@ -96,8 +96,8 @@ dispatch renewal 或资格漂移后，同一 ledger 派生为 effective full pro
   内联 shell control flow 和已知 runner 控制文件弱化会在执行前被拒绝。
 - Python Tester 文件的 skip/xfail/flaky/rerun 检测按真实 pytest、unittest、subprocess import binding
   解析 module/from-import alias 与 module-level `pytestmark`；局部定义、参数、赋值和容器造成的
-  shadowing 不按同名字符串误判。非 Python 文件继续使用文本门禁，现有常量断言、吞异常和删除测试
-  检测保持不变。
+  shadowing 不按同名字符串误判。非 Python 文件继续使用文本门禁，常量断言和吞异常检测保持不变。
+  legacy 保留删除测试门禁；v4 允许有基线来源的显式删除，并由独立 proof 与 Reviewer 检查行为覆盖。
 - 机器验证在 candidate 的临时干净 worktree 中执行，不允许验证命令改写候选现场。连续两次验证
   同一 candidate 失败会进入 no-progress，同一 failure fingerprint 跨三个 candidate 重现会要求
   架构复核；显式 resume 不重置迭代上限。
@@ -262,3 +262,13 @@ bash scripts/verify-all.sh
 和 sandbox live smoke；发布级实机验收条件见 [docs/known-issues.md](docs/known-issues.md)。
 
 设计原则见 [docs/design-philosophy.md](docs/design-philosophy.md)，运行架构见 [docs/architecture.md](docs/architecture.md)，环境限制见 [docs/known-issues.md](docs/known-issues.md)。
+
+### 暂停与恢复自动推进
+
+需要检查现场时，使用 `native-driver hold --repo <repo> --run <run> --session-id <owner> --reason <reason>`。
+`--when ready` 可提前要求门禁完成后等待；默认在下一个安全事务边界暂停。
+返回 `HELD` 后，使用 `native-driver release --repo <repo> --run <run> --session-id <owner> --hold-id <id> --reason <reason>` 解除暂停，再续接原 Driver。
+释放不会跳过目标漂移检查和验收，也不取消正在恢复的事务。
+
+Reviewer 需要可用的只读沙箱。启动探针无法证明读取成功且写入被拒时阻塞，不能切换全权限规避。
+仓库 fixtures 默认串行；可用 `CODEX_FIXTURE_JOBS=2 bash scripts/verify-all.sh` 启用受控并行，测试集合与串行入口保持一致。

@@ -4,23 +4,32 @@
     {
       "id": "baseline",
       "kind": "baseline",
-      "roles": ["builder", "planner", "reviewer", "tester"],
+      "roles": [
+        "builder",
+        "planner",
+        "reviewer",
+        "tester"
+      ],
       "instruction_source": null
     },
     {
       "id": "builder-current",
       "kind": "instruction",
-      "roles": ["builder"],
+      "roles": [
+        "builder"
+      ],
       "instruction_source": {
         "path": "skills/builder/SKILL.md",
-        "sha256": "7d9efb50c4df61f43e960eaed151de39ed6c0f6432d8c304e6fe8b81c6009c39",
+        "sha256": "45d5a9af43631e1078fb44e30e57e997b7bf15faca34cff2bad7c0fd8444319b",
         "revision": "WORKTREE"
       }
     },
     {
       "id": "builder-agent-current",
       "kind": "instruction",
-      "roles": ["builder"],
+      "roles": [
+        "builder"
+      ],
       "instruction_source": {
         "path": "agents/builder.toml",
         "sha256": "73897a73a949bc1d239f1a003ea5e9dcaf612e227e6c2c5577717a21a08deeba",
@@ -30,40 +39,48 @@
     {
       "id": "planner-current",
       "kind": "instruction",
-      "roles": ["planner"],
+      "roles": [
+        "planner"
+      ],
       "instruction_source": {
         "path": "skills/builder-loop-planner/SKILL.md",
-        "sha256": "a7a55c88143473db5508a47a2cd8ec23724b0b2299b36af6245d2d2bcb527e0d",
+        "sha256": "7ab96b88c532c59649139f50675c441f8e4c6be119b57a344b87b3b18ac68ccc",
         "revision": "WORKTREE"
       }
     },
     {
       "id": "planner-native-current",
       "kind": "instruction",
-      "roles": ["planner"],
+      "roles": [
+        "planner"
+      ],
       "instruction_source": {
         "path": "skills/planner/SKILL.md",
-        "sha256": "e4b5d7bac71e15ea13ff4dc1f080c532f24c26754946b2e8e1194256da9acd32",
+        "sha256": "16715fdedd665cc640a4366c830a733715e712e62befb9fe0755a8bfd03e8be1",
         "revision": "WORKTREE"
       }
     },
     {
       "id": "reviewer-current",
       "kind": "instruction",
-      "roles": ["reviewer"],
+      "roles": [
+        "reviewer"
+      ],
       "instruction_source": {
         "path": "agents/reviewer.toml",
-        "sha256": "d25fee358e38ccd61271193640082e26ef5562e2a55ab2ff068b654188824973",
+        "sha256": "4b60e4b93bcf29ba9c9e1de560e4b6c0104464fb2e3eb1c547f86bb27598d9df",
         "revision": "WORKTREE"
       }
     },
     {
       "id": "tester-current",
       "kind": "instruction",
-      "roles": ["tester"],
+      "roles": [
+        "tester"
+      ],
       "instruction_source": {
         "path": "agents/tester.toml",
-        "sha256": "c4c45e7050c6b2104ae2ba1832f0de576f46214f3c37eab73e130692ccf5ea42",
+        "sha256": "1866e2121455117a08d76257a31aa3541b5c363d2a834e2211122de6618218e0",
         "revision": "WORKTREE"
       }
     }

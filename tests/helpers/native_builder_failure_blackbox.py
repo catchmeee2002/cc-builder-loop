@@ -123,6 +123,9 @@ def fake_codex(path: Path, trace: Path) -> Path:
         f"""#!/usr/bin/env python3
 import json, os, sys
 trace = {str(trace)!r}
+if sys.argv[1:2] == ['sandbox']:
+    print('READ_OK_WRITE_DENIED')
+    raise SystemExit(0)
 if sys.argv[1:] == ['--version']:
     print('codex-cli native-builder-failure-blackbox')
     raise SystemExit(0)

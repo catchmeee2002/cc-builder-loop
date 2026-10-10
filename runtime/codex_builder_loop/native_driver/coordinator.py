@@ -14,7 +14,7 @@ from ..assurance_v4.driver_contract import (
     AgentActionCapability,
 )
 from ..assurance_v4.core import canonical_context_projection
-from ..assurance_v4.models import ContractError, digest, validate_agent_result
+from ..assurance_v4.models import ContractError, digest, proof_semantic_digest, validate_agent_result
 from .app_server import (
     LONG_TESTER_ACTIONS,
     AppServerError,
@@ -232,6 +232,8 @@ class NativeCoordinator:
                     code="NATIVE_DRIVER_PORT_INCOMPATIBLE",
                 )
             status = action.get("status")
+            if status == "HELD":
+                return {"status": "HELD", "run_id": self.run_id, "decision": action}
             if status == "NEEDS_USER":
                 return {"status": "NEEDS_USER", "run_id": self.run_id, "decision": action}
             if status == "STOP":
@@ -468,11 +470,11 @@ class NativeCoordinator:
             )
         new_agent = replacement.get("new_agent")
         if not isinstance(new_agent, dict):
-            instructions, _sandbox = self._role_config("tester")
+            instructions, sandbox = self._role_config("tester")
             thread_id = self.transport.start_thread(
                 cwd=str(replacement["worktree"]),
                 developer_instructions=instructions,
-                sandbox="danger-full-access",
+                sandbox=sandbox if sandbox == "read-only" else "danger-full-access",
             )
             new_agent = {
                 "agent_id": f"codex-app-server:{thread_id}",
@@ -525,11 +527,11 @@ class NativeCoordinator:
         action_id = str(replacement["action_id"])
         new_agent = replacement.get("new_agent")
         if not isinstance(new_agent, dict):
-            instructions, _sandbox = self._role_config("reviewer")
+            instructions, sandbox = self._role_config("reviewer")
             thread_id = self.transport.start_thread(
                 cwd=str(context["candidate_worktree"]),
                 developer_instructions=instructions,
-                sandbox="danger-full-access",
+                sandbox=sandbox if sandbox == "read-only" else "danger-full-access",
             )
             new_agent = {
                 "agent_id": f"codex-app-server:{thread_id}",
@@ -614,11 +616,11 @@ class NativeCoordinator:
         renewed = self._context().get("tester_replacement_intent")
         if not isinstance(renewed, dict) or renewed.get("new_agent") is not None:
             return True
-        instructions, _sandbox = self._role_config("tester")
+        instructions, sandbox = self._role_config("tester")
         thread_id = self.transport.start_thread(
             cwd=str(source["worktree"]),
             developer_instructions=instructions,
-            sandbox="danger-full-access",
+            sandbox=sandbox if sandbox == "read-only" else "danger-full-access",
         )
         self.core.call(
             "bind-tester-replacement",
@@ -893,12 +895,12 @@ class NativeCoordinator:
             thread_id = str(existing_agent["thread_id"])
             agent_id = str(existing_agent["agent_id"])
         else:
-            instructions, _sandbox = self._role_config(role)
+            instructions, sandbox = self._role_config(role)
             cwd = context["candidate_worktree"] if role == "builder" else context["repo_root"]
             thread_id = self.transport.start_thread(
                 cwd=cwd,
                 developer_instructions=instructions,
-                sandbox="danger-full-access",
+                sandbox=sandbox if sandbox == "read-only" else "danger-full-access",
             )
             agent_id = f"codex-app-server:{thread_id}"
             self._active_threads.add(thread_id)
@@ -1042,7 +1044,7 @@ class NativeCoordinator:
                     thread_id=thread_id,
                     cwd=self._turn_cwd(current, role, context),
                     developer_instructions=instructions,
-                    sandbox="danger-full-access",
+                    sandbox=sandbox if sandbox == "read-only" else "danger-full-access",
                 )
         if pending.get("state") == "exhausted":
             # An exhausted source only needs read/compaction/replacement
@@ -1860,11 +1862,11 @@ class NativeCoordinator:
                 code="NATIVE_REHYDRATION_SPAWN_CLAIM_MISSING",
                 status="NEEDS_USER",
             )
-        instructions, _sandbox = self._role_config(role)
+        instructions, sandbox = self._role_config(role)
         thread_id = self.transport.start_thread(
             cwd=self._turn_cwd(action, role, refreshed),
             developer_instructions=instructions,
-            sandbox="danger-full-access",
+            sandbox=sandbox if sandbox == "read-only" else "danger-full-access",
         )
         agent_id = f"codex-app-server:{thread_id}"
         self.core.call(
@@ -2086,11 +2088,11 @@ class NativeCoordinator:
                 code="NATIVE_CONTEXT_ROTATION_SPAWN_CLAIM_MISSING",
                 status="NEEDS_USER",
             )
-        instructions, _sandbox = self._role_config(role)
+        instructions, sandbox = self._role_config(role)
         thread_id = self.transport.start_thread(
             cwd=self._turn_cwd(action, role, refreshed),
             developer_instructions=instructions,
-            sandbox="danger-full-access",
+            sandbox=sandbox if sandbox == "read-only" else "danger-full-access",
         )
         agent_id = f"codex-app-server:{thread_id}"
         self.core.call(
@@ -2127,12 +2129,12 @@ class NativeCoordinator:
     ) -> None:
         if thread_id in self._active_threads:
             return
-        instructions, _sandbox = self._role_config(role)
+        instructions, sandbox = self._role_config(role)
         self.transport.resume_thread(
             thread_id=thread_id,
             cwd=self._turn_cwd(action, role, context),
             developer_instructions=instructions,
-            sandbox="danger-full-access",
+            sandbox=sandbox if sandbox == "read-only" else "danger-full-access",
         )
         self._active_threads.add(thread_id)
 
@@ -2187,8 +2189,11 @@ class NativeCoordinator:
             "doc_reference_scan_state": context.get("doc_reference_scan_state"),
             "problems": context.get("problems"),
             "problem_report_schema": self.problem_schema,
+            "role_observations": context.get("role_observations"),
             "result_field_contract": self._result_field_contract(str(action["action"])),
         }
+        if action["action"] in {"tester_proof", "tester_proof_diagnose"} and context.get("artifact_root"):
+            payload["proof_patch_directory"] = str(Path(context["artifact_root"]) / ("patches-" + str(action["action_id"])))
         if (
             isinstance(context.get("progress_policy"), dict)
             and context["progress_policy"].get("mode") == "bounded_rehydration"
@@ -2463,7 +2468,10 @@ class NativeCoordinator:
                     "proof diagnosis has no persisted source spec",
                     code="NATIVE_PROOF_DIAGNOSIS_FAILURE_MISSING",
                 )
-            if digest(spec) == prior_digest:
+            prior_spec = proof_failure.get("spec") if isinstance(proof_failure, dict) else None
+            unchanged = (proof_semantic_digest(spec) == proof_semantic_digest(prior_spec)
+                         if isinstance(prior_spec, dict) else digest(spec) == prior_digest)
+            if unchanged:
                 raise NativeDriverError(
                     "proof diagnosis replacement spec did not change",
                     code="NATIVE_PROOF_DIAGNOSIS_NO_PROGRESS",
@@ -2588,7 +2596,7 @@ class NativeCoordinator:
     def _sandbox_policy(
         self, action: dict[str, Any], role: str, context: dict[str, Any]
     ) -> dict[str, Any]:
-        return {"type": "dangerFullAccess"}
+        return {"type": "readOnly"} if role == "reviewer" else {"type": "dangerFullAccess"}
 
     def _start_reviewer_thread_compaction(
         self, action_id: str
@@ -3065,7 +3073,7 @@ class NativeCoordinator:
         result: dict[str, Any],
     ) -> bool:
         try:
-            self.core.call(
+            completed = self.core.call(
                 "complete-dispatch",
                 "--repo",
                 str(self.repo),
@@ -3087,6 +3095,13 @@ class NativeCoordinator:
                 failure_details=self._core_error_details(exc),
             )
             return False
+        pending = completed.get("dispatch_intent")
+        if isinstance(pending, dict) and pending.get("state") == "completed":
+            persisted = json.loads(Path(pending["result_path"]).read_text())
+            if digest(persisted) != pending["result_digest"]:
+                raise NativeDriverError("Dispatch artifact changed", code="DISPATCH_RESULT_MISMATCH")
+            result.clear()
+            result.update(persisted)
         return True
 
     @staticmethod

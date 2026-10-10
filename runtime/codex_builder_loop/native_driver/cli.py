@@ -31,6 +31,16 @@ def parser() -> argparse.ArgumentParser:
     status = commands.add_parser("status")
     status.add_argument("--repo", default=".")
     status.add_argument("--run", required=True)
+    for name in ("hold", "release"):
+        item = commands.add_parser(name)
+        item.add_argument("--repo", default=".")
+        item.add_argument("--run", required=True)
+        item.add_argument("--session-id", required=True)
+        item.add_argument("--reason", required=True)
+        if name == "hold":
+            item.add_argument("--when", choices=["now", "ready"], default="now")
+        else:
+            item.add_argument("--hold-id", required=True)
     doctor = commands.add_parser("doctor")
     doctor.add_argument("--repo", default=".")
     doctor.add_argument("--run", required=True)
@@ -617,7 +627,7 @@ def _root_builder_result(
             )
     result_status = result.get("status")
     return result, (
-        0 if result_status == "FINALIZED" else 2 if result_status == "FAILED" else 1
+        0 if result_status in {"FINALIZED", "HELD"} else 2 if result_status == "FAILED" else 1
     )
 
 
@@ -633,6 +643,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     root_resume_session_id: str | None = None
     root_start_state = {"started": False}
     try:
+        if args.command in {"hold", "release"}:
+            extra = ["--when", args.when] if args.command == "hold" else ["--hold-id", args.hold_id]
+            return emit(core.call(args.command, "--repo", str(repo), "--run", args.run, "--session-id", args.session_id, "--reason", args.reason, *extra), 0)
         if args.command in {"status", "doctor"}:
             context = core.call(
                 "driver-context", "--repo", str(repo), "--run", args.run
@@ -885,7 +898,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             result_status = result.get("status")
             result_payload = result
             result_returncode = (
-                0 if result_status == "FINALIZED" else 2 if result_status == "FAILED" else 1
+                0 if result_status in {"FINALIZED", "HELD"} else 2 if result_status == "FAILED" else 1
             )
         if result_payload is not None and result_returncode is not None:
             try:

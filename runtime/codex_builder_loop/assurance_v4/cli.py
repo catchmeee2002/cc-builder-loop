@@ -49,6 +49,17 @@ def parser() -> argparse.ArgumentParser:
             help="required to match the frozen owner for runs that bind a driver runtime",
         )
 
+    for name in ("hold", "release"):
+        hold_command = commands.add_parser(name)
+        hold_command.add_argument("--repo", default=".")
+        hold_command.add_argument("--run", required=True)
+        hold_command.add_argument("--session-id", required=True)
+        hold_command.add_argument("--reason", required=True)
+        if name == "hold":
+            hold_command.add_argument("--when", choices=["now", "ready"], default="now")
+        else:
+            hold_command.add_argument("--hold-id", required=True)
+
     validate = commands.add_parser("validate")
     validate.add_argument("--repo", default=".")
     validate.add_argument("--contract", required=True)
@@ -890,6 +901,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 _json(args.contract),
                 driver_runtime=runtime,
             )
+        elif args.command in {"hold", "release"}:
+            payload = core.hold_run(args.repo, args.run, session_id=args.session_id, reason=args.reason,
+                                    when=getattr(args, "when", "now"), release_id=getattr(args, "hold_id", None))
         elif args.command == "status":
             payload = core.status(args.repo, args.run)
         elif args.command == "record-driver-failure":

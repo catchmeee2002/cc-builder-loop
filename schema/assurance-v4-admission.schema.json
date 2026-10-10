@@ -67,7 +67,8 @@
             "execution.deployment.build_command",
             "execution.deployment.deploy_command",
             "execution.deployment.probe_command",
-            "execution.deployment.restore_command"
+            "execution.deployment.restore_command",
+            "assurance.proof_runners"
           ]
         },
         "command_id": {"type": "string", "minLength": 1},
@@ -87,7 +88,8 @@
             "prepare_deployment",
             "deploy",
             "probe",
-            "restore"
+            "restore",
+            "prove_tests"
           ]
         }
       }

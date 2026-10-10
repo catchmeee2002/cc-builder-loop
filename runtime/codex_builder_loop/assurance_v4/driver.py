@@ -23,6 +23,7 @@ from .core import (
     ensure_run_id,
     evidence_state,
     readiness,
+    hold_ready,
     runtime_compatibility,
     work_unit_progress,
 )
@@ -1673,6 +1674,11 @@ def next_action(
                 "deployment_failed_after_restore",
                 deployment=deployment_transaction,
             )
+    if isinstance(ledger.get("hold"), Mapping) and ledger["hold"].get("when") == "now":
+        if isinstance(deployment_transaction, dict) and deployment_transaction.get("state") == "deployed":
+            return decision("CONTINUE", "restore_deployment", "release_environment_before_hold")
+        if hold_ready(ledger):
+            return decision("HELD", "none", "user_hold", hold=ledger["hold"])
     replacement_problem_key = (
         replacement.get("problem_key")
         if isinstance(replacement, Mapping)
@@ -2119,4 +2125,6 @@ def next_action(
         and lease.get("state") == "held"
     ):
         return decision("CONTINUE", "restore_deployment", "release_environment_before_finalize")
+    if ledger.get("hold") is not None:
+        return decision("HELD", "none", "user_hold", hold=ledger["hold"])
     return decision("READY", "finalize", "all_gates_pass")

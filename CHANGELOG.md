@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Added read-only Reviewer enforcement and candidate integrity checks, dispatch-bound proof patch files,
+  per-test discrimination observations, and explicit Tester deletion/recomposition support (#322).
+- Added frozen proof runner preflight, input-equivalent machine/proof evidence reuse with original execution
+  provenance, canonical role observations, and explicit hold/release at safe transaction boundaries (#322).
+- Tightened Planner unanswered-decision handling and added controlled fixture parallelism with exact test
+  inventory verification. Prepared runtime version 0.3.0; 0.2 active runs are not hot-migrated (#322).
+
 - Native Driver now gives Tester author/fix/recomposition turns a 7200-second total deadline while preserving
   3600 seconds for Builder, Reviewer, proof/diagnosis, and blackbox actions. Active legacy Tester authoring
   dispatches migrate through one digest-bound ledger transaction without resetting continuity facts, and

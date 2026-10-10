@@ -200,7 +200,57 @@
     "final_head": {"oneOf": [{"type": "string", "pattern": "^[0-9a-f]{40}$"}, {"type": "null"}]},
     "created_at": {"type": "string", "minLength": 1},
     "updated_at": {"type": "string", "minLength": 1},
-    "events": {"type": "array", "items": {"type": "object"}}
+    "events": {"type": "array", "items": {"type": "object"}},
+    "reviewer_observation": {
+      "type": "object",
+      "required": [
+        "head",
+        "manifest_digest",
+        "index",
+        "status",
+        "entries",
+        "dirty_paths"
+      ]
+    },
+    "hold": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "session_id",
+        "reason",
+        "when",
+        "mission_digest",
+        "requested_at"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        },
+        "when": {
+          "enum": [
+            "now",
+            "ready"
+          ]
+        },
+        "mission_digest": {
+          "type": "string"
+        },
+        "requested_at": {
+          "type": "string"
+        }
+      }
+    }
   },
   "$defs": {
     "commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
@@ -642,7 +692,10 @@
         "result_path": {"type": "string", "minLength": 1},
         "result_digest": {"$ref": "#/$defs/sha256"},
         "created_at": {"type": "string", "minLength": 1},
-        "completed_at": {"type": "string", "minLength": 1}
+        "completed_at": {"type": "string", "minLength": 1},
+        "submitted_result_digest": {
+          "$ref": "#/$defs/sha256"
+        }
       }
     },
     "dispatchRehydrationIntent": {
@@ -1117,8 +1170,70 @@
       "required": ["path", "blob"],
       "properties": {
         "path": {"type": "string", "minLength": 1},
-        "blob": {"type": "string", "pattern": "^[0-9a-f]{40}$"}
-      }
+        "blob": {
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{40}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "operation": {
+          "const": "delete"
+        },
+        "base_blob": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "base_mode": {
+          "enum": [
+            "100644",
+            "100755"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "blob": {
+                "type": "null"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "operation",
+              "base_blob",
+              "base_mode"
+            ]
+          },
+          "else": {
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "operation"
+                  ]
+                },
+                {
+                  "required": [
+                    "base_blob"
+                  ]
+                },
+                {
+                  "required": [
+                    "base_mode"
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      ]
     },
     "publication": {
       "type": "object",
