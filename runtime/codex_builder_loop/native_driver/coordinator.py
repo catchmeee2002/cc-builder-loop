@@ -13,7 +13,7 @@ from ..assurance_v4.driver_contract import (
     AGENT_ACTION_CAPABILITIES,
     AgentActionCapability,
 )
-from ..assurance_v4.core import canonical_context_projection
+from ..assurance_v4.core import canonical_context_projection, _resolve_proof_group, AssuranceError
 from ..assurance_v4.models import ContractError, digest, proof_semantic_digest, validate_agent_result
 from .app_server import (
     LONG_TESTER_ACTIONS,
@@ -1265,6 +1265,7 @@ class NativeCoordinator:
                 self._validate_proof_diagnosis(
                     result,
                     proof_failure=source_failure,
+                    proof_runners=context["facets"].get("assurance", {}).get("proof_runners", []),
                 )
         if action["action"] == "tester_machine_diagnose":
             self._validate_machine_diagnosis(result)
@@ -1532,7 +1533,12 @@ class NativeCoordinator:
             if isinstance(item.get("path"), str) and item["path"].endswith(".py")
         ]
         for group in value.get("groups", []):
-            argv = group.get("argv", [])
+            try:
+                resolved, _runner = _resolve_proof_group(group, facets.get("assurance", {}).get("proof_runners", []))
+            except AssuranceError:
+                # Core records binding failures and routes them back to Tester diagnosis.
+                continue
+            argv = resolved.get("argv", [])
             framework = "unittest" if "unittest" in argv else "pytest" if "pytest" in argv else ""
             if not framework:
                 continue
@@ -2238,7 +2244,9 @@ class NativeCoordinator:
             payload["proof_test_id_hints"] = self._proof_test_id_hints(context)
             if action_name == "tester_proof":
                 payload["proof_execution_rule"] = (
-                    "Choose argv that executes exactly the declared canonical test_ids. Do not reuse "
+                    "When frozen assurance.proof_runners are available, prefer schema_version=2 and "
+                    "runner_id instead of argv; Core appends canonical test_ids to the frozen command. "
+                    "Otherwise choose argv that executes exactly the declared canonical test_ids. Do not reuse "
                     "unittest discover -s with ids that include the omitted start-directory prefix."
                 )
         if action_name == "tester_proof_diagnose":
@@ -2443,7 +2451,16 @@ class NativeCoordinator:
         result: dict[str, Any],
         *,
         proof_failure: Any = None,
+        proof_runners: list[dict[str, Any]] | tuple = (),
     ) -> None:
+        def semantic_digest(value):
+            resolved = copy.deepcopy(value)
+            try:
+                resolved["groups"] = [_resolve_proof_group(group, proof_runners)[0] for group in value.get("groups", [])]
+            except AssuranceError:
+                return proof_semantic_digest(value)
+            return proof_semantic_digest(resolved)
+
         spec = result.get("proof_spec")
         report = result.get("problem_report")
         problems = report.get("problems") if isinstance(report, dict) else None
@@ -2469,7 +2486,7 @@ class NativeCoordinator:
                     code="NATIVE_PROOF_DIAGNOSIS_FAILURE_MISSING",
                 )
             prior_spec = proof_failure.get("spec") if isinstance(proof_failure, dict) else None
-            unchanged = (proof_semantic_digest(spec) == proof_semantic_digest(prior_spec)
+            unchanged = (semantic_digest(spec) == semantic_digest(prior_spec)
                          if isinstance(prior_spec, dict) else digest(spec) == prior_digest)
             if unchanged:
                 raise NativeDriverError(

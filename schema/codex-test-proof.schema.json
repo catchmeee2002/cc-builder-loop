@@ -78,6 +78,23 @@
           "patch": "diff --git a/src/widget.py b/src/widget.py\n--- a/src/widget.py\n+++ b/src/widget.py\n@@ -1 +1 @@\n-return value\n+return None\n"
         }
       ]
+    },
+    {
+      "schema_version": 2,
+      "groups": [
+        {
+          "behavior_ids": [
+            "reject-empty-widget"
+          ],
+          "method": "baseline-red",
+          "test_ids": [
+            "tests.test_widget.WidgetTests.test_rejects_empty"
+          ],
+          "timeout_seconds": 120,
+          "claimed_failure_kind": "assertion-failure",
+          "runner_id": "project-tests"
+        }
+      ]
     }
   ],
   "$defs": {
@@ -144,7 +161,6 @@
       "required": [
         "behavior_ids",
         "method",
-        "argv",
         "test_ids",
         "timeout_seconds",
         "claimed_failure_kind"
@@ -167,8 +183,39 @@
         },
         "claimed_failure_kind": {
           "const": "assertion-failure"
+        },
+        "runner_id": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
         }
-      }
+      },
+      "allOf": [
+        {
+          "oneOf": [
+            {
+              "required": [
+                "argv"
+              ],
+              "not": {
+                "required": [
+                  "runner_id"
+                ]
+              }
+            },
+            {
+              "required": [
+                "runner_id"
+              ],
+              "not": {
+                "required": [
+                  "argv"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     },
     "mutationInput": {
       "type": "object",
@@ -176,7 +223,6 @@
       "required": [
         "behavior_ids",
         "method",
-        "argv",
         "test_ids",
         "timeout_seconds"
       ],
@@ -227,6 +273,11 @@
               "maximum": 4194304
             }
           }
+        },
+        "runner_id": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
         }
       },
       "oneOf": [
@@ -250,6 +301,32 @@
             ]
           }
         }
+      ],
+      "allOf": [
+        {
+          "oneOf": [
+            {
+              "required": [
+                "argv"
+              ],
+              "not": {
+                "required": [
+                  "runner_id"
+                ]
+              }
+            },
+            {
+              "required": [
+                "runner_id"
+              ],
+              "not": {
+                "required": [
+                  "argv"
+                ]
+              }
+            }
+          ]
+        }
       ]
     },
     "reviewedBoundariesInput": {
@@ -258,7 +335,6 @@
       "required": [
         "behavior_ids",
         "method",
-        "argv",
         "test_ids",
         "timeout_seconds",
         "reason",
@@ -286,8 +362,39 @@
         },
         "reviewed_boundaries": {
           "$ref": "#/$defs/reviewedBoundaries"
+        },
+        "runner_id": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
         }
-      }
+      },
+      "allOf": [
+        {
+          "oneOf": [
+            {
+              "required": [
+                "argv"
+              ],
+              "not": {
+                "required": [
+                  "runner_id"
+                ]
+              }
+            },
+            {
+              "required": [
+                "runner_id"
+              ],
+              "not": {
+                "required": [
+                  "argv"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     },
     "repositoryPaths": {
       "type": "array",
@@ -1152,7 +1259,10 @@
                 "required": [
                   "patch_file"
                 ]
-              }
+              },
+              "required": [
+                "argv"
+              ]
             }
           }
         }

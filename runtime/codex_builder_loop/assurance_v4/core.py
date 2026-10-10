@@ -127,6 +127,7 @@ PROOF_TESTER_DIAGNOSIS_CODES = frozenset(
         "TEST_PROOF_MUTATION_AUTHORITY_VIOLATION",
         "TEST_PROOF_MUTATION_INVALID",
         "TEST_PROOF_TEST_SOURCE_UNBOUND",
+        "TEST_PROOF_RUNNER_UNBOUND",
         "TEST_PROOF_UV_COMMAND_INVALID",
     }
 )
@@ -1590,6 +1591,24 @@ def _prospective_admission_execution(
         ),
     }
     return execution, candidate
+
+
+def _resolve_proof_group(group: Mapping[str, Any], runners: Sequence[Mapping[str, Any]]) -> tuple[dict[str, Any], Mapping[str, Any] | None]:
+    """Derive the command from its frozen source without rewriting submitted proof facts."""
+    resolved = copy.deepcopy(dict(group))
+    if "runner_id" in group:
+        matching = [runner for runner in runners if runner["id"] == group["runner_id"]]
+    elif runners:
+        matching = [runner for runner in runners if group["argv"][:len(runner["argv"])] == runner["argv"]]
+    else:
+        return resolved, None
+    if len(matching) != 1:
+        raise AssuranceError("Proof command must bind one frozen runner", code="TEST_PROOF_RUNNER_UNBOUND", status="FAIL")
+    runner = matching[0]
+    if "runner_id" in resolved:
+        resolved.pop("runner_id")
+        resolved["argv"] = [*runner["argv"], *group["test_ids"]]
+    return resolved, runner
 
 
 def _probe_proof_runner(worktree: Path, command: Mapping[str, Any], executable: str) -> bool:
@@ -8362,6 +8381,7 @@ def evidence_state(ledger: Mapping[str, Any], kind: str) -> str:
             expected_candidate_head=observed_candidate,
             expected_producer=expected_producer,
             expected_source_head=expected_source_head,
+            proof_runners=ledger["facets"]["assurance"].get("proof_runners", []),
             tester_paths=tester_paths,
             repo=Path(ledger["repo_root"]),
             builder_patterns=builder_patterns,
@@ -11444,6 +11464,7 @@ def _proof_group_replayable(
 def _proof_record_replayable(
     record: Any,
     *,
+    proof_runners: Sequence[Mapping[str, Any]] = (),
     expected_behaviors: Sequence[str] | None = None,
     expected_candidate_head: Any = None,
     expected_producer: Any = None,
@@ -11523,6 +11544,10 @@ def _proof_record_replayable(
         )
         if source_scope is None or candidate_scope != source_scope:
             return False
+    try:
+        execution_groups = [_resolve_proof_group(group, proof_runners)[0] for group in groups]
+    except AssuranceError:
+        return False
     return all(
         _proof_group_replayable(
             group,
@@ -11534,7 +11559,7 @@ def _proof_record_replayable(
             builder_patterns=builder_patterns,
             tester_patterns=tester_patterns,
         )
-        for group, result in zip(groups, results)
+        for group, result in zip(execution_groups, results)
     )
 
 
@@ -15455,8 +15480,11 @@ def prove_tests(
             )
         from ..core import proof_test_source_path
 
+        runners = ledger["facets"]["assurance"].get("proof_runners", [])
+        resolved_groups = capture(lambda: [_resolve_proof_group(group, runners) for group in spec["groups"]])
+        execution_groups = [group for group, _runner in resolved_groups]
         unbound_tests: list[dict[str, str]] = []
-        for group in spec["groups"]:
+        for group in execution_groups:
             framework = capture(lambda: _proof_framework(list(group["argv"])))
             if group["method"] == "reviewed-boundaries":
                 boundary_ids = _proof_reviewed_boundary_ids(group)
@@ -15490,19 +15518,17 @@ def prove_tests(
                     details={"tests": unbound_tests},
                 )
             )
-        runners = ledger["facets"]["assurance"].get("proof_runners", [])
-        if runners:
-            for group in spec["groups"]:
-                matching = [runner for runner in runners if group["argv"][:len(runner["argv"])] == runner["argv"]]
-                if len(matching) != 1:
-                    fail(AssuranceError("Proof command must match one frozen runner", code="TEST_PROOF_RUNNER_UNBOUND", status="FAIL"))
-                runner = matching[0]
-                executable, _identity = _resolve_machine_executable(repo, Path(ledger["candidate_worktree"]), candidate, runner["argv"][0])
-                if executable is None or not _probe_proof_runner(Path(ledger["candidate_worktree"]), runner, executable):
-                    fail(AssuranceError("Proof runner startup failed", code="TEST_PROOF_RUNNER_STARTUP_FAILED", status="FAIL"))
+        checked_runners: set[str] = set()
+        for _group, runner in resolved_groups:
+            if runner is None or runner["id"] in checked_runners:
+                continue
+            executable, _identity = capture(lambda: _resolve_machine_executable(repo, Path(ledger["candidate_worktree"]), candidate, runner["argv"][0]))
+            if executable is None or not _probe_proof_runner(Path(ledger["candidate_worktree"]), runner, executable):
+                fail(AssuranceError("Proof runner startup failed", code="TEST_PROOF_RUNNER_STARTUP_FAILED", status="FAIL"))
+            checked_runners.add(runner["id"])
         launcher_identities: list[dict[str, Any] | None] = []
         candidate_worktree_path = Path(ledger["candidate_worktree"])
-        for group in spec["groups"]:
+        for group in execution_groups:
             requested = list(group["argv"])
             capture(lambda: _proof_framework(requested))
             if requested and Path(requested[0]).name.lower() == "uv":
@@ -15536,7 +15562,7 @@ def prove_tests(
         candidate_results: dict[int, dict[str, Any]] = {}
         candidate_failures: list[dict[str, Any]] = []
         try:
-            for index, group in enumerate(spec["groups"]):
+            for index, group in enumerate(execution_groups):
                 candidate_worktree = proof_root / f"candidate-{index}"
                 added = git(repo, "worktree", "add", "--detach", str(candidate_worktree), candidate, check=False)
                 if added.returncode != 0:
@@ -15583,7 +15609,7 @@ def prove_tests(
                     )
                 )
 
-            for index, group in enumerate(spec["groups"]):
+            for index, group in enumerate(execution_groups):
                 candidate_result = candidate_results[index]
                 method = group["method"]
                 counterexample: dict[str, Any] | None = None

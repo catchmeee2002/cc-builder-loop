@@ -271,6 +271,9 @@ def validate_contract(value: Any) -> dict[str, Any]:
             if (str(PurePosixPath(path)) != path or "\\" in path or path.startswith((".git/", ".codex/", ".agents/"))
                 or any(fnmatch.fnmatchcase(path, pattern) for pattern in forbidden)):
                 raise ContractError("Evidence-neutral paths must be canonical and outside protected inputs", code="EVIDENCE_SCOPE_PROTECTED_INPUT", details={"path": path, "gate": gate})
+    runner_ids = [runner["id"] for runner in contract["assurance"].get("proof_runners", [])]
+    if len(set(runner_ids)) != len(runner_ids):
+        raise ContractError("duplicate assurance.proof_runners ids", code="CONTRACT_COMMAND_ID_DUPLICATE")
     all_commands = list(contract["assurance"]["machine_commands"]) + list(
         contract["execution"]["commands"]
     )

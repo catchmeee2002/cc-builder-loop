@@ -8021,6 +8021,20 @@ class NativeCoordinatorContractTest(unittest.TestCase):
                 bound["groups"][0]["test_ids"],
                 ["tests.test_calculator.AddTests.test_add"],
             )
+            context["facets"]["assurance"]["proof_runners"] = [
+                {"id": "unit", "argv": ["python3", "-m", "unittest"], "timeout_seconds": 30}
+            ]
+            reference = {"schema_version": 2, "groups": [{
+                "method": "baseline-red", "runner_id": "unit",
+                "test_ids": ["test_calculator.AddTests.test_add"],
+            }]}
+            rebound = coordinator._bind_proof_test_ids(reference, context)
+            self.assertEqual(rebound["groups"][0]["test_ids"], bound["groups"][0]["test_ids"])
+            self.assertNotIn("argv", rebound["groups"][0])
+            reference["groups"][0]["runner_id"] = "unknown"
+            self.assertEqual(coordinator._bind_proof_test_ids(reference, context), reference)
+
+
         finally:
             cleanup_repo(repo)
 
