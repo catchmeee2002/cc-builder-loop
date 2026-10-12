@@ -752,6 +752,23 @@ class NativeDriverCoreContractTest(unittest.TestCase):
         )
         return run_path, action
 
+    def test_serial_scheduling_without_prerequisites_uses_baseline_input(self) -> None:
+        run_path, action = self.prepare_tester_author_dispatch_fixture(
+            "no-publication-after-builder"
+        )
+        ledger = json.loads((run_path / "ledger.json").read_text())
+        self.assertFalse(action["work_unit_progress"]["parallel_ready"])
+        self.assertFalse(ledger["publication"]["required"])
+        self.assertIsNone(ledger["publication"]["head"])
+        source = ledger["facets"]["execution"]["tester_source"]
+        self.assertEqual(source["base_head"], ledger["target_start_head"])
+        self.assertNotEqual(source["base_head"], ledger["facets"]["execution"]["candidate_head"])
+        role = (ROOT / "agents" / "tester.toml").read_text()
+        self.assertIn("`publication.required=false`", role)
+        self.assertIn("`publication.required=true`", role)
+        self.assertIn("`target_start_head`", role)
+        self.assertNotIn("`parallel_ready=false` 时确认 tester worktree HEAD", role)
+
     def test_pre_turn_no_rollout_records_tester_continuity_problem(self) -> None:
         run_id = "native-tester-bootstrap-no-rollout"
         run_path, action = self.prepare_tester_author_dispatch_fixture(run_id)

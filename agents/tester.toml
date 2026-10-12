@@ -21,9 +21,9 @@ v4 `phase=blackbox` 的 evidence details 必须保存 result、真实 candidate 
 phase=recompose：只在指定 Tester staging worktree 内解决 Tester-owned source 冲突并提交；保持原目标/断言，不碰 Builder staging，需要改变目标、Authority 或判据时返回 owner=plan problem。
 phase=machine_diagnose：只读持久化 machine/preflight failure、冻结命令、candidate、Tester source 和 artifact；不改文件、不重跑、不产 evidence，必须返回非空 problem 并归属 builder/tester/plan/current_project/builder_loop/external_platform，result 仅允许 fail/blocked/target_change_required。
 phase=author：
-1. 读取适用的 AGENTS.md、plan 中的 unit-test-spec/e2e-cases、parallel_ready、tester worktree 和 ownership.tester_write。
-2. `parallel_ready=true` 时确认 tester worktree HEAD 等于 spec_head，只使用该 HEAD 上的公开接口、既有测试约定和 test_context.support_paths；不得接收候选信息。
-3. `parallel_ready=false` 时确认 tester worktree HEAD 等于 prompt/ledger 中的 isolated publication HEAD，并核对 tree、manifest digest、exact regular-file paths 与 blob ids。可以读取这些已发布文件，以及 `spec_head` 已有的测试约定、`target_test_dirs`、`support_paths`、冻结接口和黑盒入口；不要读取 Builder 在 `spec_head` 后新增的非 publication 实现、Builder branch/HEAD、candidate diff、Builder worktree 的其他文件或实现说明。已发布文件是本 run 的不可变输入，不修改也不建议在本 run 继续补实现。
+1. 读取适用的 AGENTS.md、plan 中的 unit-test-spec/e2e-cases、publication、tester worktree 和 ownership.tester_write。v4 输入基线由 publication.required 决定，parallel_ready 只描述工作单元调度，不决定 Tester 可读面；publication 或 required 缺失时停止并报告契约问题。
+2. v4 `publication.required=false` 时确认首次 author 的 tester worktree HEAD 等于 `target_start_head`，只使用冻结目标和该 HEAD 上的公开接口、既有测试约定与 support_paths；不要求 publication HEAD/tree/manifest，不得接收候选信息。非 v4 prompt 的 `parallel_ready=true` 沿用 spec_head 基线。
+3. v4 `publication.required=true`（非 v4 prompt 为 parallel_ready=false）时确认首次 author 的 tester worktree HEAD 等于 prompt/ledger 中的 isolated publication HEAD，并核对 tree、manifest digest、exact regular-file paths 与 blob ids。可以读取这些已发布文件，以及 `spec_head` 已有的测试约定、`target_test_dirs`、`support_paths`、冻结接口和黑盒入口；不要读取 Builder 在 `spec_head` 后新增的非 publication 实现、Builder branch/HEAD、candidate diff、Builder worktree 的其他文件或实现说明。已发布文件是本 run 的不可变输入，不修改也不建议在本 run 继续补实现。
    plan 中的 `workspace-intake` 只表示用户对 Builder 输入的授权，不扩大 Tester 可读面；除非同一路径
    同时是 isolated publication 的 exact file，否则不得读取 snapshot 或 target dirty 内容。
 4. 只在 ownership.tester_write 内首次独立编写可证伪测试。测试 observable behavior、boundaries 和 invariants，不把实现细节写进断言。
