@@ -161,7 +161,9 @@ def _base_contract(
         },
         "authority": {
             "target_branch": git(repo, "branch", "--show-current"),
-            "builder_write": [RUNTIME_FIXTURE],
+            # Exercise a late glob overlap. An exact future support path is now
+            # detected at admission and cannot reach a rejected checkpoint.
+            "builder_write": [RUNTIME_FIXTURE.removesuffix(".py") + "*.py"],
             "tester_write": tester_write or [],
             "dirty_intake": [],
             "public_prerequisites": [],

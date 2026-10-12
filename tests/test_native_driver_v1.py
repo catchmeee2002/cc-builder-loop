@@ -7531,270 +7531,38 @@ class NativeCoordinatorContractTest(unittest.TestCase):
             payload["result_field_contract"]["problem_report"],
         )
 
-    def test_recorded_proof_core_failure_is_consumed_but_unrecorded_error_is_not(self) -> None:
-        action_id = "a" * 64
-        error = CorePortError(
-            "candidate failed",
-            payload={"status": "FAIL", "code": "TEST_PROOF_CANDIDATE_FAILED"},
-            returncode=1,
-        )
-
+    def test_completed_role_results_use_the_core_application_facade(self) -> None:
         class FakeCore:
-            def __init__(self, *, recorded: bool) -> None:
-                self.recorded = recorded
-                self.calls: list[str] = []
-
-            def call(self, command: str, *args: str, input_value=None):
-                self.calls.append(command)
-                if command == "prove-tests":
-                    raise error
-                if command == "driver-context":
-                    return {
-                        "proof_failure_state": "current" if self.recorded else "missing",
-                        "proof_failure": (
-                            {
-                                "action_id": action_id,
-                                "failure_digest": "b" * 64,
-                                "failure": {
-                                    "status": "FAIL",
-                                    "code": "TEST_PROOF_CANDIDATE_FAILED",
-                                },
-                            }
-                            if self.recorded
-                            else None
-                        ),
-                    }
-                if command == "consume-dispatch":
-                    return {"status": "ACTIVE"}
-                raise AssertionError(command)
-
-        context = {
-            "facets": {
-                "authority": {"tester_write": []},
-                "execution": {
-                    "agents": {
-                        "tester": {
-                            "agent_id": "tester-agent",
-                            "thread_id": "tester-thread",
-                        }
-                    },
-                    "tester_source": None,
-                },
-            }
-        }
-        result = {
-            "result": "pass",
-            "evidence_report": None,
-            "proof_spec": {"schema_version": 1, "groups": []},
-            "problem_report": None,
-        }
-        action = {"action": "tester_proof", "action_id": action_id}
-
-        recorded_core = FakeCore(recorded=True)
-        NativeCoordinator(
-            repo=ROOT,
-            run_id="native-proof-recorded",
-            core=recorded_core,
-            transport=object(),
-            project_root=ROOT,
-        )._apply_agent_result(action, "tester", result, context)
-        self.assertEqual(
-            recorded_core.calls,
-            ["prove-tests", "driver-context", "consume-dispatch"],
-        )
-
-        unrecorded_core = FakeCore(recorded=False)
-        with self.assertRaises(CorePortError):
-            NativeCoordinator(
-                repo=ROOT,
-                run_id="native-proof-unrecorded",
-                core=unrecorded_core,
-                transport=object(),
-                project_root=ROOT,
-            )._apply_agent_result(action, "tester", result, context)
-        self.assertNotIn("consume-dispatch", unrecorded_core.calls)
-
-    def test_proof_diagnosis_records_problem_before_dispatch_consumption(self) -> None:
-        class FakeCore:
-            def __init__(self) -> None:
-                self.calls: list[str] = []
-
-            def call(self, command: str, *args: str, input_value=None):
-                self.calls.append(command)
+            def __init__(self):
+                self.calls = []
+            def call(self, *args, input_value=None):
+                self.calls.append((args, input_value))
                 return {"status": "ACTIVE"}
+        for action, capability in AGENT_ACTION_CAPABILITIES.items():
+            with self.subTest(action=action):
+                port = FakeCore()
+                coordinator = NativeCoordinator(repo=ROOT, run_id="application-route", core=port,
+                                                transport=None, project_root=ROOT)
+                coordinator._apply_agent_result({"action": action, "action_id": "a" * 64},
+                                                capability.role, {}, {})
+                self.assertEqual(port.calls, [((
+                    "apply-dispatch-result", "--repo", str(ROOT), "--run", "application-route",
+                    "--action-id", "a" * 64, "--driver-runtime-kind", "native",
+                ), None)])
 
-        core = FakeCore()
-        coordinator = NativeCoordinator(
-            repo=ROOT,
-            run_id="native-proof-problem",
-            core=core,
-            transport=object(),
-            project_root=ROOT,
-        )
-        context = {
-            "facets": {
-                "execution": {
-                    "agents": {
-                        "tester": {
-                            "agent_id": "tester-agent",
-                            "thread_id": "tester-thread",
-                        }
-                    }
-                }
-            }
-        }
-        coordinator._apply_agent_result(
-            {"action": "tester_proof_diagnose", "action_id": "a" * 64},
-            "tester",
-            {
-                "result": "fail",
-                "evidence_report": None,
-                "proof_spec": None,
-                "problem_report": {
-                    "schema_version": 1,
-                    "problems": [
-                        {
-                            "key": "candidate-contract-failure",
-                            "summary": "Candidate violates the frozen behavior.",
-                            "details": "The persisted candidate test assertion failed.",
-                            "owner": "builder",
-                        }
-                    ],
-                },
-            },
-            context,
-        )
-        self.assertEqual(core.calls, ["record-problems", "consume-dispatch"])
-
-        with self.assertRaisesRegex(NativeDriverError, "unsupported owner"):
-            coordinator._validate_proof_diagnosis(
-                {
-                    "result": "fail",
-                    "problem_report": {
-                        "schema_version": 1,
-                        "problems": [
-                            {
-                                "key": "runtime-defect",
-                                "summary": "Runtime defect.",
-                                "details": "Not a target correction.",
-                                "owner": "builder_loop",
-                            }
-                        ],
-                    },
-                }
-            )
-
-    def test_proof_diagnosis_can_retry_a_replacement_spec_without_source_integration(self) -> None:
-        original_spec = {"schema_version": 1, "groups": [{"original": True}]}
-        replacement_spec = {"schema_version": 1, "groups": []}
-
-        class FakeCore:
-            def __init__(self) -> None:
-                self.calls: list[str] = []
-
-            def call(self, command: str, *args: str, input_value=None):
-                self.calls.append(command)
-                return {"status": "ACTIVE"}
-
-        core = FakeCore()
-        coordinator = NativeCoordinator(
-            repo=ROOT,
-            run_id="native-proof-spec-correction",
-            core=core,
-            transport=object(),
-            project_root=ROOT,
-        )
-        action = {
-            "action": "tester_proof_diagnose",
-            "action_id": "c" * 64,
-            "proof_failure": {
-                "action_id": "a" * 64,
-                "candidate_head": "1" * 40,
-                "tester_source_head": "2" * 40,
-                "dependency_digest": "d" * 64,
-                "producer": {
-                    "role": "tester",
-                    "agent_id": "tester-agent",
-                    "thread_id": "tester-thread",
-                },
-                "spec": original_spec,
-                "spec_digest": digest(original_spec),
-                "failure_digest": "f" * 64,
-                "failure": {
-                    "status": "FAIL",
-                    "code": "TEST_PROOF_CANDIDATE_FAILED",
-                },
-            },
-        }
-        context = {
-            "facets": {
-                "authority": {"tester_write": []},
-                "execution": {
-                    "candidate_head": "1" * 40,
-                    "tester_source": {
-                        "head": "2" * 40,
-                        "files": [],
-                    },
-                    "agents": {
-                        "tester": {
-                            "agent_id": "tester-agent",
-                            "thread_id": "tester-thread",
-                        }
-                    },
-                },
-            }
-        }
-        coordinator._apply_agent_result(
-            action,
-            "tester",
-            {
-                "result": "tests_ready",
-                "evidence_report": None,
-                "proof_spec": replacement_spec,
-                "problem_report": None,
-            },
-            context,
-        )
-        self.assertEqual(core.calls, ["prove-tests", "consume-dispatch"])
-        self.assertNotIn("integrate-tester", core.calls)
-        self.assertNotIn("record-problems", core.calls)
-
+    def test_proof_diagnosis_rejects_unchanged_or_ambiguous_specs(self) -> None:
+        spec = {"schema_version": 1, "groups": []}
+        failure = {"spec": spec, "spec_digest": digest(spec)}
         with self.assertRaisesRegex(NativeDriverError, "did not change"):
-            coordinator._validate_proof_diagnosis(
-                {
-                    "result": "tests_ready",
-                    "evidence_report": None,
-                    "proof_spec": original_spec,
-                    "problem_report": None,
-                },
-                proof_failure=action["proof_failure"],
-            )
+            NativeCoordinator._validate_proof_diagnosis(
+                {"result": "tests_ready", "proof_spec": spec}, proof_failure=failure)
+        with self.assertRaisesRegex(NativeDriverError, "both"):
+            NativeCoordinator._validate_proof_diagnosis(
+                {"result": "tests_ready", "proof_spec": spec, "problem_report": {}},
+                proof_failure=failure)
 
-        class CanonicalizingCoordinator(NativeCoordinator):
-            def _bind_proof_test_ids(self, spec, context):
-                return original_spec
 
-        canonicalizing = CanonicalizingCoordinator(
-            repo=ROOT,
-            run_id="native-proof-spec-canonical-no-progress",
-            core=core,
-            transport=object(),
-            project_root=ROOT,
-        )
-        calls_before = list(core.calls)
-        with self.assertRaisesRegex(NativeDriverError, "did not change"):
-            canonicalizing._apply_agent_result(
-                action,
-                "tester",
-                {
-                    "result": "tests_ready",
-                    "evidence_report": None,
-                    "proof_spec": replacement_spec,
-                    "problem_report": None,
-                },
-                context,
-            )
-        self.assertEqual(core.calls, calls_before)
+
 
     def test_builder_wire_drops_unowned_evidence_fields(self) -> None:
         result = NativeCoordinator._normalize_action_result(
@@ -7828,123 +7596,6 @@ class NativeCoordinatorContractTest(unittest.TestCase):
         self.assertEqual(bound["details"]["source_head"], "1" * 40)
         self.assertEqual(source["candidate_head"], "1" * 40)
 
-    def test_partial_tester_manifest_is_bound_before_evidence_recording(self) -> None:
-        action_id = "a" * 64
-        candidate_head = "2" * 40
-        source_head = "3" * 40
-        canonical_files = [
-            {"path": "tests/test_native_driver_v1.py", "blob": "4" * 40},
-            {"path": "tests/test_assurance_v4_contract.py", "blob": "5" * 40},
-        ]
-        integrated_context = {
-            "facets": {
-                "execution": {
-                    "candidate_head": candidate_head,
-                    "tester_source": {
-                        "head": source_head,
-                        "files": canonical_files,
-                    },
-                }
-            },
-            "driver_failure": None,
-        }
-
-        class FakeCore:
-            def __init__(self) -> None:
-                self.calls: list[str] = []
-                self.recorded_report: dict | None = None
-
-            def call(self, command: str, *args: str, input_value=None):
-                self.calls.append(command)
-                if command == "driver-context":
-                    return integrated_context
-                if command == "record-evidence":
-                    self.recorded_report = input_value
-                return {"status": "ACTIVE"}
-
-        raw_evidence = {
-            "schema_version": 1,
-            "kind": "tester",
-            "status": "pass",
-            "candidate_head": "6" * 40,
-            "producer": {
-                "role": "tester",
-                "agent_id": "tester-agent",
-                "thread_id": "tester-thread",
-            },
-            "details": {
-                "result": "tests_ready",
-                "source_head": "7" * 40,
-                "files": [
-                    *canonical_files,
-                    {"path": "tests/test_driver_failure_contract.py", "blob": "8" * 40},
-                ],
-            },
-        }
-        raw_before = json.loads(json.dumps(raw_evidence))
-        core = FakeCore()
-        coordinator = NativeCoordinator(
-            repo=ROOT,
-            run_id="native-partial-tester-manifest",
-            core=core,
-            transport=object(),
-            project_root=ROOT,
-        )
-        context = {
-            "facets": {
-                "execution": {
-                    "agents": {
-                        "tester": {
-                            "agent_id": "tester-agent",
-                            "thread_id": "tester-thread",
-                        }
-                    }
-                }
-            }
-        }
-
-        coordinator._apply_agent_result(
-            {"action": "tester_fix", "action_id": action_id},
-            "tester",
-            {
-                "result": "tests_ready",
-                "evidence_report": raw_evidence,
-                "proof_spec": None,
-                "problem_report": None,
-            },
-            context,
-        )
-
-        self.assertEqual(
-            core.calls,
-            [
-                "integrate-tester",
-                "driver-context",
-                "record-evidence",
-                "consume-dispatch",
-            ],
-        )
-        self.assertNotIn("record-driver-failure", core.calls)
-        self.assertEqual(
-            core.recorded_report,
-            {
-                "schema_version": 1,
-                "kind": "tester",
-                "status": "pass",
-                "candidate_head": candidate_head,
-                "producer": {
-                    "role": "tester",
-                    "agent_id": "tester-agent",
-                    "thread_id": "tester-thread",
-                },
-                "details": {
-                    "result": "tests_ready",
-                    "source_head": source_head,
-                    "files": canonical_files,
-                },
-            },
-        )
-        self.assertEqual(raw_evidence, raw_before)
 
     def test_existing_role_thread_is_resumed_before_a_new_action(self) -> None:
         class FakeTransport:
@@ -8139,113 +7790,7 @@ class NativeCoordinatorContractTest(unittest.TestCase):
             source_index = core.consume_args[0].index("--consumer-source") + 1
             self.assertEqual(core.consume_args[0][source_index], "native_driver")
 
-    def test_builder_fix_result_checkpoints_before_consumption_and_replays_after_crash(self) -> None:
-        class FakeCore:
-            def __init__(self) -> None:
-                self.calls: list[str] = []
-                self.fail_consume_once = True
 
-            def call(self, command: str, *args: str, input_value=None):
-                self.calls.append(command)
-                if command == "consume-dispatch" and self.fail_consume_once:
-                    self.fail_consume_once = False
-                    raise RuntimeError("simulated crash after checkpoint")
-                return {"status": "ACTIVE"}
-
-        core = FakeCore()
-        coordinator = NativeCoordinator(
-            repo=ROOT,
-            run_id="native-builder-fix-replay",
-            core=core,
-            transport=object(),
-            project_root=ROOT,
-        )
-        action = {"action": "builder_fix", "action_id": "a" * 64}
-        context = {
-            "facets": {
-                "execution": {
-                    "agents": {
-                        "builder": {
-                            "agent_id": "builder-agent",
-                            "thread_id": "builder-thread",
-                        }
-                    }
-                }
-            }
-        }
-        result = {
-            "result": "implemented",
-            "evidence_report": None,
-            "proof_spec": None,
-            "problem_report": None,
-        }
-
-        with self.assertRaisesRegex(RuntimeError, "simulated crash"):
-            coordinator._apply_agent_result(
-                action, "builder", result, context
-            )
-        self.assertEqual(core.calls, ["checkpoint-builder", "consume-dispatch"])
-
-        coordinator._apply_agent_result(action, "builder", result, context)
-
-        self.assertEqual(
-            core.calls,
-            [
-                "checkpoint-builder",
-                "consume-dispatch",
-                "checkpoint-builder",
-                "consume-dispatch",
-            ],
-        )
-
-    def test_recomposition_fix_advances_persisted_transaction_before_consumption(self) -> None:
-        class FakeCore:
-            def __init__(self) -> None:
-                self.calls: list[str] = []
-
-            def call(self, command: str, *args: str, input_value=None):
-                self.calls.append(command)
-                return {"status": "ACTIVE"}
-
-        for action_name, role in (
-            ("builder_recompose_fix", "builder"),
-            ("tester_recompose_fix", "tester"),
-        ):
-            with self.subTest(action=action_name):
-                core = FakeCore()
-                coordinator = NativeCoordinator(
-                    repo=ROOT,
-                    run_id=f"native-{action_name}",
-                    core=core,
-                    transport=object(),
-                    project_root=ROOT,
-                )
-                context = {
-                    "facets": {
-                        "execution": {
-                            "agents": {
-                                role: {
-                                    "agent_id": f"{role}-agent",
-                                    "thread_id": f"{role}-thread",
-                                }
-                            }
-                        }
-                    }
-                }
-                coordinator._apply_agent_result(
-                    {"action": action_name, "action_id": "a" * 64},
-                    role,
-                    {
-                        "result": "implemented",
-                        "evidence_report": None,
-                        "proof_spec": None,
-                        "problem_report": None,
-                    },
-                    context,
-                )
-                self.assertEqual(
-                    core.calls, ["recompose-candidate", "consume-dispatch"]
-                )
 
     def test_coordinator_executes_deployment_restore_before_blackbox_completion(self) -> None:
         with tempfile.TemporaryDirectory(prefix="native-deployment-actions-") as raw:
@@ -8342,59 +7887,6 @@ class NativeCoordinatorContractTest(unittest.TestCase):
         self.assertEqual(result["status"], "FINALIZED")
         self.assertIn("scan-doc-references", core.calls)
 
-    def test_invalid_deployment_blackbox_requires_restore_before_consumption(self) -> None:
-        class FakeCore:
-            def __init__(self) -> None:
-                self.calls: list[str] = []
-
-            def call(self, command: str, *args: str, input_value=None):
-                self.calls.append(command)
-                if command == "stage-blackbox":
-                    raise CorePortError(
-                        "observation binding mismatch",
-                        payload={
-                            "status": "FATAL",
-                            "code": "BLACKBOX_OBSERVATION_BINDING_MISMATCH",
-                        },
-                        returncode=2,
-                    )
-                return {"status": "ACTIVE"}
-
-        core = FakeCore()
-        coordinator = NativeCoordinator(
-            repo=ROOT,
-            run_id="native-invalid-deployment-blackbox",
-            core=core,
-            transport=object(),
-            project_root=ROOT,
-        )
-        coordinator._apply_agent_result(
-            {"action": "tester_blackbox", "action_id": "a" * 64},
-            "tester",
-            {
-                "result": "pass",
-                "evidence_report": {"kind": "blackbox"},
-                "proof_spec": None,
-                "problem_report": None,
-            },
-            {
-                "facets": {
-                    "execution": {
-                        "deployment": {"target_id": "fixture"},
-                        "agents": {
-                            "tester": {
-                                "agent_id": "tester-agent",
-                                "thread_id": "tester-thread",
-                            }
-                        },
-                    }
-                }
-            },
-        )
-        self.assertEqual(
-            core.calls,
-            ["stage-blackbox", "require-deployment-restore"],
-        )
 
     def test_coordinator_executes_supersede_recovery_actions(self) -> None:
         with tempfile.TemporaryDirectory(prefix="native-supersede-actions-") as raw:

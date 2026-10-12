@@ -113,7 +113,7 @@ class LegacyParityContractTest(unittest.TestCase):
 
     def test_optimization_parity_references_existing_coverage(self) -> None:
         rows = load_corpus()["optimization_parity"]
-        self.assertEqual(len(rows), 3)
+        self.assertEqual(len(rows), 5)
         for row in rows:
             self.assertEqual(row["status"], "covered")
             self.assertTrue(row["behavior"])

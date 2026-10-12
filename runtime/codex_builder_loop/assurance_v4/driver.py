@@ -1049,6 +1049,10 @@ def _external_recovery_context(
 def _dispatch_action(
     ledger: Mapping[str, Any], run_id: str, pending: Mapping[str, Any]
 ) -> dict[str, Any]:
+    application = pending.get("application")
+    if isinstance(application, Mapping):
+        from .result_application import validate_application
+        validate_application(ledger, pending)
     action = str(pending.get("action"))
     execution = ledger["facets"]["execution"]
     payload: dict[str, Any] = {}
@@ -1157,7 +1161,10 @@ def _dispatch_action(
             ),
         )
         projection_digest = digest(projection)
-        stored_digest = pending.get("context_projection_digest")
+        stored_digest = (
+            application["projection_digest"] if isinstance(application, Mapping)
+            else pending.get("context_projection_digest")
+        )
         if isinstance(stored_digest, str) and stored_digest != projection_digest:
             raise AssuranceError(
                 "pending dispatch context projection is stale",

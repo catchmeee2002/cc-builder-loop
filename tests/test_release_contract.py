@@ -39,30 +39,31 @@ class ReleaseContractTest(unittest.TestCase):
             "adapter_commit": head,
             "capture_status": "captured",
         }
-        with (
-            patch.object(release, "retrospective_status", return_value=retrospective),
-            patch.object(release, "_version_identity", return_value=identity),
-        ):
-            result = release.release_preflight(
-                self.repo,
-                session_id="release-session",
-                version="0.1.0",
-                tag="v0.1.0",
-                release_commit=head,
+        for tag in ("v0.1.0", "codex-v0.1.0"):
+            with (
+                patch.object(release, "retrospective_status", return_value=retrospective),
+                patch.object(release, "_version_identity", return_value=identity),
+            ):
+                result = release.release_preflight(
+                    self.repo,
+                    session_id="release-session",
+                    version="0.1.0",
+                    tag=tag,
+                    release_commit=head,
+                )
+            intent = result["intent"]
+            schema = json.loads(
+                (
+                    Path(__file__).parents[1]
+                    / "schema"
+                    / "assurance-v4-release.schema.json"
+                ).read_text()
             )
-        intent = result["intent"]
-        schema = json.loads(
-            (
-                Path(__file__).parents[1]
-                / "schema"
-                / "assurance-v4-release.schema.json"
-            ).read_text()
-        )
-        Draft202012Validator.check_schema(schema)
-        Draft202012Validator(schema).validate(intent)
-        self.assertEqual(intent["next_stage"], "tag")
-        self.assertEqual(intent["snapshot_digest"], snapshot_digest)
-        self.assertNotIn("runs", json.dumps(intent))
+            Draft202012Validator.check_schema(schema)
+            Draft202012Validator(schema).validate(intent)
+            self.assertEqual(intent["next_stage"], "tag")
+            self.assertEqual(intent["snapshot_digest"], snapshot_digest)
+            self.assertNotIn("runs", json.dumps(intent))
 
     def test_release_preflight_blocks_stale_retrospective(self) -> None:
         with patch.object(

@@ -58,6 +58,31 @@ class AssuranceV4AdmissionContractTest(unittest.TestCase):
         path.chmod(0o755)
         return path
 
+    def test_validate_and_start_reject_missing_uv_dependency_values_before_run_creation(self) -> None:
+        launcher = self.executable("uv")
+        for tail in (["--with", "--with", "pytest", "python", "-m", "pytest"],
+                     ["--with="], ["--with-requirements"]):
+            with self.subTest(tail=tail):
+                contract = base_contract()
+                contract["assurance"]["machine_commands"][0]["argv"] = [str(launcher), "run", *tail]
+                path = self.write_json("malformed-launcher.json", contract)
+                errors = []
+                for command, extra in (("validate", []), ("start", ["--run", "invalid-launcher", "--session-id", "admission-session"])):
+                    rc, result = self.invoke(command, "--repo", self.repo, "--contract", path, *extra)
+                    self.assertNotEqual(rc, 0, result)
+                    errors.append(result["code"])
+                self.assertEqual(errors, ["COMMAND_ARGUMENT_INVALID"] * 2)
+                self.assertFalse((self.repo / ".git/builder-loop-assurance-v4/runs/invalid-launcher").exists())
+
+    def test_uv_dependency_validation_stops_at_child_command(self) -> None:
+        from runtime.codex_builder_loop.assurance_v4.core import _validate_launcher_arguments
+        for argv in (
+            ["uv", "run", "--with", "pytest", "python", "child.py", "--with"],
+            ["uv", "run", "--with=pytest", "--", "child", "--with"],
+            ["python", "child.py", "--with"],
+        ):
+            _validate_launcher_arguments({"id": "child", "argv": argv})
+
     def test_validate_aggregates_host_commands_missing_from_trusted_path(self) -> None:
         ambient = self.executable("ambient-only-tool")
         contract = base_contract()

@@ -73,8 +73,8 @@ def release_preflight(
         raise AssuranceError("session id is required", code="SESSION_ID_REQUIRED", status="FAIL")
     if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?", version):
         raise AssuranceError("release version is not SemVer", code="RELEASE_VERSION_INVALID", status="FAIL")
-    if tag != f"v{version}":
-        raise AssuranceError("release tag must be v<version>", code="RELEASE_TAG_INVALID", status="FAIL")
+    if tag not in {f"v{version}", f"codex-v{version}"}:
+        raise AssuranceError("release tag must be codex-v<version> or legacy v<version>", code="RELEASE_TAG_INVALID", status="FAIL")
     if not re.fullmatch(r"[0-9a-f]{40}", release_commit):
         raise AssuranceError("release commit must be a full SHA-1", code="RELEASE_COMMIT_INVALID", status="FAIL")
     with locked(repo):

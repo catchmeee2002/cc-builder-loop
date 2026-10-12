@@ -853,7 +853,7 @@ class FullDriverV4ContractTest(unittest.TestCase):
         start = text.index("tester_proof_diagnose")
         section = text[start : start + 900]
         self.assertRegex(section, r"replacement.{0,20}proof_spec")
-        self.assertIn("prove-tests", section)
+        self.assertIn("apply-dispatch-result", section)
         self.assertRegex(section, r"(?:不得|不).{0,60}integrate-tester")
         self.assertRegex(section, r"(?:candidate|testersource).{0,160}(?:problem|问题)")
 
@@ -1478,7 +1478,7 @@ class FullDriverV4ContractTest(unittest.TestCase):
         blocked = driver.next_action(self.repo, run_id)
 
         transitioned_identity = {
-            "builder_loop_version": "0.3.2",
+            "builder_loop_version": ledger["runtime_identity"]["builder_loop_version"],
             "adapter": "codex",
             "adapter_commit": "c" * 40,
             "adapter_dirty": False,

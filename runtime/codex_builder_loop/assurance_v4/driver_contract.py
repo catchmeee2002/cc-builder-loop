@@ -18,6 +18,7 @@ PreparationKind = Literal[
 class AgentActionCapability:
     role: AgentRole
     preparation: PreparationKind
+    result_payload: Literal["none", "evidence_report", "proof_spec", "problem_report", "proof_diagnosis"] = "none"
 
 
 AGENT_ACTION_CAPABILITIES = MappingProxyType(
@@ -25,19 +26,19 @@ AGENT_ACTION_CAPABILITIES = MappingProxyType(
         "builder_implement": AgentActionCapability("builder", "role_identity"),
         "builder_fix": AgentActionCapability("builder", "role_identity"),
         "builder_recompose_fix": AgentActionCapability("builder", "role_identity"),
-        "tester_author": AgentActionCapability("tester", "tester_source"),
-        "tester_fix": AgentActionCapability("tester", "tester_source"),
+        "tester_author": AgentActionCapability("tester", "tester_source", "evidence_report"),
+        "tester_fix": AgentActionCapability("tester", "tester_source", "evidence_report"),
         "tester_recompose_fix": AgentActionCapability("tester", "tester_source"),
-        "tester_proof": AgentActionCapability("tester", "existing_tester_source"),
+        "tester_proof": AgentActionCapability("tester", "existing_tester_source", "proof_spec"),
         "tester_proof_diagnose": AgentActionCapability(
-            "tester", "existing_tester_source"
+            "tester", "existing_tester_source", "proof_diagnosis"
         ),
         "tester_machine_diagnose": AgentActionCapability(
-            "tester", "tester_identity"
+            "tester", "tester_identity", "problem_report"
         ),
-        "tester_blackbox": AgentActionCapability("tester", "tester_identity"),
-        "reviewer_preflight": AgentActionCapability("reviewer", "role_identity"),
-        "reviewer_final": AgentActionCapability("reviewer", "role_identity"),
+        "tester_blackbox": AgentActionCapability("tester", "tester_identity", "evidence_report"),
+        "reviewer_preflight": AgentActionCapability("reviewer", "role_identity", "evidence_report"),
+        "reviewer_final": AgentActionCapability("reviewer", "role_identity", "evidence_report"),
     }
 )
 

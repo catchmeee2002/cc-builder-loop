@@ -196,6 +196,15 @@ def parser() -> argparse.ArgumentParser:
         help="completed root Builder result JSON; omit to replay the persisted artifact",
     )
 
+    application = commands.add_parser("apply-dispatch-result")
+    application.add_argument("--repo", default=".")
+    application.add_argument("--run", required=True)
+    application.add_argument("--action-id", required=True)
+    application.add_argument("--driver-runtime-kind", required=True, choices=["native", "full_driver_skill"])
+    application.add_argument("--generation", type=int)
+    application.add_argument("--owner-session-id")
+    application.add_argument("--result", help="result JSON; omit to resume the accepted artifact")
+
     context = commands.add_parser("driver-context")
     context.add_argument("--repo", default=".")
     context.add_argument("--run", required=True)
@@ -979,6 +988,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.run,
                 action_id=args.action_id,
                 driver_runtime_kind=args.driver_runtime_kind,
+            )
+        elif args.command == "apply-dispatch-result":
+            payload = core.apply_dispatch_result(
+                args.repo, args.run, action_id=args.action_id,
+                driver_runtime_kind=args.driver_runtime_kind, generation=args.generation,
+                owner_session_id=args.owner_session_id,
+                result_value=_json(args.result) if args.result else None,
             )
         elif args.command == "apply-root-builder-result":
             payload = core.apply_root_builder_result(

@@ -655,6 +655,36 @@
         "result_application": {
           "enum": ["checkpoint_builder", "record_problems", "recompose_candidate"]
         },
+        "application": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["binding_digest", "projection_digest", "observation_digest", "effects"],
+          "properties": {
+            "binding_digest": {"$ref": "#/$defs/sha256"},
+            "projection_digest": {"$ref": "#/$defs/sha256"},
+            "observation_digest": {"$ref": "#/$defs/sha256"},
+            "integration": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["before", "after", "source_head", "after_observation_digest"],
+              "properties": {
+                "before": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+                "after": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+                "source_head": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+                "after_observation_digest": {"$ref": "#/$defs/sha256"}
+              }
+            },
+            "effects": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": {"enum": [
+                "checkpoint", "problems", "recompose", "integration", "proof", "blackbox",
+                "evidence:tester", "evidence:blackbox", "evidence:reviewer_preflight",
+                "evidence:reviewer", "evidence:doc_review"
+              ]}
+            }
+          }
+        },
         "prompt_digest": {"$ref": "#/$defs/sha256"},
         "output_schema_digest": {"$ref": "#/$defs/sha256"},
         "dispatch_observation_digest": {

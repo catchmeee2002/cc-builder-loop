@@ -383,6 +383,8 @@ def _doctor_payload(context: dict[str, Any]) -> dict[str, Any]:
         and context[key].get("spawn_state") != "spawned"
         for key in ("dispatch_rehydration_intent", "context_rotation_intent")
     )
+    recovery_blocked = (context.get("dispatch_recovery") or {}).get("state") == "needs_user"
+    unresolved = unresolved or recovery_blocked
     runtime = context.get("driver_runtime")
     native_transport = (
         runtime.get("native_transport")
@@ -393,10 +395,11 @@ def _doctor_payload(context: dict[str, Any]) -> dict[str, Any]:
         return {
             "status": "NEEDS_USER" if unresolved else "READY",
             "diagnostic_state": (
-                "work-unit-spawn-unresolved"
+                "result-application-blocked" if recovery_blocked else "work-unit-spawn-unresolved"
                 if unresolved
                 else "legacy-unbound"
             ),
+            "dispatch_recovery": context.get("dispatch_recovery"),
             "transport": None,
             "dispatch_rehydration_intent": context.get(
                 "dispatch_rehydration_intent"
@@ -408,10 +411,11 @@ def _doctor_payload(context: dict[str, Any]) -> dict[str, Any]:
         return {
             "status": "NEEDS_USER" if unresolved else "READY",
             "diagnostic_state": (
-                "work-unit-spawn-unresolved"
+                "result-application-blocked" if recovery_blocked else "work-unit-spawn-unresolved"
                 if unresolved
                 else "no-live-process"
             ),
+            "dispatch_recovery": context.get("dispatch_recovery"),
             "transport": native_transport,
             "dispatch_rehydration_intent": context.get(
                 "dispatch_rehydration_intent"
@@ -444,6 +448,7 @@ def _doctor_payload(context: dict[str, Any]) -> dict[str, Any]:
     return {
         "status": "NEEDS_USER" if state == "needs_user" else "READY",
         "diagnostic_state": state,
+        "dispatch_recovery": context.get("dispatch_recovery"),
         "transport": {
             **native_transport,
             "live_process_identity": live,

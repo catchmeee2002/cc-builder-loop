@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "scope": "functional delivery via public transactions; synthetic role outputs, real Git and commands",
+  "cases": [
+    {"id": "normal", "injection": null},
+    {"id": "integration-sigkill", "injection": "tester_source_integrated"},
+    {"id": "proof-spec-correction", "injection": "invalid proof command"},
+    {"id": "reviewer-application-sigkill", "injection": "reviewer application accepted"}
+  ]
+}

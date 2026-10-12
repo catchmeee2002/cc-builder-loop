@@ -393,13 +393,17 @@ pending. Tester and Reviewer recovery use the normal App Server transport path, 
 transport-free deterministic Core actions remain on the root Coordinator. Both paths retain the frozen root
 session identity for later Builder ownership.
 
-For a root Builder dispatch, Core also records which result application completed before consumption:
-`checkpoint_builder`, `record_problems`, or `recompose_candidate`. A completed dispatch without its matching
-application remains pending and cannot be consumed, so a resumed root session can finish the exact side effect
-without rerunning the implementation. The user-facing root handoff uses one idempotent
-`apply-root-builder-result` facade that replays these existing transactions in order; it does not introduce a
-second action controller or a large cross-system transaction. A completed and consumed root dispatch can be
-replayed as a no-op only when the ledger contains the matching root dispatch, application, and consumption facts.
+所有角色结果通过同一个 `apply-dispatch-result` 入口应用；`apply-root-builder-result` 保留为绑定
+root owner 的兼容入口。Core 先绑定已接受 artifact 与 dispatch 身份，再把 checkpoint、Tester
+integration、problem 和 evidence 的完成回执与各自事实原子保存。回执只表示当前结果已经发生的
+副作用；后续角色动作仍由 Driver 派生。原始 dispatch projection 不会被覆盖，恢复观察随受控事务
+推进；外部输入或工作树漂移不会被当作本次应用的进展。
+
+Tester integration 在改变 candidate 前冻结唯一目标 Git commit，恢复只接受原 HEAD 或精确目标
+HEAD，未知 dirty 保留。Proof 使用单 run 操作锁，执行命令时释放仓库锁，写回前重新核对输入。
+结果应用中断后先完成同一 artifact，不能重派角色；已消费结果只接受身份和 digest 一致的幂等回放。
+status 与 Native doctor 从同一 ledger 派生恢复入口及前提。旧 active run 继续使用其冻结 runtime，
+不把版本升级解释为原 run 的热迁移。
 
 就绪标记只在 Builder adapter 的带仓库上下文 plan validator 返回 `READY` 后出现，并位于冻结方案之外。
 原生路线没有该标记，也不创建 Builder ledger；普通 `Implement the plan.` 继续由 Codex 原生能力执行。

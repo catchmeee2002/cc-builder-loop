@@ -1032,6 +1032,31 @@ def validate_agent_result(value: Any) -> dict[str, Any]:
     return result
 
 
+def validate_action_result(value: Any, action: str) -> dict[str, Any]:
+    from .driver_contract import AGENT_ACTION_CAPABILITIES
+    result = validate_agent_result(value)
+    capability = AGENT_ACTION_CAPABILITIES.get(action)
+    if capability is None:
+        raise ContractError("unknown role action", code="AGENT_RESULT_INVALID", details={"action": action})
+    payload = capability.result_payload
+    problem = result.get("problem_report")
+    if isinstance(problem, dict):
+        if payload == "proof_diagnosis" and result.get("proof_spec") is not None:
+            raise ContractError("proof diagnosis cannot report both a spec and problems", code="AGENT_RESULT_INVALID")
+        return result
+    required = "proof_spec" if payload == "proof_diagnosis" else payload
+    if required != "none" and not isinstance(result.get(required), dict):
+        raise ContractError(
+            "role action requires its result payload", code="AGENT_RESULT_INVALID",
+            details={"action": action, "path": required},
+        )
+    report = result.get("evidence_report")
+    if isinstance(report, dict) and report["producer"]["role"] != capability.role:
+        raise ContractError("result producer role does not match action", code="AGENT_RESULT_INVALID",
+                            details={"action": action, "path": "evidence_report/producer/role"})
+    return result
+
+
 def proof_semantic_digest(spec: Mapping[str, Any]) -> str:
     value = copy.deepcopy(dict(spec))
     value.pop("schema_version", None)

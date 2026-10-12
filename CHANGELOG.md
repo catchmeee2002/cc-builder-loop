@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Prepared 0.4.0 functional delivery recovery: all roles apply accepted dispatch results through one
+  Core facade; root Builder retains its compatible entry. Atomic effect receipts preserve the original
+  projection and reject external drift while resuming interrupted checkpoint, integration and evidence work.
+- Tester integration now freezes its target Git commit before materialization. Proof commands release the
+  repository lock and verify unchanged inputs before writing evidence. Public status and Native doctor
+  expose the same result recovery facts.
+- Shared action payload validation between Core and Native, corrected the Tester proof payload instruction,
+  rejected missing uv dependency values before start, and admitted explicitly authorized new support files
+  during self-hosted preparation. Added the Codex product tag prefix while retaining legacy release tags.
 - Proof v2 can reference frozen runners; startup probes are deduplicated within each proof call while
   legacy command inputs retain the same execution and replay checks. Prepared patch version 0.3.2.
 - Cached immutable candidate trees without caching authority or evidence decisions, and classified

@@ -14,7 +14,7 @@ from ..assurance_v4.driver_contract import (
     AgentActionCapability,
 )
 from ..assurance_v4.core import canonical_context_projection, _resolve_proof_group, AssuranceError
-from ..assurance_v4.models import ContractError, digest, proof_semantic_digest, validate_agent_result
+from ..assurance_v4.models import ContractError, digest, proof_semantic_digest, validate_agent_result, validate_action_result
 from .app_server import (
     LONG_TESTER_ACTIONS,
     AppServerError,
@@ -26,6 +26,7 @@ from .app_server import (
     timeout_profile_for_action,
 )
 from .core_port import CorePort, CorePortError
+from ..assurance_v4.result_application import ResultSemantics, ResultApplicationError as NativeDriverError
 from .transport_failures import (
     classify_app_server_failure,
     classify_turn_failure,
@@ -44,6 +45,9 @@ ROLE_RESULT_VALIDATION_FAILURE_CODES = frozenset(
         "EVIDENCE_REPORT_INVALID",
         "TEST_PROOF_SPEC_INVALID",
         "PROBLEM_REPORT_INVALID",
+        "TEST_PROOF_PATCH_OWNER_INVALID",
+        "TEST_PROOF_PATCH_FILE_INVALID",
+        "TEST_PROOF_MUTATION_INVALID",
     }
 )
 PROMPT_EVIDENCE_ACTIONS = frozenset(
@@ -60,15 +64,7 @@ PROMPT_BLACKBOX_ACTIONS = frozenset(
 )
 
 
-class NativeDriverError(RuntimeError):
-    def __init__(self, message: str, *, code: str, status: str = "FATAL", details: Any = None):
-        super().__init__(message)
-        self.code = code
-        self.status = status
-        self.details = details
-
-
-class NativeCoordinator:
+class NativeCoordinator(ResultSemantics):
     def __init__(
         self,
         *,
@@ -254,7 +250,11 @@ class NativeCoordinator:
             if capability is not None:
                 if capability.role == "builder" and self.builder_mode == "root_session":
                     return self._root_builder_handoff(action)
-                if self.transport is None:
+                completed = action.get("dispatch")
+                if self.transport is None and not (
+                    isinstance(completed, dict) and completed.get("state") == "completed"
+                    and completed.get("result_path")
+                ):
                     return {
                         "status": "TRANSPORT_HANDOFF",
                         "run_id": self.run_id,
@@ -645,14 +645,19 @@ class NativeCoordinator:
         action: dict[str, Any],
         capability: AgentActionCapability,
     ) -> None:
+        self.current_dispatch = None
+        context = self._context()
+        pending = context.get("dispatch_intent")
+        if isinstance(pending, dict) and pending.get("state") == "completed" and pending.get("result_path"):
+            self.current_dispatch = copy.deepcopy(pending)
+            self._apply_agent_result(action, capability.role, {}, context)
+            return
         if self.transport is None:
             raise NativeDriverError(
                 "Native transport is required for this non-root Builder action",
                 code="NATIVE_ROOT_TRANSPORT_REQUIRED",
                 status="NEEDS_USER",
             )
-        self.current_dispatch = None
-        context = self._context()
         role = capability.role
         agent = context["facets"]["execution"]["agents"].get(role)
         tester_source = context["facets"]["execution"].get("tester_source")
@@ -1222,235 +1227,12 @@ class NativeCoordinator:
         return result
 
     def _apply_agent_result(
-        self,
-        action: dict[str, Any],
-        role: str,
-        result: dict[str, Any],
-        context: dict[str, Any],
+        self, action: dict[str, Any], role: str,
+        result: dict[str, Any], context: dict[str, Any],
     ) -> None:
-        action_id = str(action["action_id"])
-        agent = context["facets"]["execution"]["agents"][role]
-        problem = result.get("problem_report")
-        proof_spec: dict[str, Any] | None = None
-        proof_failure_already_persisted = False
-        if action["action"] == "tester_proof" and not isinstance(problem, dict):
-            value = result.get("proof_spec")
-            if not isinstance(value, dict):
-                raise NativeDriverError(
-                    "Tester returned no proof spec", code="NATIVE_PROOF_SPEC_MISSING"
-                )
-            proof_spec = self._bind_proof_test_ids(value, context)
-            result = {**result, "proof_spec": proof_spec}
-        elif action["action"] == "tester_proof_diagnose" and isinstance(
-            result.get("proof_spec"), dict
-        ):
-            proof_spec = self._bind_proof_test_ids(result["proof_spec"], context)
-            result = {**result, "proof_spec": proof_spec}
-        if proof_spec is not None:
-            proof_failure_already_persisted = self._persisted_proof_failure_matches(
-                context.get("proof_failure"),
-                context.get("proof_failure_state"),
-                action_id,
-                proof_spec,
-                agent,
-            )
-        if action["action"] == "tester_proof_diagnose":
-            source_failure = action.get("proof_failure")
-            if (
-                not isinstance(source_failure, dict)
-                and context.get("proof_failure_state") == "current"
-            ):
-                source_failure = context.get("proof_failure")
-            if not proof_failure_already_persisted:
-                self._validate_proof_diagnosis(
-                    result,
-                    proof_failure=source_failure,
-                    proof_runners=context["facets"].get("assurance", {}).get("proof_runners", []),
-                )
-        if action["action"] == "tester_machine_diagnose":
-            self._validate_machine_diagnosis(result)
-        if isinstance(problem, dict):
-            self.core.call(
-                "record-problems",
-                "--repo",
-                str(self.repo),
-                "--run",
-                self.run_id,
-                "--report",
-                "-",
-                "--role",
-                role,
-                "--agent-id",
-                str(agent["agent_id"]),
-                "--thread-id",
-                str(agent["thread_id"]),
-                "--action-id",
-                action_id,
-                "--driver-runtime-kind",
-                "native",
-                input_value=problem,
-            )
-        elif action["action"] in {"builder_recompose_fix", "tester_recompose_fix"}:
-            self.core.call(
-                "recompose-candidate",
-                "--repo",
-                str(self.repo),
-                "--run",
-                self.run_id,
-                "--action-id",
-                action_id,
-                "--driver-runtime-kind",
-                "native",
-            )
-        elif action["action"] in {"builder_implement", "builder_fix"}:
-            self.core.call(
-                "checkpoint-builder",
-                "--repo",
-                str(self.repo),
-                "--run",
-                self.run_id,
-                "--action-id",
-                action_id,
-                "--driver-runtime-kind",
-                "native",
-            )
-        elif action["action"] in {"tester_author", "tester_fix"}:
-            self.core.call(
-                "integrate-tester",
-                "--repo",
-                str(self.repo),
-                "--run",
-                self.run_id,
-                "--action-id",
-                action_id,
-                "--driver-runtime-kind",
-                "native",
-            )
-            evidence = result.get("evidence_report")
-            if not isinstance(evidence, dict):
-                raise NativeDriverError("Tester returned no evidence", code="NATIVE_TESTER_EVIDENCE_MISSING")
-            integrated = self._context()
-            integrated_execution = integrated["facets"]["execution"]
-            integrated_head = integrated_execution.get("candidate_head")
-            if not isinstance(integrated_head, str):
-                raise NativeDriverError(
-                    "Tester integration produced no candidate HEAD",
-                    code="NATIVE_TESTER_INTEGRATION_HEAD_MISSING",
-                )
-            tester_source = integrated_execution.get("tester_source")
-            if not isinstance(tester_source, dict):
-                raise NativeDriverError(
-                    "Tester integration produced no source identity",
-                    code="NATIVE_TESTER_SOURCE_IDENTITY_MISSING",
-                )
-            self._record_evidence(
-                "tester",
-                self._bind_tester_evidence_identity(
-                    evidence,
-                    candidate_head=integrated_head,
-                    tester_source=tester_source,
-                ),
-                action_id,
-            )
-        elif action["action"] in {"tester_proof", "tester_proof_diagnose"}:
-            assert proof_spec is not None
-            if not proof_failure_already_persisted:
-                try:
-                    self.core.call(
-                        "prove-tests",
-                        "--repo",
-                        str(self.repo),
-                        "--run",
-                        self.run_id,
-                        "--spec",
-                        "-",
-                        "--agent-id",
-                        str(agent["agent_id"]),
-                        "--thread-id",
-                        str(agent["thread_id"]),
-                        "--action-id",
-                        action_id,
-                        "--driver-runtime-kind",
-                        "native",
-                        input_value=proof_spec,
-                    )
-                except CorePortError as exc:
-                    failed = self._context()
-                    if not self._proof_failure_matches(
-                        failed.get("proof_failure"),
-                        failed.get("proof_failure_state"),
-                        action_id,
-                        exc,
-                    ):
-                        raise
-        elif action["action"] == "tester_blackbox":
-            evidence = result.get("evidence_report")
-            if not isinstance(evidence, dict):
-                raise NativeDriverError("Tester returned no blackbox evidence", code="NATIVE_BLACKBOX_MISSING")
-            if isinstance(context["facets"]["execution"].get("deployment"), dict):
-                try:
-                    self.core.call(
-                        "stage-blackbox",
-                        "--repo",
-                        str(self.repo),
-                        "--run",
-                        self.run_id,
-                        "--report",
-                        "-",
-                        "--action-id",
-                        action_id,
-                        "--driver-runtime-kind",
-                        "native",
-                        input_value=evidence,
-                    )
-                except CorePortError as exc:
-                    self.core.call(
-                        "require-deployment-restore",
-                        "--repo",
-                        str(self.repo),
-                        "--run",
-                        self.run_id,
-                        "--failure-code",
-                        exc.code,
-                        "--action-id",
-                        action_id,
-                        "--driver-runtime-kind",
-                        "native",
-                    )
-                    return
-            else:
-                self._record_evidence("blackbox", evidence, action_id)
-        elif action["action"] == "reviewer_preflight":
-            evidence = result.get("evidence_report")
-            if not isinstance(evidence, dict):
-                raise NativeDriverError(
-                    "Reviewer preflight returned no evidence",
-                    code="NATIVE_REVIEW_PREFLIGHT_EVIDENCE_MISSING",
-                )
-            self._record_evidence(
-                "reviewer_preflight",
-                self._evidence_kind(evidence, "reviewer_preflight"),
-                action_id,
-            )
-        elif action["action"] == "reviewer_final":
-            evidence = result.get("evidence_report")
-            if not isinstance(evidence, dict):
-                raise NativeDriverError("Reviewer returned no evidence", code="NATIVE_REVIEW_EVIDENCE_MISSING")
-            required = set(context["facets"]["assurance"]["required"])
-            if "reviewer" in required:
-                self._record_evidence("reviewer", self._evidence_kind(evidence, "reviewer"), action_id)
-            if "doc_review" in required:
-                self._record_evidence("doc_review", self._evidence_kind(evidence, "doc_review"), action_id)
         self.core.call(
-            "consume-dispatch",
-            "--repo",
-            str(self.repo),
-            "--run",
-            self.run_id,
-            "--action-id",
-            action_id,
-            "--consumer-source",
-            "native_driver",
+            "apply-dispatch-result", "--repo", str(self.repo), "--run", self.run_id,
+            "--action-id", str(action["action_id"]), "--driver-runtime-kind", "native",
         )
 
     def _record_evidence(self, kind: str, evidence: dict[str, Any], action_id: str) -> None:
@@ -1471,107 +1253,10 @@ class NativeCoordinator:
             input_value=evidence,
         )
 
-    @staticmethod
-    def _evidence_kind(evidence: dict[str, Any], kind: str) -> dict[str, Any]:
-        value = copy.deepcopy(evidence)
-        value["kind"] = kind
-        return value
 
-    @staticmethod
-    def _bind_evidence_candidate(evidence: dict[str, Any], candidate_head: str) -> dict[str, Any]:
-        value = copy.deepcopy(evidence)
-        value["candidate_head"] = candidate_head
-        return value
 
-    @staticmethod
-    def _bind_tester_evidence_identity(
-        evidence: dict[str, Any],
-        *,
-        candidate_head: str,
-        tester_source: dict[str, Any],
-    ) -> dict[str, Any]:
-        value = copy.deepcopy(evidence)
-        value["candidate_head"] = candidate_head
-        details = value.get("details")
-        if isinstance(details, dict):
-            details["source_head"] = tester_source.get("head")
-            details["files"] = copy.deepcopy(tester_source.get("files"))
-        return value
 
-    @staticmethod
-    def _proof_test_id_hints(context: dict[str, Any]) -> list[dict[str, str]]:
-        source = context["facets"]["execution"].get("tester_source")
-        if not isinstance(source, dict):
-            return []
-        hints: list[dict[str, str]] = []
-        for item in source.get("files", []):
-            path = item.get("path")
-            if not isinstance(path, str):
-                continue
-            hint = {"path": path}
-            if path.endswith(".py"):
-                hint["unittest_module"] = path[:-3].replace("/", ".")
-                hint["pytest_prefix"] = path + "::"
-            hints.append(hint)
-        return hints
 
-    def _bind_proof_test_ids(
-        self, spec: dict[str, Any], context: dict[str, Any]
-    ) -> dict[str, Any]:
-        from ..core import proof_test_source_path
-
-        value = copy.deepcopy(spec)
-        facets = context["facets"]
-        source = facets["execution"].get("tester_source")
-        if not isinstance(source, dict):
-            return value
-        tester_head = str(source["head"])
-        tester_patterns = facets["authority"]["tester_write"]
-        modules = [
-            item["path"][:-3].replace("/", ".")
-            for item in source.get("files", [])
-            if isinstance(item.get("path"), str) and item["path"].endswith(".py")
-        ]
-        for group in value.get("groups", []):
-            try:
-                resolved, _runner = _resolve_proof_group(group, facets.get("assurance", {}).get("proof_runners", []))
-            except AssuranceError:
-                # Core records binding failures and routes them back to Tester diagnosis.
-                continue
-            argv = resolved.get("argv", [])
-            framework = "unittest" if "unittest" in argv else "pytest" if "pytest" in argv else ""
-            if not framework:
-                continue
-            normalized_ids = []
-            for test_id in group.get("test_ids", []):
-                if proof_test_source_path(
-                    self.repo, tester_head, framework, test_id, tester_patterns
-                ) is not None:
-                    normalized_ids.append(test_id)
-                    continue
-                candidates: set[str] = set()
-                for module in modules:
-                    basename = module.rsplit(".", 1)[-1]
-                    if framework == "unittest":
-                        if test_id == basename or test_id.startswith(basename + "."):
-                            candidates.add(module + test_id[len(basename) :])
-                        else:
-                            candidates.add(module + "." + test_id)
-                    elif "::" in test_id:
-                        file_part, suffix = test_id.split("::", 1)
-                        path = module.replace(".", "/") + ".py"
-                        if file_part == Path(path).name:
-                            candidates.add(path + "::" + suffix)
-                bound = sorted(
-                    candidate
-                    for candidate in candidates
-                    if proof_test_source_path(
-                        self.repo, tester_head, framework, candidate, tester_patterns
-                    ) is not None
-                )
-                normalized_ids.append(bound[0] if len(bound) == 1 else test_id)
-            group["test_ids"] = normalized_ids
-        return value
 
     def _context(self) -> dict[str, Any]:
         return self.core.call(
@@ -2402,6 +2087,12 @@ class NativeCoordinator:
                 "proof_spec": "must_be_null",
                 "problem_report": "object_only_when_blocked_or_target_change_required_else_null",
             }
+        if AGENT_ACTION_CAPABILITIES[action].result_payload == "proof_spec":
+            return {
+                "evidence_report": "must_be_null",
+                "proof_spec": "required_object_unless_problem_report",
+                "problem_report": "object_only_when_blocked_or_target_change_required_else_null",
+            }
         if action == "tester_proof_diagnose":
             return {
                 "evidence_report": "must_be_null",
@@ -2446,151 +2137,9 @@ class NativeCoordinator:
             value["proof_spec"] = None
         return value
 
-    @staticmethod
-    def _validate_proof_diagnosis(
-        result: dict[str, Any],
-        *,
-        proof_failure: Any = None,
-        proof_runners: list[dict[str, Any]] | tuple = (),
-    ) -> None:
-        def semantic_digest(value):
-            resolved = copy.deepcopy(value)
-            try:
-                resolved["groups"] = [_resolve_proof_group(group, proof_runners)[0] for group in value.get("groups", [])]
-            except AssuranceError:
-                return proof_semantic_digest(value)
-            return proof_semantic_digest(resolved)
 
-        spec = result.get("proof_spec")
-        report = result.get("problem_report")
-        problems = report.get("problems") if isinstance(report, dict) else None
-        if isinstance(spec, dict):
-            if isinstance(report, dict):
-                raise NativeDriverError(
-                    "proof diagnosis returned both a replacement spec and a problem",
-                    code="NATIVE_PROOF_DIAGNOSIS_AMBIGUOUS",
-                )
-            if result.get("result") != "tests_ready":
-                raise NativeDriverError(
-                    "proof diagnosis returned an invalid replacement result",
-                    code="NATIVE_PROOF_DIAGNOSIS_INVALID",
-                )
-            prior_digest = (
-                proof_failure.get("spec_digest")
-                if isinstance(proof_failure, dict)
-                else None
-            )
-            if not isinstance(prior_digest, str):
-                raise NativeDriverError(
-                    "proof diagnosis has no persisted source spec",
-                    code="NATIVE_PROOF_DIAGNOSIS_FAILURE_MISSING",
-                )
-            prior_spec = proof_failure.get("spec") if isinstance(proof_failure, dict) else None
-            unchanged = (semantic_digest(spec) == semantic_digest(prior_spec)
-                         if isinstance(prior_spec, dict) else digest(spec) == prior_digest)
-            if unchanged:
-                raise NativeDriverError(
-                    "proof diagnosis replacement spec did not change",
-                    code="NATIVE_PROOF_DIAGNOSIS_NO_PROGRESS",
-                )
-            return
-        if result.get("result") not in {"fail", "blocked", "target_change_required"}:
-            raise NativeDriverError(
-                "proof diagnosis returned an invalid terminal result",
-                code="NATIVE_PROOF_DIAGNOSIS_INVALID",
-            )
-        if not isinstance(problems, list) or not problems:
-            raise NativeDriverError(
-                "proof diagnosis returned no problems",
-                code="NATIVE_PROOF_DIAGNOSIS_MISSING",
-            )
-        invalid = [
-            item.get("owner")
-            for item in problems
-            if not isinstance(item, dict)
-            or item.get("owner") not in {"builder", "tester", "plan"}
-        ]
-        if invalid:
-            raise NativeDriverError(
-                "proof diagnosis returned an unsupported owner",
-                code="NATIVE_PROOF_DIAGNOSIS_OWNER_INVALID",
-                details={"owners": invalid},
-            )
 
-    @staticmethod
-    def _validate_machine_diagnosis(result: dict[str, Any]) -> None:
-        report = result.get("problem_report")
-        problems = report.get("problems") if isinstance(report, dict) else None
-        if result.get("result") not in {"fail", "blocked", "target_change_required"}:
-            raise NativeDriverError(
-                "machine diagnosis returned an invalid terminal result",
-                code="NATIVE_MACHINE_DIAGNOSIS_INVALID",
-            )
-        if not isinstance(problems, list) or not problems:
-            raise NativeDriverError(
-                "machine diagnosis returned no problems",
-                code="NATIVE_MACHINE_DIAGNOSIS_MISSING",
-            )
-        allowed = {
-            "builder",
-            "tester",
-            "plan",
-            "current_project",
-            "builder_loop",
-            "external_platform",
-        }
-        invalid = [
-            item.get("owner")
-            for item in problems
-            if not isinstance(item, dict) or item.get("owner") not in allowed
-        ]
-        if invalid:
-            raise NativeDriverError(
-                "machine diagnosis returned an unsupported owner",
-                code="NATIVE_MACHINE_DIAGNOSIS_OWNER_INVALID",
-                details={"owners": invalid},
-            )
 
-    @staticmethod
-    def _proof_failure_matches(
-        value: Any,
-        state: Any,
-        action_id: str,
-        error: CorePortError,
-    ) -> bool:
-        failure = value.get("failure") if isinstance(value, dict) else None
-        return bool(
-            state == "current"
-            and value.get("action_id") == action_id
-            and isinstance(value.get("failure_digest"), str)
-            and isinstance(failure, dict)
-            and failure.get("code") == error.code
-            and failure.get("status") == error.status
-        )
-
-    @staticmethod
-    def _persisted_proof_failure_matches(
-        value: Any,
-        state: Any,
-        action_id: str,
-        spec: dict[str, Any],
-        agent: dict[str, Any],
-    ) -> bool:
-        producer = value.get("producer") if isinstance(value, dict) else None
-        return bool(
-            isinstance(value, dict)
-            and state == "current"
-            and value.get("action_id") == action_id
-            and value.get("spec") == spec
-            and value.get("spec_digest") == digest(spec)
-            and isinstance(value.get("failure_digest"), str)
-            and producer
-            == {
-                "role": "tester",
-                "agent_id": agent.get("agent_id"),
-                "thread_id": agent.get("thread_id"),
-            }
-        )
 
     def _turn_cwd(self, action: dict[str, Any], role: str, context: dict[str, Any]) -> str:
         if action.get("action") == "builder_recompose_fix":
@@ -3050,7 +2599,7 @@ class NativeCoordinator:
             return None
         normalized = self._normalize_action_result(action, parsed)
         try:
-            return validate_agent_result(normalized)
+            return validate_action_result(normalized, action)
         except ContractError as exc:
             if exc.code not in ROLE_RESULT_VALIDATION_FAILURE_CODES:
                 raise

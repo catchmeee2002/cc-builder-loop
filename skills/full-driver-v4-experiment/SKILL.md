@@ -70,9 +70,9 @@ dispatch。直到 `finalize` 或明确的决策边界。动作面如下，不能
   修复、fixture 修正和实现缺陷不修改 Mission。
 - Full Driver fallback 每次角色 turn 先用 `begin-dispatch` 绑定当前 `action_id`、role/thread、
   prompt/output digest，并显式传 `--driver-runtime-kind full_driver_skill`；真实 turn 开始后再
-  `bind-dispatch-turn`，结果用 `complete-dispatch` 落盘并以
-  `consume-dispatch --consumer-source full_driver_skill` 消费。Native transport 字段只由 Native Driver
-  owner 绑定，不能由 fallback 冒充。
+  `bind-dispatch-turn`。角色结果统一交给 `apply-dispatch-result --driver-runtime-kind full_driver_skill`，
+  绑定同一 action/generation；中断后省略 `--result` 续接已接受 artifact，不重派角色，不手工交错
+  integration、evidence 和 consume。Native transport 字段只由 Native Driver owner 绑定。
 - `checkpoint_builder`：Builder 工作完成后先提交 candidate，再调用 `checkpoint-builder`，让 Core
   计算并绑定 candidate HEAD、builder files 和 evidence invalidation；Skill 不手写 Execution 清单。
 - `scan_doc_references`：每次 candidate identity 变化后、进入 Tester 或 Reviewer 前调用 Core
@@ -98,10 +98,10 @@ dispatch。直到 `finalize` 或明确的决策边界。动作面如下，不能
   与 blob 不可变。后续发现 prerequisite 需要修复时只能经 Core 重组事务生成下一 generation，并让 Tester
   source 与全部受影响 evidence 对新 candidate 重新绑定。
 - `tester_author`：首次 spawn Tester；后续 correction 使用同一 thread 续接。收到
-  `TESTER_RESULT` 与 `PROBLEM_REPORT` JSON 后先校验身份和 schema；`tests_ready` 才调用
-  `integrate-tester` 并记录 tester evidence。
+  `TESTER_RESULT` 与 `PROBLEM_REPORT` JSON 后先校验身份和 schema，再经结果应用入口完成
+  integration 和 tester evidence。
 - `prove-tests` / `tester_proof`：由同一 Tester thread 对冻结 behaviors 产出 proof spec；主线程把
-  spec 和真实 Tester identity 交给实验 namespace 的 `prove-tests --action-id <action_id>`。Core 按
+  spec 随角色结果交给应用入口，Core 绑定真实 Tester identity 并执行 proof。Core 按
   公共 `schema/codex-test-proof.schema.json` 先运行全部 candidate group；任一失败时在首个
   group/result 兼容字段外附有序 `failures`，且不运行 baseline-red/mutation。全部 candidate 通过后才
   执行既有反例语义，只有每个 behavior 恰好一次且反例为真实 assertion failure 时才记录 proof evidence。命令非零后先读回
@@ -111,9 +111,9 @@ dispatch。直到 `finalize` 或明确的决策边界。动作面如下，不能
 - `tester_proof_diagnose`：续接原 Tester thread，只把 Driver 返回的 current `proof_failure` 交给
   `phase=proof_diagnose`。本 turn 只归因、不改文件、不自行重跑：仅 proof execution input 需修正时，
   返回 `result=tests_ready` 和 digest 已变化的 replacement `proof_spec`，主线程以同一 diagnosis
-  `action_id` 调用 `prove-tests`，不得调用 `integrate-tester` 或新增 problem；candidate、Tester source 或
+  `action_id` 提交 `apply-dispatch-result`，不得调用 `integrate-tester` 或新增 problem；candidate、Tester source 或
   contract 需要变化时才返回非空 problem，owner 仅为 builder、tester 或 plan，并调用
-  `record-problems --action-id <action_id>`。`proof_failure_decision` 直接停止到用户，不把环境、身份或
+  结果应用入口原子记录问题。`proof_failure_decision` 直接停止到用户，不把环境、身份或
   完整性错误猜成角色修复。
 - `verify_preflight`：在 Tester integration 后运行所有 `run_before_full_suite:true` 的 focused machine
   commands。结果绑定当前 candidate；最终 `verify_machine` 只能复用同 candidate、同 dependency 的真实
@@ -123,7 +123,7 @@ dispatch。直到 `finalize` 或明确的决策边界。动作面如下，不能
   `expected_returncodes`，失败不能被 shell 包装成 PASS。
 - `tester_machine_diagnose`：续接原 Tester thread，只读 current `machine_failure` 归因，不改文件、不重跑
   machine。问题按 builder、tester、plan、current_project、builder_loop 或 external_platform 拆分后
-  `record-problems`；同 signature 三次才进入 architecture review。
+  随角色结果提交应用入口；同 signature 三次才进入 architecture review。
 - `prepare_deployment`：仅当计划冻结了已授权真实环境时调用 Core。Core 从 candidate HEAD 创建隔离部署
   worktree，运行项目提供的查询、构建和部署命令，绑定制品 SHA256 与环境状态；不得切换 target
   checkout。若当前 probe 已证明授权目标承载相同制品，Core 会跳过重复 deploy；这不复用旧 blackbox
@@ -132,7 +132,7 @@ dispatch。直到 `finalize` 或明确的决策边界。动作面如下，不能
   thread，在 candidate worktree 的 integrated HEAD 执行结构化 blackbox；逐命令实际 returncode 必须
   命中冻结的 `expected_returncodes`。新 observation contract 还必须逐 case 回传相同 surface、实际
   execution ids、外部 target 和三个判据维度；缺 case、错表面或代理 evidence 都不能登记 PASS。
-  部署型 run 先调用 `stage-blackbox` 暂存结果，不直接登记 PASS。
+  部署型结果由应用入口调用 `stage-blackbox` 暂存，不直接登记 PASS。
 - `restore_deployment` / `complete_blackbox`：部署型 run 无论 Tester 通过、失败或控制面中断，都先执行
   项目恢复命令并由 probe 证明回到部署前状态；恢复成功后才把暂存结果绑定制品、环境和恢复事实，登记
   blackbox evidence。跳过 deploy 的事务只重新 probe 并确认环境未漂移，不执行会改变既有环境的恢复
@@ -199,7 +199,7 @@ dispatch。直到 `finalize` 或明确的决策边界。动作面如下，不能
 - `finalize`：readiness 全绿后调用 Core 原子收尾，不自行移动 target ref、stash 或删除未知 worktree。
 
 每个 Tester/Reviewer 的非通过结果都必须携带唯一、非空、符合
-`schema/codex-problem-report.schema.json` 的 `PROBLEM_REPORT`。主线程调用 `record-problems` 原样登记，
+`schema/codex-problem-report.schema.json` 的 `PROBLEM_REPORT`。主线程经结果应用入口原样登记，
 按 owner 穷举路由：普通 `tester` → `tester_fix`，当前 Tester producer 明确
 `producer_continuity=invalid` → `replace_tester`，`builder` → `builder_fix`，`plan` → 产品/契约决定，
 `external_platform` → 上述授权恢复流程，`builder_loop` / `current_project` → 专属 NEEDS_USER decision。
@@ -216,8 +216,8 @@ Tester continuity 或 Reviewer continuity 丢失时，优先 same-thread 续接�
 到达 `FINALIZED`、`NEEDS_USER`、`FATAL`、continuity failure 或 abandon 后，统一读取
 [交付后事故归属](../builder/references/post-delivery-retrospective.md)，先调用
 `assurance retrospective-status --repo <repo> --session-id <session>` 取得所有 terminal root 的 canonical
-snapshot，再逐项完成分流并通过 `assurance record-retrospective` 原子记录。Full Driver Skill 调
-`consume-dispatch` 时显式传 `--consumer-source full_driver_skill`；operator recovery 传
+snapshot，再逐项完成分流并通过 `assurance record-retrospective` 原子记录。结果应用入口自动绑定
+consumer source；只读诊断后直接消费已有完整事实的 operator recovery 传
 `--consumer-source operator_recovery`。完成工程问题分流后，才以
 `builder-loop delegated` 模式调用 `$memory-review`；不得复制旧版五问或把 memory 当成 Issue、代码、
 测试、契约和项目文档的替代品。最终消息必须逐字包含 status 返回的 `required_user_block`；完整

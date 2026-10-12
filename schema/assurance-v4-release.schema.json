@@ -16,7 +16,7 @@
     "repo_root": {"type": "string", "minLength": 1},
     "owner_session_id": {"type": "string", "minLength": 1},
     "version": {"type": "string", "minLength": 1},
-    "tag": {"type": "string", "pattern": "^v\\S+$"},
+    "tag": {"type": "string", "pattern": "^(codex-)?v\\S+$"},
     "release_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
     "snapshot_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "report_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},

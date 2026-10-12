@@ -44,6 +44,7 @@ from .models import (
     work_units,
     validate_new_contract,
     validate_agent_result,
+    validate_action_result,
     validate_admission,
     validate_candidate_residue_resolution,
     validate_environment_probe,
@@ -944,6 +945,8 @@ def save_ledger(repo: Path, ledger: dict[str, Any]) -> None:
             status="NEEDS_USER",
             details={"runtime_compatibility": compatibility},
         )
+    from .result_application import checkpoint_observation
+    checkpoint_observation(ledger)
     _store_save_ledger(repo, ledger)
 
 
@@ -1411,6 +1414,17 @@ def _runtime_support_snapshot(
             for path in listed.stdout.splitlines()
             if path and _matches(path, authority_patterns)
         ]
+        # Exact future paths are authorized inputs too. A glob does not grant
+        # permission to silently extend the protected support declaration.
+        candidate_paths = sorted(set(candidate_paths) | {
+            path
+            for path in [
+                *authority_patterns,
+                *contract["authority"].get("protected_support_paths", []),
+            ]
+            if not any(character in path for character in "*?[")
+            and _matches(path, authority_patterns)
+        })
         affected_paths, affected_gates, required_independent = (
             _runtime_support_selection(manifest, candidate_paths)
         )
@@ -1430,6 +1444,8 @@ def _assert_runtime_support_contract(
     contract: Mapping[str, Any],
     snapshot: Mapping[str, Any],
     required_independent: Sequence[str],
+    *,
+    observed: bool = False,
 ) -> None:
     if snapshot.get("mode") != "self_hosted" or not snapshot.get("affected_paths"):
         return
@@ -1446,7 +1462,8 @@ def _assert_runtime_support_contract(
         )
     declared = sorted(contract["authority"].get("protected_support_paths", []))
     expected = sorted(snapshot["affected_paths"])
-    if declared != expected:
+    paths_match = set(expected).issubset(declared) if observed else declared == expected
+    if not paths_match:
         raise AssuranceError(
             "protected preparation paths do not exactly match the affected runtime support",
             code="RUNTIME_PREPARATION_PATH_MISMATCH",
@@ -1628,12 +1645,45 @@ def _probe_proof_runner(worktree: Path, command: Mapping[str, Any], executable: 
                 and observation.get("framework") == framework and observation.get("tests") == [])
 
 
+def _validate_launcher_arguments(command: Mapping[str, Any]) -> None:
+    """Check supported uv dependency options without parsing a shell or child argv."""
+    argv = command["argv"]
+    if Path(argv[0]).name != "uv" or "run" not in argv[1:]:
+        return
+    index = argv.index("run", 1) + 1
+    dependencies = {"--with", "--with-editable", "--with-requirements"}
+    valued = dependencies | {
+        "--python", "--project", "--directory", "--package", "--index",
+        "--index-url", "--default-index", "--extra-index-url", "--config-file",
+        "--cache-dir", "--env-file", "--resolution", "--prerelease", "--index-strategy",
+    }
+    while index < len(argv):
+        argument = argv[index]
+        if argument == "--" or not argument.startswith("-"):
+            break
+        option, separator, value = argument.partition("=")
+        if option in dependencies and (
+            (separator and not value.strip())
+            or (not separator and (
+                index + 1 == len(argv) or not argv[index + 1].strip()
+                or argv[index + 1].startswith("-")
+            ))
+        ):
+            raise AssuranceError(
+                "uv dependency option requires a value",
+                code="COMMAND_ARGUMENT_INVALID", status="FAIL",
+                details={"command_id": command["id"], "argument_index": index, "option": option},
+            )
+        index += 2 if option in valued and not separator else 1
+
+
 def _admission_report(
     repo: Path,
     contract: Mapping[str, Any],
 ) -> dict[str, Any]:
     command_admission: list[dict[str, Any]] = []
     for surface, latest_check_stage, command in _contract_command_surfaces(contract):
+        _validate_launcher_arguments(command)
         requested = command["argv"][0]
         requested_path = Path(requested)
         if not requested_path.is_absolute() and "/" in requested:
@@ -4080,6 +4130,7 @@ def complete_dispatch(
     action_id: str,
     result_value: Any,
     owner_session_id: str | None = None,
+    expected_generation: int | None = None,
 ) -> dict[str, Any]:
     result = validate_agent_result(result_value)
     repo = resolve_repo(repo_value)
@@ -4090,6 +4141,8 @@ def complete_dispatch(
         intent = ledger.get("dispatch_intent")
         if not isinstance(intent, dict) or intent.get("action_id") != action_id:
             raise AssuranceError("dispatch action is stale", code="DRIVER_ACTION_STALE", status="FAIL")
+        if expected_generation is not None and intent.get("generation", 1) != expected_generation:
+            raise AssuranceError("dispatch generation changed", code="DISPATCH_APPLICATION_GENERATION_MISMATCH", status="FAIL")
         if (
             intent.get("owner_mode") == "root_session"
             and intent.get("owner_session_id") != owner_session_id
@@ -4103,6 +4156,7 @@ def complete_dispatch(
                     "provided_session_id": owner_session_id,
                 },
             )
+        result = validate_action_result(result, intent["action"])
         if intent.get("state") == "completed":
             if digest(result) not in {intent.get("result_digest"), intent.get("submitted_result_digest")}:
                 raise AssuranceError(
@@ -4112,6 +4166,27 @@ def complete_dispatch(
             return status(repo, run_id)
         if intent.get("role") == "reviewer":
             _assert_reviewer_integrity(ledger)
+        report = result.get("evidence_report")
+        if isinstance(report, dict) and not isinstance(result.get("problem_report"), dict):
+            execution = ledger["facets"]["execution"]
+            expected = execution["agents"].get(intent["role"])
+            producer = report["producer"]
+            if {"agent_id": producer["agent_id"], "thread_id": producer["thread_id"]} != expected:
+                raise ContractError("evidence producer differs from dispatch", code="EVIDENCE_REPORT_INVALID",
+                                    details={"path": "producer", "action_id": action_id})
+            if intent["action"] not in {"tester_author", "tester_fix"}:
+                if report["candidate_head"] != execution.get("candidate_head"):
+                    raise ContractError("evidence candidate differs from dispatch", code="EVIDENCE_REPORT_INVALID",
+                                        details={"path": "candidate_head", "action_id": action_id})
+                if intent["role"] == "reviewer" and report["details"].get("reviewed_head") != execution.get("candidate_head"):
+                    raise ContractError("reviewed HEAD differs from dispatch", code="EVIDENCE_REPORT_INVALID",
+                                        details={"path": "details/reviewed_head", "action_id": action_id})
+                if intent["action"] == "tester_blackbox":
+                    try:
+                        _validate_blackbox_report(ledger, report)
+                    except AssuranceError as exc:
+                        raise ContractError(str(exc), code="EVIDENCE_REPORT_INVALID",
+                                            details={"source_code": exc.code, **exc.details}) from exc
         submitted_digest = digest(result)
         result = _intake_proof_files(repo, ledger, intent, result)
         intent["submitted_result_digest"] = submitted_digest
@@ -4171,8 +4246,20 @@ def _mark_root_builder_result_applied(
     intent: dict[str, Any] | None,
     application: str,
 ) -> bool:
+    from .result_application import mark_effect
+    marked = mark_effect(ledger, {
+        "checkpoint_builder": "checkpoint", "record_problems": "problems",
+        "recompose_candidate": "recompose",
+    }[application])
     if intent is None:
-        return False
+        return marked
+    if isinstance(intent.get("application"), dict):
+        if marked:
+            append_event(ledger, "root_builder_result_applied", {
+                "action_id": intent["action_id"], "action": intent["action"],
+                "application": application, "result_digest": intent.get("result_digest"),
+            })
+        return marked
     existing = intent.get("result_application")
     if existing is not None and existing != application:
         raise AssuranceError(
@@ -4182,7 +4269,7 @@ def _mark_root_builder_result_applied(
             details={"expected": existing, "provided": application},
         )
     if existing == application:
-        return False
+        return marked
     intent["result_application"] = application
     append_event(
         ledger,
@@ -4227,174 +4314,35 @@ def _expected_root_builder_result_application(intent: Mapping[str, Any]) -> str:
     return "checkpoint_builder"
 
 
-def apply_root_builder_result(
-    repo_value: str | Path,
-    run_value: str,
-    *,
-    action_id: str,
-    owner_session_id: str,
-    result_value: Any | None = None,
+def apply_dispatch_result(
+    repo_value: str | Path, run_value: str, *, action_id: str,
+    driver_runtime_kind: str, generation: int | None = None,
+    owner_session_id: str | None = None, result_value: Any | None = None,
 ) -> dict[str, Any]:
-    """Complete and apply one root-session Builder result.
-
-    The individual Core transactions remain the source of truth.  This
-    facade only makes their ordering replayable for the owning root session.
-    """
-
-    repo = resolve_repo(repo_value)
-    run_id = ensure_run_id(run_value)
-    normalized_session = owner_session_id.strip()
-    if not normalized_session:
-        raise AssuranceError(
-            "root Builder result application requires an owner session",
-            code="BUILDER_OWNER_SESSION_REQUIRED",
-            status="FAIL",
-        )
-
-    already_consumed = False
-    # Validate the frozen owner and dispatch before accepting a caller-supplied
-    # result.  A non-root dispatch must never be partially completed by this
-    # convenience entry point.
-    with locked(repo):
-        ledger = read_ledger(repo, run_id)
-        if _builder_mode(ledger) != "root_session":
-            raise AssuranceError(
-                "root Builder result application requires root-session mode",
-                code="ROOT_BUILDER_MODE_REQUIRED",
-                status="FAIL",
-            )
-        runtime = ledger.get("driver_runtime")
-        if not (
-            isinstance(runtime, Mapping)
-            and runtime.get("kind") == "native"
-            and runtime.get("transport") == "root_session"
-        ):
-            raise AssuranceError(
-                "root Builder result application requires the Native root transport",
-                code="ROOT_BUILDER_RUNTIME_REQUIRED",
-                status="FAIL",
-            )
-        _assert_builder_owner(ledger, owner_session_id=normalized_session)
-        intent = ledger.get("dispatch_intent")
-        if not isinstance(intent, Mapping) or intent.get("action_id") != action_id:
-            if result_value is None and _root_builder_dispatch_consumed(
-                ledger, action_id
-            ):
-                already_consumed = True
-            else:
-                raise AssuranceError(
-                    "root Builder result application action is stale",
-                    code="DRIVER_ACTION_STALE",
-                    status="FAIL",
-                )
-        if already_consumed:
-            pass
-        elif intent.get("role") != "builder" or intent.get("owner_mode") != "root_session":
-            raise AssuranceError(
-                "root Builder result application requires a root Builder dispatch",
-                code="ROOT_BUILDER_MODE_REQUIRED",
-                status="FAIL",
-            )
-    if already_consumed:
-        result = status(repo, run_id)
-        from .driver import next_action
-
-        result["next_action"] = next_action(repo, run_id)
-        return result
-
-    if result_value is not None:
-        complete_dispatch(
-            repo,
-            run_id,
-            action_id=action_id,
-            result_value=result_value,
-            owner_session_id=normalized_session,
-        )
-
-    with locked(repo):
-        ledger = read_ledger(repo, run_id)
-        intent = ledger.get("dispatch_intent")
-        if not isinstance(intent, Mapping) or intent.get("action_id") != action_id:
-            raise AssuranceError(
-                "root Builder result application action is stale",
-                code="DRIVER_ACTION_STALE",
-                status="FAIL",
-            )
-        _assert_builder_owner(ledger, owner_session_id=normalized_session)
-        if intent.get("state") != "completed":
-            raise AssuranceError(
-                "root Builder result must be completed before application",
-                code="ROOT_BUILDER_DISPATCH_NOT_COMPLETE",
-                status="FAIL",
-            )
-        expected_application = _expected_root_builder_result_application(intent)
-        existing_application = intent.get("result_application")
-        if (
-            existing_application is not None
-            and existing_application != expected_application
-        ):
-            raise AssuranceError(
-                "root Builder result application does not match its result",
-                code="ROOT_BUILDER_RESULT_APPLICATION_MISMATCH",
-                status="FAIL",
-                details={
-                    "expected": expected_application,
-                    "actual": existing_application,
-                },
-            )
-        owner = ledger["facets"]["execution"]["agents"].get("builder")
-    if not isinstance(owner, Mapping):
-        raise AssuranceError(
-            "root Builder owner is missing",
-            code="NATIVE_ROOT_BUILDER_OWNER_MISSING",
-            status="NEEDS_USER",
-        )
-
-    if existing_application is None:
-        if expected_application == "record_problems":
-            result = _read_dispatch_result_artifact(intent)
-            report = result.get("problem_report")
-            if not isinstance(report, Mapping):
-                raise AssuranceError(
-                    "root Builder result does not contain a problem report",
-                    code="ROOT_BUILDER_RESULT_APPLICATION_MISMATCH",
-                    status="FAIL",
-                )
-            record_problems(
-                repo,
-                run_id,
-                report,
-                role="builder",
-                agent_id=str(owner["agent_id"]),
-                thread_id=None,
-                action_id=action_id,
-                owner_session_id=normalized_session,
-            )
-        elif expected_application == "recompose_candidate":
-            recompose_candidate(
-                repo,
-                run_id,
-                action_id=action_id,
-                owner_session_id=normalized_session,
-            )
-        else:
-            checkpoint_builder(
-                repo,
-                run_id,
-                action_id=action_id,
-                owner_session_id=normalized_session,
-            )
-
-    consume_dispatch(
-        repo,
-        run_id,
-        action_id=action_id,
-        consumer_source="root_session",
-        owner_session_id=normalized_session,
+    from .result_application import apply
+    return apply(
+        repo_value, run_value, action_id=action_id,
+        driver_runtime_kind=driver_runtime_kind, generation=generation,
+        owner_session_id=owner_session_id, result_value=result_value,
     )
-    result = status(repo, run_id)
-    from .driver import next_action
 
+
+def apply_root_builder_result(
+    repo_value: str | Path, run_value: str, *, action_id: str,
+    owner_session_id: str, result_value: Any | None = None,
+) -> dict[str, Any]:
+    repo, run_id = resolve_repo(repo_value), ensure_run_id(run_value)
+    ledger = read_ledger(repo, run_id)
+    if _builder_mode(ledger) != "root_session":
+        raise AssuranceError("root Builder requires root-session mode", code="ROOT_BUILDER_MODE_REQUIRED", status="FAIL")
+    if ledger.get("driver_runtime", {}).get("transport") != "root_session":
+        raise AssuranceError("root Builder requires Native root transport", code="ROOT_BUILDER_RUNTIME_REQUIRED", status="FAIL")
+    _assert_builder_owner(ledger, owner_session_id=owner_session_id)
+    result = apply_dispatch_result(
+        repo, run_id, action_id=action_id, driver_runtime_kind="native",
+        owner_session_id=owner_session_id, result_value=result_value,
+    )
+    from .driver import next_action
     result["next_action"] = next_action(repo, run_id)
     return result
 
@@ -6252,7 +6200,7 @@ def consume_dispatch(
             and intent.get("owner_mode") == "root_session"
         ):
             expected_application = _expected_root_builder_result_application(intent)
-            if intent.get("result_application") != expected_application:
+            if not isinstance(intent.get("application"), dict) and intent.get("result_application") != expected_application:
                 raise AssuranceError(
                     "root Builder result must be applied before dispatch consumption",
                     code="ROOT_BUILDER_RESULT_NOT_APPLIED",
@@ -6264,6 +6212,8 @@ def consume_dispatch(
                 )
         if intent.get("state") != "completed":
             raise AssuranceError("dispatch is not complete", code="DISPATCH_NOT_COMPLETE")
+        from .result_application import assert_applied
+        assert_applied(ledger, intent)
         if consumer_source is None:
             runtime = ledger.get("driver_runtime")
             kind = runtime.get("kind") if isinstance(runtime, dict) else None
@@ -6297,6 +6247,10 @@ def consume_dispatch(
                 "action_id": action_id,
                 "result_digest": intent.get("result_digest"),
                 "consumer_source": consumer_source,
+                "application_binding": intent.get("application", {}).get("binding_digest"),
+                "submitted_result_digest": intent.get("submitted_result_digest"),
+                "owner_session_id": intent.get("owner_session_id"),
+                "generation": intent.get("generation", 1),
             },
         )
         ledger["dispatch_intent"] = None
@@ -10604,7 +10558,10 @@ def status(repo_value: str | Path, run_value: str) -> dict[str, Any]:
     repo = resolve_repo(repo_value)
     run_id = ensure_run_id(run_value)
     ledger = read_ledger(repo, run_id)
+    from .result_application import recovery_view
+    recovery = recovery_view(ledger)
     public_status = (
+        "NEEDS_USER" if recovery and recovery["state"] == "needs_user" else
         "HELD" if hold_ready(ledger) else
         "FATAL"
         if ledger["phase"] == "failed"
@@ -10641,6 +10598,7 @@ def status(repo_value: str | Path, run_value: str) -> dict[str, Any]:
         "deferred_wait": copy.deepcopy(ledger.get("deferred_wait")),
         "driver_failure": copy.deepcopy(ledger.get("driver_failure")),
         "dispatch_intent": copy.deepcopy(ledger.get("dispatch_intent")),
+        "dispatch_recovery": recovery,
         "dispatch_rehydration_intent": copy.deepcopy(
             ledger.get("dispatch_rehydration_intent")
         ),
@@ -11721,6 +11679,7 @@ def driver_context(repo_value: str | Path, run_value: str) -> dict[str, Any]:
     repo = resolve_repo(repo_value)
     run_id = ensure_run_id(run_value)
     ledger = read_ledger(repo, run_id)
+    from .result_application import recovery_view
     dispatch = ledger.get("dispatch_intent")
     candidate_observation: dict[str, Any] | None = None
     if (
@@ -11766,6 +11725,7 @@ def driver_context(repo_value: str | Path, run_value: str) -> dict[str, Any]:
         "deferred_wait": copy.deepcopy(ledger.get("deferred_wait")),
         "driver_failure": copy.deepcopy(ledger.get("driver_failure")),
         "dispatch_intent": copy.deepcopy(ledger.get("dispatch_intent")),
+        "dispatch_recovery": recovery_view(ledger),
         "dispatch_rehydration_intent": copy.deepcopy(
             ledger.get("dispatch_rehydration_intent")
         ),
@@ -12716,6 +12676,7 @@ def checkpoint_builder(
                 ledger["facets"],
                 actual_runtime_support,
                 required_independent,
+                observed=True,
             )
         except AssuranceError as exc:
             if exc.code in RUNTIME_PREPARATION_ERROR_CODES:
@@ -14611,70 +14572,76 @@ def integrate_tester(repo_value: str | Path, run_value: str) -> dict[str, Any]:
                 }
                 - new_paths
             )
-            for path in retired_paths:
-                if _blob_at(repo, source_head, path) is None:
-                    removed = git(
+            application = (ledger.get("dispatch_intent") or {}).get("application")
+            carryover = execution.get("carryover")
+            if isinstance(application, dict):
+                from .result_application import integrate_git
+                candidate = integrate_git(repo, ledger, source_head, tester_files, retired_paths)
+            else:
+                for path in retired_paths:
+                    if _blob_at(repo, source_head, path) is None:
+                        removed = git(
+                            candidate_worktree,
+                            "rm",
+                            "-r",
+                            "--ignore-unmatch",
+                            "--",
+                            path,
+                            check=False,
+                        )
+                        if removed.returncode != 0:
+                            raise AssuranceError(
+                                "retired Tester source could not remove an old file",
+                                code="TESTER_REPLACEMENT_REMOVE_FAILED",
+                                details={"path": path, "stderr": removed.stderr[-8000:]},
+                            )
+                        continue
+                    restored = git(
                         candidate_worktree,
-                        "rm",
-                        "-r",
-                        "--ignore-unmatch",
+                        "checkout",
+                        source_head,
                         "--",
                         path,
                         check=False,
                     )
-                    if removed.returncode != 0:
+                    if restored.returncode != 0:
                         raise AssuranceError(
-                            "retired Tester source could not remove an old file",
-                            code="TESTER_REPLACEMENT_REMOVE_FAILED",
-                            details={"path": path, "stderr": removed.stderr[-8000:]},
+                            "Tester source could not restore a retired path",
+                            code="TESTER_INTEGRATION_CHECKOUT_FAILED",
+                            details={"path": path, "stderr": restored.stderr[-8000:]},
                         )
-                    continue
-                restored = git(
+                for path in tester_files:
+                    if path in deleted_paths:
+                        checked_out = git(candidate_worktree, "rm", "--ignore-unmatch", "--", path, check=False)
+                    else:
+                        checked_out = git(candidate_worktree, "checkout", source_head, "--", path, check=False)
+                    if checked_out.returncode != 0:
+                        raise AssuranceError(
+                            "Tester source could not be materialized into candidate",
+                            code="TESTER_INTEGRATION_CHECKOUT_FAILED",
+                            details={"path": path, "stderr": checked_out.stderr[-8000:]},
+                        )
+                carryover = execution.get("carryover")
+                identical_carryover = isinstance(carryover, dict) and all(
+                    _blob_at(repo, candidate_before, item["path"]) == item["blob"]
+                    for item in manifest
+                )
+                committed = git(
                     candidate_worktree,
-                    "checkout",
-                    source_head,
-                    "--",
-                    path,
+                    "-c",
+                    "commit.gpgSign=false",
+                    "commit",
+                    *(["--allow-empty"] if identical_carryover else []),
+                    "-m",
+                    f"test(assurance): [cr_id_skip] Integrate Tester Source {source_head[:12]}",
                     check=False,
                 )
-                if restored.returncode != 0:
+                if committed.returncode != 0:
                     raise AssuranceError(
-                        "Tester source could not restore a retired path",
-                        code="TESTER_INTEGRATION_CHECKOUT_FAILED",
-                        details={"path": path, "stderr": restored.stderr[-8000:]},
+                        committed.stderr.strip() or "Tester integration commit failed",
+                        code="TESTER_INTEGRATION_COMMIT_FAILED",
                     )
-            for path in tester_files:
-                if path in deleted_paths:
-                    checked_out = git(candidate_worktree, "rm", "--ignore-unmatch", "--", path, check=False)
-                else:
-                    checked_out = git(candidate_worktree, "checkout", source_head, "--", path, check=False)
-                if checked_out.returncode != 0:
-                    raise AssuranceError(
-                        "Tester source could not be materialized into candidate",
-                        code="TESTER_INTEGRATION_CHECKOUT_FAILED",
-                        details={"path": path, "stderr": checked_out.stderr[-8000:]},
-                    )
-            carryover = execution.get("carryover")
-            identical_carryover = isinstance(carryover, dict) and all(
-                _blob_at(repo, candidate_before, item["path"]) == item["blob"]
-                for item in manifest
-            )
-            committed = git(
-                candidate_worktree,
-                "-c",
-                "commit.gpgSign=false",
-                "commit",
-                *(["--allow-empty"] if identical_carryover else []),
-                "-m",
-                f"test(assurance): [cr_id_skip] Integrate Tester Source {source_head[:12]}",
-                check=False,
-            )
-            if committed.returncode != 0:
-                raise AssuranceError(
-                    committed.stderr.strip() or "Tester integration commit failed",
-                    code="TESTER_INTEGRATION_COMMIT_FAILED",
-                )
-            candidate = git(candidate_worktree, "rev-parse", "HEAD").stdout.strip()
+                candidate = git(candidate_worktree, "rev-parse", "HEAD").stdout.strip()
             execution["version"] += 1
             execution["candidate_head"] = candidate
             ledger["reviewer_observation"] = _reviewer_manifest(ledger)
@@ -14709,9 +14676,12 @@ def integrate_tester(repo_value: str | Path, run_value: str) -> dict[str, Any]:
                 ),
             )
             _record_evidence_reuse(ledger)
+            from .result_application import mark_effect
+            mark_effect(ledger, "integration")
             save_ledger(repo, ledger)
         except Exception:
-            git(candidate_worktree, "reset", "--hard", candidate_before, check=False)
+            if not isinstance((ledger.get("dispatch_intent") or {}).get("application"), dict):
+                git(candidate_worktree, "reset", "--hard", candidate_before, check=False)
             raise
     return status(repo, run_id)
 
@@ -14883,6 +14853,16 @@ def record_evidence(
                     status="NEEDS_USER",
                     details={"blockers": blockers},
                 )
+        existing = ledger["evidence"].get(kind)
+        if (
+            isinstance(existing, dict)
+            and existing.get("candidate_head") == candidate
+            and existing.get("producer") == report["producer"]
+            and existing.get("status") == report["status"]
+            and existing.get("details") == report.get("details", {})
+            and existing.get("dependency_digest") == evidence_dependency(ledger, kind)
+        ):
+            return status(repo, run_id)
         record = {
             "kind": kind,
             "status": report["status"],
@@ -14940,6 +14920,8 @@ def record_evidence(
                 )
         if report["status"] == "pass" and role in {"tester", "reviewer"}:
             _close_problems(ledger, role, f"evidence:{kind}")
+        from .result_application import mark_effect
+        mark_effect(ledger, "evidence:" + kind)
         save_ledger(repo, ledger)
     return status(repo, run_id)
 
@@ -15361,8 +15343,8 @@ def prove_tests(
     repo = resolve_repo(repo_value)
     run_id = ensure_run_id(run_value)
     started_at = time.monotonic()
-    with locked(repo):
-        ledger = read_ledger(repo, run_id)
+    from .result_application import proof_snapshot
+    with proof_snapshot(repo, run_id) as (ledger, persist_proof):
         if ledger["phase"] != "active":
             raise AssuranceError("run is not active", code="ASSURANCE_RUN_NOT_ACTIVE")
         _assert_no_candidate_residue_intent(ledger)
@@ -15412,7 +15394,9 @@ def prove_tests(
                 artifact_root=artifact_root,
                 duration_ms=int((time.monotonic() - started_at) * 1000),
             )
-            save_ledger(repo, ledger)
+            from .result_application import mark_effect
+            mark_effect(ledger, "proof")
+            persist_proof()
             raise error
 
         def capture(call):
@@ -15864,7 +15848,9 @@ def prove_tests(
                 "duration_ms": int((time.monotonic() - started_at) * 1000),
             },
         )
-        save_ledger(repo, ledger)
+        from .result_application import mark_effect
+        mark_effect(ledger, "proof")
+        persist_proof()
     return status(repo, run_id)
 
 
@@ -18238,6 +18224,11 @@ def finalize(repo_value: str | Path, run_value: str, message: str) -> dict[str, 
             return status(repo, run_id)
         if ledger["phase"] != "active":
             raise AssuranceError("run is not active", code="ASSURANCE_RUN_NOT_ACTIVE")
+        if ledger.get("dispatch_intent") is not None:
+            raise AssuranceError(
+                "pending role result must be consumed before finalize",
+                code="DISPATCH_RESULT_PENDING", status="NEEDS_USER",
+            )
         if ledger.get("hold") is not None:
             raise AssuranceError("Explicitly release the hold before finalize", code="FINALIZE_HELD", status="NEEDS_USER")
         deployment = ledger["facets"]["execution"].get("deployment")

@@ -3473,6 +3473,27 @@
         "tests.test_fixture_parallel_runner.ParallelFixturesTest.test_serial_and_parallel_have_same_tests_and_propagate_failure",
         "tests.test_fixture_parallel_runner.ParallelFixturesTest.test_nested_same_named_modules_share_one_inventory"
       ]
+    },
+    {
+      "behavior": "Completed role results retain ordered application and replay safety across the Native/Core boundary",
+      "status": "covered",
+      "replacement": "One Core result application transaction with real Git interruption regression; Native only forwards identity",
+      "test_ids": [
+        "tests.test_result_application_contract.ResultApplicationContractTest.test_checkpoint_interruption_resumes_without_repeating_or_rebinding_dispatch",
+        "tests.test_result_application_contract.ResultApplicationContractTest.test_tester_integration_interruption_keeps_candidate_and_records_evidence_once",
+        "tests.test_result_application_contract.ResultApplicationContractTest.test_git_integration_recovers_after_worktree_switch_before_ledger_commit",
+        "tests.test_native_driver_v1.NativeCoordinatorContractTest.test_completed_role_results_use_the_core_application_facade"
+      ]
+    },
+    {
+      "behavior": "Proof errors are persisted before consumption and spec-only corrections preserve Tester source",
+      "status": "covered",
+      "replacement": "Real proof execution through apply-dispatch-result replaces Native call-order mocks",
+      "test_ids": [
+        "tests.test_result_application_contract.ResultApplicationContractTest.test_persisted_proof_failure_resumes_to_spec_correction_without_reintegration",
+        "tests.test_result_application_contract.ResultApplicationContractTest.test_unrecorded_proof_error_preserves_accepted_dispatch",
+        "tests.test_full_driver_v4_contract.FullDriverV4ContractTest.test_proof_diagnosis_problem_routes_to_declared_owner"
+      ]
     }
   ]
 }

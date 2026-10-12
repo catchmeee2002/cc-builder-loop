@@ -127,8 +127,43 @@ class RuntimePreparationContractTest(unittest.TestCase):
             r"^[0-9a-f]{64}$",
         )
 
+    def test_explicit_new_support_path_is_admitted_and_checkpointed(self) -> None:
+        contract = self.preparation_contract(PROOF_CORE, NEW_PROOF_CORE)
+        validated = core.validate(contract, self.repo)
+        self.assertEqual(
+            validated["runtime_support"]["affected_paths"],
+            sorted([PROOF_CORE, NEW_PROOF_CORE]),
+        )
+        started = core.start(self.repo, "new-support", "preparation-session", contract)
+        candidate = Path(started["candidate_worktree"])
+        (candidate / NEW_PROOF_CORE).write_text("VALUE = 2\n", encoding="utf-8")
+        first = commit_all(candidate, "add authorized support module")
+        core.checkpoint_builder(self.repo, "new-support")
+        self.assertEqual(
+            read_ledger(self.repo, "new-support")["facets"]["execution"]["candidate_head"],
+            first,
+        )
+        (candidate / PROOF_CORE).write_text("VALUE = 3\n", encoding="utf-8")
+        second = commit_all(candidate, "finish existing support module")
+        core.checkpoint_builder(self.repo, "new-support")
+        self.assertEqual(
+            read_ledger(self.repo, "new-support")["facets"]["execution"]["candidate_head"],
+            second,
+        )
+
+    def test_explicit_new_support_path_cannot_be_omitted_from_preparation(self) -> None:
+        contract = self.preparation_contract(PROOF_CORE, NEW_PROOF_CORE)
+        contract["authority"]["protected_support_paths"] = [PROOF_CORE]
+        with self.assertRaises(core.AssuranceError) as raised:
+            core.validate(contract, self.repo)
+        self.assertEqual(raised.exception.code, "RUNTIME_PREPARATION_PATH_MISMATCH")
+
     def test_checkpoint_uses_frozen_manifest_and_records_late_overlap(self) -> None:
         contract = self.preparation_contract(MANIFEST_PATH.as_posix(), NEW_PROOF_CORE)
+        contract["authority"]["builder_write"] = [
+            MANIFEST_PATH.as_posix(),
+            "runtime/codex_builder_loop/assurance_v4/new_*.py",
+        ]
         contract["authority"]["protected_support_paths"] = [MANIFEST_PATH.as_posix()]
         started = core.start(
             self.repo,
