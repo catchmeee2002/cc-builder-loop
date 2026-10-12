@@ -363,8 +363,8 @@ subagent threads 承担 Tester 与 Reviewer。runtime CLI 只处理可确定验�
              │ validated v4 contract + BUILDER_HANDOFF_READY
              ▼
  原生“实施计划” / $builder ─ optional exact dirty snapshot ─ Builder worktree
-    ├─ parallel_ready=true  ── Tester thread 与 Builder 可独立承载
-    └─ parallel_ready=false ─ exact public files → isolated publication HEAD/manifest
+    ├─ publication.required=false ─ Tester author 使用 spec HEAD
+    └─ publication.required=true  ─ exact public files → isolated publication HEAD/manifest
                                                    └→ Tester author baseline
         │ Tester author tests_ready → integrate tester commit
         ▼
@@ -567,8 +567,9 @@ Builder 与 Tester 使用冻结基线协作：
   不再次清空上下文。
 - `parallel_ready=true` 时，两者从 `spec_head` 具备独立承载条件；该事实不等于已经发生并发。
   Native Coordinator 当前一次只持有一个 `dispatch_intent`，按单动作串行落账；只有外部明确提供
-  两个独立执行承载时才可实际并行，且同一角色内部仍串行。为 `false` 时，Tester 必须等
-  `publish-prerequisites` 成功并从隔离 publication HEAD 启动。publication manifest 会绑定
+  两个独立执行承载时才可实际并行，且同一角色内部仍串行。v4 的动态调度就绪不决定 Tester 输入基线：
+  只有 `publication.required=true` 时才等待 `publish-prerequisites`，并从隔离 publication HEAD 启动；
+  无发布要求时始终使用 spec HEAD。publication manifest 会绑定
   Tester author turn、integration 与 Reviewer prerequisite snapshot；发布路径随后不可变。
 - Tester author 必须返回 `tests_ready`，runtime 将该 turn 与 Tester HEAD 持久化；即使测试 tree
   无变化，也必须显式完成 integration attestation。它只依据冻结计划、公开接口、计划声明的前置产物、

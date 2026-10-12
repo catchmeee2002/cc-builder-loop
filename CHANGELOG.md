@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Corrected v4 Tester author instructions to select the frozen input baseline from publication requirements,
+  independently of dynamic work-unit scheduling readiness.
+
 - Prepared 0.4.0 functional delivery recovery: all roles apply accepted dispatch results through one
   Core facade; root Builder retains its compatible entry. Atomic effect receipts preserve the original
   projection and reject external drift while resuming interrupted checkpoint, integration and evidence work.

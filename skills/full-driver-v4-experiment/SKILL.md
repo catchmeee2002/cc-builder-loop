@@ -92,12 +92,13 @@ dispatch。直到 `finalize` 或明确的决策边界。动作面如下，不能
 - Native transport 断流后，只有无输出且无副作用的当前工作单元允许使用现有 retry 限额；candidate
   或 Tester source 变化时禁止重放，必须保留 manifest 并进入 reconcile。canonical projection 是
   重建上下文的唯一输入，旧对话不作为事实来源。
-- `parallel_ready:false`：先 `publish-prerequisites`，再 spawn Tester 并以真实 identity 调用
+- `publication.required=true`：先 `publish-prerequisites`，再 spawn Tester 并以真实 identity 调用
   `prepare-tester`；Tester 只能从隔离
   publication HEAD 读取 exact file/blob manifest。publication path 集合冻结；每个 generation 的 manifest
   与 blob 不可变。后续发现 prerequisite 需要修复时只能经 Core 重组事务生成下一 generation，并让 Tester
   source 与全部受影响 evidence 对新 candidate 重新绑定。
-- `tester_author`：首次 spawn Tester；后续 correction 使用同一 thread 续接。收到
+- `tester_author`：输入基线只按 `publication.required` 决定；为 false 时使用 spec HEAD，不能因动态
+  `parallel_ready=false` 要求不存在的 publication。首次 spawn Tester；后续 correction 续接同一 thread。收到
   `TESTER_RESULT` 与 `PROBLEM_REPORT` JSON 后先校验身份和 schema，再经结果应用入口完成
   integration 和 tester evidence。
 - `prove-tests` / `tester_proof`：由同一 Tester thread 对冻结 behaviors 产出 proof spec；主线程把

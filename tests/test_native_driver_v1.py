@@ -7361,6 +7361,10 @@ class NativeCoordinatorContractTest(unittest.TestCase):
         self.assertIn("不含 `tester`", reviewer)
         self.assertIn("blackbox-only contract", tester)
         self.assertIn("`tester_source` 保持 null", tester)
+        self.assertIn("v4 仅以 `publication.required`", tester)
+        self.assertIn("不以 `parallel_ready`", tester)
+        self.assertIn("`publication.required=false`", tester)
+        self.assertIn("`publication.required=true`", tester)
 
     def test_tester_prompt_freezes_canonical_test_identity_rules(self) -> None:
         coordinator = NativeCoordinator(
