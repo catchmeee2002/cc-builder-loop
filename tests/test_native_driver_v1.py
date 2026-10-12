@@ -7358,6 +7358,8 @@ class NativeCoordinatorContractTest(unittest.TestCase):
         reviewer, _ = coordinator._role_config("reviewer")
         tester, _ = coordinator._role_config("tester")
         self.assertIn("pre_turn_gates.required", reviewer)
+        self.assertIn("evidence_origin", reviewer)
+        self.assertIn("source or view digest mismatch remains blocked", reviewer)
         self.assertIn("不含 `tester`", reviewer)
         self.assertIn("blackbox-only contract", tester)
         self.assertIn("`tester_source` 保持 null", tester)

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Bound the normalized proof review view to its persisted evidence source with separate source/view digests;
+  Native and fallback review inputs now distinguish schema projection from evidence drift.
+
 - Corrected v4 Tester author instructions to select the frozen input baseline from publication requirements,
   independently of dynamic work-unit scheduling readiness.
 

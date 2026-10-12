@@ -555,6 +555,9 @@ stdout，真实响应和结果只能进入忽略目录或仓库外。未来原�
 不能跨角色代证。宿主探针只报告直接观察和未证明边界。这些结果只建立 fresh model 采样的输入前提，
 不进入 runtime ledger，也不替代 Tester、机器验证、blackbox 或 Reviewer evidence。
 
+Core 的 proof schema 审查视图保留独立的来源绑定：ledger 原始 evidence 与公开视图各自计算摘要，
+并声明规范化转换。审查者分别核对两个来源；视图不写回 ledger，不替代原始执行日志，也不表示重新执行。
+
 ## 角色协作
 
 Builder 与 Tester 使用冻结基线协作：

@@ -163,7 +163,9 @@ dispatch。直到 `finalize` 或明确的决策边界。动作面如下，不能
   绑定真实 identity，再 follow-up 同一 thread 开始审查。Reviewer 只使用成熟终态
   `REVIEW_RESULT: pass`、`REVIEW_RESULT: findings` 或 `REVIEW_RESULT: blocked`，并继续返回
   `REVIEW_HEAD` 和 `PROBLEM_REPORT` 唯一终态；主线程只把这些结构字段规范成 v4 evidence report，
-  不修改 Reviewer 公共协议。finding 修复后必须 same-thread 续接；不得用
+  不修改 Reviewer 公共协议。审查输入同时传递 Core 的 `evidence_origin`，分别核对 ledger source 与
+  prompt view digest；proof schema 视图会规范化 baseline/执行身份并重算视图摘要，不冒充新执行，
+  不要求两个不同表示的摘要相等，任一来源绑定不符仍阻塞。finding 修复后必须 same-thread 续接；不得用
   fresh Reviewer 把旧 finding 洗掉。普通审查连续性仍要求 same-thread；只有 compaction capability
   不可用且第三次 exhausted turn 已由 Native Coordinator 证明是 thread 尾部、无 Agent 输出和无副作用时，
   才允许进入 `begin-reviewer-replacement` / `bind-reviewer-replacement` /

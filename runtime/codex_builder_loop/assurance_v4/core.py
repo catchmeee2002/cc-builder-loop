@@ -11675,6 +11675,18 @@ def _driver_evidence_view(ledger: Mapping[str, Any]) -> dict[str, Any]:
     return evidence
 
 
+
+def _driver_evidence_origin(ledger: Mapping[str, Any], view: Mapping[str, Any]) -> dict[str, Any]:
+    """Bind the public proof-schema projection to its unchanged ledger source."""
+    source_digest = digest(ledger.get("evidence", {}))
+    view_digest = digest(view)
+    return {
+        "source": {"source": "persisted_run_ledger", "json_pointer": "/evidence", "digest": source_digest},
+        "view": {"source": "current_prompt_payload", "json_pointer": "/evidence", "digest": view_digest},
+        "transformation": "identity" if source_digest == view_digest else "proof_schema_view_v1",
+    }
+
+
 def driver_context(repo_value: str | Path, run_value: str) -> dict[str, Any]:
     repo = resolve_repo(repo_value)
     run_id = ensure_run_id(run_value)
@@ -11696,6 +11708,7 @@ def driver_context(repo_value: str | Path, run_value: str) -> dict[str, Any]:
                 else None
             ),
         }
+    evidence = _driver_evidence_view(ledger)
     return {
         "status": "FATAL" if ledger["phase"] == "failed" else "READY",
         "run_id": run_id,
@@ -11715,7 +11728,8 @@ def driver_context(repo_value: str | Path, run_value: str) -> dict[str, Any]:
         "progress_policy": progress_policy(ledger["facets"]),
         "work_unit_progress": work_unit_progress(ledger),
         "role_observations": role_observations(ledger),
-        "evidence": _driver_evidence_view(ledger),
+        "evidence": evidence,
+        "evidence_origin": _driver_evidence_origin(ledger, evidence),
         "publication": copy.deepcopy(ledger.get("publication")),
         "problems": copy.deepcopy(ledger.get("problems", [])),
         "driver_runtime": copy.deepcopy(ledger.get("driver_runtime")),

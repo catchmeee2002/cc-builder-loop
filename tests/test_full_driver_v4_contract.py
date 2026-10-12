@@ -791,7 +791,7 @@ class FullDriverV4ContractTest(unittest.TestCase):
         text = compact(self.skill_text())
         self.assertRegex(text, r"(?:parallel_ready|parallel|并行)")
         self.assertRegex(text, r"(?:parallel_ready:true|parallel|并行).{0,200}tester")
-        self.assertRegex(text, r"(?:parallel_ready:false|serial|串行).{0,240}(?:publication|发布)")
+        self.assertRegex(text, r"publication.required=true.{0,240}(?:publication|发布)")
         self.assertRegex(text, r"(?:manifest|blob).{0,120}(?:publication|发布)")
 
     def test_skill_supports_protected_preparation_and_single_use_continuation(self) -> None:

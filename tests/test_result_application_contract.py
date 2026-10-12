@@ -207,6 +207,21 @@ class ResultApplicationContractTest(unittest.TestCase):
             self.assertEqual(after["facets"]["execution"][key], before["facets"]["execution"][key])
         self.assertEqual(sum(e["kind"] == "tester_source_integrated" for e in after["events"]), 1)
 
+    def test_proof_projection_binds_unchanged_ledger_source_and_public_view(self):
+        from runtime.codex_builder_loop.assurance_v4.models import digest
+        self.prepare_proof()
+        self.apply(self.proof_result())
+        before = read_ledger(self.repo, self.run_id)
+        context = core.driver_context(self.repo, self.run_id)
+        origin = context["evidence_origin"]
+        self.assertEqual(origin["source"]["digest"], digest(before["evidence"]))
+        self.assertEqual(origin["view"]["digest"], digest(context["evidence"]))
+        self.assertEqual(origin["transformation"], "proof_schema_view_v1")
+        self.assertNotEqual(origin["source"]["digest"], origin["view"]["digest"])
+        self.assertIn("counterexample", before["evidence"]["proof"]["details"]["results"][0])
+        self.assertIn("baseline", context["evidence"]["proof"]["details"]["results"][0])
+        self.assertEqual(read_ledger(self.repo, self.run_id), before)
+
     def test_unrecorded_proof_error_preserves_accepted_dispatch(self):
         self.prepare_proof()
         self.result = self.proof_result()

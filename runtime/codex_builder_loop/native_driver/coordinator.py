@@ -1849,6 +1849,17 @@ class NativeCoordinator(ResultSemantics):
             "Use facet_change or product_choice for every other plan-owned decision; do not label "
             "an uncertain or semantic change as engineering_correction."
         )
+        if role == "reviewer":
+            instructions += (
+                "\nAssurance v4 evidence provenance: evidence_origin binds the persisted ledger "
+                "/evidence source digest and the current prompt /evidence view digest. Verify "
+                "each against its named source. proof_schema_view_v1 is a read-only public-schema "
+                "projection: counterexample becomes baseline, executable identity and execution "
+                "observations are normalized, and report_digest is recomputed for that view. "
+                "Different raw and view digests are expected only with this explicit binding; "
+                "a source or view digest mismatch remains blocked. The projection is not a new "
+                "proof execution and does not replace the persisted source or log artifacts."
+            )
         return instructions, str(value["sandbox_mode"])
 
     def _prompt(self, action: dict[str, Any], role: str, context: dict[str, Any]) -> str:
@@ -1876,6 +1887,7 @@ class NativeCoordinator(ResultSemantics):
             "publication": context.get("publication"),
             "recomposition": action.get("recomposition"),
             "evidence": context.get("evidence"),
+            "evidence_origin": context.get("evidence_origin"),
             "doc_reference_scan": context.get("doc_reference_scan"),
             "doc_reference_scan_state": context.get("doc_reference_scan_state"),
             "problems": context.get("problems"),
