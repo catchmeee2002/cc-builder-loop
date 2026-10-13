@@ -222,6 +222,34 @@ class ResultApplicationContractTest(unittest.TestCase):
         self.assertIn("baseline", context["evidence"]["proof"]["details"]["results"][0])
         self.assertEqual(read_ledger(self.repo, self.run_id), before)
 
+    def test_blackbox_retry_consumes_core_projection_after_author_work_unit_completes(self):
+        from runtime.codex_builder_loop.native_driver.coordinator import NativeCoordinator
+        self.prepare_proof()
+        self.apply(self.proof_result())
+        core.verify_machine(self.repo, self.run_id)
+        self.action = driver.next_action(self.repo, self.run_id)
+        self.assertEqual(self.action["action"], "tester_blackbox")
+        self.assertNotIn("work_unit_id", self.action)
+        original_projection = self.action["context_projection_digest"]
+        core.begin_dispatch(
+            self.repo, self.run_id, action_id=self.action["action_id"], action="tester_blackbox",
+            role="tester", thread_id="tester-thread", prompt_digest="b" * 64,
+            output_schema_digest="c" * 64, driver_runtime_kind="native",
+            context_projection_digest=original_projection,
+        )
+        core.bind_dispatch_turn(self.repo, self.run_id, action_id=self.action["action_id"], turn_id="blackbox-1")
+        core.retry_dispatch(self.repo, self.run_id, action_id=self.action["action_id"],
+                            failure_code="responseStreamTimeout")
+        resumed = driver.next_action(self.repo, self.run_id)
+        coordinator = NativeCoordinator(repo=self.repo, run_id=self.run_id,
+                                        core=object(), transport=object())
+        with patch.object(coordinator, "_canonical_projection", side_effect=AssertionError("Native reconstructed Core facts")):
+            projection, observed = coordinator._projection_for_action(
+                resumed, "tester", core.driver_context(self.repo, self.run_id))
+        self.assertEqual(observed, original_projection)
+        self.assertEqual(projection, resumed["context_projection"])
+        self.assertEqual(read_ledger(self.repo, self.run_id)["dispatch_intent"]["attempt"], 2)
+
     def test_unrecorded_proof_error_preserves_accepted_dispatch(self):
         self.prepare_proof()
         self.result = self.proof_result()

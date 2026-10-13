@@ -27,6 +27,7 @@ from .core import (
     runtime_compatibility,
     work_unit_progress,
 )
+from .driver_contract import AGENT_ACTION_CAPABILITIES
 from .models import (
     EVIDENCE_KINDS,
     ContractError,
@@ -286,7 +287,8 @@ def _decision_result(
         else None,
         **payload,
     }
-    role = _work_unit_role_for_action(action)
+    capability = AGENT_ACTION_CAPABILITIES.get(action)
+    role = capability.role if capability is not None else None
     if (
         role is not None
         and progress_policy(ledger["facets"]).get("mode") == "bounded_rehydration"
@@ -1139,7 +1141,8 @@ def _dispatch_action(
         "dispatch": copy.deepcopy(pending),
         **payload,
     }
-    role = _work_unit_role_for_action(action)
+    capability = AGENT_ACTION_CAPABILITIES.get(action)
+    role = capability.role if capability is not None else None
     if (
         role is not None
         and progress_policy(ledger["facets"]).get("mode") == "bounded_rehydration"
