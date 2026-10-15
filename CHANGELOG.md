@@ -2,15 +2,25 @@
 
 ## Unreleased
 
+- Documented upgrades from the existing Codex installation checkout and archived published release notes.
+
+## 0.4.2 — 2026-10-15
+
 - Added bounded completion of authorized public prerequisites on the original Builder transaction,
   including all-deferred and partial checkpoints, consumed-dispatch budgets and interruption replay.
 - Preserved automatic engineering correction rejection causes in read-only Driver decisions without
-  widening automatic correction authority. Prepared patch version 0.4.2.
+  widening automatic correction authority.
+
+## 0.4.1 — 2026-10-15
 
 - Added bounded same-thread recovery for verified workspace routing discovery timeouts, with persisted
   backoff and physical-input checks before retry and reactivation. Exhaustion preserves the active run
   and requires an explicit resume reason; historical failed runs and unrelated platform errors retain
-  their existing behavior. Prepared patch version 0.4.1.
+  their existing behavior.
+
+## 0.4.0 — 2026-10-13
+
+This release included the changes prepared under 0.3.x before the first Codex-prefixed release.
 
 - Bound the normalized proof review view to its persisted evidence source with separate source/view digests;
   Native and fallback review inputs now distinguish schema projection from evidence drift.
@@ -18,7 +28,7 @@
 - Corrected v4 Tester author instructions to select the frozen input baseline from publication requirements,
   independently of dynamic work-unit scheduling readiness.
 
-- Prepared 0.4.0 functional delivery recovery: all roles apply accepted dispatch results through one
+- Added functional delivery recovery: all roles apply accepted dispatch results through one
   Core facade; root Builder retains its compatible entry. Atomic effect receipts preserve the original
   projection and reject external drift while resuming interrupted checkpoint, integration and evidence work.
 - Tester integration now freezes its target Git commit before materialization. Proof commands release the
@@ -28,21 +38,20 @@
   rejected missing uv dependency values before start, and admitted explicitly authorized new support files
   during self-hosted preparation. Added the Codex product tag prefix while retaining legacy release tags.
 - Proof v2 can reference frozen runners; startup probes are deduplicated within each proof call while
-  legacy command inputs retain the same execution and replay checks. Prepared patch version 0.3.2.
+  legacy command inputs retain the same execution and replay checks.
 - Cached immutable candidate trees without caching authority or evidence decisions, and classified
   removed neutral-path exemptions as stronger assurance rather than downgrades.
 - Unified fixture discovery and worker dispatch so nested and same-named test modules execute consistently.
 
 - Removed the host read-only sandbox prerequisite for Native Driver startup. Reviewer turns now use the
   configured execution permissions while candidate integrity checks continue to reject modified review inputs.
-  Prepared patch version 0.3.1.
 
 - Added read-only Reviewer enforcement and candidate integrity checks, dispatch-bound proof patch files,
   per-test discrimination observations, and explicit Tester deletion/recomposition support (#322).
 - Added frozen proof runner preflight, input-equivalent machine/proof evidence reuse with original execution
   provenance, canonical role observations, and explicit hold/release at safe transaction boundaries (#322).
 - Tightened Planner unanswered-decision handling and added controlled fixture parallelism with exact test
-  inventory verification. Prepared runtime version 0.3.0; 0.2 active runs are not hot-migrated (#322).
+  inventory verification. Existing 0.2 active runs were not hot-migrated (#322).
 
 - Native Driver now gives Tester author/fix/recomposition turns a 7200-second total deadline while preserving
   3600 seconds for Builder, Reviewer, proof/diagnosis, and blackbox actions. Active legacy Tester authoring

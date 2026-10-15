@@ -177,9 +177,26 @@ checkout 必须保留在安装时的路径；移动或删除前先运行 `./unin
 hook 内容变化后，需要再次检查并信任新 hash。安装完成会立即回读并打印 installed
 `runtime_identity`；发布验收必须以该输出和 `codex-builder-loop version --json` 的 SemVer/commit 为准。
 
+### 升级已有安装
+
+在原安装目录操作，先确认当前分支为 `codex/main`。若还有 active run 使用这个 checkout，
+先在原 runtime 上完成它；升级不能把已有 run 热迁移到新 runtime。另行保留的旧 runtime checkout
+应留在原路径。
+
+```bash
+git pull --ff-only origin codex/main
+bash install.sh
+codex-builder-loop version --json
+```
+
+安装成功后新开 Codex session，使 Skills 和全局 instructions 重新加载；hook 内容变化时重新通过
+`/hooks` 审查并信任。仅 pull 不能代替安装器的配置更新。跟踪 `codex/main` 会取得该分支最新提交；
+需要固定发布版本时，以对应的 `codex-vX.Y.Z` tag 为准，并核对 CLI 输出的版本、commit 和 clean 状态。
+
 ## 正式发布
 
-发布只有在同一个 clean commit 已 push、以对应的 `vX.Y.Z` tag 指向、GitHub Release 已发布、安装
+Codex 新版本使用 `codex-vX.Y.Z` tag；旧发布的 `vX.Y.Z` tag 保留。发布只有在同一个 clean commit
+已 push、对应 tag 精确指向该提交、GitHub Release 已发布、安装
 checkout 同步到该 commit、`./install.sh` 成功，且已安装 CLI 回读相同 SemVer 与 commit 时才完成。
 缺少任一远端或本机 read-back 都只是候选，不得宣称已发布。
 
