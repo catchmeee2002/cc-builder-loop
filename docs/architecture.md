@@ -720,10 +720,17 @@ Builder turn 的 completed dispatch 先 checkpoint clean commit、关闭 Builder
 的 live candidate，避免同一 `builder_fix` 无限重派。
 open problem 的 owner 采用穷举路由：`builder`/`tester` 分别回原角色，`plan`、`external_platform`、
 `builder_loop`、`current_project` 分别进入专属 `NEEDS_USER` decision。后四类任一仍 open 时禁止新的
-Agent dispatch；但 public prerequisite checkpoint 的 `builder_loop` problem 若其冻结 classification 已包含
-当前 Builder 的实际 ready 产出，仍沿原 Builder 恢复路径继续补齐缺口，避免把可完成的局部进展升级为用户决策；
-完全 deferred、无法证明有 Builder 进展的 classification 仍进入 `NEEDS_USER`，防止零进展重复派发。clean
-committed candidate 仍先执行确定性 checkpoint，使失败现场与最新 Git 身份一致。
+Agent dispatch。一个受限例外是 Core 记录的 public prerequisite checkpoint 问题：自动非语义策略与
+有界 Builder 工作单元同时启用，且未完成路径全部属于原写权限和当前工作单元、语义与 Builder 身份
+未变、无其他 open problem 时，Driver 可派原 Builder 补齐，完全 deferred 与部分 ready 使用相同条件。
+首次受阻后的补齐额度取三次与冻结 attempt limit 的较小值；次数从绑定该问题观察的已消费 dispatch
+派生，不写累计缓存，重复查询、重启、候选推进和部分完成都不清零。第三次仍未完成进入 architecture
+review，全部完成则正常 checkpoint 并关闭问题。legacy/manual 保持既有部分 ready 恢复行为。
+补齐 dispatch 只绑定当前失败观察摘要。只有该 dispatch 的结果应用事务可以把旧问题更新到新候选；
+替换前的观察保留在 ledger event，checkpoint 与结果应用共用持久化边界，崩溃重放不重复计数。
+无绑定的 dirty 或新 HEAD 不自动接纳，需保留现场核对。Tester/publication 门禁保持原契约。
+自动工程修正的 preview 拒绝原因作为 Driver 只读结果和用户决定说明派生，保留错误代码、相关字段、
+问题与候选及契约绑定；不另存问题或证据，也不把拒绝当作自动批准或扩大修正范围。
 Native `tester_proof` 的 completed dispatch 先区分结果分支：合法非空 `problem_report` 直接记录并进入
 ownership 路由，不要求同时伪造 `proof_spec`；无 problem 时才应用 Core gate，成功 evidence 或 current
 `proof_failure` 二者必须恰有一个与该 action 对应，Coordinator 才能消费。failure 的相同 action/spec

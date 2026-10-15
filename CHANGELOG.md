@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Added bounded completion of authorized public prerequisites on the original Builder transaction,
+  including all-deferred and partial checkpoints, consumed-dispatch budgets and interruption replay.
+- Preserved automatic engineering correction rejection causes in read-only Driver decisions without
+  widening automatic correction authority. Prepared patch version 0.4.2.
+
 - Added bounded same-thread recovery for verified workspace routing discovery timeouts, with persisted
   backoff and physical-input checks before retry and reactivation. Exhaustion preserves the active run
   and requires an explicit resume reason; historical failed runs and unrelated platform errors retain

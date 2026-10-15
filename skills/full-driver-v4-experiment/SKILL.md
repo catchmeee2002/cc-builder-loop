@@ -180,6 +180,8 @@ dispatch。直到 `finalize` 或明确的决策边界。动作面如下，不能
   `no rollout found` 时，以同一 intent 调 `begin-tester-replacement --renew-bootstrap`，最多三次；已
   有 turn/source/evidence 后不得续换。candidate、target、旧 source、pending dispatch 或其他 intent
   漂移时零副作用停止。
+- `builder_implement` 携带公开前置文件补齐观察时：续接原 Builder，仅补齐列出的已授权路径；
+  通过绑定 dispatch 提交结果，不自行关闭问题或发布 prerequisite。额度与停止条件由 Driver 决定。
 - `builder_fix`：结构化问题 owner=builder 时回到 Builder，在原 candidate 修复并 checkpoint。
 - `recompose_candidate`：恢复或推进已持久化的 target/publication candidate 重组事务。所有 Git 副作用前
   intent 已落盘；target 再前进时从最新 target 重启，最终以 candidate/Tester source/target CAS 提交。
@@ -198,7 +200,7 @@ dispatch。直到 `finalize` 或明确的决策边界。动作面如下，不能
 - `complete_driver_failure`：run 创建后的未处理 FATAL 已由 `record-driver-failure` 冻结 action、dispatch
   与 candidate observation。优先恢复 finalize intent，其次恢复 deployment/lease；只有环境安全后才进入
   failed。恢复失败保持 recovering/NEEDS_USER，不得 abandon、切换控制器或继续 Agent dispatch。
-- `architecture_review`：相同 failure signature 连续三次形成 no-progress 才暂停普通重试。
+- `architecture_review`：重复失败或公开前置文件补齐额度耗尽时停止普通重试，保留现场等待明确决定。
 - `finalize`：readiness 全绿后调用 Core 原子收尾，不自行移动 target ref、stash 或删除未知 worktree。
 
 每个 Tester/Reviewer 的非通过结果都必须携带唯一、非空、符合

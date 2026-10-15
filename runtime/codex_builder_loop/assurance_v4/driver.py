@@ -18,6 +18,7 @@ from .core import (
     canonical_context_projection,
     current_machine_failure,
     current_work_unit,
+    public_prerequisite_recovery,
     current_proof_failure,
     doc_reference_scan_state,
     ensure_run_id,
@@ -318,6 +319,7 @@ def contract_problem_decision(
     ledger: Mapping[str, Any],
     problem: Mapping[str, Any],
     problems: list[dict[str, Any]],
+    *, rejection: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     request = problem.get("decision_request")
     payload: dict[str, Any] = {
@@ -327,6 +329,12 @@ def contract_problem_decision(
         "contract_digest": digest(ledger["facets"]),
         "required_user_block": _contract_decision_user_block(ledger, problem),
     }
+    if rejection is not None:
+        payload["engineering_correction_rejection"] = copy.deepcopy(dict(rejection))
+        payload["required_user_block"] += (
+            "\n自动修正未执行: " + str(rejection["code"]) + " — " + str(rejection["message"])
+            + "\n相关事实: " + json.dumps(rejection.get("details"), ensure_ascii=False, sort_keys=True)
+        )
     facet = request.get("facet") if isinstance(request, Mapping) else None
     if facet in {"mission", "authority", "assurance", "execution"}:
         payload["facet"] = facet
@@ -1378,8 +1386,14 @@ def next_action(
                 ):
                     try:
                         preview = engineering_correction_preview(repo, ledger, problem)
-                    except (AssuranceError, ContractError):
-                        return contract_problem_decision(ledger, problem, problems)
+                    except (AssuranceError, ContractError) as exc:
+                        return contract_problem_decision(ledger, problem, problems, rejection={
+                            "code": getattr(exc, "code", "CONTRACT_INVALID"),
+                            "message": str(exc), "details": copy.deepcopy(getattr(exc, "details", None)),
+                            "problem_key": problem["key"],
+                            "candidate_head": ledger["facets"]["execution"].get("candidate_head"),
+                            "contract_digest": digest(ledger["facets"]),
+                        })
                     return decision(
                         "CONTINUE",
                         "apply_engineering_correction",
@@ -1713,21 +1727,23 @@ def next_action(
     if live_target != ledger["target_start_head"]:
         return decision("CONTINUE", "recompose_candidate", "target_drift")
     execution = ledger["facets"]["execution"]
-    recoverable_public_problem = any(
-        _recoverable_public_prerequisite_problem(item)
-        for item in open_problems
-    )
+    prerequisite_recovery = None
+    public_problems = [p for p in open_problems
+                       if p.get("key") == PUBLIC_PREREQUISITE_CLASSIFICATION_PROBLEM_KEY]
+    recoverable_public_problem = False
+    if len(public_problems) == 1:
+        prerequisite_recovery = public_prerequisite_recovery(ledger, public_problems[0])
+        if prerequisite_recovery is None:
+            recoverable_public_problem = _recoverable_public_prerequisite_problem(public_problems[0])
+        elif len(open_problems) == 1:
+            if prerequisite_recovery["reason"] == "public_prerequisite_recovery_limit_reached":
+                return decision("NEEDS_USER", "architecture_review",
+                                "public_prerequisite_recovery_limit_reached",
+                                problem=public_problems[0], public_prerequisite_recovery=prerequisite_recovery)
+            recoverable_public_problem = prerequisite_recovery["eligible"]
     if recoverable_public_problem:
-        open_problems = [
-            item
-            for item in open_problems
-            if not _recoverable_public_prerequisite_problem(item)
-        ]
-        blocking_problems = [
-            item
-            for item in blocking_problems
-            if not _recoverable_public_prerequisite_problem(item)
-        ]
+        open_problems = [p for p in open_problems if p not in public_problems]
+        blocking_problems = [p for p in blocking_problems if p not in public_problems]
     candidate_worktree = Path(ledger["candidate_worktree"])
     candidate_ref = f"refs/heads/{ledger['candidate_branch']}"
     candidate_result = git(repo, "rev-parse", "--verify", candidate_ref, check=False)
@@ -1743,6 +1759,9 @@ def next_action(
     worktree_head = git(candidate_worktree, "rev-parse", "HEAD").stdout.strip()
     candidate_dirty = dirty_paths(candidate_worktree)
     if candidate_dirty:
+        if prerequisite_recovery is not None and recoverable_public_problem:
+            return decision("NEEDS_USER", "continuity_decision", "prerequisite_candidate_dirty",
+                            public_prerequisite_recovery=prerequisite_recovery)
         if blocking_problems:
             return problem_decision(blocking_problems[-1], open_problems)
         return decision(
@@ -1774,7 +1793,19 @@ def next_action(
             candidate_worktree=ledger["candidate_worktree"],
             agent=execution["agents"].get("builder"),
         )
+    if public_problems and prerequisite_recovery is not None and not recoverable_public_problem:
+        other_blockers = [p for p in blocking_problems if p not in public_problems]
+        result = problem_decision(
+            other_blockers[-1] if other_blockers else public_problems[0], open_problems
+        )
+        result["other_open_problems"] = [
+            p for p in open_problems if p != result.get("problem")
+        ]
+        return result
     if live_candidate != execution.get("candidate_head"):
+        if prerequisite_recovery is not None and recoverable_public_problem:
+            return decision("NEEDS_USER", "continuity_decision", "prerequisite_candidate_drift",
+                            public_prerequisite_recovery=prerequisite_recovery)
         return decision(
             "CONTINUE",
             "checkpoint_builder",
@@ -1782,6 +1813,11 @@ def next_action(
             candidate_worktree=ledger["candidate_worktree"],
             candidate_head=live_candidate,
         )
+    if prerequisite_recovery is not None and recoverable_public_problem:
+        return decision("CONTINUE", "builder_implement", "authorized_prerequisite_completion",
+                        public_prerequisite_recovery=prerequisite_recovery,
+                        candidate_worktree=ledger["candidate_worktree"],
+                        agent=execution["agents"].get("builder"))
     repeated_proof_failures: dict[str, int] = {}
     for event in ledger.get("events", []):
         if not isinstance(event, Mapping) or event.get("kind") != "proof_failure_recorded":

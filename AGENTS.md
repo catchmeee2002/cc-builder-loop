@@ -105,6 +105,8 @@ python3 experiments/assurance-v4-replay/runner.py
   Agent 自述或重跑日志直接变成 evidence。
 - open problem owner 必须穷举：builder/tester 回原角色，plan/external_platform/builder_loop/
   current_project 进入各自 NEEDS_USER decision；后四类不得默认回落到 builder_fix。
+  仅 Core 验证的公开前置文件补齐可按 Driver 返回的 CONTINUE 续接原 Builder；严格使用已绑定
+  dispatch，保留三次补齐额度，未知问题不得套用该例外。
 - Tester/Reviewer 报出需要修复或决定的问题后，先经 `record-problems` 逐条写入 ledger；Assurance v4
   successor 用 source ledger 的逐条 disposition 连续交接，legacy v2/v3 继续由 abandon 封存问题清单并由
   更高 revision 的 `prior-problems` 逐条处理。旧 ledger 无清单时先显式补录。

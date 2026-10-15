@@ -378,6 +378,9 @@ class NativeCoordinator(ResultSemantics):
             "action": action.get("action"),
             "action_id": action.get("action_id"),
             "reason": action.get("reason"),
+            "public_prerequisite_recovery": copy.deepcopy(
+                action.get("public_prerequisite_recovery")
+            ),
             "work_unit_id": action.get("work_unit_id"),
             "work_unit": copy.deepcopy(action.get("work_unit")),
             "work_unit_progress": copy.deepcopy(
@@ -1948,6 +1951,14 @@ class NativeCoordinator(ResultSemantics):
             payload["work_unit"] = copy.deepcopy(action.get("work_unit"))
             payload["work_unit_progress"] = copy.deepcopy(
                 projection.get("work_unit_progress")
+            )
+        if action.get("public_prerequisite_recovery") is not None:
+            payload["public_prerequisite_recovery"] = copy.deepcopy(action["public_prerequisite_recovery"])
+            payload["prerequisite_completion_rule"] = (
+                "Complete only the listed missing public prerequisite paths within this Builder work unit. "
+                "Keep the frozen interfaces, authority and acceptance unchanged. Commit the candidate; "
+                "do not create Tester source or publication yourself. If specifications or permissions "
+                "are insufficient, report the precise problem instead of guessing."
             )
         action_name = str(action["action"])
         if action_name in PROMPT_EVIDENCE_ACTIONS:

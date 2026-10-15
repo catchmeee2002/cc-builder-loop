@@ -690,6 +690,7 @@
       ],
       "properties": {
         "action_id": {"$ref": "#/$defs/sha256"},
+        "public_prerequisite_problem_digest": {"$ref": "#/$defs/sha256"},
         "action": {"type": "string", "minLength": 1},
         "role": {"enum": ["builder", "tester", "reviewer"]},
         "thread_id": {

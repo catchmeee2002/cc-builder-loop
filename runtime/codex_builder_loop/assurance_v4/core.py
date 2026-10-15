@@ -2882,6 +2882,9 @@ def begin_dispatch(
         dispatch_intent["side_effect_observation_digest"] = digest(observation)
         if action in {"tester_proof", "tester_proof_diagnose"}:
             (run_dir(repo, run_id) / "artifacts" / f"patches-{action_id}").mkdir(parents=True, exist_ok=True)
+        prerequisite = current.get("public_prerequisite_recovery")
+        if isinstance(prerequisite, Mapping) and prerequisite.get("eligible"):
+            dispatch_intent["public_prerequisite_problem_digest"] = prerequisite["problem_digest"]
         ledger["dispatch_intent"] = dispatch_intent
         append_event(ledger, "dispatch_prepared", copy.deepcopy(ledger["dispatch_intent"]))
         save_ledger(repo, ledger)
@@ -12535,6 +12538,70 @@ def _record_runtime_preparation_problem(
     )
 
 
+def _prerequisite_recovery_context(ledger: Mapping[str, Any]) -> str:
+    """Frozen semantics and Builder identity; never candidate progress or evidence."""
+    facets = ledger["facets"]
+    return digest({
+        "mission": facets["mission"], "authority": facets["authority"],
+        "assurance": facets["assurance"],
+        "work_units": facets["execution"].get("work_units"),
+        "builder": facets["execution"]["agents"].get("builder"),
+        "publication_paths": (ledger.get("publication") or {}).get("paths", []),
+    })
+
+
+def public_prerequisite_recovery(
+    ledger: Mapping[str, Any], problem: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    """Read-only eligibility and consumed-turn budget, derived from canonical facts."""
+    if (recovery_policy(ledger["facets"]).get("mode") != "automatic_nonsemantic"
+            or not _progress_enabled(ledger)):
+        return None  # Preserve legacy/manual recovery policy.
+    limit = min(3, int(progress_policy(ledger["facets"]).get("attempt_limit", 3)))
+    result = {"eligible": False, "limit": limit, "completed": 0,
+              "reason": "prerequisite_observation_unverified"}
+    try:
+        details = json.loads(str(problem["details"]))
+    except (KeyError, ValueError, TypeError):
+        return result
+    if not isinstance(details, dict):
+        return result
+    observation = digest(details)
+    result["problem_digest"] = observation
+    if (problem.get("key") != PUBLIC_PREREQUISITE_CLASSIFICATION_PROBLEM_KEY
+            or problem.get("owner") != "builder_loop" or problem.get("status") != "open"
+            or problem.get("candidate_head") != ledger["facets"]["execution"].get("candidate_head")
+            or details.get("candidate_head") != problem.get("candidate_head")
+            or details.get("authority_digest") != ledger["digests"]["authority"]
+            or details.get("recovery_context_digest") != _prerequisite_recovery_context(ledger)
+            or not any(e.get("kind") == "builder_checkpoint_blocked"
+                       and e.get("details", {}).get("problem_details_digest") == observation
+                       for e in ledger.get("events", []))):
+        return result
+    unit = current_work_unit(ledger, role="builder")
+    paths = details.get("paths")
+    classification = details.get("classification")
+    if (not isinstance(paths, list) or not paths or not isinstance(classification, list)
+            or details.get("classification_digest") != digest(classification)
+            or unit is None
+            or any(not _matches(path, ledger["facets"]["authority"]["builder_write"])
+                   or not _matches(path, unit["scope"].get("paths", [])) for path in paths)):
+        result["reason"] = "prerequisites_outside_builder_work_unit"
+        return result
+    # Count consumed recovery actions across all candidates, not HEAD changes or reads.
+    prepared = {e["details"]["action_id"] for e in ledger.get("events", [])
+                if e.get("kind") == "dispatch_prepared"
+                and e.get("details", {}).get("public_prerequisite_problem_digest")}
+    consumed = {e["details"]["action_id"] for e in ledger.get("events", [])
+                if e.get("kind") == "dispatch_consumed"
+                and e.get("details", {}).get("action_id") in prepared}
+    result.update(completed=len(consumed), paths=paths, work_unit_id=unit["id"],
+                  eligible=len(consumed) < limit,
+                  reason="authorized_prerequisite_completion" if len(consumed) < limit
+                  else "public_prerequisite_recovery_limit_reached")
+    return result
+
+
 def _record_public_prerequisite_classification_problem(
     ledger: dict[str, Any],
     *,
@@ -12557,6 +12624,7 @@ def _record_public_prerequisite_classification_problem(
         "paths": paths,
         "classification": classification_value,
         "classification_digest": digest(classification_value),
+        "recovery_context_digest": _prerequisite_recovery_context(ledger),
     }
     details_digest = digest(details_value)
     existing = [
@@ -12567,33 +12635,32 @@ def _record_public_prerequisite_classification_problem(
         and item.get("status") == "open"
     ]
     if existing:
-        if len(existing) != 1 or existing[0].get("candidate_head") != candidate_head:
-            raise AssuranceError(
-                "public prerequisite classification problem identity changed",
-                code="PUBLIC_PREREQUISITE_CLASSIFICATION_PROBLEM_CONFLICT",
-                status="NEEDS_USER",
-                details={"candidate_head": candidate_head, "problem_count": len(existing)},
-            )
+        if len(existing) != 1:
+            raise AssuranceError("ambiguous prerequisite problem", code="PUBLIC_PREREQUISITE_CLASSIFICATION_PROBLEM_CONFLICT", status="NEEDS_USER")
+        record = existing[0]
         try:
-            existing_details = json.loads(str(existing[0]["details"]))
-        except json.JSONDecodeError as exc:
-            raise AssuranceError(
-                "public prerequisite classification problem details are malformed",
-                code="PUBLIC_PREREQUISITE_CLASSIFICATION_PROBLEM_CONFLICT",
-                status="NEEDS_USER",
-            ) from exc
-        if existing_details != details_value:
-            raise AssuranceError(
-                "public prerequisite classification facts changed",
-                code="PUBLIC_PREREQUISITE_CLASSIFICATION_PROBLEM_CONFLICT",
-                status="NEEDS_USER",
-                details={
-                    "candidate_head": candidate_head,
-                    "recorded": existing_details,
-                    "expected": details_value,
-                },
-            )
-        return digest(existing_details)
+            old_details = json.loads(record["details"])
+        except (KeyError, TypeError, json.JSONDecodeError):
+            old_details = None
+        if not isinstance(old_details, dict):
+            raise AssuranceError("invalid prerequisite observation",
+                                 code="PUBLIC_PREREQUISITE_CLASSIFICATION_PROBLEM_CONFLICT", status="NEEDS_USER")
+        if old_details == details_value:
+            return digest(old_details)
+        pending = ledger.get("dispatch_intent") or {}
+        if (pending.get("role") != "builder" or pending.get("state") != "completed"
+                or pending.get("public_prerequisite_problem_digest") != digest(old_details)
+                or old_details.get("recovery_context_digest") != _prerequisite_recovery_context(ledger)
+                or record.get("candidate_head") != previous_candidate_head):
+            raise AssuranceError("public prerequisite observation changed outside its bound Builder transaction",
+                                 code="PUBLIC_PREREQUISITE_CLASSIFICATION_PROBLEM_CONFLICT", status="NEEDS_USER")
+        append_event(ledger, "public_prerequisite_observation_replaced", {
+            "action_id": pending["action_id"], "previous": old_details,
+            "previous_digest": digest(old_details), "replacement_digest": details_digest,
+        })
+        record["details"] = json.dumps(details_value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        record["candidate_head"] = candidate_head
+        return details_digest
     builder = ledger["facets"]["execution"].get("agents", {}).get("builder")
     producer = (
         {"role": "builder", **copy.deepcopy(builder)}
@@ -12747,6 +12814,22 @@ def checkpoint_builder(
             action_id=action_id,
             action="checkpoint_builder",
         )
+        for problem in ledger.get("problems", []):
+            if (problem.get("key") != PUBLIC_PREREQUISITE_CLASSIFICATION_PROBLEM_KEY
+                    or problem.get("status") != "open"):
+                continue
+            recovery = public_prerequisite_recovery(ledger, problem)
+            if recovery is None:
+                continue
+            pending = ledger.get("dispatch_intent") or {}
+            if (any(p.get("status") == "open" and p.get("key") != problem["key"]
+                    for p in ledger.get("problems", []))
+                    or not recovery["eligible"] or pending.get("role") != "builder"
+                    or pending.get("state") != "completed" or action_id != pending.get("action_id")
+                    or pending.get("public_prerequisite_problem_digest") != recovery.get("problem_digest")):
+                raise AssuranceError("prerequisite completion requires its bound Builder result",
+                                     code="PUBLIC_PREREQUISITE_RECOVERY_UNVERIFIED", status="NEEDS_USER",
+                                     details=recovery)
         if (
             execution.get("candidate_head") is None
             and isinstance(execution.get("cost_ancestry"), Mapping)
