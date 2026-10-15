@@ -276,3 +276,8 @@ Reviewer 只负责审查，沿用现有执行环境；审查前后检查候选�
 proof 可引用冻结的 runner，由 runtime 生成命令；旧命令输入继续兼容。输入结构以 `schema/codex-test-proof.schema.json` 为准。
 
 仓库 fixtures 默认串行；可用 `CODEX_FIXTURE_JOBS=2 bash scripts/verify-all.sh` 启用受控并行，测试集合与串行入口保持一致，包含可被 unittest discovery 发现的嵌套包和同名模块。
+
+明确的 workspace routing 入口超时会在原 run 和角色 thread 内有界重试，并保留已完成的 Builder 工作。
+三次失败后停止并保留现场；先用 `native-driver doctor` 查看原因，确认平台恢复后可显式执行
+`native-driver resume --repo <repo> --run <run> --reason "<恢复原因>"`。输入或角色身份漂移时仍拒绝恢复；
+已 failed 的旧 run 不适用这一入口。

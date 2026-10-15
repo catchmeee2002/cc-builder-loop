@@ -187,6 +187,15 @@ Core 将该 generation 持久化为 `exhausted` 并返回 `NEEDS_USER`，Driver 
 非尾部 turn、存在部分 Agent 输出、任何前缀/身份漂移或 compaction 后再次耗尽都继续 fail closed。
 deprecated `thread/rollback` 不进入自动路径。
 
+平台 failed turn 明确报告 workspace routing discovery timed out 时，Native 将其归一为入口路由超时。
+该分类只表示可以申请恢复；Driver 必须回读同一 thread 的失败尾部，确认没有 Agent 输出、命令、文件或
+外部工具活动，Core 再比较冻结的候选、Tester source 和部署观察。无法读取、缺少物理基线或任何漂移
+都保留现场并返回 NEEDS_USER。错误原文与回读摘要保存在现有 dispatch failure details，不维护旁路状态。
+路由超时的第二、第三次 attempt 分别等待 30、60 秒；等待截止时间持久化，重启不重新计时。
+再次激活前重新核对失败尾部和物理输入。三次耗尽保持 exhausted，不自动压缩上下文、换 thread 或
+rehydrate；只有显式 resume reason 且原身份、输入仍成立时才在同一 thread 建立新 generation。
+已 failed 的历史 run 不复活，未知 other 与权限、额度错误不按路由超时处理。
+
 Reviewer prompt contract v2 把 contract、evidence、publication 和 doc-reference 事实各保留在顶层唯一位置，
 `review_input_contract` 只保存同 payload JSON Pointer 与 digest，并使用紧凑 JSON 编码；它不建立 prompt
 缓存、evidence 副本或 transcript 索引。用户显式提供 `native-driver resume --reason` 时，非上述自动恢复或

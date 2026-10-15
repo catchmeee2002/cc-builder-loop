@@ -2980,6 +2980,8 @@ def record_dispatch_activation(
                     status="NEEDS_USER",
                 )
         elif activation_state == "activated":
+            if pending.get("failure_code") == "workspaceRoutingTimeout" and pending.get("state") == "prepared":
+                _assert_routing_retry_safe(repo, ledger, pending, failure_details, reactivation=True)
             if pending.get("activation_state") == "activated":
                 return status(repo, run_id)
             if pending.get("activation_state") == "unknown":
@@ -4406,6 +4408,72 @@ def _read_dispatch_result_artifact(intent: Mapping[str, Any]) -> dict[str, Any]:
     return result
 
 
+def _assert_routing_retry_safe(
+    repo: Path, ledger: dict[str, Any], intent: dict[str, Any], details: Any,
+    *, reactivation: bool = False,
+) -> None:
+    """Core verifies local observations; the Native driver attests the platform tail."""
+    receipt = details.get("routing_retry") if isinstance(details, Mapping) else None
+    reason = None
+    schema = json.loads((schema_root() / "assurance-v4-ledger.schema.json").read_text())
+    try:
+        jsonschema.Draft202012Validator({
+            "$ref": "#/$defs/routingRetryObservation", "$defs": schema["$defs"],
+        }).validate(receipt)
+    except jsonschema.ValidationError:
+        reason = "thread_observation_missing_or_invalid"
+    binding = intent
+    if reactivation:
+        stored = intent.get("failure_details")
+        binding = stored.get("routing_retry", {}) if isinstance(stored, Mapping) else {}
+        if receipt != binding:
+            reason = "thread_observation_changed_before_activation"
+    if reason is None:
+        for key in ("action_id", "role", "thread_id", "turn_id", "attempt", "generation",
+                    "prompt_digest", "output_schema_digest"):
+            if receipt[key] != binding.get(key):
+                reason = "dispatch_binding_drift:" + key
+                break
+    from ..core import capture_runtime_identity
+    agent = ledger["facets"]["execution"]["agents"].get(intent.get("role"))
+    if reason is None and (
+        ledger.get("phase") != "active"
+        or ledger.get("driver_runtime", {}).get("kind") != "native"
+        or capture_runtime_identity() != ledger.get("runtime_identity")
+        or not isinstance(agent, Mapping)
+        or agent.get("thread_id") != intent.get("thread_id")
+    ):
+        reason = "runtime_or_role_identity_drift"
+    allowed_states = {"prepared"} if reactivation else {"in_flight", "exhausted"}
+    if reason is None and intent.get("state") not in allowed_states:
+        reason = "dispatch_not_failed_in_flight"
+    if reason is None and not isinstance(intent.get("pre_execution_observation_digest"), str):
+        reason = "physical_observation_baseline_missing"
+    if reason is None:
+        try:
+            observation = _progress_side_effect_observation(ledger, str(intent["role"]))
+            if observation.get("candidate_manifest") is None:
+                reason = "candidate_observation_unavailable"
+            elif digest(observation) != intent["pre_execution_observation_digest"]:
+                reason = "physical_observation_drift"
+            elif branch_head(repo, ledger["target_branch"]) != ledger["target_start_head"]:
+                reason = "target_head_drift"
+        except (OSError, StoreError):
+            reason = "physical_observation_unavailable"
+    deployment = ledger.get("deployment_transaction")
+    if reason is None and isinstance(deployment, Mapping) and deployment.get("state") == "deployed":
+        reason = "deployment_restore_required"
+    if reason is not None:
+        rejection = {"action_id": intent.get("action_id"), "reason": reason,
+                     "attempt": intent.get("attempt"), "generation": intent.get("generation")}
+        append_event(ledger, "routing_retry_rejected", rejection)
+        save_ledger(repo, ledger)
+        raise AssuranceError(
+            "Workspace routing retry cannot prove unchanged execution inputs",
+            code="NATIVE_ROUTING_RETRY_UNVERIFIED", status="NEEDS_USER", details=rejection,
+        )
+
+
 def retry_dispatch(
     repo_value: str | Path,
     run_value: str,
@@ -4458,6 +4526,8 @@ def retry_dispatch(
                 code="NATIVE_ROOT_BUILDER_RETRY_FORBIDDEN",
                 status="NEEDS_USER",
             )
+        if normalized_failure_code == "workspaceRoutingTimeout":
+            _assert_routing_retry_safe(repo, ledger, intent, normalized_failure_details)
         baseline_manifest_digest = intent.get("candidate_manifest_digest")
         if (
             intent.get("action") in BUILDER_SIDE_EFFECT_ACTIONS
@@ -4671,7 +4741,7 @@ def retry_dispatch(
         scheduled_at = now()
         next_attempt = attempt + 1
         retry_delay = 0
-        if normalized_failure_code == "authUnavailable":
+        if normalized_failure_code in {"authUnavailable", "workspaceRoutingTimeout"}:
             retry_delay = min(
                 AUTH_UNAVAILABLE_RETRY_BASE_SECONDS * (2 ** (next_attempt - 2)),
                 AUTH_UNAVAILABLE_RETRY_MAX_SECONDS,
@@ -5794,6 +5864,8 @@ def renew_dispatch(
                 code="DISPATCH_RENEWAL_IDENTITY_MISMATCH",
                 status="NEEDS_USER",
             )
+        if intent.get("failure_code") == "workspaceRoutingTimeout":
+            _assert_routing_retry_safe(repo, ledger, intent, intent.get("failure_details"))
         previous_intent = copy.deepcopy(intent)
         previous_digest = digest(previous_intent)
         previous_generation = int(previous_intent.get("generation", 1))
@@ -5864,6 +5936,10 @@ def renew_dispatch(
         ):
             if renewed_intent.get(key) is None:
                 renewed_intent.pop(key, None)
+        if previous_intent.get("failure_code") == "workspaceRoutingTimeout":
+            renewed_intent["failure_code"] = "workspaceRoutingTimeout"
+            renewed_intent["failure_details"] = copy.deepcopy(previous_intent["failure_details"])
+            renewed_intent["activation_state"] = "pending"
         ledger["dispatch_intent"] = renewed_intent
         append_event(
             ledger,

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Added bounded same-thread recovery for verified workspace routing discovery timeouts, with persisted
+  backoff and physical-input checks before retry and reactivation. Exhaustion preserves the active run
+  and requires an explicit resume reason; historical failed runs and unrelated platform errors retain
+  their existing behavior. Prepared patch version 0.4.1.
+
 - Bound the normalized proof review view to its persisted evidence source with separate source/view digests;
   Native and fallback review inputs now distinguish schema projection from evidence drift.
 

@@ -15,6 +15,7 @@ RETRYABLE_TRANSPORT_FAILURES = frozenset(
         "responseTooManyFailedAttempts",
         "httpConnectionFailed",
         "authUnavailable",
+        "workspaceRoutingTimeout",
     }
 )
 
@@ -59,6 +60,13 @@ def _known_auth_unavailable(error: Any) -> bool:
 
 def classify_turn_failure(error: Any) -> str:
     code = _codex_error_info(error)
+    if (
+        code == "other" and isinstance(error, Mapping)
+        and isinstance(error.get("message"), str)
+        and " ".join(error["message"].lower().split())
+        == "workspace routing discovery timed out"
+    ):
+        return "workspaceRoutingTimeout"
     if code == "other" and _known_stream_disconnect(error):
         return "responseStreamDisconnected"
     if code == "other" and _known_auth_unavailable(error):

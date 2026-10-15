@@ -253,6 +253,67 @@
     }
   },
   "$defs": {
+    "routingRetryObservation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "action_id",
+        "role",
+        "thread_id",
+        "turn_id",
+        "attempt",
+        "generation",
+        "prompt_digest",
+        "output_schema_digest",
+        "thread_digest",
+        "empty_failed_tail"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "action_id": {
+          "$ref": "#/$defs/sha256"
+        },
+        "role": {
+          "enum": [
+            "builder",
+            "tester",
+            "reviewer"
+          ]
+        },
+        "thread_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "turn_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "attempt": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3
+        },
+        "generation": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "prompt_digest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "output_schema_digest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "thread_digest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "empty_failed_tail": {
+          "const": true
+        }
+      }
+    },
     "commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
     "nullableCommit": {
       "oneOf": [{"$ref": "#/$defs/commit"}, {"type": "null"}]

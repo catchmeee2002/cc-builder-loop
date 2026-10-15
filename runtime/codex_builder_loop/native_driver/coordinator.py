@@ -1027,6 +1027,14 @@ class NativeCoordinator(ResultSemantics):
                         status="NEEDS_USER",
                         details={"action_id": pending.get("action_id")},
                     )
+                activation_details = None
+                if pending.get("failure_code") == "workspaceRoutingTimeout":
+                    stored = pending.get("failure_details") or {}
+                    source = stored.get("routing_retry") or {}
+                    activation_details = {"routing_retry": self._routing_retry_observation(
+                        TurnResult(turn_id=str(source.get("turn_id")), status="failed", text=""),
+                        str(pending["action_id"]), source=source,
+                    )}
                 self._activate_role_thread(current, role, context, thread_id)
                 self.core.call(
                     "record-dispatch-activation",
@@ -1040,6 +1048,8 @@ class NativeCoordinator(ResultSemantics):
                     "activated",
                     "--driver-runtime-kind",
                     "native",
+                    *(["--failure-details", "-"] if activation_details is not None else []),
+                    input_value=activation_details,
                 )
             elif activation_state == "activated":
                 self._active_threads.add(thread_id)
@@ -1055,6 +1065,12 @@ class NativeCoordinator(ResultSemantics):
             # An exhausted source only needs read/compaction/replacement
             # recovery.  Do not resume the old thread before proving its tail;
             # a closed or otherwise unavailable source must remain diagnosable.
+            if pending.get("failure_code") == "workspaceRoutingTimeout":
+                self._retry_turn_failure(TurnResult(
+                    turn_id=str(pending.get("turn_id")), status="failed", text="",
+                    error={"codexErrorInfo": "other", "message": "workspace routing discovery timed out"},
+                ), str(pending["action_id"]))
+                return None
             thread = self.transport.read_thread(thread_id)
             compacted = self._recover_reviewer_thread_compaction(pending, thread)
             if compacted is not None:
@@ -1090,6 +1106,21 @@ class NativeCoordinator(ResultSemantics):
             or self._turn_client_id(turn) == client_id
         ]
         if not matches and pending.get("state") == "prepared" and not pending.get("turn_id"):
+            if pending.get("failure_code") == "workspaceRoutingTimeout":
+                stored = pending.get("failure_details") or {}
+                source = stored.get("routing_retry") or {}
+                receipt = self._routing_retry_observation(
+                    TurnResult(turn_id=str(source.get("turn_id")), status="failed", text=""),
+                    str(pending["action_id"]), source=source,
+                )
+                # Activation may already be persisted after a previous process died.
+                # Recheck only when no turn exists for this attempt, before any new work.
+                self.core.call(
+                    "record-dispatch-activation", "--repo", str(self.repo), "--run", self.run_id,
+                    "--action-id", str(pending["action_id"]), "--state", "activated",
+                    "--driver-runtime-kind", "native", "--failure-details", "-",
+                    input_value={"routing_retry": receipt},
+                )
             turn = self.transport.run_turn(
                 thread_id=thread_id,
                 prompt=prompt,
@@ -1134,6 +1165,12 @@ class NativeCoordinator(ResultSemantics):
             return result
         if len(matches) == 1 and matches[0].get("status") == "failed":
             failure_code = self._turn_failure_code(matches[0])
+            if failure_code == "workspaceRoutingTimeout":
+                self._retry_turn_failure(TurnResult(
+                    turn_id=str(matches[0]["id"]), status="failed",
+                    text=self._turn_agent_text(matches[0]) or "", error=matches[0].get("error"),
+                ), str(pending["action_id"]))
+                return None
             if is_retryable_transport_failure(failure_code):
                 self._schedule_dispatch_retry(
                     str(pending["action_id"]),
@@ -2560,13 +2597,43 @@ class NativeCoordinator(ResultSemantics):
             and self.current_action.get("action_id") == action_id
             else None
         )
+        details = self._turn_failure_details(turn, failure_code)
+        if failure_code == "workspaceRoutingTimeout":
+            details = {"diagnostic": details, "routing_retry": self._routing_retry_observation(turn, action_id)}
         self._schedule_dispatch_retry(
-            action_id,
-            failure_code,
-            action_name=action_name,
-            failure_details=self._turn_failure_details(turn, failure_code),
+            action_id, failure_code, action_name=action_name, failure_details=details,
         )
         return True
+
+    def _routing_retry_observation(
+        self, turn: TurnResult, action_id: str, *, source: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        pending = source if source is not None else self._context().get("dispatch_intent")
+        if not isinstance(pending, dict) or pending.get("action_id") != action_id:
+            return None
+        if turn.status != "failed" or turn.text or turn.turn_id != pending.get("turn_id"):
+            return None
+        try:
+            thread = self.transport.read_thread(str(pending.get("thread_id")))
+            turns = self._thread_turns(thread)
+        except (AppServerError, NativeDriverError):
+            return None
+        if (thread.get("id") != pending.get("thread_id") or not turns
+                or turns[-1].get("id") != turn.turn_id
+                or turns[-1].get("status") != "failed"
+                or self._turn_failure_code(turns[-1]) != "workspaceRoutingTimeout"
+                or "items" not in turns[-1]
+                or any(not isinstance(item, dict) or item.get("type") != "reasoning"
+                       for item in turns[-1]["items"])):
+            return None
+        return {
+            "schema_version": 1,
+            **{key: pending.get(key) for key in (
+                "action_id", "role", "thread_id", "turn_id", "attempt", "generation",
+                "prompt_digest", "output_schema_digest",
+            )},
+            "thread_digest": digest({"id": thread["id"], "turns": turns}), "empty_failed_tail": True,
+        }
 
     def _turn_failure_details(
         self, turn: TurnResult, failure_code: str
@@ -2725,18 +2792,21 @@ class NativeCoordinator(ResultSemantics):
         except CorePortError as error:
             if error.code != "NATIVE_DISPATCH_RETRY_EXHAUSTED":
                 raise
-            compacted = self._start_reviewer_thread_compaction(action_id)
+            compacted = (None if failure_code == "workspaceRoutingTimeout"
+                         else self._start_reviewer_thread_compaction(action_id))
             if compacted is not None:
                 self._dispatch_renewal_reason = None
                 return compacted
             if (
-                self._dispatch_renewal_reason is None
+                failure_code != "workspaceRoutingTimeout"
+                and self._dispatch_renewal_reason is None
                 and action_name in {"reviewer_preflight", "reviewer_final"}
                 and self._start_reviewer_replacement(action_id)
             ):
                 return self._context()
             if (
-                self._dispatch_renewal_reason is None
+                failure_code != "workspaceRoutingTimeout"
+                and self._dispatch_renewal_reason is None
                 and self._start_canonical_rehydration(
                     action_id, action_name=action_name
                 )
