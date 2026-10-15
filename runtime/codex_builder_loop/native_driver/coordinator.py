@@ -2623,8 +2623,14 @@ class NativeCoordinator(ResultSemantics):
                 or turns[-1].get("status") != "failed"
                 or self._turn_failure_code(turns[-1]) != "workspaceRoutingTimeout"
                 or "items" not in turns[-1]
-                or any(not isinstance(item, dict) or item.get("type") != "reasoning"
-                       for item in turns[-1]["items"])):
+                or turns[-1].get("itemsView", "full") != "full"
+                or sum(isinstance(item, dict) and item.get("type") == "userMessage"
+                       for item in turns[-1]["items"]) > 1
+                or any(not isinstance(item, dict) or not (
+                    item.get("type") == "reasoning"
+                    or (item.get("type") == "userMessage"
+                        and item.get("clientId") == self._dispatch_client_id(pending))
+                ) for item in turns[-1]["items"])):
             return None
         return {
             "schema_version": 1,

@@ -115,6 +115,28 @@ class RoutingRecoveryTest(unittest.TestCase):
                     self.transport.thread["turns"][-1]["items"] = items
                 self.assert_rejected()
 
+    def test_bound_user_input_is_not_an_execution_side_effect(self):
+        self.transport.thread["turns"][-1]["items"] = [{
+            "type": "userMessage", "clientId": self.coordinator._dispatch_client_id(
+                self.ledger()["dispatch_intent"]),
+            "content": [{"type": "text", "text": "frozen prompt"}],
+        }, {"type": "reasoning"}]
+        self.assertTrue(self.retry())
+        self.assertEqual(self.ledger()["dispatch_intent"]["attempt"], 2)
+
+    def test_unbound_or_duplicate_user_input_preserves_dispatch(self):
+        client_id = self.coordinator._dispatch_client_id(self.ledger()["dispatch_intent"])
+        for items in ([{"type": "userMessage"}],
+                      [{"type": "userMessage", "clientId": client_id + "-other"}],
+                      [{"type": "userMessage", "clientId": client_id}] * 2):
+            with self.subTest(items=items):
+                self.transport.thread["turns"][-1]["items"] = items
+                self.assert_rejected()
+
+    def test_partial_thread_item_view_cannot_prove_no_activity(self):
+        self.transport.thread["turns"][-1]["itemsView"] = "summary"
+        self.assert_rejected()
+
     def test_thread_read_failure_preserves_dispatch(self):
         with patch.object(self.transport, "read_thread", side_effect=AppServerError("unavailable", code="NATIVE_APP_SERVER_TIMEOUT")):
             self.assert_rejected()
