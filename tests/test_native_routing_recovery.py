@@ -13,17 +13,26 @@ from harness import ROOT, commit_all, git
 from runtime.codex_builder_loop.assurance_v4 import core
 from runtime.codex_builder_loop.assurance_v4.store import read_ledger
 from runtime.codex_builder_loop.native_driver.app_server import AppServerError
-from runtime.codex_builder_loop.native_driver.coordinator import NativeCoordinator
+from runtime.codex_builder_loop.native_driver.coordinator import NativeCoordinator, NativeDriverError
 from runtime.codex_builder_loop.native_driver.core_port import CorePort, CorePortError
 from runtime.codex_builder_loop.native_driver.transport_failures import classify_turn_failure
 from tests.helpers import native_routing_recovery as fixture_helpers
 from tests.helpers.native_delivery_recovery import complete_delivery
 
 
+INCIDENTS = json.loads((ROOT / "tests/fixtures/native_routing_incidents.json").read_text())["cases"]
+
+
 class RoutingClassifierTest(unittest.TestCase):
-    def test_only_explicit_platform_routing_timeout_is_recoverable(self):
+    def test_historical_platform_error_envelopes_select_observation_policy(self):
+        for incident in INCIDENTS:
+            with self.subTest(incident=incident["id"]):
+                self.assertEqual(classify_turn_failure(incident["error"]), incident["expected_code"])
+
+
+    def test_unknown_errors_are_not_routing_recovery_candidates(self):
         self.assertEqual(classify_turn_failure(fixture_helpers.ERROR), "workspaceRoutingTimeout")
-        for message in ("workspace routing discovery failed", "timeout", "MCP HTTP403",
+        for message in ("unrecognized workspace failure", "timeout", "MCP HTTP403",
                         "permission denied: workspace routing discovery timed out",
                         "tool output: workspace routing discovery timed out"):
             self.assertEqual(classify_turn_failure({"codexErrorInfo": "other", "message": message}), "other")
@@ -31,10 +40,14 @@ class RoutingClassifierTest(unittest.TestCase):
 
 
 class RoutingRecoveryTest(unittest.TestCase):
+    error = next(c["error"] for c in INCIDENTS if c["expected_code"] == "workspaceRoutingTimeout")
+    failure_code = "workspaceRoutingTimeout"
+
     def setUp(self):
         self.f = fixture_helpers.RootRoutingFixture()
         self.addCleanup(self.f.tearDown)
         self.f.setUp()
+        self.f.error = self.error
         self.turn = self.f.fail_turn()
         self.transport = fixture_helpers.FailedTurnTransport(self.turn)
         self.coordinator = NativeCoordinator(repo=self.f.repo, run_id=self.f.run_id,
@@ -168,7 +181,7 @@ class RoutingRecoveryTest(unittest.TestCase):
             "attempt": 2}}):
             with self.assertRaises(core.AssuranceError) as raised:
                 core.retry_dispatch(self.f.repo, self.f.run_id, action_id=self.f.action["action_id"],
-                                    failure_code="workspaceRoutingTimeout", failure_details=details)
+                                    failure_code=self.failure_code, failure_details=details)
             self.assertEqual(raised.exception.code, "NATIVE_ROUTING_RETRY_UNVERIFIED")
         self.assertEqual(self.ledger()["dispatch_intent"]["attempt"], 1)
 
@@ -232,17 +245,17 @@ def save(repo,ledger):
  original(repo,ledger)
  if ledger['dispatch_intent']['attempt']==2: os.kill(os.getpid(),signal.SIGKILL)
 core._store_save_ledger=save
-core.retry_dispatch(sys.argv[1],sys.argv[2],action_id=sys.argv[3],failure_code='workspaceRoutingTimeout',failure_details=json.loads(sys.argv[4]))
+core.retry_dispatch(sys.argv[1],sys.argv[2],action_id=sys.argv[3],failure_code=sys.argv[5],failure_details=json.loads(sys.argv[4]))
 """
         child = subprocess.run([sys.executable, "-c", program, str(self.f.repo), self.f.run_id,
-            self.f.action["action_id"], json.dumps(details)], cwd=ROOT,
+            self.f.action["action_id"], json.dumps(details), self.failure_code], cwd=ROOT,
             env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}, capture_output=True, text=True)
         self.assertEqual(child.returncode, -9, child.stderr)
         pending = self.ledger()["dispatch_intent"]
         self.assertEqual(pending["attempt"], 2)
         with self.assertRaises(core.AssuranceError):
             core.retry_dispatch(self.f.repo,self.f.run_id,action_id=pending["action_id"],
-                failure_code="workspaceRoutingTimeout", failure_details=details)
+                failure_code=self.failure_code, failure_details=details)
         self.assertEqual(self.ledger()["dispatch_intent"]["attempt"], 2)
 
     def test_restart_after_activation_does_not_start_turn_with_drift(self):
@@ -269,9 +282,9 @@ core.retry_dispatch(sys.argv[1],sys.argv[2],action_id=sys.argv[3],failure_code='
             turn_id = f"real-submit-g{pending['generation']}-a{pending['attempt']}"
             kwargs["on_started"](turn_id)
             self.transport.thread["turns"].append({"id": turn_id, "status": "failed", "items": [],
-                                                   "error": dict(fixture_helpers.ERROR)})
+                                                   "error": dict(self.error)})
             from runtime.codex_builder_loop.native_driver.app_server import TurnResult
-            return TurnResult(turn_id=turn_id, status="failed", text="", error=dict(fixture_helpers.ERROR))
+            return TurnResult(turn_id=turn_id, status="failed", text="", error=dict(self.error))
         self.transport.run_turn = run_turn
         context = self.coordinator._context()
         self.coordinator._recover_dispatch(context["dispatch_intent"], "tester", context, self.f.action)
@@ -295,3 +308,141 @@ core.retry_dispatch(sys.argv[1],sys.argv[2],action_id=sys.argv[3],failure_code='
         self.retry()
         self.assertTrue(self.recover_to_next_failed_turn().endswith(":g2:1"))
         self.assertEqual(self.ledger()["dispatch_intent"]["thread_id"], "tester-thread")
+
+
+    def test_reported_error_must_match_failed_tail(self):
+        self.transport.thread["turns"][-1]["error"] = {
+            "codexErrorInfo": "other", "message": "workspace routing discovery failed"
+            if self.failure_code == "workspaceRoutingTimeout" else "workspace routing discovery timed out"}
+        self.assert_rejected()
+
+    def test_exhausted_restart_uses_actual_tail_and_preserves_generation(self):
+        for _ in (1, 2):
+            self.retry()
+            self.turn = self.f.fail_turn()
+            self.transport = fixture_helpers.FailedTurnTransport(self.turn)
+            self.coordinator.transport = self.transport
+        with self.assertRaises(CorePortError):
+            self.retry()
+        before = copy.deepcopy(self.ledger()["dispatch_intent"])
+        self.coordinator._now_fn = lambda: datetime.now(timezone.utc) + timedelta(minutes=5)
+        context = self.coordinator._context()
+        with self.assertRaises(CorePortError) as raised:
+            self.coordinator._recover_dispatch(before, "tester", context, self.f.action)
+        self.assertEqual(raised.exception.code, "NATIVE_DISPATCH_RETRY_EXHAUSTED")
+        after = self.ledger()["dispatch_intent"]
+        self.assertEqual((after["attempt"], after["generation"]), (3, 1))
+        self.assertEqual(after["failure_code"], self.failure_code)
+        self.assertEqual(self.ledger()["phase"], "active")
+        self.coordinator._dispatch_renewal_reason = "fixture explicit platform recovery"
+        self.coordinator._recover_dispatch(after, "tester", self.coordinator._context(), self.f.action)
+        renewed = self.ledger()["dispatch_intent"]
+        self.assertEqual((renewed["attempt"], renewed["generation"]), (1, 2))
+        self.assertEqual(renewed["failure_code"], self.failure_code)
+        self.assertEqual(renewed["thread_id"], before["thread_id"])
+
+
+    def test_exhausted_unreadable_or_drifted_tail_preserves_run(self):
+        for _ in (1, 2):
+            self.retry()
+            self.turn = self.f.fail_turn()
+            self.transport = fixture_helpers.FailedTurnTransport(self.turn)
+            self.coordinator.transport = self.transport
+        with self.assertRaises(CorePortError):
+            self.retry()
+        before = copy.deepcopy(self.ledger()["dispatch_intent"])
+        self.coordinator._now_fn = lambda: datetime.now(timezone.utc) + timedelta(minutes=5)
+        original = copy.deepcopy(self.transport.thread)
+        bad_tails = [None, {"turns": "unreadable"},
+                     {"id": "tester-thread", "turns": [{"id": "drift", "items": []}]},
+                     {"id": "tester-thread", "turns": [{"id": self.turn.turn_id, "items": [None]}]},
+                     {"id": "tester-thread", "turns": [{"id": self.turn.turn_id, "status": "completed",
+                                                       "items": [], "error": self.error}]},
+                     {**original, "id": "different-thread"}]
+        for tail in bad_tails:
+            with self.subTest(tail=tail):
+                if tail is None:
+                    mocked = patch.object(self.transport, "read_thread", side_effect=AppServerError(
+                        "read unavailable", code="NATIVE_APP_SERVER_TIMEOUT"))
+                else:
+                    mocked = patch.object(self.transport, "read_thread", return_value=tail)
+                with mocked, self.assertRaises(NativeDriverError) as raised:
+                    self.coordinator._recover_dispatch(before, "tester", self.coordinator._context(), self.f.action)
+                self.assertEqual(raised.exception.status, "NEEDS_USER")
+                self.assertEqual(self.ledger()["phase"], "active")
+                self.assertEqual(self.ledger()["dispatch_intent"], before)
+        self.transport.thread = original
+
+
+class RoutingFailedRecoveryTest(RoutingRecoveryTest):
+    # Run the complete recovery/negative-boundary suite with the production 0.4.2 envelope.
+    error = next(c["error"] for c in INCIDENTS if c["id"] == "issue-322-042-failed")
+    failure_code = "workspaceRoutingFailed"
+
+    def test_mixed_routing_failures_share_budget_and_original_thread(self):
+        self.retry()
+        self.f.error = fixture_helpers.ERROR
+        self.turn = self.f.fail_turn()
+        self.transport = fixture_helpers.FailedTurnTransport(self.turn)
+        self.coordinator.transport = self.transport
+        self.retry()
+        self.f.error = self.error
+        self.turn = self.f.fail_turn()
+        self.transport = fixture_helpers.FailedTurnTransport(self.turn)
+        self.coordinator.transport = self.transport
+        with self.assertRaises(CorePortError) as raised:
+            self.retry()
+        self.assertEqual(raised.exception.code, "NATIVE_DISPATCH_RETRY_EXHAUSTED")
+        pending = self.ledger()["dispatch_intent"]
+        self.assertEqual((pending["attempt"], pending["generation"], pending["thread_id"]),
+                         (3, 1, "tester-thread"))
+        self.assertEqual(self.ledger()["phase"], "active")
+
+
+class NativeBuilderRoutingRecoveryTest(unittest.TestCase):
+    def check_builder(self, error, dirty):
+        from harness import init_repo, cleanup_repo
+        from tests.test_native_driver_v1 import native_contract
+        from runtime.codex_builder_loop.assurance_v4 import driver
+        from runtime.codex_builder_loop.native_driver.app_server import TurnResult
+        repo = init_repo()
+        self.addCleanup(cleanup_repo, repo)
+        run_id = "native-builder-routing"
+        started = core.start(repo, run_id, "native-session", native_contract(repo),
+            driver_runtime={"kind": "native", "protocol_version": 1, "transport": "codex_app_server",
+                            "runtime_version": "fixture", "protocol_schema_digest": "a" * 64})
+        core.prepare_builder(repo, run_id, "builder", "builder-thread")
+        action = driver.next_action(repo, run_id)
+        core.begin_dispatch(repo, run_id, action_id=action["action_id"], action=action["action"],
+            role="builder", thread_id="builder-thread", prompt_digest="b" * 64, output_schema_digest="c" * 64,
+            work_unit_id=action.get("work_unit_id"), context_projection_digest=action.get("context_projection_digest"))
+        core.bind_dispatch_turn(repo, run_id, action_id=action["action_id"], turn_id="builder-failed-turn")
+        turn = TurnResult(turn_id="builder-failed-turn", status="failed", text="", error=error)
+        transport = fixture_helpers.FailedTurnTransport(turn)
+        transport.thread["id"] = "builder-thread"
+        coordinator = NativeCoordinator(repo=repo, run_id=run_id, core=CorePort(),
+                                        transport=transport, project_root=ROOT)
+        coordinator.current_action = action
+        before = copy.deepcopy(read_ledger(repo, run_id)["dispatch_intent"])
+        if dirty:
+            candidate = Path(started["candidate_worktree"])
+            (candidate / "src/partial.py").write_text("partial = True\n")
+            with self.assertRaises(CorePortError) as raised:
+                coordinator._retry_turn_failure(turn, action["action_id"])
+            self.assertEqual(raised.exception.code, "NATIVE_ROUTING_RETRY_UNVERIFIED")
+            self.assertEqual(raised.exception.status, "NEEDS_USER")
+            self.assertEqual(read_ledger(repo, run_id)["dispatch_intent"], before)
+        else:
+            self.assertTrue(coordinator._retry_turn_failure(turn, action["action_id"]))
+            self.assertEqual(read_ledger(repo, run_id)["dispatch_intent"]["attempt"], 2)
+        self.assertEqual(read_ledger(repo, run_id)["phase"], "active")
+
+    def test_native_builder_clean_routing_failure_retries(self):
+        for error in (fixture_helpers.ERROR, RoutingFailedRecoveryTest.error):
+            with self.subTest(error=error):
+                self.check_builder(error, dirty=False)
+
+    def test_native_builder_drift_is_needs_user_without_losing_run(self):
+        for error in (fixture_helpers.ERROR, RoutingFailedRecoveryTest.error):
+            with self.subTest(error=error):
+                self.check_builder(error, dirty=True)

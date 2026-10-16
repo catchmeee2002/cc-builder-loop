@@ -61,11 +61,13 @@ class RootRoutingFixture(application.ResultApplicationContractTest):
             context_projection_digest=action.get("context_projection_digest"))
         return action
 
+    error = ERROR
+
     def fail_turn(self):
         intent = read_ledger(self.repo, self.run_id)["dispatch_intent"]
         turn_id = f"turn-g{intent['generation']}-a{intent['attempt']}"
         core.bind_dispatch_turn(self.repo, self.run_id, action_id=self.action["action_id"], turn_id=turn_id)
-        return TurnResult(turn_id=turn_id, status="failed", text="", error=dict(ERROR))
+        return TurnResult(turn_id=turn_id, status="failed", text="", error=dict(self.error))
 
     def finish_author(self):
         ledger = read_ledger(self.repo, self.run_id)

@@ -20,6 +20,7 @@ from typing import Any, Mapping, Sequence
 import jsonschema
 
 from . import SCHEMA_VERSION
+from .driver_contract import WORKSPACE_ROUTING_FAILURE_CODES
 from .doc_references import (
     DOC_REFERENCE_CONTRACT_VERSION,
     DocReferenceScanError,
@@ -2983,7 +2984,7 @@ def record_dispatch_activation(
                     status="NEEDS_USER",
                 )
         elif activation_state == "activated":
-            if pending.get("failure_code") == "workspaceRoutingTimeout" and pending.get("state") == "prepared":
+            if pending.get("failure_code") in WORKSPACE_ROUTING_FAILURE_CODES and pending.get("state") == "prepared":
                 _assert_routing_retry_safe(repo, ledger, pending, failure_details, reactivation=True)
             if pending.get("activation_state") == "activated":
                 return status(repo, run_id)
@@ -4529,7 +4530,7 @@ def retry_dispatch(
                 code="NATIVE_ROOT_BUILDER_RETRY_FORBIDDEN",
                 status="NEEDS_USER",
             )
-        if normalized_failure_code == "workspaceRoutingTimeout":
+        if normalized_failure_code in WORKSPACE_ROUTING_FAILURE_CODES:
             _assert_routing_retry_safe(repo, ledger, intent, normalized_failure_details)
         baseline_manifest_digest = intent.get("candidate_manifest_digest")
         if (
@@ -4744,7 +4745,8 @@ def retry_dispatch(
         scheduled_at = now()
         next_attempt = attempt + 1
         retry_delay = 0
-        if normalized_failure_code in {"authUnavailable", "workspaceRoutingTimeout"}:
+        if (normalized_failure_code == "authUnavailable"
+                or normalized_failure_code in WORKSPACE_ROUTING_FAILURE_CODES):
             retry_delay = min(
                 AUTH_UNAVAILABLE_RETRY_BASE_SECONDS * (2 ** (next_attempt - 2)),
                 AUTH_UNAVAILABLE_RETRY_MAX_SECONDS,
@@ -5867,7 +5869,7 @@ def renew_dispatch(
                 code="DISPATCH_RENEWAL_IDENTITY_MISMATCH",
                 status="NEEDS_USER",
             )
-        if intent.get("failure_code") == "workspaceRoutingTimeout":
+        if intent.get("failure_code") in WORKSPACE_ROUTING_FAILURE_CODES:
             _assert_routing_retry_safe(repo, ledger, intent, intent.get("failure_details"))
         previous_intent = copy.deepcopy(intent)
         previous_digest = digest(previous_intent)
@@ -5939,8 +5941,8 @@ def renew_dispatch(
         ):
             if renewed_intent.get(key) is None:
                 renewed_intent.pop(key, None)
-        if previous_intent.get("failure_code") == "workspaceRoutingTimeout":
-            renewed_intent["failure_code"] = "workspaceRoutingTimeout"
+        if previous_intent.get("failure_code") in WORKSPACE_ROUTING_FAILURE_CODES:
+            renewed_intent["failure_code"] = previous_intent["failure_code"]
             renewed_intent["failure_details"] = copy.deepcopy(previous_intent["failure_details"])
             renewed_intent["activation_state"] = "pending"
         ledger["dispatch_intent"] = renewed_intent

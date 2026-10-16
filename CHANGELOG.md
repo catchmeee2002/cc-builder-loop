@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.4.3 — 2026-10-16
+
+- Unified known workspace routing discovery failures and timeouts under the same evidence-gated
+  entry recovery policy, including restart, activation, shared retry budgets and explicit renewal.
+- Preserved actual failed-turn errors during exhausted-dispatch recovery and checked error readback
+  before retry. Added historical incident envelopes and recovery-boundary coverage for both variants.
+
 - Documented upgrades from the existing Codex installation checkout and archived published release notes.
 
 ## 0.4.2 — 2026-10-15

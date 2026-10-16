@@ -4,6 +4,7 @@ import re
 from typing import Any, Mapping
 
 from .app_server import AppServerError
+from ..assurance_v4.driver_contract import WORKSPACE_ROUTING_FAILURE_CODES
 
 
 RETRYABLE_TRANSPORT_FAILURES = frozenset(
@@ -15,9 +16,8 @@ RETRYABLE_TRANSPORT_FAILURES = frozenset(
         "responseTooManyFailedAttempts",
         "httpConnectionFailed",
         "authUnavailable",
-        "workspaceRoutingTimeout",
     }
-)
+) | WORKSPACE_ROUTING_FAILURE_CODES
 
 AUTH_UNAVAILABLE_503_RE = re.compile(r"\b503\b")
 
@@ -60,13 +60,15 @@ def _known_auth_unavailable(error: Any) -> bool:
 
 def classify_turn_failure(error: Any) -> str:
     code = _codex_error_info(error)
-    if (
-        code == "other" and isinstance(error, Mapping)
-        and isinstance(error.get("message"), str)
-        and " ".join(error["message"].lower().split())
-        == "workspace routing discovery timed out"
-    ):
-        return "workspaceRoutingTimeout"
+    # These are App Server error envelopes, not tool output or arbitrary substrings.
+    # Recognition only selects the shared, evidence-gated entry recovery policy.
+    if code == "other" and isinstance(error, Mapping) and isinstance(error.get("message"), str):
+        routing_code = {
+            "workspace routing discovery timed out": "workspaceRoutingTimeout",
+            "workspace routing discovery failed": "workspaceRoutingFailed",
+        }.get(" ".join(error["message"].lower().split()))
+        if routing_code is not None:
+            return routing_code
     if code == "other" and _known_stream_disconnect(error):
         return "responseStreamDisconnected"
     if code == "other" and _known_auth_unavailable(error):

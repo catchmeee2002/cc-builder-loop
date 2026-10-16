@@ -5,6 +5,13 @@ from types import MappingProxyType
 from typing import Literal
 
 
+# Failure classification selects an observation policy, never permission to retry.
+# Keep the legacy timeout code readable; both variants require the same no-effect proof.
+WORKSPACE_ROUTING_FAILURE_CODES = frozenset({
+    "workspaceRoutingTimeout", "workspaceRoutingFailed",
+})
+
+
 AgentRole = Literal["builder", "tester", "reviewer"]
 PreparationKind = Literal[
     "role_identity",

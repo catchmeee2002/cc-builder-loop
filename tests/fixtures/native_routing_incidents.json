@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "scope": "Historical App Server error envelopes; thread and filesystem observations are synthetic, not recovered production traces",
+  "cases": [
+    {
+      "id": "issue-322-initial-failed",
+      "source": "https://github.com/catchmeee2002/cc-builder-loop/issues/322#issuecomment-6098232273",
+      "runtime_commit": "319ff207a31c60898c4cc833ecd726bea06a0e0e",
+      "error": {
+        "codexErrorInfo": "other",
+        "message": "workspace routing discovery failed"
+      },
+      "expected_code": "workspaceRoutingFailed",
+      "disposition": "rescue"
+    },
+    {
+      "id": "issue-322-tester-timeout",
+      "source": "https://github.com/catchmeee2002/cc-builder-loop/issues/322#issuecomment-6166932665",
+      "runtime_commit": "35463e6e5bce7d4d19ef968bf18455b645eb1703",
+      "error": {
+        "codexErrorInfo": "other",
+        "message": "workspace routing discovery timed out"
+      },
+      "expected_code": "workspaceRoutingTimeout",
+      "disposition": "covered"
+    },
+    {
+      "id": "issue-322-042-failed",
+      "source": "https://github.com/catchmeee2002/cc-builder-loop/issues/322#issuecomment-6199605552",
+      "runtime_commit": "b053cc49a421ca62174f6e320ae210857f345c5e",
+      "error": {
+        "codexErrorInfo": "other",
+        "message": "workspace routing discovery failed"
+      },
+      "expected_code": "workspaceRoutingFailed",
+      "disposition": "rescue"
+    }
+  ]
+}
