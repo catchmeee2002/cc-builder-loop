@@ -20,7 +20,7 @@
       ],
       "instruction_source": {
         "path": "skills/builder/SKILL.md",
-        "sha256": "83d83b61bc3b4b8a579cff96812364aa14332b1fe2033a7dd4cda6806dcc1a65",
+        "sha256": "8c681835f24bb08c883dbe561fe47018fef6969a29f693a94959909546dfd49c",
         "revision": "WORKTREE"
       }
     },
@@ -44,7 +44,7 @@
       ],
       "instruction_source": {
         "path": "skills/builder-loop-planner/SKILL.md",
-        "sha256": "7ab96b88c532c59649139f50675c441f8e4c6be119b57a344b87b3b18ac68ccc",
+        "sha256": "8f03dc998617bf2503d7bd8a2d950b8855e1bd540c12a06c1fd7520e78c0c1b5",
         "revision": "WORKTREE"
       }
     },

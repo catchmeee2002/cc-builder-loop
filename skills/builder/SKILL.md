@@ -57,7 +57,7 @@ description: 执行已接受的 Builder-loop 实验方案，把同 session 紧�
    - 完成当前 Builder action 后调用 `native-driver resume`，把 Tester/Reviewer 和后续 gate 交回
      Native Driver。Builder 中断、dirty side effect 或 owner 漂移不得切换到 `native_thread`。
    `execution.builder_runtime.mode=native_thread` 时继续执行现有 Native Driver Builder/Tester/Reviewer
-   thread 路径；该模式只由 Builder-loop Plan 的显式实验选择产生。
+   thread 路径；新 contract 仅在用户主动指定独立 Native thread 时使用该模式。
 
 新 v4 contract 的角色 dispatch 必须绑定当前 `work_unit_id`（proof、blackbox 等不产生角色进度的
 动作除外）。完成事实只能由 Core 根据候选提交、Tester source manifest 或正式 Reviewer evidence
