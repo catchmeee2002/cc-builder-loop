@@ -79,6 +79,17 @@ integration 后、proof 与完整 suite 前执行；最终 machine gate 默认�
 的真实结果。已冻结 scope 且输入等价、接受记录完整时允许跨 HEAD 复用，原执行 HEAD 保持不变。失败保存结构化 command result 与 signature，并续接原 Tester thread 做只读归因；归属可为
 Builder、Tester、计划、当前项目、builder-loop 或外部平台，三次同 signature 才进入架构复核。
 
+显式 `native-driver probe` 将协议能力与真实模型请求分开观察。它复用正式 App Server transport，
+在临时目录创建独立诊断 thread，发送禁止工具调用的最小请求，并核对完成事件、同一 turn 的回读、
+预期响应及进程组清理。它不创建或修改业务 ledger，不计入交付 evidence，也不自动在每个角色 turn
+前执行。观察到工具或交互请求时失败并清理进程；这是运行诊断与输出校验，不是通用文件系统沙箱。
+协议成功、进程退出码为零或模型自述均不能单独构成真实请求通过。
+
+App Server 只继承启动 Driver 时已经生效的宿主环境。代理由用户的原生 Codex 配置或调用环境提供，
+不从父进程补取、不通过项目文件覆盖、不另建网络配置副本。诊断仅报告代理变量名称，不报告变量值，
+并对错误与 stderr 中的凭据脱敏；缺少代理不直接等价于网络故障。模型 turn 使用有界超时，协议探测
+和初始化另有各自时限。此诊断不改变已冻结 run 的 thread 连续性、重试额度或 runtime identity。
+
 Native Driver 使用 App Server 稳定 stdio thread/turn 接口并在启动前检查当前协议 schema；不启用
 `experimentalApi` 字段，也不新增 API Key。Builder、Tester、Reviewer 的唯一 role policy 仍来自
 `agents/*.toml`，App Server `outputSchema` 传递原生 v4 JSON object，Native Coordinator 再用公共

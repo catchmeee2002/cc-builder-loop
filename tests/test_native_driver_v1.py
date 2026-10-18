@@ -4489,6 +4489,7 @@ for line in sys.stdin:
 
         with (
             patch.object(transport, "_send"),
+            patch("codex_builder_loop.native_driver.app_server.time.monotonic", side_effect=[100.0, 100.5]),
             patch.object(
                 transport,
                 "_read",
@@ -4496,10 +4497,11 @@ for line in sys.stdin:
             ) as read,
         ):
             transport._request("initialize", {})
-        read.assert_called_once_with(timeout=INITIALIZE_TIMEOUT_SECONDS)
+        read.assert_called_once_with(timeout=INITIALIZE_TIMEOUT_SECONDS - 0.5)
 
         with (
             patch.object(transport, "_send"),
+            patch("codex_builder_loop.native_driver.app_server.time.monotonic", side_effect=[100.0, 100.5]),
             patch.object(
                 transport,
                 "_read",
@@ -4508,19 +4510,20 @@ for line in sys.stdin:
         ):
             transport._next_id = 2
             transport._request("thread/start", {})
-        read.assert_called_once_with(timeout=REQUEST_TIMEOUT_SECONDS)
+        read.assert_called_once_with(timeout=REQUEST_TIMEOUT_SECONDS - 0.5)
 
     def test_probe_retries_transient_canary_timeout(self) -> None:
         attempts = 0
 
         class RetryTransport:
             def __init__(self, **_kwargs):
-                pass
+                self.cleanup_observation = None
 
             def __enter__(self):
                 return self
 
             def __exit__(self, *_args):
+                self.cleanup_observation = {"process_group_gone": True}
                 return False
 
             def start_thread(self, **_kwargs):

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.4.4 — 2026-10-18
+
+- Added an explicit Native Driver readiness probe that separates protocol admission from a real model
+  request, verifies turn readback and rejects tool activity or incomplete process cleanup.
+- Redacted URL credentials in transport diagnostics and documented native proxy propagation plus
+  fresh-session installation verification without command-local proxy overrides.
+- Defaulted Planner Builder ownership to the root session without a repeated ownership question.
+
 ## 0.4.3 — 2026-10-16
 
 - Unified known workspace routing discovery failures and timeouts under the same evidence-gated

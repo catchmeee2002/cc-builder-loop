@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -10,15 +11,25 @@ from typing import Any, Sequence
 from ..assurance_v4.driver_contract import AGENT_ACTION_CAPABILITIES
 from ..assurance_v4.models import builder_runtime_mode, digest, load_json_source
 from ..process import process_group_gone, read_proc_identity
-from .app_server import AppServerError, AppServerTransport, probe_app_server
+from .app_server import AppServerError, AppServerTransport, probe_app_server, probe_model_request
 from .coordinator import NativeCoordinator, NativeDriverError
 from .core_port import CorePort, CorePortError
+
+
+def _probe_timeout(value: str) -> float:
+    seconds = float(value)
+    if not math.isfinite(seconds) or not 0 < seconds <= 300:
+        raise argparse.ArgumentTypeError("timeout must be finite and in (0, 300] seconds")
+    return seconds
 
 
 def parser() -> argparse.ArgumentParser:
     value = argparse.ArgumentParser(prog="codex-builder-loop native-driver")
     value.add_argument("--codex-bin", default="codex")
     commands = value.add_subparsers(dest="command", required=True)
+    probe = commands.add_parser("probe", help="Check protocol and a real no-tools model request; no run mutation")
+    probe.add_argument("--timeout-seconds", type=_probe_timeout, default=120.0,
+                       help="Model-turn timeout, excluding protocol/setup (default: 120, maximum: 300)")
     start = commands.add_parser("start")
     start.add_argument("--repo", default=".")
     start.add_argument("--run", required=True)
@@ -638,6 +649,9 @@ def _root_builder_result(
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parser().parse_args(argv)
+    if args.command == "probe":
+        result = probe_model_request(args.codex_bin, timeout_seconds=args.timeout_seconds)
+        return emit(result, 0 if result["status"] == "READY" else 1)
     core = CorePort()
     repo = Path(args.repo).resolve()
     run_may_exist = args.command == "resume"

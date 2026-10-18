@@ -162,6 +162,23 @@ cd /path/to/cc-builder-loop-codex
 `${CODEX_HOME:-$HOME/.codex}/AGENTS.override.md`，它会遮蔽 `AGENTS.md`，安装器因此拒绝继续；先
 合并或移除 override，再重新安装。
 
+在新 session 内通过普通 shell 执行真实入口检查：
+
+```bash
+codex-builder-loop native-driver probe
+```
+
+该命令会产生一次真实模型请求和独立诊断 thread，不创建 Builder run。协议可用、真实请求返回正确结果、
+回读无工具活动且子进程清理完成才返回成功；安装成功或仅能创建 thread 不代表运行就绪。探针只证明
+当前连接，不替代真实 Tester 和最终交付验收。离线时可以安装，但运行就绪检查不能标为通过。
+
+如果宿主联网依赖代理，主 Codex 能联网不代表其 shell 启动的 App Server 也能联网。
+`inherit = "core"` 会过滤代理变量；保留该策略，在 Codex 用户配置现有的
+`[shell_environment_policy.set]` 中合并本机实际需要的 `HTTP_PROXY`、`HTTPS_PROXY` 及小写变体，
+保留已有 `NO_PROXY`/`no_proxy`，并检查显式 include/exclude 规则的最终效果。不要复制别人的代理地址。
+新开 session 后重新从普通 shell 检查，不在验收命令前临时补代理。安装器不改写网络配置；Driver 不从
+父进程、shell 启动脚本或项目文件猜测代理，也不持久化代理凭据。没有代理变量的直连环境仍可正常通过。
+
 安装器只配置 Codex。以下路径中的 Skills、custom agents、CLI、hook 脚本和默认文档政策均为
 指向当前 checkout 的符号链接；`hooks.json` 与 `AGENTS.md` 只合并托管注册：
 
