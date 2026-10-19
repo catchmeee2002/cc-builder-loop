@@ -4,9 +4,9 @@ Claude Code 的判据驱动交付闭环。模型说"做完了"不算数——由
 
 | gate | 谁产生 | 绑定的输入 |
 |---|---|---|
-| machine | runtime 在候选 worktree 跑 `.claude/loop.yml` 的 `pass_cmd` | contract digest、候选 HEAD |
+| machine | runtime 在候选 worktree 跑 `.claude/loop.yml` 的 `pass_cmd` | contract digest、候选输入（candidate facet，默认即候选 HEAD） |
 | tester | 独立 tester subagent 在 run 起点的冻结基线上**盲写测试**（看不到实现，与 builder 并行） | tester 分支上的测试文件 blob、mission digest |
-| proof | runtime 证明测试有鉴别力：候选逐用例全绿 + baseline-red / mutation / reviewed-boundaries；命令来自冻结的 `proof_runner`，结果读 junit | 候选 HEAD、测试文件、behaviors、proof_spec、assurance digest |
+| proof | runtime 证明测试有鉴别力：候选逐用例全绿 + baseline-red / mutation / reviewed-boundaries；命令来自冻结的 `proof_runner`，结果读 junit | 候选输入（candidate facet）、测试文件、behaviors、proof_spec、assurance digest |
 | reviewer | 独立 reviewer subagent 审查，每条问题标明该谁修 | 候选 HEAD、contract digest、前三项证据的状态与 digest |
 
 tester 看不到实现是刻意的：看着实现写的测试只能证明"实现等于实现"。四项 fresh pass 后 `bl finalize` 用 `commit-tree` + `update-ref` CAS 把已审 tree 单提交写回目标分支；之后还要过一道**复盘闸门**——runtime 从 ledger 派生确定性信号，逐条给出去向（立项 / 不是事故）写进 ledger，session 才解绑。编排（spawn subagent、SendMessage 续接、AskUserQuestion）全部交给 Claude Code 原生能力；runtime 只做判据与 Git 事务。设计原则见 [docs/design-philosophy.md](docs/design-philosophy.md)。

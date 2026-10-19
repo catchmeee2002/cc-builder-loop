@@ -30,15 +30,16 @@
 | `agents/{tester,reviewer}.md` | 角色 subagent 定义；运行时上下文由 SubagentStart hook 注入，文件本身只写硬约束 |
 | `skills/builder` `skills/planner` `skills/builder-loop` | `/builder` `/planner` 入口与机制说明 + 接入向导 |
 | `schema/` | contract / proof-spec / agent-result / ledger 的 JSON schema（文档级，runtime 用手写校验） |
-| `tests/` | pytest；`conftest.py` 提供临时 git 仓、CLI、hook 三个 fixture |
+| `tests/` | pytest；`conftest.py` 提供临时 git 仓（`repo`）、CLI（`cli`）、hook（`hook`）三个基础 fixture，`started` 组合它们 |
 | `docs/architecture.md` | 工程推导：模块边界、evidence 投影、hook 接线、失败路径 |
+| `docs/known-issues.md` | 环境问题与临时诊断记录（带保质期） |
 | `docs/doc-policy.md` | 全局文档维护原则（install 软链到 `~/.claude/doc-policy.md`，builder / reviewer / planner 按它判断文档改动） |
 
 ## Commands
 
 ```bash
 pip install -r requirements-dev.txt                         # 判据依赖，含 pytest-xdist
-python3 -m pytest -p no:html -p no:cacheprovider -q -n 16 tests   # 全量测试（串行要 17 分钟）；本机 pytest-html 插件损坏，必须 -p no:html
+python3 -m pytest -p no:html -p no:cacheprovider -q -n 16 tests   # 全量测试（串行要 17 分钟）；本机 pytest-html 损坏见 docs/known-issues.md
 ./install.sh                                                # 软链 + 注册 10 条 hook（幂等，会清旧版断链）
 bl doctor                                                   # hook / 软链 / 孤儿 session 诊断
 ```

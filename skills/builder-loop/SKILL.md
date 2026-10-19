@@ -5,7 +5,7 @@ description: "builder-loop 机制说明与接入向导：判据驱动的交付�
 
 # builder-loop
 
-模型改完代码不算完成；完成由四类独立证据决定，每条证据绑定产生它的真实输入（候选 HEAD、测试文件 blob、contract digest），输入一变证据即失效。编排（spawn / 续接 / 问用户）交给 Claude Code 原生能力，runtime 只管判据与 Git 事务。设计原则见仓库 `docs/design-philosophy.md`。
+模型改完代码不算完成；完成由四类独立证据决定，每条证据绑定它真正读得到的输入（候选输入 / 测试文件 blob / contract digest），输入一变证据即失效。编排（spawn / 续接 / 问用户）交给 Claude Code 原生能力，runtime 只管判据与 Git 事务。设计原则见仓库 `docs/design-philosophy.md`。
 
 ## 一次 run 的形状
 
