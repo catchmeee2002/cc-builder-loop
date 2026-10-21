@@ -1091,6 +1091,13 @@ class NativeCoordinator(ResultSemantics):
                 self._retry_turn_failure(turn, str(pending["action_id"]))
                 return None
             thread = self.transport.read_thread(thread_id)
+            if self._dispatch_renewal_reason is not None:
+                self._schedule_dispatch_retry(
+                    str(pending["action_id"]),
+                    str(pending["failure_code"]),
+                    action_name=str(pending["action"]),
+                )
+                return None
             compacted = self._recover_reviewer_thread_compaction(pending, thread)
             if compacted is not None:
                 return None

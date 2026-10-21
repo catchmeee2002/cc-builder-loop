@@ -61,7 +61,7 @@ def complete_delivery(fixture, *, kill_reviewer: bool = False) -> dict:
         "evidence_report": {
             "schema_version": 1, "kind": "blackbox", "status": "pass",
             "candidate_head": candidate,
-            "producer": {"role": "tester", "agent_id": "tester", "thread_id": "tester-thread"},
+            "producer": {"role": "tester", **ledger["facets"]["execution"]["agents"]["tester"]},
             "details": {
                 "result": "pass", "worktree": str(fixture.candidate),
                 "before_head": candidate, "after_head": candidate,

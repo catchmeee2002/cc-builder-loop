@@ -633,6 +633,8 @@ def _root_builder_result(
                     capability, "thread_compaction", False
                 ),
             )
+            if runtime_state is not None:
+                runtime_state["coordinator"] = coordinator
             result = coordinator.run()
         if run_may_exist:
             _persist_transport_cleanup(
