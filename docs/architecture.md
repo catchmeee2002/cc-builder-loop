@@ -378,8 +378,12 @@ Reviewer result and evidence are never reused. Tester replacement remains limite
 bounded to three starts per run and otherwise routes to architecture review. Any source-thread, candidate, or
 identity drift preserves the exhausted dispatch and returns `NEEDS_USER`.
 
-Turn waiting keeps 30-second initialize/request limits, a 120-second idle-read limit, and a 600-second compaction
-deadline. The runtime derives one immutable timeout profile from each dispatch action: Tester author, fix, and
+This isolated Issue 216 experiment uses a 360-second idle-read limit only for `tester_author`; other actions
+retain 120 seconds. It does not establish a production timeout policy. Experiment inputs and field interpretation
+are frozen in `experiments/native-transport-diagnostics/tester-idle360.json`; run it in a separate checkout with
+a new successor runtime identity, without updating the installed production checkout or mutating old ledgers.
+Turn waiting keeps 30-second initialize/request limits and a 600-second compaction deadline.
+The runtime derives one immutable timeout profile from each dispatch action: Tester author, fix, and
 recomposition-fix turns use a 7200-second total deadline, while Builder, Reviewer, Tester proof/diagnosis, and
 Tester blackbox turns retain 3600 seconds. Coordinator uses the same profile object for the ledger digest and the
 actual `run_turn`/`wait_turn` deadline. Existing active Tester authoring dispatches can move from the known legacy

@@ -1,0 +1,70 @@
+{
+  "schema_version": 1,
+  "experiment": "issue216-tester-author-idle360",
+  "production_policy": false,
+  "baseline_runtime_commit": "2b8051b78ddcf42f956ca55a0c89de8d27f89bde",
+  "baseline_evidence": "https://github.com/catchmeee2002/cc-builder-loop/issues/216#issuecomment-6367065191",
+  "hypothesis": "Driver complete-frame idle timeout can censor an outstanding upstream request before its 300-second idle budget expires; longer waiting may reveal completion or an upstream error.",
+  "independent_variable": {
+    "action": "tester_author",
+    "turn_idle_seconds_before": 120,
+    "turn_idle_seconds_after": 360
+  },
+  "invariants": {
+    "tester_author_total_seconds": 7200,
+    "initialize_seconds": 30,
+    "request_seconds": 30,
+    "compaction_total_seconds": 600,
+    "other_action_idle_seconds": 120,
+    "dispatch_attempt_limit": 3,
+    "model": "gpt-6.1-sol",
+    "reasoning_effort": "high",
+    "upstream_effective_idle_ms": 300000,
+    "business_candidate": "ef34259c28aeb41dce35d430168df98ceb5175e2"
+  },
+  "identity_rules": [
+    "Fetch the experiment into a separate clean checkout at the exact published commit; do not merge it into codex/main or run install.sh.",
+    "Invoke the experiment checkout scripts/codex-builder-loop.py explicitly for every mutating CLI call; verify version --json reports that exact commit.",
+    "Keep the existing validated capture launcher, real Codex binary and capture environment. Verify their hashes and the effective Tester cwd configuration before execution.",
+    "Use official successor/supersession from vbase-passive-read-upstream-20261023, preserving source frozen runtime, attempt history and candidate implementation. Never replace an existing frozen runtime or profile digest by editing the ledger.",
+    "Preserve mission, authority, assurance and model settings; reacquire independent evidence. No deployment or release is part of this experiment."
+  ],
+  "execution_rules": [
+    "Run the actual Tester workload with the capture launcher; a no-tools capability probe only admits the executable.",
+    "Verify the tester_author profile is 360/7200/600 and record its digest with runtime, action, turn and thread identities.",
+    "Use the existing generation retry limit of three, without reset or extra generations. This is one controlled successor, not a repeat-until-success loop.",
+    "Do not claim an automatic idle migration for old active runs; the experiment requires a new runtime identity.",
+    "Record the first timeout/error immediately; retain every attempt even if a later attempt succeeds. Other actions keep 120-second idle limits.",
+    "If Tester completes, use the normal independent gates for any business acceptance claim. A completed author turn alone is not business PASS."
+  ],
+  "outcomes": {
+    "completion_after_120_seconds_of_driver_silence": "Shows longer waiting enabled completion for this attempt. Does not prove all historical failures have the same cause.",
+    "completion_without_more_than_120_seconds_silence": "This attempt did not exercise the old idle boundary; not evidence the timeout change caused success.",
+    "upstream_error_before_driver_deadline": "Record the exact redacted error category and timing; investigate the exposed upstream failure rather than extending again.",
+    "driver_360_second_timeout": "The larger budget still produced no terminal frame. Preserve evidence and stop at the configured retry bound; do not automatically raise the deadline again.",
+    "total_deadline": "Classify separately from idle timeout; retain the original 7200-second cap.",
+    "drift_or_capture_failure": "Mark the comparison inconclusive; retain state and report the precise drift or missing evidence."
+  },
+  "report_fields": [
+    "runtime_identity",
+    "executable_identity",
+    "effective_tester_config",
+    "timeout_profile",
+    "timeout_profile_digest",
+    "candidate_head",
+    "action_id",
+    "thread_id",
+    "turn_id",
+    "attempt",
+    "maximum_driver_silence_seconds",
+    "last_driver_frame_utc",
+    "last_upstream_send_utc",
+    "upstream_completion_or_error",
+    "driver_timeout_utc",
+    "cleanup_utc",
+    "capture_completeness",
+    "gate_results"
+  ],
+  "comparison_limit": "Historical 120-second attempts versus fresh 360-second attempts are sequential observations, not deterministic replay or a randomized causal A/B test.",
+  "upstream_limit": "360 seconds covers one configured 300-second upstream idle interval plus 60 seconds, not every possible internal retry or server computation duration."
+}
