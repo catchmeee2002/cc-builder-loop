@@ -605,6 +605,7 @@
       "properties": {
         "kind": {"type": "string", "maxLength": 64},
         "offset_seconds": {"type": "number", "minimum": 0},
+        "complete_frame_wait_seconds": {"type": "number", "minimum": 0},
         "method": {"type": ["string", "integer", "null"], "maxLength": 128},
         "request_id": {"type": ["string", "integer", "null"], "maxLength": 128},
         "thread_id": {"type": ["string", "integer", "null"], "maxLength": 128},

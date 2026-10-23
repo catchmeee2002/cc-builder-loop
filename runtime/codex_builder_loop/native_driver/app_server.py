@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Callable, IO
 
 from ..process import capture_process_identity, digest as process_digest, reap_process_group
+from .observation_journal import ENV_NAME as OBSERVATION_DIR_ENV, ObservationJournal
 
 
 class AppServerError(RuntimeError):
@@ -409,6 +410,7 @@ class AppServerTransport:
         self._stderr_truncated = False
         self._stderr_thread: threading.Thread | None = None
         self._stderr_drain_error: str | None = None
+        self._observation_journal: ObservationJournal | None = None
         self._reset_receive_diagnostics()
 
     def _reset_receive_diagnostics(self) -> None:
@@ -422,10 +424,16 @@ class AppServerTransport:
     def _observe(self, kind: str, **fields: Any) -> None:
         # Metadata only: callers must never pass protocol bodies or tool text.
         self._receive_event_count += 1
-        self._receive_events.append({
+        event = {
             "kind": kind, "offset_seconds": time.perf_counter() - self._diagnostic_epoch,
             **fields,
-        })
+        }
+        self._receive_events.append(event)
+        if self._observation_journal is not None:
+            try:
+                self._observation_journal.observe(event)
+            except Exception:
+                self._observation_journal.mark_failed()
 
     @staticmethod
     def _metadata(value: Any) -> str | int | None:
@@ -572,12 +580,19 @@ class AppServerTransport:
             )
         )
         environment = os.environ.copy()
+        # The diagnostic destination belongs to this Driver, not role tool children.
+        environment.pop(OBSERVATION_DIR_ENV, None)
         environment["PYTHONPYCACHEPREFIX"] = str(cache_root)
         environment["TMPDIR"] = str(cache_parent)
         environment.pop("TEMP", None)
         environment.pop("TMP", None)
         self._python_cache_root = cache_root
         try:
+            observation_dir = os.environ.get(OBSERVATION_DIR_ENV)
+            if observation_dir:
+                self._observation_journal = ObservationJournal(
+                    observation_dir, utc_anchor=self._diagnostic_utc,
+                )
             self.process = subprocess.Popen(
                 [self.codex_bin, "app-server", "--stdio"],
                 stdin=subprocess.PIPE,
@@ -615,6 +630,11 @@ class AppServerTransport:
                 }
             )
             self._transport_state = "initializing"
+            if self._observation_journal is not None:
+                self._observation_journal.bind_identity(
+                    generation=self._generation, executable_identity=self.executable_identity,
+                    process_identity=self._process_identity,
+                )
             self._request(
                 "initialize",
                 {
@@ -691,6 +711,13 @@ class AppServerTransport:
             self._read_buffer = b""
             return dict(self._cleanup_observation)
         finally:
+            journal = self._observation_journal
+            self._observation_journal = None
+            if journal is not None:
+                try:
+                    journal.close(cleanup=self._cleanup_observation)
+                except Exception:
+                    journal.mark_failed()
             cache_root = self._python_cache_root
             self._python_cache_root = None
             if cache_root is not None:
@@ -851,6 +878,10 @@ class AppServerTransport:
                 for item in turn.get("items", []):
                     if item.get("type") == "agentMessage" and isinstance(item.get("text"), str):
                         last_text = item["text"]
+                observed_status = turn.get("status")
+                self._observe("turn_wait_completed", thread_id=self._metadata(thread_id),
+                              turn_id=self._metadata(turn_id),
+                              code=observed_status if observed_status in ("completed", "failed", "interrupted") else "unknown")
                 return TurnResult(
                     turn_id=turn_id,
                     status=str(turn.get("status", "unknown")),
@@ -998,6 +1029,7 @@ class AppServerTransport:
         if stream is None:
             raise AppServerError("App Server is not running", code="NATIVE_APP_SERVER_NOT_RUNNING")
         self._observe("read_started", timeout_seconds=timeout)
+        read_started_at = time.perf_counter()
         deadline = time.monotonic() + timeout
         while b"\n" not in self._read_buffer:
             remaining = deadline - time.monotonic()
@@ -1042,6 +1074,7 @@ class AppServerTransport:
             self._received_bytes += len(chunk)
             self._observe("bytes_received", byte_count=len(chunk))
             self._read_buffer += chunk
+        complete_frame_wait_seconds = time.perf_counter() - read_started_at
         line, self._read_buffer = self._read_buffer.split(b"\n", 1)
         try:
             value = json.loads(line.decode("utf-8"))
@@ -1056,6 +1089,7 @@ class AppServerTransport:
         item = params.get("item")
         item = item if isinstance(item, dict) else {}
         self._observe("message_parsed", byte_count=len(line),
+                      complete_frame_wait_seconds=complete_frame_wait_seconds,
                       sha256=hashlib.sha256(line).hexdigest(),
                       method=self._metadata(value.get("method")),
                       request_id=self._metadata(value.get("id")),

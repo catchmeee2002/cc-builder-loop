@@ -382,6 +382,16 @@ This isolated Issue 216 experiment uses a 360-second idle-read limit only for `t
 retain 120 seconds. It does not establish a production timeout policy. Experiment inputs and field interpretation
 are frozen in `experiments/native-transport-diagnostics/tester-idle360.json`; run it in a separate checkout with
 a new successor runtime identity, without updating the installed production checkout or mutating old ledgers.
+Optional `CODEX_BUILDER_LOOP_OBSERVATION_DIR` enables a separate bounded metadata journal in an existing
+absolute directory owned by the current user with mode 0700. It defaults off. Each transport creates a unique
+0600 JSONL file, bound to its transport generation and executable hash. Both successful and failed waits retain
+observations; the journal is diagnostic evidence, never role acceptance or an alternative ledger. It records
+complete-frame read waiting before JSON parsing, excluding time spent by the host between reads. It is not
+the duration of an upstream inference request or proof of absent upstream network traffic. Up to 16 MiB of
+events and 64 turn summaries are retained; the reserved footer reports omitted events and evicted summaries.
+Turn summaries retain the maximum complete-frame read wait even after event truncation. Missing footers,
+capture warnings, or evicted summaries limit conclusions. Normal cleanup closes and syncs the journal;
+diagnostic write failures cannot prevent process cleanup. No protocol bodies or prompts enter this journal.
 Turn waiting keeps 30-second initialize/request limits and a 600-second compaction deadline.
 The runtime derives one immutable timeout profile from each dispatch action: Tester author, fix, and
 recomposition-fix turns use a 7200-second total deadline, while Builder, Reviewer, Tester proof/diagnosis, and

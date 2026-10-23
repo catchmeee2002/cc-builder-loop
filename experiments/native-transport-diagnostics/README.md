@@ -44,3 +44,25 @@ A longer-deadline completion is evidence that the particular diagnostic task can
 It does not establish why an earlier Tester failed. If both groups finish quickly, the incident was not
 reproduced. Missing upstream request logs remain missing evidence; do not infer network or model causality
 from the local `responseStreamTimeout` classification.
+
+## Successful Driver receive observations
+
+On the experimental runtime, set `CODEX_BUILDER_LOOP_OBSERVATION_DIR` to an existing absolute private
+directory outside frozen checkouts (owned by the current user, mode 0700) for the Driver process.
+Leave it unset for default behavior.
+The Driver creates a separate 0600 `transport-*.jsonl` journal for each transport. Keep these files alongside
+the upstream capture launcher output: the launcher observes the App Server's upstream side, while this journal
+observes actual Driver reads. Do not substitute one for the other.
+
+Verify runtime and executable identity, the journal's transport generation, and the awaited thread/turn.
+Inspect `journal_closed.turns[].max_complete_frame_wait_seconds` and `longest_read_frame` for a completed turn.
+A value above 120 seconds is a measured complete-frame read wait crossing the former boundary in this run;
+it is not a deterministic replay of an earlier run or proof of the upstream cause. The measurement ends before
+JSON parsing and excludes host work between reads; partial bytes may arrive during that wait. Do not call it
+network-byte silence. A successful short wait does not exercise the old boundary.
+
+Require the closing footer, inspect cleanup and capture warnings, and report `omitted_events` and
+`evicted_turn_summaries`. Event storage is capped at 16 MiB; at most 64 completed wait summaries are retained.
+Maximum waits remain in retained summaries when detailed events are truncated. Summaries never imply role
+acceptance. A killed process or write failure may leave incomplete evidence. Do not rerun an already finalized
+business delivery solely to populate this diagnostic channel; use a future task or separately scoped diagnostic.

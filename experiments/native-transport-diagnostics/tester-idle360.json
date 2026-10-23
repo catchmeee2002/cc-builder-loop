@@ -66,5 +66,14 @@
     "gate_results"
   ],
   "comparison_limit": "Historical 120-second attempts versus fresh 360-second attempts are sequential observations, not deterministic replay or a randomized causal A/B test.",
-  "upstream_limit": "360 seconds covers one configured 300-second upstream idle interval plus 60 seconds, not every possible internal retry or server computation duration."
+  "upstream_limit": "360 seconds covers one configured 300-second upstream idle interval plus 60 seconds, not every possible internal retry or server computation duration.",
+  "success_observations": {
+    "environment_variable": "CODEX_BUILDER_LOOP_OBSERVATION_DIR",
+    "directory": "existing absolute path owned by current user, mode 0700",
+    "enabled_by_default": false,
+    "evidence": "Driver journal plus existing upstream capture; bind transport generation and thread/turn identities",
+    "metric": "maximum complete-frame read wait before JSON parsing; excludes host processing between reads; partial bytes may arrive",
+    "success_does_not_prove": "historical root cause, lack of upstream traffic, or deterministic counterfactual success under another timeout",
+    "completed_business_policy": "Do not rerun finalized business delivery merely for this evidence. Enable on a future task or separately scoped diagnostic."
+  }
 }
