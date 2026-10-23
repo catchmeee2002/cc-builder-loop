@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Checked Reviewer recovery eligibility before thread access and deferred transport-dependent recovery
+  until a fresh connection after transport failure, preserving exhausted dispatches and inspection errors.
+- Unified read-only exhaustion diagnostics across status, doctor and retrospective reporting, retaining
+  existing recovery authorization, report freshness and completion gates.
+
 ## 0.4.4 — 2026-10-18
 
 - Added an explicit Native Driver readiness probe that separates protocol admission from a real model

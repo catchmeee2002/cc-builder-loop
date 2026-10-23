@@ -12,6 +12,9 @@ from typing import Any, Callable, Mapping
 from ..assurance_v4.driver_contract import (
     AGENT_ACTION_CAPABILITIES,
     WORKSPACE_ROUTING_FAILURE_CODES,
+    REVIEWER_COMPACTION_FAILURE_CODES,
+    reviewer_compaction_eligible,
+    dispatch_exhaustion_view,
     AgentActionCapability,
 )
 from ..assurance_v4.core import canonical_context_projection, _resolve_proof_group, AssuranceError
@@ -36,10 +39,6 @@ from .transport_failures import (
 )
 
 
-REVIEWER_COMPACTION_FAILURE_CODES = {
-    "responseStreamDisconnected",
-    "missingAgentResult",
-}
 ROLE_RESULT_VALIDATION_FAILURE_CODES = frozenset(
     {
         "AGENT_RESULT_INVALID",
@@ -575,6 +574,8 @@ class NativeCoordinator(ResultSemantics):
         action: dict[str, Any],
         context: dict[str, Any],
         error: AppServerError,
+        *,
+        defer_activation: bool = False,
     ) -> bool:
         if action.get("action") != "tester_author" or not is_missing_rollout_failure(error):
             return False
@@ -617,6 +618,10 @@ class NativeCoordinator(ResultSemantics):
             "--driver-runtime-kind",
             "native",
         )
+        if defer_activation:
+            # The bound replacement intent is sufficient for the next resume's
+            # normal replace_tester action; this connection has already closed.
+            return True
         renewed = self._context().get("tester_replacement_intent")
         if not isinstance(renewed, dict) or renewed.get("new_agent") is not None:
             return True
@@ -2257,6 +2262,11 @@ class NativeCoordinator(ResultSemantics):
         pending = context.get("dispatch_intent")
         if not isinstance(pending, dict) or pending.get("action_id") != action_id:
             return None
+        if not reviewer_compaction_eligible(pending):
+            return None
+        recovery = pending.get("compaction_recovery")
+        if isinstance(recovery, dict) and recovery.get("state") == "completed":
+            return None
         thread_id = pending.get("thread_id")
         if not isinstance(thread_id, str):
             return None
@@ -2267,7 +2277,8 @@ class NativeCoordinator(ResultSemantics):
                 "Reviewer thread could not be inspected before compaction",
                 code="NATIVE_DISPATCH_COMPACTION_INSPECTION_FAILED",
                 status="NEEDS_USER",
-                details={"source_code": exc.code, "source_details": exc.details},
+                details={"source_code": exc.code, "source_details": exc.details,
+                         "dispatch_exhaustion": dispatch_exhaustion_view(context)},
             ) from exc
         return self._recover_reviewer_thread_compaction(pending, thread)
 
@@ -2277,14 +2288,7 @@ class NativeCoordinator(ResultSemantics):
         recovery = pending.get("compaction_recovery")
         if isinstance(recovery, dict) and recovery.get("state") == "completed":
             return None
-        eligible = bool(
-            pending.get("state") == "exhausted"
-            and int(pending.get("attempt", 1)) >= 3
-            and pending.get("role") == "reviewer"
-            and pending.get("action") in {"reviewer_preflight", "reviewer_final"}
-            and pending.get("failure_code") in REVIEWER_COMPACTION_FAILURE_CODES
-        )
-        if not eligible:
+        if not reviewer_compaction_eligible(pending):
             return None
         if not self._thread_compaction_available:
             if isinstance(recovery, dict) and recovery.get("state") == "prepared":
@@ -2810,6 +2814,7 @@ class NativeCoordinator(ResultSemantics):
         *,
         action_name: str | None = None,
         failure_details: Any | None = None,
+        allow_transport_recovery: bool = True,
     ) -> dict[str, Any]:
         # Entry recovery uses Core's stronger no-effect proof first; a rejected
         # observation preserves the run instead of the generic Builder FATAL path.
@@ -2835,6 +2840,11 @@ class NativeCoordinator(ResultSemantics):
             )
         except CorePortError as error:
             if error.code != "NATIVE_DISPATCH_RETRY_EXHAUSTED":
+                raise
+            # Transport exceptions reach this method after the CLI has left its
+            # transport context. Persist exhaustion, then inspect/recover only
+            # in a subsequent resume with a newly verified connection.
+            if not allow_transport_recovery:
                 raise
             compacted = (None if failure_code in WORKSPACE_ROUTING_FAILURE_CODES
                          else self._start_reviewer_thread_compaction(action_id))
@@ -3078,11 +3088,22 @@ class NativeCoordinator(ResultSemantics):
             and intent.get("action_id") == action_id
             and intent.get("action") == action_name
             and intent.get("role") == capability.role
-            and intent.get("state") in {"prepared", "in_flight"}
+            and intent.get("state") in {"prepared", "in_flight", "exhausted"}
             and isinstance(agent, dict)
             and intent.get("thread_id") == agent.get("thread_id")
         ):
             return None
+        if intent.get("state") == "exhausted":
+            # An inspection failure cannot turn a previously exhausted dispatch
+            # into a new attempt or an unhandled run-level FATAL.
+            return {
+                "status": "NEEDS_USER",
+                "code": "NATIVE_DISPATCH_RETRY_EXHAUSTED",
+                "run_id": self.run_id,
+                "message": "Exhausted dispatch recovery could not inspect its thread",
+                "dispatch_exhaustion": dispatch_exhaustion_view(context),
+                "recovery_error": {"code": error.code, "message": str(error), "details": error.details},
+            }
         pre_activation = (
             intent.get("state") == "prepared"
             and intent.get("turn_id") is None
@@ -3105,7 +3126,7 @@ class NativeCoordinator(ResultSemantics):
             if (
                 action_name == "tester_author"
                 and self._renew_tester_bootstrap_after_missing_rollout(
-                    action, context, error
+                    action, context, error, defer_activation=True
                 )
             ):
                 return self._context()
@@ -3164,7 +3185,8 @@ class NativeCoordinator(ResultSemantics):
             return None
         try:
             payload = self._schedule_dispatch_retry(
-                action_id, failure_code, action_name=str(action_name)
+                action_id, failure_code, action_name=str(action_name),
+                allow_transport_recovery=False,
             )
         except CorePortError as retry_error:
             if retry_error.status not in {"FAIL", "NEEDS_USER"}:

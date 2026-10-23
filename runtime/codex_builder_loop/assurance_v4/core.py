@@ -20,7 +20,10 @@ from typing import Any, Mapping, Sequence
 import jsonschema
 
 from . import SCHEMA_VERSION
-from .driver_contract import WORKSPACE_ROUTING_FAILURE_CODES
+from .driver_contract import (
+    WORKSPACE_ROUTING_FAILURE_CODES, REVIEWER_COMPACTION_FAILURE_CODES,
+    reviewer_compaction_eligible, dispatch_exhaustion_view, dispatch_exhaustion_blocked,
+)
 from .doc_references import (
     DOC_REFERENCE_CONTRACT_VERSION,
     DocReferenceScanError,
@@ -90,9 +93,6 @@ TRUSTED_SYSTEM_ROOTS = tuple(Path(item).resolve() for item in TRUSTED_SYSTEM_PAT
 AUTH_UNAVAILABLE_RETRY_BASE_SECONDS = 30
 AUTH_UNAVAILABLE_RETRY_MAX_SECONDS = 120
 NON_SEMANTIC_CONTINUATION_WINDOW = 3
-REVIEWER_COMPACTION_FAILURE_CODES = frozenset(
-    {"responseStreamDisconnected", "missingAgentResult"}
-)
 REVIEWER_REPLACEMENT_MAX = 3
 REHYDRATABLE_DISPATCH_FAILURE_CODES = frozenset(
     {
@@ -6007,13 +6007,7 @@ def prepare_dispatch_compaction(
             raise AssuranceError(
                 "dispatch action is stale", code="DRIVER_ACTION_STALE", status="FAIL"
             )
-        if (
-            intent.get("state") != "exhausted"
-            or int(intent.get("attempt", 1)) < 3
-            or intent.get("role") != "reviewer"
-            or intent.get("action") not in {"reviewer_preflight", "reviewer_final"}
-            or intent.get("failure_code") not in REVIEWER_COMPACTION_FAILURE_CODES
-        ):
+        if not reviewer_compaction_eligible(intent):
             raise AssuranceError(
                 "dispatch is not eligible for Reviewer thread compaction",
                 code="DISPATCH_COMPACTION_NOT_AVAILABLE",
@@ -7994,6 +7988,7 @@ def retrospective_status(repo_value: str | Path, session_id: str) -> dict[str, A
             "message": "no matching Assurance v4 runs",
         }
     terminal_facts: dict[str, dict[str, Any]] = {}
+    exhausted_dispatches: dict[str, dict[str, Any]] = {}
     active: list[str] = []
     held: list[str] = []
     for ledger, _ledger_digest in ledgers:
@@ -8023,6 +8018,9 @@ def retrospective_status(repo_value: str | Path, session_id: str) -> dict[str, A
             else:
                 terminal_facts[run_id] = {"terminal_status": phase}
             continue
+        exhaustion = dispatch_exhaustion_view(ledger)
+        if exhaustion is not None:
+            exhausted_dispatches[run_id] = exhaustion
         try:
             from .driver import next_action
 
@@ -8047,6 +8045,18 @@ def retrospective_status(repo_value: str | Path, session_id: str) -> dict[str, A
                 "action": action,
                 "reason": reason,
             }
+        elif (
+            decision.get("status") == "CONTINUE"
+            and dispatch_exhaustion_blocked(ledger)
+            and decision.get("action") == exhaustion["action"]
+        ):
+            terminal_facts[run_id] = {
+                "terminal_status": "needs-user",
+                "action": exhaustion["action"],
+                "reason": "dispatch_retry_exhausted",
+                "code": exhaustion["code"],
+                "dispatch_exhaustion": exhaustion,
+            }
         else:
             active.append(run_id)
             if decision.get("status") == "HELD":
@@ -8058,6 +8068,7 @@ def retrospective_status(repo_value: str | Path, session_id: str) -> dict[str, A
             "owner_session_id": owner_session_id,
             "message": "Assurance v4 run remains active",
             "active_runs": active,
+            "exhausted_dispatches": exhausted_dispatches,
             "run_id": active[0] if len(active) == 1 else None,
         }
     snapshot = _derive_retrospective_snapshot(
@@ -10646,6 +10657,8 @@ def status(repo_value: str | Path, run_value: str) -> dict[str, Any]:
         "HELD" if hold_ready(ledger) else
         "FATAL"
         if ledger["phase"] == "failed"
+        else "NEEDS_USER"
+        if dispatch_exhaustion_blocked(ledger)
         else "READY"
         if readiness(ledger)["ready"]
         else "ACTIVE"
@@ -10679,6 +10692,7 @@ def status(repo_value: str | Path, run_value: str) -> dict[str, Any]:
         "deferred_wait": copy.deepcopy(ledger.get("deferred_wait")),
         "driver_failure": copy.deepcopy(ledger.get("driver_failure")),
         "dispatch_intent": copy.deepcopy(ledger.get("dispatch_intent")),
+        "dispatch_exhaustion": dispatch_exhaustion_view(ledger),
         "dispatch_recovery": recovery,
         "dispatch_rehydration_intent": copy.deepcopy(
             ledger.get("dispatch_rehydration_intent")
@@ -11820,6 +11834,7 @@ def driver_context(repo_value: str | Path, run_value: str) -> dict[str, Any]:
         "deferred_wait": copy.deepcopy(ledger.get("deferred_wait")),
         "driver_failure": copy.deepcopy(ledger.get("driver_failure")),
         "dispatch_intent": copy.deepcopy(ledger.get("dispatch_intent")),
+        "dispatch_exhaustion": dispatch_exhaustion_view(ledger),
         "dispatch_recovery": recovery_view(ledger),
         "dispatch_rehydration_intent": copy.deepcopy(
             ledger.get("dispatch_rehydration_intent")

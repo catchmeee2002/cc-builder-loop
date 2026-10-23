@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Literal
+from typing import Any, Literal, Mapping
 
 
 # Failure classification selects an observation policy, never permission to retry.
@@ -10,6 +10,57 @@ from typing import Literal
 WORKSPACE_ROUTING_FAILURE_CODES = frozenset({
     "workspaceRoutingTimeout", "workspaceRoutingFailed",
 })
+
+REVIEWER_COMPACTION_FAILURE_CODES = frozenset({
+    "responseStreamDisconnected", "missingAgentResult",
+})
+
+
+def reviewer_compaction_eligible(dispatch: Mapping[str, Any]) -> bool:
+    """Pure admission check; tail, identity and side-effect proof remain in Core."""
+    return bool(
+        dispatch.get("state") == "exhausted"
+        and int(dispatch.get("attempt", 1)) >= 3
+        and dispatch.get("role") == "reviewer"
+        and dispatch.get("action") in {"reviewer_preflight", "reviewer_final"}
+        and dispatch.get("failure_code") in REVIEWER_COMPACTION_FAILURE_CODES
+    )
+
+
+def dispatch_exhaustion_view(context: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Read-only public facts, not permission to renew or replace a dispatch.
+
+    Null unless the persisted dispatch is exhausted. All identity/counter fields
+    come from that dispatch, including on historical terminal runs.
+    """
+    dispatch = context.get("dispatch_intent")
+    if not isinstance(dispatch, Mapping) or dispatch.get("state") != "exhausted":
+        return None
+    return {"code": "NATIVE_DISPATCH_RETRY_EXHAUSTED", **{
+        key: dispatch.get(key) for key in (
+            "action_id", "action", "role", "thread_id", "attempt", "generation", "failure_code"
+        )
+    }}
+
+
+def dispatch_exhaustion_blocked(context: Mapping[str, Any]) -> bool:
+    """Exhaustion pauses an active run unless a bound recovery already exists.
+
+    This projection neither probes transport nor decides which recovery is safe.
+    Existing recovery/hold/terminal decisions retain their own precedence.
+    """
+    view = dispatch_exhaustion_view(context)
+    if view is None or context.get("phase") != "active":
+        return False
+    dispatch = context["dispatch_intent"]
+    compaction = dispatch.get("compaction_recovery")
+    if isinstance(compaction, Mapping) and compaction.get("state") == "prepared":
+        return False
+    for key in ("dispatch_rehydration_intent", "reviewer_replacement_intent"):
+        intent = context.get(key)
+        if isinstance(intent, Mapping) and intent.get("action_id") == view["action_id"]:
+            return False
+    return True
 
 
 AgentRole = Literal["builder", "tester", "reviewer"]

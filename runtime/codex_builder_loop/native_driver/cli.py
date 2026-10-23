@@ -8,7 +8,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Sequence
 
-from ..assurance_v4.driver_contract import AGENT_ACTION_CAPABILITIES
+from ..assurance_v4.driver_contract import (
+    AGENT_ACTION_CAPABILITIES, dispatch_exhaustion_view, dispatch_exhaustion_blocked,
+)
 from ..assurance_v4.models import builder_runtime_mode, digest, load_json_source
 from ..process import process_group_gone, read_proc_identity
 from .app_server import AppServerError, AppServerTransport, probe_app_server, probe_model_request
@@ -388,7 +390,30 @@ def _reconcile_previous_transport(
     )
 
 
+def _with_exhaustion_diagnostic(
+    payload: dict[str, Any], context: dict[str, Any]
+) -> dict[str, Any]:
+    """Project user-facing exhaustion without changing DriverPort admission."""
+    payload = {**payload, "dispatch_exhaustion": dispatch_exhaustion_view(context)}
+    if dispatch_exhaustion_blocked(context) and payload.get("status") in {"READY", "ACTIVE"}:
+        payload.update(
+            status="NEEDS_USER",
+            code="NATIVE_DISPATCH_RETRY_EXHAUSTED",
+            message=("Dispatch retry budget exhausted. Resume may inspect existing bounded recovery "
+                     "using a new connection; renewing the same-thread generation requires an "
+                     "explicit resume --reason and unchanged runtime and dispatch identity."),
+        )
+    return payload
+
+
 def _doctor_payload(context: dict[str, Any]) -> dict[str, Any]:
+    payload = _with_exhaustion_diagnostic(_transport_doctor_payload(context), context)
+    if payload.get("code") == "NATIVE_DISPATCH_RETRY_EXHAUSTED":
+        payload["diagnostic_state"] = "dispatch-exhausted"
+    return payload
+
+
+def _transport_doctor_payload(context: dict[str, Any]) -> dict[str, Any]:
     unresolved = any(
         isinstance(context.get(key), dict)
         and context[key].get("spawn_state") != "spawned"
@@ -676,7 +701,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 payload["run_id"] = args.run
                 return emit(payload, 0 if payload["status"] == "READY" else 1)
             return emit(
-                context, 0
+                _with_exhaustion_diagnostic(context, context), 0
             )
         if args.command == "start":
             raw = sys.stdin.read() if args.contract == "-" else None

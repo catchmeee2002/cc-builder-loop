@@ -4,6 +4,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import sys
 import unittest
 from contextlib import redirect_stdout
 from io import StringIO
@@ -11,9 +12,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from harness import ROOT, cleanup_repo, commit_all, git, init_repo
+from harness import ROOT, CLI, cleanup_repo, commit_all, git, init_repo, run_process
 from runtime.codex_builder_loop.assurance_v4 import core, driver
-from runtime.codex_builder_loop.assurance_v4.store import read_ledger
+from runtime.codex_builder_loop.assurance_v4.store import read_ledger, ledger_path
 from runtime.codex_builder_loop.assurance_v4.models import digest
 from runtime.codex_builder_loop.native_driver import cli
 from runtime.codex_builder_loop.native_driver.app_server import AppServerError, TurnResult
@@ -169,6 +170,8 @@ class RootHandoffLedgerTest(unittest.TestCase):
         self.turns = []
         self.created_threads = []
         self.resumed_threads = []
+        self.compaction_available = False
+        self.closed_rpc_calls = []
 
     def ledger(self):
         return read_ledger(self.repo, self.run_id)
@@ -185,17 +188,26 @@ class RootHandoffLedgerTest(unittest.TestCase):
                 return {**super().runtime_snapshot(), "generation": self.identity}
 
             def start_thread(self, **_kwargs):
+                self.assert_open()
                 owner.created_threads.append("tester-thread")
                 return "tester-thread"
 
             def resume_thread(self, *, thread_id, **_kwargs):
+                self.assert_open()
                 owner.resumed_threads.append(thread_id)
                 return {"id": thread_id}
 
             def read_thread(self, thread_id):
+                self.assert_open()
                 return {"id": thread_id, "turns": []}
 
+            def assert_open(self):
+                if self.exits:
+                    owner.closed_rpc_calls.append(self.identity)
+                    raise AppServerError("App Server is not running", code="NATIVE_APP_SERVER_NOT_RUNNING")
+
             def run_turn(self, *, thread_id, on_started, **_kwargs):
+                self.assert_open()
                 pending = owner.ledger()["dispatch_intent"]
                 turn_id = f"turn-{len(owner.turns)}"
                 on_started(turn_id)
@@ -235,7 +247,8 @@ class RootHandoffLedgerTest(unittest.TestCase):
         # Advance only the coordinator clock, without modifying ledger deadlines.
         def coordinator(**kwargs):
             return NativeCoordinator(**kwargs, now_fn=lambda: datetime.now(timezone.utc) + timedelta(days=1))
-        with (patch.object(cli, "probe_app_server", return_value=CAPABILITY),
+        capability = SimpleNamespace(**{**vars(CAPABILITY), "thread_compaction": self.compaction_available})
+        with (patch.object(cli, "probe_app_server", return_value=capability),
               patch.object(cli, "AppServerTransport", side_effect=self.platform),
               patch.object(cli, "NativeCoordinator", side_effect=coordinator),
               patch("sys.stdin", StringIO(json.dumps(contract))), redirect_stdout(output)):
@@ -337,6 +350,87 @@ class RootHandoffLedgerTest(unittest.TestCase):
         self.assertEqual(len(renewal), 1)
         self.assertEqual((renewal[0]["previous_generation"], renewal[0]["previous_attempt"]), (1, 3))
         self.assertEqual(renewal[0]["thread_id"], exhausted["thread_id"])
+
+    def test_compaction_enabled_timeout_exhaustion_never_uses_closed_transport(self):
+        self.compaction_available = True
+        self.prepare_root()
+        for _ in range(3):
+            rc, payload = self.invoke()
+            self.assertEqual(rc, 1, payload)
+        self.assertEqual(payload.get("code"), "NATIVE_DISPATCH_RETRY_EXHAUSTED", payload)
+        self.assertEqual(payload["transport_retry"]["source_code"], TIMEOUT)
+        self.assertEqual(self.closed_rpc_calls, [])
+        ledger = self.assert_retry(payload)
+        kinds = [event["kind"] for event in ledger["events"]]
+        self.assertEqual(kinds.count("dispatch_retry_scheduled"), 2)
+        self.assertEqual(kinds.count("dispatch_retry_exhausted"), 1)
+        self.assertEqual(ledger["dispatch_intent"]["attempt"], 3)
+
+    def test_exhaustion_queries_and_retrospective_share_readonly_facts(self):
+        self.prepare_root()
+        for _ in range(3):
+            self.invoke()
+        before = ledger_path(self.repo, self.run_id).read_bytes()
+        refs = git(self.repo, "show-ref")
+        expected = {"code": "NATIVE_DISPATCH_RETRY_EXHAUSTED", **{
+            field: self.ledger()["dispatch_intent"].get(field)
+            for field in ("action_id", "action", "role", "thread_id", "attempt", "generation", "failure_code")}}
+        for command, expected_rc in (("status", 0), ("doctor", 1)):
+            rc, payload = self.invoke(command)
+            self.assertEqual((rc, payload["status"]), (expected_rc, "NEEDS_USER"), payload)
+            self.assertEqual(payload["dispatch_exhaustion"], expected)
+        self.assertEqual(core.status(self.repo, self.run_id)["status"], "NEEDS_USER")
+        self.assertEqual(core.driver_context(self.repo, self.run_id)["dispatch_exhaustion"], expected)
+        retro = core.retrospective_status(self.repo, "root-session")
+        self.assertEqual(retro["status"], "REQUIRED", retro)
+        self.assertTrue(retro["snapshot"]["snapshot_digest"])
+        self.assertEqual(retro["snapshot"]["runs"][0]["phase"], "active")
+        self.assertEqual(ledger_path(self.repo, self.run_id).read_bytes(), before)
+        self.assertEqual(git(self.repo, "show-ref"), refs)
+        snapshot = retro["snapshot"]
+        core.record_retrospective(self.repo, "root-session", {
+            "schema_version": 2, "snapshot_digest": snapshot["snapshot_digest"],
+            "issue_updates": [], "dispositions": [
+                {"signal_id": signal["signal_id"], "disposition": "needs-user",
+                 "reason": "Fixture awaits a recovery decision"}
+                for signal in snapshot["signals"]],
+        })
+        pending = core.retrospective_status(self.repo, "root-session")
+        self.assertEqual(pending["status"], "NEEDS_USER", pending)
+        self.assertIn("dispatch_retry_exhausted", pending["required_user_block"])
+        for message, blocked in (("done", True), (pending["required_user_block"], False)):
+            result = run_process([sys.executable, ROOT / "hooks/builder-loop.py"], cwd=self.repo,
+                env={"BUILDER_LOOP_CLI": str(CLI)}, input_text=json.dumps({
+                    "hook_event_name": "Stop", "cwd": str(self.repo), "session_id": "root-session",
+                    "stop_hook_active": False, "last_assistant_message": message}))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            hook = json.loads(result.stdout)
+            self.assertEqual(hook.get("decision") == "block", blocked, hook)
+        self.assertEqual(ledger_path(self.repo, self.run_id).read_bytes(), before)
+
+        # Mixed-session aggregation must still respect a genuinely active run.
+        matching, _ = core._matching_retrospective_ledgers(self.repo, "root-session")
+        other = copy.deepcopy(self.ledger())
+        other.update(run_id="still-working", dispatch_intent=None)
+        original_next = driver.next_action
+        def mixed_next(repo, run_id):
+            return ({"status": "CONTINUE", "action": "builder_implement"}
+                    if run_id == "still-working" else original_next(repo, run_id))
+        with (patch.object(core, "_matching_retrospective_ledgers", return_value=(
+                  [*matching, (other, digest(other))], [])),
+              patch.object(driver, "next_action", side_effect=mixed_next)):
+            mixed = core.retrospective_status(self.repo, "root-session")
+        self.assertEqual(mixed["status"], "ACTIVE")
+        self.assertEqual(mixed["active_runs"], ["still-working"])
+        self.assertEqual(mixed["exhausted_dispatches"], {self.run_id: expected})
+
+        self.invoke("resume", "--reason", "fixture explicitly authorizes the next generation")
+        self.assertEqual(core.retrospective_status(self.repo, "root-session")["status"], "ACTIVE")
+        for _ in range(2):
+            self.invoke()
+        stale = core.retrospective_status(self.repo, "root-session")
+        self.assertEqual(stale["status"], "STALE", stale)
+        self.assertNotEqual(stale["snapshot"]["snapshot_digest"], snapshot["snapshot_digest"])
 
 
 if __name__ == "__main__":

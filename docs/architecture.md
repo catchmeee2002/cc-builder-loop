@@ -198,6 +198,12 @@ Core 将该 generation 持久化为 `exhausted` 并返回 `NEEDS_USER`，Driver 
 非尾部 turn、存在部分 Agent 输出、任何前缀/身份漂移或 compaction 后再次耗尽都继续 fail closed。
 deprecated `thread/rollback` 不进入自动路径。
 
+恢复适用性先于 transport 访问：Core 与 Native Driver 共用角色、动作和失败类型的纯资格判断，
+Core 继续负责真实尾部、身份与副作用验证。transport 异常退出连接上下文后，只登记重试或耗尽；
+需要读取 thread 的恢复留到下一次 resume 建立并核验新连接后执行，不在已关闭连接上尝试压缩、
+角色替换或上下文重建。耗尽后的检查再次失败时保留原失败与新检查错误，不能因此重置额度或将
+原有耗尽现场升级为未处理的 FATAL。有效连接内的既有受限恢复条件保持不变。
+
 平台 failed turn 明确报告 workspace routing discovery timed out 或 workspace routing discovery failed 时，
 Native 将其归入同一入口路由恢复策略，保留各自错误分类及原文。
 该分类只表示可以申请恢复；Driver 必须回读同一 thread 的失败尾部，确认没有 Agent 输出、命令、文件或
@@ -936,6 +942,13 @@ container 或等待用户授权，advisory 的 not-incident 必须带显式理�
 回读 body 的相同 digest。Core 不访问 GitHub，只验证 root Agent 提供的 canonical binding、远端记录引用、
 read-back receipt 和覆盖率。含 Issue route 的 v1 report 保持可读但状态为 `REQUIRED/legacy-unverified`，
 不能以“内部已有 URL”冒充事故事实已进入外部问题容器。
+
+耗尽诊断从 ledger 的 dispatch 事实只读派生，由 Core status、Native status/doctor 与复盘共用。
+当前动作已耗尽且没有绑定的恢复事务时，用户状态为 NEEDS_USER；run 的实际 phase 不因此改变。
+driver-context 仍表示读取成功，driver-next 继续负责既有恢复调度，诊断不构成恢复授权。
+复盘把这种暂停纳入已有报告流程：无报告时 REQUIRED，报告与同步要求满足后 NEEDS_USER；
+续开 generation 或恢复事实变化使旧报告失效。同 session 还有实际运行中的其他 run 时保留 ACTIVE，
+同时返回耗尽事实。查询不创建 problem、driver failure 或新的持久化状态。
 
 `retrospective-status` 同时返回完整审计 `required_block` 与用户可见 `required_user_block`。前者保留全部
 跨 run disposition inventory；后者只显示 run/signal/pending 计数、report digest、真正待决的 run 或
