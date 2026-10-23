@@ -352,7 +352,21 @@ a new thread. These operations change execution identity and evidence dependenci
 The Native transport drains App Server stderr independently of the protocol stdout reader. It retains a bounded,
 redacted summary plus total byte count and SHA-256, and binds that diagnostic receipt to the transport generation,
 structured turn error, and cleanup observation. Authorization material and tokens are never persisted in the
-receipt. This diagnostic path does not change the retry limit or Reviewer compaction exception.
+receipt. Local read timeouts and disconnects retain the same diagnostic receipt through dispatch retry and
+exhaustion. The receipt binds the original error and dispatch identity; failure-time wire checkpoints use the
+existing generation-checked Core transaction. Diagnostic failures are reported alongside the original failure
+and do not replace it or authorize another attempt.
+
+Transport observations retain a bounded metadata ring with a UTC anchor, monotonic offsets, total byte/event
+counts and an explicit eviction count. They distinguish bytes received, complete JSON messages, request/wait
+boundaries, timeout and cleanup. Message bodies are excluded; frame and partial-buffer digests permit correlation
+without saving prompt, tool or reasoning text. Before closing stdin, cleanup freezes the receive snapshot so
+clearing buffers cannot erase the failure observation. Cleanup timing is recorded separately. Receipts remain
+backward compatible through additive fields; historical receipts without receive observations stay readable.
+A read deadline bounds the next complete JSON frame, including partial-frame reads; receiving bytes does not
+reset it. These observations do not change the default timeout, retry limit or Reviewer compaction exception.
+The [transport comparison experiment](../experiments/native-transport-diagnostics/README.md) exercises these
+boundaries offline or through explicitly requested isolated model turns; it produces no role evidence.
 
 If Reviewer compaction is unavailable, a third exhausted Reviewer dispatch may use a narrower replacement path
 only when the exhausted tail is the exact thread tail, contains no Agent output or tool/file/external side effect,

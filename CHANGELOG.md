@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Preserved local transport failure receipts and generation-bound wire checkpoints through retries and
+  exhaustion, with bounded body-free receive diagnostics retained across cleanup.
+- Added an offline transport comparison runner and an explicit, isolated live diagnostic comparison;
+  neither changes business-run evidence or the default read deadline.
+
 - Checked Reviewer recovery eligibility before thread access and deferred transport-dependent recovery
   until a fresh connection after transport failure, preserving exhausted dispatches and inspection errors.
 - Unified read-only exhaustion diagnostics across status, doctor and retrospective reporting, retaining

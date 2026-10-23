@@ -12,6 +12,8 @@ import tempfile
 import select
 import threading
 import time
+from collections import deque
+from datetime import datetime, timezone
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, IO
@@ -401,6 +403,45 @@ class AppServerTransport:
         self._stderr_truncated = False
         self._stderr_thread: threading.Thread | None = None
         self._stderr_drain_error: str | None = None
+        self._reset_receive_diagnostics()
+
+    def _reset_receive_diagnostics(self) -> None:
+        self._diagnostic_epoch = time.perf_counter()
+        self._diagnostic_utc = datetime.now(timezone.utc).isoformat()
+        self._receive_events: deque[dict[str, Any]] = deque(maxlen=128)
+        self._receive_event_count = 0
+        self._received_bytes = 0
+        self._pre_cleanup_snapshot: dict[str, Any] | None = None
+
+    def _observe(self, kind: str, **fields: Any) -> None:
+        # Metadata only: callers must never pass protocol bodies or tool text.
+        self._receive_event_count += 1
+        self._receive_events.append({
+            "kind": kind, "offset_seconds": time.perf_counter() - self._diagnostic_epoch,
+            **fields,
+        })
+
+    @staticmethod
+    def _metadata(value: Any) -> str | int | None:
+        if isinstance(value, int) and not isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return _redact_text(value)[0][:128]
+        return None
+
+    def receive_snapshot(self) -> dict[str, Any]:
+        return {
+            "utc_anchor": self._diagnostic_utc,
+            "offset_seconds": time.perf_counter() - self._diagnostic_epoch,
+            "received_bytes": self._received_bytes,
+            "wire": self.wire_snapshot(),
+            "partial_bytes": len(self._read_buffer),
+            "deferred_messages": len(self._deferred),
+            "partial_sha256": hashlib.sha256(self._read_buffer).hexdigest(),
+            "event_count": self._receive_event_count,
+            "dropped_events": max(0, self._receive_event_count - len(self._receive_events)),
+            "events": [dict(event) for event in self._receive_events],
+        }
 
     def _fallback_executable_identity(self) -> dict[str, Any]:
         resolved = _resolved_executable(self.codex_bin)
@@ -473,6 +514,9 @@ class AppServerTransport:
             "redaction_count": stderr_redactions + error_redactions,
             "turn_error": redacted_error,
             "cleanup_observation": self.cleanup_observation,
+            "receive": self._pre_cleanup_snapshot or self.receive_snapshot(),
+            "lifecycle_tail": [dict(event) for event in self._receive_events
+                               if event["kind"] in {"close_started", "close_completed"}],
         }
         receipt["receipt_digest"] = _canonical_digest(receipt)
         return receipt
@@ -513,6 +557,7 @@ class AppServerTransport:
         self._last_wire_event_digest = None
         self._cleanup_observation = None
         self._reset_stderr_capture()
+        self._reset_receive_diagnostics()
         cache_parent = _trusted_cache_parent()
         cache_root = Path(
             tempfile.mkdtemp(
@@ -587,6 +632,12 @@ class AppServerTransport:
         try:
             if process is None:
                 return self._cleanup_observation
+            try:
+                self._pre_cleanup_snapshot = self.receive_snapshot()
+            except Exception as exc:
+                # Observability must never prevent process-group cleanup.
+                self._pre_cleanup_snapshot = {"diagnostic_error": type(exc).__name__}
+            self._observe("close_started")
             self._transport_state = "draining"
             if process.stdin:
                 try:
@@ -629,6 +680,7 @@ class AppServerTransport:
                 "process_group_gone": group_gone,
                 "state": self._transport_state,
             }
+            self._observe("close_completed", process_group_gone=group_gone)
             self._deferred.clear()
             self._read_buffer = b""
             return dict(self._cleanup_observation)
@@ -735,11 +787,14 @@ class AppServerTransport:
             turn_total_seconds=self.turn_total_timeout,
             compaction_total_seconds=self.compaction_total_timeout,
         )
+        self._observe("wait_turn", thread_id=self._metadata(thread_id),
+                      turn_id=self._metadata(turn_id), **profile.as_dict())
         last_text = ""
         deadline = time.monotonic() + profile.turn_total_seconds
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
+                self._observe("turn_total_timeout", remaining_total_seconds=remaining)
                 raise AppServerError(
                     "Codex App Server turn total timeout",
                     code="NATIVE_APP_SERVER_TURN_TIMEOUT",
@@ -755,9 +810,13 @@ class AppServerTransport:
                     timeout=min(profile.turn_idle_seconds, remaining)
                 )
             except AppServerError as exc:
+                remaining_total = deadline - time.monotonic()
+                self._observe("turn_wait_failed", code=exc.code,
+                              remaining_total_seconds=remaining_total,
+                              idle_seconds=profile.turn_idle_seconds)
                 if (
                     exc.code == "NATIVE_APP_SERVER_TIMEOUT"
-                    and time.monotonic() >= deadline
+                    and remaining_total <= 0
                 ):
                     raise AppServerError(
                         "Codex App Server turn total timeout",
@@ -814,9 +873,13 @@ class AppServerTransport:
                     timeout=min(self.turn_idle_timeout, remaining)
                 )
             except AppServerError as exc:
+                remaining_total = deadline - time.monotonic()
+                self._observe("compaction_wait_failed", code=exc.code,
+                              remaining_total_seconds=remaining_total,
+                              idle_seconds=self.turn_idle_timeout)
                 if (
                     exc.code == "NATIVE_APP_SERVER_TIMEOUT"
-                    and time.monotonic() >= deadline
+                    and remaining_total <= 0
                 ):
                     raise AppServerError(
                         "Codex App Server compaction total timeout",
@@ -876,6 +939,7 @@ class AppServerTransport:
 
     def _request(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         request_id = self._next_id
+        self._observe("request_started", method=self._metadata(method), request_id=request_id)
         self._next_id += 1
         self._send({"jsonrpc": "2.0", "method": method, "id": request_id, "params": params})
         timeout = INITIALIZE_TIMEOUT_SECONDS if method == "initialize" else REQUEST_TIMEOUT_SECONDS
@@ -883,6 +947,7 @@ class AppServerTransport:
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
+                self._observe("request_timeout", method=self._metadata(method), timeout_seconds=timeout)
                 raise AppServerError("Codex App Server request timed out",
                                      code="NATIVE_APP_SERVER_TIMEOUT",
                                      details={"method": method, "timeout_seconds": timeout})
@@ -926,10 +991,12 @@ class AppServerTransport:
         stream: IO[Any] | None = process.stdout if process is not None else None
         if stream is None:
             raise AppServerError("App Server is not running", code="NATIVE_APP_SERVER_NOT_RUNNING")
+        self._observe("read_started", timeout_seconds=timeout)
         deadline = time.monotonic() + timeout
         while b"\n" not in self._read_buffer:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
+                self._observe("read_timeout", timeout_seconds=timeout, partial_bytes=len(self._read_buffer))
                 raise AppServerError(
                     "Codex App Server read timed out",
                     code="NATIVE_APP_SERVER_TIMEOUT",
@@ -940,6 +1007,7 @@ class AppServerTransport:
             except (OSError, ValueError):
                 ready = [stream]
             if not ready:
+                self._observe("select_timeout", timeout_seconds=timeout, partial_bytes=len(self._read_buffer))
                 raise AppServerError(
                     "Codex App Server read timed out",
                     code="NATIVE_APP_SERVER_TIMEOUT",
@@ -952,6 +1020,7 @@ class AppServerTransport:
                     str(exc), code="NATIVE_APP_SERVER_DISCONNECTED"
                 ) from exc
             if not chunk:
+                self._observe("stdout_eof", partial_bytes=len(self._read_buffer))
                 code = process.poll() if process is not None else None
                 raise AppServerError(
                     "Codex App Server closed its output",
@@ -964,6 +1033,8 @@ class AppServerTransport:
                         ).hexdigest(),
                     },
                 )
+            self._received_bytes += len(chunk)
+            self._observe("bytes_received", byte_count=len(chunk))
             self._read_buffer += chunk
         line, self._read_buffer = self._read_buffer.split(b"\n", 1)
         try:
@@ -972,6 +1043,20 @@ class AppServerTransport:
             raise AppServerError("invalid App Server JSON", code="NATIVE_APP_SERVER_PROTOCOL_ERROR") from exc
         if not isinstance(value, dict):
             raise AppServerError("invalid App Server message", code="NATIVE_APP_SERVER_PROTOCOL_ERROR")
+        params = value.get("params")
+        params = params if isinstance(params, dict) else {}
+        turn = params.get("turn")
+        turn = turn if isinstance(turn, dict) else {}
+        item = params.get("item")
+        item = item if isinstance(item, dict) else {}
+        self._observe("message_parsed", byte_count=len(line),
+                      sha256=hashlib.sha256(line).hexdigest(),
+                      method=self._metadata(value.get("method")),
+                      request_id=self._metadata(value.get("id")),
+                      thread_id=self._metadata(params.get("threadId")),
+                      turn_id=self._metadata(params.get("turnId", turn.get("id"))),
+                      item_type=self._metadata(item.get("type")),
+                      sequence=self._wire_sequence + 1)
         self._wire_sequence += 1
         self._last_wire_event_digest = _canonical_digest(
             {
@@ -1010,6 +1095,9 @@ class AppServerTransport:
 
     def _answer_server_request(self, message: dict[str, Any]) -> None:
         method = str(message.get("method", ""))
+        self._observe("server_request", method=self._metadata(method),
+                      request_id=self._metadata(message.get("id")),
+                      decision="decline" if "Approval" in method or "requestApproval" in method else "unsupported")
         if "Approval" in method or "requestApproval" in method:
             self._send({"id": message["id"], "result": {"decision": "decline"}})
             return

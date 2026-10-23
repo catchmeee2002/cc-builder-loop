@@ -59,7 +59,8 @@ class RecoveryEligibilityTest(unittest.TestCase):
             "closed output", code="NATIVE_APP_SERVER_DISCONNECTED"))
         self.assertEqual(result["code"], "NATIVE_DISPATCH_RETRY_EXHAUSTED")
         self.assertEqual(result["transport_retry"]["failure_code"], "responseStreamDisconnected")
-        self.assertEqual(coordinator.transport.mock_calls, [])
+        self.assertEqual([call[0] for call in coordinator.transport.mock_calls],
+                         ["diagnostic_receipt", "wire_snapshot"])
         self.assertEqual(coordinator.core.call.call_args.args[0], "retry-dispatch")
 
     def test_failed_inspection_of_exhausted_thread_preserves_original_failure(self):

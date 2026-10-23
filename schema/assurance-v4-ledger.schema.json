@@ -598,6 +598,80 @@
         "manifest_digest": {"$ref": "#/$defs/sha256"}
       }
     },
+    "transportObservationEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "offset_seconds"],
+      "properties": {
+        "kind": {"type": "string", "maxLength": 64},
+        "offset_seconds": {"type": "number", "minimum": 0},
+        "method": {"type": ["string", "integer", "null"], "maxLength": 128},
+        "request_id": {"type": ["string", "integer", "null"], "maxLength": 128},
+        "thread_id": {"type": ["string", "integer", "null"], "maxLength": 128},
+        "turn_id": {"type": ["string", "integer", "null"], "maxLength": 128},
+        "item_type": {"type": ["string", "integer", "null"], "maxLength": 128},
+        "byte_count": {"type": "integer", "minimum": 0},
+        "partial_bytes": {"type": "integer", "minimum": 0},
+        "sequence": {"type": "integer", "minimum": 0},
+        "timeout_seconds": {"type": "number"},
+        "remaining_total_seconds": {"type": "number"},
+        "idle_seconds": {"type": "number"},
+        "turn_idle_seconds": {"type": "number"},
+        "turn_total_seconds": {"type": "number"},
+        "compaction_total_seconds": {"type": "number"},
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "code": {"type": "string"},
+        "decision": {"enum": ["decline", "unsupported"]},
+        "process_group_gone": {"type": "boolean"}
+      }
+    },
+    "receiveDiagnostics": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "utc_anchor",
+            "offset_seconds",
+            "received_bytes",
+            "wire",
+            "partial_bytes",
+            "deferred_messages",
+            "partial_sha256",
+            "event_count",
+            "dropped_events",
+            "events"
+          ],
+          "properties": {
+            "utc_anchor": {"type": "string"},
+            "offset_seconds": {"type": "number", "minimum": 0},
+            "received_bytes": {"type": "integer", "minimum": 0},
+            "wire": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["generation", "sequence", "event_digest"],
+              "properties": {
+                "generation": {"type": ["string", "null"]},
+                "sequence": {"type": "integer", "minimum": 0},
+                "event_digest": {"oneOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]}
+              }
+            },
+            "partial_bytes": {"type": "integer", "minimum": 0},
+            "deferred_messages": {"type": "integer", "minimum": 0},
+            "partial_sha256": {"$ref": "#/$defs/sha256"},
+            "event_count": {"type": "integer", "minimum": 0},
+            "dropped_events": {"type": "integer", "minimum": 0},
+            "events": {"type": "array", "maxItems": 128, "items": {"$ref": "#/$defs/transportObservationEvent"}}
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["diagnostic_error"],
+          "properties": {"diagnostic_error": {"type": "string"}}
+        }
+      ]
+    },
     "diagnosticReceipt": {
       "type": "object",
       "additionalProperties": false,
@@ -621,6 +695,11 @@
         "turn_error": {},
         "cleanup_observation": {
           "oneOf": [{"type": "object"}, {"type": "null"}]
+        },
+        "receive": {"$ref": "#/$defs/receiveDiagnostics"},
+        "lifecycle_tail": {
+          "type": "array", "maxItems": 2,
+          "items": {"$ref": "#/$defs/transportObservationEvent"}
         },
         "receipt_digest": {"$ref": "#/$defs/sha256"}
       }

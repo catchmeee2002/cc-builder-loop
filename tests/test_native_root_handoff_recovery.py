@@ -187,6 +187,9 @@ class RootHandoffLedgerTest(unittest.TestCase):
             def runtime_snapshot(self):
                 return {**super().runtime_snapshot(), "generation": self.identity}
 
+            def wire_snapshot(self):
+                return {"generation": self.identity, "sequence": 7, "event_digest": "f" * 64}
+
             def start_thread(self, **_kwargs):
                 self.assert_open()
                 owner.created_threads.append("tester-thread")
@@ -365,6 +368,19 @@ class RootHandoffLedgerTest(unittest.TestCase):
         self.assertEqual(kinds.count("dispatch_retry_scheduled"), 2)
         self.assertEqual(kinds.count("dispatch_retry_exhausted"), 1)
         self.assertEqual(ledger["dispatch_intent"]["attempt"], 3)
+        observations = [event["details"]["failure_details"] for event in ledger["events"]
+                        if event["kind"] in {"dispatch_retry_scheduled", "dispatch_retry_exhausted"}]
+        self.assertEqual([item["dispatch"]["attempt"] for item in observations], [1, 2, 3])
+        generations = []
+        for item in observations:
+            self.assertEqual(item["source_code"], TIMEOUT)
+            self.assertEqual(item["error"]["details"]["timeout_seconds"], 120)
+            receipt = item["diagnostic_receipt"]
+            self.assertTrue(receipt["cleanup_observation"]["process_group_gone"])
+            self.assertEqual(receipt["transport_generation"], item["dispatch"]["native_transport_generation"])
+            generations.append(receipt["transport_generation"])
+        self.assertEqual(len(set(generations)), 3)
+        self.assertEqual(kinds.count("wire_observation_checkpointed"), 3)
 
     def test_exhaustion_queries_and_retrospective_share_readonly_facts(self):
         self.prepare_root()

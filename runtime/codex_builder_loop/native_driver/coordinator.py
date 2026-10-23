@@ -23,6 +23,7 @@ from .app_server import (
     LONG_TESTER_ACTIONS,
     AppServerError,
     AppServerTransport,
+    _redact_value,
     TurnResult,
     TurnTimeoutProfile,
     compaction_timeout_profile,
@@ -3183,10 +3184,35 @@ class NativeCoordinator(ResultSemantics):
                     },
                 )
             return None
+        # The connection is already closed here. Only consume retained local
+        # observations; never issue an RPC while recording a transport failure.
+        details: dict[str, Any] = {
+            "source_code": error.code,
+            "error": _redact_value({"message": str(error), "details": error.details})[0],
+            "dispatch": {key: intent.get(key) for key in (
+                "action_id", "thread_id", "turn_id", "attempt", "generation",
+                "native_transport_generation")},
+        }
+        try:
+            receipt_fn = getattr(self.transport, "diagnostic_receipt", None)
+            if callable(receipt_fn):
+                receipt = receipt_fn(
+                    failure_code=failure_code,
+                    turn_error={"code": error.code, "message": str(error), "details": error.details},
+                )
+                if isinstance(receipt, dict):
+                    details["diagnostic_receipt"] = receipt
+        except Exception as diagnostic_error:
+            # A failed diagnostic must not replace the transport failure.
+            details["diagnostic_error"] = type(diagnostic_error).__name__
+        try:
+            self._checkpoint_wire(action_id, expected_generation=intent.get("native_transport_generation"))
+        except Exception as checkpoint_error:
+            details["checkpoint_error"] = type(checkpoint_error).__name__
         try:
             payload = self._schedule_dispatch_retry(
                 action_id, failure_code, action_name=str(action_name),
-                allow_transport_recovery=False,
+                failure_details=details, allow_transport_recovery=False,
             )
         except CorePortError as retry_error:
             if retry_error.status not in {"FAIL", "NEEDS_USER"}:
