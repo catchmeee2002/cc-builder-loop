@@ -299,6 +299,19 @@ bash scripts/verify-all.sh
 
 设计原则见 [docs/design-philosophy.md](docs/design-philosophy.md)，运行架构见 [docs/architecture.md](docs/architecture.md)，环境限制见 [docs/known-issues.md](docs/known-issues.md)。
 
+### 当前会话身份
+
+在 Codex 会话内使用 `native-driver session-identity` 查询当前身份。Native Driver 启动自动读取
+宿主注入的 `CODEX_THREAD_ID`，不依赖 SessionStart 聊天消息；`start --session-id` 是可选的一致性
+断言，不能代替缺失的宿主身份。普通终端仅传入手填 ID 不再满足启动条件。
+
+root-session run 只能由同一宿主 thread 续接。缺失、非法或不匹配的身份会在启动副作用前拒绝；
+错误调用者的续接不会修改原 run。`status` 和 `doctor` 仍可只读诊断。不要手工覆盖身份环境变量；
+这是一致性检查，不是针对同一用户恶意修改进程环境的认证机制。
+
+方案 `validate` 的 READY 只表示方案准入；启动入口还会核验当前身份和适用的运行条件。
+身份修复后可继续已接受的方案，无需重新规划或请求逐任务身份例外。
+
 ### 暂停与恢复自动推进
 
 需要检查现场时，使用 `native-driver hold --repo <repo> --run <run> --session-id <owner> --reason <reason>`。

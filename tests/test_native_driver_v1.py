@@ -373,6 +373,7 @@ class NativeDriverCoreContractTest(unittest.TestCase):
         finished = self.invoke("driver-context", "--repo", self.repo, "--run", run_id)
         self.assertIsNone(finished["dispatch_intent"])
 
+    @patch.dict(os.environ, {"CODEX_THREAD_ID": "root-lazy-session"})
     def test_root_start_does_not_probe_app_server_until_transport_handoff(self) -> None:
         repo = self.repo
 
@@ -3368,6 +3369,7 @@ class NativeDriverCoreContractTest(unittest.TestCase):
         self.assertNotIn("turn_id", preserved["dispatch_intent"])
         self.assertIsNotNone(preserved["tester_replacement_intent"])
 
+    @patch.dict(os.environ, {"CODEX_THREAD_ID": "native-cli-fatal-session"})
     def test_native_cli_persists_unhandled_fatal_after_run_creation(self) -> None:
         class FakeCore:
             def __init__(self) -> None:
@@ -3468,6 +3470,7 @@ class NativeDriverCoreContractTest(unittest.TestCase):
         self.assertEqual(payload["status"], "FATAL")
         self.assertEqual(payload["phase"], "failed")
 
+    @patch.dict(os.environ, {"CODEX_THREAD_ID": "root-transport-session"})
     def test_root_session_native_recovery_preserves_transport_diagnostics_on_fatal(
         self,
     ) -> None:
@@ -3618,6 +3621,7 @@ class NativeDriverCoreContractTest(unittest.TestCase):
         payload = json.loads(output.getvalue().splitlines()[-1])
         self.assertEqual(payload["code"], "NATIVE_APP_SERVER_DISCONNECTED")
 
+    @patch.dict(os.environ, {"CODEX_THREAD_ID": "root-session"})
     def test_root_session_tester_resume_uses_native_recovery_with_reason(self) -> None:
         captured: dict[str, object] = {}
         calls: list[str] = []
@@ -3759,6 +3763,7 @@ class NativeDriverCoreContractTest(unittest.TestCase):
             )
         )
 
+    @patch.dict(os.environ, {"CODEX_THREAD_ID": "native-cli-admission-blocked-session"})
     def test_native_cli_admission_blocker_creates_no_agent_thread_or_turn(self) -> None:
         class BlockedCore:
             def __init__(self) -> None:

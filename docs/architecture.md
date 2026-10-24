@@ -425,6 +425,19 @@ It never creates or aliases an App Server thread. Native-thread mode retains the
 retry/compaction behavior. A root Builder failure waits for the same session's explicit continuation and never
 falls back across modes.
 
+The Native Driver reads caller identity through the shared session-identity resolver before start side effects.
+The trusted Codex command environment is the source; an explicit start identity is only an equality assertion.
+Root-session resume compares this live caller with the recorded root owner before any recovery or mutation.
+Identity rejection bypasses run-failure persistence: a different caller cannot fail or clean up the owner's run.
+Read-only status and doctor remain available without a caller identity. No additional identity cache or ledger
+field is introduced, and contract validation remains independent from current-session readiness.
+
+The host thread is the continuity identity, not a process-session ID. Codex injects the active thread ID into
+command environments, replaces inherited values, and excludes it from shell snapshots. Resuming a thread
+retains that ID; a fork has its own identity. This boundary trusts host-supplied process environments and does
+not authenticate arbitrary local processes against a hostile caller. SessionStart text is not required by the
+Native Driver; the unregistered legacy handler remains a legacy capability, not a startup dependency.
+
 Root mode defers App Server admission and transport binding until a Tester or Reviewer action is reached. This
 keeps the default Builder path independent from child-thread startup while preserving the existing independent
 Tester/Reviewer evidence boundary. Retained contracts and ledgers without `builder_runtime` remain on the legacy

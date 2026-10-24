@@ -268,6 +268,8 @@ class SessionStartAuthorizationNeutralityTest(unittest.TestCase):
             self.assertIn("BUILDER_HANDOFF_READY", native_planner)
             self.assertIn("full-driver-v4-experiment", builder)
             self.assertIn("native-driver start", builder)
+            self.assertIn("native-driver session-identity", builder)
+            self.assertNotIn("从 SessionStart developer context 原样取得", builder)
             self.assertIn(
                 "allow_implicit_invocation:false", compact(full_driver_manifest)
             )

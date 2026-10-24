@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -43,6 +44,29 @@ class InstallContractTest(unittest.TestCase):
             "CODEX_HOME": str(home / ".codex"),
             "PATH": f"{home / '.local' / 'bin'}:{os.environ.get('PATH', '')}",
         }
+
+    def test_clean_and_upgrade_install_supply_identity_without_session_start(self) -> None:
+        for upgrade in (False, True):
+            with self.subTest(upgrade=upgrade), tempfile.TemporaryDirectory(prefix="identity-install-") as raw:
+                home = Path(raw)
+                codex_home = home / ".codex"
+                codex_home.mkdir()
+                hooks_path = codex_home / "hooks.json"
+                if upgrade:
+                    hooks_path.write_text(json.dumps({"hooks": {"SessionStart": [{"hooks": [{
+                        "type": "command", "command": f"python3 {codex_home / 'hooks/builder-loop.py'}"
+                    }]}]}}))
+                env = {**self.environment(home), "CODEX_THREAD_ID": "installed-host-thread"}
+                installed = run_process(["bash", ROOT / "install.sh"], cwd=ROOT, env=env)
+                self.assertEqual(installed.returncode, 0, installed.stderr)
+                self.assertNotIn("SessionStart", json.loads(hooks_path.read_text())["hooks"])
+                command = [sys.executable, home / ".local/bin/codex-builder-loop", "native-driver", "session-identity"]
+                queried = run_process(command, cwd=home, env=env)
+                self.assertEqual(queried.returncode, 0, queried.stderr)
+                self.assertEqual(json.loads(queried.stdout)["session_id"], "installed-host-thread")
+                missing = run_process(command, cwd=home, env={**env, "CODEX_THREAD_ID": ""})
+                self.assertEqual(missing.returncode, 1)
+                self.assertEqual(json.loads(missing.stdout)["code"], "NATIVE_SESSION_IDENTITY_MISSING")
 
     def test_install_is_idempotent_and_uninstall_preserves_foreign_content(self) -> None:
         with tempfile.TemporaryDirectory(prefix="builder-loop-install-") as raw_home:

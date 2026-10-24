@@ -4,6 +4,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import os
 import sys
 import unittest
 from contextlib import redirect_stdout
@@ -68,6 +69,7 @@ class Transport:
 
 
 class RootHandoffEntryTest(unittest.TestCase):
+    @patch.dict(os.environ, {"CODEX_THREAD_ID": "root-session"})
     def exercise(self, command, error_code, *, fail_before_handoff=False):
         old_action = {"action": "tester_author", "action_id": "a" * 64,
                       "reason": "tester_source_missing"}
@@ -241,6 +243,7 @@ class RootHandoffLedgerTest(unittest.TestCase):
         self.transports.append(platform)
         return platform
 
+    @patch.dict(os.environ, {"CODEX_THREAD_ID": "root-session"})
     def invoke(self, command="resume", *extra, contract=None):
         from datetime import datetime, timedelta, timezone
         output = StringIO()
@@ -281,6 +284,23 @@ class RootHandoffLedgerTest(unittest.TestCase):
                                                          "problem_report": None, "proof_spec": None})
         core.apply_dispatch_result(self.repo, self.run_id, action_id=action["action_id"],
                                    driver_runtime_kind="native", owner_session_id="root-session")
+
+    def test_wrong_caller_resume_preserves_real_ledger_and_worktrees(self):
+        self.prepare_root()
+        path = ledger_path(self.repo, self.run_id)
+        before = path.read_bytes()
+        trees = git(self.repo, "worktree", "list", "--porcelain")
+        for caller in ("", "different-session"):
+            output = StringIO()
+            with patch.dict(os.environ, {"CODEX_THREAD_ID": caller}), redirect_stdout(output), \
+                 patch.object(cli, "AppServerTransport") as transport:
+                rc = cli.main(["resume", "--repo", str(self.repo), "--run", self.run_id])
+            self.assertEqual(rc, 1)
+            payload = json.loads(output.getvalue())
+            self.assertEqual(payload["code"], "NATIVE_SESSION_IDENTITY_" + ("MISMATCH" if caller else "MISSING"))
+            self.assertEqual(path.read_bytes(), before)
+            self.assertEqual(git(self.repo, "worktree", "list", "--porcelain"), trees)
+            transport.assert_not_called()
 
     def assert_retry(self, payload):
         ledger = self.ledger()

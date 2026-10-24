@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Replaced the Native Driver startup dependency on SessionStart text with host-supplied caller identity;
+  explicit start IDs now assert equality, and root resume rejects a different caller without mutating the run.
+
 - Preserved local transport failure receipts and generation-bound wire checkpoints through retries and
   exhaustion, with bounded body-free receive diagnostics retained across cleanup.
 - Added an offline transport comparison runner and an explicit, isolated live diagnostic comparison;

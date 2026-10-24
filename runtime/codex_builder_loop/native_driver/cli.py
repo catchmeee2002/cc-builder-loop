@@ -13,6 +13,7 @@ from ..assurance_v4.driver_contract import (
 )
 from ..assurance_v4.models import builder_runtime_mode, digest, load_json_source
 from ..process import process_group_gone, read_proc_identity
+from ..session_identity import SOURCE, SessionIdentityError, current_session_id
 from .app_server import AppServerError, AppServerTransport, probe_app_server, probe_model_request
 from .coordinator import NativeCoordinator, NativeDriverError
 from .core_port import CorePort, CorePortError
@@ -32,10 +33,12 @@ def parser() -> argparse.ArgumentParser:
     probe = commands.add_parser("probe", help="Check protocol and a real no-tools model request; no run mutation")
     probe.add_argument("--timeout-seconds", type=_probe_timeout, default=120.0,
                        help="Model-turn timeout, excluding protocol/setup (default: 120, maximum: 300)")
+    identity = commands.add_parser("session-identity", help="Read current Codex caller identity without run mutation")
+    identity.add_argument("--session-id", help="Assert the expected identity; never supplies a missing host identity")
     start = commands.add_parser("start")
     start.add_argument("--repo", default=".")
     start.add_argument("--run", required=True)
-    start.add_argument("--session-id", required=True)
+    start.add_argument("--session-id", help="Assert the expected Codex identity (defaults to the host identity)")
     start.add_argument("--contract", required=True)
     resume = commands.add_parser("resume")
     resume.add_argument("--repo", default=".")
@@ -679,6 +682,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "probe":
         result = probe_model_request(args.codex_bin, timeout_seconds=args.timeout_seconds)
         return emit(result, 0 if result["status"] == "READY" else 1)
+    if args.command == "session-identity":
+        try:
+            return emit({"status": "READY", "session_id": current_session_id(args.session_id), "source": SOURCE}, 0)
+        except SessionIdentityError as exc:
+            return emit(exc.payload(), 1)
     core = CorePort()
     repo = Path(args.repo).resolve()
     run_may_exist = args.command == "resume"
@@ -704,6 +712,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 _with_exhaustion_diagnostic(context, context), 0
             )
         if args.command == "start":
+            args.session_id = current_session_id(args.session_id)
             raw = sys.stdin.read() if args.contract == "-" else None
             start_contract = load_json_source(args.contract, stdin_text=raw)
             if builder_runtime_mode(start_contract) == "root_session":
@@ -741,6 +750,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         code="NATIVE_ROOT_SESSION_IDENTITY_MISSING",
                         status="NEEDS_USER",
                     )
+                current_session_id(root_session_id)
                 failure_owner_session_id = root_session_id
                 root_resume_session_id = root_session_id
                 if _root_resume_uses_root_coordinator(
@@ -969,6 +979,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                     1,
                 )
             return emit(result_payload, result_returncode)
+    except SessionIdentityError as exc:
+        # Caller rejection is not a failure of the recorded run. No recovery,
+        # failure event, cleanup or owner mutation may follow this rejection.
+        return emit(exc.payload(), 1)
     except (CorePortError, NativeDriverError, AppServerError) as exc:
         if root_start_state.get("started"):
             run_may_exist = True

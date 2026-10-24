@@ -15,6 +15,7 @@
         "scripts/codex-builder-loop.py",
         "runtime/codex_builder_loop/core.py",
         "runtime/codex_builder_loop/process.py",
+        "runtime/codex_builder_loop/session_identity.py",
         "runtime/codex_builder_loop/assurance_v4/*.py",
         "runtime/codex_builder_loop/assurance_v4/runtime-support.json",
         "runtime/codex_builder_loop/native_driver/*.py",

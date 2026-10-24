@@ -25,7 +25,10 @@ description: 执行已接受的 Builder-loop 实验方案，把同 session 紧�
 2. 从已接受方案提取唯一 `assurance-v4-contract` marker；缺失、重复或 JSON 外还有第二份 contract 时停止。
 3. 再次把 contract 原样通过 stdin 交给
    `codex-builder-loop assurance --experimental-v4 validate --contract -`；只有 `status=READY` 才继续。
-4. 从 SessionStart developer context 原样取得 `session_id`。若方案含唯一 `assurance-v4-decision` marker，
+4. 调用 `codex-builder-loop native-driver session-identity`，只接受 `status=READY`，原样使用返回的
+   `session_id`；不得从聊天、旧 ledger 或历史文件推断当前调用者，不设置或覆盖 `CODEX_THREAD_ID`。
+   身份缺失或不匹配时保留已接受方案，待宿主身份恢复后继续，不请求用户手填身份。
+   若方案含唯一 `assurance-v4-decision` marker，
    这是同 run contract decision，不得生成新 run：
    - marker 必须只含 schema_version/run_id/problem_key/action_id/facet/facet_digest，且当前
      `driver-next` 仍是同一 `contract_decision`；
@@ -39,7 +42,7 @@ description: 执行已接受的 Builder-loop 实验方案，把同 session 紧�
      `codex-builder-loop native-driver resume --repo <repo> --run <run-id>`，并继续等待原 run 终态。
 5. 没有 decision marker 时才生成唯一小写连字符 run id，把 contract 原样通过 stdin交给：
 
-   `codex-builder-loop native-driver start --repo <repo> --run <run-id> --session-id <session-id> --contract -`
+   `codex-builder-loop native-driver start --repo <repo> --run <run-id> --contract -`
 
 6. 如果 contract 的 `execution.builder_runtime.mode=root_session`，Native Driver 返回
    `status=BUILDER_HANDOFF` 时，当前主 session 必须逐 action 执行 Builder：

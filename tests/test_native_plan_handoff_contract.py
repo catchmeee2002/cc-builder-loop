@@ -85,6 +85,8 @@ class ExperimentalEntryContractTest(unittest.TestCase):
             )
         builder = read("skills/builder/SKILL.md")
         self.assertIn("full-driver-v4-experiment", builder)
+        self.assertIn("native-driver session-identity", builder)
+        self.assertNotIn("从 SessionStart developer context 原样取得", builder)
         self.assertIn("不得调用公共 legacy `start`", builder)
         self.assertIn("native-driver start", builder)
         self.assertIn("validate-decision", builder)
