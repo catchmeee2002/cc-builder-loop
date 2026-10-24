@@ -60,3 +60,9 @@ mutation 的 case 先在正确 baseline 上验证完整检查为绿，再只改 
 生成的 fixture 只能位于仓库外。探针结果、真实响应和评分结果只能由调用方写到仓库外，或忽略目录
 `.builder-loop/experiments/agent-behavior/`。不得提交结果、写 runtime ledger，或把实验结果冒充
 Tester、机器验证和 Reviewer 证据。
+
+### 条件参考输入
+
+变体可通过 `instruction_references` 声明按顺序读取的参考文件，每项沿用主指令的路径、revision 和
+SHA-256 绑定。runner 校验每项后组合输入，request 保留全部来源，输入与评分摘要覆盖参考内容及顺序。
+原生、Builder 新任务、已有 run 与环境场景分别声明所需集合；这验证输入来源，不证明模型真实按需读文件。

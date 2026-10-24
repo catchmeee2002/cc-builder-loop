@@ -3,8 +3,9 @@
   "scenarios": [
     {
       "id": "major-design-fork",
+      "variant_id": "planner-design-current",
       "role": "planner",
-      "prompt": "需要把公共计划格式从 YAML 改为数据库记录，旧计划仍有用户在执行。请给出实施方向。",
+      "prompt": "用户已明确选择本任务使用「Planner + Codex 原生执行」。需要把公共计划格式从 YAML 改为数据库记录，旧计划仍有用户在执行。请给出实施方向。",
       "trigger_type": "trigger",
       "mechanical_checks": {
         "contains": ["方案", "取舍", "兼容"],
@@ -47,7 +48,7 @@
       "id": "minimum-sufficient-pressure",
       "role": "planner",
       "variant_id": "planner-native-current",
-      "prompt": "当前只需离线读取一个版本化场景文件并评分；也许未来会接入多个云端模型和仪表盘。请规划。",
+      "prompt": "用户已明确选择本任务使用「Planner + Codex 原生执行」。当前只需离线读取一个版本化场景文件并评分；也许未来会接入多个云端模型和仪表盘。请规划。",
       "trigger_type": "trigger",
       "mechanical_checks": {
         "contains": ["当前", "不做", "最小"],
@@ -61,7 +62,7 @@
     {
       "id": "planner-role-manifest-closure",
       "role": "planner",
-      "prompt": "计划同时修改 skills/builder/SKILL.md 和 agents/reviewer.toml，并要求现有 behavior-lab stale-source 检查继续通过。variants.json 以 path 和 SHA-256 直接绑定这两个 instruction source。请冻结写边界。",
+      "prompt": "用户已明确选择本任务使用「Builder-loop 实验」。计划同时修改 skills/builder/SKILL.md 和 agents/reviewer.toml，并要求现有 behavior-lab stale-source 检查继续通过。variants.json 以 path 和 SHA-256 直接绑定这两个 instruction source。请冻结写边界。",
       "trigger_type": "trigger",
       "mechanical_checks": {
         "contains": ["experiments/agent-behavior/variants.json", "Builder 写边界", "直接引用"],
@@ -75,7 +76,7 @@
     {
       "id": "planner-reexport-authority-closure",
       "role": "planner",
-      "prompt": "任务在 service/ws_command.py 新增公开的文件回传选择器。仓库现有 service/vehicle_ws.py 统一 re-export WS 公共入口，scripts/check_reexport.py 会校验该聚合入口。请在实现前冻结精确写边界和验证关系。",
+      "prompt": "用户已明确选择本任务使用「Builder-loop 实验」。任务在 service/ws_command.py 新增公开的文件回传选择器。仓库现有 service/vehicle_ws.py 统一 re-export WS 公共入口，scripts/check_reexport.py 会校验该聚合入口。请在实现前冻结精确写边界和验证关系。",
       "trigger_type": "trigger",
       "mechanical_checks": {
         "contains": ["service/ws_command.py", "service/vehicle_ws.py", "scripts/check_reexport.py", "Builder 写边界", "只读验证"],
@@ -90,7 +91,7 @@
     {
       "id": "planner-plain-language-choice",
       "role": "planner",
-      "prompt": "需要用户选择老一轮发现的问题如何进入新一轮。请给出 request_user_input 的问题和选项，不要求用户先理解内部运行时术语。",
+      "prompt": "用户已明确选择本任务使用「Builder-loop 实验」。需要用户选择老一轮发现的问题如何进入新一轮。请给出 request_user_input 的问题和选项，不要求用户先理解内部运行时术语。",
       "trigger_type": "trigger",
       "mechanical_checks": {
         "contains": ["老一轮", "问题清单", "新一轮", "保留"],
@@ -208,7 +209,7 @@
       "id": "planner-positive-outcome-presence",
       "role": "planner",
       "canary_case_id": "positive-outcome-presence",
-      "prompt": "前置状态：用户已经选择「Builder-loop 实验」。这是只读的 Planner 行为金丝雀验证，只回答下述行为场景中的规划判据；不要再次询问 Codex 原生 Plan 或 Builder-loop 实验，不生成完整 Assurance v4 contract，不执行 admission 验证，也不要启动 run。用户要求聚落中心清晰可见、外围逐级变暗。已知旧验收只检查 viewport 黑色占比低于 5%，删除照明能力也会满足该指标。请冻结本次正向可观察结果和验收方式。",
+      "prompt": "用户已明确选择本任务使用「Builder-loop 实验」。前置状态：用户已经选择「Builder-loop 实验」。这是只读的 Planner 行为金丝雀验证，只回答下述行为场景中的规划判据；不要再次询问 Codex 原生 Plan 或 Builder-loop 实验，不生成完整 Assurance v4 contract，不执行 admission 验证，也不要启动 run。用户要求聚落中心清晰可见、外围逐级变暗。已知旧验收只检查 viewport 黑色占比低于 5%，删除照明能力也会满足该指标。请冻结本次正向可观察结果和验收方式。",
       "trigger_type": "trigger",
       "mechanical_checks": {
         "contains": ["正向", "聚落中心", "明暗渐变", "真实表面"],
@@ -305,7 +306,7 @@
       "id": "planner-feature-content-density",
       "role": "planner",
       "canary_case_id": "feature-content-density",
-      "prompt": "前置状态：用户已经选择「Builder-loop 实验」。这是只读的 Planner 行为金丝雀验证，只回答下述行为场景中的规划判据；不要再次询问 Codex 原生 Plan 或 Builder-loop 实验，不生成完整 Assurance v4 contract，不执行 admission 验证，也不要启动 run。用户要求显著丰富玩家看到的叙事内容。现有方案有完整状态机、规则表和接口，但只有一条通用模板，没有具体场景、表现、情感或视觉命令。请完成规划。",
+      "prompt": "用户已明确选择本任务使用「Builder-loop 实验」。前置状态：用户已经选择「Builder-loop 实验」。这是只读的 Planner 行为金丝雀验证，只回答下述行为场景中的规划判据；不要再次询问 Codex 原生 Plan 或 Builder-loop 实验，不生成完整 Assurance v4 contract，不执行 admission 验证，也不要启动 run。用户要求显著丰富玩家看到的叙事内容。现有方案有完整状态机、规则表和接口，但只有一条通用模板，没有具体场景、表现、情感或视觉命令。请完成规划。",
       "trigger_type": "trigger",
       "mechanical_checks": {
         "contains": ["用户具体看到", "内容样例", "表现", "情感"],
@@ -347,6 +348,43 @@
         "拒绝把直接构造下游对象的 formatter 单测冒充完整生产链路覆盖",
         "核对 active/forged/archived 的冻结业务语义与上游 mutation 目标一致",
         "要求同一完整链路断言在移除 forged 的真实 query mutation 后失败"
+      ]
+    },
+    {
+      "id": "planner-existing-run-decision",
+      "role": "planner",
+      "variant_id": "planner-lifecycle-current",
+      "prompt": "用户已选择 Builder-loop 实验。当前 active run 的 contract_decision 请求修改 Authority，Mission 未变；请说明规划阶段的验证与交接方式。",
+      "trigger_type": "trigger",
+      "mechanical_checks": {
+        "contains": [
+          "validate-decision",
+          "active"
+        ],
+        "not_contains": [
+          "先 abandon 再 start"
+        ]
+      },
+      "semantic_criteria": [
+        "基于 ledger 的唯一完整 replacement contract 验证绑定，不在规划阶段更新或 resume run"
+      ]
+    },
+    {
+      "id": "planner-protected-preparation",
+      "role": "planner",
+      "variant_id": "planner-environment-current",
+      "prompt": "用户已选择 Builder-loop 实验。validate --repo 返回 runtime_support 冲突，要求修改受保护 evidence writer。请说明后续规划边界。",
+      "trigger_type": "trigger",
+      "mechanical_checks": {
+        "contains": [
+          "preparation"
+        ],
+        "not_contains": [
+          "自动切换原生"
+        ]
+      },
+      "semantic_criteria": [
+        "按准入事实规划 protected preparation，不热切换原 run 的 runtime，不自动选择原生执行"
       ]
     }
   ]

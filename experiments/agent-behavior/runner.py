@@ -98,7 +98,7 @@ def load_inputs(args: argparse.Namespace) -> tuple[dict[str, Any], dict[str, Any
     return scenario, variant
 
 
-def instruction_input(variant: dict[str, Any]) -> dict[str, Any]:
+def single_instruction_input(variant: dict[str, Any]) -> dict[str, Any]:
     kind = variant.get("kind")
     source = variant.get("instruction_source")
     if source is None:
@@ -117,7 +117,10 @@ def instruction_input(variant: dict[str, Any]) -> dict[str, Any]:
         or len(expected) != 64
     ):
         raise ExperimentError("指令来源必须包含 path 和 64 位 sha256")
-    path = (REPO_ROOT / relative).resolve()
+    source_path = REPO_ROOT / relative
+    if source_path.is_symlink():
+        raise ExperimentError("指令来源必须是仓库内普通文件")
+    path = source_path.resolve()
     try:
         path.relative_to(REPO_ROOT)
     except ValueError as exc:
@@ -152,6 +155,32 @@ def instruction_input(variant: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def instruction_input(variant: dict[str, Any]) -> dict[str, Any]:
+    primary = single_instruction_input(variant)
+    references = variant.get("instruction_references", [])
+    if not isinstance(references, list) or (references and primary["path"] is None):
+        raise ExperimentError("instruction_references requires an instruction variant and a list")
+    sources = []
+    seen = {primary["path"]}
+    contents = [primary["content"]]
+    for source in references:
+        reference = single_instruction_input({"kind": "instruction", "instruction_source": source})
+        if reference["path"] in seen:
+            raise ExperimentError("duplicate instruction reference")
+        seen.add(reference["path"])
+        sources.append({key: reference[key] for key in ("path", "sha256", "revision")})
+        contents.append(reference["content"])
+    if sources:
+        primary["references"] = sources
+        primary["content"] = "\n\n".join(contents)
+        primary["input_sha256"] = digest({
+            "primary": {key: primary[key] for key in ("path", "sha256", "revision")},
+            "references": sources,
+            "content": primary["content"],
+        })
+    return primary
+
+
 def prepare(args: argparse.Namespace) -> dict[str, Any]:
     scenario, variant = load_inputs(args)
     instruction = instruction_input(variant)
@@ -165,6 +194,8 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
             "revision": instruction["revision"],
         }
     )
+    if source_metadata is not None and "references" in instruction:
+        source_metadata["references"] = instruction["references"]
     request = {
         "role": scenario.get("role"),
         "instructions": instruction["content"],
@@ -250,7 +281,7 @@ def score(
         "scenario_id": scenario["id"],
         "variant_id": variant["id"],
         "trigger_type": scenario["trigger_type"],
-        "instruction_source_sha256": instruction["sha256"],
+        "instruction_source_sha256": instruction.get("input_sha256", instruction["sha256"]),
         "mechanical_checks": results,
         "mechanical_pass": not omissions and not false_triggers,
         "missed_triggers": omissions,

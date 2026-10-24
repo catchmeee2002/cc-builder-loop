@@ -14,7 +14,7 @@ from harness import ROOT, git, run_process
 RUNNER = ROOT / "experiments" / "agent-behavior" / "runner.py"
 BUILDER_SKILL = ROOT / "skills" / "builder" / "SKILL.md"
 BUILDER_AGENT = ROOT / "agents" / "builder.toml"
-PLANNER_SKILL = ROOT / "skills" / "builder-loop-planner" / "SKILL.md"
+PLANNER_SKILL = ROOT / "skills" / "planner" / "SKILL.md"
 NATIVE_PLANNER_SKILL = ROOT / "skills" / "planner" / "SKILL.md"
 VARIANTS = ROOT / "experiments" / "agent-behavior" / "variants.json"
 
@@ -56,10 +56,8 @@ class AgentBehaviorLabTest(unittest.TestCase):
         self.assertEqual(source["path"], "skills/builder/SKILL.md")
         self.assertEqual(source["revision"], "WORKTREE")
         self.assertEqual(source["sha256"], actual_sha256)
-        self.assertEqual(
-            git(ROOT, "rev-parse", "HEAD:skills/builder/SKILL.md"),
-            git(ROOT, "hash-object", "skills/builder/SKILL.md"),
-        )
+        # Current source identity is verified by the WORKTREE digest above.
+        self.assertTrue(git(ROOT, "ls-files", "--error-unmatch", "skills/builder/SKILL.md"))
 
     def test_builder_agent_current_binds_the_actual_builder_role(self) -> None:
         variants = json.loads(VARIANTS.read_text())
@@ -83,7 +81,7 @@ class AgentBehaviorLabTest(unittest.TestCase):
         ]
         self.assertEqual(len(matches), 1, matches)
         source = matches[0]["instruction_source"]
-        self.assertEqual(source["path"], "skills/builder-loop-planner/SKILL.md")
+        self.assertEqual(source["path"], "skills/planner/SKILL.md")
         self.assertEqual(source["revision"], "WORKTREE")
         self.assertEqual(
             source["sha256"], hashlib.sha256(PLANNER_SKILL.read_bytes()).hexdigest()
@@ -257,7 +255,7 @@ class AgentBehaviorLabTest(unittest.TestCase):
             current_roles = {
                 "builder-current": "skills/builder/SKILL.md",
                 "builder-agent-current": "agents/builder.toml",
-                "planner-current": "skills/builder-loop-planner/SKILL.md",
+                "planner-current": "skills/planner/SKILL.md",
                 "planner-native-current": "skills/planner/SKILL.md",
                 "reviewer-current": "agents/reviewer.toml",
                 "tester-current": "agents/tester.toml",

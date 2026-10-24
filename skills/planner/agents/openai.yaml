@@ -1,7 +1,7 @@
 interface:
   display_name: "Planner"
-  short_description: "独立规划，可交给 Codex 原生或 Builder adapter"
-  default_prompt: "Use $planner to prepare an implementation plan for native Codex execution or an explicit Builder-loop handoff."
+  short_description: "用户选择路线，统一规划并按需加载 Builder 契约"
+  default_prompt: "Use $planner to ask for the execution route first, then prepare one implementation plan with Builder contract guidance only when selected."
 
 policy:
   allow_implicit_invocation: true

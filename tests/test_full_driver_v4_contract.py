@@ -8,6 +8,8 @@ import shutil
 import sys
 import tempfile
 import unittest
+
+from planner_sources import builder_planner_instructions
 from copy import deepcopy
 from pathlib import Path
 from typing import Any, Mapping
@@ -742,7 +744,7 @@ class FullDriverV4ContractTest(unittest.TestCase):
         self.assertEqual(rc, 2, data)
         self.assertEqual(data.get("code"), "ASSURANCE_V4_EXPERIMENTAL_REQUIRED")
         builder = (ROOT / "skills" / "builder" / "SKILL.md").read_text()
-        planner = (ROOT / "skills" / "builder-loop-planner" / "SKILL.md").read_text()
+        planner = builder_planner_instructions()
         self.assertIn("full-driver-v4-experiment", builder)
         self.assertIn("native-driver start", builder)
         self.assertIn("native-driver resume", builder)

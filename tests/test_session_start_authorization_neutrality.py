@@ -253,7 +253,7 @@ class SessionStartAuthorizationNeutralityTest(unittest.TestCase):
             self.assert_neutral_context(context)
             self.assertIn("session_id=installed-fixed-session", context)
 
-            planner = (home / ".agents/skills/builder-loop-planner/SKILL.md").read_text()
+            planner = (home / ".agents/skills/planner/references/builder-contract.md").read_text()
             native_planner = (home / ".agents/skills/planner/SKILL.md").read_text()
             builder = (home / ".agents/skills/builder/SKILL.md").read_text()
             full_driver_manifest = (
@@ -289,7 +289,6 @@ class SessionStartAuthorizationNeutralityTest(unittest.TestCase):
                 {
                     ".agents/skills/planner",
                     ".agents/skills/builder",
-                    ".agents/skills/builder-loop-planner",
                     ".agents/skills/file-github-issue",
                     ".agents/skills/full-driver-v4-experiment",
                     ".codex/AGENTS.md",

@@ -13,7 +13,7 @@ description: 执行已接受的 Builder-loop 实验方案，把同 session 紧�
 只接受一种入口：
 
 - 用户当前 turn 显式调用 `$builder`，且同一聊天中存在已接受、已验证的 Builder-loop 实验方案；或
-- 同 session 紧邻上一轮由 `$builder-loop-planner` 输出 `BUILDER_HANDOFF_READY`，当前已在 Default
+- 同 session 紧邻上一轮由 `$planner` 的 Builder 路线输出 `BUILDER_HANDOFF_READY`，当前已在 Default
   mode，用户使用 Codex 原生 `Implement the plan.`／“实施计划”动作，期间没有插入消息或修订方案。
 
 标记缺失、非紧邻、session 变化、仍在 Plan mode、来自 Codex 原生 Plan、contract 被修改或普通文字

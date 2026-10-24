@@ -3,11 +3,11 @@
 
 - Plan mode 入口规则：涉及代码或文档变更且路线尚未确定时，第一条动作必须用 `request_user_input`
   只询问「Planner + Codex 原生执行」或「Builder-loop 实验」；回答前不得读取、分析、输出结论或提出其他问题。
-- 选择「Planner + Codex 原生执行」时加载 `$planner`，只产出普通 Codex 实施计划；不得加载
-  `$builder-loop-planner`，不得生成 Assurance v4 contract、`BUILDER_HANDOFF_READY` 或启动 run。
-- 选择「Builder-loop 实验」时调用 `$builder-loop-planner` adapter；它消费通用 Planner 的语义计划，
-  只产出并验证 Assurance v4 contract，`READY` 后在方案外输出独立行 `BUILDER_HANDOFF_READY`，
-  不得实现或启动 run。
+- 用户未回答、取消或答案缺失时停止本轮，不调用其他工具，不以推荐或默认项代替选择。
+  已明确指定本任务路线时沿用，不重复询问；不得按复杂度、风险或历史偏好自动选择或切换。
+- 两条路线均加载 `$planner`。选择「Planner + Codex 原生执行」时只产出普通计划，不读取 Builder
+  参考文件或生成 contract；选择「Builder-loop 实验」时由 Planner 按需读取内部契约指导，完成验证后
+  才输出 `BUILDER_HANDOFF_READY`。规划阶段不得实现或启动 run。
 - 若同一 session 的紧邻下一轮已处于 Default mode，且用户通过 Codex 原生“实施计划”动作提交
   `Implement the plan.`，仅当上一轮存在 `BUILDER_HANDOFF_READY` 时，该动作才等价于对上述实验方案
   显式调用 `$builder`，直接加载 Builder Skill；普通 `$planner` 计划继续由 Codex 原生能力执行，

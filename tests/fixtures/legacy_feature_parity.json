@@ -3495,5 +3495,36 @@
         "tests.test_full_driver_v4_contract.FullDriverV4ContractTest.test_proof_diagnosis_problem_routes_to_declared_owner"
       ]
     }
+  ],
+  "planner_loading_parity": [
+    {
+      "behavior": "Separate public Builder Planner entry",
+      "status": "retired",
+      "replacement": "One public Planner with conditional internal references",
+      "rationale": "User explicitly chose removal of the old entry; route remains user-owned.",
+      "test_ids": [
+        "tests.test_planner_demand_loading.PlannerDemandLoadingTest.test_native_and_builder_inputs_have_distinct_loading_surfaces"
+      ]
+    },
+    {
+      "behavior": "Builder contract and lifecycle planning semantics",
+      "status": "covered",
+      "replacement": "Planner contract, lifecycle and environment references",
+      "rationale": "Existing semantic contract assertions now audit their owning surfaces.",
+      "test_ids": [
+        "tests.test_native_plan_handoff_contract.ExperimentalEntryContractTest.test_public_skills_open_only_as_v4_experiment",
+        "tests.test_protected_support_continuation_contract.ProtectedSupportContinuationContractTest.test_experimental_planner_uses_v4_continuation_without_transcript_state"
+      ]
+    },
+    {
+      "behavior": "Owned skill installation and rollback",
+      "status": "covered",
+      "replacement": "Owned dangling-link retirement within installation transaction",
+      "rationale": "Preserve foreign content and restore original link on config failure.",
+      "test_ids": [
+        "tests.test_planner_demand_loading.PlannerDemandLoadingTest.test_failed_config_commit_restores_exact_retired_link",
+        "tests.test_planner_demand_loading.PlannerDemandLoadingTest.test_upgrade_preserves_foreign_link_and_ordinary_file"
+      ]
+    }
   ]
 }

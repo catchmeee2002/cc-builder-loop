@@ -245,7 +245,7 @@ App Server 的线程创建、续接、替换和 turn 使用同一角色配置的
 
 内部确定性入口为 `codex-builder-loop assurance --experimental-v4 ...`，Native 编排入口为
 `codex-builder-loop native-driver start|resume|status`，但用户不直接调用。通用 `$planner` 负责冻结
-语义计划；Plan 选项可以把它交给 Codex 原生执行，也可以交给 `builder-loop-planner` adapter
+语义计划；Plan 选项可以把它交给 Codex 原生执行，也可以交给 Planner 内部契约适配
 生成并验证 v4 contract。`$builder` 只消费已验证 handoff 并启动 Native Driver；内部 Full Driver
 Skill 仍禁止被普通请求隐式调用。首版覆盖本地单仓 Git 代码、L1 文档交付，以及由项目 wrapper
 定义的单 run 候选部署事务；相邻 Revision 可在当前 probe 证明目标、制品和状态一致时跳过重复 deploy，
@@ -1064,3 +1064,10 @@ Git 树缓存仅保存由仓库与完整 commit 身份确定的不可变数据�
 machine/proof 的跨候选复用要求冻结的相关输入、执行身份及其他依赖保持一致。原执行记录保持原 HEAD，接受新候选的等价依据写入 ledger 事件；角色摘要从这些事实派生。Reviewer 和文档审查仍绑定完整候选。逐测试辨别力只展示实际结构化观察，不将缺失记录或普通异常解释为有效反例。
 
 用户请求 hold 后，Driver 在安全事务边界停止推进；环境恢复与 lease 释放优先。完成后等待可提前请求，避免自动 finalize 抢先发生。release 绑定原暂停身份与当前 Mission，随后重新判断门禁；显式等待不构成失败或交付完成。
+
+## Planner 按需加载
+
+规划只保留一个公共入口。用户在调查前决定执行路线，两条路线共享语义计划；Builder 路线额外读取
+内部契约构造指导，仅在相关任务出现时读取生命周期或环境约束。原生路线不加载这些约束。
+这落实显式授权、每个事实只有一个家和最小充分原则；schema 与 validator 继续拥有结构和机械判据。
+旧 Builder Planner 公开入口退役，安装只清理本 checkout 拥有的旧链接，外来内容保留。

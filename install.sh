@@ -14,7 +14,6 @@ DOC_POLICY="${CODEX_HOME}/builder-loop/doc-policy.md"
 
 LINK_SOURCES=(
   "$REPO_DIR/skills/planner"
-  "$REPO_DIR/skills/builder-loop-planner"
   "$REPO_DIR/skills/builder"
   "$REPO_DIR/agents/tester.toml"
   "$REPO_DIR/agents/reviewer.toml"
@@ -27,7 +26,6 @@ LINK_SOURCES=(
 )
 LINK_TARGETS=(
   "$SKILLS_HOME/planner"
-  "$SKILLS_HOME/builder-loop-planner"
   "$SKILLS_HOME/builder"
   "$CODEX_HOME/agents/tester.toml"
   "$CODEX_HOME/agents/reviewer.toml"
@@ -39,6 +37,20 @@ LINK_TARGETS=(
   "$CODEX_HOME/agents/builder.toml"
 )
 LINK_PREEXISTED=()
+RETIRED_LINK="$SKILLS_HOME/builder-loop-planner"
+RETIRED_SOURCE="$REPO_DIR/skills/builder-loop-planner"
+RETIRED_RAW=""
+RETIRED_REMOVED=0
+# The old source directory may already be absent after an upgrade.
+if [ -L "$RETIRED_LINK" ]; then
+  if [ "$(readlink -m -- "$RETIRED_LINK")" = "$(readlink -m -- "$RETIRED_SOURCE")" ]; then
+    RETIRED_RAW="$(readlink -- "$RETIRED_LINK")"
+  else
+    echo "leaving foreign retired skill symlink: $RETIRED_LINK" >&2
+  fi
+elif [ -e "$RETIRED_LINK" ]; then
+  echo "leaving non-symlink retired skill: $RETIRED_LINK" >&2
+fi
 
 preflight_link() {
   local source="$1"
@@ -182,6 +194,9 @@ rollback_new_links() {
       fi
     fi
   done
+  if [ "$RETIRED_REMOVED" -eq 1 ] && [ ! -e "$RETIRED_LINK" ] && [ ! -L "$RETIRED_LINK" ]; then
+    ln -s -- "$RETIRED_RAW" "$RETIRED_LINK"
+  fi
   exit "$status"
 }
 trap rollback_new_links ERR
@@ -209,6 +224,16 @@ if (
 ):
     raise SystemExit("installed Builder-loop version identity mismatch")
 PY
+
+# Retire only the exact link seen during preflight; restore it if config commit fails.
+if [ -n "$RETIRED_RAW" ]; then
+  if [ ! -L "$RETIRED_LINK" ] || [ "$(readlink -- "$RETIRED_LINK")" != "$RETIRED_RAW" ]; then
+    echo "retired skill link changed during install" >&2
+    false
+  fi
+  rm -- "$RETIRED_LINK"
+  RETIRED_REMOVED=1
+fi
 
 python3 "$REPO_DIR/scripts/codex-builder-loop-config.py" install \
   --hooks-file "$HOOKS_FILE" \

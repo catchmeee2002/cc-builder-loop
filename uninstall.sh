@@ -51,8 +51,12 @@ preflight_link() {
   fi
   local actual
   local wanted
-  if ! actual="$(readlink -f -- "$target")" || \
-    ! wanted="$(readlink -f -- "$expected")" || \
+  local resolve_option=-f
+  if [ "$expected" = "$REPO_DIR/skills/builder-loop-planner" ]; then
+    resolve_option=-m
+  fi
+  if ! actual="$(readlink "$resolve_option" -- "$target")" || \
+    ! wanted="$(readlink "$resolve_option" -- "$expected")" || \
     [ "$actual" != "$wanted" ]; then
     echo "leaving foreign symlink: $target" >&2
     LINK_OWNED+=(0)
@@ -66,11 +70,16 @@ for index in "${!LINK_TARGETS[@]}"; do
   preflight_link "${LINK_TARGETS[$index]}" "${LINK_EXPECTED[$index]}"
 done
 
-HOOK_LINK_OWNED="${LINK_OWNED[5]}"
+HOOK_LINK_OWNED=0
 INSTALLATION_OWNED=0
-if [ "${LINK_OWNED[0]}" -eq 1 ] || [ "${LINK_OWNED[2]}" -eq 1 ]; then
-  INSTALLATION_OWNED=1
-fi
+for index in "${!LINK_TARGETS[@]}"; do
+  if [ "${LINK_OWNED[$index]}" -eq 1 ]; then
+    case "${LINK_TARGETS[$index]}" in
+      "$INSTALLED_HOOK") HOOK_LINK_OWNED=1 ;;
+      "$SKILLS_HOME/planner"|"$SKILLS_HOME/builder"|"$SKILLS_HOME/builder-loop-planner") INSTALLATION_OWNED=1 ;;
+    esac
+  fi
+done
 
 python3 - "$HOOKS_FILE" "$GLOBAL_AGENTS" "$ANY_LINK_OWNED" <<'PY'
 from __future__ import annotations

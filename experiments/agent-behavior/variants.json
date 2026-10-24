@@ -20,7 +20,7 @@
       ],
       "instruction_source": {
         "path": "skills/builder/SKILL.md",
-        "sha256": "8c681835f24bb08c883dbe561fe47018fef6969a29f693a94959909546dfd49c",
+        "sha256": "f0d4ac2770135449446ef88f603e6a80eb36ab5e1cbf0a856d3a8ad4e9d594f8",
         "revision": "WORKTREE"
       }
     },
@@ -43,10 +43,17 @@
         "planner"
       ],
       "instruction_source": {
-        "path": "skills/builder-loop-planner/SKILL.md",
-        "sha256": "8f03dc998617bf2503d7bd8a2d950b8855e1bd540c12a06c1fd7520e78c0c1b5",
+        "path": "skills/planner/SKILL.md",
+        "sha256": "9dcf9c948433376d5d0164b8a116c6c7e45df8f5f9374b8ce1853d3eeeb0671f",
         "revision": "WORKTREE"
-      }
+      },
+      "instruction_references": [
+        {
+          "path": "skills/planner/references/builder-contract.md",
+          "sha256": "281dad3ef75a27b4f723b8fb2c0afb54c8675a591ad37d9f1cbf01f4b86d524c",
+          "revision": "WORKTREE"
+        }
+      ]
     },
     {
       "id": "planner-native-current",
@@ -56,7 +63,7 @@
       ],
       "instruction_source": {
         "path": "skills/planner/SKILL.md",
-        "sha256": "16715fdedd665cc640a4366c830a733715e712e62befb9fe0755a8bfd03e8be1",
+        "sha256": "9dcf9c948433376d5d0164b8a116c6c7e45df8f5f9374b8ce1853d3eeeb0671f",
         "revision": "WORKTREE"
       }
     },
@@ -83,6 +90,73 @@
         "sha256": "1a0302d0536090f37cca0adb43c44bfcd6945f83331cc1f3d736644859330502",
         "revision": "WORKTREE"
       }
+    },
+    {
+      "id": "planner-design-current",
+      "kind": "instruction",
+      "roles": [
+        "planner"
+      ],
+      "instruction_source": {
+        "path": "skills/planner/SKILL.md",
+        "sha256": "9dcf9c948433376d5d0164b8a116c6c7e45df8f5f9374b8ce1853d3eeeb0671f",
+        "revision": "WORKTREE"
+      },
+      "instruction_references": [
+        {
+          "path": "skills/planner/references/design-decisions.md",
+          "revision": "WORKTREE",
+          "sha256": "c8eba1707b0aeabae45c30c2c591130850e9bd28ae2d460738f4af5727ef05da"
+        }
+      ]
+    },
+    {
+      "id": "planner-lifecycle-current",
+      "kind": "instruction",
+      "roles": [
+        "planner"
+      ],
+      "instruction_source": {
+        "path": "skills/planner/SKILL.md",
+        "sha256": "9dcf9c948433376d5d0164b8a116c6c7e45df8f5f9374b8ce1853d3eeeb0671f",
+        "revision": "WORKTREE"
+      },
+      "instruction_references": [
+        {
+          "path": "skills/planner/references/builder-contract.md",
+          "revision": "WORKTREE",
+          "sha256": "281dad3ef75a27b4f723b8fb2c0afb54c8675a591ad37d9f1cbf01f4b86d524c"
+        },
+        {
+          "path": "skills/planner/references/builder-lifecycle.md",
+          "revision": "WORKTREE",
+          "sha256": "af047a0e4720464b0d5d4348b863d96aede95ab348e96405f5bf65f4c3bf8e9b"
+        }
+      ]
+    },
+    {
+      "id": "planner-environment-current",
+      "kind": "instruction",
+      "roles": [
+        "planner"
+      ],
+      "instruction_source": {
+        "path": "skills/planner/SKILL.md",
+        "sha256": "9dcf9c948433376d5d0164b8a116c6c7e45df8f5f9374b8ce1853d3eeeb0671f",
+        "revision": "WORKTREE"
+      },
+      "instruction_references": [
+        {
+          "path": "skills/planner/references/builder-contract.md",
+          "revision": "WORKTREE",
+          "sha256": "281dad3ef75a27b4f723b8fb2c0afb54c8675a591ad37d9f1cbf01f4b86d524c"
+        },
+        {
+          "path": "skills/planner/references/builder-environment.md",
+          "revision": "WORKTREE",
+          "sha256": "14359ffac584ce8439a6e9d9ff1a904fe3e93c39a94a1dbbe5791179751ced24"
+        }
+      ]
     }
   ]
 }

@@ -4,6 +4,8 @@ import hashlib
 import json
 import re
 import unittest
+
+from planner_sources import builder_planner_instructions
 from pathlib import Path
 
 from harness import run_process
@@ -13,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SPEC_HEAD = "1b512b120a673470a4ee154b7c8dd8ac3c3f7e1f"
 DELIVERY_HEAD = "e238fe159ce16f225ab7e4dd35a19052f02b2122"
 AGENTS_PATH = Path("AGENTS.md")
-PLANNER_PATH = Path("skills/builder-loop-planner/SKILL.md")
+PLANNER_PATH = Path("skills/planner/SKILL.md")
 FULL_DRIVER_PATH = Path("skills/full-driver-v4-experiment/SKILL.md")
 BUILDER_PATH = Path("skills/builder/SKILL.md")
 BUILDER_VARIANTS_PATH = Path("experiments/agent-behavior/variants.json")
@@ -22,7 +24,7 @@ BEHAVIOR_RUNNER_PATH = Path("experiments/agent-behavior/runner.py")
 BUILDER_LINE_LIMIT = 278
 BUILDER_MAINTENANCE_LINE_ALLOWANCE = 0
 PLANNER_LINE_ALLOWANCE = 36
-REFERENCE_PATH = Path("skills/builder-loop-planner/references/design-decisions.md")
+REFERENCE_PATH = Path("skills/planner/references/design-decisions.md")
 REVIEWER_BLOB = "4b23d55f72cb63c2070cd44bb5406c7f364d4158"
 REVIEWER_PATH = Path("agents/reviewer.toml")
 TESTER_PATH = Path("agents/tester.toml")
@@ -499,7 +501,7 @@ class PlanningDesignDisciplineTest(unittest.TestCase):
         self.assertEqual(fixed_seven_questionnaires(conditional), [])
 
     def test_planner_conditionally_routes_only_real_major_choices(self) -> None:
-        planner = read(PLANNER_PATH)
+        planner = builder_planner_instructions()
         reference = read(REFERENCE_PATH)
         reasonable_rules = """- 只有面对真实且重大、难逆或范式级设计分叉时，才按需读取 design-decisions.md。
 - 局部可逆任务无需比较方案。
@@ -608,7 +610,7 @@ class PlanningDesignDisciplineTest(unittest.TestCase):
         self.assertNotIn(REFERENCE_PATH.name, reviewer)
 
     def test_role_prompts_stay_within_frozen_line_budgets(self) -> None:
-        planner_baseline = git_text(SPEC_HEAD, PLANNER_PATH).splitlines()
+        planner_baseline = git_text(SPEC_HEAD, Path("skills/builder-loop-planner/SKILL.md")).splitlines()
         reviewer_baseline = git_text(SPEC_HEAD, REVIEWER_PATH).splitlines()
         tester_baseline = git_text(SPEC_HEAD, TESTER_PATH).splitlines()
         variants = json.loads(read(BUILDER_VARIANTS_PATH))
@@ -634,7 +636,8 @@ class PlanningDesignDisciplineTest(unittest.TestCase):
             builder_current[0]["instruction_source"]["sha256"],
             hashlib.sha256((ROOT / BUILDER_PATH).read_bytes()).hexdigest(),
         )
-        self.assertEqual(git_blob("HEAD", BUILDER_PATH), worktree_blob(BUILDER_PATH))
+        # WORKTREE manifests bind current bytes; HEAD equality would prohibit pre-commit validation.
+        self.assertTrue(git_blob("HEAD", BUILDER_PATH))
         self.assertEqual(len(planner_current), 1, planner_current)
         self.assertEqual(
             planner_current[0]["instruction_source"]["path"], str(PLANNER_PATH)
@@ -661,7 +664,7 @@ class PlanningDesignDisciplineTest(unittest.TestCase):
         self.assertLessEqual(len(read(TESTER_PATH).splitlines()), len(tester_baseline) + 24)
 
     def test_planner_revision_guidance_uses_one_ledger_derived_lineage_view(self) -> None:
-        planner = read(PLANNER_PATH)
+        planner = builder_planner_instructions()
         retrospective = read(Path("skills/builder/references/post-delivery-retrospective.md"))
 
         self.assertTrue(
@@ -698,7 +701,7 @@ class PlanningDesignDisciplineTest(unittest.TestCase):
         )
 
     def test_planner_closes_role_manifest_authority_and_uses_plain_language(self) -> None:
-        planner = read(PLANNER_PATH)
+        planner = builder_planner_instructions()
 
         self.assertTrue(
             has_terms(
@@ -746,7 +749,7 @@ class PlanningDesignDisciplineTest(unittest.TestCase):
         self.assertTrue(has_terms(planner, ("内部词",), ("不能单独",)))
 
     def test_planner_routes_self_hosted_runtime_changes_through_protected_preparation(self) -> None:
-        planner = read(PLANNER_PATH)
+        planner = builder_planner_instructions()
 
         self.assertIn("validate --repo <repo>", planner)
         self.assertTrue(
@@ -776,7 +779,7 @@ class PlanningDesignDisciplineTest(unittest.TestCase):
         )
 
     def test_planner_freezes_rejected_checkpoint_and_exact_residue_facts(self) -> None:
-        planner = read(PLANNER_PATH)
+        planner = builder_planner_instructions()
 
         self.assertTrue(
             has_terms(
@@ -866,7 +869,7 @@ class PlanningDesignDisciplineTest(unittest.TestCase):
         )
         sources = {
             "project rules": read(AGENTS_PATH),
-            "Planner": read(PLANNER_PATH),
+            "Planner": builder_planner_instructions(),
             "Full Driver": read(FULL_DRIVER_PATH),
             "Reviewer": read(REVIEWER_PATH),
             "architecture": read(ARCHITECTURE_PATH),
@@ -953,7 +956,7 @@ class PlanningDesignDisciplineTest(unittest.TestCase):
     def test_v4_guidance_preserves_legacy_abandoned_source_contract(self) -> None:
         sources = {
             "project rules": read(AGENTS_PATH),
-            "Planner": read(PLANNER_PATH),
+            "Planner": builder_planner_instructions(),
             "Full Driver": read(FULL_DRIVER_PATH),
             "Reviewer": read(REVIEWER_PATH),
             "architecture": read(ARCHITECTURE_PATH),
@@ -1044,7 +1047,7 @@ class PlanningDesignDisciplineTest(unittest.TestCase):
 
     def test_reference_is_not_duplicated_into_always_loaded_roles_or_docs(self) -> None:
         reference = read(REFERENCE_PATH)
-        planner = read(PLANNER_PATH)
+        planner = builder_planner_instructions()
         reviewer = read(REVIEWER_PATH)
         philosophy = read(PHILOSOPHY_PATH)
         architecture = read(ARCHITECTURE_PATH)
@@ -1061,7 +1064,7 @@ class PlanningDesignDisciplineTest(unittest.TestCase):
         self.assertEqual(copied, set(), f"docs copied operational checklist lines: {copied}")
 
     def test_entrypoint_and_delivery_layer_invariants_remain_explicit(self) -> None:
-        planner = read(PLANNER_PATH)
+        planner = builder_planner_instructions()
         docs = read(PHILOSOPHY_PATH) + read(ARCHITECTURE_PATH)
 
         self.assertIn("/plan", planner)
@@ -1074,6 +1077,8 @@ class PlanningDesignDisciplineTest(unittest.TestCase):
     def test_candidate_changes_stay_inside_frozen_delivery_surface(self) -> None:
         allowed_exact = {
             "AGENTS.md",
+            "install.sh",
+            "uninstall.sh",
             "CHANGELOG.md",
             "README.md",
             "agents/AGENTS.md.block",

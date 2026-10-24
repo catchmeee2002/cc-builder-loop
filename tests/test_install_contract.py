@@ -15,9 +15,6 @@ class InstallContractTest(unittest.TestCase):
         codex_home = home / ".codex"
         return {
             home / ".agents" / "skills" / "planner": ROOT / "skills" / "planner",
-            home / ".agents" / "skills" / "builder-loop-planner": ROOT
-            / "skills"
-            / "builder-loop-planner",
             home / ".agents" / "skills" / "builder": ROOT / "skills" / "builder",
             home / ".agents" / "skills" / "full-driver-v4-experiment": ROOT
             / "skills"

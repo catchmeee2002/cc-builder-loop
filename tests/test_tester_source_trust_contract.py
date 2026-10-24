@@ -218,7 +218,7 @@ class TesterSourceTrustContractTest(unittest.TestCase):
 
     def test_role_contracts_define_trusted_source_without_claiming_os_sandbox(self) -> None:
         paths = (
-            "skills/builder-loop-planner/SKILL.md",
+            "skills/planner/references/builder-contract.md",
             "agents/tester.toml",
             "agents/reviewer.toml",
             "docs/design-philosophy.md",

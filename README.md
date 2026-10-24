@@ -35,10 +35,10 @@ identity 和 evidence 不会因制品相同而自动继承，终态前仍必须�
    └─ Planner → Builder adapter → 原生“实施计划” / $builder → Native Driver 承载 Full Driver v4
 ```
 
-全局托管规则会在每次进入 Plan mode 时通过选项卡询问。选择原生路线时加载 `$planner`，只输出
+路线未确定时，全局托管规则会在调查前通过选项卡询问；无答案就停止，用户已明确选择时沿用。选择原生路线时加载 `$planner`，只输出
 普通实施计划，不生成 v4 contract、handoff 或 Builder run；下一轮 `Implement the plan.` 仍由
-Codex 原生能力执行。选择 Builder-loop 实验时，`$builder-loop-planner` 作为 adapter 消费同一份
-语义计划，冻结并验证 v4 四事实面 contract，验证通过后输出一次性就绪标记。只有存在该标记时，
+Codex 原生能力执行。选择 Builder-loop 实验时，`$planner` 按需读取内部契约指导，
+基于同一份语义计划冻结并验证 v4 四事实面 contract，验证通过后输出一次性就绪标记。只有存在该标记时，
 同 session 紧邻的原生“实施计划”才进入 Builder；显式 `$builder` 仍需已接受且验证的 Builder
 contract。Builder Skill 只做授权桥接；Native
 Driver 负责 Builder、Tester、proof、机器验证、blackbox、Reviewer 和 Git 收尾。Codex App Server
@@ -182,7 +182,7 @@ codex-builder-loop native-driver probe
 安装器只配置 Codex。以下路径中的 Skills、custom agents、CLI、hook 脚本和默认文档政策均为
 指向当前 checkout 的符号链接；`hooks.json` 与 `AGENTS.md` 只合并托管注册：
 
-- Skills（Planner、Builder adapter、Builder、GitHub Issue 记录、Full Driver 兼容回退）→ `~/.agents/skills/`
+- Skills（Planner、Builder、GitHub Issue 记录、Full Driver 兼容回退）→ `~/.agents/skills/`
 - Builder、Tester、Reviewer role 配置 → `${CODEX_HOME:-$HOME/.codex}/agents/`
 - CLI → `~/.local/bin/codex-builder-loop`
 - lifecycle hook 注册 → `${CODEX_HOME:-$HOME/.codex}/hooks.json`

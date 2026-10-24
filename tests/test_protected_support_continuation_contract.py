@@ -4,6 +4,8 @@ import hashlib
 import json
 import tempfile
 import unittest
+
+from planner_sources import builder_planner_instructions
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -34,7 +36,7 @@ from harness import (
 
 
 CONTRACT_PATH = ROOT / "schema" / "codex-protected-support-continuation.schema.json"
-PLANNER_PATH = ROOT / "skills" / "builder-loop-planner" / "SKILL.md"
+PLANNER_PATH = ROOT / "skills" / "planner" / "SKILL.md"
 
 
 def contract() -> dict[str, Any]:
@@ -600,7 +602,7 @@ class ProtectedSupportContinuationContractTest(unittest.TestCase):
         self.assertEqual(result.data["target_head"], head(repo))
 
     def test_experimental_planner_uses_v4_continuation_without_transcript_state(self) -> None:
-        text = PLANNER_PATH.read_text()
+        text = builder_planner_instructions()
         self.assertIn("execution.continuation", text)
         self.assertIn("Core 已验证的 finalized run 事实", text)
         self.assertIn("不得解析", text)

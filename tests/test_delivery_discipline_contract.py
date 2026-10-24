@@ -3,6 +3,8 @@ from __future__ import annotations
 import re
 import subprocess
 import unittest
+
+from planner_sources import builder_planner_instructions
 from pathlib import Path
 
 
@@ -30,7 +32,7 @@ def git_lines(*args: str) -> list[str]:
 
 class DeliveryDisciplineContractTest(unittest.TestCase):
     def test_root_cause_minimum_sufficient_and_real_tradeoff_rules_are_explicit(self) -> None:
-        planner = compact(read("skills/builder-loop-planner/SKILL.md"))
+        planner = compact(builder_planner_instructions())
         builder = compact(read("skills/builder/SKILL.md"))
         full_driver = compact(read("skills/full-driver-v4-experiment/SKILL.md"))
         philosophy = compact(read("docs/design-philosophy.md"))

@@ -4,6 +4,8 @@ import json
 import os
 import tempfile
 import unittest
+
+from planner_sources import builder_planner_instructions
 from pathlib import Path
 
 from harness import CLI, ROOT, init_repo, run_cli, run_process
@@ -73,7 +75,7 @@ class ExperimentalEntryContractTest(unittest.TestCase):
         self.assertNotEqual(result.data["code"], "BUILDER_MAINTENANCE_DISABLED")
 
     def test_public_skills_open_only_as_v4_experiment(self) -> None:
-        for skill in ("planner", "builder", "builder-loop-planner"):
+        for skill in ("planner", "builder"):
             body = read(f"skills/{skill}/SKILL.md")
             metadata = read(f"skills/{skill}/agents/openai.yaml")
             self.assertNotIn("维护门禁", body)
@@ -88,14 +90,14 @@ class ExperimentalEntryContractTest(unittest.TestCase):
         self.assertIn("validate-decision", builder)
         self.assertIn("native-driver resume", builder)
         self.assertIn("assurance-v4-decision", builder)
-        planner = read("skills/builder-loop-planner/SKILL.md")
+        planner = builder_planner_instructions()
         native_planner = read("skills/planner/SKILL.md")
         self.assertIn("native_codex", native_planner)
         self.assertIn("builder_loop", native_planner)
-        self.assertIn("$builder-loop-planner", native_planner)
+        self.assertIn("references/builder-contract.md", native_planner)
         self.assertIn("BUILDER_HANDOFF_READY", native_planner)
         self.assertIn("不生成", native_planner)
-        self.assertIn("Planner Adapter", planner)
+        self.assertIn("Builder 契约适配", planner)
         self.assertIn("assurance-v4-contract", planner)
         self.assertIn("--experimental-v4 validate", planner)
         self.assertIn("validate-decision", planner)
@@ -104,9 +106,9 @@ class ExperimentalEntryContractTest(unittest.TestCase):
         self.assertIn("`reviewer_preflight:true`", planner)
         self.assertIn("`preflight_before_proof:true`", planner)
         self.assertIn("BUILDER_HANDOFF_READY", planner)
-        self.assertIn("Plan mode 调用本 Skill 前必须已完成路线选择", native_planner)
-        self.assertIn("未完成时停止", native_planner)
-        self.assertNotIn("## 路线准入", native_planner)
+        self.assertIn("第一条动作必须用 `request_user_input`", native_planner)
+        self.assertIn("答案缺失时停止本轮", native_planner)
+        self.assertIn("## 路线准入", native_planner)
 
     def test_managed_agents_restore_experimental_route_choice_and_handoff(self) -> None:
         agents = read("agents/AGENTS.md.block")
@@ -115,13 +117,13 @@ class ExperimentalEntryContractTest(unittest.TestCase):
         self.assertIn("回答前不得读取、分析、输出结论或提出其他问题", agents)
         self.assertLess(
             agents.index("Plan mode 入口规则"),
-            agents.index("选择「Planner + Codex 原生执行」"),
+            agents.index("两条路线均加载"),
             "入口规则必须先于路线分支规则",
         )
         self.assertIn("Planner + Codex 原生执行", agents)
         self.assertIn("$planner", agents)
         self.assertIn("Builder-loop 实验", agents)
-        self.assertIn("$builder-loop-planner", agents)
+        self.assertNotIn("$builder-loop-planner", agents)
         self.assertIn("request_user_input", agents)
         self.assertIn("Implement the plan.", agents)
         self.assertIn("BUILDER_HANDOFF_READY", agents)
