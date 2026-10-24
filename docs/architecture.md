@@ -378,14 +378,18 @@ Reviewer result and evidence are never reused. Tester replacement remains limite
 bounded to three starts per run and otherwise routes to architecture review. Any source-thread, candidate, or
 identity drift preserves the exhausted dispatch and returns `NEEDS_USER`.
 
-Turn waiting keeps 30-second initialize/request limits, a 120-second idle-read limit, and a 600-second compaction
-deadline. The runtime derives one immutable timeout profile from each dispatch action: Tester author, fix, and
+Turn waiting keeps 30-second initialize/request limits and a 600-second compaction deadline.
+Tester author uses a 360-second idle-read limit to allow delayed complete frames; other actions retain
+120 seconds. The runtime derives one immutable timeout profile from each dispatch action: Tester author, fix, and
 recomposition-fix turns use a 7200-second total deadline, while Builder, Reviewer, Tester proof/diagnosis, and
 Tester blackbox turns retain 3600 seconds. Coordinator uses the same profile object for the ledger digest and the
 actual `run_turn`/`wait_turn` deadline. Existing active Tester authoring dispatches can move from the known legacy
 profile digest only through the atomic `migrate-dispatch-timeout-profile` transaction; it preserves action,
 thread, generation, attempt, prompt, and evidence identity, records the old/new digest, and rejects unknown
-profiles or uncertain continuity. Machine and deployment commands use the same owned process-group observation boundary.
+profiles or uncertain continuity. The former Tester author profile (120-second idle, 7200-second total)
+is not the legacy default profile and is not automatically migrated to 360 seconds. Frozen runtime identity
+checks still apply; a runtime change requires the supported successor path rather than editing a ledger.
+Machine and deployment commands use the same owned process-group observation boundary.
 `native-driver doctor` is read-only and reports legacy-unbound transport, process identity drift, deferred-wait
 state, and cleanup uncertainty. Deferred wait events describe delivery liveness only; they do not prove that a
 root Agent received a result or authorize replaying a side effect.

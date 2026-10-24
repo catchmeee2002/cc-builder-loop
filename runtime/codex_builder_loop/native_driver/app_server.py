@@ -63,6 +63,7 @@ REQUIRED_PROTOCOL_TOKENS = (
 )
 
 TURN_IDLE_TIMEOUT_SECONDS = 120.0
+TESTER_AUTHOR_IDLE_TIMEOUT_SECONDS = 360.0
 INITIALIZE_TIMEOUT_SECONDS = 30.0
 REQUEST_TIMEOUT_SECONDS = 30.0
 TURN_TOTAL_TIMEOUT_SECONDS = 3600.0
@@ -119,7 +120,11 @@ class TurnTimeoutProfile:
 
 def timeout_profile_for_action(action: str) -> TurnTimeoutProfile:
     return TurnTimeoutProfile(
-        turn_idle_seconds=TURN_IDLE_TIMEOUT_SECONDS,
+        turn_idle_seconds=(
+            TESTER_AUTHOR_IDLE_TIMEOUT_SECONDS
+            if action == "tester_author"
+            else TURN_IDLE_TIMEOUT_SECONDS
+        ),
         turn_total_seconds=(
             LONG_TESTER_TURN_TOTAL_TIMEOUT_SECONDS
             if action in LONG_TESTER_ACTIONS

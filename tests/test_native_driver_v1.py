@@ -4448,7 +4448,9 @@ for line in sys.stdin:
                 profile.turn_total_seconds,
                 LONG_TESTER_TURN_TOTAL_TIMEOUT_SECONDS,
             )
-            self.assertEqual(profile.turn_idle_seconds, 120.0)
+            self.assertEqual(
+                profile.turn_idle_seconds, 360.0 if action == "tester_author" else 120.0
+            )
             self.assertEqual(profile.compaction_total_seconds, 600.0)
         for action in (
             "builder_implement",
