@@ -574,6 +574,11 @@ def canonical_context_projection(
         if isinstance(ledger.get("repo_root"), str)
         else ledger.get("evidence")
     )
+    observations = role_observations(ledger)
+    # Hold governs scheduling at a safe transaction boundary, not the work
+    # already assigned to a role. Keep it visible in driver_context/status,
+    # but do not invalidate an in-flight or completed dispatch when it changes.
+    observations.pop("hold", None)
     return {
         "schema_version": 1,
         "source": "assurance_ledger",
@@ -598,7 +603,7 @@ def canonical_context_projection(
             ledger.get("recomposition_intent")
         ),
         "work_unit_progress": _canonical_progress_projection(ledger),
-        "role_observations": role_observations(ledger),
+        "role_observations": observations,
     }
 
 

@@ -1932,6 +1932,11 @@ class NativeCoordinator(ResultSemantics):
         return instructions, str(value["sandbox_mode"])
 
     def _prompt(self, action: dict[str, Any], role: str, context: dict[str, Any]) -> str:
+        observations = copy.deepcopy(context.get("role_observations"))
+        if isinstance(observations, dict):
+            # Scheduling control must not change a pending role's prompt on
+            # retry; Core still exposes and enforces hold at transaction boundaries.
+            observations.pop("hold", None)
         payload = {
             "assurance_schema_version": 4,
             "run_id": self.run_id,
@@ -1961,7 +1966,7 @@ class NativeCoordinator(ResultSemantics):
             "doc_reference_scan_state": context.get("doc_reference_scan_state"),
             "problems": context.get("problems"),
             "problem_report_schema": self.problem_schema,
-            "role_observations": context.get("role_observations"),
+            "role_observations": observations,
             "result_field_contract": self._result_field_contract(str(action["action"])),
         }
         if action["action"] in {"tester_proof", "tester_proof_diagnose"} and context.get("artifact_root"):

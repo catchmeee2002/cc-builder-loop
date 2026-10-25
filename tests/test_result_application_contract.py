@@ -207,6 +207,60 @@ class ResultApplicationContractTest(unittest.TestCase):
             self.assertEqual(after["facets"]["execution"][key], before["facets"]["execution"][key])
         self.assertEqual(sum(e["kind"] == "tester_source_integrated" for e in after["events"]), 1)
 
+    def test_proof_diagnosis_retry_survives_hold_change_and_stops_after_application(self):
+        self.prepare_proof()
+        self.apply(self.proof_result(invalid=True))
+        ready = core.hold_run(self.repo, self.run_id, session_id="result-session",
+                              reason="review delivery", when="ready")
+        self.action = self.begin("tester")
+        self.assertEqual(self.action["action"], "tester_proof_diagnose")
+        action_id = self.action["action_id"]
+        before = read_ledger(self.repo, self.run_id)
+        frozen = before["dispatch_intent"]["context_projection_digest"]
+        from runtime.codex_builder_loop.native_driver.coordinator import NativeCoordinator
+        coordinator = NativeCoordinator(repo=self.repo, run_id=self.run_id,
+                                        core=object(), transport=object())
+        prompt = coordinator._prompt(self.action, "tester", core.driver_context(self.repo, self.run_id))
+        core.bind_dispatch_turn(self.repo, self.run_id, action_id=action_id,
+                                turn_id="proof-diagnosis-1")
+        core.hold_run(self.repo, self.run_id, session_id="result-session",
+                      reason="stop after current action", release_id=ready["hold"]["id"])
+        held = core.hold_run(self.repo, self.run_id, session_id="result-session",
+                             reason="inspect independent failure", when="now")
+        self.assertNotEqual(held["status"], "HELD")
+        core.retry_dispatch(self.repo, self.run_id, action_id=action_id,
+                            failure_code="TEST_PROOF_PATCH_FILE_INVALID")
+        replay = driver.next_action(self.repo, self.run_id)
+        self.assertEqual(replay["action_id"], action_id)
+        self.assertEqual(replay["context_projection_digest"], frozen)
+        self.assertEqual(coordinator._prompt(replay, "tester", core.driver_context(self.repo, self.run_id)), prompt)
+        intent = read_ledger(self.repo, self.run_id)["dispatch_intent"]
+        self.assertEqual(intent["attempt"], 2)
+        self.assertEqual(intent["thread_id"], "tester-thread")
+        self.assertEqual(intent["context_projection_digest"], frozen)
+        self.assertEqual(core.driver_context(self.repo, self.run_id)["role_observations"]["hold"],
+                         held["hold"])
+        self.apply(self.proof_result())
+        after = read_ledger(self.repo, self.run_id)
+        self.assertIsNone(after["dispatch_intent"])
+        self.assertEqual(after["evidence"]["proof"]["status"], "pass")
+        self.assertEqual(driver.next_action(self.repo, self.run_id)["status"], "HELD")
+        for key in ("candidate_head", "tester_source"):
+            self.assertEqual(after["facets"]["execution"][key],
+                             before["facets"]["execution"][key])
+        with self.assertRaises(core.AssuranceError):
+            core.finalize(self.repo, self.run_id, "must remain held")
+
+    def test_hold_after_completed_dispatch_preserves_result_application(self):
+        before = read_ledger(self.repo, self.run_id)["dispatch_intent"]
+        core.hold_run(self.repo, self.run_id, session_id="result-session",
+                      reason="inspect completed result", when="now")
+        replay = driver.next_action(self.repo, self.run_id)
+        self.assertEqual(replay["action_id"], self.action["action_id"])
+        self.assertEqual(read_ledger(self.repo, self.run_id)["dispatch_intent"], before)
+        self.apply()
+        self.assertEqual(driver.next_action(self.repo, self.run_id)["status"], "HELD")
+
     def test_proof_projection_binds_unchanged_ledger_source_and_public_view(self):
         from runtime.codex_builder_loop.assurance_v4.models import digest
         self.prepare_proof()
