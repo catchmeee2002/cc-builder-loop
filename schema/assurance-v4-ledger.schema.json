@@ -819,7 +819,7 @@
               "type": "array",
               "uniqueItems": true,
               "items": {"enum": [
-                "checkpoint", "problems", "recompose", "integration", "proof", "blackbox",
+                "checkpoint", "problems", "recompose", "integration", "proof", "blackbox", "observations",
                 "evidence:tester", "evidence:blackbox", "evidence:reviewer_preflight",
                 "evidence:reviewer", "evidence:doc_review"
               ]}
@@ -1437,6 +1437,7 @@
         "details": {"type": "string", "minLength": 1},
         "owner": {"enum": ["builder", "tester", "plan", "current_project", "builder_loop", "external_platform"]},
         "producer_continuity": {"const": "invalid"},
+        "observation_request": {"$ref": "https://openai.local/codex-builder-loop/problem-report-v1.schema.json#/$defs/observationRequest"},
         "decision_request": {
           "$ref": "https://openai.local/codex-builder-loop/problem-report-v1.schema.json#/$defs/decisionRequest"
         },

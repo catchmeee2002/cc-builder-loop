@@ -22,6 +22,118 @@
     },
     "details": {"type": "object"}
   },
+  "$defs": {
+  "localObservation": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "problem_key",
+      "request_digest",
+      "acceptance_case_ids",
+      "input_head",
+      "source_manifest_digest",
+      "cwd",
+      "before_head",
+      "after_head",
+      "argv",
+      "returncode",
+      "timed_out",
+      "stdout",
+      "stderr"
+    ],
+    "properties": {
+      "problem_key": {
+        "type": "string",
+        "minLength": 1
+      },
+      "request_digest": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{64}$"
+      },
+      "acceptance_case_ids": {
+        "type": "array",
+        "minItems": 1,
+        "uniqueItems": true,
+        "items": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "input_head": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{40}$"
+      },
+      "source_manifest_digest": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{64}$"
+      },
+      "cwd": {
+        "type": "string",
+        "minLength": 1
+      },
+      "before_head": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{40}$"
+      },
+      "after_head": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{40}$"
+      },
+      "argv": {
+        "type": "array",
+        "minItems": 1,
+        "items": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "returncode": {
+        "type": "integer"
+      },
+      "timed_out": {
+        "type": "boolean"
+      },
+      "stdout": {
+        "type": "string"
+      },
+      "stderr": {
+        "type": "string"
+      }
+    }
+  },
+  "observationDisposition": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "problem_key",
+      "request_digest",
+      "artifact_digest",
+      "accepted",
+      "reason"
+    ],
+    "properties": {
+      "problem_key": {
+        "type": "string",
+        "minLength": 1
+      },
+      "request_digest": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{64}$"
+      },
+      "artifact_digest": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{64}$"
+      },
+      "accepted": {
+        "type": "boolean"
+      },
+      "reason": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  }
+},
   "allOf": [
     {
       "if": {"properties": {"kind": {"enum": ["tester", "proof", "blackbox"]}}},
@@ -61,6 +173,7 @@
             "additionalProperties": false,
             "required": ["result", "source_head", "files"],
             "properties": {
+              "observations": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/localObservation"}},
               "result": {"enum": ["tests_ready", "fail"]},
               "source_head": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
               "files": {
@@ -217,7 +330,8 @@
             "required": ["result", "reviewed_head"],
             "properties": {
               "result": {"enum": ["pass", "findings", "blocked"]},
-              "reviewed_head": {"type": "string", "pattern": "^[0-9a-f]{40}$"}
+              "reviewed_head": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+              "observation_dispositions": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/observationDisposition"}}
             }
           }
         }

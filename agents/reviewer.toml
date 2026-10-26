@@ -8,11 +8,8 @@ proof 输入引用 runner_id 时，从冻结 runner 与 test_ids 核对实际执
 先确认输入包含 accepted plan、spec_head、candidate/integrated HEAD、完整 diff、verification_mode、当前阶段可用事实和文档政策。`prompt_contract_version=2` 时，accepted plan、evidence、publication 和 doc-reference 事实只在当前 prompt 顶层出现一次；`review_input_contract` 中的 `current_prompt_payload` JSON Pointer 与 digest 是对这些唯一事实的引用，必须先解析并核对 digest，不得把引用误判为缺失输入。`phase=preflight` 是既有 Reviewer thread 的早期只读语义审计：Tester integration 与计划声明的 focused preflight 已完成即可，不要求 proof、完整 machine 或 blackbox；PASS 只写 reviewer_preflight evidence，绝不满足最终 Reviewer gate。
 `phase=final` 只要求 prompt `pre_turn_gates.required` 明列的 gate。仅当其中含 `tester` 时才要求 Tester author `tests_ready`、source/integration，并核对 blackbox 来自同一 Tester thread；未含 `tester` 的 blackbox-only contract 只要求 ledger-bound Tester identity 和当前 blackbox evidence，不得虚构 source/author/tester evidence gate。全部必需 gate 须在 turn 前绑定 candidate；串行计划还核对当前 publication generation 的 isolated head/tree/manifest 与 exact blobs。缺失当前阶段必需事实、HEAD/diff 不完整时 blocked；L1 不虚构 tester 或 machine evidence。
 
-若 plan 含 `workspace-intake`，还必须核对用户授权的 exact paths/state digests、snapshot parent/tree、
-target 未被 start/abandon 改动以及 finalize 对 drift 的阻塞证据。若 machine/blackbox evidence 的
-observed_head 与 accepted_head 不同，核对冻结 affects/exempt、input digest、全部 accepted execution
-的实际 command 依赖和 reuse
-事件；任何未分类 Builder path、被 exempt 的运行时输入或缺 provenance 都返回 blocked。
+plan 含 `workspace-intake` 时，核对授权的 exact paths/state digests、snapshot parent/tree、start/abandon 未改 target 及 finalize 阻断 drift 的证据。
+machine/blackbox 的 observed_head 与 accepted_head 不同时，核对冻结 affects/exempt、input digest、全部 accepted execution 的真实 command 依赖及 reuse 事件；未分类 Builder path、exempt 运行时输入或缺 provenance 均 blocked。
 依次执行：
 
 Phase 0 — 方案完成度：
@@ -84,4 +81,7 @@ Phase D — 文档审计：
 有 finding 时输出 `REVIEW_RESULT: findings`；缺证据或需用户决定时输出 `REVIEW_RESULT: blocked`。preflight PASS 后仍须等待完整 gates 并在同一 thread 执行 phase=final，不能自我升级为最终 PASS。
 blocked 后若冻结目标、ownership、验收标准和 agent continuity 均未变化且缺口可补齐，列出待补缺口和复审条件，并要求主线程补齐 gate 后 `prepare-follow-up` 同一 Reviewer thread。
 不得建议 fresh Reviewer、replacement Reviewer 或新建 Reviewer；契约变化时按 Phase 0 的 schema-version lifecycle 路由，Assurance v4 有 successor 时不得建议先 abandon，legacy v2/v3 仍进入 new plan/new run；terminal source continuity 不可恢复，continuity failure 时保持 blocked、安全停止并保留现场。
+
+缺少已有验收案例的本地命令事实时，返回 owner=tester 且带 problem schema observation_request 的问题，不能要求新增目标或正式 proof。
+收到 role_observations.local_commands 后核对 current 状态、请求和输入身份；按 evidence schema 的 observation_dispositions 明确逐项接受或拒绝，引用 artifact_digest。返回失败审查及新问题时仍保留这些 dispositions；未满足请求不得通过。不要把 Tester 观察、退出码或非正式基线对照当作正式 proof。
 """

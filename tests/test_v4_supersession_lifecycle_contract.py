@@ -379,6 +379,8 @@ class V4SupersessionLifecycleContractTest(unittest.TestCase):
             carryover_path,
             new_path,
         ]
+        # Verified carryover is already ready; only the new output needs a producer.
+        successor_contract["execution"]["work_units"][0]["scope"]["paths"] = [new_path]
         successor_contract["assurance"]["required"] = ["machine", "tester"]
         contract_path = self.write_json(
             "public-prerequisite-successor.json", successor_contract
@@ -509,6 +511,7 @@ class V4SupersessionLifecycleContractTest(unittest.TestCase):
         first = "src/public_first.py"
         second = "src/public_second.py"
         contract["authority"]["public_prerequisites"] = [first, second]
+        contract["execution"]["work_units"][0]["scope"]["paths"] = [first, second]
         contract["assurance"]["required"] = ["machine", "tester"]
         run_id = "partial-root-prerequisites"
         started = self.start(run_id, contract)

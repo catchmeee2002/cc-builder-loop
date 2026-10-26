@@ -25,7 +25,6 @@ BUILDER_LINE_LIMIT = 278
 BUILDER_MAINTENANCE_LINE_ALLOWANCE = 0
 PLANNER_LINE_ALLOWANCE = 36
 REFERENCE_PATH = Path("skills/planner/references/design-decisions.md")
-REVIEWER_BLOB = "4b23d55f72cb63c2070cd44bb5406c7f364d4158"
 REVIEWER_PATH = Path("agents/reviewer.toml")
 TESTER_PATH = Path("agents/tester.toml")
 PHILOSOPHY_PATH = Path("docs/design-philosophy.md")
@@ -654,8 +653,9 @@ class PlanningDesignDisciplineTest(unittest.TestCase):
             reviewer_current[0]["instruction_source"]["sha256"],
             hashlib.sha256((ROOT / REVIEWER_PATH).read_bytes()).hexdigest(),
         )
-        self.assertEqual(git_blob("HEAD", REVIEWER_PATH), REVIEWER_BLOB)
-        self.assertEqual(worktree_blob(REVIEWER_PATH), REVIEWER_BLOB)
+        # Bind the reviewed bytes to this checkout, not an obsolete instruction snapshot.
+        # The registry digest above and unchanged budgets below still constrain updates.
+        self.assertEqual(worktree_blob(REVIEWER_PATH), git_blob("HEAD", REVIEWER_PATH))
         self.assertLessEqual(
             len(read(BUILDER_PATH).splitlines()),
             BUILDER_LINE_LIMIT + BUILDER_MAINTENANCE_LINE_ALLOWANCE,

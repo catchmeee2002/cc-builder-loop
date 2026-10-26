@@ -14,11 +14,35 @@
     }
   },
   "$defs": {
+    "observationRequest": {
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "acceptance_case_ids",
+    "question"
+  ],
+  "properties": {
+    "acceptance_case_ids": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "question": {
+      "type": "string",
+      "minLength": 1
+    }
+  }
+},
     "problem": {
       "type": "object",
       "additionalProperties": false,
       "required": ["key", "summary", "details", "owner"],
       "allOf": [
+        {"if": {"required": ["observation_request"]}, "then": {"properties": {"owner": {"const": "tester"}}, "not": {"anyOf": [{"required": ["producer_continuity"]}, {"required": ["decision_request"]}]}}},
         {
           "if": {"required": ["producer_continuity"]},
           "then": {"properties": {"owner": {"const": "tester"}}}
@@ -54,6 +78,7 @@
           ]
         },
         "producer_continuity": {"const": "invalid"},
+        "observation_request": {"$ref": "#/$defs/observationRequest"},
         "decision_request": {"$ref": "#/$defs/decisionRequest"}
       }
     },

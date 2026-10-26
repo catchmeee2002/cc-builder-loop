@@ -19,6 +19,35 @@
       "type": "array",
       "items": {"$ref": "#/$defs/commandAdmission"}
     },
+    "prerequisite_blockers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "path",
+          "reason",
+          "work_unit_ids"
+        ],
+        "properties": {
+          "path": {
+            "$ref": "#/$defs/path"
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1
+          },
+          "work_unit_ids": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      }
+    },
     "public_prerequisites": {
       "type": "array",
       "items": {"$ref": "#/$defs/publicPrerequisiteAdmission"}

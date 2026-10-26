@@ -55,6 +55,7 @@ PROMPT_EVIDENCE_ACTIONS = frozenset(
     {
         "tester_author",
         "tester_fix",
+        "tester_observe",
         "tester_blackbox",
         "reviewer_preflight",
         "reviewer_final",
@@ -1946,6 +1947,7 @@ class NativeCoordinator(ResultSemantics):
                 "builder_recompose_fix": "recompose",
                 "tester_author": "author",
                 "tester_fix": "author",
+                "tester_observe": "observe",
                 "tester_recompose_fix": "recompose",
                 "tester_proof": "proof",
                 "tester_proof_diagnose": "proof_diagnose",
@@ -2193,6 +2195,12 @@ class NativeCoordinator(ResultSemantics):
                 "proof_spec": "changed_replacement_object_for_spec_only_correction_else_null",
                 "problem_report": "required_non_empty_for_source_or_contract_problem_else_null",
             }
+        if action in {"reviewer_preflight", "reviewer_final"}:
+            return {
+                "evidence_report": "required_on_pass_or_observation_disposition_else_null",
+                "proof_spec": "must_be_null",
+                "problem_report": "object_only_when_findings_blocked_or_target_change_required_else_null",
+            }
         if action == "tester_machine_diagnose":
             return {
                 "evidence_report": "must_be_null",
@@ -2209,7 +2217,10 @@ class NativeCoordinator(ResultSemantics):
     def _normalize_action_result(action: str, result: dict[str, Any]) -> dict[str, Any]:
         value = copy.deepcopy(result)
         if isinstance(value.get("problem_report"), dict) and action != "tester_proof_diagnose":
-            value["evidence_report"] = None
+            report = value.get("evidence_report")
+            if not (action in {"reviewer_preflight", "reviewer_final"} and isinstance(report, dict)
+                    and report.get("status") == "fail" and report.get("details", {}).get("observation_dispositions")):
+                value["evidence_report"] = None
             value["proof_spec"] = None
             return value
         if action in {
@@ -2257,7 +2268,7 @@ class NativeCoordinator(ResultSemantics):
         self, action: dict[str, Any], role: str, context: dict[str, Any]
     ) -> dict[str, Any]:
         _instructions, sandbox = self._role_config(role)
-        return {"type": "readOnly"} if sandbox == "read-only" else {"type": "dangerFullAccess"}
+        return {"type": "readOnly"} if sandbox == "read-only" or action.get("action") == "tester_observe" else {"type": "dangerFullAccess"}
 
     def _start_reviewer_thread_compaction(
         self, action_id: str

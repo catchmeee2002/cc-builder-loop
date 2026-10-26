@@ -92,3 +92,5 @@
 或启动 run。
 
 新增 proof 计划声明实际 runner 的启动前缀与超时；仅在输入确实不影响判据时声明 evidence neutral paths，测试、runner 和依赖不得排除。需要完成后等待时使用显式 hold，不减少验收 gate。字段以公共 schema 为准。
+
+补充验证要求必须映射到冻结可执行命令，或已有验收案例支持的 Reviewer 本地观察请求。受保护 preparation 不运行正式 proof 时，必要的基线对照直接纳入冻结 machine/blackbox 命令；不得只写成无法提交的验收文字。涉及角色结果持久化时，写边界须覆盖报告 schema、ledger schema 及事务回执的依赖闭包。

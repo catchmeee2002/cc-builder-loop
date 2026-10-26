@@ -24,6 +24,8 @@ from .core import (
     ensure_run_id,
     evidence_state,
     readiness,
+    observation_view,
+    observation_request_digest,
     hold_ready,
     runtime_compatibility,
     work_unit_progress,
@@ -1071,6 +1073,7 @@ def _dispatch_action(
         "builder_fix",
         "tester_author",
         "tester_fix",
+        "tester_observe",
         "tester_proof",
         "tester_blackbox",
         "reviewer_preflight",
@@ -1278,6 +1281,33 @@ def next_action(
             )
         return decision("CONTINUE", "tester_fix", reason, **payload)
 
+    def doc_scan_decision():
+        scan_state = doc_reference_scan_state(ledger)
+        if scan_state in {"missing", "stale"}:
+            return decision(
+                "CONTINUE",
+                "scan_doc_references",
+                f"doc_reference_scan_{scan_state}",
+                candidate_worktree=ledger["candidate_worktree"],
+            )
+        if scan_state == "failed":
+            return decision(
+                "CONTINUE",
+                "builder_fix",
+                "doc_reference_scan_failed",
+                candidate_worktree=ledger["candidate_worktree"],
+                doc_reference_scan=copy.deepcopy(ledger.get("doc_reference_scan")),
+                agent=ledger["facets"]["execution"]["agents"].get("builder"),
+            )
+        if scan_state == "error":
+            return decision(
+                "NEEDS_USER",
+                "doc_reference_scan_decision",
+                "doc_reference_scan_error",
+                doc_reference_scan=copy.deepcopy(ledger.get("doc_reference_scan")),
+            )
+        return None
+
     def problem_decision(
         problem: Mapping[str, Any], problems: list[dict[str, Any]]
     ) -> dict[str, Any]:
@@ -1290,6 +1320,40 @@ def next_action(
                 problem=problem,
                 agent=ledger["facets"]["execution"]["agents"].get("builder"),
             )
+        if owner == "tester" and problem.get("observation_request"):
+            request_digest = observation_request_digest(problem)
+            observations = [item for item in observation_view(ledger) if item["state"] == "current"
+                            and any(o["request_digest"] == request_digest for o in item["observations"])]
+            reviewed = {e["details"]["artifact_digest"] for e in ledger.get("events", [])
+                        if e["kind"] == "local_observation_reviewed" and e["details"]["request_digest"] == request_digest}
+            pending = [item for item in observations if item["artifact_digest"] not in reviewed]
+            execution = ledger["facets"]["execution"]
+            if pending:
+                scan_decision = doc_scan_decision()
+                if scan_decision is not None:
+                    return scan_decision
+                index = max(i for i, e in enumerate(ledger.get("events", []))
+                            if e["kind"] == "local_observations_recorded" and e["details"]["artifact_digest"] == pending[-1]["artifact_digest"])
+                review_actions = {e["details"]["action_id"] for e in ledger["events"][index + 1:]
+                                  if e["kind"] == "dispatch_prepared" and e["details"].get("action") in {"reviewer_preflight", "reviewer_final"}}
+                reviews = sum(1 for e in ledger["events"][index + 1:] if e["kind"] == "dispatch_consumed"
+                              and e["details"].get("action_id") in review_actions)
+                if reviews >= 3:
+                    return decision("NEEDS_USER", "architecture_review", "observation_review_no_progress", problem=problem)
+                prereqs = [kind for kind in ("tester", "machine", "proof", "blackbox")
+                           if kind in ledger["facets"]["assurance"]["required"]]
+                action = "reviewer_final" if all(evidence_state(ledger, kind) == "pass" for kind in prereqs) else "reviewer_preflight"
+                return decision("CONTINUE", action, "observation_pending_review", problem=problem,
+                                agent=execution["agents"].get("reviewer"), candidate_worktree=ledger["candidate_worktree"])
+            attempts = sum(1 for e in ledger.get("events", []) if e["kind"] == "local_observation_reviewed"
+                           and e["details"]["request_digest"] == request_digest)
+            if attempts >= 3:
+                return decision("NEEDS_USER", "architecture_review", "observation_no_progress", problem=problem)
+            if not execution.get("tester_source") or not execution["agents"].get("tester"):
+                return decision("NEEDS_USER", "continuity_decision", "observation_source_missing", problem=problem)
+            return decision("CONTINUE", "tester_observe", "observation_requested", problem=problem,
+                            request_digest=request_digest, agent=execution["agents"]["tester"],
+                            tester_source=execution["tester_source"], candidate_worktree=ledger["candidate_worktree"])
         if owner == "tester":
             if problem.get("producer_continuity") == "invalid":
                 execution = ledger["facets"]["execution"]
@@ -1911,10 +1975,14 @@ def next_action(
         if item["status"] != "ready"
     ]
     if unready_public:
+        builder_unit = current_work_unit(ledger, role="builder")
+        unit_details = ({"work_unit_id": builder_unit["id"], "work_unit": builder_unit}
+                        if builder_unit is not None else {})
         return decision(
             "CONTINUE",
             "builder_implement",
             "public_prerequisites_unready",
+            **unit_details,
             candidate_worktree=ledger["candidate_worktree"],
             public_prerequisites=public_classification,
             agent=execution["agents"].get("builder"),
@@ -1939,30 +2007,9 @@ def next_action(
             candidate_worktree=ledger["candidate_worktree"],
             agent=execution["agents"].get("builder"),
         )
-    scan_state = doc_reference_scan_state(ledger)
-    if scan_state in {"missing", "stale"}:
-        return decision(
-            "CONTINUE",
-            "scan_doc_references",
-            f"doc_reference_scan_{scan_state}",
-            candidate_worktree=ledger["candidate_worktree"],
-        )
-    if scan_state == "failed":
-        return decision(
-            "CONTINUE",
-            "builder_fix",
-            "doc_reference_scan_failed",
-            candidate_worktree=ledger["candidate_worktree"],
-            doc_reference_scan=copy.deepcopy(ledger.get("doc_reference_scan")),
-            agent=execution["agents"].get("builder"),
-        )
-    if scan_state == "error":
-        return decision(
-            "NEEDS_USER",
-            "doc_reference_scan_decision",
-            "doc_reference_scan_error",
-            doc_reference_scan=copy.deepcopy(ledger.get("doc_reference_scan")),
-        )
+    scan_decision = doc_scan_decision()
+    if scan_decision is not None:
+        return scan_decision
     publication = ledger.get("publication")
     if isinstance(publication, dict) and publication.get("required") and not publication.get("head"):
         return decision(

@@ -574,7 +574,7 @@ def canonical_context_projection(
         if isinstance(ledger.get("repo_root"), str)
         else ledger.get("evidence")
     )
-    observations = role_observations(ledger)
+    observations = role_observations(ledger, canonical=True)
     # Hold governs scheduling at a safe transaction boundary, not the work
     # already assigned to a role. Keep it visible in driver_context/status,
     # but do not invalidate an in-flight or completed dispatch when it changes.
@@ -1575,6 +1575,62 @@ def _public_prerequisite_classification(
     return result
 
 
+
+def _public_prerequisite_obligations(
+    contract: Mapping[str, Any],
+    classification: Sequence[Mapping[str, str]],
+    *,
+    completed: Sequence[str] = (),
+    checkpoint: bool = False,
+    current_unit: Mapping[str, Any] | None = None,
+    previously_ready: Sequence[str] = (),
+) -> list[dict[str, Any]]:
+    """Derive unsatisfied obligations; never persist a second progress graph."""
+    units = work_units(contract)
+    bounded = progress_policy(contract).get("mode") == "bounded_rehydration"
+    if not bounded and not checkpoint:
+        return []  # Retained contracts keep their existing admission semantics.
+    done = set(completed)
+    reachable = set(done)
+    builders = [unit for unit in units if unit["role"] == "builder"]
+    # Closure over the existing graph, excluding consumers of publication.
+    while True:
+        added = {
+            unit["id"] for unit in builders
+            if set(unit["depends_on"]).issubset(reachable)
+        } - reachable
+        if not added:
+            break
+        reachable.update(added)
+    blockers: list[dict[str, Any]] = []
+    for item in classification:
+        if item["status"] == "ready":
+            continue
+        path = item["path"]
+        owners = [unit for unit in builders
+                  if _matches(path, unit["scope"]["paths"])
+                  and _matches(path, contract["authority"]["builder_write"])]
+        future = [unit for unit in owners
+                  if unit["id"] not in done and unit["id"] in reachable
+                  and (current_unit is None or unit["id"] != current_unit["id"])]
+        reason = None
+        if checkpoint:
+            if not bounded or current_unit is None:
+                reason = "checkpoint_prerequisite_missing"
+            elif path in previously_ready:
+                reason = "ready_prerequisite_regressed"
+            elif _matches(path, current_unit["scope"]["paths"]):
+                reason = "current_work_unit_prerequisite_missing"
+            elif not future:
+                reason = "no_reachable_builder_work_unit"
+        elif not any(unit["id"] in reachable for unit in owners):
+            reason = "no_reachable_builder_work_unit"
+        if reason is not None:
+            blockers.append({"path": path, "reason": reason,
+                             "work_unit_ids": [unit["id"] for unit in owners]})
+    return blockers
+
+
 def _prospective_admission_execution(
     repo: Path, contract: Mapping[str, Any]
 ) -> tuple[dict[str, Any], str | None]:
@@ -1758,16 +1814,18 @@ def _admission_report(
         contract["authority"].get("public_prerequisites", []),
         candidate=candidate,
     )
+    prerequisite_blockers = _public_prerequisite_obligations(contract, public_prerequisites)
     report = {
         "schema_version": 1,
         "status": (
             "BLOCKED"
-            if any(item["status"] == "blocked" for item in command_admission)
+            if prerequisite_blockers or any(item["status"] == "blocked" for item in command_admission)
             else "READY"
         ),
         "trusted_system_path": TRUSTED_SYSTEM_PATH,
         "commands": command_admission,
         "public_prerequisites": public_prerequisites,
+        "prerequisite_blockers": prerequisite_blockers,
     }
     return validate_admission(report)
 
@@ -1776,7 +1834,7 @@ def _require_admission(repo: Path, contract: Mapping[str, Any]) -> dict[str, Any
     admission = _admission_report(repo, contract)
     if admission["status"] == "BLOCKED":
         raise AssuranceError(
-            "one or more host executables are unavailable from the trusted execution boundary",
+            "host executables or public prerequisite obligations block admission",
             code="ASSURANCE_ADMISSION_BLOCKED",
             status="FAIL",
             details={"admission": admission},
@@ -4192,6 +4250,11 @@ def complete_dispatch(
                 if intent["role"] == "reviewer" and report["details"].get("reviewed_head") != execution.get("candidate_head"):
                     raise ContractError("reviewed HEAD differs from dispatch", code="EVIDENCE_REPORT_INVALID",
                                         details={"path": "details/reviewed_head", "action_id": action_id})
+                if intent["action"] == "tester_observe":
+                    try:
+                        _validate_local_observations(ledger, report)
+                    except AssuranceError as exc:
+                        raise ContractError(str(exc), code="EVIDENCE_REPORT_INVALID", details={"source_code": exc.code}) from exc
                 if intent["action"] == "tester_blackbox":
                     try:
                         _validate_blackbox_report(ledger, report)
@@ -8361,6 +8424,9 @@ def evidence_state(ledger: Mapping[str, Any], kind: str) -> str:
         ledger, kind, evidence=dependency_evidence
     ):
         return "stale"
+    if kind in {"reviewer", "reviewer_preflight", "doc_review"}:
+        if not _review_observations_current(ledger, record):
+            return "stale"
     if record.get("status") == "pass" and kind == "tester":
         candidate = ledger["facets"]["execution"].get("candidate_head")
         files = record.get("details", {}).get("files", [])
@@ -11686,7 +11752,177 @@ def _proof_group_evidence_view(
     return None
 
 
-def role_observations(ledger: Mapping[str, Any]) -> dict[str, Any]:
+def observation_request_digest(problem: Mapping[str, Any]) -> str:
+    """Bind the immutable request and producer, excluding its resolution state."""
+    return digest({key: value for key, value in problem.items()
+                   if key not in {"status", "resolution", "resolved_at"}})
+
+
+def _observation_artifact(ledger: Mapping[str, Any], event: Mapping[str, Any]) -> dict[str, Any]:
+    path = Path(str(event.get("result_path", "")))
+    expected = run_dir(Path(ledger["repo_root"]), ledger["run_id"]) / "artifacts" / ("dispatch-" + str(event.get("action_id")) + ".json")
+    if path != expected or path.is_symlink():
+        raise AssuranceError("observation artifact path is not registered", code="OBSERVATION_ARTIFACT_INVALID")
+    return _read_dispatch_result_artifact({"result_path": str(path), "result_digest": event.get("artifact_digest")})
+
+
+def _validate_local_observations(ledger: Mapping[str, Any], report: Mapping[str, Any], *, canonical: bool = False) -> None:
+    execution = ledger["facets"]["execution"]
+    source = execution.get("tester_source")
+    candidate = execution.get("candidate_head")
+    if (report.get("kind") != "tester" or report.get("candidate_head") != candidate
+        or not isinstance(source, Mapping)
+        or report.get("producer") != {"role": "tester", **execution["agents"].get("tester", {})}
+        or source.get("agent") != execution["agents"].get("tester")):
+        raise AssuranceError("observation producer or candidate differs", code="OBSERVATION_INPUT_MISMATCH")
+    details = report["details"]
+    if (details.get("source_head") != source["head"] or details.get("files") != source["files"]
+        or not details.get("observations")):
+        raise AssuranceError("observation source manifest differs", code="OBSERVATION_INPUT_MISMATCH")
+    repo = Path(ledger["repo_root"])
+    candidate_path = Path(ledger["candidate_worktree"])
+    if not canonical:
+        _assert_tester_source_exact(repo, source)
+        if git(candidate_path, "rev-parse", "HEAD").stdout.strip() != candidate or dirty_paths(candidate_path):
+            raise AssuranceError("observation candidate drifted", code="OBSERVATION_INPUT_MISMATCH")
+    sources = {str(candidate_path): candidate, str(Path(source["worktree"])): source["head"]}
+    problems = {observation_request_digest(p): p for p in ledger.get("problems", []) if p.get("observation_request")}
+    seen = set()
+    for item in details["observations"]:
+        problem = problems.get(item["request_digest"])
+        if (problem is None or problem["key"] != item["problem_key"]
+            or problem["producer"] != {"role": "reviewer", **execution["agents"].get("reviewer", {})}
+            or set(item["acceptance_case_ids"]) != set(problem["observation_request"]["acceptance_case_ids"])):
+            raise AssuranceError("observation request is not current", code="OBSERVATION_REQUEST_MISMATCH")
+        if (item["source_manifest_digest"] != digest(source["files"])
+            or item["cwd"] not in sources or item["before_head"] != sources[item["cwd"]]
+            or item["after_head"] != item["before_head"]
+            or item["input_head"] not in {candidate, source["head"], source["base_head"]}):
+            raise AssuranceError("observation Git inputs differ", code="OBSERVATION_INPUT_MISMATCH")
+        identity = digest(item)
+        if identity in seen:
+            raise AssuranceError("duplicate local observation", code="OBSERVATION_DUPLICATE")
+        seen.add(identity)
+
+
+def observation_view(ledger: Mapping[str, Any], *, canonical: bool = False) -> list[dict[str, Any]]:
+    """Project immutable artifacts; no supplementary evidence cache in the ledger."""
+    values = []
+    for event in ledger.get("events", []):
+        if event.get("kind") != "local_observations_recorded":
+            continue
+        reference = event["details"]
+        value = {**copy.deepcopy(reference), "state": "current", "observations": []}
+        try:
+            result = _observation_artifact(ledger, reference)
+            report = result["evidence_report"]
+            _validate_local_observations(ledger, report, canonical=canonical)
+            value["observations"] = copy.deepcopy(report["details"]["observations"])
+        except (AssuranceError, ContractError, OSError, ValueError, KeyError) as exc:
+            value["state"] = "stale"
+            value["code"] = getattr(exc, "code", "OBSERVATION_ARTIFACT_INVALID")
+        values.append(value)
+    return values
+
+
+def record_observations(repo_value: str | Path, run_value: str, report_value: Any) -> dict[str, Any]:
+    report = validate_evidence_report(report_value)
+    repo, run_id = resolve_repo(repo_value), ensure_run_id(run_value)
+    with locked(repo):
+        ledger = read_ledger(repo, run_id)
+        pending = ledger.get("dispatch_intent")
+        if (ledger["phase"] != "active" or not isinstance(pending, Mapping)
+            or pending.get("action") != "tester_observe" or pending.get("state") != "completed"
+            or pending.get("thread_id") != report["producer"]["thread_id"]):
+            raise AssuranceError("observation requires the accepted Tester dispatch", code="OBSERVATION_DISPATCH_REQUIRED")
+        _assert_no_candidate_residue_intent(ledger)
+        reference = {"action_id": pending["action_id"], "result_path": pending["result_path"],
+                     "artifact_digest": pending["result_digest"]}
+        if _observation_artifact(ledger, reference).get("evidence_report") != report:
+            raise AssuranceError("observation differs from accepted artifact", code="OBSERVATION_ARTIFACT_INVALID")
+        _validate_local_observations(ledger, report)
+        existing = [e["details"] for e in ledger["events"] if e["kind"] == "local_observations_recorded"]
+        if reference not in existing:
+            requested = {item["request_digest"] for item in report["details"]["observations"]}
+            if any(observation_request_digest(p) in requested and p["status"] != "open" for p in ledger["problems"]):
+                raise AssuranceError("observation request is already resolved", code="OBSERVATION_REQUEST_MISMATCH")
+            identities = {digest(item) for item in report["details"]["observations"]}
+            for old in observation_view(ledger):
+                if old["state"] == "current" and identities.intersection(digest(item) for item in old["observations"]):
+                    raise AssuranceError("identical observations cannot create progress", code="OBSERVATION_NO_PROGRESS")
+            append_event(ledger, "local_observations_recorded", reference)
+        from .result_application import mark_effect
+        mark_effect(ledger, "observations")
+        save_ledger(repo, ledger)
+    return status(repo, run_id)
+
+
+def _review_observations_current(ledger: Mapping[str, Any], report: Mapping[str, Any]) -> bool:
+    """Closed requests remain review inputs through their accepted receipts."""
+    required = list(report.get("details", {}).get("observation_dispositions", []))
+    receipts = [event["details"] for event in ledger.get("events", [])
+                if event.get("kind") == "local_observation_reviewed"]
+    for problem in ledger.get("problems", []):
+        if not problem.get("observation_request") or problem["status"] != "resolved":
+            continue
+        matches = [receipt for receipt in receipts
+                   if receipt.get("accepted") is True
+                   and receipt["problem_key"] == problem["key"]
+                   and receipt["request_digest"] == observation_request_digest(problem)
+                   and receipt["producer"] == problem["producer"]
+                   and problem.get("resolution") == "observation:" + receipt["artifact_digest"]]
+        if not matches:
+            return False
+        required.extend(matches)
+    if not required:
+        return True
+    artifacts = {item["artifact_digest"]: item for item in observation_view(ledger)
+                 if item["state"] == "current"}
+    return all(item["artifact_digest"] in artifacts and any(
+        observation["request_digest"] == item["request_digest"]
+        and observation["problem_key"] == item["problem_key"]
+        for observation in artifacts[item["artifact_digest"]]["observations"]
+    ) for item in required)
+
+
+def _apply_observation_dispositions(ledger: dict[str, Any], report: Mapping[str, Any]) -> None:
+    dispositions = report["details"].get("observation_dispositions", [])
+    if report["status"] == "pass":
+        if not _review_observations_current(ledger, report):
+            raise AssuranceError("review observation inputs are stale", code="OBSERVATION_DISPOSITION_INVALID")
+        pending = {observation_request_digest(p) for p in ledger.get("problems", [])
+                   if p.get("observation_request") and p["status"] == "open"}
+        accepted = {d["request_digest"] for d in dispositions if d["accepted"]}
+        if pending - accepted:
+            raise AssuranceError("passing review must adjudicate pending observation requests", code="OBSERVATION_REVIEW_REQUIRED")
+    if not dispositions:
+        return
+    artifacts = {item["artifact_digest"]: item for item in observation_view(ledger) if item["state"] == "current"}
+    changes = []
+    seen = set()
+    for disposition in dispositions:
+        request_digest = disposition["request_digest"]
+        matches = [p for p in ledger["problems"] if p.get("observation_request") and observation_request_digest(p) == request_digest]
+        artifact = artifacts.get(disposition["artifact_digest"])
+        if (request_digest in seen or len(matches) != 1 or matches[0]["key"] != disposition["problem_key"]
+            or matches[0]["producer"] != report["producer"] or artifact is None
+            or not any(o["request_digest"] == request_digest for o in artifact["observations"])):
+            raise AssuranceError("review disposition does not bind a current observation", code="OBSERVATION_DISPOSITION_INVALID")
+        seen.add(request_digest)
+        changes.append((matches[0], disposition))
+    for problem, disposition in changes:
+        receipt = {**copy.deepcopy(disposition), "producer": report["producer"], "candidate_head": report["candidate_head"]}
+        prior = [e["details"] for e in ledger["events"] if e["kind"] == "local_observation_reviewed"]
+        if receipt in prior:
+            continue
+        if problem["status"] != "open":
+            raise AssuranceError("observation request is already resolved", code="OBSERVATION_DISPOSITION_INVALID")
+        append_event(ledger, "local_observation_reviewed", receipt)
+        if disposition["accepted"]:
+            problem.update(status="resolved", resolution="observation:" + disposition["artifact_digest"], resolved_at=now())
+
+
+def role_observations(ledger: Mapping[str, Any], *, canonical: bool = False) -> dict[str, Any]:
     """Read-only projections; never become a second evidence store."""
     proof = ledger.get("evidence", {}).get("proof") or {}
     details = proof.get("details") or {}
@@ -11720,7 +11956,10 @@ def role_observations(ledger: Mapping[str, Any]) -> dict[str, Any]:
     reuse = [copy.deepcopy(event["details"]) for event in ledger.get("events", [])
              if event.get("kind") == "evidence_reused" and event["details"].get("accepted_head") == candidate]
     return {"proof_discrimination": rows, "target_drift": drifts, "evidence_reuse": reuse,
-            "hold": copy.deepcopy(ledger.get("hold"))}
+            "hold": copy.deepcopy(ledger.get("hold")),
+            "local_commands": observation_view(ledger, canonical=canonical),
+            "observation_requests": [{"problem": copy.deepcopy(p), "request_digest": observation_request_digest(p)}
+                                     for p in ledger.get("problems", []) if p.get("observation_request") and p["status"] == "open"]}
 
 
 def _driver_evidence_view(ledger: Mapping[str, Any]) -> dict[str, Any]:
@@ -12501,9 +12740,47 @@ def revise_mission(
     return status(repo, run_id)
 
 
+def _refresh_observation_requests(ledger: dict[str, Any]) -> None:
+    """A committed input transition reopens requests without erasing receipts."""
+    execution = ledger["facets"]["execution"]
+    candidate = execution.get("candidate_head")
+    source = execution.get("tester_source")
+    for problem in ledger.get("problems", []):
+        if not problem.get("observation_request"):
+            continue
+        changed = problem.get("candidate_head") != candidate
+        if not changed and problem["status"] == "resolved" and isinstance(source, Mapping):
+            references = [event["details"] for event in ledger.get("events", [])
+                          if event.get("kind") == "local_observations_recorded"
+                          and problem.get("resolution") == "observation:" + event["details"]["artifact_digest"]]
+            for reference in references:
+                try:
+                    report = _observation_artifact(ledger, reference)["evidence_report"]
+                except (AssuranceError, ContractError, OSError, ValueError, KeyError):
+                    # Corruption is not an input transition and cannot retire a dependency.
+                    continue
+                changed = (report["details"].get("source_head") != source.get("head")
+                           or report["details"].get("files") != source.get("files"))
+                if changed:
+                    break
+        if not changed:
+            continue
+        previous = copy.deepcopy(problem)
+        problem.update(status="open", candidate_head=candidate, recorded_at=now())
+        problem.pop("resolution", None)
+        problem.pop("resolved_at", None)
+        append_event(ledger, "local_observation_request_refreshed", {
+            "previous_problem": previous,
+            "request_digest": observation_request_digest(problem),
+            "candidate_head": candidate,
+        })
+
+
 def _close_problems(ledger: dict[str, Any], owner: str, resolution: str) -> None:
+    if owner in {"builder", "tester"}:
+        _refresh_observation_requests(ledger)
     for item in ledger.get("problems", []):
-        if item.get("owner") == owner and item.get("status") == "open":
+        if item.get("owner") == owner and item.get("status") == "open" and not item.get("observation_request"):
             item["status"] = "resolved"
             item["resolution"] = resolution
             item["resolved_at"] = now()
@@ -12630,6 +12907,7 @@ def _record_public_prerequisite_classification_problem(
     previous_candidate_head: str | None,
     candidate_head: str,
     classification: Sequence[Mapping[str, str]],
+    blocking_paths: Sequence[str] | None = None,
 ) -> str:
     key = PUBLIC_PREREQUISITE_CLASSIFICATION_PROBLEM_KEY
     classification_value = [copy.deepcopy(dict(item)) for item in classification]
@@ -12638,6 +12916,8 @@ def _record_public_prerequisite_classification_problem(
         for item in classification_value
         if item.get("status") != "ready"
     )
+    if blocking_paths is not None:
+        paths = sorted(blocking_paths)
     details_value = {
         "code": "PUBLIC_PREREQUISITE_CLASSIFICATION_INVALID",
         "previous_candidate_head": previous_candidate_head,
@@ -12902,7 +13182,27 @@ def checkpoint_builder(
             for item in public_classification
             if item["status"] != "ready"
         ]
-        if unready_public:
+        carryover = execution.get("carryover")
+        previous_candidate = execution.get("candidate_head")
+        if previous_candidate is None and isinstance(carryover, Mapping):
+            previous_candidate = carryover.get("source_candidate_head")
+        previous_classification = _public_prerequisite_classification(
+            repo, execution,
+            ledger["facets"]["authority"].get("public_prerequisites", []),
+            candidate=previous_candidate,
+        )
+        obligations = _public_prerequisite_obligations(
+            ledger["facets"], public_classification,
+            completed=_completed_work_unit_ids(ledger),
+            checkpoint=True,
+            current_unit=_work_unit_for_id(
+                ledger, progress_intent.get("work_unit_id") if progress_intent else None,
+            ),
+            previously_ready=[item["path"] for item in previous_classification
+                              if item["status"] == "ready"],
+        )
+        blocking_paths = [item["path"] for item in obligations]
+        if blocking_paths:
             previous = execution.get("candidate_head")
             if previous != candidate or execution.get("builder_files") != builder_files:
                 execution["version"] += 1
@@ -12917,6 +13217,7 @@ def checkpoint_builder(
                     previous_candidate_head=previous,
                     candidate_head=candidate,
                     classification=public_classification,
+                    blocking_paths=blocking_paths,
                 )
             )
             append_event(
@@ -12926,7 +13227,7 @@ def checkpoint_builder(
                     "code": "PUBLIC_PREREQUISITE_CLASSIFICATION_INVALID",
                     "old_head": previous,
                     "candidate_head": candidate,
-                    "paths": unready_public,
+                    "paths": blocking_paths,
                     "authority_digest": ledger["digests"]["authority"],
                     "classification": copy.deepcopy(public_classification),
                     "classification_digest": digest(public_classification),
@@ -12961,9 +13262,9 @@ def checkpoint_builder(
         if (
             previous == candidate
             and execution.get("builder_files") == builder_files
-            and ledger.get("builder_checkpointed") is True
+            and ledger.get("builder_checkpointed") is (not unready_public)
         ):
-            _mark_work_unit_completed(
+            completed_unit = _mark_work_unit_completed(
                 ledger,
                 intent=progress_intent,
                 observation="candidate_commit",
@@ -12974,9 +13275,10 @@ def checkpoint_builder(
                     }
                 ),
             )
-            if _mark_root_builder_result_applied(
+            applied = _mark_root_builder_result_applied(
                 ledger, root_dispatch, "checkpoint_builder"
-            ):
+            )
+            if applied or completed_unit:
                 _record_evidence_reuse(ledger)
                 save_ledger(repo, ledger)
             return status(repo, run_id)
@@ -12984,7 +13286,7 @@ def checkpoint_builder(
         execution["candidate_head"] = candidate
         ledger["reviewer_observation"] = _reviewer_manifest(ledger)
         execution["builder_files"] = builder_files
-        ledger["builder_checkpointed"] = True
+        ledger["builder_checkpointed"] = not unready_public
         ledger["digests"] = facet_digests(ledger["facets"])
         _close_problem_key(
             ledger,
@@ -13681,6 +13983,12 @@ def record_problems(
         candidate = ledger["facets"]["execution"].get("candidate_head")
         added: list[str] = []
         for problem in report["problems"]:
+            request = problem.get("observation_request")
+            if request is not None:
+                cases = {item["id"] for item in ledger["facets"]["mission"]["acceptance_cases"]}
+                if (role != "reviewer" or expected is None or problem["owner"] != "tester"
+                    or not set(request["acceptance_case_ids"]).issubset(cases)):
+                    raise AssuranceError("observation request must come from the registered Reviewer and reference frozen cases", code="OBSERVATION_REQUEST_INVALID")
             if problem.get("producer_continuity") == "invalid" and (
                 role != "tester" or problem.get("owner") != "tester"
             ):
@@ -13705,14 +14013,14 @@ def record_problems(
                     field: replay.get(field)
                     for field in (
                         "key", "summary", "details", "owner",
-                        "producer_continuity", "decision_request",
+                        "producer_continuity", "decision_request", "observation_request",
                     )
                 }
                 replayed_problem = {
                     field: problem.get(field)
                     for field in (
                         "key", "summary", "details", "owner",
-                        "producer_continuity", "decision_request",
+                        "producer_continuity", "decision_request", "observation_request",
                     )
                 }
                 if content != replayed_problem:
@@ -14935,6 +15243,8 @@ def record_evidence(
         if role == "reviewer":
             _assert_reviewer_integrity(ledger)
         details = report["details"]
+        if kind == "tester" and details.get("observations"):
+            raise AssuranceError("supplemental observations require tester_observe result application", code="OBSERVATION_DISPATCH_REQUIRED")
         if kind == "tester":
             if (report["status"] == "pass") != (details["result"] == "tests_ready"):
                 raise AssuranceError("Tester result does not match evidence status", code="EVIDENCE_RESULT_MISMATCH")
@@ -15048,6 +15358,8 @@ def record_evidence(
                     status="NEEDS_USER",
                     details={"blockers": blockers},
                 )
+        if role == "reviewer":
+            _apply_observation_dispositions(ledger, report)
         existing = ledger["evidence"].get(kind)
         if (
             isinstance(existing, dict)

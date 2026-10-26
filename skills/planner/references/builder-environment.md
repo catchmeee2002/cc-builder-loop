@@ -16,8 +16,13 @@
   后续 business run 仍必须消费 finalized continuation。
   `runtime_support.affected_paths` 是自托管 runtime 写边界的唯一来源；不得让同一 run 热切换 evidence
   writer、补写旧 observation，或用 candidate 改写 manifest 后继续当前 proof gate。
+- 拆分公开前置文件准备任务时，将尚未就绪的精确路径纳入对应 Builder 单元 scope，并确保准备单元
+  在 publication 前可达，不依赖 Tester/Reviewer。当前单元必须完成其 scope 内的前置文件；仅后续
+  合法 Builder 单元负责的文件允许暂缓。Tester 仍等待完整 publication，不把单元完成当成全局就绪。
 - 需要真实环境时，只允许计划冻结一个 `authority.external_targets` 目标和项目提供的
   `execution.deployment` probe/build/deploy/restore wrapper。若当前 probe 证明同一目标已经承载同一候选
   制品，Core 可跳过重复 deploy，但本 Revision 的 blackbox 仍重新执行。只有用户明确允许 Revision
   期间保留目标状态时才冻结 `revision_retention: lease`，否则使用默认恢复；通用远程部署编排和多仓
   原子事务超出支持范围，停止交接并由用户决定路线。
+
+受保护 preparation 的基线对照若属于验收条件，应在冻结命令中输出可核对的输入身份与具体行为差异，不依赖尚未交付的补充观察通道完成自举。

@@ -279,8 +279,21 @@ successor continuity 把 source candidate 相对原 target 的 exact path/blob �
 revision 的 Builder/Tester manifest 重置为空。Builder checkpoint 从当前 candidate 重新派生本 revision
 产出；与 carryover blob 相同的路径仍属于 carryover，新增或改变的 Builder-owned 路径才属于
 `builder_files`。公开前置文件必须由当前 Builder manifest 或未漂移 carryover 满足；checkpoint、Driver
-下一动作、publication 和 recomposition 都复核这条分类。缺失时只让当前 Builder 阶段失效，不把旧产出
-冒充新产出，也不把可修复执行事实升级成新的产品决策。
+下一动作、publication 和 recomposition 都复核这条分类。启用有界工作单元时，准入从既有依赖图和
+写 scope 派生公开前置文件的准备义务：尚未就绪的路径必须能由 publication 之前可达的 Builder 单元
+准备；依赖 Tester/Reviewer 才能准备的路径不满足条件。blocker 与命令准入失败一并阻止 start，诊断
+保留路径和相关单元；已验证 ready 的 carryover 不必重新生产。该检查不预测实现是否成功。
+
+中间 checkpoint 仍绑定 clean candidate 并记录既有单元完成事件；当前单元 scope 内缺失的前置文件、
+已 ready 文件的退化，以及没有后续合法准备单元的路径均阻塞。只有后续可达 Builder 单元负责的
+未就绪文件允许暂缓，暂缓本身不建立 problem 或消耗恢复次数。恢复问题只包含本次必须补齐的路径，
+保留完整分类观察；其写权限和次数限制保持不变。全局文件未就绪时 builder_checkpointed 仍为 false，
+Driver 继续现有待完成 Builder 单元。publication 的全部文件就绪检查、Tester 的正式 publication
+门禁以及刷新和 evidence 失效规则保持不变，直接 CLI 调用也不能消费部分产物。
+
+以上判断从契约、候选分类和已完成事件派生，不增加 ledger 字段或文件级依赖图。未启用有界进度的
+保留契约继续使用原有 checkpoint 语义，不把旧产出冒充新产出，也不把可修复执行事实升级成新的
+产品决策。
 
 ### Reliability profile、恢复与版本身份
 
@@ -1088,3 +1101,9 @@ machine/proof 的跨候选复用要求冻结的相关输入、执行身份及其
 内部契约构造指导，仅在相关任务出现时读取生命周期或环境约束。原生路线不加载这些约束。
 这落实显式授权、每个事实只有一个家和最小充分原则；schema 与 validator 继续拥有结构和机械判据。
 旧 Builder Planner 公开入口退役，安装只清理本 checkout 拥有的旧链接，外来内容保留。
+
+## 本地命令补充观察
+
+Reviewer 可针对冻结验收案例请求原 Tester 补充本地命令事实。观察行动只读取注册候选和 Tester 输入，不集成源码、不完成工作单元，也不消耗源码修正额度。结果沿用严格角色报告，通过统一结果应用事务验证身份、请求、Git 输入和日志，再以不可变 dispatch 制品保存；事件仅保存来源引用，角色上下文从来源派生。
+
+请求保持未解决，直到原 Reviewer 明确接受对应制品。普通源码集成和 Tester evidence 不关闭观察请求。已关闭请求仍通过接受回执绑定后续审查；候选或 Tester 输入提交变化时重新开放请求，保留历史回执，由原角色重新观察并接受。角色上下文摘要绑定已登记输入，避免合法工作树修改改变正在执行的 dispatch；观察接收和审查有效性仍检查实际输入与制品完整性。审查依赖观察摘要，输入或制品变化使观察与审查失效；未变化的机器与黑盒输入保持有效。非零退出与超时都是待解释的观察，不是自动通过或正式 proof。重放沿用原结果制品；重复无进展受现有有界恢复规则限制，未知框架问题仍阻塞。

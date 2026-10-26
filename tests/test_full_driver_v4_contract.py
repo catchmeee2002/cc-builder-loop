@@ -881,6 +881,7 @@ class FullDriverV4ContractTest(unittest.TestCase):
         run_id = "full-driver-publication"
         contract = contract_for(self.repo)
         contract["authority"]["public_prerequisites"] = ["src/calc.py"]
+        contract["execution"]["work_units"][0]["scope"]["paths"] = ["src/calc.py"]
         data, run_path = self.start(run_id, contract=contract)
         candidate = Path(data["candidate_worktree"])
         (candidate / "src" / "calc.py").write_text(
@@ -4117,6 +4118,7 @@ class FullDriverV4ContractTest(unittest.TestCase):
         run_id = "full-driver-serial-rematerialize"
         contract = contract_for(self.repo)
         contract["authority"]["public_prerequisites"] = ["src/calc.py"]
+        contract["execution"]["work_units"][0]["scope"]["paths"] = ["src/calc.py"]
         data, run_path = self.start(run_id, contract=contract)
         candidate = Path(data["candidate_worktree"])
         (candidate / "src" / "calc.py").write_text(
@@ -4188,6 +4190,7 @@ class FullDriverV4ContractTest(unittest.TestCase):
         run_id = "full-driver-publication-refresh"
         contract = contract_for(self.repo)
         contract["authority"]["public_prerequisites"] = ["src/calc.py"]
+        contract["execution"]["work_units"][0]["scope"]["paths"] = ["src/calc.py"]
         data, run_path = self.start(run_id, contract=contract)
         candidate = Path(data["candidate_worktree"])
         (candidate / "src" / "calc.py").write_text(

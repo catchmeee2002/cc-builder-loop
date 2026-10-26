@@ -40,6 +40,9 @@ class SuccessorPublicationContractTest(unittest.TestCase):
         contract["authority"]["public_prerequisites"] = [
             "contracts/public.json"
         ]
+        contract["execution"]["work_units"][0]["scope"]["paths"] = [
+            "contracts/public.json"
+        ]
         contract["execution"]["revision_transition"] = {
             "category": "mission_change",
             "predecessor_pressure_digest": core.status(

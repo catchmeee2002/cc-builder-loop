@@ -86,6 +86,7 @@ AGENT_ACTION_CAPABILITIES = MappingProxyType(
         "builder_recompose_fix": AgentActionCapability("builder", "role_identity"),
         "tester_author": AgentActionCapability("tester", "tester_source", "evidence_report"),
         "tester_fix": AgentActionCapability("tester", "tester_source", "evidence_report"),
+        "tester_observe": AgentActionCapability("tester", "existing_tester_source", "evidence_report"),
         "tester_recompose_fix": AgentActionCapability("tester", "tester_source"),
         "tester_proof": AgentActionCapability("tester", "existing_tester_source", "proof_spec"),
         "tester_proof_diagnose": AgentActionCapability(

@@ -1044,7 +1044,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         elif args.command == "record-evidence":
             accepted = {
-                "tester": {"tester_author", "tester_fix"},
+                "tester": {"tester_author", "tester_fix", "tester_observe"},
                 "proof": {"tester_proof"},
                 "blackbox": {"tester_blackbox"},
                 "reviewer_preflight": {"reviewer_preflight"},
@@ -1052,7 +1052,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "doc_review": {"reviewer_final"},
             }.get(args.kind, set())
             _guard_dispatch(args, accepted)
-            payload = core.record_evidence(args.repo, args.run, args.kind, _json(args.report))
+            report = _json(args.report)
+            if args.kind == "tester" and report.get("details", {}).get("observations"):
+                payload = core.record_observations(args.repo, args.run, report)
+            else:
+                payload = core.record_evidence(args.repo, args.run, args.kind, report)
         elif args.command == "prepare-tester":
             preparation = "tester_identity" if args.identity_only else "tester_source"
             _guard_dispatch(args, actions_for_preparation("tester", preparation))

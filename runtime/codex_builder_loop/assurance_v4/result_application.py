@@ -194,6 +194,7 @@ def assert_applied(ledger: Mapping[str, Any], intent: Mapping[str, Any]) -> None
             "builder_recompose_fix": {"recompose"}, "tester_recompose_fix": {"recompose"},
             "tester_author": {"integration", "evidence:tester"},
             "tester_fix": {"integration", "evidence:tester"},
+            "tester_observe": {"observations"},
             "tester_proof": {"proof"}, "tester_proof_diagnose": {"proof"},
             "reviewer_preflight": {"evidence:reviewer_preflight"},
             "tester_blackbox": {"blackbox"} if ledger["facets"]["execution"].get("deployment") else {"evidence:blackbox"},
@@ -712,6 +713,11 @@ class _Application(ResultSemantics):
                         proof_runners=context["facets"]["assurance"].get("proof_runners", []),
                     )
         if isinstance(problem, dict):
+            report = result.get("evidence_report")
+            if role == "reviewer" and isinstance(report, dict) and report.get("details", {}).get("observation_dispositions"):
+                if report["status"] != "fail":
+                    raise ResultApplicationError("findings cannot include passing observation review", code="EVIDENCE_REPORT_INVALID")
+                self.evidence("reviewer_preflight" if action == "reviewer_preflight" else "reviewer", report)
             self.effect("problems", lambda: core.record_problems(
                 self.repo, self.run_id, problem, role=role, agent_id=agent["agent_id"],
                 thread_id=agent.get("thread_id"), action_id=self.action_id,
@@ -727,6 +733,9 @@ class _Application(ResultSemantics):
                 self.repo, self.run_id, action_id=self.action_id,
                 owner_session_id=self.owner_session_id,
             ))
+        elif action == "tester_observe":
+            self.effect("observations", lambda: core.record_observations(
+                self.repo, self.run_id, result["evidence_report"]))
         elif action in {"tester_author", "tester_fix"}:
             self.effect("integration", lambda: core.integrate_tester(self.repo, self.run_id))
             integrated = read_ledger(self.repo, self.run_id)["facets"]["execution"]

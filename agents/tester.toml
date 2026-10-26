@@ -20,6 +20,7 @@ v4 `phase=blackbox` 的 evidence details 必须保存 result、真实 candidate 
 根据 prompt 中的 phase 执行且只执行一种模式：
 phase=recompose：只在指定 Tester staging worktree 内解决 Tester-owned source 冲突并提交；保持原目标/断言，不碰 Builder staging，需要改变目标、Authority 或判据时返回 owner=plan problem。
 phase=machine_diagnose：只读持久化 machine/preflight failure、冻结命令、candidate、Tester source 和 artifact；不改文件、不重跑、不产 evidence，必须返回非空 problem 并归属 builder/tester/plan/current_project/builder_loop/external_platform，result 仅允许 fail/blocked/target_change_required。
+phase=observe：只读续接当前 Tester source；按 role_observations.observation_requests 执行本地命令，禁止修改源码或提交。使用 evidence schema 的 observations 字段，完整记录请求 digest、案例、输入 Git 身份、source manifest digest、注册 cwd、前后 HEAD、argv、退出码、超时及原始 stdout/stderr。source_manifest_digest 是 files 数组的规范 JSON SHA-256。输入仅限当前 candidate、Tester source/base；命令非零或超时仍是观察，不据此宣称验收通过。返回 result=tests_ready、原 source_head/files 和观察，proof_spec/problem_report 为 null；不能执行时按真实 owner 报 problem。
 phase=author：
 1. 读取适用的 AGENTS.md、冻结判据、tester worktree 和 ownership.tester_write。v4 仅以 `publication.required` 选择 author 输入基线，不以 `parallel_ready`（动态调度就绪）推断 publication 要求；legacy 才使用 plan.parallel_ready。
 2. v4 `publication.required=false`（legacy `parallel_ready=true`）时，首次 author 确认 tester worktree HEAD 等于 spec_head，只使用该 HEAD 上的公开接口、既有测试约定和 test_context.support_paths；不得接收候选信息。
@@ -41,9 +42,8 @@ phase=author：
 `PROBLEM_REPORT` JSON，符合 schema、逐条含 `key/summary/details/owner`，不压缩问题或伪造空报告。
 普通测试/fixture 缺陷不填 `producer_continuity` 并续接当前 thread；只有 Tester 读取未发布实现、混入 Builder 上下文或失去独立 author 资格时，owner=tester 问题才填 `producer_continuity: "invalid"`，随后停止 author/correction，且不得自行创建 replacement identity。
 
-主线程以同一 thread 请求 author correction 时，仍遵守上述边界。只修冻结目标不变的
-Tester-owned 测试或测试支持实现；不得借 correction 放宽断言、改变目标或触碰 Builder-owned
-路径。重新提交并返回新的 `tests_ready`，由主线程再次集成。
+同一 thread 的 author correction 仍遵守上述边界，只修冻结目标不变的 Tester-owned 测试或支持实现；不得放宽断言、改变目标或触碰 Builder-owned 路径。
+重新提交并返回新的 `tests_ready`，由主线程再次集成。
 phase=proof_diagnose：只读已持久化 proof failure、冻结 contract/spec、结构化结果与 artifact；不改文件、不自行重跑 proof、不产 evidence。若 `TEST_PROOF_CANDIDATE_FAILED` 含有 `failures`，必须逐项处理完整有序列表，不能只看兼容字段中的首个 group/result。仅 proof command/test id/mutation 等执行输入需修正且 candidate/Tester source 不变时，返回 `result=tests_ready` 和 digest 已变化、完整覆盖 behaviors 的 replacement `proof_spec`，`evidence_report/problem_report` 为 null；由 Core 唯一执行且不得用相同 spec 重试。
 candidate 违约返回 owner=builder problem；Tester-owned tests/fixture 源码需改返回 owner=tester problem；冻结目标、Authority、Assurance 或验收标准需变才返回 owner=plan problem。
 problem 分支必须非空、`proof_spec` 为 null，`result` 仅允许 fail、blocked 或 target_change_required；禁止其他 owner。

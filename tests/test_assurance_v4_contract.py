@@ -433,6 +433,7 @@ class AssuranceV4ContractTest(unittest.TestCase):
     ) -> tuple[Path, Path, dict[str, Any]]:
         contract = contract_for(self.repo)
         contract["authority"]["public_prerequisites"] = ["src/calc.py"]
+        contract["execution"]["work_units"][0]["scope"]["paths"] = ["src/calc.py"]
         started, run_path = self.start(run_id, contract=contract)
         candidate = Path(started["candidate_worktree"])
         (candidate / "src" / "calc.py").write_text(
@@ -4736,6 +4737,7 @@ class AssuranceV4ContractTest(unittest.TestCase):
         run_id = "public-prerequisite-classification-problem"
         contract = contract_for(self.repo)
         contract["authority"]["public_prerequisites"] = ["src/calc.py"]
+        contract["execution"]["work_units"][0]["scope"]["paths"] = ["src/calc.py"]
         _started, run_path = self.start(run_id, contract=contract)
 
         for _attempt in range(2):

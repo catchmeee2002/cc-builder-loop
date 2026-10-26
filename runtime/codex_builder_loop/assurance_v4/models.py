@@ -1501,6 +1501,10 @@ def evidence_dependency(
             deployment_observation=deployment_observation,
         )
     elif kind in {"reviewer_preflight", "reviewer", "doc_review"}:
+        observations = [event["details"] for event in ledger.get("events", [])
+                        if event.get("kind") == "local_observations_recorded"]
+        if observations:
+            base["local_observations"] = observations
         base.update(
             candidate_head=candidate,
             assurance=ledger["digests"]["assurance"],
