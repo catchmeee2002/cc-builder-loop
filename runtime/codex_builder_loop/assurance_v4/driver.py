@@ -30,6 +30,7 @@ from .core import (
     runtime_compatibility,
     work_unit_progress,
 )
+from .decision_requests import apply_changes as _apply_decision_changes, effective_problem
 from .driver_contract import AGENT_ACTION_CAPABILITIES
 from .models import (
     EVIDENCE_KINDS,
@@ -331,6 +332,15 @@ def contract_problem_decision(
         "contract_digest": digest(ledger["facets"]),
         "required_user_block": _contract_decision_user_block(ledger, problem),
     }
+    if isinstance(request, Mapping) and request.get("kind") == "facet_change":
+        from .decision_requests import validate_request
+        payload["request_digest"] = digest(request)
+        try:
+            validate_request(ledger["facets"], request)
+        except AssuranceError as exc:
+            payload["request_validation"] = {"status": "FAIL", "code": exc.code,
+                "details": exc.details, "correction_command": "correct-decision-request"}
+            payload["required_user_block"] = "决策请求格式无效；先由当前 owner 纠正请求，再验证授权变更。"
     if rejection is not None:
         payload["engineering_correction_rejection"] = copy.deepcopy(dict(rejection))
         payload["required_user_block"] += (
@@ -612,128 +622,6 @@ def _assert_engineering_correction_candidate(
         )
 
 
-def _json_pointer_parts(pointer: str) -> list[str]:
-    if not pointer.startswith("/"):
-        raise AssuranceError(
-            "decision change pointer must be an absolute JSON pointer",
-            code="DECISION_POINTER_INVALID",
-            status="FAIL",
-            details={"pointer": pointer},
-        )
-    return [part.replace("~1", "/").replace("~0", "~") for part in pointer[1:].split("/")]
-
-
-def _apply_decision_changes(value: Any, changes: Any) -> Any:
-    if not isinstance(changes, list) or not changes:
-        raise AssuranceError(
-            "structured decision request must declare at least one exact change",
-            code="DECISION_CHANGES_REQUIRED",
-            status="FAIL",
-        )
-    result = copy.deepcopy(value)
-    for change in changes:
-        if not isinstance(change, Mapping):
-            raise AssuranceError(
-                "decision change must be an object",
-                code="DECISION_CHANGE_INVALID",
-                status="FAIL",
-            )
-        operation = change.get("operation")
-        pointer = change.get("pointer")
-        if operation not in {"add", "replace", "remove"} or not isinstance(pointer, str):
-            raise AssuranceError(
-                "decision change operation or pointer is invalid",
-                code="DECISION_CHANGE_INVALID",
-                status="FAIL",
-                details={"change": copy.deepcopy(change)},
-            )
-        if operation in {"add", "replace"} and "value" not in change:
-            raise AssuranceError(
-                "decision add or replace change requires a value",
-                code="DECISION_CHANGE_VALUE_REQUIRED",
-                status="FAIL",
-                details={"pointer": pointer, "operation": operation},
-            )
-        parts = _json_pointer_parts(pointer)
-        parent = result
-        for token in parts[:-1]:
-            if isinstance(parent, list):
-                try:
-                    index = int(token)
-                except ValueError as exc:
-                    raise AssuranceError(
-                        "decision array pointer is invalid",
-                        code="DECISION_POINTER_INVALID",
-                        status="FAIL",
-                        details={"pointer": pointer},
-                    ) from exc
-                if index < 0 or index >= len(parent):
-                    raise AssuranceError(
-                        "decision pointer does not exist",
-                        code="DECISION_POINTER_MISSING",
-                        status="FAIL",
-                        details={"pointer": pointer},
-                    )
-                parent = parent[index]
-            elif isinstance(parent, dict) and token in parent:
-                parent = parent[token]
-            else:
-                raise AssuranceError(
-                    "decision pointer does not exist",
-                    code="DECISION_POINTER_MISSING",
-                    status="FAIL",
-                    details={"pointer": pointer},
-                )
-        token = parts[-1]
-        if isinstance(parent, list):
-            if operation == "add" and token == "-":
-                parent.append(copy.deepcopy(change["value"]))
-                continue
-            try:
-                index = int(token)
-            except ValueError as exc:
-                raise AssuranceError(
-                    "decision array pointer is invalid",
-                    code="DECISION_POINTER_INVALID",
-                    status="FAIL",
-                    details={"pointer": pointer},
-                ) from exc
-            upper = len(parent) if operation == "add" else len(parent) - 1
-            if index < 0 or index > upper:
-                raise AssuranceError(
-                    "decision array pointer is out of range",
-                    code="DECISION_POINTER_MISSING",
-                    status="FAIL",
-                    details={"pointer": pointer},
-                )
-            if operation == "add":
-                parent.insert(index, copy.deepcopy(change["value"]))
-            elif operation == "replace":
-                parent[index] = copy.deepcopy(change["value"])
-            else:
-                parent.pop(index)
-        elif isinstance(parent, dict):
-            if operation in {"replace", "remove"} and token not in parent:
-                raise AssuranceError(
-                    "decision pointer does not exist",
-                    code="DECISION_POINTER_MISSING",
-                    status="FAIL",
-                    details={"pointer": pointer},
-                )
-            if operation == "remove":
-                parent.pop(token)
-            else:
-                parent[token] = copy.deepcopy(change["value"])
-        else:
-            raise AssuranceError(
-                "decision pointer parent is not a container",
-                code="DECISION_POINTER_INVALID",
-                status="FAIL",
-                details={"pointer": pointer},
-            )
-    return result
-
-
 def _mission_semantics(value: Mapping[str, Any]) -> dict[str, Any]:
     return {
         key: copy.deepcopy(value.get(key))
@@ -845,6 +733,7 @@ def validate_decision(
                 details={"facet": unchanged},
             )
 
+    scope_preview = None
     authorization_flags: list[str] = []
     if facet == "mission":
         expected_supersedes = {
@@ -899,7 +788,10 @@ def validate_decision(
                 )
         command = "revise-mission"
     else:
-        if replacement["execution"] != current_contract["execution"]:
+        if facet == "authority":
+            from .decision_requests import authority_scope_preview
+            scope_preview = authority_scope_preview(ledger, replacement)
+        if facet != "authority" and replacement["execution"] != current_contract["execution"]:
             raise AssuranceError(
                 "replacement contract changed execution facts",
                 code="DECISION_REPLACEMENT_DRIFT",
@@ -940,13 +832,13 @@ def validate_decision(
                         status="NEEDS_USER",
                         details={"field": field},
                     )
-            if authority_expands(old, new):
+            if authority_expands(old, new) or (scope_preview and scope_preview["linked"]):
                 authorization_flags.append("authorize_expansion")
         elif assurance_downgrades(
             current_contract["assurance"], replacement["assurance"]
         ):
             authorization_flags.append("authorize_downgrade")
-        command = "update-facet"
+        command = "apply-authority-decision" if scope_preview and scope_preview["linked"] else "update-facet"
 
     digests = facet_digests(replacement)
     replacement_ledger = copy.deepcopy(ledger)
@@ -969,6 +861,7 @@ def validate_decision(
         "replacement_facet_digest": digests[facet],
         "replacement_contract_digest": digest(replacement),
         "invalidated_evidence": invalidated_evidence,
+        "scope_preview": scope_preview,
         "apply": {
             "command": command,
             "authorization_flags": authorization_flags,
@@ -1775,7 +1668,7 @@ def next_action(
     )
     included_execution_problem_keys = _included_execution_problem_keys(ledger)
     open_problems = [
-        item
+        effective_problem(ledger, item)
         for item in ledger.get("problems", [])
         if item.get("status") == "open"
         and item.get("key") != replacement_problem_key

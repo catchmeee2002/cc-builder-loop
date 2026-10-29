@@ -56,7 +56,8 @@ python3 experiments/assurance-v4-replay/runner.py
 - Assurance v4 只有在 `validate --repo` 同时返回顶层 READY 与 `admission.status=READY` 时才能启动；宿主
   executable blocker 必须先改为 trusted PATH 可解析或显式绝对路径，不能靠 ambient PATH 或自动安装绕过。
 - Assurance v4 的已授权 plan decision 先用 `validate-decision` 绑定同 session、problem、action、facet
-  digest 和唯一完整 replacement contract，再以相同 binding 调用 `update-facet` 或 `revise-mission`，
+  digest 和唯一完整 replacement contract，再按 preview 以相同 binding 调用 `update-facet`、
+  `revise-mission` 或 `apply-authority-decision`，
   原子关闭 problem 并 resume 同一 active run；普通执行信息变化不得先 abandon 或自动升级为新 run。确需 successor 时，source 必须在新
   contract 验证和 `start` 持久化 target 前保持 active，由 `start` 创建 target 后封为 superseded。
   Builder checkpoint 因受保护 runtime preparation 被拒时，successor 只能绑定 ledger 唯一 open problem
@@ -64,6 +65,9 @@ python3 experiments/assurance-v4-replay/runner.py
   不 resume source、不搜索 orphan、不手工改 ledger。
   `abandon` 只表示用户取消且没有 successor；abandoned、superseded、failed、finalized source 不恢复 continuity。
   legacy v2/v3 保持既有 abandoned-source revision 契约。
+- 已消费的无效 facet-change 请求用 `correct-decision-request` 追加纠正，再重新预检；不覆盖原结果、
+  problem 或 ledger。Authority 精确路径扩展需同步扩大未完成 Builder scope 时，用
+  `apply-authority-decision` 原子提交，不拆成两次修改。
 - 候选变化后按冻结 scope digest 处理 machine/blackbox evidence；未声明 scope 时全 tree 失效。
   Reviewer 与 doc-review 对任何 candidate 变化都失效。
 - target dirty 默认隔离；只有用户显式授权的 exact path/state digest 才能经 workspace snapshot 进入

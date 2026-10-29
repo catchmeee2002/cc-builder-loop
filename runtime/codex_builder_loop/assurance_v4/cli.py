@@ -76,6 +76,21 @@ def parser() -> argparse.ArgumentParser:
     validate_decision.add_argument("--facet-digest", required=True)
     validate_decision.add_argument("--contract", required=True)
 
+    correction = commands.add_parser("correct-decision-request",
+        help="Append a pointer-only correction to an invalid consumed facet proposal; does not grant authority")
+    correction.add_argument("--repo", default=".")
+    for field in ("run", "session-id", "problem-key", "action-id", "request-digest", "facet-digest", "request", "reason"):
+        correction.add_argument("--" + field, required=True)
+    correction.add_argument("--driver-runtime-kind", choices=["native", "full_driver_skill"], required=True)
+
+    authority = commands.add_parser("apply-authority-decision",
+        help="Atomically apply approved exact Builder paths and pending work-unit scope additions")
+    authority.add_argument("--repo", default=".")
+    for field in ("run", "session-id", "problem-key", "action-id", "facet-digest", "contract", "replacement-digest"):
+        authority.add_argument("--" + field, required=True)
+    authority.add_argument("--authorize-expansion", action="store_true")
+    authority.add_argument("--driver-runtime-kind", choices=["native", "full_driver_skill"], required=True)
+
     start = commands.add_parser("start")
     start.add_argument("--repo", default=".")
     start.add_argument("--run", required=True)
@@ -846,6 +861,18 @@ def main(argv: Sequence[str] | None = None) -> int:
                 facet_digest=args.facet_digest,
                 replacement_contract=_json(args.contract),
             )
+        elif args.command == "correct-decision-request":
+            payload = core.correct_decision_request(args.repo, args.run,
+                session_id=args.session_id, problem_key=args.problem_key, action_id=args.action_id,
+                request_digest=args.request_digest, facet_digest=args.facet_digest,
+                request_value=_json(args.request), reason=args.reason,
+                driver_runtime_kind=args.driver_runtime_kind)
+        elif args.command == "apply-authority-decision":
+            payload = core.apply_authority_decision(args.repo, args.run,
+                session_id=args.session_id, problem_key=args.problem_key, action_id=args.action_id,
+                facet_digest=args.facet_digest, replacement_contract=_json(args.contract),
+                replacement_digest=args.replacement_digest, authorize_expansion=args.authorize_expansion,
+                driver_runtime_kind=args.driver_runtime_kind)
         elif args.command == "start":
             runtime = None
             driver_values = (

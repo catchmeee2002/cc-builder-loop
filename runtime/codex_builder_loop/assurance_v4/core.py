@@ -20,6 +20,7 @@ from typing import Any, Mapping, Sequence
 import jsonschema
 
 from . import SCHEMA_VERSION
+from .decision_requests import effective_problems, problem_identity
 from .driver_contract import (
     WORKSPACE_ROUTING_FAILURE_CODES, REVIEWER_COMPACTION_FAILURE_CODES,
     reviewer_compaction_eligible, dispatch_exhaustion_view, dispatch_exhaustion_blocked,
@@ -598,7 +599,7 @@ def canonical_context_projection(
         },
         "publication": _strip_context_identity(ledger.get("publication")),
         "evidence": _strip_context_identity(evidence),
-        "problems": _strip_context_identity(ledger.get("problems")),
+        "problems": _strip_context_identity(effective_problems(ledger)),
         "recomposition": _strip_context_identity(
             ledger.get("recomposition_intent")
         ),
@@ -4226,6 +4227,9 @@ def complete_dispatch(
                 },
             )
         result = validate_action_result(result, intent["action"])
+        if intent.get("state") != "completed" and isinstance(result.get("problem_report"), Mapping):
+            from .decision_requests import validate_report
+            validate_report(ledger["facets"], result["problem_report"])
         if intent.get("state") == "completed":
             if digest(result) not in {intent.get("result_digest"), intent.get("submitted_result_digest")}:
                 raise AssuranceError(
@@ -9031,7 +9035,7 @@ def telemetry(ledger: Mapping[str, Any]) -> dict[str, Any]:
 
 def _problem_snapshot_value(ledger: Mapping[str, Any]) -> list[dict[str, Any]]:
     problems = []
-    for item in ledger.get("problems", []):
+    for item in effective_problems(ledger):
         if not isinstance(item, dict) or item.get("status") != "open":
             continue
         problem = {
@@ -9105,7 +9109,7 @@ def _candidate_residue_pre_mutation_value(
         "agents": copy.deepcopy(execution.get("agents")),
         "tester_source": copy.deepcopy(execution.get("tester_source")),
         "evidence": copy.deepcopy(ledger.get("evidence", {})),
-        "problems": copy.deepcopy(ledger.get("problems", [])),
+        "problems": effective_problems(ledger),
         "driver_failure": copy.deepcopy(ledger.get("driver_failure")),
         "dispatch_intent": copy.deepcopy(ledger.get("dispatch_intent")),
         "dispatch_rehydration_intent": copy.deepcopy(
@@ -10800,7 +10804,7 @@ def status(repo_value: str | Path, run_value: str) -> dict[str, Any]:
         "lineage": _derive_lineage(repo, ledger),
         "readiness": readiness(ledger),
         "publication": copy.deepcopy(ledger.get("publication")),
-        "problems": copy.deepcopy(ledger.get("problems", [])),
+        "problems": effective_problems(ledger),
     }
 
 
@@ -12070,7 +12074,7 @@ def driver_context(repo_value: str | Path, run_value: str) -> dict[str, Any]:
         "evidence": evidence,
         "evidence_origin": _driver_evidence_origin(ledger, evidence),
         "publication": copy.deepcopy(ledger.get("publication")),
-        "problems": copy.deepcopy(ledger.get("problems", [])),
+        "problems": effective_problems(ledger),
         "driver_runtime": copy.deepcopy(ledger.get("driver_runtime")),
         "transport_cleanup_intent": copy.deepcopy(
             ledger.get("transport_cleanup_intent")
@@ -12170,6 +12174,75 @@ def _assert_plan_decision_mutation_binding(
         )
 
 
+def correct_decision_request(
+    repo_value: str | Path, run_value: str, *, session_id: str,
+    problem_key: str, action_id: str, request_digest: str,
+    facet_digest: str, request_value: Any, reason: str,
+    driver_runtime_kind: str,
+) -> dict[str, Any]:
+    """Append a correction to an invalid proposal, never an approval or facet write."""
+    from .decision_requests import effective_problem, validate_request
+    from .driver import next_action
+    repo, run_id = resolve_repo(repo_value), ensure_run_id(run_value)
+    with locked(repo):
+        ledger = read_ledger(repo, run_id)
+        _require_driver_runtime_owner(ledger, driver_runtime_kind)
+        if ledger.get("owner_session_id") != session_id:
+            raise AssuranceError("decision owner changed", code="DECISION_SESSION_MISMATCH", status="FAIL")
+        if not isinstance(reason, str) or not reason.strip():
+            raise AssuranceError("correction reason is required", code="DECISION_CORRECTION_INVALID", status="FAIL")
+        binding = {"session_id": session_id, "problem_key": problem_key,
+                   "action_id": action_id, "request_digest": request_digest,
+                   "facet_digest": facet_digest, "request": request_value, "reason": reason.strip()}
+        binding_digest = digest(binding)
+        for event in ledger.get("events", []):
+            if event.get("kind") == "decision_request_corrected" and event["details"].get("binding_digest") == binding_digest:
+                return status(repo, run_id)
+        if ledger.get("phase") != "active":
+            raise AssuranceError("correction requires an active run", code="ASSURANCE_RUN_NOT_ACTIVE", status="FAIL")
+        blockers = _candidate_residue_transaction_blockers(ledger)
+        for field in ("candidate_residue_intent", "context_rotation_intent", "dispatch_rehydration_intent", "tester_replacement_intent"):
+            if ledger.get(field) is not None:
+                blockers.append(field)
+        if blockers or ledger.get("hold"):
+            raise AssuranceError("correction conflicts with a pending transaction", code="DECISION_TRANSACTION_PENDING", status="FAIL", details={"transactions": blockers})
+        current = next_action(repo, run_id, _ledger=ledger)
+        if current.get("action") != "contract_decision" or current.get("action_id") != action_id:
+            raise AssuranceError("decision action changed", code="DECISION_ACTION_STALE", status="FAIL")
+        matches = [p for p in ledger.get("problems", []) if p.get("key") == problem_key and p.get("status") == "open" and p.get("owner") == "plan"]
+        if len(matches) != 1 or current.get("problem", {}).get("key") != problem_key:
+            raise AssuranceError("decision problem changed", code="DECISION_PROBLEM_MISMATCH", status="FAIL")
+        original = matches[0]
+        old = effective_problem(ledger, original).get("decision_request")
+        if not isinstance(old, Mapping) or digest(old) != request_digest or ledger["digests"].get(old.get("facet")) != facet_digest:
+            raise AssuranceError("decision request or facet changed", code="DECISION_CORRECTION_STALE", status="FAIL")
+        if old.get("kind") != "facet_change":
+            raise AssuranceError("only invalid facet proposals can be corrected", code="DECISION_CORRECTION_INVALID", status="FAIL")
+        try:
+            validate_request(ledger["facets"], old)
+        except AssuranceError:
+            pass
+        else:
+            raise AssuranceError("valid proposals require a new product decision", code="DECISION_CORRECTION_NOT_REQUIRED", status="FAIL")
+        report = validate_problem_report({"schema_version": 1, "problems": [{
+            "key": problem_key, "summary": original["summary"], "details": original["details"],
+            "owner": "plan", "decision_request": request_value}]})
+        new = report["problems"][0]["decision_request"]
+        # This interface repairs addresses, not requested operations or values.
+        without_pointer = lambda r: [{k: v for k, v in c.items() if k != "pointer"} for c in r.get("changes", [])]
+        if (new.get("kind") != old.get("kind") or new.get("facet") != old.get("facet")
+                or without_pointer(new) != without_pointer(old)):
+            raise AssuranceError("correction changed the requested delta", code="DECISION_CORRECTION_DELTA_CHANGED", status="FAIL")
+        validate_request(ledger["facets"], new)
+        append_event(ledger, "decision_request_corrected", {
+            **binding, "binding_digest": binding_digest,
+            "problem_identity": problem_identity(original), "original_request_digest": digest(old),
+            "replacement_request_digest": digest(new),
+        })
+        save_ledger(repo, ledger)
+    return status(repo, run_id)
+
+
 def apply_engineering_correction(
     repo_value: str | Path,
     run_value: str,
@@ -12262,6 +12335,49 @@ def apply_engineering_correction(
                 "action_id": action_id,
             },
         )
+        save_ledger(repo, ledger)
+    return status(repo, run_id)
+
+
+def apply_authority_decision(
+    repo_value: str | Path, run_value: str, *, session_id: str, problem_key: str,
+    action_id: str, facet_digest: str, replacement_contract: Any,
+    replacement_digest: str, authorize_expansion: bool, driver_runtime_kind: str,
+) -> dict[str, Any]:
+    """Atomically install a validated Authority and pending Builder scope extension."""
+    from .driver import validate_decision
+    repo, run_id = resolve_repo(repo_value), ensure_run_id(run_value)
+    binding = {"session_id": session_id, "problem_key": problem_key, "action_id": action_id,
+               "facet_digest": facet_digest, "replacement_digest": replacement_digest}
+    with locked(repo):
+        ledger = read_ledger(repo, run_id)
+        _require_driver_runtime_owner(ledger, driver_runtime_kind)
+        if ledger.get('owner_session_id') != session_id:
+            raise AssuranceError('decision owner changed', code='DECISION_SESSION_MISMATCH', status='FAIL')
+        validated = validate_persisted_contract(replacement_contract)
+        if digest(validated) != replacement_digest:
+            raise AssuranceError('replacement changed after preview', code='DECISION_REPLACEMENT_DRIFT', status='FAIL')
+        if not authorize_expansion:
+            raise AssuranceError('scope extension requires explicit authorization', code='AUTHORITY_EXPANSION_REQUIRES_USER', status='NEEDS_USER')
+        for event in ledger.get('events', []):
+            if event.get('kind') == 'authority_scope_decision_applied' and event['details'].get('binding') == binding:
+                return status(repo, run_id)
+        preview = validate_decision(repo, run_id, session_id=session_id, problem_key=problem_key,
+            action_id=action_id, facet='authority', facet_digest=facet_digest,
+            replacement_contract=validated)
+        if preview['apply']['command'] != 'apply-authority-decision':
+            raise AssuranceError('no linked scope extension requested', code='DECISION_SCOPE_INVALID', status='FAIL')
+        # All checks precede this single ledger save; Git and role artifacts are untouched.
+        old_digests = copy.deepcopy(ledger['digests'])
+        ledger['facets'] = validated
+        ledger['digests'] = facet_digests(validated)
+        problem = next(p for p in ledger['problems'] if p['key'] == problem_key and p['status'] == 'open')
+        problem.update(status='resolved', resolution='authority-scope-decision:' + replacement_digest, resolved_at=now())
+        append_event(ledger, 'authority_scope_decision_applied', {
+            'binding': binding, 'old_digests': old_digests, 'new_digests': copy.deepcopy(ledger['digests']),
+            'scope_additions': preview['scope_preview']['scope_additions'],
+            'invalidated_evidence': preview['invalidated_evidence'],
+        })
         save_ledger(repo, ledger)
     return status(repo, run_id)
 
@@ -12441,6 +12557,9 @@ def update_facet(
         if facet == "mission":
             _reject_acceptance_observation_downgrade(old, candidate["mission"])
         validated = validate_persisted_contract(candidate)
+        if facet == "authority":
+            from .decision_requests import authority_scope_preview
+            authority_scope_preview(ledger, validated)
         if facet == "execution":
             if value.get("dirty_snapshot") != old["dirty_snapshot"]:
                 raise AssuranceError(
@@ -13950,6 +14069,8 @@ def record_problems(
     with locked(repo):
         ledger = read_ledger(repo, run_id)
         _assert_no_candidate_residue_intent(ledger)
+        from .decision_requests import validate_report
+        validate_report(ledger["facets"], report)
         expected = None
         if role in {"builder", "tester", "reviewer"}:
             expected = ledger["facets"]["execution"]["agents"].get(role)

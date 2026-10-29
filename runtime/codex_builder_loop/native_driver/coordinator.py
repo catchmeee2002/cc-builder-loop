@@ -43,6 +43,7 @@ from .transport_failures import (
 ROLE_RESULT_VALIDATION_FAILURE_CODES = frozenset(
     {
         "AGENT_RESULT_INVALID",
+        "DECISION_REQUEST_INVALID",
         "EVIDENCE_REPORT_INVALID",
         "TEST_PROOF_SPEC_INVALID",
         "PROBLEM_REPORT_INVALID",

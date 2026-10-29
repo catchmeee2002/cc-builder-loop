@@ -804,14 +804,30 @@ completed dispatch，不再次进入 proof gate。消费后 Driver 才能派生�
 `root_session`、`full_driver_skill` 或 `operator_recovery`；旧事件缺少该字段时只按保守规则推断，不回写历史
 ledger。Root Builder 的正常提交使用 `root_session`，不计入人工恢复。
 
-用户批准的 plan decision 复用 `update-facet` 的既有校验与授权参数，并以
-`decision_request` 向用户展示相对 facet 的精确 delta。Planner 的人类正文只重复变化项，但仍生成唯一
-完整 replacement contract；只读 `validate-decision` 同时绑定 active run、同 session、problem key、
-Driver action id、base facet digest，并拒绝未展示的额外 facet 变化。Builder 把同一 binding 传给
-`update-facet` 或 `revise-mission`，在一次 repo lock/ledger save 中更新 Mission、Authority 或 Assurance、
-精确关闭 problem，再 resume 原 run。execution、publication path、dirty intake、歧义/缺失 key、stale
-handoff 或已关闭 problem 的冲突决定均在写入前拒绝；旧 problem 缺 `decision_request` 时只允许显式
-facet fallback，不建立第二份 decision 状态或 delta contract。
+角色提交的 facet-change decision 在 dispatch 接受和 problem 登记前验证 facet-relative pointer、
+容器类型与操作可达性；拒绝时保留原 dispatch 和候选，允许修正后重提。Native thread 仍受既有有界重试
+和候选副作用检查约束，不能借报告纠错重做已经产生副作用的实现。该前置检查只验证请求可解释，
+不批准请求，也不替代完整 replacement 的校验。这落实原则四的输入条件约束。
+
+历史已消费的无效请求通过 `correct-decision-request` 追加纠正事件。事务绑定当前 owner session、
+problem、action、原请求和 facet；只允许修正同 facet、同操作与值的地址。原 problem 和角色 artifact
+保持不变，Driver、status 与角色 context 从原请求及纠正事件派生有效请求。重复提交幂等；过期绑定、
+有效请求改写及并发事务拒绝。纠正不更新 facet、不关闭 problem、不产生授权，符合原则二、七的事实
+保留和事务身份约束。
+
+用户批准的 plan decision 以 `decision_request` 展示相对 facet 的精确 delta。Planner 仍生成唯一完整
+replacement contract；只读 `validate-decision` 绑定 active run、同 session、problem key、Driver action、
+base facet digest，并拒绝未展示的额外 facet 变化。一般决定使用 `update-facet` 或 `revise-mission`；
+精确 Builder 路径扩展若需要联动未完成工作单元的 paths，则使用 `apply-authority-decision`，
+在同一次 repo lock/ledger save 中更新 Authority、scope 并关闭 problem。预检汇总缺失 scope、Tester
+ownership、保护路径和事务冲突；角色身份、工作单元身份、依赖及完成事实不能随路径扩展改写。
+已有 scope 的 run 不允许先扩大 Authority 再补 scope；未声明 scope 的旧 contract 保持原 facet-only
+行为。候选和历史 evidence 不被重写，是否仍有效按新输入 digest 派生。
+
+联动事务绑定完整 replacement digest，写入失败不留下半更新，已写入后的重提为幂等。
+publication path、dirty intake、歧义/缺失 key、stale handoff 或已关闭 problem 的冲突决定均在写入前
+拒绝；旧 problem 缺 `decision_request` 时只允许显式 facet fallback。该路径复用 ledger 事务与原生
+重试，不引入第二套计划或工作单元依赖语言，遵守原则五、九。
 
 Assurance v4 的 target drift 与 publication refresh 共用唯一 `recomposition_intent`。intent 在任何 Git
 副作用前绑定 old/new target、incoming candidate、publication generation、Builder/Tester source 和 staging
