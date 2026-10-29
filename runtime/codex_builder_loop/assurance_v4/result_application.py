@@ -208,6 +208,50 @@ def assert_applied(ledger: Mapping[str, Any], intent: Mapping[str, Any]) -> None
         )
 
 
+def application_failure(ledger: Mapping[str, Any]) -> dict[str, Any] | None:
+    intent = ledger.get('dispatch_intent')
+    if not isinstance(intent, Mapping) or not isinstance(intent.get('application'), Mapping):
+        return None
+    for event in reversed(ledger.get('events', [])):
+        if event['kind'] != 'dispatch_application_failed':
+            continue
+        details = event['details']
+        if (details.get('binding_digest') == intent['application']['binding_digest']
+                and details.get('completed_effects') == intent['application']['effects']):
+            return copy.deepcopy(details)
+    return None
+
+
+def record_application_failure(repo: Path, run_id: str, action_id: str, identity: str,
+                               effect: str, error: Exception) -> None:
+    """Persist diagnosis without adopting changed inputs or worktree observations."""
+    with locked(repo):
+        ledger = read_ledger(repo, run_id)
+        intent = ledger.get('dispatch_intent')
+        if (not isinstance(intent, Mapping) or intent.get('action_id') != action_id
+                or intent.get('application', {}).get('binding_digest') != identity
+                or binding(ledger, intent) != identity):
+            return
+        details = {
+            'action_id': action_id, 'binding_digest': identity, 'effect': effect,
+            'result_digest': intent['result_digest'], 'generation': intent.get('generation', 1),
+            'completed_effects': list(intent['application']['effects']),
+            'code': getattr(error, 'code', 'DISPATCH_APPLICATION_IO_ERROR'),
+            'status': getattr(error, 'status', 'NEEDS_USER'),
+            'message': str(error), 'details': copy.deepcopy(getattr(error, 'details', {})),
+        }
+        if application_failure(ledger) == details:
+            return
+        append_event(ledger, 'dispatch_application_failed', details)
+        # Disable only the process-local checkpoint hook for this diagnostic save.
+        # Core still enforces runtime compatibility and all ledger validation.
+        token = _active_application.set(None)
+        try:
+            core.save_ledger(repo, ledger)
+        finally:
+            _active_application.reset(token)
+
+
 def recovery_view(ledger: Mapping[str, Any]) -> dict[str, Any] | None:
     if ledger.get("phase") != "active":
         return None
@@ -221,6 +265,9 @@ def recovery_view(ledger: Mapping[str, Any]) -> dict[str, Any] | None:
         "completed_effects": list(intent.get("application", {}).get("effects", [])),
         "preconditions": ["same runtime and producer", "unchanged accepted result", "bound input and worktree observations"],
     }
+    failure = application_failure(ledger)
+    if failure:
+        view["failure"] = failure
     try:
         validate_application(ledger, intent)
         read_result(intent)
@@ -237,7 +284,8 @@ def recovery_view(ledger: Mapping[str, Any]) -> dict[str, Any] | None:
     ]
     if intent.get("owner_mode") == "root_session":
         args.extend(["--owner-session-id", intent["owner_session_id"]])
-    return {**view, "command": args}
+    failure = application_failure(ledger)
+    return {**view, "command": args, **({"state": "needs_user", "failure": failure} if failure else {})}
 
 
 def integrate_git(
@@ -385,7 +433,12 @@ def apply(
                     "native_driver" if driver_runtime_kind == "native" else "full_driver_skill",
             )
     except ResultApplicationError as exc:
+        record_application_failure(repo, run_id, action_id, identity, "application", exc)
         raise AssuranceError(str(exc), code=exc.code, status="NEEDS_USER", details=exc.details) from exc
+    except (AssuranceError, ContractError, OSError) as exc:
+        if application_failure(read_ledger(repo, run_id)) is None:
+            record_application_failure(repo, run_id, action_id, identity, "application", exc)
+        raise
     finally:
         _active_application.reset(token)
     return core.status(repo, run_id)
@@ -672,7 +725,18 @@ class _Application(ResultSemantics):
                 return
         # Core owns each atomic mutation and any Git/proof/deployment intent.
         # No application lock is held over commands or external observations.
-        operation()
+        try:
+            operation()
+        except (AssuranceError, ContractError, ResultApplicationError, OSError) as exc:
+            record_application_failure(self.repo, self.run_id, self.action_id,
+                                       intent["application"]["binding_digest"], name, exc)
+            if getattr(exc, "status", "NEEDS_USER") == "FATAL":
+                raise
+            raise AssuranceError(str(exc), code=getattr(exc, "code", "DISPATCH_APPLICATION_IO_ERROR"),
+                                 status="NEEDS_USER", details={
+                                     **copy.deepcopy(getattr(exc, "details", {})), "effect": name,
+                                     "recovery": "inspect status recovery; resume the accepted result with apply-dispatch-result",
+                                 }) from exc
         with locked(self.repo):
             ledger = read_ledger(self.repo, self.run_id)
             intent = ledger["dispatch_intent"]

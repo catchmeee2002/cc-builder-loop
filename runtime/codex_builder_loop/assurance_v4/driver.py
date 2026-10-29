@@ -1403,6 +1403,11 @@ def next_action(
             "runtime_identity_not_mutable",
             runtime_compatibility=compatibility,
         )
+    from .result_application import application_failure, recovery_view
+    failure = application_failure(ledger)
+    if failure is not None:
+        return decision("NEEDS_USER", "result_application_decision", "accepted_result_application_failed",
+                        application_failure=failure, recovery=recovery_view(ledger))
     pending_activation = ledger.get("dispatch_intent")
     if (
         isinstance(pending_activation, Mapping)

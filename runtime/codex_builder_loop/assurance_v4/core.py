@@ -20,7 +20,7 @@ from typing import Any, Mapping, Sequence
 import jsonschema
 
 from . import SCHEMA_VERSION
-from .decision_requests import effective_problems, problem_identity
+from .problems import effective_problem, effective_problems, problem_identity
 from .driver_contract import (
     WORKSPACE_ROUTING_FAILURE_CODES, REVIEWER_COMPACTION_FAILURE_CODES,
     reviewer_compaction_eligible, dispatch_exhaustion_view, dispatch_exhaustion_blocked,
@@ -1951,7 +1951,7 @@ def _rejected_checkpoint_candidate(
 ) -> str:
     problems = [
         item
-        for item in source_ledger.get("problems", [])
+        for item in effective_problems(source_ledger)
         if isinstance(item, Mapping)
         and item.get("key") == RUNTIME_PREPARATION_PROBLEM_KEY
         and item.get("status") == "open"
@@ -2320,7 +2320,7 @@ def start(
                 source_by_key = {item["key"]: item for item in source_problems}
                 source_open_by_key = {
                     item["key"]: copy.deepcopy(item)
-                    for item in source_ledger.get("problems", [])
+                    for item in effective_problems(source_ledger)
                     if isinstance(item, Mapping) and item.get("status") == "open"
                 }
                 dispositions = prior_problems.get("items", [])
@@ -7434,7 +7434,7 @@ def _derive_retrospective_snapshot(
         roots.setdefault(root_run_id, []).append(run_id)
         events = [item for item in ledger.get("events", []) if isinstance(item, dict)]
         runtime_identity = copy.deepcopy(ledger["runtime_identity"])
-        problems = [item for item in ledger.get("problems", []) if isinstance(item, dict)]
+        problems = [item for item in effective_problems(ledger) if isinstance(item, dict)]
         run_facts.append(
             {
                 "run_id": run_id,
@@ -9147,7 +9147,7 @@ def _candidate_residue_replay_value(
     )
     value["problems"] = [
         copy.deepcopy(item)
-        for item in ledger.get("problems", [])
+        for item in effective_problems(ledger)
         if isinstance(item, Mapping)
         and item.get("key") != bound_problem_key
     ]
@@ -9160,7 +9160,7 @@ def _candidate_residue_replay_value(
                     "candidate_head", "recorded_at",
                 )
             }
-            for item in ledger.get("problems", [])
+            for item in effective_problems(ledger)
             if isinstance(item, Mapping)
             and item.get("key") == bound_problem_key
         ),
@@ -11963,7 +11963,7 @@ def role_observations(ledger: Mapping[str, Any], *, canonical: bool = False) -> 
             "hold": copy.deepcopy(ledger.get("hold")),
             "local_commands": observation_view(ledger, canonical=canonical),
             "observation_requests": [{"problem": copy.deepcopy(p), "request_digest": observation_request_digest(p)}
-                                     for p in ledger.get("problems", []) if p.get("observation_request") and p["status"] == "open"]}
+                                     for p in effective_problems(ledger) if p.get("observation_request") and p["status"] == "open"]}
 
 
 def _driver_evidence_view(ledger: Mapping[str, Any]) -> dict[str, Any]:
@@ -12885,6 +12885,8 @@ def _refresh_observation_requests(ledger: dict[str, Any]) -> None:
         if not changed:
             continue
         previous = copy.deepcopy(problem)
+        current = effective_problem(ledger, problem)
+        problem.update(summary=current["summary"], details=current["details"])
         problem.update(status="open", candidate_head=candidate, recorded_at=now())
         problem.pop("resolution", None)
         problem.pop("resolved_at", None)
@@ -14102,7 +14104,10 @@ def record_problems(
                     raise AssuranceError("problem producer identity mismatch", code="PROBLEM_PRODUCER_MISMATCH")
             producer = {"role": role, "agent_id": agent_id, "thread_id": thread_id}
         candidate = ledger["facets"]["execution"].get("candidate_head")
+        from .problems import dispatch_binding, bind_report, update_report
+        report_binding = dispatch_binding(ledger, action_id, role, producer, report)
         added: list[str] = []
+        updated = False
         for problem in report["problems"]:
             request = problem.get("observation_request")
             if request is not None:
@@ -14130,27 +14135,7 @@ def record_problems(
                 None,
             )
             if isinstance(replay, dict):
-                content = {
-                    field: replay.get(field)
-                    for field in (
-                        "key", "summary", "details", "owner",
-                        "producer_continuity", "decision_request", "observation_request",
-                    )
-                }
-                replayed_problem = {
-                    field: problem.get(field)
-                    for field in (
-                        "key", "summary", "details", "owner",
-                        "producer_continuity", "decision_request", "observation_request",
-                    )
-                }
-                if content != replayed_problem:
-                    raise AssuranceError(
-                        "problem replay changed content for the same producer and candidate",
-                        code="PROBLEM_REPLAY_MISMATCH",
-                        status="FAIL",
-                        details={"key": problem["key"], "candidate_head": candidate},
-                    )
+                updated = update_report(repo, ledger, replay, problem, report_binding) or updated
                 continue
             stored = {
                 **copy.deepcopy(problem),
@@ -14161,7 +14146,9 @@ def record_problems(
             }
             ledger.setdefault("problems", []).append(stored)
             added.append(problem["key"])
-        if not added:
+            if report_binding is not None:
+                bind_report(ledger, stored, problem, report_binding)
+        if not added and not updated:
             if _mark_root_builder_result_applied(
                 ledger, root_dispatch, "record_problems"
             ):
@@ -14175,6 +14162,8 @@ def record_problems(
         _mark_root_builder_result_applied(
             ledger, root_dispatch, "record_problems"
         )
+        from .result_application import mark_effect
+        mark_effect(ledger, "problems")
         save_ledger(repo, ledger)
     return status(repo, run_id)
 
@@ -14210,7 +14199,7 @@ def _tester_replacement_problem(
 def _tester_replacement_problem_snapshot(ledger: Mapping[str, Any]) -> str:
     problems = [
         item
-        for item in ledger.get("problems", [])
+        for item in effective_problems(ledger)
         if isinstance(item, Mapping)
         and item.get("status") == "open"
         and item.get("owner") == "tester"

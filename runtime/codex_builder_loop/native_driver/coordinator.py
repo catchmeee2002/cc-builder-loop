@@ -1016,6 +1016,9 @@ class NativeCoordinator(ResultSemantics):
                 code="NATIVE_DISPATCH_PROMPT_DRIFT",
                 status="NEEDS_USER",
             )
+        # The base task digest stays frozen; the retry event binds per-attempt
+        # diagnostics. Reconstruct both identically after process restart.
+        prompt = self._retry_prompt(prompt, pending)
         self._wait_for_retry(pending)
         thread_id = str(pending["thread_id"])
         activation_state = pending.get("activation_state")
@@ -2815,15 +2818,22 @@ class NativeCoordinator(ResultSemantics):
 
     @staticmethod
     def _core_error_details(error: CorePortError) -> Any | None:
-        details = error.payload.get("details")
-        if details is not None:
-            return copy.deepcopy(details)
-        value = {
-            key: copy.deepcopy(item)
-            for key, item in error.payload.items()
-            if key not in {"status", "code", "message"}
-        }
+        # Core errors historically flatten details into the envelope. A nested
+        # details object is only one field, not a replacement for its siblings.
+        value = {key: copy.deepcopy(item) for key, item in error.payload.items()
+                 if key not in {"status", "code", "message"}}
+        if set(value) == {"details"}:
+            return value["details"]
         return value or None
+
+    @staticmethod
+    def _retry_prompt(base_prompt: str, pending: dict[str, Any]) -> str:
+        if pending.get("failure_code") not in ROLE_RESULT_VALIDATION_FAILURE_CODES | {
+                "NATIVE_ROLE_RESULT_INVALID", "NATIVE_ROLE_RESULT_INVALID_JSON"}:
+            return base_prompt
+        feedback = {key: copy.deepcopy(pending.get(key)) for key in (
+            "action_id", "generation", "attempt", "failure_code", "failure_details")}
+        return base_prompt + "\n\nPersisted feedback for this attempt (keep the frozen task and authority):\n" + json.dumps(feedback, ensure_ascii=False, sort_keys=True)
 
     def _schedule_dispatch_retry(
         self,

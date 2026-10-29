@@ -7,7 +7,7 @@ import copy
 import re
 from typing import Any, Mapping
 from pathlib import PurePosixPath
-from .models import digest
+from .problems import effective_problem, effective_problems, problem_identity
 
 def _json_pointer_parts(pointer: str) -> list[str]:
     from .core import AssuranceError
@@ -165,19 +165,6 @@ def validate_report(facets: Mapping[str, Any], report: Mapping[str, Any]) -> Non
                 }) from exc
 
 
-def effective_problem(ledger: Mapping[str, Any], problem: Mapping[str, Any]) -> dict[str, Any]:
-    """Derive the current request; never overwrite the original problem or artifact."""
-    result = copy.deepcopy(dict(problem))
-    identity = problem_identity(problem)
-    for event in ledger.get("events", []):
-        if event.get("kind") != "decision_request_corrected":
-            continue
-        details = event["details"]
-        if details.get("problem_identity") == identity:
-            result["decision_request"] = copy.deepcopy(details["request"])
-    return result
-
-
 def authority_scope_preview(ledger: Mapping[str, Any], replacement: Mapping[str, Any]) -> dict[str, Any]:
     """Validate exact path additions and their work-unit dependency closure together."""
     from . import core
@@ -240,11 +227,3 @@ def authority_scope_preview(ledger: Mapping[str, Any], replacement: Mapping[str,
         raise core.AssuranceError('authority change is not jointly executable',
             code='DECISION_SCOPE_INVALID', status='FAIL', details={'blockers': problems})
     return {'added_paths': added, 'scope_additions': assignments, 'linked': linked}
-
-
-def problem_identity(problem: Mapping[str, Any]) -> str:
-    return digest({k: v for k, v in problem.items() if k not in {"status", "resolution", "resolved_at"}})
-
-
-def effective_problems(ledger: Mapping[str, Any]) -> list[dict[str, Any]]:
-    return [effective_problem(ledger, p) for p in ledger.get("problems", [])]

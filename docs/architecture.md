@@ -776,9 +776,16 @@ adopt、不删除，矛盾的合法来源事件进入结构化 continuity failur
   逻辑应下沉到计划声明的受保护 wrapper。wrapper 必须在 `spec_head` 已存在、位于仓库内且为
   普通文件；symlink、仓库外 target 和 PATH override 均拒绝。
 
-Assurance v4 把 problem replay 绑定到 producer、key 和 candidate identity：同一身份上的相同内容是
-no-op，冲突内容以 `PROBLEM_REPLAY_MISMATCH` 停止；candidate 前移后同 key 可记录为新复发。Native
-Builder turn 的 completed dispatch 先 checkpoint clean commit、关闭 Builder problem 并更新 candidate，
+Assurance v4 分开问题身份与报告事务身份：producer、key 和 candidate 标识问题；真实 completed
+dispatch 的 action、generation 和结果摘要标识一次报告。同一事务的相同报告幂等，内容变化拒绝；
+新事务可追加同一 open problem 的描述进展，不能借此改 owner、决策请求、观察请求或连续性声明。
+原 problem 与结果 artifact 保留，统一问题视图按报告事件和请求纠正事件派生，供 Driver、status、
+角色 context、决策快照和复盘使用。candidate 前移后的同 key 仍按既有复发语义处理。
+无 dispatch 的旧登记入口保持严格重放检查；历史报告只有在消费事件、角色身份、时间顺序和
+artifact 摘要能唯一对应时才补记绑定，否则保留现场并明确阻塞。该设计落实原则二、七，避免把
+正常 follow-up 当成旧结果篡改，也不让调用方自报 action 获得更新权限。
+
+Native Builder turn 的 completed dispatch 先 checkpoint clean commit、关闭 Builder problem 并更新 candidate，
 再消费 dispatch；崩溃恢复重复同一顺序。Driver 在路由 open problem 前先收敛已提交但未 checkpoint
 的 live candidate，避免同一 `builder_fix` 无限重派。
 open problem 的 owner 采用穷举路由：`builder`/`tester` 分别回原角色，`plan`、`external_platform`、
@@ -803,6 +810,17 @@ completed dispatch，不再次进入 proof gate。消费后 Driver 才能派生�
 `dispatch_consumed.details.consumer_source` 是消费事实的唯一来源，值为 `native_driver`、
 `root_session`、`full_driver_skill` 或 `operator_recovery`；旧事件缺少该字段时只按保守规则推断，不回写历史
 ledger。Root Builder 的正常提交使用 `root_session`，不计入人工恢复。
+
+接受后的结果应用失败会追加绑定原 application 的失败事实，包含失败步骤与已经提交的效果；相同
+失败重复应用不追加副本。诊断写入不推进输入或工作树观察摘要。Driver 返回明确的恢复决定，status
+列出失败和原结果应用入口；原 artifact、角色和输入通过验证后，继续未完成效果，已提交效果不重复。
+未知输入漂移仍阻塞，FATAL 继续既有失败收尾。该边界按原则三、七局部停止事务，不把所有 FAIL
+升级为终态失败，也不重新派发已完成角色来替换其结果。
+
+Native 格式纠错完整保留 Core 返回的原因、定位与修正说明，嵌套详情不能遮蔽并列诊断字段。
+每次纠错输入由冻结的基础 prompt 加该 attempt 已持久化的错误反馈派生；基础 digest 不变，反馈
+沿现有 action/generation/attempt 和 retry 事件重建。原 thread 和重试上限保持不变。按原则四、十，
+验收覆盖真实 CLI 错误经持久化、进程重建到下一次角色输入，再到修正结果被接受的整条路径。
 
 角色提交的 facet-change decision 在 dispatch 接受和 problem 登记前验证 facet-relative pointer、
 容器类型与操作可达性；拒绝时保留原 dispatch 和候选，允许修正后重提。Native thread 仍受既有有界重试

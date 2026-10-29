@@ -53,6 +53,10 @@ python3 experiments/assurance-v4-replay/runner.py
 - runtime ledger 是执行事实唯一来源；Skills、hooks 和 agents 不直接改 JSON。
 - 已接受角色结果统一经 `apply-dispatch-result` 应用；root 兼容入口委托同一事务。中断后续接原
   artifact，先完成应用再重新派生动作；不得覆盖原 dispatch projection 或重派已完成角色。
+- 同一问题的进展更新必须绑定新 dispatch 的真实结果；同一次提交仍按不可变重放处理。描述更新
+  不得修改 ownership、决策请求或角色连续性。结果应用失败先查看持久化诊断，再续接原应用事务。
+- 修改角色结果校验或错误适配时，验证真实 CLI 到原 thread 下一次输入的纠错信息完整性，并覆盖
+  进程重建与重试耗尽；不得仅用错误码或模拟完整诊断证明闭环。
 - Assurance v4 只有在 `validate --repo` 同时返回顶层 READY 与 `admission.status=READY` 时才能启动；宿主
   executable blocker 必须先改为 trusted PATH 可解析或显式绝对路径，不能靠 ambient PATH 或自动安装绕过。
 - Assurance v4 的已授权 plan decision 先用 `validate-decision` 绑定同 session、problem、action、facet
