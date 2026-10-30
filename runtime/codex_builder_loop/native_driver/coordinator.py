@@ -9,6 +9,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
+from ..assurance_v4.role_input import build_role_input, project_role_input, project_retry_feedback, RoleInputError
+
 from ..assurance_v4.driver_contract import (
     AGENT_ACTION_CAPABILITIES,
     WORKSPACE_ROUTING_FAILURE_CODES,
@@ -1937,44 +1939,12 @@ class NativeCoordinator(ResultSemantics):
         return instructions, str(value["sandbox_mode"])
 
     def _prompt(self, action: dict[str, Any], role: str, context: dict[str, Any]) -> str:
-        observations = copy.deepcopy(context.get("role_observations"))
-        if isinstance(observations, dict):
-            # Scheduling control must not change a pending role's prompt on
-            # retry; Core still exposes and enforces hold at transaction boundaries.
-            observations.pop("hold", None)
-        payload = {
-            "assurance_schema_version": 4,
-            "run_id": self.run_id,
-            "action_id": action["action_id"],
-            "action": action["action"],
-            "phase": {
-                "builder_recompose_fix": "recompose",
-                "tester_author": "author",
-                "tester_fix": "author",
-                "tester_observe": "observe",
-                "tester_recompose_fix": "recompose",
-                "tester_proof": "proof",
-                "tester_proof_diagnose": "proof_diagnose",
-                "tester_machine_diagnose": "machine_diagnose",
-                "tester_blackbox": "blackbox",
-                "reviewer_preflight": "preflight",
-                "reviewer_final": "final",
-            }.get(str(action["action"]), "implement"),
-            "role": role,
-            "contract": context["facets"],
-            "target_start_head": context["target_start_head"],
-            "candidate_worktree": action.get("candidate_worktree", context["candidate_worktree"]),
-            "publication": context.get("publication"),
-            "recomposition": action.get("recomposition"),
-            "evidence": context.get("evidence"),
-            "evidence_origin": context.get("evidence_origin"),
-            "doc_reference_scan": context.get("doc_reference_scan"),
-            "doc_reference_scan_state": context.get("doc_reference_scan_state"),
-            "problems": context.get("problems"),
-            "problem_report_schema": self.problem_schema,
-            "role_observations": observations,
-            "result_field_contract": self._result_field_contract(str(action["action"])),
-        }
+        try:
+            payload = build_role_input({**context, "run_id": self.run_id}, action, role)
+        except RoleInputError as exc:
+            raise NativeDriverError(str(exc), code=exc.code, status=exc.status, details=exc.details) from exc
+        payload["problem_report_schema"] = self.problem_schema
+        payload["result_field_contract"] = self._result_field_contract(str(action["action"]))
         if action["action"] in {"tester_proof", "tester_proof_diagnose"} and context.get("artifact_root"):
             payload["proof_patch_directory"] = str(Path(context["artifact_root"]) / ("patches-" + str(action["action_id"])))
         if (
@@ -2063,6 +2033,7 @@ class NativeCoordinator(ResultSemantics):
             json_options["separators"] = (",", ":")
         else:
             json_options["indent"] = 2
+        payload = project_role_input(payload)
         return "CBL_ACTION_ID:" + str(action["action_id"]) + "\n" + json.dumps(
             payload, **json_options
         )
@@ -2831,8 +2802,7 @@ class NativeCoordinator(ResultSemantics):
         if pending.get("failure_code") not in ROLE_RESULT_VALIDATION_FAILURE_CODES | {
                 "NATIVE_ROLE_RESULT_INVALID", "NATIVE_ROLE_RESULT_INVALID_JSON"}:
             return base_prompt
-        feedback = {key: copy.deepcopy(pending.get(key)) for key in (
-            "action_id", "generation", "attempt", "failure_code", "failure_details")}
+        feedback = project_retry_feedback(pending)
         return base_prompt + "\n\nPersisted feedback for this attempt (keep the frozen task and authority):\n" + json.dumps(feedback, ensure_ascii=False, sort_keys=True)
 
     def _schedule_dispatch_retry(

@@ -215,6 +215,15 @@ rehydrate；只有显式 resume reason 且原身份、输入仍成立时才在�
 两种错误交替出现仍消费同一 dispatch 的额度；耗尽后重启回读实际失败尾部，不合成错误替代现场。
 已 failed 的历史 run 不复活，未知 other 与权限、额度错误不进入该恢复策略。
 
+角色输入从协调器事实派生，内部事务投影与模型可见输入分离。Native 与 Skill adapter 使用同一角色输入
+投影：独立 author 只接收冻结公共契约、自己的 source 与同 producer 问题，以及按需授权的 isolated
+publication；候选扫描、候选执行清单、dirty intake、全局证据与问题不进入 author，包括嵌套恢复投影。
+公开 publication 不携带其来源 candidate HEAD。其他 producer 的未解决 Tester correction 无法证明输入
+独立性时，在发出 author 输入前停止并保留原问题；不得静默丢弃修正要求或转发未经隔离的自由文本。完整 canonical digest 仍由 Core 校验事务恢复，模型
+可见投影单独计算 digest，不能把过滤后的内容冒充原事务输入。Reviewer 保留完整候选和文档扫描事实。
+已接收未授权候选信息的 thread 不会因后续过滤而恢复独立性；只能满足既有 replacement 前置条件后
+重建身份，或由正式 successor 重新取得证据。历史 dispatch、输入和结果不改写。
+
 Reviewer prompt contract v2 把 contract、evidence、publication 和 doc-reference 事实各保留在顶层唯一位置，
 `review_input_contract` 只保存同 payload JSON Pointer 与 digest，并使用紧凑 JSON 编码；它不建立 prompt
 缓存、evidence 副本或 transcript 索引。用户显式提供 `native-driver resume --reason` 时，非上述自动恢复或

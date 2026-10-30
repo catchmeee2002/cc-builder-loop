@@ -35,8 +35,10 @@ Agent spawn、same-thread follow-up、结构化结果解析和持续循环由本
 ### Tester 初次 spawn
 
 每个身份只允许一次初始 `spawn_agent(agent_type="tester", fork_turns="none")`，一个 run 只 spawn 一次 Tester。
-最小 brief 只包含 `run_id`、冻结 `contract`、Tester worktree、spec head 或隔离 publication manifest，
-以及 author/blackbox 阶段目标；不得夹带父线程讨论、用户倾向、Builder 辩护或候选信息。
+最小 brief 使用 `role-context --repo <repo> --run <run> --action-id <action_id>` 返回的
+`run_id`、冻结 `contract` 公共投影、Tester worktree、spec head 或隔离 publication manifest；
+首次 author、correction 和恢复均使用此入口，不转发完整 `driver-context`、canonical projection 或 ledger。
+按阶段附公共输出 schema；不得夹带父线程讨论、用户倾向、Builder 辩护或候选信息。
 
 ### Reviewer 初次 spawn
 

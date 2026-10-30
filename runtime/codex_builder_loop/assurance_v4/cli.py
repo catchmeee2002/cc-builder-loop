@@ -224,6 +224,11 @@ def parser() -> argparse.ArgumentParser:
     context.add_argument("--repo", default=".")
     context.add_argument("--run", required=True)
 
+    role_context = commands.add_parser("role-context")
+    role_context.add_argument("--repo", default=".")
+    role_context.add_argument("--run", required=True)
+    role_context.add_argument("--action-id", required=True)
+
     checkpoint = commands.add_parser("checkpoint-builder")
     checkpoint.add_argument("--repo", default=".")
     checkpoint.add_argument("--run", required=True)
@@ -1033,6 +1038,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         elif args.command == "driver-context":
             payload = core.driver_context(args.repo, args.run)
+        elif args.command == "role-context":
+            from .role_input import role_context
+            payload = role_context(args.repo, args.run, args.action_id)
         elif args.command == "checkpoint-builder":
             _guard_dispatch(args, {"builder_implement", "builder_fix", "checkpoint_builder"})
             payload = core.checkpoint_builder(
