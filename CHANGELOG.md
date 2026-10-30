@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 0.4.5 — 2026-10-30
+
+- Scoped independent Tester authoring to frozen work units, preserved its producer across normal
+  continuation, and kept global readiness closed until all Tester units complete.
+- Disabled host memory injection and generation in dedicated Native Driver role processes with
+  effective configuration readback before thread and turn calls.
+- Removed candidate metadata from independent author inputs and retained bounded correction and
+  source integration checks without treating partial work as successful delivery.
+
 - Replaced the Native Driver startup dependency on SessionStart text with host-supplied caller identity;
   explicit start IDs now assert equality, and root resume rejects a different caller without mutating the run.
 
