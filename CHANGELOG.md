@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Preserved inherited Tester reports as provenance-bound review obligations, kept them out of new
+  independent author corrections, and required current final-review evidence to discharge them.
+- Shared successor continuity checks between preflight and start, and clarified revision numbering
+  without changing Mission semantics or resetting correction limits.
+
 ## 0.4.5 — 2026-10-30
 
 - Scoped independent Tester authoring to frozen work units, preserved its producer across normal

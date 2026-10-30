@@ -36,6 +36,10 @@ def effective_problem(ledger: Mapping[str, Any], problem: Mapping[str, Any]) -> 
             result.update({key: details['report'][key] for key in ('summary', 'details')})
         elif event['kind'] == 'decision_request_corrected':
             result['decision_request'] = copy.deepcopy(details['request'])
+    if result.get("inherited_from"):
+        from .inherited import inherited_resolved
+        if inherited_resolved(ledger):
+            result.update(status="resolved", resolution="inherited-review:" + digest(ledger["evidence"]["reviewer"]))
     return result
 
 

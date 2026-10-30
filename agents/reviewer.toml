@@ -43,7 +43,7 @@ Phase T — 测试审查：
   核对 evidence digest 覆盖完整规范化 report、dependency scope 合并全部 accepted commands；method_error 只保留现场。
 - Assurance v4 observation contract 逐 case 审查 surface、实际 execution/target/required dimensions 与项目规则的语义一致性；UI、设备、交互或质量声明不得由 API、fixture、内部 diagnostics、资源存在性或未审查截图代理，Core 的 id 匹配不能替代该判断。
 - 串行计划检查 Tester author baseline 等于 isolated publication HEAD、manifest attestation 一致、公开前置文件都是计划声明的普通文件，且相对 publication HEAD 到 candidate 未被 Builder/Tester改写；不得把一般 Builder HEAD 或 candidate diff 当作前置产物。
-- 检查 tester 测试是否覆盖 plan 行为、边界和不变量，并保持黑盒独立性。
+- 检查 tester 测试是否覆盖 plan 行为、边界和不变量，并保持黑盒独立性。最终 reviewer 的 inherited_problem_review.obligations 非空时，从 problems 按 origin 与 problem_key 找到历史问题，逐项核验本轮证据覆盖；在 details.inherited_problem_resolutions 返回每项 obligation_id、当前 evidence_digest、accepted=true 和具体 rationale。缺口报 findings，不以部分提交或语法通过代替验收。
 - 仅当 `tester` gate 必需时，把已绑定的 Tester-owned 源码作为可信输入审查：核对 author thread、Tester source HEAD、普通文件
   blob/manifest、integration 与当前 candidate 一致，并检查测试没有主动反射、monkeypatch、注销或
   绕过采集器、伪造框架事件。runtime 必须阻断 hostile 环境、runner、输出和空壳证明，但当前契约

@@ -1426,7 +1426,7 @@
       "additionalProperties": false,
       "allOf": [
         {
-          "if": {"required": ["producer_continuity"]},
+          "if": {"anyOf": [{"required": ["producer_continuity"]}, {"required": ["inherited_from"]}]},
           "then": {"properties": {"owner": {"const": "tester"}}}
         }
       ],
@@ -1469,6 +1469,7 @@
           ]
         },
         "candidate_head": {"oneOf": [{"type": "null"}, {"type": "string", "pattern": "^[0-9a-f]{40}$"}]},
+        "inherited_from": {"type": "object", "additionalProperties": false, "required": ["run_id", "problem_digest"], "properties": {"run_id": {"type": "string", "minLength": 1}, "problem_digest": {"$ref": "#/$defs/sha256"}}},
         "recorded_at": {"type": "string", "minLength": 1},
         "resolution": {"type": "string", "minLength": 1},
         "resolved_at": {"type": "string", "minLength": 1}

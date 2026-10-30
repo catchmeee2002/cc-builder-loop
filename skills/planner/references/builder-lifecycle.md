@@ -6,7 +6,8 @@
 publication 路径、dirty intake 等专用事务变化按真实边界规划 successor。
 涉及 protected preparation 或 residue 时同时读取 [环境约束](builder-environment.md)。
 
-- 只有 Mission 语义变化才提升 revision。
+- 同 run 只有 Mission 语义变化才提升 revision；跨 run successor 的 revision 必须为 source+1，
+  此继承序号不代表业务语义改变，transition category 仍按真实语义差异判定。
   已授权且现有 `update-facet` 或 `revise-mission` 事务能安全表达的 plan decision，先在同一 active run
   收敛；普通执行信息变化不得先 abandon 或自动升级为新 run。同 run Revision 绑定上一 mission digest。
 - 只有现有事务不能保持语义、授权或事务安全时才规划新 run。Assurance v4 source 必须在 successor

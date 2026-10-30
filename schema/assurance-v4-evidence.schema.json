@@ -331,6 +331,7 @@
             "properties": {
               "result": {"enum": ["pass", "findings", "blocked"]},
               "reviewed_head": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+              "inherited_problem_resolutions": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["obligation_id", "evidence_digest", "accepted", "rationale"], "properties": {"obligation_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"}, "evidence_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}, "accepted": {"const": true}, "rationale": {"type": "string", "minLength": 1}}}},
               "observation_dispositions": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/observationDisposition"}}
             }
           }

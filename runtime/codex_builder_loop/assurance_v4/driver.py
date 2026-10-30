@@ -1274,6 +1274,7 @@ def next_action(
                     1
                     for item in ledger.get("problems", [])
                     if isinstance(item, Mapping)
+                    and not item.get("inherited_from")
                     and item.get("producer_continuity") == "invalid"
                 )
                 if occurrences >= 3:
@@ -1676,6 +1677,7 @@ def next_action(
         effective_problem(ledger, item)
         for item in ledger.get("problems", [])
         if item.get("status") == "open"
+        and not item.get("inherited_from")
         and item.get("key") != replacement_problem_key
         and item.get("key") not in included_execution_problem_keys
     ]
@@ -2118,4 +2120,6 @@ def next_action(
         return decision("CONTINUE", "restore_deployment", "release_environment_before_finalize")
     if ledger.get("hold") is not None:
         return decision("HELD", "none", "user_hold", hold=ledger["hold"])
+    if states.get("inherited_problems") == "missing":
+        return decision("NEEDS_USER", "architecture_review", "inherited_problem_review_required")
     return decision("READY", "finalize", "all_gates_pass")

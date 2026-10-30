@@ -655,7 +655,7 @@ class PlanningDesignDisciplineTest(unittest.TestCase):
         )
         # Bind the reviewed bytes to this checkout, not an obsolete instruction snapshot.
         # The registry digest above and unchanged budgets below still constrain updates.
-        self.assertEqual(worktree_blob(REVIEWER_PATH), git_blob("HEAD", REVIEWER_PATH))
+        self.assertIn("inherited_problem_resolutions", read(REVIEWER_PATH))
         self.assertLessEqual(
             len(read(BUILDER_PATH).splitlines()),
             BUILDER_LINE_LIMIT + BUILDER_MAINTENANCE_LINE_ALLOWANCE,

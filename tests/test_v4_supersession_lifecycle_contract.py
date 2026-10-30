@@ -276,6 +276,7 @@ class V4SupersessionLifecycleContractTest(unittest.TestCase):
         target_contract = self.next_contract(source, dispositions=dispositions)
         rc, validated = self.invoke(
             "validate",
+            "--repo", self.repo,
             "--contract",
             self.write_json("active-target-validated.json", target_contract),
         )

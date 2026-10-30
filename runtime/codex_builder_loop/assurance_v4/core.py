@@ -21,6 +21,7 @@ import jsonschema
 
 from . import SCHEMA_VERSION
 from .problems import effective_problem, effective_problems, problem_identity
+from .inherited import inherited_review_input, inherited_review_current, inherited_resolved, handoff_problem_key
 from .driver_contract import (
     WORKSPACE_ROUTING_FAILURE_CODES, REVIEWER_COMPACTION_FAILURE_CODES,
     reviewer_compaction_eligible, dispatch_exhaustion_view, dispatch_exhaustion_blocked,
@@ -2088,6 +2089,210 @@ def _rejected_checkpoint_candidate(
     return requested_candidate
 
 
+def _successor_preflight(repo: Path, contract: Mapping[str, Any], run_id: str | None = None):
+    """Shared read-only continuity check; start repeats it under the repository lock."""
+    target_branch = contract["authority"]["target_branch"]
+    target_head = branch_head(repo, target_branch)
+    supersedes = contract["mission"].get("supersedes")
+    if contract["mission"]["revision"] > 1 and not isinstance(supersedes, dict):
+        raise AssuranceError(
+            "a new higher-revision run requires mission supersedes",
+            code="MISSION_SUPERSEDES_REQUIRED",
+            status="NEEDS_USER",
+        )
+    source_ledger: dict[str, Any] | None = None
+    inherited_problems: list[dict[str, Any]] = []
+    problem_dispositions: list[dict[str, Any]] = []
+    revision_transitions: list[dict[str, Any]] = []
+    candidate_base = target_head
+    if isinstance(supersedes, dict):
+        source_ledger = read_ledger(repo, supersedes["run_id"])
+        _assert_no_candidate_residue_intent(source_ledger)
+        source_mission = source_ledger["facets"]["mission"]
+        checkpointed_candidate = source_ledger["facets"]["execution"].get(
+            "candidate_head"
+        )
+        if source_ledger["phase"] != "active":
+            raise AssuranceError(
+                "superseded run must remain active until continuity transfers",
+                code="SUPERSEDED_RUN_NOT_ACTIVE",
+                status="NEEDS_USER",
+            )
+        if (
+            supersedes["revision"] != source_mission["revision"]
+            or supersedes["mission_digest"] != source_ledger["digests"]["mission"]
+        ):
+            raise AssuranceError(
+                "mission supersedes binding does not match the source run",
+                code="MISSION_SUPERSEDES_MISMATCH",
+            )
+        if contract["mission"]["revision"] != source_mission["revision"] + 1:
+            raise AssuranceError(
+                "superseding mission must increment revision by one",
+                code="MISSION_REVISION_INVALID",
+            )
+        if source_ledger["target_branch"] != target_branch:
+            raise AssuranceError(
+                "superseding run cannot change target branch",
+                code="SUPERSEDE_TARGET_MISMATCH",
+                status="NEEDS_USER",
+            )
+        if target_head != source_ledger["target_start_head"]:
+            raise AssuranceError(
+                "target moved before supersede continuity could be captured",
+                code="SUPERSEDE_TARGET_DRIFT",
+                status="NEEDS_USER",
+            )
+        requested_candidate = supersedes["candidate_head"]
+        if requested_candidate == checkpointed_candidate:
+            source_candidate = checkpointed_candidate
+        else:
+            source_candidate = _rejected_checkpoint_candidate(
+                repo,
+                source_ledger,
+                requested_candidate,
+            )
+        if not isinstance(source_candidate, str) or not commit_exists(repo, source_candidate):
+            raise AssuranceError(
+                "superseded candidate is unavailable",
+                code="SUPERSEDE_CANDIDATE_MISSING",
+                status="NEEDS_USER",
+            )
+        source_worktree = Path(source_ledger["candidate_worktree"])
+        if dirty_paths(source_worktree) or branch_head(repo, source_ledger["candidate_branch"]) != source_candidate:
+            raise AssuranceError(
+                "superseded candidate is not a clean immutable snapshot",
+                code="SUPERSEDE_CANDIDATE_DRIFT",
+                status="NEEDS_USER",
+            )
+        source_deployment = source_ledger["facets"]["execution"].get("deployment")
+        if digest(source_deployment) != digest(contract["execution"].get("deployment")):
+            raise AssuranceError(
+                "superseding run changed the deployment contract",
+                code="SUPERSEDE_DEPLOYMENT_MISMATCH",
+                status="NEEDS_USER",
+            )
+        transition = contract["execution"].get("revision_transition")
+        prior_problems = contract["execution"].get("prior_problem_dispositions")
+        snapshot_digest, source_problems = _open_problem_snapshot(source_ledger)
+        legacy_transition = (
+            source_mission["revision"] == 1
+            and transition is None
+            and prior_problems is None
+            and not source_problems
+        )
+        if not legacy_transition and (
+            not isinstance(transition, dict) or not isinstance(prior_problems, dict)
+        ):
+            raise AssuranceError(
+                "supersession requires revision transition and prior-problem dispositions",
+                code="REVISION_CONTINUITY_REQUIRED",
+                status="NEEDS_USER",
+            )
+        source_semantics = {
+            key: source_mission.get(key)
+            for key in (
+                "delivery_kind", "objective", "behaviors", "interfaces",
+                "acceptance_cases", "trust_boundaries",
+            )
+        }
+        target_semantics = {
+            key: contract["mission"].get(key)
+            for key in (
+                "delivery_kind", "objective", "behaviors", "interfaces",
+                "acceptance_cases", "trust_boundaries",
+            )
+        }
+        semantic_changed = source_semantics != target_semantics
+        if not legacy_transition:
+            assert isinstance(transition, dict) and isinstance(prior_problems, dict)
+            source_lineage = _derive_lineage(repo, source_ledger)
+            _validate_revision_transition(source_lineage, transition)
+            if (transition["category"] == "mission_change") != semantic_changed:
+                raise AssuranceError(
+                    "revision transition category does not match the mission semantic delta",
+                    code="REVISION_TRANSITION_SEMANTICS_MISMATCH",
+                    status="NEEDS_USER",
+                )
+            if (
+                prior_problems.get("source_snapshot_digest") != snapshot_digest
+            ):
+                raise AssuranceError(
+                    "prior-problem snapshot does not match the source run",
+                    code="PRIOR_PROBLEM_SNAPSHOT_MISMATCH",
+                    status="NEEDS_USER",
+                )
+            source_by_key = {item["key"]: item for item in source_problems}
+            source_open_by_key = {
+                handoff_problem_key(item): copy.deepcopy(item)
+                for item in effective_problems(source_ledger)
+                if isinstance(item, Mapping) and item.get("status") == "open"
+            }
+            dispositions = prior_problems.get("items", [])
+            disposition_by_key = {item["key"]: item for item in dispositions}
+            if set(disposition_by_key) != set(source_by_key):
+                raise AssuranceError(
+                    "every open source problem requires exactly one disposition",
+                    code="PRIOR_PROBLEM_DISPOSITIONS_INCOMPLETE",
+                    status="NEEDS_USER",
+                    details={
+                        "missing": sorted(set(source_by_key) - set(disposition_by_key)),
+                        "unexpected": sorted(set(disposition_by_key) - set(source_by_key)),
+                    },
+                )
+            for key in sorted(disposition_by_key):
+                decision = disposition_by_key[key]
+                problem_dispositions.append(
+                    {
+                        "source_run_id": source_ledger["run_id"],
+                        "target_run_id": run_id,
+                        **copy.deepcopy(decision),
+                    }
+                )
+                if decision["disposition"] == "included":
+                    inherited = source_open_by_key.get(key)
+                    if not isinstance(inherited, dict):
+                        raise AssuranceError(
+                            "included source problem is not present in the source ledger",
+                            code="PRIOR_PROBLEM_SOURCE_MISSING",
+                            status="NEEDS_USER",
+                            details={"key": key},
+                        )
+                    if inherited.get("owner") == "tester":
+                        inherited.setdefault("inherited_from", {"run_id": source_ledger["run_id"], "problem_digest": problem_identity(inherited)})
+                        if not {"tester", "reviewer"}.issubset(contract["assurance"]["required"]):
+                            raise AssuranceError("Inherited Tester obligations require Tester and final Reviewer gates", code="INHERITED_ASSURANCE_REQUIRED", status="NEEDS_USER")
+                    inherited_problems.append(inherited)
+            revision_transitions.append(
+                _recorded_transition(
+                    transition,
+                    source_run=source_ledger["run_id"],
+                    target_run=run_id,
+                    from_revision=source_mission["revision"],
+                    to_revision=contract["mission"]["revision"],
+                    source_lineage=source_lineage,
+                    mission_semantics_digest=digest(
+                        _mission_semantics_value(source_mission)
+                    ),
+                )
+            )
+        if run_id is None:
+            run_id = (source_ledger.get("supersede_intent") or {}).get("target_run_id", "preflight")
+        expected_supersede_intent = {
+            "source_run_id": supersedes["run_id"],
+            "target_run_id": run_id,
+            "state": "prepared",
+        }
+        if source_ledger.get("supersede_intent") not in (None, expected_supersede_intent):
+            raise AssuranceError(
+                "source run already has another supersede intent",
+                code="SUPERSEDE_INTENT_CONFLICT",
+                status="NEEDS_USER",
+            )
+        candidate_base = source_candidate
+    return source_ledger, inherited_problems, problem_dispositions, revision_transitions, candidate_base
+
+
 def validate(contract: Any, repo_value: str | Path | None = None) -> dict[str, Any]:
     value = validate_new_contract(contract)
     result = {
@@ -2106,6 +2311,8 @@ def validate(contract: Any, repo_value: str | Path | None = None) -> dict[str, A
         )
         _assert_runtime_support_contract(value, runtime_support, required_independent)
         result["runtime_support"] = runtime_support
+        if value["mission"].get("supersedes") is not None:
+            _successor_preflight(repo, value)
         result["admission"] = _require_admission(repo, value)
     return result
 
@@ -2188,197 +2395,8 @@ def start(
                     return status(repo, run_id)
             raise AssuranceError("assurance run already exists", code="ASSURANCE_RUN_EXISTS")
         target_head = branch_head(repo, target_branch)
+        source_ledger, inherited_problems, problem_dispositions, revision_transitions, candidate_base = _successor_preflight(repo, contract, run_id)
         supersedes = contract["mission"].get("supersedes")
-        if contract["mission"]["revision"] > 1 and not isinstance(supersedes, dict):
-            raise AssuranceError(
-                "a new higher-revision run requires mission supersedes",
-                code="MISSION_SUPERSEDES_REQUIRED",
-                status="NEEDS_USER",
-            )
-        source_ledger: dict[str, Any] | None = None
-        inherited_problems: list[dict[str, Any]] = []
-        problem_dispositions: list[dict[str, Any]] = []
-        revision_transitions: list[dict[str, Any]] = []
-        candidate_base = target_head
-        if isinstance(supersedes, dict):
-            source_ledger = read_ledger(repo, supersedes["run_id"])
-            _assert_no_candidate_residue_intent(source_ledger)
-            source_mission = source_ledger["facets"]["mission"]
-            checkpointed_candidate = source_ledger["facets"]["execution"].get(
-                "candidate_head"
-            )
-            if source_ledger["phase"] != "active":
-                raise AssuranceError(
-                    "superseded run must remain active until continuity transfers",
-                    code="SUPERSEDED_RUN_NOT_ACTIVE",
-                    status="NEEDS_USER",
-                )
-            if (
-                supersedes["revision"] != source_mission["revision"]
-                or supersedes["mission_digest"] != source_ledger["digests"]["mission"]
-            ):
-                raise AssuranceError(
-                    "mission supersedes binding does not match the source run",
-                    code="MISSION_SUPERSEDES_MISMATCH",
-                )
-            if contract["mission"]["revision"] != source_mission["revision"] + 1:
-                raise AssuranceError(
-                    "superseding mission must increment revision by one",
-                    code="MISSION_REVISION_INVALID",
-                )
-            if source_ledger["target_branch"] != target_branch:
-                raise AssuranceError(
-                    "superseding run cannot change target branch",
-                    code="SUPERSEDE_TARGET_MISMATCH",
-                    status="NEEDS_USER",
-                )
-            if target_head != source_ledger["target_start_head"]:
-                raise AssuranceError(
-                    "target moved before supersede continuity could be captured",
-                    code="SUPERSEDE_TARGET_DRIFT",
-                    status="NEEDS_USER",
-                )
-            requested_candidate = supersedes["candidate_head"]
-            if requested_candidate == checkpointed_candidate:
-                source_candidate = checkpointed_candidate
-            else:
-                source_candidate = _rejected_checkpoint_candidate(
-                    repo,
-                    source_ledger,
-                    requested_candidate,
-                )
-            if not isinstance(source_candidate, str) or not commit_exists(repo, source_candidate):
-                raise AssuranceError(
-                    "superseded candidate is unavailable",
-                    code="SUPERSEDE_CANDIDATE_MISSING",
-                    status="NEEDS_USER",
-                )
-            source_worktree = Path(source_ledger["candidate_worktree"])
-            if dirty_paths(source_worktree) or branch_head(repo, source_ledger["candidate_branch"]) != source_candidate:
-                raise AssuranceError(
-                    "superseded candidate is not a clean immutable snapshot",
-                    code="SUPERSEDE_CANDIDATE_DRIFT",
-                    status="NEEDS_USER",
-                )
-            source_deployment = source_ledger["facets"]["execution"].get("deployment")
-            if digest(source_deployment) != digest(contract["execution"].get("deployment")):
-                raise AssuranceError(
-                    "superseding run changed the deployment contract",
-                    code="SUPERSEDE_DEPLOYMENT_MISMATCH",
-                    status="NEEDS_USER",
-                )
-            transition = contract["execution"].get("revision_transition")
-            prior_problems = contract["execution"].get("prior_problem_dispositions")
-            snapshot_digest, source_problems = _open_problem_snapshot(source_ledger)
-            legacy_transition = (
-                source_mission["revision"] == 1
-                and transition is None
-                and prior_problems is None
-                and not source_problems
-            )
-            if not legacy_transition and (
-                not isinstance(transition, dict) or not isinstance(prior_problems, dict)
-            ):
-                raise AssuranceError(
-                    "supersession requires revision transition and prior-problem dispositions",
-                    code="REVISION_CONTINUITY_REQUIRED",
-                    status="NEEDS_USER",
-                )
-            source_semantics = {
-                key: source_mission.get(key)
-                for key in (
-                    "delivery_kind", "objective", "behaviors", "interfaces",
-                    "acceptance_cases", "trust_boundaries",
-                )
-            }
-            target_semantics = {
-                key: contract["mission"].get(key)
-                for key in (
-                    "delivery_kind", "objective", "behaviors", "interfaces",
-                    "acceptance_cases", "trust_boundaries",
-                )
-            }
-            semantic_changed = source_semantics != target_semantics
-            if not legacy_transition:
-                assert isinstance(transition, dict) and isinstance(prior_problems, dict)
-                source_lineage = _derive_lineage(repo, source_ledger)
-                _validate_revision_transition(source_lineage, transition)
-                if (transition["category"] == "mission_change") != semantic_changed:
-                    raise AssuranceError(
-                        "revision transition category does not match the mission semantic delta",
-                        code="REVISION_TRANSITION_SEMANTICS_MISMATCH",
-                        status="NEEDS_USER",
-                    )
-                if (
-                    prior_problems.get("source_snapshot_digest") != snapshot_digest
-                ):
-                    raise AssuranceError(
-                        "prior-problem snapshot does not match the source run",
-                        code="PRIOR_PROBLEM_SNAPSHOT_MISMATCH",
-                        status="NEEDS_USER",
-                    )
-                source_by_key = {item["key"]: item for item in source_problems}
-                source_open_by_key = {
-                    item["key"]: copy.deepcopy(item)
-                    for item in effective_problems(source_ledger)
-                    if isinstance(item, Mapping) and item.get("status") == "open"
-                }
-                dispositions = prior_problems.get("items", [])
-                disposition_by_key = {item["key"]: item for item in dispositions}
-                if set(disposition_by_key) != set(source_by_key):
-                    raise AssuranceError(
-                        "every open source problem requires exactly one disposition",
-                        code="PRIOR_PROBLEM_DISPOSITIONS_INCOMPLETE",
-                        status="NEEDS_USER",
-                        details={
-                            "missing": sorted(set(source_by_key) - set(disposition_by_key)),
-                            "unexpected": sorted(set(disposition_by_key) - set(source_by_key)),
-                        },
-                    )
-                for key in sorted(disposition_by_key):
-                    decision = disposition_by_key[key]
-                    problem_dispositions.append(
-                        {
-                            "source_run_id": source_ledger["run_id"],
-                            "target_run_id": run_id,
-                            **copy.deepcopy(decision),
-                        }
-                    )
-                    if decision["disposition"] == "included":
-                        inherited = source_open_by_key.get(key)
-                        if not isinstance(inherited, dict):
-                            raise AssuranceError(
-                                "included source problem is not present in the source ledger",
-                                code="PRIOR_PROBLEM_SOURCE_MISSING",
-                                status="NEEDS_USER",
-                                details={"key": key},
-                            )
-                        inherited_problems.append(inherited)
-                revision_transitions.append(
-                    _recorded_transition(
-                        transition,
-                        source_run=source_ledger["run_id"],
-                        target_run=run_id,
-                        from_revision=source_mission["revision"],
-                        to_revision=contract["mission"]["revision"],
-                        source_lineage=source_lineage,
-                        mission_semantics_digest=digest(
-                            _mission_semantics_value(source_mission)
-                        ),
-                    )
-                )
-            expected_supersede_intent = {
-                "source_run_id": supersedes["run_id"],
-                "target_run_id": run_id,
-                "state": "prepared",
-            }
-            if source_ledger.get("supersede_intent") not in (None, expected_supersede_intent):
-                raise AssuranceError(
-                    "source run already has another supersede intent",
-                    code="SUPERSEDE_INTENT_CONFLICT",
-                    status="NEEDS_USER",
-                )
-            candidate_base = source_candidate
         cost_source_lineage = _validate_cost_ancestry_start(repo, run_id, contract)
         continuation = contract["execution"].get("continuation")
         preparation_ledger: dict[str, Any] | None = None
@@ -8435,6 +8453,8 @@ def evidence_state(ledger: Mapping[str, Any], kind: str) -> str:
         ledger, kind, evidence=dependency_evidence
     ):
         return "stale"
+    if kind == "reviewer" and record.get("status") == "pass" and not inherited_review_current(ledger, record):
+        return "stale"
     if kind in {"reviewer", "reviewer_preflight", "doc_review"}:
         if not _review_observations_current(ledger, record):
             return "stale"
@@ -8573,6 +8593,8 @@ def current_proof_failure(ledger: Mapping[str, Any]) -> dict[str, Any] | None:
 def readiness(ledger: Mapping[str, Any]) -> dict[str, Any]:
     required = ledger["facets"]["assurance"]["required"]
     states = {kind: evidence_state(ledger, kind) for kind in required}
+    if any(p.get("inherited_from") for p in ledger.get("problems", [])):
+        states["inherited_problems"] = "pass" if inherited_resolved(ledger) else "missing"
     scan_state = doc_reference_scan_state(ledger)
     if scan_state != "not_required":
         states["doc_reference_scan"] = scan_state
@@ -9046,7 +9068,7 @@ def _problem_snapshot_value(ledger: Mapping[str, Any]) -> list[dict[str, Any]]:
         if not isinstance(item, dict) or item.get("status") != "open":
             continue
         problem = {
-            "key": item["key"],
+            "key": handoff_problem_key(item),
             "summary": item["summary"],
             "details": item["details"],
             "owner": item["owner"],
@@ -11902,7 +11924,7 @@ def _apply_observation_dispositions(ledger: dict[str, Any], report: Mapping[str,
         if not _review_observations_current(ledger, report):
             raise AssuranceError("review observation inputs are stale", code="OBSERVATION_DISPOSITION_INVALID")
         pending = {observation_request_digest(p) for p in ledger.get("problems", [])
-                   if p.get("observation_request") and p["status"] == "open"}
+                   if p.get("observation_request") and p["status"] == "open" and not p.get("inherited_from")}
         accepted = {d["request_digest"] for d in dispositions if d["accepted"]}
         if pending - accepted:
             raise AssuranceError("passing review must adjudicate pending observation requests", code="OBSERVATION_REVIEW_REQUIRED")
@@ -11913,7 +11935,7 @@ def _apply_observation_dispositions(ledger: dict[str, Any], report: Mapping[str,
     seen = set()
     for disposition in dispositions:
         request_digest = disposition["request_digest"]
-        matches = [p for p in ledger["problems"] if p.get("observation_request") and observation_request_digest(p) == request_digest]
+        matches = [p for p in ledger["problems"] if p.get("observation_request") and not p.get("inherited_from") and observation_request_digest(p) == request_digest]
         artifact = artifacts.get(disposition["artifact_digest"])
         if (request_digest in seen or len(matches) != 1 or matches[0]["key"] != disposition["problem_key"]
             or matches[0]["producer"] != report["producer"] or artifact is None
@@ -11970,7 +11992,7 @@ def role_observations(ledger: Mapping[str, Any], *, canonical: bool = False) -> 
             "hold": copy.deepcopy(ledger.get("hold")),
             "local_commands": observation_view(ledger, canonical=canonical),
             "observation_requests": [{"problem": copy.deepcopy(p), "request_digest": observation_request_digest(p)}
-                                     for p in effective_problems(ledger) if p.get("observation_request") and p["status"] == "open"]}
+                                     for p in effective_problems(ledger) if p.get("observation_request") and p["status"] == "open" and not p.get("inherited_from")]}
 
 
 def _driver_evidence_view(ledger: Mapping[str, Any]) -> dict[str, Any]:
@@ -12082,6 +12104,7 @@ def driver_context(repo_value: str | Path, run_value: str) -> dict[str, Any]:
         "evidence_origin": _driver_evidence_origin(ledger, evidence),
         "publication": copy.deepcopy(ledger.get("publication")),
         "problems": effective_problems(ledger),
+        "inherited_problem_review": inherited_review_input(ledger),
         "driver_runtime": copy.deepcopy(ledger.get("driver_runtime")),
         "transport_cleanup_intent": copy.deepcopy(
             ledger.get("transport_cleanup_intent")
@@ -12872,7 +12895,7 @@ def _refresh_observation_requests(ledger: dict[str, Any]) -> None:
     candidate = execution.get("candidate_head")
     source = execution.get("tester_source")
     for problem in ledger.get("problems", []):
-        if not problem.get("observation_request"):
+        if not problem.get("observation_request") or problem.get("inherited_from"):
             continue
         changed = problem.get("candidate_head") != candidate
         if not changed and problem["status"] == "resolved" and isinstance(source, Mapping):
@@ -12908,7 +12931,7 @@ def _close_problems(ledger: dict[str, Any], owner: str, resolution: str) -> None
     if owner in {"builder", "tester"}:
         _refresh_observation_requests(ledger)
     for item in ledger.get("problems", []):
-        if item.get("owner") == owner and item.get("status") == "open" and not item.get("observation_request"):
+        if item.get("owner") == owner and item.get("status") == "open" and not item.get("observation_request") and not item.get("inherited_from"):
             item["status"] = "resolved"
             item["resolution"] = resolution
             item["resolved_at"] = now()
@@ -12916,7 +12939,7 @@ def _close_problems(ledger: dict[str, Any], owner: str, resolution: str) -> None
 
 def _close_problem_key(ledger: dict[str, Any], key: str, resolution: str) -> None:
     for item in ledger.get("problems", []):
-        if item.get("key") == key and item.get("status") == "open":
+        if item.get("key") == key and item.get("status") == "open" and not item.get("inherited_from"):
             item["status"] = "resolved"
             item["resolution"] = resolution
             item["resolved_at"] = now()
@@ -14136,6 +14159,7 @@ def record_problems(
                     item
                     for item in ledger.get("problems", [])
                     if item.get("key") == problem["key"]
+                    and not item.get("inherited_from")
                     and item.get("candidate_head") == candidate
                     and item.get("producer") == producer
                 ),
@@ -14183,6 +14207,7 @@ def _tester_replacement_problem(
         for item in ledger.get("problems", [])
         if isinstance(item, dict)
         and item.get("status") == "open"
+        and not item.get("inherited_from")
         and item.get("key") == problem_key
     ]
     if len(matches) != 1:
@@ -14210,6 +14235,7 @@ def _tester_replacement_problem_snapshot(ledger: Mapping[str, Any]) -> str:
         if isinstance(item, Mapping)
         and item.get("status") == "open"
         and item.get("owner") == "tester"
+        and not item.get("inherited_from")
         and item.get("producer_continuity") == "invalid"
     ]
     problems.sort(
@@ -14590,6 +14616,7 @@ def begin_tester_replacement(
             1
             for item in ledger.get("problems", [])
             if isinstance(item, Mapping)
+            and not item.get("inherited_from")
             and item.get("producer_continuity") == "invalid"
         )
         if occurrences >= 3:
@@ -15483,6 +15510,8 @@ def record_evidence(
                     status="NEEDS_USER",
                     details={"blockers": blockers},
                 )
+        if kind == "reviewer" and report["status"] == "pass" and not inherited_review_current(ledger, report):
+            raise AssuranceError("Final review must bind every inherited obligation to current passing evidence", code="INHERITED_PROBLEM_REVIEW_REQUIRED", status="NEEDS_USER")
         if role == "reviewer":
             _apply_observation_dispositions(ledger, report)
         existing = ledger["evidence"].get(kind)

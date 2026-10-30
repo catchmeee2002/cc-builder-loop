@@ -146,7 +146,8 @@ def build_role_input(context: Mapping[str, Any], action: Mapping[str, Any], role
         "evidence_origin": context.get("evidence_origin"),
         "doc_reference_scan": context.get("doc_reference_scan"),
         "doc_reference_scan_state": context.get("doc_reference_scan_state"),
-        "problems": context.get("problems"),
+        "problems": [p for p in context.get("problems") or [] if not (role == "tester" and action["action"] in AUTHOR_ACTIONS and p.get("inherited_from"))],
+        "inherited_problem_review": context.get("inherited_problem_review") if role == "reviewer" else None,
         "role_observations": observations,
     }
     if action.get("work_unit_id") is not None:
