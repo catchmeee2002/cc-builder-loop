@@ -130,7 +130,7 @@ if sys.argv[1:] == ['--version']:
 if sys.argv[1:3] == ['app-server', 'generate-json-schema']:
     out = sys.argv[sys.argv.index('--out') + 1]
     os.makedirs(out, exist_ok=True)
-    tokens = ['thread/start','thread/resume','thread/read','turn/start',
+    tokens = ['config/read','thread/start','thread/resume','thread/read','turn/start',
               'turn/interrupt','developerInstructions','outputSchema',
               'clientUserMessageId']
     open(os.path.join(out, 'codex_app_server_protocol.schemas.json'), 'w').write(
@@ -146,6 +146,9 @@ for line in sys.stdin:
         print(json.dumps({{'id': message['id'], 'result': {{}}}}), flush=True)
     elif method == 'initialized':
         pass
+    elif method == 'config/read':
+        assert sys.argv[3:] == ['-c', 'memories.use_memories=false', '-c', 'memories.generate_memories=false']
+        print(json.dumps({{'id': message['id'], 'result': {{'config': {{'memories': {{'use_memories': False, 'generate_memories': False}}}}, 'origins': {{'memories.use_memories': {{'name': {{'type': 'sessionFlags'}}}}, 'memories.generate_memories': {{'name': {{'type': 'sessionFlags'}}}}}}}}}}), flush=True)
     elif method == 'thread/start':
         print(json.dumps({{'id': message['id'], 'result': {{'thread': {{'id': 'builder-blackbox-thread'}}}}}}), flush=True)
     elif method == 'thread/resume':

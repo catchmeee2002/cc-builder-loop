@@ -475,7 +475,7 @@
         "mode": {"const": "bounded_rehydration"},
         "attempt_limit": {"const": 3},
         "rehydration_limit": {"const": 1},
-        "max_units_per_thread": {"const": 3},
+        "max_units_per_thread": {"const": 3, "description": "Completed-unit rotation threshold for replaceable contexts. Tester source authors retain their producer thread across units; invalid continuity uses the explicit recovery contract."},
         "context_source": {"const": "canonical"}
       }
     },

@@ -19,6 +19,7 @@ AUTHOR_FIELDS = (
     "contract", "target_start_head", "publication", "problems", "tester_worktree",
     "work_unit_id", "work_unit", "problem_report_schema", "evidence_report_schema",
     "result_field_contract", "test_identity_contract", "author_result_contract",
+    "role_phase_instructions",
 )
 
 
@@ -88,7 +89,17 @@ def project_role_input(payload: Mapping[str, Any]) -> dict[str, Any]:
                           and problem.get("producer") == {"role": "tester", **agent}
                           and problem.get("owner") == "tester"]
     result["author_result_contract"] = {
-        "result": "tests_ready only after the required tests are committed; evidence_report.status=pass",
+        "result": "tests_ready only after all tests required by the current work_unit are committed; evidence_report.status=pass",
+        "scope": (
+            "Complete the current work_unit objective, scope and completion requirements. "
+            "The full Mission remains the semantic contract, not a demand to author other pending units in this turn. "
+            "Without a work_unit, complete the entire frozen author task."
+        ),
+        "execution": (
+            "Keep working in this turn until the current unit is complete or a concrete obstacle prevents further work. "
+            "Remaining work, a partial commit, or not yet running later integrated proof/blackbox is not itself a blocker. "
+            "Run the author minimum checks possible on the public baseline; do not invent implementation or claim later gates passed."
+        ),
         "evidence_candidate_head": (
             "Use details.source_head (your actual committed Tester HEAD) for the author report's "
             "candidate_head field. This author report describes Tester source, not an observed candidate. "

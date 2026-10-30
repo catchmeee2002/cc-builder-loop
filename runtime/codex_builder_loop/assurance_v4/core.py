@@ -8415,6 +8415,13 @@ def _record_evidence_reuse(ledger: dict[str, Any]) -> None:
 
 def evidence_state(ledger: Mapping[str, Any], kind: str) -> str:
     record = ledger.get("evidence", {}).get(kind)
+    # A passing source result completes one frozen unit, not the global author gate.
+    # Preserve failed evidence and derive readiness from existing completion events.
+    if kind == "tester" and isinstance(record, dict) and record.get("status") == "pass" and _progress_enabled(ledger):
+        completed = _completed_work_unit_ids(ledger)
+        if any(unit.get("role") == "tester" and unit["id"] not in completed
+               for unit in _progress_work_units(ledger)):
+            return "missing"
     if not isinstance(record, dict):
         return "missing"
     observed_candidate = record.get("candidate_head")
@@ -15172,6 +15179,14 @@ def integrate_tester(repo_value: str | Path, run_value: str) -> dict[str, Any]:
             and source.get("files") == manifest
             and all(_blob_at(repo, candidate_before, item["path"]) == item["blob"] for item in manifest)
         ):
+            unit_id = progress_intent.get("work_unit_id") if isinstance(progress_intent, Mapping) else None
+            if _progress_enabled(ledger) and isinstance(unit_id, str) and unit_id not in _completed_work_unit_ids(ledger):
+                raise AssuranceError(
+                    "Pending Tester work unit has no new source to integrate",
+                    code="WORK_UNIT_SOURCE_UNCHANGED",
+                    status="NEEDS_USER",
+                    details={"work_unit_id": unit_id, "source_head": source_head},
+                )
             return status(repo, run_id)
         try:
             new_paths = set(tester_files)

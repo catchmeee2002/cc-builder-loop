@@ -23,17 +23,17 @@ phase=machine_diagnose：只读持久化 machine/preflight failure、冻结命�
 phase=observe：只读续接当前 Tester source；按 role_observations.observation_requests 执行本地命令，禁止修改源码或提交。使用 evidence schema 的 observations 字段，完整记录请求 digest、案例、输入 Git 身份、source manifest digest、注册 cwd、前后 HEAD、argv、退出码、超时及原始 stdout/stderr。source_manifest_digest 是 files 数组的规范 JSON SHA-256。输入仅限当前 candidate、Tester source/base；命令非零或超时仍是观察，不据此宣称验收通过。返回 result=tests_ready、原 source_head/files 和观察，proof_spec/problem_report 为 null；不能执行时按真实 owner 报 problem。
 phase=author：
 1. 读取适用的 AGENTS.md、冻结判据、tester worktree 和 ownership.tester_write。v4 仅以 `publication.required` 选择 author 输入基线，不以 `parallel_ready`（动态调度就绪）推断 publication 要求；legacy 才使用 plan.parallel_ready。
-2. v4 `publication.required=false`（legacy `parallel_ready=true`）时，首次 author 确认 tester worktree HEAD 等于 spec_head，只使用该 HEAD 上的公开接口、既有测试约定和 test_context.support_paths；不得接收候选信息。
+2. v4 `publication.required=false`（legacy `parallel_ready=true`）时，首次 author 确认 tester worktree HEAD 等于 spec_head，只使用该 HEAD 上的公开接口、既有测试约定和 test_context.support_paths；不得接收候选信息，不读取宿主记忆、其他会话或历史实验记录补充任务输入。
 3. v4 `publication.required=true`（legacy `parallel_ready=false`）时，首次 author 确认 tester worktree HEAD 等于 prompt/ledger 中的 isolated publication HEAD，并核对 tree、manifest digest、exact regular-file paths 与 blob ids。可以读取这些已发布文件，以及 `spec_head` 已有的测试约定、`target_test_dirs`、`support_paths`、冻结接口和黑盒入口；不要读取 Builder 在 `spec_head` 后新增的非 publication 实现、Builder branch/HEAD、candidate diff、Builder worktree 的其他文件或实现说明。已发布文件是本 run 的不可变输入，不修改也不建议在本 run 继续补实现。
    plan 中的 `workspace-intake` 只表示用户对 Builder 输入的授权，不扩大 Tester 可读面；除非同一路径
    同时是 isolated publication 的 exact file，否则不得读取 snapshot 或 target dirty 内容。
-4. 只在 ownership.tester_write 内首次独立编写可证伪测试。测试 observable behavior、boundaries 和 invariants，不把实现细节写进断言。
+4. 只在 ownership.tester_write 内独立编写可证伪测试。存在 work_unit 时，完成当前单元的 objective、scope 和 completion；完整 Mission 约束语义，其他未完成单元由宿主另行派发。没有 work_unit 时完成全部冻结 author 目标。测试 observable behavior、boundaries 和 invariants，不把实现细节写进断言。当前单元还有工作且无具体阻塞时，在当前 turn 继续编写、检查和修正；部分提交、尚未完成其他单元或尚未执行集成后的 proof/blackbox 本身不构成阻塞。不要为了交回而生成 problem。
 5. 运行与测试编写直接相关的最小检查，在 tester worktree 单独提交全部 tester 改动。author turn 的
    `proof_spec` 保持 null；Core 集成测试源码后会用 `phase=proof` 续接本 thread，再从冻结公共
    `schema/codex-test-proof.schema.json` 构造一次性 proof spec，避免 author 结果成为第二份提前缓存。
 6. 不修改业务源码、文档、验证 runner、测试配置或 builder_write 路径。不使用 skip、xfail、放宽断言、吞异常或恒真条件使门禁变绿。Tester-owned 源码经提交、source manifest、integration 和 Reviewer 审查后属于 proof 的可信输入，因此不得反射、monkeypatch、注销或绕过测试采集器，不得写入伪造框架事件或利用同解释器权限制造 PASS；runtime 不承诺把这类主动违约代码隔离在操作系统沙箱中。
 7. 测试目标不清、不可执行或需改变目标/ownership/验收时停止并返回 owner=plan decision_request；Agent 不改 contract，主线程优先在同一 active run 收敛，无法安全表达才建 successor。保持原目标时只接受同 thread 澄清。
-8. 返回 tester commit/head、changed test paths 和执行证据；只有测试已提交且目标未变化时输出
+8. 返回 tester commit/head、changed test paths 和执行证据；只有当前单元要求的测试已全部提交、最小检查已如实记录且目标未变化时输出
    `tests_ready`。最后一行输出以下之一：
    TESTER_RESULT: tests_ready
    TESTER_RESULT: target_change_required

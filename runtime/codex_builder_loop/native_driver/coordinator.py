@@ -1757,6 +1757,7 @@ class NativeCoordinator(ResultSemantics):
     ) -> bool:
         if (
             self.transport is None
+            or role == "tester"  # Source authorship keeps its producer across completed units.
             or (self.builder_mode == "root_session" and role == "builder")
         ):
             return False
@@ -1905,9 +1906,33 @@ class NativeCoordinator(ResultSemantics):
         )
         self._active_threads.add(thread_id)
 
+    @staticmethod
+    def _tester_instructions(text: str, *, common: bool = False, author: bool = False) -> str:
+        """Select explicit sections of the versioned role definition, not model output."""
+        if not common and not author:
+            return text
+        try:
+            if common:
+                start = text.index("以独立 tester 身份工作。")
+                end = text.index("v4 `phase=proof`")
+                safety_start = text.index("测试替身或 monkeypatch")
+                safety_end = text.index("v4 `phase=blackbox`", safety_start)
+                return (text[start:end] + text[safety_start:safety_end]
+                        + "\n执行当前输入 role_phase_instructions 指定的阶段；其他阶段在后续输入中提供。")
+            start = text.index("phase=author：\n")
+            end = text.index("phase=proof_diagnose：", start)
+            return text[start:end]
+        except ValueError as exc:
+            raise NativeDriverError("Tester phase instruction boundaries are missing",
+                                    code="NATIVE_ROLE_INSTRUCTIONS_INVALID") from exc
+
     def _role_config(self, role: str) -> tuple[str, str]:
         value = tomllib.loads((self.project_root / "agents" / f"{role}.toml").read_text())
         instructions = str(value["developer_instructions"])
+        if role == "tester":
+            # Phase bodies have one source in the role file. They are delivered with
+            # each action, so a resumed thread does not retain an obsolete phase policy.
+            instructions = self._tester_instructions(instructions, common=True)
         instructions += (
             "\nNative Driver transport rule: return the raw JSON object required by the supplied "
             "output schema. Do not add marker lines, Markdown fences, commentary, or extra keys. "
@@ -1976,6 +2001,11 @@ class NativeCoordinator(ResultSemantics):
         if action_name in PROMPT_BLACKBOX_ACTIONS:
             payload["blackbox_case_schema"] = self.blackbox_case_schema
         if role == "tester":
+            definition = tomllib.loads((self.project_root / "agents" / "tester.toml").read_text())
+            payload["role_phase_instructions"] = self._tester_instructions(
+                str(definition["developer_instructions"]),
+                author=action_name in {"tester_author", "tester_fix"},
+            )
             payload["test_identity_contract"] = {
                 "unittest": (
                     "Canonical test ids are repository-root dotted source paths plus class and "

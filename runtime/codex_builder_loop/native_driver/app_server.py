@@ -261,6 +261,7 @@ def _trusted_cache_parent() -> Path:
 
 def probe_app_server(
     codex_bin: str = "codex", *, strict_protocol: bool = False,
+    isolate_memories: bool = False,
     command_timeout: float | None = None,
 ) -> AppServerCapability:
     version = subprocess.run(
@@ -293,7 +294,8 @@ def probe_app_server(
             )
         content = schema_path.read_bytes()
         text = content.decode("utf-8")
-        missing = [token for token in REQUIRED_PROTOCOL_TOKENS if token not in text]
+        required = (*REQUIRED_PROTOCOL_TOKENS, *(("config/read",) if isolate_memories else ()))
+        missing = [token for token in required if token not in text]
         if missing:
             raise AppServerError(
                 "Codex App Server lacks required Native Driver capabilities",
@@ -308,7 +310,8 @@ def probe_app_server(
                     prefix="codex-native-driver-canary-"
                 ) as canary_cwd:
                     with AppServerTransport(
-                        codex_bin=codex_bin, strict_protocol=strict_protocol
+                        codex_bin=codex_bin, strict_protocol=strict_protocol,
+                        isolate_memories=isolate_memories,
                     ) as transport:
                         thread_id = transport.start_thread(
                             cwd=canary_cwd,
@@ -324,6 +327,7 @@ def probe_app_server(
                                         "thread/start",
                                     ],
                                     "thread_id_observed": bool(thread_id),
+                                    **({"memory_isolation": "sessionFlags:false:false"} if isolate_memories else {}),
                                 },
                                 sort_keys=True,
                             ).encode()
@@ -380,6 +384,7 @@ class AppServerTransport:
         *,
         codex_bin: str = "codex",
         strict_protocol: bool = False,
+        isolate_memories: bool = False,
         executable_identity: dict[str, Any] | None = None,
         turn_idle_timeout: float = TURN_IDLE_TIMEOUT_SECONDS,
         turn_total_timeout: float = TURN_TOTAL_TIMEOUT_SECONDS,
@@ -387,6 +392,7 @@ class AppServerTransport:
     ):
         self.codex_bin = codex_bin
         self.strict_protocol = strict_protocol
+        self.isolate_memories = isolate_memories
         self.executable_identity = executable_identity or self._fallback_executable_identity()
         self.turn_idle_timeout = float(turn_idle_timeout)
         self.turn_total_timeout = float(turn_total_timeout)
@@ -552,6 +558,39 @@ class AppServerTransport:
         except (OSError, ValueError) as exc:
             self._stderr_drain_error = str(exc)
 
+    def _launch_argv(self) -> list[str]:
+        argv = [self.codex_bin, "app-server", "--stdio"]
+        if self.isolate_memories:
+            argv.extend(["-c", "memories.use_memories=false",
+                         "-c", "memories.generate_memories=false"])
+        return argv
+
+    def _verify_memory_isolation(self, cwd: str | None = None) -> None:
+        if not self.isolate_memories:
+            return
+        params: dict[str, Any] = {"includeLayers": True}
+        if cwd is not None:
+            params["cwd"] = cwd
+        response = self._request("config/read", params)
+        config = response.get("config")
+        config = config if isinstance(config, dict) else {}
+        memories = config.get("memories")
+        memories = memories if isinstance(memories, dict) else {}
+        origins = response.get("origins")
+        origins = origins if isinstance(origins, dict) else {}
+        for key in ("use_memories", "generate_memories"):
+            origin = origins.get("memories." + key)
+            origin = origin if isinstance(origin, dict) else {}
+            name = origin.get("name")
+            name = name if isinstance(name, dict) else {}
+            if memories.get(key) is not False or name.get("type") != "sessionFlags":
+                raise AppServerError(
+                    "Dedicated role process did not confirm memory isolation",
+                    code="NATIVE_MEMORY_ISOLATION_UNVERIFIED",
+                    details={"setting": "memories." + key},
+                )
+        self._observe("memory_isolation_verified")
+
     def start(self) -> None:
         if self.process is not None:
             return
@@ -578,7 +617,7 @@ class AppServerTransport:
         self._python_cache_root = cache_root
         try:
             self.process = subprocess.Popen(
-                [self.codex_bin, "app-server", "--stdio"],
+                self._launch_argv(),
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -598,7 +637,7 @@ class AppServerTransport:
             try:
                 proc = capture_process_identity(
                     self.process,
-                    argv=[self.codex_bin, "app-server", "--stdio"],
+                    argv=self._launch_argv(),
                     executable_identity=self.executable_identity,
                 )
             except RuntimeError as exc:
@@ -626,6 +665,7 @@ class AppServerTransport:
                 },
             )
             self._send({"method": "initialized", "params": {}})
+            self._verify_memory_isolation()
             self._transport_state = "ready"
         except Exception:
             self.close()
@@ -652,7 +692,7 @@ class AppServerTransport:
             if self._process_identity is None:
                 self._process_identity = capture_process_identity(
                     process,
-                    argv=[self.codex_bin, "app-server", "--stdio"],
+                    argv=self._launch_argv(),
                     executable_identity=self.executable_identity,
                 )
             cleanup = reap_process_group(
@@ -702,6 +742,7 @@ class AppServerTransport:
         developer_instructions: str,
         sandbox: str,
     ) -> str:
+        self._verify_memory_isolation(cwd)
         result = self._request(
             "thread/start",
             {
@@ -725,6 +766,7 @@ class AppServerTransport:
         developer_instructions: str,
         sandbox: str,
     ) -> None:
+        self._verify_memory_isolation(cwd)
         result = self._request(
             "thread/resume",
             {
@@ -767,6 +809,7 @@ class AppServerTransport:
             params["cwd"] = cwd
         if sandbox_policy is not None:
             params["sandboxPolicy"] = sandbox_policy
+        self._verify_memory_isolation(cwd)
         started = self._request("turn/start", params)
         turn = started.get("turn")
         turn_id = turn.get("id") if isinstance(turn, dict) else None

@@ -617,7 +617,7 @@ def _root_builder_result(
         runtime_state["coordinator"] = coordinator
     result = coordinator.run()
     if result.get("status") == "TRANSPORT_HANDOFF":
-        capability = probe_app_server(args.codex_bin, strict_protocol=True)
+        capability = probe_app_server(args.codex_bin, strict_protocol=True, isolate_memories=True)
         if args.command == "resume":
             context = core.call(
                 "driver-context", "--repo", str(repo), "--run", run_id
@@ -630,6 +630,7 @@ def _root_builder_result(
                 context=context,
             )
         transport = AppServerTransport(
+            isolate_memories=True,
             codex_bin=args.codex_bin,
             strict_protocol=True,
             executable_identity=getattr(capability, "executable_identity", None),
@@ -769,8 +770,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                         runtime_state=root_start_state,
                     )
                     return emit(result, returncode)
-        capability = probe_app_server(args.codex_bin, strict_protocol=True)
+        capability = probe_app_server(args.codex_bin, strict_protocol=True, isolate_memories=True)
         transport = AppServerTransport(
+            isolate_memories=True,
             codex_bin=args.codex_bin,
             strict_protocol=True,
             executable_identity=getattr(capability, "executable_identity", None),

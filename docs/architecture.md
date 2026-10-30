@@ -90,6 +90,20 @@ App Server 只继承启动 Driver 时已经生效的宿主环境。代理由用�
 并对错误与 stderr 中的凭据脱敏；缺少代理不直接等价于网络故障。模型 turn 使用有界超时，协议探测
 和初始化另有各自时限。此诊断不改变已冻结 run 的 thread 连续性、重试额度或 runtime identity。
 
+Native Driver 的专用角色进程以固定启动参数关闭记忆读取与生成；启动后及角色 thread/turn
+调用前，在实际 cwd 回读有效配置及 sessionFlags 来源。无法确认时停止，不回退到继承宿主记忆，
+也不修改全局配置或绕过外部 executable wrapper。此门禁证明宿主配置，不代替对实际可见输入的
+独立性审计；既有线程历史不因关闭记忆而被清除。
+
+Tester 的 author 工作以冻结工作单元为完成边界；完整 Mission 保持语义约束，集成后的 proof、
+黑盒和其他未完成单元不构成本单元的提前验收要求。Native 输入从唯一角色定义选择 author 纪律，
+其他阶段在对应输入中提供。当前单元有剩余工作而无具体阻塞时由原生角色继续执行，不新增部分完成
+结果或中间进度状态。完成单元通过既有源码集成事务及 completion event 推进；全部 Tester 单元完成前，
+局部 passing source 不能满足全局 Tester readiness。正常 author 单元不消耗 tester_fix 额度，
+实际问题仍走既有有界纠错路径；不按问题措辞、行数或提交数豁免。新的未完成单元若重用上一单元
+已集成的相同源码，停止并保留现场，不把无变化的结果当作完成或重复调度。Tester 不因完成单元数量轮换身份，
+同一 producer 贯穿源码编写和后续验证，明确连续性失效仍按原恢复契约处理。
+
 Native Driver 使用 App Server 稳定 stdio thread/turn 接口并在启动前检查当前协议 schema；不启用
 `experimentalApi` 字段，也不新增 API Key。Builder、Tester、Reviewer 的唯一 role policy 仍来自
 `agents/*.toml`，App Server `outputSchema` 传递原生 v4 JSON object，Native Coordinator 再用公共

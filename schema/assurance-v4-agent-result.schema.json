@@ -7,6 +7,7 @@
   "required": ["result", "evidence_report", "proof_spec", "problem_report"],
   "properties": {
     "result": {
+      "description": "For Tester author, tests_ready completes the current frozen work_unit (or the full author task when no unit exists), not later integrated verification. Global Tester readiness requires all Tester units. Remaining work without an actual obstacle is not blocked.",
       "enum": [
         "implemented", "tests_ready", "pass", "fail", "findings", "blocked",
         "target_change_required"
