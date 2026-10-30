@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.4.6 — 2026-10-30
+
 - Preserved inherited Tester reports as provenance-bound review obligations, kept them out of new
   independent author corrections, and required current final-review evidence to discharge them.
 - Shared successor continuity checks between preflight and start, and clarified revision numbering
