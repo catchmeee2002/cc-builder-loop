@@ -13,6 +13,19 @@ from .models import ContractError, digest
 AUTHOR_ACTIONS = frozenset({"tester_author", "tester_fix"})
 PUBLICATION_FIELDS = ("required", "generation", "paths", "head", "tree", "files", "manifest_digest")
 SOURCE_FIELDS = ("base_head", "head", "branch", "worktree", "files", "replaces_files", "agent")
+# Explicit public views, not whole-facet copies. Lineage remains in Core.
+MISSION_FIELDS = ("delivery_kind", "revision", "objective", "behaviors", "interfaces",
+                  "acceptance_cases", "trust_boundaries")
+AUTHORITY_FIELDS = ("target_branch", "builder_write", "tester_write", "public_prerequisites",
+                    "protected_support_paths", "external_targets")
+ASSURANCE_FIELDS = ("profile", "required", "machine_commands", "preflight_before_proof",
+                    "reviewer_preflight", "evidence_neutral_paths", "proof_runners")
+COMMAND_FIELDS = ("id", "argv", "timeout_seconds", "expected_returncodes", "run_before_full_suite")
+STATEMENT_FIELDS = ("id", "description")
+OBSERVATION_FIELDS = ("surface_id", "surface_description", "execution_ids", "required_dimensions", "target_id")
+MANIFEST_FIELDS = ("path", "blob", "operation", "base_blob", "base_mode")
+AGENT_FIELDS = ("agent_id", "thread_id")
+WORK_UNIT_FIELDS = ("id", "role", "objective", "depends_on", "scope", "completion")
 AUTHOR_EXECUTION_FIELDS = ("commands", "driver_enforced", "recovery_policy", "progress_policy")
 AUTHOR_FIELDS = (
     "assurance_schema_version", "run_id", "action_id", "action", "phase", "role",
@@ -33,10 +46,65 @@ def _pick(value: Any, fields: tuple[str, ...]) -> dict[str, Any]:
     return {key: copy.deepcopy(value[key]) for key in fields if key in value}
 
 
+def _items(value: Any, fields: tuple[str, ...]) -> list[dict[str, Any]]:
+    return [_pick(item, fields) for item in value]
+
+
+def _public_mission(value: Any) -> dict[str, Any]:
+    result = _pick(value, MISSION_FIELDS)
+    for field in ("behaviors", "interfaces", "trust_boundaries"):
+        if field in result:
+            result[field] = _items(result[field], STATEMENT_FIELDS)
+    if "acceptance_cases" in result:
+        cases = _items(result["acceptance_cases"], (*STATEMENT_FIELDS, "observation"))
+        for case in cases:
+            if "observation" in case:
+                case["observation"] = _pick(case["observation"], OBSERVATION_FIELDS)
+        result["acceptance_cases"] = cases
+    return result
+
+
+def _public_authority(value: Any) -> dict[str, Any]:
+    result = _pick(value, AUTHORITY_FIELDS)
+    if "external_targets" in result:
+        result["external_targets"] = _items(result["external_targets"], STATEMENT_FIELDS)
+    return result
+
+
+def _public_assurance(value: Any) -> dict[str, Any]:
+    result = _pick(value, ASSURANCE_FIELDS)
+    for field in ("machine_commands", "proof_runners"):
+        if field in result:
+            fields = COMMAND_FIELDS if field == "machine_commands" else ("id", "argv", "timeout_seconds")
+            result[field] = _items(result[field], fields)
+    if "evidence_neutral_paths" in result:
+        result["evidence_neutral_paths"] = _pick(result["evidence_neutral_paths"], ("machine", "proof"))
+    return result
+
+
+def _public_source(value: Any) -> dict[str, Any]:
+    result = _pick(value, SOURCE_FIELDS)
+    for field in ("files", "replaces_files"):
+        if field in result:
+            result[field] = _items(result[field], MANIFEST_FIELDS)
+    if "agent" in result:
+        result["agent"] = _pick(result["agent"], AGENT_FIELDS)
+    return result
+
+
+def _public_work_unit(value: Any) -> dict[str, Any]:
+    result = _pick(value, WORK_UNIT_FIELDS)
+    if "scope" in result:
+        result["scope"] = _pick(result["scope"], ("paths", "behavior_ids", "command_ids"))
+    if "completion" in result:
+        result["completion"] = _pick(result["completion"], ("kind", "required_observations"))
+    return result
+
+
 def project_role_input(payload: Mapping[str, Any]) -> dict[str, Any]:
     """Project a role payload; newly added coordinator fields are not author inputs.
 
-    Frozen Mission/Assurance are public contract facts, not candidate reports.
+    Public semantic fields are retained verbatim; Mission lineage is not public author input.
     Runtime Execution and publication are projected separately. Problems enter
     author only from the currently bound Tester, never by ownership alone.
     """
@@ -51,8 +119,8 @@ def project_role_input(payload: Mapping[str, Any]) -> dict[str, Any]:
     result = _pick(result, AUTHOR_FIELDS)
     facets = result.get("contract") or {}
     execution = facets.get("execution") or {}
-    source = _pick(execution.get("tester_source"), SOURCE_FIELDS)
-    agent = (execution.get("agents") or {}).get("tester") or source.get("agent")
+    source = _public_source(execution.get("tester_source"))
+    agent = _pick((execution.get("agents") or {}).get("tester") or source.get("agent"), AGENT_FIELDS)
     foreign_corrections = [problem for problem in result.get("problems") or []
                            if isinstance(problem, Mapping)
                            and problem.get("status") == "open"
@@ -66,22 +134,34 @@ def project_role_input(payload: Mapping[str, Any]) -> dict[str, Any]:
                      "recovery": "Preserve the reports; use an authorized recovery or successor with author-safe correction input. Do not discard findings or retry the same input."},
         )
     projected_execution = _pick(execution, AUTHOR_EXECUTION_FIELDS)
+    if "commands" in projected_execution:
+        projected_execution["commands"] = _items(projected_execution["commands"], COMMAND_FIELDS)
+    for field, fields in (
+        ("recovery_policy", ("schema_version", "mode", "continuation_window")),
+        ("progress_policy", ("schema_version", "mode", "attempt_limit", "rehydration_limit",
+                             "max_units_per_thread", "context_source")),
+    ):
+        if field in projected_execution:
+            projected_execution[field] = _pick(projected_execution[field], fields)
     projected_execution["tester_source"] = source or None
     if agent:
         projected_execution["agents"] = {"tester": copy.deepcopy(agent)}
     # Dirty intake grants Builder access; it is not an author read capability.
-    authority = {key: copy.deepcopy(value) for key, value in facets.get("authority", {}).items()
-                 if key != "dirty_intake"}
+    authority = _public_authority(facets.get("authority"))
     result["contract"] = {
         "schema_version": facets.get("schema_version", 4),
-        "mission": copy.deepcopy(facets.get("mission", {})),
+        "mission": _public_mission(facets.get("mission")),
         "authority": authority,
-        "assurance": copy.deepcopy(facets.get("assurance", {})),
+        "assurance": _public_assurance(facets.get("assurance")),
         "execution": projected_execution,
     }
     publication = result.get("publication") or {}
     result["publication"] = (_pick(publication, PUBLICATION_FIELDS)
                              if publication.get("required") is True else {"required": False})
+    if "files" in result["publication"]:
+        result["publication"]["files"] = _items(result["publication"]["files"], MANIFEST_FIELDS)
+    if result.get("work_unit") is not None:
+        result["work_unit"] = _public_work_unit(result["work_unit"])
     result["tester_worktree"] = source.get("worktree")
     result["problems"] = [_pick(problem, ("key", "summary", "details", "owner", "status", "producer", "producer_continuity")) for problem in result.get("problems") or []
                           if isinstance(problem, Mapping)

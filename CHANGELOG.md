@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.4.7 — 2026-10-30
+
+- Projected independent author inputs by explicit public fields at each contract layer, excluding
+  Mission successor lineage while preserving complete public behavior, interfaces and acceptance.
+- Added nested-field and candidate-invariance checks through Native dispatch, plus recovery coverage
+  preserving an overbroad plan proposal and old uncommitted drafts without carrying them into a new author.
+
 ## 0.4.6 — 2026-10-30
 
 - Preserved inherited Tester reports as provenance-bound review obligations, kept them out of new

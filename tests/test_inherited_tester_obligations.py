@@ -87,6 +87,8 @@ class InheritedTesterObligationsTest(unittest.TestCase):
         self.assertNotIn('OLD-PRIVATE-REPORT',prompt)
         self.assertNotIn('old-tester-thread',prompt)
         self.assertNotIn('inherited_problem_review',prompt)
+        self.assertNotIn('supersedes',json.loads(prompt.split('\n',1)[1])['contract']['mission'])
+        self.assertNotIn(context['facets']['mission']['supersedes']['candidate_head'],prompt)
         ledger=read_ledger(self.repo,'new')
         old=ledger['problems'][0]
         self.assertEqual(old['producer']['thread_id'],'old-tester-thread')
@@ -205,3 +207,82 @@ class InheritedTesterObligationsTest(unittest.TestCase):
         self.assertEqual(len(inherited_review_input(ledger)['obligations']),1)
         self.assertEqual(sum(e['kind']=='run_started' for e in ledger['events']),1)
         self.assertEqual(core.status(self.repo,'old')['phase'],'superseded')
+
+
+    def test_successor_preserves_overbroad_plan_report_and_uncommitted_old_source(self):
+        old = read_ledger(self.repo, 'old')
+        source = Path(old['facets']['execution']['tester_source']['worktree'])
+        draft = source / 'tests/unfinished.py'
+        draft.write_text('# Historical draft; not accepted independent evidence\n')
+        before = draft.read_bytes()
+        problem = {
+            'key': 'missing-fixture-contract', 'owner': 'plan',
+            'summary': 'Requests an internal adapter protocol',
+            'details': 'Existing public entry may already satisfy the observable acceptance.',
+            'decision_request': {'kind': 'facet_change', 'facet': 'mission',
+                'question': 'Add a protocol?',
+                'changes': [{'operation': 'add', 'pointer': '/interfaces/-',
+                             'value': {'id': 'internal-protocol', 'description': 'Requested protocol'}}]},
+        }
+        core.record_problems(self.repo, 'old', {'schema_version': 1, 'problems': [problem]},
+                             role='tester', agent_id='old-tester', thread_id='old-tester-thread')
+        self.assertEqual(driver.next_action(self.repo, 'old')['action'], 'contract_decision')
+        original = copy.deepcopy(read_ledger(self.repo, 'old')['problems'])
+        state = core.status(self.repo, 'old')
+        self.contract['execution']['revision_transition']['predecessor_pressure_digest'] = state['lineage']['pressure_digest']
+        self.contract['execution']['prior_problem_dispositions'] = {
+            'source_snapshot_digest': state['lineage']['open_problem_snapshot_digest'],
+            'items': [{'key': 'coverage', 'disposition': 'included'},
+                      {'key': 'missing-fixture-contract', 'disposition': 'discarded'}],
+        }
+        self.start_successor()
+        old_after = read_ledger(self.repo, 'old')
+        self.assertEqual(old_after['problems'], original)
+        self.assertEqual(draft.read_bytes(), before)
+        self.assertEqual(old_after['phase'], 'superseded')
+        new = read_ledger(self.repo, 'new')
+        self.assertEqual(new['facets']['mission']['interfaces'], old_after['facets']['mission']['interfaces'])
+        self.assertNotEqual(new['facets']['execution']['agents']['tester'],
+                            old_after['facets']['execution']['agents']['tester'])
+        self.assertFalse((Path(new['facets']['execution']['tester_source']['worktree']) / 'tests/unfinished.py').exists())
+        self.assertEqual(driver.next_action(self.repo, 'new')['action'], 'tester_author')
+        self.assertFalse(core.readiness(new)['ready'])
+        self.assertEqual(new['evidence'], {})
+        self.assertIn('discarded', json.dumps(new['problem_dispositions']))
+
+    def test_native_transport_receives_only_public_successor_author_input(self):
+        from runtime.codex_builder_loop.assurance_v4.driver_contract import AGENT_ACTION_CAPABILITIES
+        self.start_successor()
+        context = core.driver_context(self.repo, 'new')
+        action = driver.next_action(self.repo, 'new')
+        captured = {}
+        class Captured(BaseException):
+            pass
+        class ReadContextCore:
+            def call(self, command, *args, input_value=None):
+                if command == 'driver-context':
+                    return context
+                if command == 'begin-dispatch':
+                    captured['bound_prompt_digest'] = args[args.index('--prompt-digest') + 1]
+                    return {}
+                raise AssertionError(command)
+        class CaptureTransport:
+            def resume_thread(self, **kwargs):
+                captured['thread'] = kwargs
+            def run_turn(self, **kwargs):
+                captured['turn'] = kwargs
+                raise Captured()
+        coordinator = NativeCoordinator(repo=self.repo, run_id='new', core=ReadContextCore(),
+                                        transport=CaptureTransport(), project_root=ROOT)
+        with self.assertRaises(Captured):
+            coordinator._run_agent_action(action, AGENT_ACTION_CAPABILITIES['tester_author'])
+        turn = captured['turn']
+        self.assertEqual(digest(turn['prompt']), captured['bound_prompt_digest'])
+        delivered = json.loads(turn['prompt'].split('\n', 1)[1])
+        self.assertNotIn('supersedes', delivered['contract']['mission'])
+        visible = json.dumps({k: v for k, v in captured['thread'].items()})
+        visible += turn['prompt'] + json.dumps(turn['output_schema'])
+        self.assertNotIn(context['facets']['execution']['candidate_head'], visible)
+        self.assertNotIn('OLD-PRIVATE-REPORT', visible)
+        self.assertEqual(turn['cwd'], context['facets']['execution']['tester_source']['worktree'])
+        self.assertEqual(turn['thread_id'], context['facets']['execution']['agents']['tester']['thread_id'])

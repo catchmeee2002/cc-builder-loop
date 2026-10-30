@@ -238,7 +238,10 @@ rehydrate；只有显式 resume reason 且原身份、输入仍成立时才在�
 
 角色输入从协调器事实派生，内部事务投影与模型可见输入分离。Native 与 Skill adapter 使用同一角色输入
 投影：独立 author 只接收冻结公共契约、自己的 source 与同 producer 问题，以及按需授权的 isolated
-publication；候选扫描、候选执行清单、dirty intake、全局证据与问题不进入 author，包括嵌套恢复投影。
+publication。公共输入按各层字段显式投影：Mission 的目标、接口、行为和验收完整保留，交接 lineage
+不属于公共任务；新增字段必须明确其可见性。候选扫描、候选执行清单、dirty intake、全局证据与问题
+不进入 author，包括 Mission 内的交接元数据和嵌套恢复投影。公开文本按原意保留，不以 SHA 字符串
+匹配代替来源边界；候选私有元数据变化不得改变 author 的公共任务视图。
 公开 publication 不携带其来源 candidate HEAD。其他 producer 的未解决 Tester correction 无法证明输入
 独立性时，在发出 author 输入前停止并保留原问题；不得静默丢弃修正要求或转发未经隔离的自由文本。完整 canonical digest 仍由 Core 校验事务恢复，模型
 可见投影单独计算 digest，不能把过滤后的内容冒充原事务输入。Reviewer 保留完整候选和文档扫描事实。
