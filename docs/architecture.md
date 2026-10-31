@@ -854,6 +854,12 @@ Native 格式纠错完整保留 Core 返回的原因、定位与修正说明，�
 每次纠错输入由冻结的基础 prompt 加该 attempt 已持久化的错误反馈派生；基础 digest 不变，反馈
 沿现有 action/generation/attempt 和 retry 事件重建。原 thread 和重试上限保持不变。按原则四、十，
 验收覆盖真实 CLI 错误经持久化、进程重建到下一次角色输入，再到修正结果被接受的整条路径。
+独立 Tester author/fix 的结果纠正可保留本轮授权范围内的草稿或提交。Core 在首次 dispatch 绑定
+不可由作者修改的输入摘要；纠正前验证候选、目标、契约、证据与来源身份不变，并验证测试修改
+仍属于冻结 authority/work-unit scope。下一 attempt 的执行前摘要绑定同一份已核验的执行后观察，
+retry 事件保留两端摘要；激活再核对该基线。接纳作者进展时，缺失历史保护基线、越权修改或
+身份变化均停止，激活前的新漂移也拒绝。无副作用纠错保持原路径；传输中断仍要求无副作用，
+纠正不重置次数、不生成验收证据，也不替代源码集成检查。
 
 角色提交的 facet-change decision 在 dispatch 接受和 problem 登记前验证 facet-relative pointer、
 容器类型与操作可达性；拒绝时保留原 dispatch 和候选，允许修正后重提。Native thread 仍受既有有界重试

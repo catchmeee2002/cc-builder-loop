@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 0.4.8 — 2026-10-31
+
+- Bound Tester result-correction retries to verified author progress while keeping candidate,
+  target, contract, evidence, source identity and write-scope guards intact.
+- Preserved attempt observation history and retry limits, rejected later activation drift,
+  and rebound the protected inputs after an admitted role rehydration.
+- Exercised the real CLI rejection and persisted correction feedback alongside source-progress,
+  external-drift, transport-interruption and exhaustion cases.
+
 ## 0.4.7 — 2026-10-30
 
 - Projected independent author inputs by explicit public fields at each contract layer, excluding

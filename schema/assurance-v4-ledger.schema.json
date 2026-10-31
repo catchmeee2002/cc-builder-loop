@@ -781,6 +781,7 @@
         "unit_attempt": {"type": "integer", "minimum": 1},
         "rehydration_count": {"type": "integer", "minimum": 0, "maximum": 1},
         "context_projection_digest": {"$ref": "#/$defs/sha256"},
+        "tester_retry_guard_digest": {"$ref": "#/$defs/sha256"},
         "pre_execution_observation_digest": {
           "oneOf": [
             {"$ref": "#/$defs/sha256"},

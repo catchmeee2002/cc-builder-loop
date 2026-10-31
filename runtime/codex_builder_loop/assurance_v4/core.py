@@ -24,6 +24,7 @@ from .problems import effective_problem, effective_problems, problem_identity
 from .inherited import inherited_review_input, inherited_review_current, inherited_resolved, handoff_problem_key
 from .driver_contract import (
     WORKSPACE_ROUTING_FAILURE_CODES, REVIEWER_COMPACTION_FAILURE_CODES,
+    RESULT_CORRECTION_FAILURE_CODES,
     reviewer_compaction_eligible, dispatch_exhaustion_view, dispatch_exhaustion_blocked,
 )
 from .doc_references import (
@@ -203,6 +204,61 @@ def _progress_side_effect_observation(
 
 def _progress_side_effect_digest(ledger: Mapping[str, Any], role: str) -> str:
     return digest(_progress_side_effect_observation(ledger, role))
+
+
+def _tester_retry_guard(
+    repo: Path, ledger: Mapping[str, Any], observation: Mapping[str, Any] | None = None
+) -> str:
+    """Bind everything except the author's own source worktree contents."""
+    observation = copy.deepcopy(dict(observation)) if observation is not None else _progress_side_effect_observation(ledger, "tester")
+    observation.pop("tester_worktree_manifest", None)
+    observation["facets"] = ledger["digests"]
+    observation["target_head"] = branch_head(repo, ledger["target_branch"])
+    source = ledger["facets"]["execution"].get("tester_source")
+    if isinstance(source, Mapping):
+        observation["tester_branch"] = git(
+            Path(source["worktree"]), "symbolic-ref", "--short", "HEAD", check=False
+        ).stdout.strip()
+    return digest(observation)
+
+
+def _assert_tester_result_retry_safe(
+    repo: Path, ledger: Mapping[str, Any], intent: Mapping[str, Any],
+    observation: Mapping[str, Any],
+) -> None:
+    expected = intent.get("tester_retry_guard_digest")
+    if (not isinstance(expected, str) or expected != _tester_retry_guard(repo, ledger, observation)
+            or intent.get("state") != "in_flight" or not intent.get("turn_id")):
+        raise AssuranceError(
+            "Tester result correction cannot verify its protected inputs",
+            code="TESTER_RESULT_RETRY_UNSAFE", status="NEEDS_USER",
+        )
+    source = ledger["facets"]["execution"]["tester_source"]
+    agent = ledger["facets"]["execution"]["agents"].get("tester")
+    worktree = Path(source["worktree"])
+    head = git(worktree, "rev-parse", "HEAD").stdout.strip()
+    branch = git(worktree, "symbolic-ref", "--short", "HEAD", check=False).stdout.strip()
+    if (source.get("agent") != agent or not isinstance(agent, Mapping)
+            or agent.get("thread_id") != intent.get("thread_id")
+            or branch != source["branch"] or branch_head(repo, source["branch"]) != head
+            or git(repo, "merge-base", "--is-ancestor", source["head"], head,
+                   check=False).returncode != 0):
+        raise AssuranceError(
+            "Tester result correction lost source continuity",
+            code="TESTER_RESULT_RETRY_UNSAFE", status="NEEDS_USER",
+        )
+    paths = set(changed_files(repo, source["head"], head)) | set(dirty_paths(worktree))
+    allowed = ledger["facets"]["authority"]["tester_write"]
+    unit = _work_unit_for_id(ledger, intent.get("work_unit_id"))
+    scope = unit["scope"]["paths"] if unit else []
+    invalid = sorted(path for path in paths
+                     if not _matches(path, allowed) or (scope and not _matches(path, scope)))
+    if invalid:
+        raise AssuranceError(
+            "Tester result correction has writes outside its frozen scope",
+            code="TESTER_RESULT_RETRY_UNSAFE", status="NEEDS_USER",
+            details={"paths": invalid},
+        )
 
 
 def _interrupted_retry_observation(
@@ -2949,6 +3005,8 @@ def begin_dispatch(
                 _progress_side_effect_digest(ledger, role)
             )
             dispatch_intent["post_execution_observation_digest"] = None
+            if role == "tester" and action in {"tester_author", "tester_fix"}:
+                dispatch_intent["tester_retry_guard_digest"] = _tester_retry_guard(repo, ledger)
         if role == "builder" and owner_mode == "root_session":
             dispatch_intent["owner_mode"] = owner_mode
             dispatch_intent["owner_session_id"] = owner_session_id
@@ -3094,7 +3152,12 @@ def record_dispatch_activation(
         expected_observation = pending.get("pre_execution_observation_digest")
         if _progress_enabled(ledger) and isinstance(expected_observation, str):
             current_observation = _progress_side_effect_digest(ledger, role)
-            if current_observation != expected_observation:
+            protected = pending.get("tester_retry_guard_digest")
+            protected_drift = (
+                isinstance(protected, str)
+                and protected != _tester_retry_guard(repo, ledger)
+            )
+            if current_observation != expected_observation or protected_drift:
                 raise AssuranceError(
                     "dispatch activation observation changed",
                     code="DISPATCH_ACTIVATION_OBSERVATION_DRIFT",
@@ -4769,14 +4832,27 @@ def retry_dispatch(
                     "reason": "no_output_no_side_effect",
                 },
             )
+        tester_result_retry = (
+            _progress_enabled(ledger) and not interrupted_retry
+            and intent.get("role") == "tester"
+            and intent.get("action") in {"tester_author", "tester_fix"}
+            and normalized_failure_code in RESULT_CORRECTION_FAILURE_CODES
+        )
+        post_observation = (
+            _progress_side_effect_observation(ledger, str(intent.get("role")))
+            if _progress_enabled(ledger) else None
+        )
+        # Unchanged worktrees keep the existing no-effect retry path. Only
+        # adopting author progress requires a bound turn and the protected guard.
+        tester_result_retry = tester_result_retry and (
+            digest(post_observation) != intent.get("pre_execution_observation_digest")
+        )
+        if tester_result_retry:
+            _assert_tester_result_retry_safe(repo, ledger, intent, post_observation)
         attempt = int(intent.get("attempt", 1))
         generation = int(intent.get("generation", 1))
         if _progress_enabled(ledger):
-            intent["post_execution_observation_digest"] = digest(
-                _progress_side_effect_observation(
-                    ledger, str(intent.get("role"))
-                )
-            )
+            intent["post_execution_observation_digest"] = digest(post_observation)
         if normalized_failure_details is None:
             intent.pop("failure_details", None)
         else:
@@ -4858,6 +4934,10 @@ def retry_dispatch(
         }
         if normalized_failure_details is not None:
             retry_event["failure_details"] = normalized_failure_details
+        if tester_result_retry:
+            retry_event["pre_execution_observation_digest"] = intent["pre_execution_observation_digest"]
+            retry_event["post_execution_observation_digest"] = intent["post_execution_observation_digest"]
+            intent["pre_execution_observation_digest"] = intent["post_execution_observation_digest"]
         append_event(ledger, "dispatch_retry_scheduled", retry_event)
         intent["attempt"] = next_attempt
         if _progress_enabled(ledger):
@@ -5381,8 +5461,10 @@ def bind_dispatch_rehydration(
         new_pending["generation"] = int(previous.get("generation", 1)) + 1
         new_pending["unit_attempt"] = int(previous.get("unit_attempt", 1)) + 1
         new_pending["rehydration_count"] = 1
-        new_pending["pre_execution_observation_digest"] = current_observation
+        new_pending["pre_execution_observation_digest"] = _progress_side_effect_digest(ledger, role)
         new_pending["post_execution_observation_digest"] = None
+        if role == "tester" and new_pending.get("action") in {"tester_author", "tester_fix"}:
+            new_pending["tester_retry_guard_digest"] = _tester_retry_guard(repo, ledger)
         new_pending["context_projection_digest"] = canonical_projection
         new_pending["prompt_digest"] = prompt_digest
         new_pending["renewed_from_digest"] = previous_digest

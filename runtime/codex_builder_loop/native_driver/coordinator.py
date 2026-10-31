@@ -13,6 +13,7 @@ from ..assurance_v4.role_input import build_role_input, project_role_input, proj
 
 from ..assurance_v4.driver_contract import (
     AGENT_ACTION_CAPABILITIES,
+    ROLE_RESULT_VALIDATION_FAILURE_CODES,
     WORKSPACE_ROUTING_FAILURE_CODES,
     REVIEWER_COMPACTION_FAILURE_CODES,
     reviewer_compaction_eligible,
@@ -42,18 +43,6 @@ from .transport_failures import (
 )
 
 
-ROLE_RESULT_VALIDATION_FAILURE_CODES = frozenset(
-    {
-        "AGENT_RESULT_INVALID",
-        "DECISION_REQUEST_INVALID",
-        "EVIDENCE_REPORT_INVALID",
-        "TEST_PROOF_SPEC_INVALID",
-        "PROBLEM_REPORT_INVALID",
-        "TEST_PROOF_PATCH_OWNER_INVALID",
-        "TEST_PROOF_PATCH_FILE_INVALID",
-        "TEST_PROOF_MUTATION_INVALID",
-    }
-)
 PROMPT_EVIDENCE_ACTIONS = frozenset(
     {
         "tester_author",
