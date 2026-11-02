@@ -17800,9 +17800,25 @@ def recollect_machine_failure(repo_value: str | Path, run_value: str, *, session
                e.get("details", {}).get("binding_digest") == binding_digest for e in ledger["events"]):
             return status(repo, run_id)
         blockers = _candidate_residue_transaction_blockers(ledger)
-        for field in ("candidate_residue_intent", "context_rotation_intent", "dispatch_rehydration_intent", "tester_replacement_intent", "transport_cleanup_intent", "deferred_wait"):
+        for field in ("candidate_residue_intent", "context_rotation_intent", "dispatch_rehydration_intent", "tester_replacement_intent"):
             if ledger.get(field) is not None:
                 blockers.append(field)
+        # These slots retain observations after completion; existence is not liveness.
+        cleanup = ledger.get("transport_cleanup_intent")
+        transport = (ledger.get("driver_runtime") or {}).get("native_transport")
+        if cleanup is not None and not (
+            isinstance(cleanup, Mapping) and cleanup.get("state") == "completed"
+            and cleanup.get("process_group_gone") is True
+            and isinstance(transport, Mapping) and transport.get("state") == "cleaned"
+            and cleanup.get("source_generation") == transport.get("generation")
+            and cleanup.get("process_identity") == transport.get("process_identity")
+        ):
+            blockers.append("transport_cleanup_intent")
+        wait = ledger.get("deferred_wait")
+        if wait is not None and not (
+            isinstance(wait, Mapping) and wait.get("state") in {"idle", "terminal"}
+        ):
+            blockers.append("deferred_wait")
         if blockers or ledger.get("hold"):
             raise AssuranceError("recollection conflicts with a pending transaction", code="MACHINE_RECOLLECTION_PENDING")
         from .driver import next_action

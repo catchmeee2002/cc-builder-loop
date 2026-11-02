@@ -23,10 +23,11 @@ class MachineOutputRetentionTest(unittest.TestCase):
         original_invoke = self.f.invoke
         def invoke(command, *args, **kwargs):
             if command == "start":
-                args = (*args, "--driver-kind", "full_driver_skill")
+                args = (*args, "--driver-kind", "native", "--driver-transport", "codex_app_server",
+                        "--driver-runtime-version", "codex-test", "--driver-protocol-schema-digest", "a" * 64)
             elif command in {"checkpoint-builder", "prepare-tester", "integrate-tester", "record-evidence",
                              "verify-preflight", "verify-machine", "record-problems"}:
-                args = (*args, "--driver-runtime-kind", "full_driver_skill")
+                args = (*args, "--driver-runtime-kind", "native")
             return original_invoke(command, *args, **kwargs)
         self.f.invoke = invoke
         _, self.run_path = self.f.start(self.rid, contract=contract)
@@ -70,7 +71,7 @@ class MachineOutputRetentionTest(unittest.TestCase):
             action_id=driver.next_action(self.repo, self.rid)["action_id"],
             failure_digest=ledger["machine_failure"]["failure_digest"],
             reason="Recapture full diagnostics without changing the contract.",
-            driver_runtime_kind="full_driver_skill")
+            driver_runtime_kind="native")
 
     def test_real_cli_recollection_preserves_original_thread_and_failure(self):
         before = self.legacy_failure()
@@ -105,7 +106,7 @@ class MachineOutputRetentionTest(unittest.TestCase):
         before = self.legacy_failure()
         args = self.recovery_args(before)
         for override in ({"session_id": "other"}, {"action_id": "a"*64}, {"failure_digest": "b"*64},
-                         {"problem_key": "other"}, {"reason": " "}, {"driver_runtime_kind": "native"}):
+                         {"problem_key": "other"}, {"reason": " "}, {"driver_runtime_kind": "full_driver_skill"}):
             with self.subTest(override=override):
                 with patch.object(core, "_run_machine_commands", side_effect=AssertionError("must not execute")):
                     with self.assertRaises(core.AssuranceError):
@@ -146,6 +147,111 @@ class MachineOutputRetentionTest(unittest.TestCase):
         self.assertEqual(caught.exception.code, "MACHINE_RECOLLECTION_GIT_DRIFT")
         self.assertEqual(self.f.load_ledger(self.run_path), before)
         self.assertIn("unrelated edit", dirty.read_text())
+
+    def completed_transport(self):
+        identity = {"pid": 1001, "pgid": 1001, "starttime": "1", "parent_pid": 1,
+            "argv_digest": "a" * 64, "executable_identity_digest": "b" * 64,
+            "started_at": core.now(), "process_group_gone": True}
+        transport = {"contract_version": 2, "generation": "recollection-transport", "state": "exited",
+            "process_identity": identity, "executable_identity": {
+                "requested": "fixture", "resolved": "/fixture", "sha256": "c" * 64,
+                "runtime_version": "fixture", "protocol_schema_digest": "d" * 64,
+                "protocol_canary_digest": None}}
+        core.bind_native_transport(self.repo, self.rid, native_transport=transport,
+            driver_runtime_kind="native")
+        core.record_transport_cleanup(self.repo, self.rid, generation=transport["generation"],
+            process_identity=identity, state="completed", term_attempt=1, kill_attempt=0,
+            process_group_gone=True, driver_runtime_kind="native")
+        return self.f.load_ledger(self.run_path)
+
+    def test_completed_transport_allows_real_recollection_without_erasing_history(self):
+        self.legacy_failure()
+        before = self.completed_transport()
+        args = self.recovery_args(before)
+        cli_args = [part for key, value in args.items() for part in ("--" + key.replace("_", "-"), value)]
+        rc, result = self.f.invoke("recollect-machine-failure", "--repo", self.repo, "--run", self.rid, *cli_args)
+        self.assertEqual(rc, 0, result)
+        after = self.f.load_ledger(self.run_path)
+        self.assertEqual(after["transport_cleanup_intent"], before["transport_cleanup_intent"])
+        self.assertEqual(after["driver_runtime"], before["driver_runtime"])
+        self.assertEqual(after["events"][:len(before["events"])], before["events"])
+        self.assertEqual(after["facets"], before["facets"])
+        self.assertEqual(after["evidence"]["preflight"]["status"], "fail")
+        ref = after["machine_failure"]["commands"][0]["output_ref"]
+        self.assertIn("FIRST_ASSERTION", core.read_machine_output(self.repo, self.rid, ref["digest"])["result"]["stdout"])
+        self.assertEqual(driver.next_action(self.repo, self.rid)["action"], "tester_machine_diagnose")
+
+    def test_unfinished_or_inconsistent_transport_refuses_before_execution(self):
+        self.legacy_failure()
+        original = self.completed_transport()
+        args = self.recovery_args(original)
+        cases = [{"state": state} for state in ("prepared", "term_sent", "kill_sent", "unknown")]
+        cases += [{"process_group_gone": False}, {"process_group_gone": None},
+                  {"source_generation": "other-generation"},
+                  {"process_identity": {**original["transport_cleanup_intent"]["process_identity"], "pid": 1002}}]
+        cases = [(override, {}) for override in cases] + [({}, {"state": "ready"})]
+        for override, transport_override in cases:
+            with self.subTest(override=override, transport_override=transport_override):
+                before = copy.deepcopy(original)
+                before["transport_cleanup_intent"].update(override)
+                before["driver_runtime"]["native_transport"].update(transport_override)
+                core.save_ledger(self.repo, before)
+                content = (self.run_path / "ledger.json").read_bytes()
+                with patch.object(core, "_run_machine_commands", side_effect=AssertionError("must not execute")):
+                    with self.assertRaises(core.AssuranceError) as caught:
+                        core.recollect_machine_failure(self.repo, self.rid, **args)
+                self.assertEqual(caught.exception.code, "MACHINE_RECOLLECTION_PENDING")
+                self.assertEqual((self.run_path / "ledger.json").read_bytes(), content)
+
+    def test_wait_observations_only_allow_idle_or_terminal_without_dispatch(self):
+        self.legacy_failure()
+        original = self.completed_transport()
+        args = self.recovery_args(original)
+        for state in ("active", "stalled", "unknown", "idle", "terminal"):
+            with self.subTest(state=state):
+                before = copy.deepcopy(original)
+                before["deferred_wait"] = {"state": state, "action_id": "e" * 64,
+                    "dispatch_generation": 1, "transport_generation": "recollection-transport",
+                    "started_at": core.now(), "observation_digest": "f" * 64,
+                    "delivery_state": "completed" if state == "terminal" else "waiting"}
+                core.save_ledger(self.repo, before)
+                # Observation changes also change the current decision identity.
+                args = self.recovery_args(before)
+                content = (self.run_path / "ledger.json").read_bytes()
+                if state in {"idle", "terminal"}:
+                    core.recollect_machine_failure(self.repo, self.rid, **args)
+                    after = self.f.load_ledger(self.run_path)
+                    self.assertEqual(after["deferred_wait"], before["deferred_wait"])
+                    self.assertEqual(after["evidence"]["preflight"]["status"], "fail")
+                else:
+                    with patch.object(core, "_run_machine_commands", side_effect=AssertionError("must not execute")):
+                        with self.assertRaises(core.AssuranceError) as caught:
+                            core.recollect_machine_failure(self.repo, self.rid, **args)
+                    self.assertEqual(caught.exception.code, "MACHINE_RECOLLECTION_PENDING")
+                    self.assertEqual((self.run_path / "ledger.json").read_bytes(), content)
+
+    def test_terminal_wait_and_cleanup_do_not_override_unconsumed_dispatch(self):
+        with patch.object(core, "_save_machine_output", return_value=None):
+            core.verify_preflight(self.repo, self.rid)
+        self.completed_transport()
+        action = driver.next_action(self.repo, self.rid)
+        self.assertEqual(action["action"], "tester_machine_diagnose")
+        core.begin_dispatch(self.repo, self.rid, action_id=action["action_id"],
+            action=action["action"], role="tester", thread_id=action["agent"]["thread_id"],
+            prompt_digest="a" * 64, output_schema_digest="b" * 64,
+            native_transport_generation="recollection-transport", timeout_profile_digest="c" * 64)
+        dispatch = self.f.load_ledger(self.run_path)["dispatch_intent"]
+        core.record_deferred_wait(self.repo, self.rid, state="terminal", action_id=action["action_id"],
+            dispatch_generation=dispatch["generation"], transport_generation="recollection-transport",
+            delivery_state="completed", terminal_at=core.now())
+        before = self.f.load_ledger(self.run_path)
+        args = self.recovery_args(before)
+        content = (self.run_path / "ledger.json").read_bytes()
+        with patch.object(core, "_run_machine_commands", side_effect=AssertionError("must not execute")):
+            with self.assertRaises(core.AssuranceError) as caught:
+                core.recollect_machine_failure(self.repo, self.rid, **args)
+        self.assertEqual(caught.exception.code, "MACHINE_RECOLLECTION_PENDING")
+        self.assertEqual((self.run_path / "ledger.json").read_bytes(), content)
 
     def test_timeout_retains_partial_output(self):
         ledger = self.f.load_ledger(self.run_path)
