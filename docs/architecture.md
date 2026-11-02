@@ -916,6 +916,17 @@ candidate 重新执行原 machine gate，不能把旧失败 evidence 转成 PASS
 “显式授权，默认隔离”和“每个事实只有一个家”：授权决定留在 ledger event，环境恢复由新 probe 观察，
 通过结论仍只能来自重跑后的 machine evidence。
 
+机器 preflight 与完整 machine gate 在删除临时验证 worktree 前，将完整 stdout/stderr、命令、退出码、
+超时和进程清理事实写入 run 的内容寻址制品。ledger 与角色输入保留有界尾部摘要及制品引用；失败
+signature 绑定完整输出内容；制品文件名和采集进程元数据不参与 signature。只读读取入口校验制品摘要和
+run 归属；缺失、篡改不得作为归因依据，也不得由摘要冒充完整日志。
+
+旧失败缺少完整输出时，已授权的重新取证操作必须绑定当前 owner、builder-loop 问题、decision action
+及 failure digest。Core 在锁内拒绝 pending transaction、hold、候选/target/Tester source 漂移，保存
+原始失败快照后重新执行相同冻结 stage。只有新完整输出已持久化，才解除这一条证据采集问题；其他
+问题、历史 runtime identity、角色、契约和未受影响证据保持不变。新结果不是旧日志的补写，也不自动
+意味着通过；原 Tester 继续诊断或修正。重复提交同一恢复 binding 不重复执行命令。
+
 ## Evidence 与失效
 
 ledger v2 为每类 evidence 记录 `observed_head`、`accepted_head`、输入 digest、scope 和 provenance。

@@ -17542,6 +17542,8 @@ def _machine_failure_signature(stage: str, results: Sequence[Mapping[str, Any]])
             "executable_identity": item.get("executable_identity"),
             "stdout": item.get("stdout"),
             "stderr": item.get("stderr"),
+            **({"full_output": {k: item["output_ref"][k] for k in ("stdout_sha256", "stderr_sha256")}}
+               if isinstance(item.get("output_ref"), Mapping) else {}),
         }
         for item in results
     ]
@@ -17585,6 +17587,39 @@ def _record_machine_failure(
             "recovery": recovery,
         },
     )
+
+
+def read_machine_output(repo_value: str | Path, run_value: str, output_digest: str) -> dict[str, Any]:
+    """Read a content-bound command observation, never an arbitrary caller path."""
+    repo, run_id = resolve_repo(repo_value), ensure_run_id(run_value)
+    if re.fullmatch(r"[0-9a-f]{64}", output_digest) is None:
+        raise AssuranceError("invalid output digest", code="MACHINE_OUTPUT_INVALID")
+    path = run_dir(repo, run_id) / "artifacts" / f"machine-output-{output_digest}.json"
+    try:
+        if path.is_symlink() or not path.is_file():
+            raise ValueError("missing or symlink output")
+        value = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(value, dict) or digest(value) != output_digest or value.get("run_id") != run_id:
+            raise ValueError("output digest or run mismatch")
+    except (OSError, ValueError, TypeError) as exc:
+        raise AssuranceError("machine output missing or changed", code="MACHINE_OUTPUT_INVALID") from exc
+    return value
+
+
+def _save_machine_output(repo: Path, run_id: str, candidate: str, command: Mapping[str, Any],
+                         result: Mapping[str, Any]) -> dict[str, Any]:
+    value = {"run_id": run_id, "candidate_head": candidate,
+             "command": dict(command), "result": dict(result)}
+    output_digest = digest(value)
+    path = run_dir(repo, run_id) / "artifacts" / f"machine-output-{output_digest}.json"
+    if path.exists() or path.is_symlink():
+        read_machine_output(repo, run_id, output_digest)
+    else:
+        atomic_write_json(path, value)
+    return {"digest": output_digest, "path": str(path),
+            "stdout_sha256": hashlib.sha256(str(result["stdout"]).encode("utf-8")).hexdigest(),
+            "stderr_sha256": hashlib.sha256(str(result["stderr"]).encode("utf-8")).hexdigest(),
+            "stdout_chars": len(result["stdout"]), "stderr_chars": len(result["stderr"])}
 
 
 def _run_machine_commands(
@@ -17640,8 +17675,10 @@ def _run_machine_commands(
                     "PYTHONDONTWRITEBYTECODE": "1",
                 },
             )
+            output_ref = _save_machine_output(repo, run_id, candidate, command, result)
             results.append(
                 {
+                    "output_ref": output_ref,
                     "id": command["id"],
                     "argv": command["argv"],
                     "executable": executable,
@@ -17682,136 +17719,141 @@ def _machine_results_pass(
     )
 
 
-def verify_preflight(
-    repo_value: str | Path,
-    run_value: str,
-    *,
-    action_id: str | None = None,
-) -> dict[str, Any]:
-    repo = resolve_repo(repo_value)
-    run_id = ensure_run_id(run_value)
+def _verify_machine_stage(repo: Path, ledger: dict[str, Any], stage: str,
+                          action_id: str | None) -> bool:
     started_at = time.monotonic()
+    candidate = ledger["facets"]["execution"].get("candidate_head")
+    if not candidate or not commit_exists(repo, candidate):
+        raise AssuranceError("candidate head is unavailable", code="CANDIDATE_HEAD_INVALID")
+    commands = ledger["facets"]["assurance"]["machine_commands"]
+    if stage == "preflight":
+        commands = [item for item in commands if item.get("run_before_full_suite")]
+        if not commands:
+            return False
+    else:
+        commands = [item for _, item in sorted(enumerate(commands),
+                    key=lambda pair: (not pair[1].get("run_before_full_suite", False), pair[0]))]
+        if "machine" in ledger["facets"]["assurance"]["required"] and not commands:
+            raise AssuranceError("machine evidence requires at least one command", code="MACHINE_COMMAND_REQUIRED")
+    results = _run_machine_commands(repo, ledger["run_id"], candidate, commands) if commands else []
+    passed = _machine_results_pass(commands, results)
+    record = {"kind": stage, "status": "pass" if passed else "fail", "dependency_digest": "",
+              "candidate_head": candidate,
+              "producer": {"role": "runtime", "agent_id": "assurance-core-v4",
+                           "thread_id": "deterministic-" + stage},
+              "details": {"commands": results}, "recorded_at": now()}
+    ledger["evidence"][stage] = record
+    record["dependency_digest"] = evidence_dependency(ledger, stage, evidence=record if stage == "machine" else None)
+    if passed:
+        ledger["machine_failure"] = None
+    else:
+        _record_machine_failure(ledger, stage=stage, results=results, action_id=action_id)
+    append_event(ledger, stage + "_verified", {
+        "status": record["status"], "commands": len(results),
+        "failure_signature": None if passed else ledger["machine_failure"]["failure_signature"],
+        "duration_ms": int((time.monotonic() - started_at) * 1000),
+        **({"preflight_reused": 0} if stage == "machine" else {}),
+    })
+    return True
+
+
+def _verify_stage(repo_value: str | Path, run_value: str, stage: str,
+                  action_id: str | None) -> dict[str, Any]:
+    repo, run_id = resolve_repo(repo_value), ensure_run_id(run_value)
     with locked(repo):
         ledger = read_ledger(repo, run_id)
         if ledger["phase"] != "active":
             raise AssuranceError("run is not active", code="ASSURANCE_RUN_NOT_ACTIVE")
         _assert_no_candidate_residue_intent(ledger)
-        candidate = ledger["facets"]["execution"].get("candidate_head")
-        if not candidate or not commit_exists(repo, candidate):
-            raise AssuranceError("candidate head is unavailable", code="CANDIDATE_HEAD_INVALID")
-        commands = [
-            item
-            for item in ledger["facets"]["assurance"]["machine_commands"]
-            if item.get("run_before_full_suite")
-        ]
-        if not commands:
-            return status(repo, run_id)
-        results = _run_machine_commands(repo, run_id, candidate, commands)
-        passed = _machine_results_pass(commands, results)
-        record = {
-            "kind": "preflight",
-            "status": "pass" if passed else "fail",
-            "dependency_digest": "",
-            "candidate_head": candidate,
-            "producer": {
-                "role": "runtime",
-                "agent_id": "assurance-core-v4",
-                "thread_id": "deterministic-preflight",
-            },
-            "details": {"commands": results},
-            "recorded_at": now(),
-        }
-        ledger["evidence"]["preflight"] = record
-        record["dependency_digest"] = evidence_dependency(ledger, "preflight")
-        if passed:
-            ledger["machine_failure"] = None
-        else:
-            _record_machine_failure(
-                ledger,
-                stage="preflight",
-                results=results,
-                action_id=action_id,
-            )
-        append_event(
-            ledger,
-            "preflight_verified",
-            {
-                "status": record["status"],
-                "commands": len(results),
-                "failure_signature": (
-                    None if passed else ledger["machine_failure"]["failure_signature"]
-                ),
-                "duration_ms": int((time.monotonic() - started_at) * 1000),
-            },
-        )
-        save_ledger(repo, ledger)
+        if _verify_machine_stage(repo, ledger, stage, action_id):
+            save_ledger(repo, ledger)
     return status(repo, run_id)
 
 
-def verify_machine(
-    repo_value: str | Path,
-    run_value: str,
-    *,
-    action_id: str | None = None,
-) -> dict[str, Any]:
-    repo = resolve_repo(repo_value)
-    run_id = ensure_run_id(run_value)
-    started_at = time.monotonic()
+def verify_preflight(repo_value: str | Path, run_value: str, *,
+                     action_id: str | None = None) -> dict[str, Any]:
+    return _verify_stage(repo_value, run_value, "preflight", action_id)
+
+
+def verify_machine(repo_value: str | Path, run_value: str, *,
+                   action_id: str | None = None) -> dict[str, Any]:
+    return _verify_stage(repo_value, run_value, "machine", action_id)
+
+
+def recollect_machine_failure(repo_value: str | Path, run_value: str, *, session_id: str,
+                              problem_key: str, action_id: str, failure_digest: str,
+                              reason: str, driver_runtime_kind: str) -> dict[str, Any]:
+    """Replace incomplete diagnostics with a fresh Core execution, preserving history."""
+    from ..core import capture_runtime_identity
+    repo, run_id = resolve_repo(repo_value), ensure_run_id(run_value)
+    binding = {"problem_key": problem_key, "action_id": action_id, "failure_digest": failure_digest,
+               "session_id": session_id, "reason": reason.strip()}
+    binding_digest = digest(binding)
     with locked(repo):
         ledger = read_ledger(repo, run_id)
-        if ledger["phase"] != "active":
+        _require_driver_runtime_owner(ledger, driver_runtime_kind)
+        if ledger.get("owner_session_id") != session_id or not binding["reason"]:
+            raise AssuranceError("owner and recovery reason are required", code="MACHINE_RECOLLECTION_BINDING_INVALID")
+        if ledger.get("phase") != "active":
             raise AssuranceError("run is not active", code="ASSURANCE_RUN_NOT_ACTIVE")
-        _assert_no_candidate_residue_intent(ledger)
-        candidate = ledger["facets"]["execution"].get("candidate_head")
-        if not candidate or not commit_exists(repo, candidate):
-            raise AssuranceError("candidate head is unavailable", code="CANDIDATE_HEAD_INVALID")
-        commands = ledger["facets"]["assurance"]["machine_commands"]
-        commands = sorted(
-            enumerate(commands),
-            key=lambda item: (not item[1].get("run_before_full_suite", False), item[0]),
-        )
-        commands = [item[1] for item in commands]
-        if "machine" in ledger["facets"]["assurance"]["required"] and not commands:
-            raise AssuranceError("machine evidence requires at least one command", code="MACHINE_COMMAND_REQUIRED")
-        results = _run_machine_commands(repo, run_id, candidate, commands) if commands else []
-        passed = _machine_results_pass(commands, results)
-        record = {
-            "kind": "machine",
-            "status": "pass" if passed else "fail",
-            "dependency_digest": "",
-            "candidate_head": candidate,
-            "producer": {
-                "role": "runtime",
-                "agent_id": "assurance-core-v4",
-                "thread_id": "deterministic-machine",
-            },
-            "details": {"commands": results},
-            "recorded_at": now(),
-        }
-        ledger["evidence"]["machine"] = record
-        record["dependency_digest"] = evidence_dependency(ledger, "machine", evidence=record)
-        if passed:
-            ledger["machine_failure"] = None
-        else:
-            _record_machine_failure(
-                ledger,
-                stage="machine",
-                results=results,
-                action_id=action_id,
-            )
-        append_event(
-            ledger,
-            "machine_verified",
-            {
-                "status": record["status"],
-                "commands": len(results),
-                "failure_signature": (
-                    None if passed else ledger["machine_failure"]["failure_signature"]
-                ),
-                "duration_ms": int((time.monotonic() - started_at) * 1000),
-                "preflight_reused": 0,
-            },
-        )
+        if any(e.get("kind") == "machine_failure_recollected" and
+               e.get("details", {}).get("binding_digest") == binding_digest for e in ledger["events"]):
+            return status(repo, run_id)
+        blockers = _candidate_residue_transaction_blockers(ledger)
+        for field in ("candidate_residue_intent", "context_rotation_intent", "dispatch_rehydration_intent", "tester_replacement_intent", "transport_cleanup_intent", "deferred_wait"):
+            if ledger.get(field) is not None:
+                blockers.append(field)
+        if blockers or ledger.get("hold"):
+            raise AssuranceError("recollection conflicts with a pending transaction", code="MACHINE_RECOLLECTION_PENDING")
+        from .driver import next_action
+        current = next_action(repo, run_id, _ledger=ledger)
+        problems = [p for p in ledger.get("problems", []) if p.get("key") == problem_key
+                    and p.get("status") == "open" and p.get("owner") == "builder_loop"]
+        failure = current_machine_failure(ledger)
+        if (current.get("action") != "builder_loop_problem_decision" or current.get("action_id") != action_id
+                or current.get("problem", {}).get("key") != problem_key or len(problems) != 1
+                or not failure or failure.get("failure_digest") != failure_digest
+                or problems[0].get("candidate_head") != failure.get("candidate_head")):
+            raise AssuranceError("recollection no longer binds the decision and failure", code="MACHINE_RECOLLECTION_STALE")
+        candidate_worktree = Path(ledger["candidate_worktree"])
+        if (not candidate_worktree.is_dir() or dirty_paths(candidate_worktree)
+                or git(candidate_worktree, "rev-parse", "HEAD").stdout.strip() != failure["candidate_head"]
+                or branch_head(repo, ledger["candidate_branch"]) != failure["candidate_head"]
+                or branch_head(repo, ledger["target_branch"]) != ledger["target_start_head"]):
+            raise AssuranceError("candidate or target drifted", code="MACHINE_RECOLLECTION_GIT_DRIFT")
+        source = ledger["facets"]["execution"].get("tester_source")
+        if isinstance(source, Mapping):
+            _assert_tester_source_exact(repo, source)
+        complete = True
+        for command in failure["commands"]:
+            ref = command.get("output_ref")
+            try:
+                if not isinstance(ref, Mapping):
+                    raise ValueError("legacy output has no full artifact")
+                read_machine_output(repo, run_id, str(ref.get("digest")))
+            except (AssuranceError, ValueError):
+                complete = False
+        if complete:
+            raise AssuranceError("complete output is already available", code="MACHINE_RECOLLECTION_NOT_REQUIRED")
+        # Retain the old observation exactly, never label the new output as its missing bytes.
+        previous = {"run_id": run_id, "failure": failure,
+                    "evidence": ledger["evidence"].get(failure["stage"])}
+        previous_digest = digest(previous)
+        previous_path = run_dir(repo, run_id) / "artifacts" / f"machine-previous-{previous_digest}.json"
+        if not previous_path.exists():
+            atomic_write_json(previous_path, previous)
+        _verify_machine_stage(repo, ledger, failure["stage"], action_id)
+        # An absent executable cannot repair missing diagnostics.
+        commands = ledger["evidence"][failure["stage"]]["details"]["commands"]
+        if not commands or any(not item.get("output_ref") for item in commands):
+            raise AssuranceError("recollection did not capture command output", code="MACHINE_RECOLLECTION_INCOMPLETE")
+        problems[0].update(status="resolved", resolution=binding["reason"], resolved_at=now())
+        append_event(ledger, "machine_failure_recollected", {
+            **binding, "binding_digest": binding_digest, "previous_digest": previous_digest,
+            "previous_path": str(previous_path),
+            "replacement_evidence_digest": digest(ledger["evidence"][failure["stage"]]),
+            "executor_runtime_identity": capture_runtime_identity(),
+        })
         save_ledger(repo, ledger)
     return status(repo, run_id)
 

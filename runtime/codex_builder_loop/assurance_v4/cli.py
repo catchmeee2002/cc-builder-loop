@@ -417,6 +417,16 @@ def parser() -> argparse.ArgumentParser:
     verify.add_argument("--run", required=True)
     dispatch_guard(verify)
 
+    recollect = commands.add_parser("recollect-machine-failure")
+    recollect.add_argument("--repo", default=".")
+    for field in ("run", "session-id", "problem-key", "action-id", "failure-digest", "reason", "driver-runtime-kind"):
+        recollect.add_argument("--" + field, required=True)
+
+    machine_output = commands.add_parser("read-machine-output")
+    machine_output.add_argument("--repo", default=".")
+    machine_output.add_argument("--run", required=True)
+    machine_output.add_argument("--digest", required=True)
+
     preflight = commands.add_parser("verify-preflight")
     preflight.add_argument("--repo", default=".")
     preflight.add_argument("--run", required=True)
@@ -1231,6 +1241,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         elif args.command == "verify-machine":
             _guard_dispatch(args, {"verify_machine"})
             payload = core.verify_machine(args.repo, args.run, action_id=args.action_id)
+        elif args.command == "recollect-machine-failure":
+            payload = core.recollect_machine_failure(args.repo, args.run, session_id=args.session_id,
+                problem_key=args.problem_key, action_id=args.action_id, failure_digest=args.failure_digest,
+                reason=args.reason, driver_runtime_kind=args.driver_runtime_kind)
+        elif args.command == "read-machine-output":
+            payload = core.read_machine_output(args.repo, args.run, args.digest)
         elif args.command == "verify-preflight":
             _guard_dispatch(args, {"verify_preflight"})
             payload = core.verify_preflight(args.repo, args.run, action_id=args.action_id)

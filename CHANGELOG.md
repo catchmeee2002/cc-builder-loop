@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.4.10 — 2026-11-02
+
+- 保留 machine/preflight 完整输出的内容寻址制品，尾部摘要不再丢失诊断依据；只读入口验证摘要。
+- 支持绑定原问题与失败记录的正式重新取证，保留旧截断记录及原 Tester 连续性，不将重新执行冒充旧证据。
+
 ## 0.4.9 — 2026-11-02
 
 - Added an explicit unchanged-contract decision preview and bound application with public execution clarification.

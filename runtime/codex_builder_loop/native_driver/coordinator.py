@@ -2039,7 +2039,11 @@ class NativeCoordinator(ResultSemantics):
             payload["machine_diagnosis_rule"] = (
                 "Do not edit files or rerun the command as a replacement for Core. Classify each "
                 "independent failure from the frozen contract, persisted command result, Tester "
-                "source and bound artifacts. Route implementation defects to builder, Tester-owned "
+                "source and bound artifacts. When command output_ref is present, read output_ref.path "
+                "in bounded sections. The configured Builder-loop CLI provides assurance --experimental-v4 "
+                "read-machine-output --repo <repo> --run <run> "
+                "--digest <output_ref.digest> before attributing failures missing from the tail. "
+                "Route implementation defects to builder, Tester-owned "
                 "tests or harness defects to tester, frozen-contract changes to plan, repository "
                 "defects to current_project, Builder-loop defects to builder_loop, and environment "
                 "failures to external_platform."
