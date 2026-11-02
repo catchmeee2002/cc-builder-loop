@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.4.9 — 2026-11-02
+
+- Added an explicit unchanged-contract decision preview and bound application with public execution clarification.
+- Delivered retained-plan explanations to the original independent author without changing Mission, source,
+  evidence or retry limits; kept foreign and inherited reports outside the author input.
+- Exercised the real CLI, coordinator restart and original-thread delivery alongside stale-binding,
+  semantic-drift and pending-transaction rejection.
+
 ## 0.4.8 — 2026-10-31
 
 - Bound Tester result-correction retries to verified author progress while keeping candidate,

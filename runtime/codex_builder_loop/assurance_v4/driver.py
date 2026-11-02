@@ -646,6 +646,8 @@ def validate_decision(
     facet: str,
     facet_digest: str,
     replacement_contract: Any,
+    retain_contract: bool = False,
+    reason: str | None = None,
 ) -> dict[str, Any]:
     """Validate one same-run contract replacement without mutating the ledger."""
 
@@ -732,6 +734,32 @@ def validate_decision(
                 status="FAIL",
                 details={"facet": unchanged},
             )
+
+    if retain_contract:
+        if not isinstance(reason, str) or not reason.strip():
+            raise AssuranceError("retaining a contract requires a public execution explanation",
+                                 code="DECISION_REASON_REQUIRED", status="FAIL")
+        if replacement != current_contract:
+            raise AssuranceError("retaining a contract cannot change any facet",
+                                 code="DECISION_REPLACEMENT_DRIFT", status="FAIL")
+        pending = [field for field in ("dispatch_intent", "candidate_residue_intent",
+                   "context_rotation_intent", "dispatch_rehydration_intent", "tester_replacement_intent",
+                   "reviewer_replacement_intent", "finalize_intent", "recomposition_intent") if ledger.get(field)]
+        if pending or ledger.get("hold"):
+            raise AssuranceError("decision conflicts with an unfinished transaction",
+                                 code="DECISION_TRANSACTION_PENDING", status="FAIL", details={"transactions": pending})
+        return {
+            "status": "READY", "run_id": run_id, "problem_key": problem_key,
+            "action_id": action_id, "facet": facet, "base_facet_digest": facet_digest,
+            "replacement_facet_digest": facet_digest,
+            "replacement_contract_digest": digest(replacement), "invalidated_evidence": [],
+            "disposition": "retain_contract", "reason": reason.strip(),
+            "apply": {"command": "update-facet", "authorization_flags": [],
+                      "resolve_plan_problem_key": problem_key, "decision_reason": reason.strip()},
+        }
+    if reason is not None:
+        raise AssuranceError("reason requires explicit retain-contract disposition",
+                             code="DECISION_DISPOSITION_REQUIRED", status="FAIL")
 
     scope_preview = None
     authorization_flags: list[str] = []

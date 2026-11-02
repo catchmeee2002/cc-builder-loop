@@ -163,11 +163,16 @@ def project_role_input(payload: Mapping[str, Any]) -> dict[str, Any]:
     if result.get("work_unit") is not None:
         result["work_unit"] = _public_work_unit(result["work_unit"])
     result["tester_worktree"] = source.get("worktree")
-    result["problems"] = [_pick(problem, ("key", "summary", "details", "owner", "status", "producer", "producer_continuity")) for problem in result.get("problems") or []
+    result["problems"] = [_pick(problem, ("key", "summary", "details", "owner", "status", "producer", "producer_continuity", "decision_resolution")) for problem in result.get("problems") or []
                           if isinstance(problem, Mapping)
                           and agent
                           and problem.get("producer") == {"role": "tester", **agent}
-                          and problem.get("owner") == "tester"]
+                          and (problem.get("owner") == "tester" or (
+                              problem.get("owner") == "plan" and problem.get("status") == "resolved"
+                              and problem.get("decision_resolution", {}).get("disposition") == "retain_contract"))]
+    for problem in result["problems"]:
+        if "decision_resolution" in problem:
+            problem["decision_resolution"] = _pick(problem["decision_resolution"], ("disposition", "reason"))
     result["author_result_contract"] = {
         "result": "tests_ready only after all tests required by the current work_unit are committed; evidence_report.status=pass",
         "scope": (

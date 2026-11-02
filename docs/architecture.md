@@ -866,6 +866,12 @@ retry 事件保留两端摘要；激活再核对该基线。接纳作者进展�
 和候选副作用检查约束，不能借报告纠错重做已经产生副作用的实现。该前置检查只验证请求可解释，
 不批准请求，也不替代完整 replacement 的校验。这落实原则四的输入条件约束。
 
+规划请求不必以修改契约告终。保持完整契约不变的处置通过现有 decision 预检和 facet 事务，
+显式绑定当前 owner、problem、action、facet digest 与公开执行澄清；任何 facet 变化或未完成事务均拒绝。
+处置理由只保存在既有决策事件中，当前问题视图从事件派生，原报告和全部验收责任保留。
+独立 author 只接收自己线程提出且已经处置的规划问题及公开澄清，其他 producer 和继承报告仍排除；
+澄清不授权读取候选、不形成通过证据，也不改变角色身份、源码、work unit 或重试额度。
+
 历史已消费的无效请求通过 `correct-decision-request` 追加纠正事件。事务绑定当前 owner session、
 problem、action、原请求和 facet；只允许修正同 facet、同操作与值的地址。原 problem 和角色 artifact
 保持不变，Driver、status 与角色 context 从原请求及纠正事件派生有效请求。重复提交幂等；过期绑定、

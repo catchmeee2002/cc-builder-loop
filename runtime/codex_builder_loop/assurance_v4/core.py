@@ -12507,6 +12507,7 @@ def update_facet(
     decision_action_id: str | None = None,
     expected_facet_digest: str | None = None,
     owner_session_id: str | None = None,
+    decision_reason: str | None = None,
 ) -> dict[str, Any]:
     if facet not in {"mission", "authority", "assurance", "execution"}:
         raise AssuranceError("unknown contract facet", code="ASSURANCE_FACET_INVALID")
@@ -12526,6 +12527,18 @@ def update_facet(
             expected_facet_digest=expected_facet_digest,
             owner_session_id=owner_session_id,
         )
+        if decision_reason is not None:
+            # Revalidate the full bound decision under the mutation lock.
+            from .driver import validate_decision
+            if not all((resolve_plan_problem_key, decision_action_id, expected_facet_digest, owner_session_id)):
+                raise AssuranceError("retained decision requires all owner/action/facet bindings",
+                                     code="DECISION_MUTATION_BINDING_INCOMPLETE", status="FAIL")
+            replacement = copy.deepcopy(ledger["facets"])
+            replacement[facet] = copy.deepcopy(value)
+            validate_decision(repo, run_id, session_id=owner_session_id,
+                              problem_key=resolve_plan_problem_key, action_id=decision_action_id,
+                              facet=facet, facet_digest=expected_facet_digest,
+                              replacement_contract=replacement, retain_contract=True, reason=decision_reason)
         old = ledger["facets"][facet]
         plan_problem: dict[str, Any] | None = None
         expected_resolution: str | None = None
@@ -12597,6 +12610,10 @@ def update_facet(
                     "old_digest": current_digest,
                     "new_digest": current_digest,
                     "facet_changed": False,
+                    **({"problem_identity": problem_identity(plan_problem),
+                        "disposition": "retain_contract", "reason": decision_reason.strip(),
+                        "action_id": decision_action_id, "owner_session_id": owner_session_id}
+                       if decision_reason is not None else {}),
                 },
             )
             save_ledger(repo, ledger)

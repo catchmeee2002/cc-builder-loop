@@ -34,6 +34,11 @@ def effective_problem(ledger: Mapping[str, Any], problem: Mapping[str, Any]) -> 
             continue
         if event['kind'] == 'problem_report_updated':
             result.update({key: details['report'][key] for key in ('summary', 'details')})
+        elif (event['kind'] == 'plan_problem_decision_applied'
+              and details.get('disposition') == 'retain_contract'
+              and result.get('status') == 'resolved'):
+            result['decision_resolution'] = {
+                'disposition': 'retain_contract', 'reason': details['reason']}
         elif event['kind'] == 'decision_request_corrected':
             result['decision_request'] = copy.deepcopy(details['request'])
     if result.get("inherited_from"):

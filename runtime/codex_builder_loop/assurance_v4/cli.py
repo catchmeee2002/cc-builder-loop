@@ -75,6 +75,8 @@ def parser() -> argparse.ArgumentParser:
     )
     validate_decision.add_argument("--facet-digest", required=True)
     validate_decision.add_argument("--contract", required=True)
+    validate_decision.add_argument("--retain-contract", action="store_true")
+    validate_decision.add_argument("--reason", help="Public execution clarification; never candidate implementation details")
 
     correction = commands.add_parser("correct-decision-request",
         help="Append a pointer-only correction to an invalid consumed facet proposal; does not grant authority")
@@ -252,6 +254,7 @@ def parser() -> argparse.ArgumentParser:
     update.add_argument("--decision-action-id")
     update.add_argument("--expected-facet-digest")
     update.add_argument("--session-id")
+    update.add_argument("--decision-reason", help="Retain the exact contract and explain the plan disposition to its producer")
 
     revise = commands.add_parser("revise-mission")
     revise.add_argument("--repo", default=".")
@@ -865,6 +868,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 facet=args.facet,
                 facet_digest=args.facet_digest,
                 replacement_contract=_json(args.contract),
+                retain_contract=args.retain_contract, reason=args.reason,
             )
         elif args.command == "correct-decision-request":
             payload = core.correct_decision_request(args.repo, args.run,
@@ -1065,6 +1069,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 decision_action_id=args.decision_action_id,
                 expected_facet_digest=args.expected_facet_digest,
                 owner_session_id=args.session_id,
+                decision_reason=args.decision_reason,
             )
         elif args.command == "revise-mission":
             payload = core.revise_mission(
