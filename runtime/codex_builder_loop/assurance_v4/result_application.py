@@ -776,9 +776,14 @@ class _Application(ResultSemantics):
                         result, proof_failure=context.get("proof_failure"),
                         proof_runners=context["facets"]["assurance"].get("proof_runners", []),
                     )
+        if role == "reviewer" and context.get("review_reconsideration"):
+            report = result.get("evidence_report")
+            if not isinstance(report, dict) or not report.get("details", {}).get("review_problem_dispositions"):
+                raise ResultApplicationError("reconsideration must explicitly withdraw or uphold the bound problem",
+                                             code="REVIEW_RECONSIDERATION_DISPOSITION_REQUIRED")
         if isinstance(problem, dict):
             report = result.get("evidence_report")
-            if role == "reviewer" and isinstance(report, dict) and report.get("details", {}).get("observation_dispositions"):
+            if role == "reviewer" and isinstance(report, dict) and (report.get("details", {}).get("observation_dispositions") or report.get("details", {}).get("review_problem_dispositions")):
                 if report["status"] != "fail":
                     raise ResultApplicationError("findings cannot include passing observation review", code="EVIDENCE_REPORT_INVALID")
                 self.evidence("reviewer_preflight" if action == "reviewer_preflight" else "reviewer", report)

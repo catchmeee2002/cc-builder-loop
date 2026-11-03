@@ -234,12 +234,33 @@ def build_role_input(context: Mapping[str, Any], action: Mapping[str, Any], role
         "recomposition": action.get("recomposition"),
         "evidence": context.get("evidence"),
         "evidence_origin": context.get("evidence_origin"),
+        "evidence_gates": context.get("evidence_gates"),
+        "review_reconsideration": context.get("review_reconsideration") if role == "reviewer" else None,
         "doc_reference_scan": context.get("doc_reference_scan"),
         "doc_reference_scan_state": context.get("doc_reference_scan_state"),
         "problems": [p for p in context.get("problems") or [] if not (role == "tester" and action["action"] in AUTHOR_ACTIONS and p.get("inherited_from"))],
         "inherited_problem_review": context.get("inherited_problem_review") if role == "reviewer" else None,
         "role_observations": observations,
     }
+    if role == "reviewer":
+        payload["gate_validity_rule"] = (
+            "Use evidence_gates for Core-derived current validity. Tester evidence binds independent "
+            "source and integrated blobs; its candidate_head is historical provenance, not a demand "
+            "for equal current HEAD or a machine evidence_reuse receipt. Candidate executions have "
+            "their own preflight/machine/proof/blackbox gates. Never rewrite historical evidence."
+        )
+        if payload.get("review_reconsideration"):
+            payload["review_reconsideration"] = {
+                **copy.deepcopy(payload["review_reconsideration"]),
+                "result_contract": (
+                    "Re-evaluate the bound original problem in this same Reviewer thread. Return "
+                    "exactly one evidence_report.details.review_problem_dispositions item with "
+                    "request_id, problem_key, decision=withdrawn|upheld, and a concrete reason, "
+                    "including with other findings. Upholding requires a failed report. Withdrawing "
+                    "only resolves this problem; all other review requirements still apply. "
+                    "This request does not authorize PASS or any evidence rewrite."
+                ),
+            }
     if role == "tester" and action["action"] == "tester_fix":
         authorization = action.get("tester_correction_authorization")
         if isinstance(authorization, Mapping) and isinstance(authorization.get("author_instructions"), str):

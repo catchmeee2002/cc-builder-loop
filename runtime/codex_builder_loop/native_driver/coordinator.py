@@ -1941,6 +1941,8 @@ class NativeCoordinator(ResultSemantics):
         )
         if role == "reviewer":
             instructions += (
+                "\nFollow the current input gate_validity_rule and, when present, "
+                "review_reconsideration.result_contract. A reconsideration request is not a passing gate. "
                 "\nAssurance v4 evidence provenance: evidence_origin binds the persisted ledger "
                 "/evidence source digest and the current prompt /evidence view digest. Verify "
                 "each against its named source. proof_schema_view_v1 is a read-only public-schema "
@@ -2120,6 +2122,7 @@ class NativeCoordinator(ResultSemantics):
             ),
             "doc_reference_scan_state": context.get("doc_reference_scan_state"),
             "pre_turn_gates": {
+                "current_validity": self._prompt_source_ref(context.get("evidence_gates", {}), "/evidence_gates"),
                 "required": (
                     [
                         *(
@@ -2206,7 +2209,7 @@ class NativeCoordinator(ResultSemantics):
                 "problem_report": "required_non_empty_with_supported_problem_owner",
             }
         return {
-            "evidence_report": "required_on_pass_else_null",
+            "evidence_report": "required_on_pass_or_review_problem_disposition_else_null",
             "proof_spec": "must_be_null",
             "problem_report": "object_only_when_findings_blocked_or_target_change_required_else_null",
         }
@@ -2217,7 +2220,7 @@ class NativeCoordinator(ResultSemantics):
         if isinstance(value.get("problem_report"), dict) and action != "tester_proof_diagnose":
             report = value.get("evidence_report")
             if not (action in {"reviewer_preflight", "reviewer_final"} and isinstance(report, dict)
-                    and report.get("status") == "fail" and report.get("details", {}).get("observation_dispositions")):
+                    and report.get("status") == "fail" and (report.get("details", {}).get("observation_dispositions") or report.get("details", {}).get("review_problem_dispositions"))):
                 value["evidence_report"] = None
             value["proof_spec"] = None
             return value

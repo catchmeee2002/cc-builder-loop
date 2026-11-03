@@ -632,6 +632,7 @@ def canonical_context_projection(
         if isinstance(ledger.get("repo_root"), str)
         else ledger.get("evidence")
     )
+    from .review_recovery import active_request
     observations = role_observations(ledger, canonical=True)
     # Hold governs scheduling at a safe transaction boundary, not the work
     # already assigned to a role. Keep it visible in driver_context/status,
@@ -662,6 +663,7 @@ def canonical_context_projection(
         ),
         "work_unit_progress": _canonical_progress_projection(ledger),
         "role_observations": observations,
+        "review_reconsideration": _strip_context_identity(active_request(ledger)),
     }
 
 
@@ -3399,6 +3401,76 @@ def record_tester_bootstrap_failure(
     return status(repo, run_id)
 
 
+def _transition_recovery_runtime(ledger, repo, *, allow_runtime_transition, reason, action_id, binding, error_prefix):
+    from ..core import capture_runtime_identity
+
+    current_runtime_identity = capture_runtime_identity()
+    previous_runtime_identity = copy.deepcopy(ledger["runtime_identity"])
+    if current_runtime_identity != previous_runtime_identity:
+        if not allow_runtime_transition:
+            raise AssuranceError(
+                "Tester correction authorization cannot change the frozen runtime identity",
+                code=f"{error_prefix}_RUNTIME_IDENTITY_MISMATCH",
+                status="NEEDS_USER",
+                details={
+                    "expected_runtime_identity": previous_runtime_identity,
+                    "actual_runtime_identity": current_runtime_identity,
+                },
+            )
+        if (
+            current_runtime_identity.get("capture_status") != "captured"
+            or current_runtime_identity.get("adapter_dirty") is not False
+        ):
+            raise AssuranceError(
+                "Tester correction runtime transition requires a captured clean runtime",
+                code=f"{error_prefix}_RUNTIME_TRANSITION_UNSAFE",
+                status="NEEDS_USER",
+                details={"actual_runtime_identity": current_runtime_identity},
+            )
+        current_runtime_support, _manifest, required_independent = (
+            _runtime_support_snapshot(repo, copy.deepcopy(ledger["facets"]))
+        )
+        _assert_runtime_support_contract(
+            ledger["facets"], current_runtime_support, required_independent
+        )
+        previous_support = copy.deepcopy(ledger["runtime_support"])
+        comparable_previous = {
+            key: value
+            for key, value in previous_support.items()
+            if key != "runtime_head"
+        }
+        comparable_current = {
+            key: value
+            for key, value in current_runtime_support.items()
+            if key != "runtime_head"
+        }
+        if comparable_current != comparable_previous:
+            raise AssuranceError(
+                "Tester correction runtime support changed beyond the approved runtime commit",
+                code=f"{error_prefix}_RUNTIME_SUPPORT_DRIFT",
+                status="NEEDS_USER",
+                details={
+                    "expected_runtime_support": previous_support,
+                    "actual_runtime_support": current_runtime_support,
+                },
+            )
+        ledger["runtime_identity"] = current_runtime_identity
+        ledger["runtime_support"] = current_runtime_support
+        append_event(
+            ledger,
+            "runtime_identity_transitioned",
+            {
+                "reason": reason,
+                "architecture_action_id": action_id,
+                "review_binding": binding,
+                "previous_runtime_identity": previous_runtime_identity,
+                "current_runtime_identity": copy.deepcopy(current_runtime_identity),
+                "previous_runtime_support": previous_support,
+                "current_runtime_support": copy.deepcopy(current_runtime_support),
+            },
+        )
+
+
 def authorize_tester_correction(
     repo_value: str | Path,
     run_value: str,
@@ -3469,73 +3541,10 @@ def authorize_tester_correction(
                 details={"current": current},
             )
 
-        from ..core import capture_runtime_identity
-
-        current_runtime_identity = capture_runtime_identity()
-        previous_runtime_identity = copy.deepcopy(ledger["runtime_identity"])
-        if current_runtime_identity != previous_runtime_identity:
-            if not allow_runtime_transition:
-                raise AssuranceError(
-                    "Tester correction authorization cannot change the frozen runtime identity",
-                    code="TESTER_CORRECTION_RUNTIME_IDENTITY_MISMATCH",
-                    status="NEEDS_USER",
-                    details={
-                        "expected_runtime_identity": previous_runtime_identity,
-                        "actual_runtime_identity": current_runtime_identity,
-                    },
-                )
-            if (
-                current_runtime_identity.get("capture_status") != "captured"
-                or current_runtime_identity.get("adapter_dirty") is not False
-            ):
-                raise AssuranceError(
-                    "Tester correction runtime transition requires a captured clean runtime",
-                    code="TESTER_CORRECTION_RUNTIME_TRANSITION_UNSAFE",
-                    status="NEEDS_USER",
-                    details={"actual_runtime_identity": current_runtime_identity},
-                )
-            current_runtime_support, _manifest, required_independent = (
-                _runtime_support_snapshot(repo, copy.deepcopy(ledger["facets"]))
-            )
-            _assert_runtime_support_contract(
-                ledger["facets"], current_runtime_support, required_independent
-            )
-            previous_support = copy.deepcopy(ledger["runtime_support"])
-            comparable_previous = {
-                key: value
-                for key, value in previous_support.items()
-                if key != "runtime_head"
-            }
-            comparable_current = {
-                key: value
-                for key, value in current_runtime_support.items()
-                if key != "runtime_head"
-            }
-            if comparable_current != comparable_previous:
-                raise AssuranceError(
-                    "Tester correction runtime support changed beyond the approved runtime commit",
-                    code="TESTER_CORRECTION_RUNTIME_SUPPORT_DRIFT",
-                    status="NEEDS_USER",
-                    details={
-                        "expected_runtime_support": previous_support,
-                        "actual_runtime_support": current_runtime_support,
-                    },
-                )
-            ledger["runtime_identity"] = current_runtime_identity
-            ledger["runtime_support"] = current_runtime_support
-            append_event(
-                ledger,
-                "runtime_identity_transitioned",
-                {
-                    "reason": normalized_reason,
-                    "architecture_action_id": action_id,
-                    "review_binding": review_binding,
-                    "previous_runtime_identity": previous_runtime_identity,
-                    "current_runtime_identity": copy.deepcopy(current_runtime_identity),
-                    "previous_runtime_support": previous_support,
-                    "current_runtime_support": copy.deepcopy(current_runtime_support),
-                },
-            )
+        _transition_recovery_runtime(
+            ledger, repo, allow_runtime_transition=allow_runtime_transition,
+            reason=normalized_reason, action_id=action_id, binding=review_binding,
+            error_prefix="TESTER_CORRECTION")
 
         authorization_payload = {
             "run_id": run_id,
@@ -4317,6 +4326,9 @@ def complete_dispatch(
                 },
             )
         result = validate_action_result(result, intent["action"])
+        if intent.get("role") == "reviewer" and intent.get("state") != "completed":
+            from .review_recovery import validate_result
+            validate_result(ledger, result)
         if intent.get("state") != "completed" and isinstance(result.get("problem_report"), Mapping):
             from .decision_requests import validate_report
             validate_report(ledger["facets"], result["problem_report"])
@@ -12139,6 +12151,25 @@ def _driver_evidence_view(ledger: Mapping[str, Any]) -> dict[str, Any]:
 
 
 
+def evidence_gate_view(ledger: Mapping[str, Any]) -> dict[str, Any]:
+    """Derive current validity; observed heads are immutable provenance, not validity."""
+    result = {}
+    for kind in EVIDENCE_KINDS:
+        record = ledger.get("evidence", {}).get(kind)
+        result[kind] = {
+            "state": evidence_state(ledger, kind),
+            "binding": "tester_source_and_integrated_blobs" if kind == "tester" else "candidate_inputs",
+            "observed_head": record.get("candidate_head") if isinstance(record, Mapping) else None,
+            "current_candidate": ledger["facets"]["execution"].get("candidate_head"),
+            "source_record_digest": digest(record) if isinstance(record, Mapping) else None,
+            "record_source": {"source": "persisted_run_ledger", "json_pointer": "/evidence/" + kind},
+            "recorded_dependency_digest": record.get("dependency_digest") if isinstance(record, Mapping) else None,
+            "current_dependency_digest": evidence_dependency(
+                ledger, kind, evidence=record if kind == "machine" else None),
+        }
+    return result
+
+
 def _driver_evidence_origin(ledger: Mapping[str, Any], view: Mapping[str, Any]) -> dict[str, Any]:
     """Bind the public proof-schema projection to its unchanged ledger source."""
     source_digest = digest(ledger.get("evidence", {}))
@@ -12151,6 +12182,7 @@ def _driver_evidence_origin(ledger: Mapping[str, Any], view: Mapping[str, Any]) 
 
 
 def driver_context(repo_value: str | Path, run_value: str) -> dict[str, Any]:
+    from .review_recovery import active_request
     repo = resolve_repo(repo_value)
     run_id = ensure_run_id(run_value)
     ledger = read_ledger(repo, run_id)
@@ -12193,6 +12225,8 @@ def driver_context(repo_value: str | Path, run_value: str) -> dict[str, Any]:
         "role_observations": role_observations(ledger),
         "evidence": evidence,
         "evidence_origin": _driver_evidence_origin(ledger, evidence),
+        "evidence_gates": evidence_gate_view(ledger),
+        "review_reconsideration": active_request(ledger),
         "publication": copy.deepcopy(ledger.get("publication")),
         "problems": effective_problems(ledger),
         "inherited_problem_review": inherited_review_input(ledger),
@@ -15622,6 +15656,8 @@ def record_evidence(
             raise AssuranceError("Final review must bind every inherited obligation to current passing evidence", code="INHERITED_PROBLEM_REVIEW_REQUIRED", status="NEEDS_USER")
         if role == "reviewer":
             _apply_observation_dispositions(ledger, report)
+            from .review_recovery import apply_disposition
+            apply_disposition(ledger, report)
         existing = ledger["evidence"].get(kind)
         if (
             isinstance(existing, dict)
@@ -17789,6 +17825,30 @@ def verify_machine(repo_value: str | Path, run_value: str, *,
     return _verify_stage(repo_value, run_value, "machine", action_id)
 
 
+def recovery_transaction_blockers(ledger: Mapping[str, Any]) -> list[str]:
+    blockers = _candidate_residue_transaction_blockers(ledger)
+    for field in ("candidate_residue_intent", "context_rotation_intent", "dispatch_rehydration_intent", "tester_replacement_intent"):
+        if ledger.get(field) is not None:
+            blockers.append(field)
+    # These slots retain observations after completion; existence is not liveness.
+    cleanup = ledger.get("transport_cleanup_intent")
+    transport = (ledger.get("driver_runtime") or {}).get("native_transport")
+    if cleanup is not None and not (
+        isinstance(cleanup, Mapping) and cleanup.get("state") == "completed"
+        and cleanup.get("process_group_gone") is True
+        and isinstance(transport, Mapping) and transport.get("state") == "cleaned"
+        and cleanup.get("source_generation") == transport.get("generation")
+        and cleanup.get("process_identity") == transport.get("process_identity")
+    ):
+        blockers.append("transport_cleanup_intent")
+    wait = ledger.get("deferred_wait")
+    if wait is not None and not (
+        isinstance(wait, Mapping) and wait.get("state") in {"idle", "terminal"}
+    ):
+        blockers.append("deferred_wait")
+    return blockers
+
+
 def recollect_machine_failure(repo_value: str | Path, run_value: str, *, session_id: str,
                               problem_key: str, action_id: str, failure_digest: str,
                               reason: str, driver_runtime_kind: str) -> dict[str, Any]:
@@ -17808,26 +17868,7 @@ def recollect_machine_failure(repo_value: str | Path, run_value: str, *, session
         if any(e.get("kind") == "machine_failure_recollected" and
                e.get("details", {}).get("binding_digest") == binding_digest for e in ledger["events"]):
             return status(repo, run_id)
-        blockers = _candidate_residue_transaction_blockers(ledger)
-        for field in ("candidate_residue_intent", "context_rotation_intent", "dispatch_rehydration_intent", "tester_replacement_intent"):
-            if ledger.get(field) is not None:
-                blockers.append(field)
-        # These slots retain observations after completion; existence is not liveness.
-        cleanup = ledger.get("transport_cleanup_intent")
-        transport = (ledger.get("driver_runtime") or {}).get("native_transport")
-        if cleanup is not None and not (
-            isinstance(cleanup, Mapping) and cleanup.get("state") == "completed"
-            and cleanup.get("process_group_gone") is True
-            and isinstance(transport, Mapping) and transport.get("state") == "cleaned"
-            and cleanup.get("source_generation") == transport.get("generation")
-            and cleanup.get("process_identity") == transport.get("process_identity")
-        ):
-            blockers.append("transport_cleanup_intent")
-        wait = ledger.get("deferred_wait")
-        if wait is not None and not (
-            isinstance(wait, Mapping) and wait.get("state") in {"idle", "terminal"}
-        ):
-            blockers.append("deferred_wait")
+        blockers = recovery_transaction_blockers(ledger)
         if blockers or ledger.get("hold"):
             raise AssuranceError("recollection conflicts with a pending transaction", code="MACHINE_RECOLLECTION_PENDING")
         from .driver import next_action

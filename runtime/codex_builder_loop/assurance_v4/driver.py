@@ -1248,6 +1248,18 @@ def next_action(
         problem: Mapping[str, Any], problems: list[dict[str, Any]]
     ) -> dict[str, Any]:
         owner = str(problem.get("owner"))
+        if owner == "builder_loop":
+            from .review_recovery import active_request, validate_current
+            request = active_request(ledger)
+            if request and request['problem_key'] == problem['key']:
+                try:
+                    validate_current(ledger, request)
+                except AssuranceError as exc:
+                    return decision("NEEDS_USER", "builder_loop_problem_decision", exc.code, problem=problem)
+                return decision("CONTINUE", request['action'], "review_problem_reconsideration",
+                                problem=problem, agent=ledger['facets']['execution']['agents']['reviewer'],
+                                candidate_worktree=ledger['candidate_worktree'])
+
         if owner == "builder":
             return decision(
                 "CONTINUE",
