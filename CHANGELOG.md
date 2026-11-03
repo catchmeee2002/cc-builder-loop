@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.4.14 — 2026-11-03
+
+- 支持 current_project 问题通过既有 Authority 事务批准精确 Builder 文件权限，保留原报告并交回原 Builder 修复。
+- 拒绝额外语义、其他权限、通配路径、Tester/受保护路径和未绑定 scope；授权不关闭业务问题或授予验收通过。
+- 绑定当前 owner/action/facet/replacement，并支持显式受限 runtime 迁移和事务幂等恢复。
+
 ## 0.4.13 — 2026-11-03
 
 - 向 Reviewer 显式提供 Core 派生的当前门禁状态及输入绑定，区分独立测试源码与候选执行证据，保留历史观察 HEAD。
