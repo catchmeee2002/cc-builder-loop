@@ -91,6 +91,8 @@ def parser() -> argparse.ArgumentParser:
     for field in ("run", "session-id", "problem-key", "action-id", "facet-digest", "contract", "replacement-digest"):
         authority.add_argument("--" + field, required=True)
     authority.add_argument("--authorize-expansion", action="store_true")
+    authority.add_argument("--allow-runtime-transition", action="store_true")
+    authority.add_argument("--reason")
     authority.add_argument("--driver-runtime-kind", choices=["native", "full_driver_skill"], required=True)
 
     start = commands.add_parser("start")
@@ -902,7 +904,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 session_id=args.session_id, problem_key=args.problem_key, action_id=args.action_id,
                 facet_digest=args.facet_digest, replacement_contract=_json(args.contract),
                 replacement_digest=args.replacement_digest, authorize_expansion=args.authorize_expansion,
-                driver_runtime_kind=args.driver_runtime_kind)
+                driver_runtime_kind=args.driver_runtime_kind, reason=args.reason,
+                allow_runtime_transition=args.allow_runtime_transition)
         elif args.command == "start":
             runtime = None
             driver_values = (

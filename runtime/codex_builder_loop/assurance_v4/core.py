@@ -12498,12 +12498,15 @@ def apply_authority_decision(
     repo_value: str | Path, run_value: str, *, session_id: str, problem_key: str,
     action_id: str, facet_digest: str, replacement_contract: Any,
     replacement_digest: str, authorize_expansion: bool, driver_runtime_kind: str,
+    allow_runtime_transition: bool = False, reason: str | None = None,
 ) -> dict[str, Any]:
-    """Atomically install a validated Authority and pending Builder scope extension."""
+    """Apply bound Builder authority and derive a project repair without closing its report."""
     from .driver import validate_decision
     repo, run_id = resolve_repo(repo_value), ensure_run_id(run_value)
     binding = {"session_id": session_id, "problem_key": problem_key, "action_id": action_id,
                "facet_digest": facet_digest, "replacement_digest": replacement_digest}
+    if reason is not None:
+        binding["reason"] = reason.strip()
     with locked(repo):
         ledger = read_ledger(repo, run_id)
         _require_driver_runtime_owner(ledger, driver_runtime_kind)
@@ -12522,13 +12525,27 @@ def apply_authority_decision(
             replacement_contract=validated)
         if preview['apply']['command'] != 'apply-authority-decision':
             raise AssuranceError('no linked scope extension requested', code='DECISION_SCOPE_INVALID', status='FAIL')
+        problem = next(p for p in ledger['problems'] if p['key'] == problem_key and p['status'] == 'open')
+        project_scope = problem['owner'] == 'current_project'
+        if project_scope:
+            if not isinstance(reason, str) or not reason.strip():
+                raise AssuranceError('project scope requires public repair instructions', code='DECISION_REASON_REQUIRED', status='FAIL')
+            if problem.get('inherited_from') or problem.get('observation_request'):
+                raise AssuranceError('project problem requires its own lifecycle', code='DECISION_PROBLEM_MISMATCH', status='FAIL')
+            _transition_recovery_runtime(ledger, repo, allow_runtime_transition=allow_runtime_transition,
+                reason=reason.strip(), action_id=action_id, binding=digest(binding), error_prefix='AUTHORITY_DECISION')
+        elif allow_runtime_transition or reason is not None:
+            raise AssuranceError('runtime transition is only supported for project scope recovery', code='DECISION_SCOPE_INVALID', status='FAIL')
+        identity = problem_identity(problem)
         # All checks precede this single ledger save; Git and role artifacts are untouched.
         old_digests = copy.deepcopy(ledger['digests'])
         ledger['facets'] = validated
         ledger['digests'] = facet_digests(validated)
-        problem = next(p for p in ledger['problems'] if p['key'] == problem_key and p['status'] == 'open')
-        problem.update(status='resolved', resolution='authority-scope-decision:' + replacement_digest, resolved_at=now())
+        if not project_scope:
+            problem.update(status='resolved', resolution='authority-scope-decision:' + replacement_digest, resolved_at=now())
         append_event(ledger, 'authority_scope_decision_applied', {
+            'problem_identity': identity, 'repair_owner': 'builder' if project_scope else None,
+            'repair_instructions': reason.strip() if project_scope else None,
             'binding': binding, 'old_digests': old_digests, 'new_digests': copy.deepcopy(ledger['digests']),
             'scope_additions': preview['scope_preview']['scope_additions'],
             'invalidated_evidence': preview['invalidated_evidence'],
@@ -13073,7 +13090,7 @@ def _close_problems(ledger: dict[str, Any], owner: str, resolution: str) -> None
     if owner in {"builder", "tester"}:
         _refresh_observation_requests(ledger)
     for item in ledger.get("problems", []):
-        if item.get("owner") == owner and item.get("status") == "open" and not item.get("observation_request") and not item.get("inherited_from"):
+        if effective_problem(ledger, item).get("owner") == owner and item.get("status") == "open" and not item.get("observation_request") and not item.get("inherited_from"):
             item["status"] = "resolved"
             item["resolution"] = resolution
             item["resolved_at"] = now()

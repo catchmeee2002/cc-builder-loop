@@ -28,6 +28,7 @@ def problem_identity(problem: Mapping[str, Any]) -> str:
 def effective_problem(ledger: Mapping[str, Any], problem: Mapping[str, Any]) -> dict[str, Any]:
     result = copy.deepcopy(dict(problem))
     identity = problem_identity(problem)
+    repair_instructions = None
     for event in ledger.get('events', []):
         details = event.get('details', {})
         if details.get('problem_identity') != identity:
@@ -39,8 +40,13 @@ def effective_problem(ledger: Mapping[str, Any], problem: Mapping[str, Any]) -> 
               and result.get('status') == 'resolved'):
             result['decision_resolution'] = {
                 'disposition': 'retain_contract', 'reason': details['reason']}
+        elif event['kind'] == 'authority_scope_decision_applied' and details.get('repair_owner') == 'builder':
+            result['owner'] = 'builder'
+            repair_instructions = details['repair_instructions']
         elif event['kind'] == 'decision_request_corrected':
             result['decision_request'] = copy.deepcopy(details['request'])
+    if repair_instructions is not None:
+        result['details'] += '\nAuthorized repair scope: ' + repair_instructions
     if result.get("inherited_from"):
         from .inherited import inherited_resolved
         if inherited_resolved(ledger):

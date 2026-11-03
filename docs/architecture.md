@@ -887,6 +887,13 @@ ownership、保护路径和事务冲突；角色身份、工作单元身份、�
 已有 scope 的 run 不允许先扩大 Authority 再补 scope；未声明 scope 的旧 contract 保持原 facet-only
 行为。候选和历史 evidence 不被重写，是否仍有效按新输入 digest 派生。
 
+已登记的 `current_project` 问题可复用同一预检与 Authority 事务，仅追加精确 Builder 文件权限。
+目标、验收、其他权限与执行事实保持；所有 Builder 单元已完成时，后续修复使用现有无 work-unit 的 Builder correction 路径，
+不改已完成单元 scope 或重置其完成事实；仍有未完成单元时，新增 scope 只允许扩展该未完成单元。
+事务须绑定 owner、当前 action、原 facet 和完整 replacement digest，并显式授权及提供公开修复说明。
+批准记录只把该问题的当前修复责任派生为 Builder，不改写原报告或直接关闭业务问题；原 Builder checkpoint
+按既有规则完成修复登记，真实受影响的门禁仍须重验。新执行器须显式经过受限 runtime 迁移，不能隐式热换。
+
 联动事务绑定完整 replacement digest，写入失败不留下半更新，已写入后的重提为幂等。
 publication path、dirty intake、歧义/缺失 key、stale handoff 或已关闭 problem 的冲突决定均在写入前
 拒绝；旧 problem 缺 `decision_request` 时只允许显式 facet fallback。该路径复用 ledger 事务与原生

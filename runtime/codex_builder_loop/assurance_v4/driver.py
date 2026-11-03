@@ -675,9 +675,10 @@ def validate_decision(
         )
     current = next_action(repo, run_id)
     current_problem = current.get("problem")
+    decision_owners = {"contract_decision": "plan", "current_project_problem_decision": "current_project"}
     if (
         current.get("status") != "NEEDS_USER"
-        or current.get("action") != "contract_decision"
+        or current.get("action") not in decision_owners
         or current.get("action_id") != action_id
     ):
         raise AssuranceError(
@@ -692,7 +693,7 @@ def validate_decision(
     if (
         not isinstance(current_problem, Mapping)
         or current_problem.get("key") != problem_key
-        or current_problem.get("owner") != "plan"
+        or current_problem.get("owner") != decision_owners.get(current.get("action"))
         or current_problem.get("status") != "open"
     ):
         raise AssuranceError(
@@ -713,6 +714,10 @@ def validate_decision(
             },
         )
 
+    project_scope = current_problem.get("owner") == "current_project"
+    if project_scope and (facet != "authority" or retain_contract):
+        raise AssuranceError("project recovery only grants exact Builder paths",
+                             code="DECISION_FACET_UNSUPPORTED", status="FAIL")
     request = current_problem.get("decision_request")
     if isinstance(request, Mapping):
         requested_facet = request.get("facet")
@@ -818,7 +823,7 @@ def validate_decision(
     else:
         if facet == "authority":
             from .decision_requests import authority_scope_preview
-            scope_preview = authority_scope_preview(ledger, replacement)
+            scope_preview = authority_scope_preview(ledger, replacement, project_repair=project_scope)
         if facet != "authority" and replacement["execution"] != current_contract["execution"]:
             raise AssuranceError(
                 "replacement contract changed execution facts",
@@ -866,7 +871,7 @@ def validate_decision(
             current_contract["assurance"], replacement["assurance"]
         ):
             authorization_flags.append("authorize_downgrade")
-        command = "apply-authority-decision" if scope_preview and scope_preview["linked"] else "update-facet"
+        command = "apply-authority-decision" if project_scope or (scope_preview and scope_preview["linked"]) else "update-facet"
 
     digests = facet_digests(replacement)
     replacement_ledger = copy.deepcopy(ledger)

@@ -165,7 +165,7 @@ def validate_report(facets: Mapping[str, Any], report: Mapping[str, Any]) -> Non
                 }) from exc
 
 
-def authority_scope_preview(ledger: Mapping[str, Any], replacement: Mapping[str, Any]) -> dict[str, Any]:
+def authority_scope_preview(ledger: Mapping[str, Any], replacement: Mapping[str, Any], *, project_repair: bool = False) -> dict[str, Any]:
     """Validate exact path additions and their work-unit dependency closure together."""
     from . import core
     old = ledger['facets']
@@ -176,7 +176,7 @@ def authority_scope_preview(ledger: Mapping[str, Any], replacement: Mapping[str,
     linked = old_exec != new_exec
     def reject(code, **facts):
         problems.append({'code': code, **facts})
-    if linked:
+    if linked or project_repair:
         rest = copy.deepcopy(new_exec)
         rest['work_units'] = copy.deepcopy(old_units)
         if rest != old_exec or len(old_units) != len(new_units):
@@ -186,7 +186,14 @@ def authority_scope_preview(ledger: Mapping[str, Any], replacement: Mapping[str,
         if unchanged != before or not set(before['builder_write']).issubset(after['builder_write']):
             reject('AUTHORITY_NOT_ADDITIVE_BUILDER_PATHS')
     added = sorted(set(after['builder_write']) - set(before['builder_write']))
+    if project_repair and not added:
+        reject("EXACT_PATH_ADDITION_REQUIRED")
     completed = core._completed_work_unit_ids(ledger)
+    builders = [u for u in old_units if u['role'] == 'builder']
+    post_completion_repair = project_repair and not linked and bool(builders) and all(
+        u['id'] in completed for u in builders)
+    scope_required = linked or any(
+        u.get('scope', {}).get('paths') for u in (builders if project_repair else old_units))
     assignments = []
     for first, second in zip(old_units, new_units):
         if first == second:
@@ -202,7 +209,7 @@ def authority_scope_preview(ledger: Mapping[str, Any], replacement: Mapping[str,
                 reject('WORK_UNIT_PATH_NOT_AUTHORIZED', path=path)
     paths = sorted(set(added + [a['path'] for a in assignments]))
     # Legacy runs without work units retain their existing facet-only behavior.
-    if linked or any(u.get('scope', {}).get('paths') for u in old_units):
+    if project_repair or linked or any(u.get('scope', {}).get('paths') for u in old_units):
         for path in paths:
             if (any(c in path for c in '*?[') or str(PurePosixPath(path)) != path
                     or '\\' in path or path.startswith(('.git/', '.codex/', '.agents/'))
@@ -213,11 +220,12 @@ def authority_scope_preview(ledger: Mapping[str, Any], replacement: Mapping[str,
             protected = list(before.get('protected_support_paths', [])) + list(before.get('public_prerequisites', []))
             if core._matches(path, protected):
                 reject('PROTECTED_OR_PUBLISHED_PATH', path=path)
-            if not any(u['role'] == 'builder' and u['id'] not in completed
-                       and core._matches(path, u['scope']['paths']) for u in new_units):
+            if not post_completion_repair and scope_required and not any(
+                    u['role'] == 'builder' and u['id'] not in completed
+                    and core._matches(path, u['scope']['paths']) for u in new_units):
                 reject('MISSING_PENDING_BUILDER_SCOPE', path=path)
-    if linked:
-        blockers = core._candidate_residue_transaction_blockers(ledger)
+    if linked or project_repair:
+        blockers = core.recovery_transaction_blockers(ledger)
         for field in ('candidate_residue_intent', 'context_rotation_intent', 'dispatch_rehydration_intent', 'tester_replacement_intent'):
             if ledger.get(field) is not None:
                 blockers.append(field)
@@ -226,4 +234,5 @@ def authority_scope_preview(ledger: Mapping[str, Any], replacement: Mapping[str,
     if problems:
         raise core.AssuranceError('authority change is not jointly executable',
             code='DECISION_SCOPE_INVALID', status='FAIL', details={'blockers': problems})
-    return {'added_paths': added, 'scope_additions': assignments, 'linked': linked}
+    return {'added_paths': added, 'scope_additions': assignments, 'linked': linked,
+            'post_completion_repair': post_completion_repair}
