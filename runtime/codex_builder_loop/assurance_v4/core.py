@@ -3408,10 +3408,16 @@ def authorize_tester_correction(
     reason: str,
     driver_runtime_kind: str,
     allow_runtime_transition: bool = False,
+    author_instructions: str | None = None,
 ) -> dict[str, Any]:
     repo = resolve_repo(repo_value)
     run_id = ensure_run_id(run_value)
     normalized_reason = reason.strip()
+    if author_instructions is not None and (
+        not isinstance(author_instructions, str) or not author_instructions.strip()
+    ):
+        raise AssuranceError("public author instructions must be non-empty text",
+                             code="TESTER_CORRECTION_INSTRUCTIONS_INVALID", status="FAIL")
     if not normalized_reason:
         raise AssuranceError(
             "Tester correction authorization requires a non-empty reason",
@@ -3437,7 +3443,8 @@ def authorize_tester_correction(
             and event["details"].get("review_binding") == review_binding
         ]
         if matching:
-            if len(matching) != 1 or matching[0].get("reason") != normalized_reason:
+            if (len(matching) != 1 or matching[0].get("reason") != normalized_reason
+                    or matching[0].get("author_instructions") != author_instructions):
                 raise AssuranceError(
                     "Tester correction authorization replay conflicts with the recorded decision",
                     code="TESTER_CORRECTION_AUTHORIZATION_CONFLICT",
@@ -3530,15 +3537,16 @@ def authorize_tester_correction(
                 },
             )
 
-        authorization_id = digest(
-            {
-                "run_id": run_id,
-                "architecture_action_id": action_id,
-                "review_binding": review_binding,
-                "reason": normalized_reason,
-                "runtime_identity": ledger["runtime_identity"],
-            }
-        )
+        authorization_payload = {
+            "run_id": run_id,
+            "architecture_action_id": action_id,
+            "review_binding": review_binding,
+            "reason": normalized_reason,
+            "runtime_identity": ledger["runtime_identity"],
+        }
+        if author_instructions is not None:
+            authorization_payload["author_instructions"] = author_instructions
+        authorization_id = digest(authorization_payload)
         append_event(
             ledger,
             "tester_correction_authorized",
@@ -3548,6 +3556,7 @@ def authorize_tester_correction(
                 "review_binding": review_binding,
                 "reason": normalized_reason,
                 "runtime_identity": copy.deepcopy(ledger["runtime_identity"]),
+                **({"author_instructions": author_instructions} if author_instructions is not None else {}),
             },
         )
         save_ledger(repo, ledger)

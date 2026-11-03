@@ -175,6 +175,7 @@ def parser() -> argparse.ArgumentParser:
     authorize_tester_correction.add_argument("--action-id", required=True)
     authorize_tester_correction.add_argument("--review-binding", required=True)
     authorize_tester_correction.add_argument("--reason", required=True)
+    authorize_tester_correction.add_argument("--author-instructions", help="Explicit public correction guidance for the bound Tester; excludes candidate implementation and audit metadata")
     authorize_tester_correction.add_argument(
         "--driver-runtime-kind",
         choices=["native", "full_driver_skill"],
@@ -1021,6 +1022,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 reason=args.reason,
                 driver_runtime_kind=args.driver_runtime_kind,
                 allow_runtime_transition=args.allow_runtime_transition,
+                author_instructions=args.author_instructions,
             )
         elif args.command == "resolve-candidate-residue":
             payload = core.resolve_candidate_residue(

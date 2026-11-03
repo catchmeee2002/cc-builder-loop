@@ -1039,6 +1039,21 @@ def _dispatch_action(
                 "worktree": recomposition.get("tester_worktree"),
                 "head": recomposition.get("tester_head"),
             }
+    if action == "tester_fix":
+        # Recover from the original authorization event, including after consumption.
+        consumed_ids = {
+            e.get("details", {}).get("authorization_id") for e in ledger.get("events", [])
+            if e.get("kind") == "tester_correction_authorization_consumed"
+            and e.get("details", {}).get("tester_fix_action_id") == pending.get("action_id")
+        }
+        matches = [e["details"] for e in ledger.get("events", [])
+                   if e.get("kind") == "tester_correction_authorized"
+                   and e.get("details", {}).get("authorization_id") in consumed_ids]
+        if consumed_ids and (len(consumed_ids) != 1 or len(matches) != 1):
+            raise AssuranceError("dispatch lost its unique correction authorization",
+                                 code="TESTER_CORRECTION_AUTHORIZATION_MISSING", status="NEEDS_USER")
+        if len(matches) == 1:
+            payload["tester_correction_authorization"] = copy.deepcopy(matches[0])
     if action == "tester_proof_diagnose":
         failure = current_proof_failure(ledger)
         if not isinstance(failure, Mapping) and pending.get("state") != "completed":

@@ -32,7 +32,7 @@ AUTHOR_FIELDS = (
     "contract", "target_start_head", "publication", "problems", "tester_worktree",
     "work_unit_id", "work_unit", "problem_report_schema", "evidence_report_schema",
     "result_field_contract", "test_identity_contract", "author_result_contract",
-    "role_phase_instructions",
+    "role_phase_instructions", "tester_correction_instructions",
 )
 
 
@@ -117,6 +117,11 @@ def project_role_input(payload: Mapping[str, Any]) -> dict[str, Any]:
     if result.get("action") not in AUTHOR_ACTIONS:
         return result
     result = _pick(result, AUTHOR_FIELDS)
+    if result.get("action") != "tester_fix":
+        result.pop("tester_correction_instructions", None)
+    elif "tester_correction_instructions" in result:
+        result["tester_correction_instructions"] = _pick(
+            result["tester_correction_instructions"], ("text",))
     facets = result.get("contract") or {}
     execution = facets.get("execution") or {}
     source = _public_source(execution.get("tester_source"))
@@ -235,6 +240,10 @@ def build_role_input(context: Mapping[str, Any], action: Mapping[str, Any], role
         "inherited_problem_review": context.get("inherited_problem_review") if role == "reviewer" else None,
         "role_observations": observations,
     }
+    if role == "tester" and action["action"] == "tester_fix":
+        authorization = action.get("tester_correction_authorization")
+        if isinstance(authorization, Mapping) and isinstance(authorization.get("author_instructions"), str):
+            payload["tester_correction_instructions"] = {"text": authorization["author_instructions"]}
     if action.get("work_unit_id") is not None:
         payload["work_unit_id"] = action["work_unit_id"]
         payload["work_unit"] = copy.deepcopy(action.get("work_unit"))
