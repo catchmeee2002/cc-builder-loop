@@ -1,6 +1,6 @@
 # 文档维护原则
 
-> 适用所有 .md 文档和 memory 的维护。「该写哪、该删哪、该不该写」一律按本文件判断。
+> 适用所有 .md 文档和 memory 的维护。「该写哪、该删哪、该不该写」一律按本文件判断。Builder 写文档前（step 3.5）读取，Reviewer Phase D 按本文件审查。
 
 ---
 
@@ -21,24 +21,31 @@
 
 ## 1. 容器矩阵
 
+> **语境映射**：表中 `CLAUDE.md` 指「当前 Agent 的主文档」——Claude Code 侧是 `CLAUDE.md`，Codex 侧是 `AGENTS.md`，按执行 Agent 换算，其余判据不变。
+
 | 内容类型 | 应该去 | 禁止去 |
 |---|---|---|
 | **模块导航 + 何时读** | CLAUDE.md（唯一归宿） | — |
 | **架构决策**（系统怎么设计 / 为什么这么选） | CLAUDE.md 或 `docs/ARCHITECTURE.md` | — |
-| **外部契约约束**（QNX 限制、字段被外部消费、协议要求等） | CLAUDE.md「核心约束」段 | — |
-| **AI 协作隐式约束**（修 X 前先读 Y、测试要 mock Z、Agent 工具坑、bash 陷阱、subagent 注意事项） | 当前 Agent 的 memory | ❌ CLAUDE.md |
-| **改动史**（issue/任务/实验编号、版本改动） | git log + `CHANGELOG.md` | ❌ CLAUDE.md |
-| **当前快照**（模型选型、实验数据、性能数字、测试通过率） | 按 §3 | ❌ CLAUDE.md / ❌ 新建 `docs/state-*.md` |
+| **外部契约约束**（QNX 限制、字段被外部消费、协议要求等接手者必须知道的事） | CLAUDE.md「核心约束」段 | — |
+| **AI 协作隐式约束**（修 X 前先读 Y、测试要 mock Z、Agent 工具坑、bash 陷阱、subagent 调用注意）<br>**限本仓改不动的外部行为**；"夹具写得不对"这类本仓可修的，按 §0a 处理 | 当前 Agent 的项目记忆（路径见下） | ❌ CLAUDE.md |
+| **改动史**（issue/任务/实验编号、哪个版本改了啥） | git log + `CHANGELOG.md` | ❌ CLAUDE.md |
+| **待办 / 路线图**（要做的事、进行中的任务、计划项） | 责任仓库的 Issue；本地 plan 例外见 §3 | ❌ CLAUDE.md / ❌ README 的 TODO 段 |
+| **当前快照**（模型选型、实验数据、性能数字、测试通过率、模型推荐） | 配置文件 / 数据库 / 自动生成报告（详见 §3） | ❌ CLAUDE.md / ❌ 新建 `docs/state-*.md` |
 | **Debug 记录**（coredump、call stack、失败测试名、hex 地址） | `docs/known-issues.md` 或 `docs/bug-*.md` | ❌ CLAUDE.md |
 | **API 签名 / 字段定义 / JSON schema** | 代码 docstring / `models.py` / schema 文件 | ❌ 任何 .md |
 
-**踩坑 / 约束类判别**：把这个仓交给一支纯人工新团队，他们也要知道吗？是 → CLAUDE.md「核心约束」；否 → 当前 Agent 的 memory。
+**判别简记**：先过 §0 / §0a 两道闸，再按容器归位。
 
-### Memory 路径
+> memory 是兜底容器。先排除可修缺陷；不属于团队文档的内容，不自动归入 memory。
 
-- Claude Code：`~/.claude/projects/<project-hash>/memory/`。
-- Codex：`~/.codex/memories/`；`MEMORY.md` 作总索引，项目细节放 `projects/<project-key>/`，`memory_summary.md` 只放简短路由。
-- 按当前执行的 Agent 选路径，禁止写入另一个 Agent 的 memory 目录。
+### Memory 路径分流
+
+- Claude Code / CC 写入 `~/.claude/projects/<project-hash>/memory/`。
+- Codex 写入 `~/.codex/memories/`：`MEMORY.md` 作总索引，项目细节放 `projects/<project-key>/`，`memory_summary.md` 只放简短路由。
+- 必须按当前执行 Agent 选择路径，禁止跨 Agent 写入另一方的 memory 目录。
+
+**踩坑 / 约束类判别**：把这个仓交给一支纯人工新团队，他们也要知道吗？是 → CLAUDE.md「核心约束」；否 → 再判断是否属于当前 Agent 的 memory。
 
 ---
 
@@ -53,44 +60,59 @@
 
 ## 3. 快照沉结构化通道
 
+> 本节是「快照」处理的**唯一权威定义**。§1 表（当前快照行）、§4（保质期）、§5（checklist）凡涉及快照，判断一律回到本节，不在别处重复展开规则。
+
 「当前 / 最近 / 正在 / 实验编号验证 / 推荐配置」类快照不写 .md，按下表归位：
 
 | 快照内容 | 应该去 |
 |---|---|
 | 模型选型 / 运行参数 / 阈值 | 配置文件（如 `novel.yml` / `config.py` / `.env`） |
 | 实验数据 / 性能数字 / 测试通过率 | DB / `*.jsonl` / 自动生成的 report.md |
-| 历史改动 | git log + CHANGELOG（过去时态） |
-| 进行中的事 | `docs/plan.md` |
+| 历史改动 | git log + CHANGELOG（**过去时态**写，不维护「当前」） |
+| 进行中的事 / 待办 | 责任仓库的 Issue；只有没有远端仓库、无法提 Issue 时才用本地 `docs/plan.md`，并加 §4 保质期 |
 
-确实无法结构化的，只写在一处，并加 §4 保质期。
+### 待办的单一真相源：Issue
+
+- 待办统一进入责任仓库的 Issue；提交按当前 Agent 的提 Issue Skill 执行，依据 remote 选择 GitHub/GitLab，并遵守其授权、查重和证据规则。
+- .md 只留一行指针（Issue 链接 / label 查询命令），不镜像 Issue 列表、状态或进度。
+- 只有没有远端仓库、无法提 Issue 时才用本地 `docs/plan.md`，并加 §4 保质期。连接或认证失败先处理环境问题，不改用本地 plan。
+- 无法结构化的其他快照只写在一处，并加 §4 保质期。
 
 ---
 
-## 4. 保质期
+## 4. 保质期规则
 
-.md 里的快照 / 调试记录 / 临时决策，节首必须标：
+任何快照 / 调试记录 / 临时决策出现在 .md 里，**节首必须标**：
 
 ```
 [保质期: <事件 or YYYY-MM-DD>, owner: <name>, 正向归宿: <配置/DB/CHANGELOG 路径>]
 ```
 
-例：`[保质期: exp-024 完成, owner: hongyu, 正向归宿: novel.yml model_config 段]`
+例：
 
-- 豁免：架构决策、外部契约约束。
-- 没有保质期标注的快照，任何人都可以删。
+```
+[保质期: exp-024 完成, owner: hongyu, 正向归宿: novel.yml model_config 段]
+[保质期: 2026-08-01 复审, owner: hongyu, 正向归宿: docs/known-issues.md]
+```
+
+**豁免**：「架构决策」「外部契约约束」两类——本身就是稳定知识，加保质期反而误导。
+
+无保质期标注的快照内容 = 谁看到谁有权删。
 
 ---
 
 ## 5. 落笔前 checklist
 
 - [ ] §0 / §0a 两道闸都过了吗？没过 → 不写
+- [ ] 待办按 §3 进入 Issue；仅无远端仓库、无法提 Issue 时使用本地 plan
 - [ ] §1：属于哪类容器？不在表内 → 默认不写
 - [ ] **三问自检**（全 ✅ 才动手，任一 ❌ → 换容器或换写法）：① 3 个月后还成立吗？② 能从 git log / 配置 / DB / 自动报告复原吗（能 → 不写）？③ 含会漂移的标识符吗（issue/实验编号、版本号、字段名/路径、hex/堆栈、性能数字、模型名、命令输出 → 进 CHANGELOG / 子文档，CLAUDE.md 只留一行指针）？
 - [ ] CLAUDE.md 改完 ≤ 200 行
 - [ ] 快照类按 §3 归位，写进 .md 的加 §4 保质期
+- [ ] 写完反向核对：能从 git log / 配置 / 自动报告恢复的内容 → 删
 - [ ] 章节按 §7 归位
 - [ ] 进展 / 状态按 §8 覆写
-- [ ] **写法：写触发器不写事故**——写成可复用的条件→动作规则（"修改 X 时，先检查 Y，再跑 Z"），不写历史叙事（"上次改 X 时没找到 Y"）。
+- [ ] **写法：写触发器不写事故**——写成可复用的条件→动作规则，不写历史叙事。
 - [ ] **写法：AI 指令按最小集**——写给 AI 的工作规范和指令时，按最小集维护：写「做什么、不做什么、怎么做」，不写设计意图、背景考虑、字段去向或实现原理等解释性内容。
 
 ---
@@ -133,3 +155,12 @@
 - 进展 / 状态：覆写为当前态，不追加。
 - 过期历史：删除，或以过去时态归 CHANGELOG，不堆进进展节。
 - 承重决策理由：放决策节或 CHANGELOG，不混进进展节。
+
+---
+
+## 9. builder-loop runtime 契约
+
+> 本节只对 builder-loop 的执行者成立，不构成对文档内容的判断规则。
+
+- **Builder 负责写文档；Reviewer 独立判断**是否该写、写到哪里、是否与代码和计划一致。
+- **本文件不可读取时停止 Phase D**，不自行发明替代规则。
