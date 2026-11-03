@@ -60,7 +60,7 @@
 | 模型选型 / 运行参数 / 阈值 | 配置文件（如 `novel.yml` / `config.py` / `.env`） |
 | 实验数据 / 性能数字 / 测试通过率 | DB / `*.jsonl` / 自动生成的 report.md |
 | 历史改动 | git log + CHANGELOG（过去时态） |
-| 进行中的事 | `docs/plan.md` |
+| 进行中的事 | issue tracker（有 GitHub/GitLab 的仓库，完成的关掉）；无 tracker 时兜底 `docs/plan.md`（覆写维护，不 append） |
 
 确实无法结构化的，只写在一处，并加 §4 保质期。
 
