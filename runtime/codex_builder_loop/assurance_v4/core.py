@@ -7049,6 +7049,8 @@ def resolve_candidate_residue(
     repo_value: str | Path,
     run_value: str,
     request_value: Any,
+    *, allow_runtime_transition: bool = False, owner_session_id: str | None = None,
+    driver_runtime_kind: str | None = None,
 ) -> dict[str, Any]:
     """Remove one exact ignored-file manifest without changing delivery facts."""
 
@@ -7065,6 +7067,10 @@ def resolve_candidate_residue(
     run_id = ensure_run_id(run_value)
     with locked(repo):
         ledger = read_ledger(repo, run_id)
+        if allow_runtime_transition:
+            if owner_session_id != ledger.get("owner_session_id"):
+                raise AssuranceError("residue runtime transition requires the run owner", code="CANDIDATE_RESIDUE_OWNER_MISMATCH")
+            _require_driver_runtime_owner(ledger, driver_runtime_kind)
         intent = ledger.get("candidate_residue_intent")
         completed = [
             event
@@ -7355,6 +7361,10 @@ def resolve_candidate_residue(
                 )
 
         assert isinstance(intent, dict)
+        if allow_runtime_transition:
+            _transition_recovery_runtime(ledger, repo, allow_runtime_transition=True,
+                reason=request['reason'], action_id=request_digest, binding=request_digest,
+                error_prefix='CANDIDATE_RESIDUE')
         intent["state"] = "deleting"
         intent["updated_at"] = now()
         save_ledger(repo, ledger)
@@ -9724,6 +9734,7 @@ def _quarantine_candidate_residue_file(
                             quarantine_name,
                             normalized,
                             expected_sha256,
+                            request_digest=ledger["candidate_residue_intent"]["request_digest"],
                         )
                     return
                 _raise_candidate_residue_drift(
@@ -9863,6 +9874,7 @@ def _quarantine_candidate_residue_file(
             quarantine_name,
             normalized,
             expected_sha256,
+            request_digest=ledger["candidate_residue_intent"]["request_digest"],
         )
         return
     finally:
@@ -9871,17 +9883,52 @@ def _quarantine_candidate_residue_file(
                 os.close(fd)
 
 
+def _restore_candidate_residue_exchange(directory_fd, name, tombstone, relative, expected_sha256):
+    """Reverse an interrupted exchange only when both named inodes match the request."""
+    opened = []
+    try:
+        flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
+        source = os.open(name, flags, dir_fd=directory_fd)
+        opened.append(source)
+        before = os.fstat(source)
+        if not stat.S_ISREG(before.st_mode) or before.st_size != 0:
+            return
+        if expected_sha256 == hashlib.sha256(b'').hexdigest():
+            return
+        saved = os.open(tombstone, flags, dir_fd=directory_fd)
+        opened.append(saved)
+        saved_before = os.fstat(saved)
+        if (not stat.S_ISREG(saved_before.st_mode)
+                or _candidate_residue_fd_sha256(saved) != expected_sha256
+                or _candidate_residue_content_identity(saved_before) != _candidate_residue_content_identity(os.fstat(saved))):
+            raise OSError('interrupted exchange content changed')
+        for fd, entry in ((source, name), (saved, tombstone)):
+            if _candidate_residue_file_identity(os.fstat(fd)) != _candidate_residue_file_identity(
+                    os.stat(entry, dir_fd=directory_fd, follow_symlinks=False)):
+                raise OSError('interrupted exchange identity changed')
+        _candidate_residue_exchange_verified_entry(directory_fd, name,
+            _candidate_residue_file_identity(before), tombstone,
+            _candidate_residue_file_identity(saved_before))
+    except OSError as exc:
+        _raise_candidate_residue_drift('candidate residue interrupted exchange is unverified', relative, exc)
+    finally:
+        for fd in opened:
+            os.close(fd)
+
+
 def _remove_quarantined_candidate_residue(
     quarantine_fd: int,
     quarantine_name: str,
     relative: str,
     expected_sha256: str,
+    *, request_digest: str,
 ) -> None:
     file_fd = -1
     tombstone_fd = -1
-    tombstone_name = f".{quarantine_name}.delete"
+    tombstone_name = f".{quarantine_name}.{request_digest}.delete"
     tombstone_identity: tuple[int, int, int] | None = None
     try:
+        _restore_candidate_residue_exchange(quarantine_fd, quarantine_name, tombstone_name, relative, expected_sha256)
         try:
             tombstone_fd, tombstone_identity = _candidate_residue_create_tombstone(
                 quarantine_fd,

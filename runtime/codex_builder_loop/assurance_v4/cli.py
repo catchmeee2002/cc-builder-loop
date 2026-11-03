@@ -201,6 +201,9 @@ def parser() -> argparse.ArgumentParser:
     resolve_candidate_residue.add_argument("--repo", default=".")
     resolve_candidate_residue.add_argument("--run", required=True)
     resolve_candidate_residue.add_argument("--request", required=True)
+    resolve_candidate_residue.add_argument("--allow-runtime-transition", action="store_true")
+    resolve_candidate_residue.add_argument("--owner-session-id")
+    resolve_candidate_residue.add_argument("--driver-runtime-kind", choices=["native", "full_driver_skill"])
 
     apply_engineering_correction = commands.add_parser(
         "apply-engineering-correction"
@@ -1048,6 +1051,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.repo,
                 args.run,
                 _json(args.request),
+                allow_runtime_transition=args.allow_runtime_transition,
+                owner_session_id=args.owner_session_id, driver_runtime_kind=args.driver_runtime_kind,
             )
         elif args.command == "apply-engineering-correction":
             payload = core.apply_engineering_correction(

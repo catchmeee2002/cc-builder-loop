@@ -56,6 +56,125 @@ class CandidateResidueRecoveryContractTest(unittest.TestCase):
         resolver = getattr(core, "resolve_candidate_residue")
         return resolver(self.repo, run_id, request)
 
+    def test_repeated_identical_residue_uses_separate_transaction_tombstones(self):
+        run = "repeated-residue"
+        started, root = self.start(run)
+        candidate = Path(started["candidate_worktree"])
+        for key in ("first-cleanup", "second-cleanup"):
+            files = self.make_residue(candidate, "cache/one.pyc")
+            request = self.request(self.record_problem(run, root, key=key), files, key=key)
+            self.resolve(run, request)
+        saved = list((root / "candidate-residue-quarantine").glob("*.delete"))
+        self.assertEqual(len(saved), 2)
+        self.assertEqual(saved[0].read_bytes(), saved[1].read_bytes())
+        self.assertIsNone(read_ledger(self.repo, run).get("candidate_residue_intent"))
+
+    def test_legacy_tombstone_collision_resumes_existing_deleting_intent(self):
+        run = "legacy-collision"
+        started, root = self.start(run)
+        candidate = Path(started["candidate_worktree"])
+        files = self.make_residue(candidate, "cache/one.pyc")
+        request = self.request(self.record_problem(run, root), files)
+        content = (candidate / files[0]["path"]).read_bytes()
+        directory = root / "candidate-residue-quarantine"
+        directory.mkdir()
+        name = core._candidate_residue_quarantine_name(files[0]["path"], files[0]["sha256"])
+        legacy = directory / f".{name}.delete"
+        legacy.write_bytes(content)
+        with patch.object(core, "_remove_quarantined_candidate_residue", side_effect=RuntimeError("legacy collision")):
+            with self.assertRaises(RuntimeError):
+                self.resolve(run, request)
+        pending = read_ledger(self.repo, run)
+        self.assertEqual(pending["candidate_residue_intent"]["state"], "deleting")
+        self.assertFalse((candidate / files[0]["path"]).exists())
+        self.assertEqual((directory / name).read_bytes(), content)
+        self.resolve(run, request)
+        after = read_ledger(self.repo, run)
+        self.assertEqual(legacy.read_bytes(), content)
+        self.assertEqual(after["facets"], pending["facets"])
+        self.assertEqual(sum(e["kind"] == "candidate_residue_intent_written" for e in after["events"]), 1)
+
+    def test_interrupted_exchange_resumes_without_losing_preserved_content(self):
+        self._exercise_interrupted_exchange(tamper=False)
+
+    def test_interrupted_exchange_rejects_modified_preserved_content(self):
+        self._exercise_interrupted_exchange(tamper=True)
+
+    def _exercise_interrupted_exchange(self, *, tamper):
+        run = "exchange-tamper" if tamper else "exchange-resume"
+        started, root = self.start(run)
+        candidate = Path(started["candidate_worktree"])
+        files = self.make_residue(candidate, "cache/one.pyc")
+        request = self.request(self.record_problem(run, root), files)
+        content = (candidate / files[0]["path"]).read_bytes()
+        with patch.object(core, "_candidate_residue_unlink_fd_entry", side_effect=RuntimeError("process interrupted")):
+            with self.assertRaises(RuntimeError):
+                self.resolve(run, request)
+        directory = root / "candidate-residue-quarantine"
+        saved = next(directory.glob("*.delete"))
+        self.assertEqual(saved.read_bytes(), content)
+        if tamper:
+            saved.write_bytes(b"external replacement")
+            with self.assertRaises(core.AssuranceError) as raised:
+                self.resolve(run, request)
+            self.assertEqual(raised.exception.code, "CANDIDATE_RESIDUE_REPLAY_DRIFT")
+            self.assertEqual(saved.read_bytes(), b"external replacement")
+            self.assertEqual(read_ledger(self.repo, run)["candidate_residue_intent"]["state"], "deleting")
+        else:
+            self.resolve(run, request)
+            self.assertEqual(saved.read_bytes(), content)
+            self.assertIsNone(read_ledger(self.repo, run).get("candidate_residue_intent"))
+
+    def test_residue_runtime_transition_requires_exact_owner(self):
+        run = "residue-owner"
+        started, root = self.start(run)
+        candidate = Path(started["candidate_worktree"])
+        files = self.make_residue(candidate, "cache/one.pyc")
+        request = self.request(self.record_problem(run, root), files)
+        before = (root / "ledger.json").read_bytes()
+        with self.assertRaises(core.AssuranceError) as raised:
+            core.resolve_candidate_residue(self.repo, run, request,
+                allow_runtime_transition=True, owner_session_id="foreign", driver_runtime_kind="native")
+        self.assertEqual(raised.exception.code, "CANDIDATE_RESIDUE_OWNER_MISMATCH")
+        self.assertEqual((root / "ledger.json").read_bytes(), before)
+
+    def test_pending_residue_runtime_migration_preserves_original_intent(self):
+        run = "residue-migration"
+        started = core.start(self.repo, run, "owner", contract_for(self.repo), driver_runtime={
+            "kind": "native", "protocol_version": 1, "transport": "codex_app_server",
+            "runtime_version": "fixture", "protocol_schema_digest": "a" * 64})
+        candidate = Path(started["candidate_worktree"])
+        root = candidate.parent
+        files = self.make_residue(candidate, "cache/one.pyc")
+        request = self.request(self.record_problem(run, root), files)
+        with patch.object(core, "_remove_quarantined_candidate_residue", side_effect=RuntimeError("old runtime failure")):
+            with self.assertRaises(RuntimeError): self.resolve(run, request)
+        before = read_ledger(self.repo, run)
+        identity = {**before["runtime_identity"], "adapter_commit": "b" * 40,
+                    "adapter_dirty": False, "capture_status": "captured"}
+        args = dict(allow_runtime_transition=True, owner_session_id="owner", driver_runtime_kind="native")
+        with patch("runtime.codex_builder_loop.core.capture_runtime_identity", return_value={**identity, "adapter_dirty": True}):
+            with self.assertRaises(core.AssuranceError):
+                core.resolve_candidate_residue(self.repo, run, request, **args)
+        self.assertEqual(read_ledger(self.repo, run), before)
+        from contextlib import redirect_stdout
+        from io import StringIO
+        from runtime.codex_builder_loop.assurance_v4.cli import main
+        request_path = root / "original-request.json"
+        request_path.write_text(json.dumps(request))
+        with patch("runtime.codex_builder_loop.core.capture_runtime_identity", return_value=identity), redirect_stdout(StringIO()) as output:
+            result = main(["--experimental-v4", "resolve-candidate-residue", "--repo", str(self.repo), "--run", run,
+                           "--request", str(request_path), "--allow-runtime-transition",
+                           "--owner-session-id", "owner", "--driver-runtime-kind", "native"])
+        self.assertEqual(result, 0, output.getvalue())
+        self.assertEqual(json.loads(request_path.read_text()), request)
+        after = read_ledger(self.repo, run)
+        self.assertEqual(after["runtime_identity"], identity)
+        self.assertEqual(after["facets"], before["facets"])
+        self.assertEqual(after["evidence"], before["evidence"])
+        for kind in ("candidate_residue_intent_written", "runtime_identity_transitioned", "candidate_residue_resolved"):
+            self.assertEqual(sum(e["kind"] == kind for e in after["events"]), 1)
+
     def test_public_residue_recovery_entrypoint_is_available(self) -> None:
         self.assertTrue(callable(getattr(core, "resolve_candidate_residue", None)))
 

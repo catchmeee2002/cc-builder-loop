@@ -201,6 +201,11 @@ ignored 分类和无其他事务，再持久化 immutable intent，之后才逐�
 继续，变化或替换的剩余内容则保留 intent 与现场。成功只关闭该 problem，保持 facet、role、Tester source
 和既有 evidence 不变，因此 blackbox 若原本缺失或失效仍必须真实重跑。已 supersede source 仅在 target
 ledger 把该 key disposition 为 `handled_elsewhere` 时允许同一 cleanup，source 保持 terminal。
+删除凭据以既有请求摘要区分事务，历史隔离内容不被后续清理覆盖。交换后中断只能在目录项身份与
+原内容摘要均吻合时续接；旧格式隔离文件保留原位置，由当前请求产生独立凭据。已持久化清理请求
+可显式绑定原 owner 与 Driver runtime 迁移到干净修复版本，沿用原 intent 与 manifest；runtime 支持
+边界、候选或内容漂移仍拒绝，不借清理改变角色、验收或纠错额度。
+
 
 结构化 turn failure 与 raw App Server stdio disconnect 先在唯一 transport classifier 中归一；只有分类为
 可恢复且精确匹配 ledger 当前 role thread、action 和 dispatch 的事故才能进入 retry。可恢复 transport
