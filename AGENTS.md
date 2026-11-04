@@ -46,7 +46,8 @@ python3 experiments/assurance-v4-replay/runner.py
   Driver Skill。run 创建后按 `driver_runtime.kind` 单写，禁止接管或双控制器 mutation。
 - Native transport 三次重试耗尽后必须持久化 `exhausted` dispatch；只有用户显式提供
   `native-driver resume --reason`，且 runtime、role/thread、action 与 prompt digest 均未漂移时，才能在
-  同一 thread 建立新 generation。不得重置旧 generation 的 attempt；runtime 已变化则规划 successor。
+  同一 thread 建立新 generation。不得重置旧 generation 的 attempt；执行器变化先按
+  [恢复边界](docs/architecture.md#恢复边界)核对适用入口，不以普通 resume 隐式迁移。
 - run 创建后的未处理 FATAL 必须先经 `record-driver-failure` 写入 ledger，再恢复 finalize/deployment
   副作用；环境安全后才进入 `failed`。failed 不 resume、不 supersede、不 abandon，cleanup 只接受与
   冻结 failure observation 一致的 clean worktree。

@@ -1,5 +1,23 @@
 # Codex Builder Loop 架构
 
+本文分别说明 Assurance v4 与 legacy v2/v3；旧版证据规则不作为 v4 的恢复或审查判据。
+
+## 恢复边界
+
+恢复优先保持冻结语义、用户授权、角色独立性和 Git 安全。已有事务能保持这些不变量时，在原 run
+续接已持久化的操作；没有适用的安全路径时保留现场并重新规划，确需新 run 才通过正式 successor
+重新取得所需证据。执行失败或 runtime 升级本身不等于 Mission 语义变化，也不构成清理现场、
+重写历史或增加纠错额度的授权。
+
+普通 resume 不允许执行器身份漂移。需要修复版本参与恢复时，只能使用对应事务明确支持的受限
+runtime 迁移入口，满足该入口的授权、身份、输入及 runtime support 校验；不存在适用入口或校验
+失败时保留现场，不能通过修改版本字段、观察摘要或角色绑定继续。各事务的前置条件仍独立生效，
+不能把一项恢复能力推广成任意 active run 的热升级能力。
+
+恢复验收必须覆盖真实入口、持久化和后续路由：首次执行、关键副作用前后中断、进程重建、同一
+请求重放及连续独立事务；同时用身份、内容或授权漂移验证拒绝路径。验收应核对效果不重复、历史
+保留、角色与额度变化未超出授权，以及仍需执行的门禁未被跳过，不能仅凭命令成功或局部单测判定闭环。
+
 ## v4 分层边界
 
 legacy v2/v3 新 run 与无实验标志的 v4 CLI 保持关闭；面向用户的 Plan/Builder 实验入口已经开放。
@@ -259,7 +277,7 @@ Reviewer prompt contract v2 把 contract、evidence、publication 和 doc-refere
 再次耗尽的 dispatch 只有在实际 runtime identity、role/thread、action 和 prompt/output digest 全部未变时，
 Core 才归档旧 generation 并在同一 role thread 建立新的 generation；旧 attempt、turn 和 failure 仍保留在
 ledger event 中。runtime identity 漂移、缺少所需理由、无匹配 dispatch、协议错误或未知 failure 均继续
-fail closed；runtime 已升级时必须由新 run 重新绑定执行身份和 evidence。
+fail closed；执行器变化按[恢复边界](#恢复边界)处理，不以普通 resume 隐式迁移。
 对于启用 bounded rehydration 的 dispatch，interrupted retry 的 observation 判定唯一由 Core 对
 `pre_execution_observation_digest` 对应的 side-effect observation 执行；Native Coordinator 不得使用更窄的
 旁路摘要提前放行。若 observation 在 retry 前漂移或缺少可验证基线，Core 持久化
@@ -941,7 +959,26 @@ run 归属；缺失、篡改不得作为归因依据，也不得由摘要冒充�
 问题、历史 runtime identity、角色、契约和未受影响证据保持不变。新结果不是旧日志的补写，也不自动
 意味着通过；原 Tester 继续诊断或修正。重复提交同一恢复 binding 不重复执行命令。
 
-## Evidence 与失效
+## Assurance v4 证据与审查
+
+Core 从证据依赖和当前文件对象派生角色可见的门禁有效性；历史观察提交仍作为来源保留。Tester
+门禁绑定独立测试来源及当前候选中的测试文件，候选执行则由各执行门禁判断。Reviewer 使用这些
+确定性事实审查语义，不因来源提交不同要求改写证据或重复作者工作。
+
+machine/preflight/proof 的跨候选复用要求冻结的相关输入、执行身份及其他依赖保持一致，并通过
+各自的复用校验。原执行记录保持原 HEAD，接受新候选的等价依据写入 ledger 事件；角色摘要从这些
+事实派生。Reviewer 和文档审查仍绑定完整候选。Tester 源码门禁不套用候选执行证据的复用记录要求。
+证据是否有效由 Core 依赖计算与文件核验决定，不能只比较历史 HEAD，也不能由角色自述授予通过。
+
+### 原 Reviewer 的受限复核
+
+已登记的 Reviewer 框架问题可由原 run owner 请求单次原线程复核。请求绑定已消费报告制品、原
+producer、当前候选、四面契约和真实前置门禁；请求只允许重新审查，不关闭问题或授予证据。原
+Reviewer 必须在统一结果事务中明确撤回或维持该问题；撤回只解决绑定问题，其他发现和全部门禁
+仍独立生效。维持后停止，新的复核须有新的显式处置，不以自动循环替代判断。历史报告、复核理由
+和处置均保留来源，重放不会制造额外通过证据。输入、线程、候选或必要门禁漂移时拒绝恢复。
+
+## Legacy v2/v3 证据与失效
 
 ledger v2 为每类 evidence 记录 `observed_head`、`accepted_head`、输入 digest、scope 和 provenance。
 所有非 L1 v3 run 都先完成 Tester integration：测试鉴别要求全部为 `strong` 时依次执行测试鉴别证明、
@@ -953,6 +990,8 @@ ledger v2 为每类 evidence 记录 `observed_head`、`accepted_head`、输入 d
 details。只有全部必需 evidence 接受当前候选 HEAD，Tester commits 与 dirty tree 已
 完整集成、worktree 无越界修改、目标分支仍满足 continuity 时，finalize 才能冻结最终提交。
 目标 checkout 是否可同步是后续独立 gate，不再冒充 evidence readiness。
+
+## 测试鉴别证明
 
 `schema/codex-test-proof.schema.json` 是 `prove-tests` 输入和成功 evidence 的唯一结构来源，使用
 JSON Schema Draft 2020-12，并在标准 examples 中提供 unittest 基线先红与 pytest 受控变异正例；
@@ -1195,9 +1234,9 @@ Git 树缓存仅保存由仓库与完整 commit 身份确定的不可变数据�
 
 仓库测试派发由统一 discovery 的完整测试身份派生，串行与并行消费同一份清单。worker 的实际执行集合仍与原始清单核对，错误和遗漏不能形成成功。
 
-machine/proof 的跨候选复用要求冻结的相关输入、执行身份及其他依赖保持一致。原执行记录保持原 HEAD，接受新候选的等价依据写入 ledger 事件；角色摘要从这些事实派生。Reviewer 和文档审查仍绑定完整候选。逐测试辨别力只展示实际结构化观察，不将缺失记录或普通异常解释为有效反例。
+逐测试辨别力只展示实际结构化观察，不将缺失记录或普通异常解释为有效反例；证据有效性按[Assurance v4 证据与审查](#assurance-v4-证据与审查)判断。
 
-用户请求 hold 后，Driver 在安全事务边界停止推进；环境恢复与 lease 释放优先。完成后等待可提前请求，避免自动 finalize 抢先发生。release 绑定原暂停身份与当前 Mission，随后重新判断门禁；显式等待不构成失败或交付完成。 hold 属于运行控制，仍由状态和角色观察展示，但不进入角色任务的逻辑上下文摘要或 prompt。暂停的请求、释放或替换不改变已派发任务的输入；当前 dispatch 的重试和结果应用保持原身份与摘要，事务结束后才执行暂停。任务、候选和证据变化仍参与漂移校验。冻结在旧 runtime 上的运行不就地重写摘要，runtime 更新仍遵循既有 successor 边界。
+用户请求 hold 后，Driver 在安全事务边界停止推进；环境恢复与 lease 释放优先。完成后等待可提前请求，避免自动 finalize 抢先发生。release 绑定原暂停身份与当前 Mission，随后重新判断门禁；显式等待不构成失败或交付完成。 hold 属于运行控制，仍由状态和角色观察展示，但不进入角色任务的逻辑上下文摘要或 prompt。暂停的请求、释放或替换不改变已派发任务的输入；当前 dispatch 的重试和结果应用保持原身份与摘要，事务结束后才执行暂停。任务、候选和证据变化仍参与漂移校验。冻结在旧 runtime 上的运行不就地重写摘要；执行器变化按[恢复边界](#恢复边界)处理。
 
 ## Planner 按需加载
 
@@ -1223,16 +1262,3 @@ Reviewer 可针对冻结验收案例请求原 Tester 补充本地命令事实。
 回查同一授权事件，确保重建和结果纠正重试读取相同说明。其他 dispatch 和初次盲写不继承这份说明，
 旧授权未显式提供说明时保持旧可见边界。Native prompt 和公共 role-context 共用投影，角色输入摘要
 绑定实际可见正文；发生授权关联缺失或冲突时不得静默丢失说明继续执行。
-
-
-## Reviewer 门禁解释与受限复核
-
-Core 从证据依赖和当前文件对象派生角色可见的门禁有效性；历史观察提交仍作为来源保留。Tester
-门禁绑定独立测试来源及当前候选中的测试文件，候选执行则由各执行门禁判断。Reviewer 使用这些
-确定性事实审查语义，不因来源提交不同要求改写证据或重复作者工作。
-
-已登记的 Reviewer 框架问题可由原 run owner 请求单次原线程复核。请求绑定已消费报告制品、原
-producer、当前候选、四面契约和真实前置门禁；请求只允许重新审查，不关闭问题或授予证据。原
-Reviewer 必须在统一结果事务中明确撤回或维持该问题；撤回只解决绑定问题，其他发现和全部门禁
-仍独立生效。维持后停止，新的复核须有新的显式处置，不以自动循环替代判断。历史报告、复核理由
-和处置均保留来源，重放不会制造额外通过证据。输入、线程、候选或必要门禁漂移时拒绝恢复。
