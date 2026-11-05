@@ -32,7 +32,7 @@ AUTHOR_FIELDS = (
     "contract", "target_start_head", "publication", "problems", "tester_worktree",
     "work_unit_id", "work_unit", "problem_report_schema", "evidence_report_schema",
     "result_field_contract", "test_identity_contract", "author_result_contract",
-    "role_phase_instructions", "tester_correction_instructions",
+    "role_phase_instructions", "tester_correction_instructions", "tester_rechecks",
 )
 
 
@@ -131,13 +131,24 @@ def project_role_input(payload: Mapping[str, Any]) -> dict[str, Any]:
                            and problem.get("status") == "open"
                            and problem.get("owner") == "tester"
                            and problem.get("producer") != {"role": "tester", **(agent or {})}]
-    if foreign_corrections:
+    from .tester_feedback import public_recheck
+    rechecks = [public_recheck(facets, p) for p in foreign_corrections]
+    if foreign_corrections and any(item is None for item in rechecks):
         raise RoleInputError(
             "Tester correction requires author-safe input; foreign reports cannot be forwarded or silently discarded",
             code="TESTER_CORRECTION_INPUT_UNSAFE",
             details={"problem_keys": [p.get("key") for p in foreign_corrections],
-                     "recovery": "Preserve the reports; use an authorized recovery or successor with author-safe correction input. Do not discard findings or retry the same input."},
+                     "recovery": "Preserve the reports; follow driver-next to obtain source-bound references from the original Reviewer. A frozen older runtime requires explicit recover-tester-feedback migration. Do not discard findings or retry unchanged input."},
         )
+    if rechecks:
+        result["tester_rechecks"] = rechecks
+    elif "tester_rechecks" in result:
+        # Reprojection validates references again; it never accepts free-form feedback.
+        from .tester_feedback import validate_references
+        checked = [validate_references(facets, item) for item in result["tester_rechecks"]]
+        if any(item is None for item in checked):
+            raise RoleInputError("Recheck reference drift", code="TESTER_RECHECK_INVALID")
+        result["tester_rechecks"] = checked
     projected_execution = _pick(execution, AUTHOR_EXECUTION_FIELDS)
     if "commands" in projected_execution:
         projected_execution["commands"] = _items(projected_execution["commands"], COMMAND_FIELDS)
@@ -196,6 +207,17 @@ def project_role_input(payload: Mapping[str, Any]) -> dict[str, Any]:
             "Core binds the resulting evidence to the actual integrated candidate after source integration."
         ),
     }
+    if result.get("tester_rechecks"):
+        result["author_result_contract"]["recheck"] = (
+            "Independently check the referenced own-source files against the frozen public contract. "
+            "References are review questions, not expected answers. Repair confirmed defects without "
+            "weakening assertions. If you disagree, keep source unchanged and return tests_ready with "
+            "details.recheck_results containing the supplied request_digest, decision=disputed and "
+            "your reason. The original Reviewer must resolve the disagreement; this is not a business PASS."
+        )
+        result["author_result_contract"]["recheck_requests"] = [
+            {"index": index, "request_digest": digest(request)}
+            for index, request in enumerate(result["tester_rechecks"])]
     # No candidate-dependent digest is advertised as a digest of this view.
     result["role_input_digest"] = digest(result)
     return result
@@ -243,6 +265,12 @@ def build_role_input(context: Mapping[str, Any], action: Mapping[str, Any], role
         "role_observations": observations,
     }
     if role == "reviewer":
+        if action.get("reason") in {"tester_recheck_references_required", "tester_recheck_disputed"}:
+            payload["tester_recheck_request"] = {
+                "problem_identity": action["problem_identity"],
+                "instruction": "Re-evaluate the open Tester finding and any Tester evidence recheck_results disagreement. If upheld, update the same problem with tester_recheck references to current Tester source files/blobs and frozen acceptance IDs. Preserve owner and original report; do not copy candidate implementation advice into author input. If mistaken, return evidence_report.details.tester_finding_withdrawals with this problem_identity, current source_head and reason. Do not invent a test defect.",
+                "problem": copy.deepcopy(action.get("problem")),
+            }
         payload["gate_validity_rule"] = (
             "Use evidence_gates for Core-derived current validity. Tester evidence binds independent "
             "source and integrated blobs; its candidate_head is historical provenance, not a demand "

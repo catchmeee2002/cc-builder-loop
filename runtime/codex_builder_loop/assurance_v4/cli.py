@@ -176,6 +176,16 @@ def parser() -> argparse.ArgumentParser:
     reconsider_review.add_argument("--driver-runtime-kind", choices=["native", "full_driver_skill"], required=True)
     reconsider_review.add_argument("--allow-runtime-transition", action="store_true")
 
+    recover_feedback = commands.add_parser("recover-tester-feedback")
+    recover_feedback.add_argument("--repo", default=".")
+    recover_feedback.add_argument("--run", required=True)
+    recover_feedback.add_argument("--session-id", required=True)
+    recover_feedback.add_argument("--action-id", required=True)
+    recover_feedback.add_argument("--problem-key", required=True)
+    recover_feedback.add_argument("--reason", required=True)
+    recover_feedback.add_argument("--driver-runtime-kind", choices=["native", "full_driver_skill"], required=True)
+    recover_feedback.add_argument("--allow-runtime-transition", action="store_true")
+
     resolve_external_problem = commands.add_parser("resolve-external-problem")
     resolve_external_problem.add_argument("--repo", default=".")
     resolve_external_problem.add_argument("--run", required=True)
@@ -1025,6 +1035,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         elif args.command == "reconsider-review-problem":
             from .review_recovery import request_reconsideration
             payload = request_reconsideration(
+                args.repo, args.run, session_id=args.session_id, action_id=args.action_id, problem_key=args.problem_key,
+                reason=args.reason, driver_runtime_kind=args.driver_runtime_kind,
+                allow_runtime_transition=args.allow_runtime_transition)
+        elif args.command == "recover-tester-feedback":
+            from .tester_feedback import recover_feedback
+            payload = recover_feedback(
                 args.repo, args.run, session_id=args.session_id, action_id=args.action_id, problem_key=args.problem_key,
                 reason=args.reason, driver_runtime_kind=args.driver_runtime_kind,
                 allow_runtime_transition=args.allow_runtime_transition)

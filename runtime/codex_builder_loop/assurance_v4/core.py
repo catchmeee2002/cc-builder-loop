@@ -4329,9 +4329,19 @@ def complete_dispatch(
         if intent.get("role") == "reviewer" and intent.get("state") != "completed":
             from .review_recovery import validate_result
             validate_result(ledger, result)
+            from .tester_feedback import validate_withdrawals
+            validate_withdrawals(ledger, result.get("evidence_report"))
+        if intent.get("state") != "completed":
+            from .tester_feedback import validate_disputes
+            validate_disputes(ledger, result.get("evidence_report"))
         if intent.get("state") != "completed" and isinstance(result.get("problem_report"), Mapping):
             from .decision_requests import validate_report
             validate_report(ledger["facets"], result["problem_report"])
+            from .tester_feedback import public_recheck
+            producer = {"role": intent["role"], **(ledger["facets"]["execution"]["agents"].get(intent["role"]) or {})}
+            for problem in result["problem_report"]["problems"]:
+                if problem.get("tester_recheck") is not None and public_recheck(ledger["facets"], {**problem, "producer": producer}) is None:
+                    raise AssuranceError("Recheck references must bind current Tester source and frozen cases", code="TESTER_RECHECK_INVALID")
         if intent.get("state") == "completed":
             if digest(result) not in {intent.get("result_digest"), intent.get("submitted_result_digest")}:
                 raise AssuranceError(
@@ -13137,6 +13147,9 @@ def _close_problems(ledger: dict[str, Any], owner: str, resolution: str) -> None
     if owner in {"builder", "tester"}:
         _refresh_observation_requests(ledger)
     for item in ledger.get("problems", []):
+        from .tester_feedback import disputed
+        if owner == "tester" and disputed(ledger, effective_problem(ledger, item)):
+            continue
         if effective_problem(ledger, item).get("owner") == owner and item.get("status") == "open" and not item.get("observation_request") and not item.get("inherited_from"):
             item["status"] = "resolved"
             item["resolution"] = resolution
@@ -14345,6 +14358,11 @@ def record_problems(
         added: list[str] = []
         updated = False
         for problem in report["problems"]:
+            if problem.get("tester_recheck") is not None:
+                from .tester_feedback import public_recheck
+                if public_recheck(ledger["facets"], {**problem, "producer": producer}) is None:
+                    raise AssuranceError("Tester recheck must reference current source blobs and frozen acceptance cases",
+                                         code="TESTER_RECHECK_INVALID")
             request = problem.get("observation_request")
             if request is not None:
                 cases = {item["id"] for item in ledger["facets"]["mission"]["acceptance_cases"]}
@@ -14371,6 +14389,15 @@ def record_problems(
                 ),
                 None,
             )
+            if replay is None and problem.get("tester_recheck") is not None and report_binding is not None:
+                # Builder-only changes do not create a second finding when the
+                # original Reviewer supplements source-bound references.
+                matches = [p for p in ledger["problems"] if p.get("key") == problem["key"]
+                           and p.get("producer") == producer and p.get("status") == "open"
+                           and not p.get("inherited_from")]
+                if len(matches) > 1:
+                    raise AssuranceError("Ambiguous original Tester finding", code="TESTER_RECHECK_AMBIGUOUS")
+                replay = matches[0] if matches else None
             if isinstance(replay, dict):
                 updated = update_report(repo, ledger, replay, problem, report_binding) or updated
                 continue
@@ -15604,6 +15631,8 @@ def record_evidence(
         if kind == "tester" and details.get("observations"):
             raise AssuranceError("supplemental observations require tester_observe result application", code="OBSERVATION_DISPATCH_REQUIRED")
         if kind == "tester":
+            from .tester_feedback import validate_disputes
+            validate_disputes(ledger, report)
             if (report["status"] == "pass") != (details["result"] == "tests_ready"):
                 raise AssuranceError("Tester result does not match evidence status", code="EVIDENCE_RESULT_MISMATCH")
             tester_source = ledger["facets"]["execution"].get("tester_source")
@@ -15722,6 +15751,8 @@ def record_evidence(
             _apply_observation_dispositions(ledger, report)
             from .review_recovery import apply_disposition
             apply_disposition(ledger, report)
+            from .tester_feedback import apply_withdrawals
+            apply_withdrawals(ledger, report)
         existing = ledger["evidence"].get(kind)
         if (
             isinstance(existing, dict)

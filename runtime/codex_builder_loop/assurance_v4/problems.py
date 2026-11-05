@@ -13,12 +13,12 @@ from .models import digest
 from .store import append_event, run_dir
 
 REPORT_FIELDS = ('key', 'summary', 'details', 'owner', 'producer_continuity',
-                 'decision_request', 'observation_request')
+                 'decision_request', 'observation_request', 'tester_recheck')
 CONTROL_FIELDS = ('key', 'owner', 'producer_continuity', 'decision_request', 'observation_request')
 
 
 def report_content(problem: Mapping[str, Any]) -> dict[str, Any]:
-    return {key: copy.deepcopy(problem.get(key)) for key in REPORT_FIELDS}
+    return {key: copy.deepcopy(problem.get(key)) for key in REPORT_FIELDS if key != "tester_recheck" or key in problem}
 
 
 def problem_identity(problem: Mapping[str, Any]) -> str:
@@ -34,7 +34,8 @@ def effective_problem(ledger: Mapping[str, Any], problem: Mapping[str, Any]) -> 
         if details.get('problem_identity') != identity:
             continue
         if event['kind'] == 'problem_report_updated':
-            result.update({key: details['report'][key] for key in ('summary', 'details')})
+            result.pop('tester_recheck', None)
+            result.update({key: details['report'][key] for key in ('summary', 'details', 'tester_recheck') if key in details['report']})
         elif (event['kind'] == 'plan_problem_decision_applied'
               and details.get('disposition') == 'retain_contract'
               and result.get('status') == 'resolved'):

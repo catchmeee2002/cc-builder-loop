@@ -238,10 +238,11 @@ class LocalCommandObservationsTest(unittest.TestCase):
     def fixture(self, kind='native'):
         return review_fixture(self, kind)
 
-    def test_legacy_problem_keeps_source_correction_route(self):
+    def test_legacy_problem_requests_safe_references_before_source_correction(self):
         f = self.fixture()
         f.request(legacy=True)
-        self.assertEqual(f.next()['action'], 'tester_fix')
+        self.assertEqual(f.next()['action'], 'reviewer_preflight')
+        self.assertEqual(f.next()['reason'], 'tester_recheck_references_required')
 
     def test_observation_loop_replay_and_gate_retention(self):
         def exercise(case, value):
@@ -293,6 +294,11 @@ class LocalCommandObservationsTest(unittest.TestCase):
         problems = None if correction is None else dict(schema_version=1, problems=[dict(
             key='independent-correction', owner=correction, summary='Revise fixture input',
             details='An independent finding requires a source correction.')])
+        if correction == 'tester':
+            source = f.ledger()['facets']['execution']['tester_source']
+            problems['problems'][0]['tester_recheck'] = dict(source_head=source['head'],
+                files=[{k:v for k,v in item.items() if k in ('path','blob')} for item in source['files']],
+                acceptance_case_ids=['add-positive'])
         f.submit(review, f.envelope(details['result'],
             f.evidence('reviewer_preflight' if f.early_review else 'reviewer',
                        details, 'fail' if correction else 'pass'), problems))

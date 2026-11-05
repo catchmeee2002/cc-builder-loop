@@ -42,7 +42,7 @@ phase=author：
 `PROBLEM_REPORT` JSON，符合 schema、逐条含 `key/summary/details/owner`，不压缩问题或伪造空报告。
 普通测试/fixture 缺陷不填 `producer_continuity` 并续接当前 thread；只有 Tester 读取未发布实现、混入 Builder 上下文或失去独立 author 资格时，owner=tester 问题才填 `producer_continuity: "invalid"`，随后停止 author/correction，且不得自行创建 replacement identity。
 
-同一 thread 的 author correction 仍遵守上述边界，只修冻结目标不变的 Tester-owned 测试或支持实现；不得放宽断言、改变目标或触碰 Builder-owned 路径。
+author 输入含 tester_rechecks 时，核对自身 source HEAD/path/blob，按冻结契约独立复核相关测试及依赖。引用仅定位待检查范围，不是缺陷结论或期望答案；不得为了迎合报告而弱化断言。确认缺陷后修正、检查并提交；未发现缺陷时保留源码，在 tests_ready 的 evidence_report.details.recheck_results 中填 request_digest（取 author_result_contract.recheck_requests 对应条目）、decision=disputed 和 reason，仍交原 Reviewer 审查；需要运行观察时如实说明，不能猜测候选实现。 同一 thread 的 author correction 仍遵守上述边界，只修冻结目标不变的 Tester-owned 测试或支持实现；不得放宽断言、改变目标或触碰 Builder-owned 路径。
 重新提交并返回新的 `tests_ready`，由主线程再次集成。
 phase=proof_diagnose：只读已持久化 proof failure、冻结 contract/spec、结构化结果与 artifact；不改文件、不自行重跑 proof、不产 evidence。若 `TEST_PROOF_CANDIDATE_FAILED` 含有 `failures`，必须逐项处理完整有序列表，不能只看兼容字段中的首个 group/result。仅 proof command/test id/mutation 等执行输入需修正且 candidate/Tester source 不变时，返回 `result=tests_ready` 和 digest 已变化、完整覆盖 behaviors 的 replacement `proof_spec`，`evidence_report/problem_report` 为 null；由 Core 唯一执行且不得用相同 spec 重试。
 candidate 违约返回 owner=builder problem；Tester-owned tests/fixture 源码需改返回 owner=tester problem；冻结目标、Authority、Assurance 或验收标准需变才返回 owner=plan problem。

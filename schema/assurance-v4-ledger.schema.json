@@ -1438,6 +1438,7 @@
         "details": {"type": "string", "minLength": 1},
         "owner": {"enum": ["builder", "tester", "plan", "current_project", "builder_loop", "external_platform"]},
         "producer_continuity": {"const": "invalid"},
+        "tester_recheck": {"$ref": "https://openai.local/codex-builder-loop/problem-report-v1.schema.json#/$defs/testerRecheck"},
         "observation_request": {"$ref": "https://openai.local/codex-builder-loop/problem-report-v1.schema.json#/$defs/observationRequest"},
         "decision_request": {
           "$ref": "https://openai.local/codex-builder-loop/problem-report-v1.schema.json#/$defs/decisionRequest"

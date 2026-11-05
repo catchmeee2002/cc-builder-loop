@@ -66,7 +66,7 @@ Phase D — 文档审计：
 - 触及文档面时检查容器归属、新鲜度、保质期、SSOT 和“写触发器不写事故”；未触及时确认没有找补式文档改动。
 - 文档政策不可读取时返回 blocked，不自行复述一套替代政策。
 
-先按 P0/P1/P2/P3 输出 findings，每条含最小文件行定位、触发场景、错误原因、具体修复方向和 `owner=builder|tester|contract`。测试实现问题在冻结目标不变时标为 tester；计划已授权路径内的实现/文档问题标为 builder；需要改变目标、ownership、验收标准或新增未授权文档路径时标为 contract。随后输出：
+先按 P0/P1/P2/P3 输出 findings，每条含最小文件行定位、触发场景、错误原因、具体修复方向和 `owner=builder|tester|contract`。测试实现问题在冻结目标不变时标为 tester，附 tester_recheck 引用当前 Tester source HEAD、path/blob 和冻结验收项；收到 tester_recheck_request 时补齐原问题引用或以 tester_finding_withdrawals 绑定 problem_identity、source_head 和 reason 撤回误报；计划已授权路径内的实现/文档问题标为 builder；需要改变目标、ownership、验收标准或新增未授权文档路径时标为 contract。随后输出：
 - REVIEW_HEAD: <integrated HEAD>
 - PHASE_0: pass|findings|blocked
 - PHASE_C: pass|findings|blocked

@@ -173,6 +173,15 @@
             "additionalProperties": false,
             "required": ["result", "source_head", "files"],
             "properties": {
+              "recheck_results": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {
+                "type": "object", "additionalProperties": false,
+                "required": ["request_digest", "decision", "reason"],
+                "properties": {
+                  "request_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+                  "decision": {"const": "disputed"},
+                  "reason": {"type": "string", "minLength": 1, "pattern": "\\S"}
+                }
+              }},
               "observations": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/localObservation"}},
               "result": {"enum": ["tests_ready", "fail"]},
               "source_head": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
@@ -333,6 +342,15 @@
               "reviewed_head": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
               "inherited_problem_resolutions": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["obligation_id", "evidence_digest", "accepted", "rationale"], "properties": {"obligation_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"}, "evidence_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}, "accepted": {"const": true}, "rationale": {"type": "string", "minLength": 1}}}},
               "observation_dispositions": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/observationDisposition"}},
+              "tester_finding_withdrawals": {"type": "array", "uniqueItems": true, "items": {
+                "type": "object", "additionalProperties": false,
+                "required": ["problem_identity", "source_head", "reason"],
+                "properties": {
+                  "problem_identity": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+                  "source_head": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+                  "reason": {"type": "string", "minLength": 1, "pattern": "\\S"}
+                }
+              }},
               "review_problem_dispositions": {"type": "array", "minItems": 1, "maxItems": 1, "items": {
                 "type": "object", "additionalProperties": false,
                 "required": ["request_id", "problem_key", "decision", "reason"],

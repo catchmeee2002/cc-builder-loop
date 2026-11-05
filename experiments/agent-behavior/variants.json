@@ -75,7 +75,7 @@
       ],
       "instruction_source": {
         "path": "agents/reviewer.toml",
-        "sha256": "8cf76b6e5b17b0e6e0df676aea23a4f4017daca142205c10ddf8ace2865fe7ea",
+        "sha256": "612ba5db36e6aa1e2615d2bef8e88a30790d43bd40d1d40c155bfa282f659dcc",
         "revision": "WORKTREE"
       }
     },
@@ -87,7 +87,7 @@
       ],
       "instruction_source": {
         "path": "agents/tester.toml",
-        "sha256": "a829949977c95eef23184bde353da3c454d41b46d419fd316bd4cfa1b7b79c7f",
+        "sha256": "b89cfeb8dd52555e843576d9ff18ffee955e6a353a2fa4e18448dc7965c94b5e",
         "revision": "WORKTREE"
       }
     },

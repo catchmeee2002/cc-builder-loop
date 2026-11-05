@@ -1308,6 +1308,32 @@ def next_action(
                             request_digest=request_digest, agent=execution["agents"]["tester"],
                             tester_source=execution["tester_source"], candidate_worktree=ledger["candidate_worktree"])
         if owner == "tester":
+            from .tester_feedback import public_recheck, disputed
+            missing = [p for p in problems if p.get("owner") == "tester" and p.get("status") == "open"
+                       and not p.get("inherited_from") and not p.get("observation_request")
+                       and (p.get("producer") or {}).get("role") == "reviewer"
+                       and (public_recheck(ledger["facets"], p) is None or disputed(ledger, p))]
+            if missing:
+                problem = missing[0]
+                reviewer = ledger["facets"]["execution"]["agents"].get("reviewer")
+                if not reviewer or problem.get("producer") != {"role": "reviewer", **reviewer}:
+                    return decision("NEEDS_USER", "continuity_decision", "tester_recheck_reviewer_mismatch", problem=problem)
+                # Follow up the existing Reviewer report, preserving its identity.
+                # An absent or stale reference is not a Tester correction attempt.
+                from .problems import problem_identity
+                original = next(p for p in ledger["problems"] if p.get("key") == problem["key"]
+                                and p.get("producer") == problem.get("producer")
+                                and p.get("candidate_head") == problem.get("candidate_head"))
+                followups = {e["details"]["action_id"] for e in ledger.get("events", [])
+                             if e["kind"] == "dispatch_prepared" and e.get("at", "") > original["recorded_at"]
+                             and e["details"].get("action") in {"reviewer_preflight", "reviewer_final"}}
+                updates = sum(e["kind"] == "dispatch_consumed" and e["details"].get("action_id") in followups
+                              for e in ledger.get("events", []))
+                if updates >= 3:
+                    return decision("NEEDS_USER", "architecture_review", "tester_recheck_no_progress", problem=problem)
+                return decision("CONTINUE", "reviewer_preflight", "tester_recheck_disputed" if disputed(ledger, problem) else "tester_recheck_references_required",
+                                problem_identity=problem_identity(original), problem=problem, agent=ledger["facets"]["execution"]["agents"].get("reviewer"),
+                                candidate_worktree=ledger["candidate_worktree"])
             if problem.get("producer_continuity") == "invalid":
                 execution = ledger["facets"]["execution"]
                 current_agent = execution["agents"].get("tester")
