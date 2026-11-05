@@ -19,13 +19,37 @@ def executable(value):
         raise ListenerError('EXECUTABLE_UNAVAILABLE')
     return str(Path(path).resolve())
 
+_active_call = None
+_stopping = False
+
+def cancel_call():
+    """Interrupt only this worker's currently owned remote subprocess."""
+    global _stopping
+    _stopping = True
+    if _active_call is not None and _active_call.poll() is None:
+        _active_call.terminate()
+
 def call(argv, cwd=None):
+    global _active_call
+    if _stopping:
+        raise ListenerError('WORKER_STOPPING', 'STOPPED')
     try:
-        r = subprocess.run(argv, cwd=cwd, env={**os.environ, 'LARK_CLI_NO_PROXY': '1'}, text=True,
-                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
-    except (OSError, subprocess.TimeoutExpired):
+        with subprocess.Popen(argv, cwd=cwd, env={**os.environ, 'LARK_CLI_NO_PROXY': '1'}, text=True,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE) as child:
+            _active_call = child
+            if _stopping:
+                child.terminate()
+            try:
+                stdout, stderr = child.communicate(timeout=30)
+            except subprocess.TimeoutExpired:
+                child.kill()
+                child.communicate()
+                raise ListenerError('TRANSPORT_UNKNOWN', 'DEGRADED')
+            return subprocess.CompletedProcess(argv, child.returncode, stdout, stderr)
+    except OSError:
         raise ListenerError('TRANSPORT_UNKNOWN', 'DEGRADED')
-    return r
+    finally:
+        _active_call = None
 
 def lark(s, command, *args, cwd=None):
     r = call([s['lark_bin'], *command, *args, '--as', s['identity'], *(['--profile',s['account']] if s.get('account') else [])], cwd)
@@ -33,10 +57,13 @@ def lark(s, command, *args, cwd=None):
         result = json.loads(r.stdout)
     except ValueError:
         raise ListenerError('LARK_RESPONSE_INVALID', 'DEGRADED')
-    if r.returncode or result.get('ok') is not True:
+    if not isinstance(result,dict) or r.returncode or result.get('ok') is not True:
         # Never persist stderr, auth envelopes, environment, or token responses.
         raise ListenerError('LARK_REQUEST_FAILED', 'DEGRADED')
-    return result.get('data', {})
+    data = result.get('data')
+    if not isinstance(data,dict):
+        raise ListenerError('LARK_RESPONSE_INVALID', 'DEGRADED')
+    return data
 
 def identity(s):
     r = call([s['lark_bin'], 'whoami'])
@@ -44,9 +71,11 @@ def identity(s):
         x = json.loads(r.stdout)
     except ValueError:
         raise ListenerError('LARK_IDENTITY_INVALID')
-    if r.returncode or x.get('available') is False:
+    if not isinstance(x,dict) or r.returncode or x.get('available') is False:
         raise ListenerError('LARK_IDENTITY_UNAVAILABLE')
     x = x.get('data', x)
+    if not isinstance(x,dict):
+        raise ListenerError('LARK_IDENTITY_INVALID')
     app = x.get('appId') or x.get('profile')
     user = (x.get('onBehalfOf') or {}).get('openId')
     if not app:
@@ -92,6 +121,8 @@ def page(s, topic, cursor):
         args += ['--page-token', cursor]
     x = lark(s, ['im', '+threads-messages-list'], *args)
     if not isinstance(x.get('messages'), list) or not isinstance(x.get('has_more'), bool):
+        raise ListenerError('PAGE_RESPONSE_INVALID', 'DEGRADED')
+    if x.get('thread_id',topic) != topic or any(not isinstance(m,dict) for m in x['messages']):
         raise ListenerError('PAGE_RESPONSE_INVALID', 'DEGRADED')
     if x['has_more'] and not x.get('page_token'):
         raise ListenerError('PAGE_TOKEN_MISSING', 'DEGRADED')

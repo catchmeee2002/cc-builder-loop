@@ -30,6 +30,9 @@ def ingest(data, s, m, bootstrap=False):
     if delivery_id in data['deliveries']:
         return
     state = 'skipped' if bootstrap and s['backlog'] == 'new' else 'pending'
+    if state == 'pending' and 'content' not in data['messages'][key]:
+        # A new subscriber needs the body even when another owner aged it out.
+        data['messages'][key]['content'] = m.get('content')
     for intent in data['sends'].values():
         if intent['subscription_id'] != s['subscription_id'] or intent['origin'] != s['owner_session']:
             continue
@@ -64,10 +67,11 @@ def release_echoes(data, s):
 def health_notice(store, sid):
     with store.transaction() as data:
         current = data['subscriptions'][sid]
-        notice = current.pop('health_notice_pending',None)
+        notice = current.get('health_notice_pending')
         s = copy.deepcopy(current)
         if not notice or not s['active']:
             return
+        current.pop('health_notice_pending',None)
         current['health_notice_inflight'] = {'pid':os.getpid(),'starttime':process_start(os.getpid()),'notice':notice}
     try:
         receipt = transport.queue(s, '[飞书监听状态变化；不新增业务授权] '+notice+' subscription_id='+sid+'；请查看lark-listener status。')
@@ -160,11 +164,14 @@ def status(store, sid):
         read_ok = s.get('coverage') == 'complete' and not s.get('read_error') and bool(s.get('last_read_at')) and s.get('last_read_at',0) >= s.get('worker_started_at',0)
         result = {'status': 'STOPPED' if not s['active'] else ('DEGRADED' if not read_ok or attention or (process and not running) else 'OK'),
             'subscription_id': sid, 'owner_session': s['owner_session'], 'chat_id': s.get('chat_id'), 'thread_id': s.get('thread_id'),
-            'binding_pending': s.get('binding_pending', False), 'coverage': s.get('coverage', 'unknown'),
+            'binding_pending': not bool(s.get('thread_id') and s.get('chat_id')), 'coverage': s.get('coverage', 'unknown'),
             'last_read_at': s.get('last_read_at'), 'last_full_read_at': s.get('last_full_read_at'),
             'read_error': s.get('read_error'), 'consecutive_failures': s.get('failures', 0),
             'fault_at': s.get('fault_at'), 'recovered_at': s.get('recovered_at'), 'process': process,
-            'running': running, 'started': bool(process), 'healthy': bool(running and read_ok),
+            'running': running, 'worker_lock_acquired': running, 'started': bool(process), 'healthy': bool(running and read_ok),
+            'lifecycle': 'stopped' if not s['active'] else ('healthy' if running and read_ok else 'spawned' if running else 'not_running'),
+            'health_notice':s.get('health_notice_receipt'),
+            'delivery_receipts':[{'batch_id':b['batch_id'], 'received_at':b['received_at'], 'attempts':b['attempts'], 'receipts':b['receipts']} for b in data['batches'].values() if b['subscription_id']==sid],
             'unreceived_batches':[b['batch_id'] for b in data['batches'].values() if b['subscription_id']==sid and not b.get('received_at')],
             'unknown_sends':[i['request_id'] for i in data['sends'].values() if i['subscription_id']==sid and i['state'] in ('sending','unknown')],
             'pending_count': len(pending), 'attention': attention,
@@ -176,6 +183,7 @@ def run(store, sid, instance):
     stopping = [False]
     def stop_signal(*_):
         stopping[0] = True
+        transport.cancel_call()
     signal.signal(signal.SIGTERM, stop_signal)
     signal.signal(signal.SIGINT, stop_signal)
     with store.worker_lock(sid):
@@ -244,6 +252,9 @@ def collect_expired(store,sid):
     t=now()
     with store.transaction() as data:
         s=data['subscriptions'][sid]
+        notice=s.get('health_notice_receipt')
+        if notice and notice.get('state')=='queued' and t-notice['at']>=30*86400:
+            s.pop('health_notice_receipt',None)
         for key,m in data['messages'].items():
             ds=[d for d in data['deliveries'].values() if d['message_key']==key]
             if not ds or not any(d['subscription_id']==sid for d in ds):continue
@@ -252,10 +263,13 @@ def collect_expired(store,sid):
             for d in ds:
                 if d['state'] not in DONE and t-d['created_at']>=30*86400 and not d.get('age_warning_at'):
                     d['age_warning_at']=t;s['health_notice_pending']='unreceived_30_days'
-        for b in data['batches'].values():
-            if b['subscription_id']==sid:
-                b['receipts']=[r for r in b['receipts'] if t-r['at']<30*86400]
+        for bid,b in list(data['batches'].items()):
+            if b['subscription_id']==sid and b.get('received_at') is not None and t-b['received_at']>=30*86400:
+                del data['batches'][bid]  # delivery/version index remains; no replay
+            # Unreceived receipts remain recoverable, regardless of age.
         for i in data['sends'].values():
+            if i['subscription_id']==sid and i['state']!='sent' and t-i['created_at']>=30*86400 and not i.get('age_warning_at'):
+                i['age_warning_at']=t;s['health_notice_pending']='unknown_send_30_days'
             if i['subscription_id']==sid and i['state']=='sent':
                 if t-i['completed_at']>=7*86400:i.pop('text',None)
                 if t-i['completed_at']>=30*86400:i.pop('process',None)

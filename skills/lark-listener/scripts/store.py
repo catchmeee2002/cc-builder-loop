@@ -67,7 +67,10 @@ class Store:
             else:
                 data = {'schema_version': 1, 'subscriptions': {}, 'messages': {}, 'deliveries': {}, 'sends': {}, 'batches': {}}
             data.setdefault('batches', {})
+            before = json.dumps(data, sort_keys=True, ensure_ascii=False)
             yield data
+            if json.dumps(data, sort_keys=True, ensure_ascii=False) == before:
+                return
             tempfd, name = tempfile.mkstemp(prefix='.state-', dir=self.root)
             try:
                 with os.fdopen(tempfd, 'w') as f:

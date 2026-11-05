@@ -22,7 +22,7 @@ import uuid
 ROOT = Path(__file__).resolve().parents[1]
 OWNER = "11111111-1111-4111-8111-111111111111"
 OTHER = "22222222-2222-4222-8222-222222222222"
-THREAD = "omt_fixture_new"
+THREAD = "omt_fixturenew"
 CHAT = "oc_fixture"
 REMOTE = "ws://127.0.0.1:9"
 DAY = 86400

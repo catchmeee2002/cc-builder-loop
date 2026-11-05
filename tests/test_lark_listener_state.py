@@ -53,12 +53,12 @@ def has_fact(value, word):
     for node in nodes(value):
         if isinstance(node, str) and re.fullmatch(r'[A-Za-z_]+', node):
             tokens = node.lower().split('_')
-            if word in tokens and not {'not', 'unconfirmed', 'failed'}.intersection(tokens):
+            if (word == node.lower() or word in tokens) and not {'not', 'unconfirmed', 'failed'}.intersection(tokens):
                 return True
         if isinstance(node, dict):
             for key, item in node.items():
                 tokens = key.lower().split('_')
-                if (word in tokens and 'not' not in tokens
+                if ((word == key.lower() or word in tokens) and 'not' not in tokens
                         and item not in (None, False, '', [], {})):
                     return True
     return False
@@ -171,6 +171,7 @@ class StateScenarios:
         s.stop()
         s.wait(lambda: proc_identity(worker['pid']) is None
                or proc_identity(worker['pid'])['state'] == 'Z', description='stopped worker exit')
+        s.advance(31 * DAY)  # Querying an aged stopped subscription must still be read-only.
         before = {str(p.relative_to(s.state)): p.read_bytes() for p in s.state.rglob('*') if p.is_file()}
         calls = len(s.calls())
         result = s.status()
@@ -188,12 +189,15 @@ class StateScenarios:
         s.receive(row)
         s.stop()
         s.advance(31 * DAY)
-        result = s.read_once()
+        result = s.command('start', expected=2)
+        self.assertEqual(s.calls('+threads-messages-list')[-1]['thread'], s.world()['messages']['om_root']['thread_id'])
         rendered = text_of(result).lower()
         self.assertRegex(rendered, r'boundary|backlog|读取边界',
                          'A cleared stopped index requires an explicit new read boundary')
         self.assertNotIn(batch_id(row['message']).encode(), s.state_bytes(),
                          'Settled stopped receipts must be cleaned after thirty days')
+        s.start(backlog='all')
+        s.wait(lambda: len(s.batches()) == 2, description='explicit new boundary')
 
 
 # Oracle self-checks are author checks, not listener behavioral proof.

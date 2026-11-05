@@ -178,6 +178,7 @@ def start(store, r):
                        first_read_boundary={'mode':r.get('backlog','all'),'observed_at':now()})
             old.pop('index_cleared_at',None)
         old['active']=True;old['generation']+=1
+        old['coverage']='unknown';old['last_read_at']=None
     instance=str(uuid.uuid4())
     logfd=store.open_private(store.root/'worker.log',os.O_WRONLY|os.O_CREAT|os.O_APPEND)
     try:
@@ -233,7 +234,7 @@ Results distinguish started, healthy, queued and received; none means business d
         required(r,'subscription_id')
         store=Store(args.state_dir)
         with store.transaction() as data: exists=r['subscription_id'] in data['subscriptions']
-        if exists:worker.collect_expired(store,r['subscription_id'])
+        if exists and args.command=='start':worker.collect_expired(store,r['subscription_id'])
         result=worker.status(store,r['subscription_id']) if args.command=='status' else globals()[args.command](store,r)
         print(json.dumps(result,ensure_ascii=False));return 0
     except ListenerError as e:

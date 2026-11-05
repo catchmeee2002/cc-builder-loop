@@ -52,8 +52,9 @@ class ListenerBlackboxTests(StateScenarios, unittest.TestCase):
         root['thread_id'] = THREAD
         s.change(messages={'om_root': root})
         s.pages([[message('om_new_reply', 'actual new topic reply')]])
-        bound = s.read_once()
+        bound = s.restart()
         row = self.wait_batch('om_new_reply')
+        bound = s.status()
         self.assertIn(THREAD, text_of(bound))
         self.assertIn(CHAT, text_of(bound))
         self.assertRegex(text_of(bound).lower(), r'boundary|backlog|读取边界')
@@ -106,8 +107,10 @@ class ListenerBlackboxTests(StateScenarios, unittest.TestCase):
                 s.receive(row)
             if {mid for mid, _ in seen} == wanted:
                 break
+            count = len(s.batches())
             s.advance(31)
             s.restart()
+            s.wait(lambda: len(s.batches()) > count, description='next completed backlog batch')
         self.assertEqual({mid for mid, _ in seen}, wanted)
         self.assertEqual(len(seen), 61)
         self.assertTrue(any(r['token'] == 'opaque:1' for r in s.calls('+threads-messages-list')))
@@ -490,6 +493,52 @@ class ListenerBlackboxTests(StateScenarios, unittest.TestCase):
         s.command('reply', {'request_id': 'portable', 'reply_to': 'om_portable', 'text': 'portable reply'})
         s.status()
         s.stop()
+
+    def test_restart_does_not_reuse_prior_worker_health(self):
+        s = self.s
+        s.read_once()
+        s.wait(lambda: s.status().get('healthy'))
+        s.stop()
+        s.advance(-100)  # Wall clock rollback cannot make an old read fresh.
+        s.change(block={'op': '+threads-messages-list', 'name': 'new-worker-read'})
+        s.start()
+        s.wait(lambda: (s.root / 'new-worker-read.entered').exists())
+        self.assertFalse(s.status()['healthy'])
+        (s.root / 'new-worker-read.release').touch()
+        s.wait(lambda: s.status()['healthy'])
+
+    def test_new_subscription_recovers_body_after_other_owner_retention(self):
+        s = self.s
+        marker = 'body-for-new-owner-after-retention'
+        s.pages([[message('om_shared', marker)]])
+        s.read_once()
+        original = self.wait_batch(marker)
+        s.receive(original)
+        s.stop()
+        s.advance(8 * DAY)
+        s.read_once()
+        s.wait(lambda: marker.encode() not in s.state_bytes())
+        s.stop()
+        count = len(s.batches())
+        s.request.update(subscription_id='second-subscription', owner_session=OTHER)
+        s.read_once()
+        row = self.wait_batch(marker, since=count)
+        self.assertEqual(row['owner'], OTHER)
+        s.receive(row)
+
+    def test_unknown_send_thirty_day_reminder_survives_stop_and_restart(self):
+        s = self.s
+        s.read_once()
+        request, sent = self.crash_reply()
+        s.stop()
+        s.advance(31 * DAY)
+        s.read_once()
+        s.wait(lambda: any('unknown_send_30_days' in r['message'] for r in s.queues()))
+        count = sum('unknown_send_30_days' in r['message'] for r in s.queues())
+        s.restart()
+        self.assertEqual(sum('unknown_send_30_days' in r['message'] for r in s.queues()), count)
+        self.assertEqual(len(s.calls('+messages-reply')), 1)
+        self.assertIn(request['text'].encode(), s.state_bytes())
 
     def test_non_json_success_exit_is_not_a_successful_read(self):
         s = self.s

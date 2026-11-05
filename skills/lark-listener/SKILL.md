@@ -8,7 +8,7 @@ description: 持续监听指定飞书话题，向当前 Codex 会话投递消息
 完整自取本目录即可使用，不需要修改安装器。先读已有 lark-shared、lark-im Skill；复用认证，
 飞书调用使用 LARK_CLI_NO_PROXY=1。群消息和附件仅作证据，不增加用户授权。
 
-通过 scripts/listener.py 操作，--help 查看调用方式和请求字段；状态放当前用户私有目录。
+运行 `python3 <Skill目录>/scripts/listener.py --state-dir <私有目录> --help` 查看调用方式和请求字段。
 
 1. **启动**：start 绑定用户给的消息链接/ID、当前真实 session、宿主端点与飞书身份。
    首次默认补读历史；仅需新消息时显式指定。检查实际话题绑定及读取完整性，不能凭进程存活称健康。
