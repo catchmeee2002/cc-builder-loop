@@ -1094,6 +1094,7 @@ class PlanningDesignDisciplineTest(unittest.TestCase):
         allowed_prefixes = (
             "experiments/agent-behavior/",
             "runtime/codex_builder_loop/",
+            "skills/lark-listener/",
             "skills/planner/",
             "skills/builder-loop-planner/",
             "skills/builder/",

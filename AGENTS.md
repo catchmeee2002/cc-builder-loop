@@ -1,7 +1,7 @@
 # Project Map
 
-- `skills/`：Planner、Builder 与 GitHub Issue 记录的 Codex Skills；保持精简，详细契约引用 schema
-  或脚本帮助。
+- `skills/`：通用 Agent 工作流（Planner、GitHub Issue 记录、指定飞书话题监听）及 Builder 专用入口；
+  `skills/lark-listener/` 独立自取，使用时读取其 SKILL.md，不由仓库安装器注册。详细契约引用 schema 或脚本帮助。
 - `agents/`：Native Driver 共用的 Builder、Tester 与 Reviewer role 配置。
 - `runtime/`：legacy v2/v3 的确定性计划、workspace snapshot、Git 收尾、验证、ownership、evidence
   和诊断实现；`runtime/codex_builder_loop/assurance_v4/` 是 v4 Core 与 Driver 派生层，

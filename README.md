@@ -55,6 +55,13 @@ dispatch renewal 或资格漂移后，同一 ledger 派生为 effective full pro
 角色、Tester source、evidence、problem resolution、lease 或 dispatch。第三次任务级非语义 transition 的
 一次授权只覆盖当前及同 category 的后续三次，过期、新 category 或语义变化重新停止。
 
+## 可独立使用的 Skills
+
+`skills/planner/`、`skills/file-github-issue/` 和 `skills/lark-listener/` 服务通用 Agent 工作流；
+`skills/builder/` 与 `skills/full-driver-v4-experiment/` 服务 Builder-loop 交付。
+飞书话题监听直接取用完整的 [`skills/lark-listener/`](skills/lark-listener/SKILL.md) 目录，
+按其中说明运行；它不依赖 Builder run，也不由本仓安装器自动安装或启动。
+
 ## 核心行为
 
 - 通用 `$planner` 先冻结目标、范围、设计决策、ownership、验收和执行路线；Builder-loop adapter
