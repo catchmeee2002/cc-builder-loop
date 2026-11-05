@@ -24,7 +24,7 @@ OWNER = "11111111-1111-4111-8111-111111111111"
 OTHER = "22222222-2222-4222-8222-222222222222"
 THREAD = "omt_fixture_new"
 CHAT = "oc_fixture"
-REMOTE = "http://127.0.0.1:9/isolated-app-server"
+REMOTE = "ws://127.0.0.1:9"
 DAY = 86400
 
 # Executed only as an isolated external peer, never as another test runner.
@@ -135,7 +135,8 @@ with (root / 'peer.lock').open('a') as lock:
     elif op == 'queue':
         owner, remote, message = option('--thread'), option('--remote'), option('--message')
         trace.update(owner=owner, remote=remote, message=message)
-        if args[:1] != ['queue'] or '--resume' not in args or remote != world['remote'] or not message:
+        if (args[:1] != ['queue'] or '--resume' not in args or remote != world['remote']
+                or not remote.startswith(('ws://', 'wss://', 'unix://')) or not message):
             rc, err = 2, 'fixture: invalid queue invocation'
         else:
             mode = world.get('queue_mode', 'ok')
@@ -457,12 +458,21 @@ class WireFixtureTests(unittest.TestCase):
         self.assertEqual(json.loads(failed.stderr)['error']['code'], 99991679)
 
     def test_queue_receipt_and_warning_are_independent(self):
+        self.assertTrue(REMOTE.startswith(('ws://', 'wss://', 'unix://')))
         self.s.change(queue_mode='wake-failed')
         result = self.peer('codex-peer', 'queue', '--remote', REMOTE,
             '--thread', OWNER, '--message', 'batch_id: fixture', '--resume')
         self.assertEqual(result.returncode, 0)
         self.assertRegex(result.stdout, r'^Queued message [0-9a-f-]{36} for thread ' + OWNER + r'\.')
         self.assertIn('warning', result.stderr)
+
+    def test_queue_fixture_rejects_unsupported_http_remote(self):
+        invalid = 'http://127.0.0.1:9'
+        self.s.change(remote=invalid)
+        result = self.peer('codex-peer', 'queue', '--remote', invalid,
+            '--thread', OWNER, '--message', 'batch_id: fixture', '--resume')
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(result.stdout, '')
 
     def test_clock_is_child_only_and_does_not_replace_monotonic(self):
         self.s.advance(30 * DAY)
