@@ -32,6 +32,7 @@ class ReviewReconsiderationTest(unittest.TestCase):
         rc, checked = self.f.invoke('checkpoint-builder', '--repo', self.repo, '--run', self.run)
         self.assertEqual(rc, 0, checked)
         self.f.prepare_and_record_tester(self.run, self.run_path)
+        self.initial_scan = copy.deepcopy(self.ledger()['doc_reference_scan'])
         candidate = Path(self.ledger()['candidate_worktree'])
         implementation = candidate/'src/calc.py'
         implementation.write_text(implementation.read_text() + '\n# implementation-only revision\n')
@@ -73,10 +74,12 @@ class ReviewReconsiderationTest(unittest.TestCase):
     def request(self, **changes):
         args = dict(action_id=self.blocked['action_id'], reason='Verify source-bound gate without rewriting provenance.',
                     problem_key=self.problem['key'])
+        refresh = changes.pop('refresh_prerequisites', False)
         args.update(changes)
         return self.f.invoke('reconsider-review-problem', '--repo', self.repo, '--run', self.run,
                              '--session-id', 'owner', '--action-id', args['action_id'], '--problem-key', args['problem_key'],
-                             '--reason', args['reason'], '--driver-runtime-kind', 'full_driver_skill')
+                             '--reason', args['reason'], '--driver-runtime-kind', 'full_driver_skill',
+                             *(['--refresh-prerequisites'] if refresh else []))
 
     def result(self, decision='withdrawn'):
         ledger = self.ledger(); request = review_recovery.active_request(ledger)
@@ -88,6 +91,37 @@ class ReviewReconsiderationTest(unittest.TestCase):
                                                                 'decision':decision, 'reason':'Rechecked dependency and integrated blobs.'}]}}
         return {'result':'pass' if decision=='withdrawn' else 'blocked', 'evidence_report':report,
                 'proof_spec':None, 'problem_report':None if decision=='withdrawn' else {'schema_version':1,'problems':[self.problem]}}
+
+    def test_enforced_driver_refreshes_only_authorized_review_prerequisites(self):
+        from runtime.codex_builder_loop.assurance_v4.models import facet_digests
+        ledger = self.ledger()
+        ledger['facets']['execution']['driver_enforced'] = True
+        ledger['digests'] = facet_digests(ledger['facets'])
+        ledger['evidence']['preflight']['dependency_digest'] = '0' * 64
+        ledger['doc_reference_scan'] = copy.deepcopy(self.initial_scan)
+        core.save_ledger(self.repo, ledger)
+        self.blocked = self.next()
+        before = self.ledger()
+        rc, refused = self.request()
+        self.assertNotEqual(rc, 0)
+        self.assertEqual(refused['code'], 'REVIEW_RECONSIDERATION_STALE')
+        rc, refused = self.f.invoke('verify-preflight', '--repo', self.repo, '--run', self.run)
+        self.assertNotEqual(rc, 0)
+        self.assertEqual(refused['code'], 'DRIVER_ACTION_STALE')
+        rc, accepted = self.request(refresh_prerequisites=True)
+        self.assertEqual(rc, 0, accepted)
+        for action_name, command in [('scan_doc_references', 'scan-doc-references'), ('verify_preflight', 'verify-preflight')]:
+            action = self.next()
+            self.assertEqual(action['action'], action_name)
+            rc, result = self.f.invoke(command, '--repo', self.repo, '--run', self.run,
+                '--driver-runtime-kind', 'full_driver_skill', '--action-id', action['action_id'])
+            self.assertEqual(rc, 0, result)
+        self.assertEqual(self.next()['action'], 'reviewer_preflight')
+        self.submit(self.next(), self.result())
+        after = self.ledger()
+        self.assertEqual(after['problems'][0]['status'], 'resolved')
+        self.assertEqual(after['facets'], before['facets'])
+        self.assertEqual(after['evidence']['tester'], before['evidence']['tester'])
 
     def test_cli_original_thread_prompt_and_explicit_withdrawal(self):
         rc, data = self.request(); self.assertEqual(rc, 0, data)

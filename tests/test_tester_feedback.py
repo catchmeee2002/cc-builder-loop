@@ -10,6 +10,54 @@ from runtime.codex_builder_loop.assurance_v4.role_input import build_role_input,
 
 
 class TesterFeedbackTest(unittest.TestCase):
+    def test_integrated_correction_receives_review_without_reference_roundtrip(self):
+        f = review_fixture(self, early_review=True, collaborative=True)
+        review = f.begin('reviewer', 'reviewer_preflight')
+        finding = dict(key='missing-tool', owner='tester', summary='Missing tool',
+                       details='The test tool whitelist omits cmp required by the declared command.')
+        f.submit(review, f.envelope('findings', problems=dict(schema_version=1, problems=[
+            finding, dict(key='implementation-fix', owner='builder',
+                          summary='Fix implementation', details='Update implementation')])) )
+        repair = f.begin('builder', 'builder_fix')
+        path = f.candidate / 'src/calc.py'
+        path.write_text(path.read_text() + '\n# implementation corrected\n')
+        commit_all(f.candidate, 'repair implementation')
+        f.submit(repair, f.envelope('implemented'))
+        action = f.next()
+        self.assertEqual(action['action'], 'tester_fix')
+        self.assertEqual(action['agent']['thread_id'], 'tester-thread')
+        payload = build_role_input(core.driver_context(f.repo, f.run), action, 'tester')
+        self.assertEqual(payload['candidate_worktree'], str(f.candidate))
+        received = next(p for p in payload['problems'] if p['key'] == finding['key'])
+        self.assertEqual(received['details'], finding['details'])
+        self.assertEqual(received['producer']['role'], 'reviewer')
+        self.assertEqual(payload['evidence_gates']['preflight']['state'], 'stale')
+        source = f.ledger()['facets']['execution']['tester_source']
+        action = f.begin('tester', 'tester_fix')
+        test_path = source['files'][0]['path']
+        (Path(source['worktree']) / test_path).write_text(
+            'from src.calc import add\ndef test_positive():\n    assert add(1,2) == 3\n')
+        head = commit_all(Path(source['worktree']), 'repair independent test')
+        report = f.evidence('tester', dict(result='tests_ready', source_head=head,
+            files=[dict(path=test_path, blob=git(Path(source['worktree']), 'rev-parse', head+':'+test_path))]))
+        f.submit(action, f.envelope('tests_ready', report))
+        observed = []
+        for _ in range(4):
+            next_action = f.next()
+            if next_action['action'] not in {'scan_doc_references', 'verify_preflight'}:
+                break
+            observed.append(next_action['action'])
+            f.call(next_action['action'].replace('_', '-'), '--driver-runtime-kind', f.kind)
+        self.assertEqual(observed, ['scan_doc_references', 'verify_preflight'])
+        review = f.begin('reviewer', 'reviewer_preflight')
+        head = f.ledger()['facets']['execution']['candidate_head']
+        f.submit(review, f.envelope('pass', f.evidence('reviewer_preflight', dict(result='pass', reviewed_head=head))))
+        self.assertEqual(f.next()['action'], 'verify_machine')
+        f.verify_gates()
+        review = f.begin('reviewer', 'reviewer_final')
+        f.submit(review, f.envelope('pass', f.evidence('reviewer', dict(result='pass', reviewed_head=head))))
+        self.assertEqual(f.next()['action'], 'finalize')
+
     def test_original_reviewer_supplements_then_original_tester_repairs(self):
         self.repair_loop('native')
 
@@ -30,6 +78,14 @@ class TesterFeedbackTest(unittest.TestCase):
             commit_all(f.candidate,'repair implementation comment')
             f.submit(repair,f.envelope('implemented'))
         followup = f.next()
+        refresh_actions = []
+        while followup['action'] in {'scan_doc_references', 'verify_preflight'}:
+            self.assertLess(len(refresh_actions), 2)
+            refresh_actions.append(followup['action'])
+            f.call(followup['action'].replace('_', '-'), '--driver-runtime-kind', f.kind)
+            followup = f.next()
+        if kind == 'full_driver_skill':
+            self.assertEqual(refresh_actions, ['scan_doc_references', 'verify_preflight'])
         self.assertEqual(followup['action'], 'reviewer_preflight')
         self.assertEqual(followup['reason'], 'tester_recheck_references_required')
         source = f.ledger()['facets']['execution']['tester_source']
@@ -162,11 +218,19 @@ class TesterFeedbackTest(unittest.TestCase):
         self.assertEqual(project_role_input(good)['tester_rechecks'],[request])
 
     def test_tester_disagreement_preserves_tests_and_returns_original_reviewer(self):
-        f=review_fixture(self,early_review=True)
+        self.disagreement_loop(False)
+
+    def test_collaborative_disagreement_preserves_tests_and_returns_original_reviewer(self):
+        self.disagreement_loop(True)
+
+    def disagreement_loop(self, collaborative):
+        f=review_fixture(self,early_review=True,collaborative=collaborative)
         source=f.ledger()['facets']['execution']['tester_source']
         request=dict(source_head=source['head'],files=[{k:v for k,v in i.items() if k in ('path','blob')} for i in source['files']],
                      acceptance_case_ids=['add-positive'])
         problem=dict(key='incorrect-review',owner='tester',summary='Recheck boundary',details='Original reviewer opinion',tester_recheck=request)
+        if collaborative:
+            problem.pop('tester_recheck')
         review=f.begin('reviewer','reviewer_preflight')
         f.submit(review,f.envelope('findings',problems=dict(schema_version=1,problems=[problem])))
         action=f.next();payload=build_role_input(core.driver_context(f.repo,f.run),action,'tester')

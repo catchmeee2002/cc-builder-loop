@@ -1258,9 +1258,17 @@ def next_action(
             request = active_request(ledger)
             if request and request['problem_key'] == problem['key']:
                 try:
-                    validate_current(ledger, request)
+                    validate_current(ledger, request, allow_refresh_pending=True)
                 except AssuranceError as exc:
                     return decision("NEEDS_USER", "builder_loop_problem_decision", exc.code, problem=problem)
+                if request.get('refresh_prerequisites'):
+                    scan = doc_scan_decision()
+                    if scan is not None:
+                        return scan
+                    if ('preflight' in request['snapshot']['prerequisites']
+                            and evidence_state(ledger, 'preflight') in {'missing', 'stale'}):
+                        return decision("CONTINUE", "verify_preflight", "review_reconsideration_preflight_refresh",
+                                        candidate_worktree=ledger['candidate_worktree'])
                 return decision("CONTINUE", request['action'], "review_problem_reconsideration",
                                 problem=problem, agent=ledger['facets']['execution']['agents']['reviewer'],
                                 candidate_worktree=ledger['candidate_worktree'])
@@ -1308,16 +1316,28 @@ def next_action(
                             request_digest=request_digest, agent=execution["agents"]["tester"],
                             tester_source=execution["tester_source"], candidate_worktree=ledger["candidate_worktree"])
         if owner == "tester":
-            from .tester_feedback import public_recheck, disputed
+            from .tester_feedback import public_recheck, disputed, collaborative_correction_allowed
             missing = [p for p in problems if p.get("owner") == "tester" and p.get("status") == "open"
                        and not p.get("inherited_from") and not p.get("observation_request")
                        and (p.get("producer") or {}).get("role") == "reviewer"
-                       and (public_recheck(ledger["facets"], p) is None or disputed(ledger, p))]
+                       and ((not collaborative_correction_allowed(ledger) and public_recheck(ledger["facets"], p) is None) or disputed(ledger, p))]
             if missing:
                 problem = missing[0]
                 reviewer = ledger["facets"]["execution"]["agents"].get("reviewer")
                 if not reviewer or problem.get("producer") != {"role": "reviewer", **reviewer}:
                     return decision("NEEDS_USER", "continuity_decision", "tester_recheck_reviewer_mismatch", problem=problem)
+                # A feedback follow-up still uses the full preflight contract.
+                # Refresh its prerequisites before dispatch, never ask Reviewer
+                # to interpret stale evidence as a current pass.
+                scan = doc_scan_decision()
+                if scan is not None:
+                    return scan
+                assurance = ledger["facets"]["assurance"]
+                if (assurance.get("preflight_before_proof")
+                        and any(c.get("run_before_full_suite") for c in assurance["machine_commands"])
+                        and evidence_state(ledger, "preflight") in {"missing", "stale"}):
+                    return decision("CONTINUE", "verify_preflight", "feedback_preflight_refresh",
+                                    candidate_worktree=ledger["candidate_worktree"])
                 # Follow up the existing Reviewer report, preserving its identity.
                 # An absent or stale reference is not a Tester correction attempt.
                 from .problems import problem_identity

@@ -1993,10 +1993,13 @@ class NativeCoordinator(ResultSemantics):
             payload["blackbox_case_schema"] = self.blackbox_case_schema
         if role == "tester":
             definition = tomllib.loads((self.project_root / "agents" / "tester.toml").read_text())
-            payload["role_phase_instructions"] = self._tester_instructions(
-                str(definition["developer_instructions"]),
-                author=action_name in {"tester_author", "tester_fix"},
-            )
+            if payload.get("phase") == "correct":
+                payload["role_phase_instructions"] = payload["correction_rule"]
+            else:
+                payload["role_phase_instructions"] = self._tester_instructions(
+                    str(definition["developer_instructions"]),
+                    author=action_name in {"tester_author", "tester_fix"},
+                )
             payload["test_identity_contract"] = {
                 "unittest": (
                     "Canonical test ids are repository-root dotted source paths plus class and "

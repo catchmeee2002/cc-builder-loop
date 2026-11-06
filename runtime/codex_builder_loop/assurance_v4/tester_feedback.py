@@ -6,6 +6,19 @@ The original finding remains in Core; these references request independent reche
 from collections.abc import Mapping
 
 
+def collaborative_correction_allowed(ledger):
+    """Derive permitted cooperation from frozen policy and current source integration."""
+    if ledger.get('facets', {}).get('assurance', {}).get('tester_feedback_policy') != 'collaborative_after_integration':
+        return False
+    execution = ledger.get('facets', {}).get('execution', {})
+    source = execution.get('tester_source') or {}
+    if not source or source.get('agent') != execution.get('agents', {}).get('tester'):
+        return False
+    return any(e.get('kind') == 'tester_source_integrated'
+               and e.get('details', {}).get('source_head') == source.get('head')
+               for e in ledger.get('events', []))
+
+
 def public_recheck(facets, problem):
     execution = facets.get("execution", {})
     reviewer = execution.get("agents", {}).get("reviewer")
@@ -13,6 +26,22 @@ def public_recheck(facets, problem):
             or problem.get("owner") != "tester"):
         return None
     return validate_references(facets, problem.get("tester_recheck"))
+
+
+def correction_request(facets, problem):
+    """Bind a collaboration question to source and the actual Reviewer report."""
+    if facets.get('assurance', {}).get('tester_feedback_policy') != 'collaborative_after_integration':
+        return public_recheck(facets, problem)
+    execution = facets.get('execution', {})
+    reviewer = execution.get('agents', {}).get('reviewer')
+    source = execution.get('tester_source') or {}
+    if (not reviewer or not source.get('head') or problem.get('owner') != 'tester'
+            or problem.get('producer') != {'role': 'reviewer', **reviewer}):
+        return None
+    from .models import digest
+    from .problems import report_content
+    return {'source_head': source['head'], 'problem_key': problem['key'],
+            'producer': problem['producer'], 'report_digest': digest(report_content(problem))}
 
 
 def validate_references(facets, request):
@@ -122,7 +151,7 @@ def disputed(ledger, problem):
     from .models import digest
     report = ledger.get('evidence', {}).get('tester') or {}
     source = ledger['facets']['execution'].get('tester_source') or {}
-    request = public_recheck(ledger['facets'], problem)
+    request = correction_request(ledger['facets'], problem)
     if not request or report.get('details', {}).get('source_head') != source.get('head'):
         return False
     return any(r.get('request_digest') == digest(request) and r.get('decision') == 'disputed'
@@ -137,7 +166,7 @@ def validate_disputes(ledger, report):
         return
     source = ledger['facets']['execution'].get('tester_source') or {}
     requests = {digest(r) for p in effective_problems(ledger) if p.get('status') == 'open'
-                for r in [public_recheck(ledger['facets'], p)] if r}
+                for r in [correction_request(ledger['facets'], p)] if r}
     if ((report or {}).get('kind') != 'tester' or report['details'].get('source_head') != source.get('head')
             or any(item['request_digest'] not in requests for item in results)):
         raise ContractError('Dispute must bind unchanged Tester source and current recheck references',

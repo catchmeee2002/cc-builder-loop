@@ -30,6 +30,9 @@
   external target/deployment/continuity 的局部任务使用 `profile:compact` 并保持 preflight 与
   reviewer_preflight false；任一条件不满足时使用 `profile:full` 与默认 `reviewer_preflight:true`。不得为
   追求 compact 删除 gate 或改写验收。纯 Markdown L1 只要求 `reviewer` 且保持 preflight false，不得伪造 Tester、machine 或 blackbox。
+- 新代码任务默认显式设置 `assurance.tester_feedback_policy: collaborative_after_integration`，在计划中
+  说明首轮独立写测、首次集成后原 Tester 可读候选和有来源的审查意见纠错；冻结验收、写权限及重验不变。
+  用户明确要求持续盲写时用 `independent`。旧合同缺省保留原语义，不在 runtime 升级时补写该字段。
 - Tester 可信来源由独立 thread、提交的普通测试文件、source manifest 与 Reviewer 审查共同绑定；这不
   宣称操作系统级恶意代码 sandbox。
 - `execution` 初始固定为 `version: 1`、`driver_enforced: true`、`candidate_head: null`、

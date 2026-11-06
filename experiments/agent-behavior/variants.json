@@ -50,7 +50,7 @@
       "instruction_references": [
         {
           "path": "skills/planner/references/builder-contract.md",
-          "sha256": "8d79ab2cd96823da5d9783540bfcab178939bc0746896e9fb1f5310e7ff9ea98",
+          "sha256": "a39bdecb5caa1a71782a11c177cca9acd3c4759fdc630648f1b5f21a251fb154",
           "revision": "WORKTREE"
         }
       ]
@@ -75,7 +75,7 @@
       ],
       "instruction_source": {
         "path": "agents/reviewer.toml",
-        "sha256": "612ba5db36e6aa1e2615d2bef8e88a30790d43bd40d1d40c155bfa282f659dcc",
+        "sha256": "17d4dfbe972add994b9fb8f351643ea9fe4837fc4ae8ec8ef6e526060b3f45a0",
         "revision": "WORKTREE"
       }
     },
@@ -87,7 +87,7 @@
       ],
       "instruction_source": {
         "path": "agents/tester.toml",
-        "sha256": "b89cfeb8dd52555e843576d9ff18ffee955e6a353a2fa4e18448dc7965c94b5e",
+        "sha256": "105cb5fb6b7a24b249ad166174a182a236b365dd8bd5e8500ca1ab7b3d5034cb",
         "revision": "WORKTREE"
       }
     },
@@ -125,7 +125,7 @@
         {
           "path": "skills/planner/references/builder-contract.md",
           "revision": "WORKTREE",
-          "sha256": "8d79ab2cd96823da5d9783540bfcab178939bc0746896e9fb1f5310e7ff9ea98"
+          "sha256": "a39bdecb5caa1a71782a11c177cca9acd3c4759fdc630648f1b5f21a251fb154"
         },
         {
           "path": "skills/planner/references/builder-lifecycle.md",
@@ -149,7 +149,7 @@
         {
           "path": "skills/planner/references/builder-contract.md",
           "revision": "WORKTREE",
-          "sha256": "8d79ab2cd96823da5d9783540bfcab178939bc0746896e9fb1f5310e7ff9ea98"
+          "sha256": "a39bdecb5caa1a71782a11c177cca9acd3c4759fdc630648f1b5f21a251fb154"
         },
         {
           "path": "skills/planner/references/builder-environment.md",

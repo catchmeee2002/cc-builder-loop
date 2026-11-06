@@ -162,6 +162,11 @@
         },
         "machine_commands": {"type": "array", "items": {"$ref": "#/$defs/command"}},
         "preflight_before_proof": {"type": "boolean"},
+        "tester_feedback_policy": {
+          "type": "string",
+          "enum": ["independent", "collaborative_after_integration"],
+          "description": "Absent retains independent correction; collaborative correction permits bound review and candidate input after integration."
+        },
         "reviewer_preflight": {"type": "boolean"},
         "evidence_neutral_paths": {
           "type": "object",

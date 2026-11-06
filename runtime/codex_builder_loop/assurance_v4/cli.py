@@ -175,6 +175,7 @@ def parser() -> argparse.ArgumentParser:
     reconsider_review.add_argument("--reason", required=True)
     reconsider_review.add_argument("--driver-runtime-kind", choices=["native", "full_driver_skill"], required=True)
     reconsider_review.add_argument("--allow-runtime-transition", action="store_true")
+    reconsider_review.add_argument("--refresh-prerequisites", action="store_true")
 
     recover_feedback = commands.add_parser("recover-tester-feedback")
     recover_feedback.add_argument("--repo", default=".")
@@ -1037,7 +1038,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             payload = request_reconsideration(
                 args.repo, args.run, session_id=args.session_id, action_id=args.action_id, problem_key=args.problem_key,
                 reason=args.reason, driver_runtime_kind=args.driver_runtime_kind,
-                allow_runtime_transition=args.allow_runtime_transition)
+                allow_runtime_transition=args.allow_runtime_transition, refresh_prerequisites=args.refresh_prerequisites)
         elif args.command == "recover-tester-feedback":
             from .tester_feedback import recover_feedback
             payload = recover_feedback(

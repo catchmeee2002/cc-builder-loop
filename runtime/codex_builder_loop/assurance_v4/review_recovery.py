@@ -48,20 +48,32 @@ def active_request(ledger):
     return requests[0]
 
 
-def validate_current(ledger, request):
+def validate_current(ledger, request, *, allow_refresh_pending=False):
     from .core import AssuranceError
     problems = [p for p in ledger.get('problems', [])
                 if problem_identity(p) == request['problem_identity'] and p.get('status') == 'open']
     current = snapshot(ledger, request['action'])
-    if (len(problems) != 1 or current != request['snapshot']
-        or any(g['state'] != 'pass' for g in current['prerequisites'].values())
-        or current['doc_reference_scan_state'] not in {'pass', 'not_required'}):
+    expected = copy.deepcopy(request['snapshot'])
+    compared = copy.deepcopy(current)
+    if request.get('refresh_prerequisites'):
+        # Only these deterministic gates may change under this bound request.
+        for value in (expected, compared):
+            value.pop('doc_reference_scan_state', None)
+            value.pop('doc_reference_scan_digest', None)
+            value['prerequisites'].pop('preflight', None)
+    ready = (all(g['state'] == 'pass' for g in current['prerequisites'].values())
+             and current['doc_reference_scan_state'] in {'pass', 'not_required'})
+    refreshable = (request.get('refresh_prerequisites') and allow_refresh_pending
+                   and all(g['state'] == 'pass' or (kind == 'preflight' and g['state'] in {'missing', 'stale'})
+                           for kind, g in current['prerequisites'].items())
+                   and current['doc_reference_scan_state'] in {'pass', 'not_required', 'missing', 'stale'})
+    if len(problems) != 1 or compared != expected or not (ready or refreshable):
         raise AssuranceError('review reconsideration inputs drifted', code='REVIEW_RECONSIDERATION_STALE', status='NEEDS_USER')
     return problems[0]
 
 
 def request_reconsideration(repo_value, run_value, *, session_id, action_id, problem_key, reason,
-                            driver_runtime_kind, allow_runtime_transition=False):
+                            driver_runtime_kind, allow_runtime_transition=False, refresh_prerequisites=False):
     from . import core
     from .driver import next_action
     repo, run_id = core.resolve_repo(repo_value), core.ensure_run_id(run_value)
@@ -76,7 +88,7 @@ def request_reconsideration(repo_value, run_value, *, session_id, action_id, pro
                    if e['kind'] == 'review_problem_reconsideration_requested'
                    and e['details']['decision_action_id'] == action_id]
         if matches:
-            if len(matches) != 1 or matches[0]['problem_key'] != problem_key or matches[0]['reason'] != reason.strip():
+            if len(matches) != 1 or matches[0]['problem_key'] != problem_key or matches[0]['reason'] != reason.strip() or bool(matches[0].get('refresh_prerequisites')) != refresh_prerequisites:
                 raise core.AssuranceError('reconsideration replay differs', code='REVIEW_RECONSIDERATION_CONFLICT')
             return core.status(repo, run_id)
         current = next_action(repo, run_id, _ledger=ledger)
@@ -124,7 +136,9 @@ def request_reconsideration(repo_value, run_value, *, session_id, action_id, pro
         request = {'session_id': session_id, 'decision_action_id': action_id, 'problem_key': problem_key,
                    'problem_identity': identity, 'report_binding': copy.deepcopy(binding),
                    'action': action, 'reason': reason.strip(), 'snapshot': snapshot(ledger, action)}
-        validate_current(ledger, request)
+        if refresh_prerequisites:
+            request['refresh_prerequisites'] = True
+        validate_current(ledger, request, allow_refresh_pending=True)
         candidate = ledger['candidate_worktree']
         if (core.git(candidate, 'rev-parse', 'HEAD').stdout.strip() != request['snapshot']['candidate_head'] or core.dirty_paths(candidate)
             or core.branch_head(repo, ledger['candidate_branch']) != request['snapshot']['candidate_head']

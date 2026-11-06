@@ -18,7 +18,7 @@ MISSION_FIELDS = ("delivery_kind", "revision", "objective", "behaviors", "interf
                   "acceptance_cases", "trust_boundaries")
 AUTHORITY_FIELDS = ("target_branch", "builder_write", "tester_write", "public_prerequisites",
                     "protected_support_paths", "external_targets")
-ASSURANCE_FIELDS = ("profile", "required", "machine_commands", "preflight_before_proof",
+ASSURANCE_FIELDS = ("profile", "required", "machine_commands", "preflight_before_proof", "tester_feedback_policy",
                     "reviewer_preflight", "evidence_neutral_paths", "proof_runners")
 COMMAND_FIELDS = ("id", "argv", "timeout_seconds", "expected_returncodes", "run_before_full_suite")
 STATEMENT_FIELDS = ("id", "description")
@@ -115,6 +115,41 @@ def project_role_input(payload: Mapping[str, Any]) -> dict[str, Any]:
     result.pop("doc_reference_scan", None)
     result.pop("doc_reference_scan_state", None)
     if result.get("action") not in AUTHOR_ACTIONS:
+        return result
+    if result.get("action") == "tester_fix" and result.get("tester_collaboration_allowed") is True and (
+        result.get("contract", {}).get("assurance", {}).get("tester_feedback_policy") == "collaborative_after_integration"
+    ):
+        execution = result.get("contract", {}).get("execution", {})
+        source = execution.get("tester_source") or {}
+        reviewer = execution.get("agents", {}).get("reviewer")
+        for problem in result.get("problems") or []:
+            if problem.get("owner") != "tester" or problem.get("status") != "open":
+                continue
+            if (problem.get("producer") or {}).get("role") == "reviewer" and (
+                not reviewer or problem["producer"] != {"role": "reviewer", **reviewer}
+            ):
+                raise RoleInputError("Correction report must retain its registered Reviewer", code="TESTER_CORRECTION_INPUT_UNSAFE")
+        result["phase"] = "correct"
+        result["tester_worktree"] = source.get("worktree")
+        result["correction_rule"] = (
+            "Read the bound review findings and candidate to evaluate the frozen acceptance. "
+            "Modify only Tester-owned source in your worktree. Historical failures describe their "
+            "observed input; consult evidence_gates before treating them as current. Never weaken "
+            "acceptance to match implementation. Report disagreement with concrete evidence. "
+            "Commit corrections and return tests_ready with the actual source_head and files; "
+            "this is not proof, machine, blackbox or release PASS."
+        )
+        from .tester_feedback import correction_request
+        requests = [correction_request(result["contract"], p) for p in result.get("problems", [])
+                    if p.get("owner") == "tester" and p.get("status") == "open"]
+        result["author_result_contract"] = {
+            "result": "Return tests_ready with committed source_head/files; candidate_head is your source_head.",
+            "recheck_requests": [{"problem_key": r["problem_key"], "request_digest": digest(r)}
+                                 for r in requests if r],
+            "disagreement": "If a finding is incorrect, preserve source unchanged and return details.recheck_results with its request_digest, decision=disputed and concrete reason. Original Reviewer resolves it."
+        }
+        result.pop("role_input_digest", None)
+        result["role_input_digest"] = digest(result)
         return result
     result = _pick(result, AUTHOR_FIELDS)
     if result.get("action") != "tester_fix":
@@ -263,6 +298,7 @@ def build_role_input(context: Mapping[str, Any], action: Mapping[str, Any], role
         "problems": [p for p in context.get("problems") or [] if not (role == "tester" and action["action"] in AUTHOR_ACTIONS and p.get("inherited_from"))],
         "inherited_problem_review": context.get("inherited_problem_review") if role == "reviewer" else None,
         "role_observations": observations,
+        "tester_collaboration_allowed": context.get("tester_collaboration_allowed", False),
     }
     if role == "reviewer":
         if action.get("reason") in {"tester_recheck_references_required", "tester_recheck_disputed"}:

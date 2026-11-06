@@ -24,7 +24,7 @@ def digest(value):
 
 
 class CliScenario:
-    def __init__(self, case, runtime=ROOT, *, prerequisites=False, kind='native', early_review=False):
+    def __init__(self, case, runtime=ROOT, *, prerequisites=False, kind='native', early_review=False, collaborative=False):
         self.case, self.runtime, self.kind = case, Path(runtime), kind
         # The frozen commands check application behavior; they do not nest a test runner.
         self.repo = init_repo({'verify.sh': '#!/bin/sh\npython3 -B -c "from src.calc import add; assert add(1,2) == 3"\n'})
@@ -49,6 +49,8 @@ class CliScenario:
             for unit in units:
                 unit['depends_on'] = ['produce-b' if v == original['id'] else v for v in unit['depends_on']]
             contract['execution']['work_units'] = [a, b, *units]
+        if collaborative:
+            contract['assurance']['tester_feedback_policy'] = 'collaborative_after_integration'
         self.early_review = early_review
         if early_review:
             contract['assurance']['preflight_before_proof'] = True
@@ -205,8 +207,8 @@ class CliScenario:
                     artifact_digest=artifact_digest, accepted=accepted, reason='Reviewed the exact command facts.')
 
 
-def review_fixture(case, kind='native', *, early_review=False):
-    f = CliScenario(case, kind=kind, early_review=early_review)
+def review_fixture(case, kind='native', *, early_review=False, collaborative=False):
+    f = CliScenario(case, kind=kind, early_review=early_review, collaborative=collaborative)
     f.ready_review()
     return f
 

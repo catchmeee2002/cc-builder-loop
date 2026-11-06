@@ -65,6 +65,41 @@ class RoleInputBoundaryTest(unittest.TestCase):
                 self.assertEqual(result['contract']['mission'], self.context['facets']['mission'])
                 self.assertIn('evidence_report_schema', result)
 
+    def test_feedback_policy_change_is_not_nonsemantic_execution_tuning(self):
+        from runtime.codex_builder_loop.assurance_v4.models import assurance_downgrades
+        old = self.context['facets']['assurance']
+        new = copy.deepcopy(old)
+        new['tester_feedback_policy'] = 'independent'
+        self.assertFalse(assurance_downgrades(old, new))
+        new['tester_feedback_policy'] = 'collaborative_after_integration'
+        self.assertTrue(assurance_downgrades(old, new))
+
+    def test_integration_alone_does_not_change_legacy_contract_visibility(self):
+        self.context['tester_collaboration_allowed'] = True
+        self.context['problems'] = []
+        wire = self.prompt({**self.action, 'action': 'tester_fix'})
+        self.assertEqual(wire['phase'], 'author')
+        self.assertNotIn('candidate_worktree', wire)
+
+    def test_integrated_fix_wire_keeps_bound_feedback_and_is_idempotent(self):
+        self.context['tester_collaboration_allowed'] = True
+        self.context['facets']['assurance']['tester_feedback_policy'] = 'collaborative_after_integration'
+        reviewer = {'agent_id': 'reviewer', 'thread_id': 'reviewer-thread'}
+        self.context['facets']['execution']['agents']['reviewer'] = reviewer
+        self.context['problems'] = [dict(key='test-defect', owner='tester', status='open',
+            producer={'role': 'reviewer', **reviewer}, summary='Check test',
+            details='Compare test assertion with frozen acceptance', candidate_head='old-head')]
+        action = {**self.action, 'action': 'tester_fix'}
+        wire = self.prompt(action)
+        self.assertEqual(wire['phase'], 'correct')
+        self.assertEqual(wire['candidate_worktree'], '/secret-candidate')
+        self.assertEqual(wire['problems'], self.context['problems'])
+        self.assertEqual(project_role_input(wire), wire)
+        self.assertIn('Historical failures', wire['role_phase_instructions'])
+        # A first-author dispatch does not gain visibility from a bare integration hint.
+        self.context['problems'] = []
+        self.assertNotIn('candidate_worktree', self.prompt())
+
     def test_candidate_only_changes_do_not_change_author_wire(self):
         original = self.prompt()
         changed = json.loads(json.dumps(self.context).replace('SECRET', 'OTHER-CANDIDATE'))

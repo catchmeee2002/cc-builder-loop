@@ -1578,6 +1578,9 @@ def authority_expands(old: Mapping[str, Any], new: Mapping[str, Any]) -> bool:
 
 
 def assurance_downgrades(old: Mapping[str, Any], new: Mapping[str, Any]) -> bool:
+    # Changing author visibility is a trust-boundary change, not execution tuning.
+    if old.get("tester_feedback_policy", "independent") != new.get("tester_feedback_policy", "independent"):
+        return True
     if old.get("proof_runners", []) != new.get("proof_runners", []):
         return True
     old_neutral = old.get("evidence_neutral_paths", {})

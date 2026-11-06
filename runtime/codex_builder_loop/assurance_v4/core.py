@@ -12240,6 +12240,7 @@ def _driver_evidence_origin(ledger: Mapping[str, Any], view: Mapping[str, Any]) 
 
 def driver_context(repo_value: str | Path, run_value: str) -> dict[str, Any]:
     from .review_recovery import active_request
+    from .tester_feedback import collaborative_correction_allowed
     repo = resolve_repo(repo_value)
     run_id = ensure_run_id(run_value)
     ledger = read_ledger(repo, run_id)
@@ -12280,6 +12281,7 @@ def driver_context(repo_value: str | Path, run_value: str) -> dict[str, Any]:
         "progress_policy": progress_policy(ledger["facets"]),
         "work_unit_progress": work_unit_progress(ledger),
         "role_observations": role_observations(ledger),
+        "tester_collaboration_allowed": collaborative_correction_allowed(ledger),
         "evidence": evidence,
         "evidence_origin": _driver_evidence_origin(ledger, evidence),
         "evidence_gates": evidence_gate_view(ledger),
