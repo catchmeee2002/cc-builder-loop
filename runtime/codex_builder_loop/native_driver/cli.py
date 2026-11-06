@@ -44,6 +44,13 @@ def parser() -> argparse.ArgumentParser:
     resume.add_argument("--repo", default=".")
     resume.add_argument("--run", required=True)
     resume.add_argument("--reason")
+    migrate = commands.add_parser("migrate-host", help="Explicitly authorize a new host between role turns")
+    migrate.add_argument("--repo", default=".")
+    migrate.add_argument("--run", required=True)
+    migrate.add_argument("--session-id", required=True)
+    migrate.add_argument("--action-id", required=True)
+    migrate.add_argument("--reason", required=True)
+    migrate.add_argument("--allow-runtime-transition", action="store_true")
     status = commands.add_parser("status")
     status.add_argument("--repo", default=".")
     status.add_argument("--run", required=True)
@@ -295,7 +302,8 @@ def _verify_resume_executable_identity(
     if not isinstance(frozen, dict) or not isinstance(current, dict):
         return
     frozen_executable = frozen.get("executable_identity")
-    if frozen_executable != current:
+    grant = context.get("native_host_transition") or {}
+    if frozen_executable != current and not (grant.get("from") == frozen_executable and grant.get("to") == current):
         raise NativeDriverError(
             "Native Driver executable identity changed",
             code="NATIVE_DRIVER_EXECUTABLE_IDENTITY_DRIFT",
@@ -698,6 +706,45 @@ def main(argv: Sequence[str] | None = None) -> int:
     root_resume_session_id: str | None = None
     root_start_state = {"started": False}
     try:
+        if args.command == "migrate-host":
+            session_id = current_session_id(args.session_id)
+            context = core.call("driver-context", "--repo", str(repo), "--run", args.run)
+            if context.get("owner_session_id") != session_id:
+                raise NativeDriverError("Only the original owner may migrate the host", code="NATIVE_HOST_TRANSITION_OWNER_MISMATCH", status="NEEDS_USER")
+            grant = context.get("native_host_transition") or {}
+            if grant.get("action_id") == args.action_id and grant.get("reason") == args.reason.strip():
+                capability = probe_app_server(args.codex_bin, strict_protocol=True, isolate_memories=True)
+                if grant.get("to") == capability.executable_identity:
+                    return emit({"status": "READY", "code": "NATIVE_HOST_TRANSITION_AUTHORIZED", "request_id": grant["request_id"]}, 0)
+            decision = core.call("driver-next", "--repo", str(repo), "--run", args.run)
+            if (not args.reason.strip() or context.get("phase") != "active"
+                    or context.get("dispatch_intent") is not None
+                    or decision.get("action_id") != args.action_id or decision.get("status") != "CONTINUE"):
+                raise NativeDriverError("Host migration is not available at this action", code="NATIVE_HOST_TRANSITION_ACTION_STALE", status="NEEDS_USER")
+            probe = probe_model_request(args.codex_bin)
+            if probe.get("status") != "READY":
+                return emit(probe, 1)
+            capability = probe_app_server(args.codex_bin, strict_protocol=True, isolate_memories=True)
+            if capability.executable_identity != probe.get("executable_identity"):
+                raise NativeDriverError("Host changed during probe", code="NATIVE_HOST_TRANSITION_IDENTITY_DRIFT", status="NEEDS_USER")
+            observed = {}
+            with AppServerTransport(codex_bin=args.codex_bin, strict_protocol=True, isolate_memories=True,
+                                    executable_identity=capability.executable_identity) as host:
+                for role, identity in context["facets"]["execution"]["agents"].items():
+                    if not identity or not identity.get("thread_id"):
+                        continue
+                    thread_id = identity["thread_id"]
+                    thread = host.read_thread(thread_id)
+                    if any(turn.get("status") == "inProgress" for turn in thread.get("turns", [])):
+                        raise NativeDriverError("Original role has an active turn", code="NATIVE_HOST_TRANSITION_THREAD_BUSY", status="NEEDS_USER")
+                    observed[role] = thread.get("id")
+            observation = {"snapshot_digest": context["native_host_transition_snapshot"],
+                           "executable_identity": capability.executable_identity,
+                           "probe": probe, "threads": observed, "cleanup": host.cleanup_observation}
+            return emit(core.call("authorize-host-transition", "--repo", str(repo), "--run", args.run,
+                "--session-id", session_id, "--action-id", args.action_id, "--reason", args.reason,
+                "--observation", "-", *(["--allow-runtime-transition"] if args.allow_runtime_transition else []),
+                input_value=observation), 0)
         if args.command in {"hold", "release"}:
             extra = ["--when", args.when] if args.command == "hold" else ["--hold-id", args.hold_id]
             return emit(core.call(args.command, "--repo", str(repo), "--run", args.run, "--session-id", args.session_id, "--reason", args.reason, *extra), 0)

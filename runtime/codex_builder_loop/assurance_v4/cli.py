@@ -166,6 +166,15 @@ def parser() -> argparse.ArgumentParser:
     release_verify.add_argument("--remote", default="origin")
     release_verify.add_argument("--installed-cli")
 
+    host = commands.add_parser("authorize-host-transition")
+    host.add_argument("--repo", default=".")
+    host.add_argument("--run", required=True)
+    host.add_argument("--session-id", required=True)
+    host.add_argument("--action-id", required=True)
+    host.add_argument("--reason", required=True)
+    host.add_argument("--observation", required=True)
+    host.add_argument("--allow-runtime-transition", action="store_true")
+
     reconsider_review = commands.add_parser("reconsider-review-problem")
     reconsider_review.add_argument("--repo", default=".")
     reconsider_review.add_argument("--run", required=True)
@@ -1033,6 +1042,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 remote=args.remote,
                 installed_cli=args.installed_cli,
             )
+        elif args.command == "authorize-host-transition":
+            from .host_transition import authorize
+            payload = authorize(args.repo, args.run, session_id=args.session_id, action_id=args.action_id,
+                reason=args.reason, observation=load_json_source(args.observation, stdin_text=sys.stdin.read() if args.observation == "-" else None),
+                allow_runtime_transition=args.allow_runtime_transition)
         elif args.command == "reconsider-review-problem":
             from .review_recovery import request_reconsideration
             payload = request_reconsideration(
