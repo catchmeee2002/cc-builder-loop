@@ -125,7 +125,8 @@
         "pattern": "^[0-9a-f]{64}$"
       },
       "accepted": {
-        "type": "boolean"
+        "type": "boolean",
+        "description": "True accepts only a current observation. False may reject a current observation or a digest-verified historical artifact bound to a retired request; rejection never supplies passing evidence."
       },
       "reason": {
         "type": "string",

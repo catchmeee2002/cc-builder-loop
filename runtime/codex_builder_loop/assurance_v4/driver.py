@@ -1159,6 +1159,15 @@ def next_action(
     ledger = read_ledger(repo, run_id) if _ledger is None else _ledger
 
     def decision(status: str, action: str, reason: str, **payload: Any) -> dict[str, Any]:
+        # Admission applies to every Reviewer route, including feedback and
+        # observation follow-ups that bypass the ordinary gate-order loop.
+        assurance = ledger["facets"]["assurance"]
+        if (status == "CONTINUE" and action in {"reviewer_preflight", "reviewer_final"}
+                and assurance.get("preflight_before_proof")
+                and any(c.get("run_before_full_suite") for c in assurance["machine_commands"])
+                and evidence_state(ledger, "preflight") in {"missing", "stale"}):
+            return decision("CONTINUE", "verify_preflight", "review_prerequisite_preflight_refresh",
+                            candidate_worktree=ledger["candidate_worktree"])
         if progress_policy(ledger["facets"]).get("mode") == "bounded_rehydration":
             role = (
                 "builder"

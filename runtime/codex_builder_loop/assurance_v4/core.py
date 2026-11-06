@@ -4354,7 +4354,7 @@ def complete_dispatch(
         if intent.get("role") == "reviewer":
             _assert_reviewer_integrity(ledger)
         report = result.get("evidence_report")
-        if isinstance(report, dict) and not isinstance(result.get("problem_report"), dict):
+        if isinstance(report, dict) and (intent["role"] == "reviewer" or not isinstance(result.get("problem_report"), dict)):
             execution = ledger["facets"]["execution"]
             expected = execution["agents"].get(intent["role"])
             producer = report["producer"]
@@ -4368,6 +4368,11 @@ def complete_dispatch(
                 if intent["role"] == "reviewer" and report["details"].get("reviewed_head") != execution.get("candidate_head"):
                     raise ContractError("reviewed HEAD differs from dispatch", code="EVIDENCE_REPORT_INVALID",
                                         details={"path": "details/reviewed_head", "action_id": action_id})
+                if intent["role"] == "reviewer":
+                    try:
+                        _observation_disposition_changes(ledger, report)
+                    except AssuranceError as exc:
+                        raise ContractError(str(exc), code="EVIDENCE_REPORT_INVALID", details={"source_code": exc.code}) from exc
                 if intent["action"] == "tester_observe":
                     try:
                         _validate_local_observations(ledger, report)
@@ -12056,7 +12061,8 @@ def record_observations(repo_value: str | Path, run_value: str, report_value: An
 
 def _review_observations_current(ledger: Mapping[str, Any], report: Mapping[str, Any]) -> bool:
     """Closed requests remain review inputs through their accepted receipts."""
-    required = list(report.get("details", {}).get("observation_dispositions", []))
+    required = [d for d in report.get("details", {}).get("observation_dispositions", [])
+                if d["accepted"]]
     receipts = [event["details"] for event in ledger.get("events", [])
                 if event.get("kind") == "local_observation_reviewed"]
     for problem in ledger.get("problems", []):
@@ -12082,7 +12088,8 @@ def _review_observations_current(ledger: Mapping[str, Any], report: Mapping[str,
     ) for item in required)
 
 
-def _apply_observation_dispositions(ledger: dict[str, Any], report: Mapping[str, Any]) -> None:
+def _observation_disposition_changes(ledger: Mapping[str, Any], report: Mapping[str, Any]) -> list:
+    """Validate acceptances against current inputs; historical rejections grant no evidence."""
     dispositions = report["details"].get("observation_dispositions", [])
     if report["status"] == "pass":
         if not _review_observations_current(ledger, report):
@@ -12093,7 +12100,7 @@ def _apply_observation_dispositions(ledger: dict[str, Any], report: Mapping[str,
         if pending - accepted:
             raise AssuranceError("passing review must adjudicate pending observation requests", code="OBSERVATION_REVIEW_REQUIRED")
     if not dispositions:
-        return
+        return []
     artifacts = {item["artifact_digest"]: item for item in observation_view(ledger) if item["state"] == "current"}
     changes = []
     seen = set()
@@ -12101,19 +12108,46 @@ def _apply_observation_dispositions(ledger: dict[str, Any], report: Mapping[str,
         request_digest = disposition["request_digest"]
         matches = [p for p in ledger["problems"] if p.get("observation_request") and not p.get("inherited_from") and observation_request_digest(p) == request_digest]
         artifact = artifacts.get(disposition["artifact_digest"])
+        historical = False
+        if not disposition["accepted"] and artifact is None:
+            # Retired requests live in the immutable refresh events, not in a
+            # second problem list. Verify the originally accepted artifact even
+            # when rejecting it; unknown or corrupted history is never trusted.
+            matches = [e["details"]["previous_problem"] for e in ledger.get("events", [])
+                       if e["kind"] == "local_observation_request_refreshed"
+                       and observation_request_digest(e["details"]["previous_problem"]) == request_digest]
+            references = [e["details"] for e in ledger.get("events", [])
+                          if e["kind"] == "local_observations_recorded"
+                          and e["details"]["artifact_digest"] == disposition["artifact_digest"]]
+            if len(matches) == 1 and len(references) == 1:
+                try:
+                    original = _observation_artifact(ledger, references[0])["evidence_report"]
+                    original_tester = {"role": "tester", **ledger["facets"]["execution"]["agents"].get("tester", {})}
+                    if original["producer"] == original_tester and original["candidate_head"] == matches[0]["candidate_head"]:
+                        artifact = {"observations": original["details"]["observations"]}
+                        historical = True
+                except (AssuranceError, ContractError, OSError, ValueError, KeyError):
+                    artifact = None
         if (request_digest in seen or len(matches) != 1 or matches[0]["key"] != disposition["problem_key"]
             or matches[0]["producer"] != report["producer"] or artifact is None
-            or not any(o["request_digest"] == request_digest for o in artifact["observations"])):
-            raise AssuranceError("review disposition does not bind a current observation", code="OBSERVATION_DISPOSITION_INVALID")
+            or not any(o["request_digest"] == request_digest and o["problem_key"] == disposition["problem_key"]
+                       for o in artifact["observations"])):
+            raise AssuranceError("review disposition does not bind a current observation or verifiable historical rejection", code="OBSERVATION_DISPOSITION_INVALID")
+        receipt = {**copy.deepcopy(disposition), "producer": report["producer"], "candidate_head": report["candidate_head"]}
+        prior = [e["details"] for e in ledger["events"] if e["kind"] == "local_observation_reviewed"]
+        if not historical and matches[0]["status"] != "open" and receipt not in prior:
+            raise AssuranceError("observation request is already resolved", code="OBSERVATION_DISPOSITION_INVALID")
         seen.add(request_digest)
-        changes.append((matches[0], disposition))
-    for problem, disposition in changes:
+        changes.append((matches[0], disposition, historical))
+    return changes
+
+
+def _apply_observation_dispositions(ledger: dict[str, Any], report: Mapping[str, Any]) -> None:
+    for problem, disposition, historical in _observation_disposition_changes(ledger, report):
         receipt = {**copy.deepcopy(disposition), "producer": report["producer"], "candidate_head": report["candidate_head"]}
         prior = [e["details"] for e in ledger["events"] if e["kind"] == "local_observation_reviewed"]
         if receipt in prior:
             continue
-        if problem["status"] != "open":
-            raise AssuranceError("observation request is already resolved", code="OBSERVATION_DISPOSITION_INVALID")
         append_event(ledger, "local_observation_reviewed", receipt)
         if disposition["accepted"]:
             problem.update(status="resolved", resolution="observation:" + disposition["artifact_digest"], resolved_at=now())
