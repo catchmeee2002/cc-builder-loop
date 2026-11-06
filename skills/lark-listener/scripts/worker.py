@@ -153,12 +153,30 @@ def poll(store, sid):
         health_notice(store, sid)
         return status(store, sid)
 
+def queued_receipt(batch):
+    """Any valid admission receipt remains authoritative across later attempts."""
+    return next((r for r in reversed(batch['receipts']) if r.get('state')=='queued'
+                 and r.get('queue_id') and (r.get('owner_session') or '').lower()==batch['owner_session'].lower()), None)
+
+def batch_delivery(batch):
+    receipt=queued_receipt(batch)
+    if batch.get('received_at') is not None:
+        return 'received'
+    if receipt:
+        return 'wake_attention' if receipt.get('wake_warning') else 'waiting_receive'
+    if batch['receipts'] and batch['receipts'][-1].get('state')=='blocked':
+        return 'capability_blocked'
+    return 'delivery_unknown' if batch['attempts'] else 'pending'
+
 def status(store, sid):
     from store import alive
     with store.transaction() as data:
         s = copy.deepcopy(store.subscription(data, {'subscription_id': sid}))
         pending = [d for d in data['deliveries'].values() if d['subscription_id'] == sid and d['owner_session'] == s['owner_session'] and d['state'] not in DONE]
-        attention = any(d['attempts'] >= 3 and d['state'] in ('pending', 'unknown', 'queued') for d in pending)
+        batches=[b for b in data['batches'].values() if b['subscription_id']==sid and b.get('received_at') is None]
+        attention=any(batch_delivery(b) in ('wake_attention','capability_blocked') or
+                      (not queued_receipt(b) and b['attempts']>=3) or
+                      (queued_receipt(b) and now()-queued_receipt(b)['at']>=300) for b in batches)
         process = s.get('process')
         running = alive(process)
         read_ok = s.get('coverage') == 'complete' and not s.get('read_error') and bool(s.get('last_read_at')) and s.get('last_read_at',0) >= s.get('worker_started_at',0)
@@ -171,7 +189,7 @@ def status(store, sid):
             'running': running, 'worker_lock_acquired': running, 'started': bool(process), 'healthy': bool(running and read_ok),
             'lifecycle': 'stopped' if not s['active'] else ('healthy' if running and read_ok else 'spawned' if running else 'not_running'),
             'health_notice':s.get('health_notice_receipt'),
-            'delivery_receipts':[{'batch_id':b['batch_id'], 'received_at':b['received_at'], 'attempts':b['attempts'], 'receipts':b['receipts']} for b in data['batches'].values() if b['subscription_id']==sid],
+            'delivery_receipts':[{'batch_id':b['batch_id'], 'received_at':b['received_at'], 'attempts':b['attempts'], 'delivery_status':batch_delivery(b), 'receipts':b['receipts']} for b in data['batches'].values() if b['subscription_id']==sid],
             'unreceived_batches':[b['batch_id'] for b in data['batches'].values() if b['subscription_id']==sid and not b.get('received_at')],
             'unknown_sends':[i['request_id'] for i in data['sends'].values() if i['subscription_id']==sid and i['state'] in ('sending','unknown')],
             'pending_count': len(pending), 'attention': attention,
@@ -223,7 +241,12 @@ def notify(store,sid):
             bid=digest([sid,s['owner_session'],ids])
             batches[bid]={'batch_id':bid,'subscription_id':sid,'owner_session':s['owner_session'],
                           'delivery_ids':ids,'attempts':0,'next_notify':0,'received_at':None,'receipts':[]}
-        eligible=[b for b in batches.values() if b['subscription_id']==sid and not b.get('received_at') and b['attempts']<3 and b['next_notify']<=now()]
+        eligible=[b for b in batches.values()
+                  if b['subscription_id']==sid and b.get('received_at') is None
+                  and not queued_receipt(b)
+                  and (batch_delivery(b)!='capability_blocked' or
+                       b['receipts'][-1].get('generation')!=s['generation'])
+                  and b['attempts']<3 and b['next_notify']<=now()]
         if not eligible:return
         batch=eligible[0];bid=batch['batch_id'];batch['attempts']+=1
         batch['next_notify']=now()+60*2**(batch['attempts']-1)
@@ -241,10 +264,13 @@ def notify(store,sid):
     except ListenerError as e:receipt={'state':'unknown','error':e.code}
     with store.transaction() as data:
         data['subscriptions'][sid].pop('notify_inflight',None)
-        batch=data['batches'][bid];batch['receipts'].append({'at':now(),**receipt})
+        batch=data['batches'][bid]
+        if receipt['state']=='blocked':
+            batch['attempts']-=1  # Capability probe sent no notification.
+        batch['receipts'].append({'at':now(),'generation':s['generation'],**receipt})
         for did in batch['delivery_ids']:
             d=data['deliveries'][did]
-            if d['state']!='received':d['state']=receipt['state']
+            if d['state']!='received':d.update(state=receipt['state'],attempts=batch['attempts'])
         if data['subscriptions'][sid]['generation']!=s['generation']:
             data['subscriptions'][sid]['inflight_delivery']='completed_after_generation_change'
 

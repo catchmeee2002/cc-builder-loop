@@ -72,7 +72,8 @@ class ListenerBlackboxTests(StateScenarios, unittest.TestCase):
         s.request['source'] = THREAD
         s.pages([[message('om_history', 'history at boundary')]])
         result = s.start(backlog='new')
-        s.wait(lambda: s.calls('+threads-messages-list'))
+        s.wait(lambda: s.status().get('coverage') == 'complete',
+               description='bootstrap page durably consumed')
         self.assertRegex(text_of(result).lower(), r'boundary|backlog|读取边界')
         self.assert_no_new_batch(0)
         # Stopping and restarting new-backlog subscriptions must resume; it
@@ -203,6 +204,39 @@ class ListenerBlackboxTests(StateScenarios, unittest.TestCase):
                 time.sleep(.2)
                 self.assertEqual(len(s.batches()), 3, 'Retries must stop after the third unconfirmed attempt')
 
+    def test_queue_capability_blocks_before_start_and_recovers(self):
+        s = self.s
+        s.change(queue_resume_supported=False)
+        result = s.command('start', expected=2)
+        self.assertIn('QUEUE_RESUME_UNSUPPORTED', text_of(result))
+        self.assertEqual(s.queues(), [])
+        self.assertEqual(s.calls('+threads-messages-list'), [])
+        s.change(queue_resume_supported=True)
+        s.pages([[message('om_capability', 'capability restored')]])
+        s.read_once()
+        row = self.wait_batch('om_capability')
+        s.receive(row)
+
+    def test_unknown_then_queued_stops_retrying(self):
+        s = self.s
+        s.change(queue_mode='empty')
+        s.pages([[message('om_unknown', 'same immutable batch')]])
+        s.read_once()
+        original = self.wait_batch('om_unknown')
+        s.change(queue_mode='ok')
+        s.advance(301)
+        s.restart()
+        s.wait(lambda: len(s.batches()) == 2)
+        self.assertEqual(batch_id(original['message']), batch_id(s.batches()[1]['message']))
+        s.wait(lambda: has_fact(s.status(), 'queued'))
+        s.advance(301)
+        s.restart()
+        time.sleep(.2)
+        self.assertEqual(len(s.batches()), 2)
+        s.receive(original)
+        s.receive(s.batches()[1])
+        self.assertEqual(s.status()['pending_count'], 0)
+
     def test_queue_success_and_resume_warning_remain_separate(self):
         s = self.s
         s.change(queue_mode='wake-failed')
@@ -212,6 +246,11 @@ class ListenerBlackboxTests(StateScenarios, unittest.TestCase):
         status = s.wait(lambda: (value if has_fact(value := s.status(), 'queued') else None))
         self.assertIn(row['queue_id'], text_of(status))
         self.assertRegex(text_of(status).lower(), r'warning|wake.{0,80}fail|resume.{0,80}fail|唤醒.{0,80}失败')
+        s.advance(301)
+        s.restart()
+        time.sleep(.2)
+        self.assertEqual(len(s.batches()), 1)
+        self.assertTrue(s.status()['attention'])
         s.receive(row)
 
     def test_batch_survives_crash_before_queue_receipt(self):

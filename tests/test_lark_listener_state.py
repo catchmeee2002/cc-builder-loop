@@ -73,11 +73,13 @@ class StateScenarios:
         before = versions(first)
         self.assertIn('om_first', before)
         s.receive(first, OTHER)
-        # A rejected foreign ACK must leave the same batch eligible for retry.
+        # A rejected foreign ACK leaves the queued batch pending, without requeue.
         s.advance(301)
         s.restart()
-        retry = s.wait(lambda: [r for r in s.batches()[1:] if batch_id(r['message']) == batch_id(first['message'])])[-1]
-        self.assertEqual(versions(retry), before)
+        time.sleep(.2)
+        self.assertEqual(len(s.batches()), 1)
+        self.assertIn(batch_id(first['message']), s.status()['unreceived_batches'])
+        self.assertTrue(s.status()['attention'])
         result = s.receive(first)
         again = s.receive(first)
         self.assertIn(batch_id(first['message']), text_of(result))
@@ -92,8 +94,9 @@ class StateScenarios:
         s.advance(301)
         count = len(s.batches())
         s.restart()
-        last = s.wait(lambda: s.batches()[count:])[-1]
-        self.assertEqual(batch_id(last['message']), batch_id(later['message']))
+        time.sleep(.2)
+        self.assertEqual(len(s.batches()), count)
+        self.assertIn(batch_id(later['message']), s.status()['unreceived_batches'])
         s.receive(later)
         self.assertFalse(has_fact(result, 'business_complete'))
 
@@ -136,14 +139,12 @@ class StateScenarios:
         s.read_once()
         batch = s.wait(lambda: s.batches())[-1]
         bid = batch_id(batch['message'])
-        # Exhaust the three delivery attempts without acknowledging anything.
-        for attempt in range(2):
-            count = len(s.batches())
-            s.advance(301)
-            s.restart()
-            s.wait(lambda: len(s.batches()) > count, description='bounded retry')
-        self.assertEqual(sum(batch_id(r['message']) == bid for r in s.batches()), 3)
-        self.assertTrue(has_fact(s.status(), 'attention'), 'Unconfirmed batch must remain visible after three attempts')
+        s.wait(lambda: has_fact(s.status(), 'queued'), description='durable queue receipt')
+        s.advance(301)
+        s.restart()
+        time.sleep(.2)
+        self.assertEqual(sum(batch_id(r['message']) == bid for r in s.batches()), 1)
+        self.assertTrue(has_fact(s.status(), 'attention'))
         s.stop()
         s.advance(30 * DAY)
         before = len(s.queues())

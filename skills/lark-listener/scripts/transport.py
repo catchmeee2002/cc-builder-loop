@@ -128,7 +128,22 @@ def page(s, topic, cursor):
         raise ListenerError('PAGE_TOKEN_MISSING', 'DEGRADED')
     return x
 
+def queue_capability(s):
+    """Read the bound CLI's public grammar without sending a message."""
+    r = call([s['codex_bin'], 'queue', '--help'])
+    if r.returncode:
+        raise ListenerError('QUEUE_CAPABILITY_UNAVAILABLE', 'DEGRADED')
+    options = set(re.findall(r'(?m)^\s+(--[a-z-]+)(?=[\s=]|$)', r.stdout))
+    if not {'--remote', '--thread', '--message'} <= options:
+        raise ListenerError('QUEUE_CAPABILITY_UNSUPPORTED', 'DEGRADED')
+    if '--resume' not in options:
+        raise ListenerError('QUEUE_RESUME_UNSUPPORTED', 'DEGRADED')
+
 def queue(s, body):
+    try:
+        queue_capability(s)
+    except ListenerError as e:
+        return {'state':'blocked', 'error':e.code}
     r = call([s['codex_bin'], 'queue', '--remote', s['remote'], '--thread', s['owner_session'], '--message', body, '--resume'])
     receipt = re.search(r'^Queued message (' + UUID + r') for thread (' + UUID + r')\.?$', r.stdout, re.M)
     if r.returncode or not receipt or receipt[2].lower() != s['owner_session'].lower():

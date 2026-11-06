@@ -162,6 +162,7 @@ def start(store, r):
     if r.get('backlog','all') not in ('all','new'):raise ListenerError('BACKLOG_INVALID')
     spec=existing or {k:r[k] for k in ('subscription_id','source','owner_session','remote','identity','lark_bin','codex_bin')}
     spec['lark_bin']=transport.executable(spec['lark_bin']);spec['codex_bin']=transport.executable(spec['codex_bin'])
+    transport.queue_capability(spec)
     account=transport.identity(spec)
     if not account.get('sender_id'):raise ListenerError('SENDER_IDENTITY_MISSING')
     if existing and (account['profile']!=existing['account'] or account['app']!=existing['app'] or account['sender_id']!=existing['sender_id']):

@@ -54,6 +54,10 @@ kind = pathlib.Path(__file__).name
 op = 'queue' if kind == 'codex-peer' else next(
     (a for a in args if a in ('whoami', '+messages-mget',
      '+threads-messages-list', '+messages-reply')), 'unsupported')
+if kind == 'codex-peer' and args == ['queue', '--help']:
+    world = json.loads((root / 'world.json').read_text())
+    print('Usage: codex queue\n  --remote ADDR\n  --thread THREAD\n  --message TEXT' + ('\n  --resume' if world.get('queue_resume_supported', True) else ''))
+    sys.exit(0)
 rc, out, err = 0, '', ''
 with (root / 'peer.lock').open('a') as lock:
     fcntl.flock(lock, fcntl.LOCK_EX)
