@@ -86,17 +86,16 @@ class HostTransitionTest(unittest.TestCase):
         with self.assertRaises(core.AssuranceError):self.authorize()
 
     def test_native_cli_observes_original_threads_before_authorization(self):
-        outer=self
-        class Host:
-            cleanup_observation={'process_group_gone':True}
-            def __init__(self,**kwargs):pass
-            def __enter__(self):return self
-            def __exit__(self,*args):pass
-            def read_thread(self,thread_id):
-                outer.assertIn(thread_id,outer.observation['threads'].values())
-                return {'id':thread_id}
-        with patch.object(cli,'current_session_id',return_value='owner'),patch.object(cli,'probe_model_request',return_value=self.probe),patch.object(cli,'probe_app_server',return_value=SimpleNamespace(executable_identity=self.new)),patch.object(cli,'AppServerTransport',Host):
-            rc=cli.main(['migrate-host','--repo',str(self.repo),'--run',self.run,'--session-id','owner',
-                         '--action-id',self.action['action_id'],'--reason','Upgrade host'])
-        self.assertEqual(rc,0)
+        import tempfile
+        from pathlib import Path
+        from tests.test_native_network_probe import FAKE_SERVER
+        with tempfile.TemporaryDirectory(prefix='host-protocol-') as root:
+            executable = Path(root) / 'codex'
+            executable.write_text(FAKE_SERVER)
+            executable.chmod(0o755)
+            with patch.object(cli, 'current_session_id', return_value='owner'):
+                rc = cli.main(['--codex-bin', str(executable), 'migrate-host', '--repo', str(self.repo),
+                    '--run', self.run, '--session-id', 'owner', '--action-id', self.action['action_id'],
+                    '--reason', 'Upgrade host'])
+        self.assertEqual(rc, 0)
         self.assertIsNotNone(host_transition.current_grant(self.f.ledger()))

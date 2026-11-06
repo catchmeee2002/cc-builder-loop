@@ -721,12 +721,15 @@ def main(argv: Sequence[str] | None = None) -> int:
                     or context.get("dispatch_intent") is not None
                     or decision.get("action_id") != args.action_id or decision.get("status") != "CONTINUE"):
                 raise NativeDriverError("Host migration is not available at this action", code="NATIVE_HOST_TRANSITION_ACTION_STALE", status="NEEDS_USER")
-            probe = probe_model_request(args.codex_bin)
+            probe = probe_model_request(args.codex_bin, isolate_memories=True)
             if probe.get("status") != "READY":
                 return emit(probe, 1)
             capability = probe_app_server(args.codex_bin, strict_protocol=True, isolate_memories=True)
             if capability.executable_identity != probe.get("executable_identity"):
-                raise NativeDriverError("Host changed during probe", code="NATIVE_HOST_TRANSITION_IDENTITY_DRIFT", status="NEEDS_USER")
+                raise NativeDriverError("Host identity observations differ", code="NATIVE_HOST_TRANSITION_IDENTITY_DRIFT", status="NEEDS_USER",
+                    details={"model_probe": probe.get("executable_identity"), "protocol_probe": capability.executable_identity,
+                             "differing_fields": sorted(key for key in set(probe.get("executable_identity") or {}) | set(capability.executable_identity or {})
+                                if (probe.get("executable_identity") or {}).get(key) != (capability.executable_identity or {}).get(key))})
             observed = {}
             with AppServerTransport(codex_bin=args.codex_bin, strict_protocol=True, isolate_memories=True,
                                     executable_identity=capability.executable_identity) as host:

@@ -1196,7 +1196,7 @@ class _ReadinessTransport(AppServerTransport):
         )
 
 
-def probe_model_request(codex_bin: str = "codex", *, timeout_seconds: float = 120.0) -> dict[str, Any]:
+def probe_model_request(codex_bin: str = "codex", *, timeout_seconds: float = 120.0, isolate_memories: bool = False) -> dict[str, Any]:
     """Explicit diagnostic, never a delivery gate or a run/dispatch mutation.
 
     Returns schema_version=1, status READY/NEEDS_USER, independent protocol/model
@@ -1218,10 +1218,10 @@ def probe_model_request(codex_bin: str = "codex", *, timeout_seconds: float = 12
     }
     transport: _ReadinessTransport | None = None
     try:
-        capability = probe_app_server(codex_bin, strict_protocol=True, command_timeout=30.0)
+        capability = probe_app_server(codex_bin, strict_protocol=True, command_timeout=30.0, isolate_memories=isolate_memories)
         payload.update(protocol_status="READY", runtime_version=capability.runtime_version,
                        executable_identity=capability.executable_identity)
-        transport = _ReadinessTransport(codex_bin=codex_bin, strict_protocol=True,
+        transport = _ReadinessTransport(codex_bin=codex_bin, strict_protocol=True, isolate_memories=isolate_memories,
                                        executable_identity=capability.executable_identity)
         # Use only a disposable directory. This is an observation guard, not a
         # general filesystem sandbox; a deviating model must never yield READY.

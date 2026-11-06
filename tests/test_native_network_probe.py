@@ -21,9 +21,9 @@ if sys.argv[1:] == ['--version']:
 if sys.argv[1:3] == ['app-server', 'generate-json-schema']:
     Path(sys.argv[-1], 'codex_app_server_protocol.schemas.json').write_text(json.dumps([
         'thread/start','thread/resume','thread/read','turn/start','turn/interrupt',
-        'developerInstructions','outputSchema','clientUserMessageId']))
+        'developerInstructions','outputSchema','clientUserMessageId','config/read']))
     raise SystemExit(0)
-assert sys.argv[1:] == ['app-server', '--stdio']
+assert sys.argv[1:] in (['app-server', '--stdio'], ['app-server', '--stdio', '-c', 'memories.use_memories=false', '-c', 'memories.generate_memories=false'])
 turn = None
 text = '{"ready":true}'
 for line in sys.stdin:
@@ -36,6 +36,10 @@ for line in sys.stdin:
             while time.monotonic() < deadline:
                 print(json.dumps({'method':'health','params':{}}),flush=True); time.sleep(0.01)
         reply({})
+    elif method == 'config/read':
+        assert 'memories.use_memories=false' in sys.argv
+        reply({'config':{'memories':{'use_memories':False,'generate_memories':False}},
+               'origins':{('memories.'+key):{'name':{'type':'sessionFlags'}} for key in ('use_memories','generate_memories')}})
     elif method == 'thread/start':
         if mode in ('null-error','string-error'):
             print(json.dumps({'id':m['id'],'error':None if mode=='null-error' else 'bad'}),flush=True)
@@ -68,6 +72,8 @@ for line in sys.stdin:
         else:
             print(json.dumps({'method':'turn/completed','params':{'threadId':'probe-thread','turn':turn}}),flush=True)
     elif method == 'thread/read':
+        if params.get('threadId') != 'probe-thread':
+            reply({'thread':{'id':params['threadId'],'turns':[]}}); continue
         if mode == 'null-history': reply({'thread':None}); continue
         value = json.loads(json.dumps(turn))
         if mode == 'wrong-turn': value['id']='another-turn'
@@ -103,6 +109,15 @@ class NativeNetworkProbeTest(unittest.TestCase):
         self.assertEqual(result["model_request_status"], "READY")
         self.assertEqual(result["runtime_version"], "codex-cli probe-fixture")
         self.assertEqual(result["turn_id"], "probe-turn")
+
+    def test_isolated_model_and_protocol_probes_have_identical_real_identity(self):
+        plain = app_server.probe_app_server(str(self.codex), strict_protocol=True)
+        isolated = app_server.probe_app_server(str(self.codex), strict_protocol=True, isolate_memories=True)
+        self.assertNotEqual(plain.protocol_canary_digest, isolated.protocol_canary_digest)
+        result = app_server.probe_model_request(str(self.codex), isolate_memories=True)
+        self.assertEqual(result["status"], "READY", result)
+        self.assertEqual(result["executable_identity"], isolated.executable_identity)
+        self.assertTrue(result["cleanup"]["process_group_gone"])
 
     def test_protocol_success_cannot_mask_routing_or_auth_failure(self):
         for mode, message in [('routing','workspace routing discovery timed out'),('auth','authentication expired')]:
