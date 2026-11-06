@@ -1254,6 +1254,18 @@ def next_action(
     ) -> dict[str, Any]:
         owner = str(problem.get("owner"))
         if owner == "builder_loop":
+            from . import observation_recovery
+            retry = observation_recovery.active_request(ledger)
+            if retry and retry['problem_key'] == problem['key']:
+                try:
+                    _blocker, observation = observation_recovery.validate_current(ledger, retry)
+                except AssuranceError as exc:
+                    return decision("NEEDS_USER", "builder_loop_problem_decision", exc.code, problem=problem)
+                execution = ledger['facets']['execution']
+                return decision("CONTINUE", "tester_observe", "observation_execution_retry",
+                                problem=observation, request_digest=retry['observation_request_digest'],
+                                observation_retry_request_id=retry['request_id'], agent=execution['agents']['tester'],
+                                tester_source=execution['tester_source'], candidate_worktree=ledger['candidate_worktree'])
             from .review_recovery import active_request, validate_current
             request = active_request(ledger)
             if request and request['problem_key'] == problem['key']:

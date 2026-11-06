@@ -3028,6 +3028,8 @@ def begin_dispatch(
         prerequisite = current.get("public_prerequisite_recovery")
         if isinstance(prerequisite, Mapping) and prerequisite.get("eligible"):
             dispatch_intent["public_prerequisite_problem_digest"] = prerequisite["problem_digest"]
+        if current.get("observation_retry_request_id"):
+            dispatch_intent["observation_retry_request_id"] = current["observation_retry_request_id"]
         ledger["dispatch_intent"] = dispatch_intent
         append_event(ledger, "dispatch_prepared", copy.deepcopy(ledger["dispatch_intent"]))
         save_ledger(repo, ledger)
@@ -6518,6 +6520,8 @@ def consume_dispatch(
                 code="DISPATCH_CONSUMER_SOURCE_MISMATCH",
                 status="FAIL",
             )
+        from .observation_recovery import complete_retry
+        complete_retry(ledger, intent)
         append_event(
             ledger,
             "dispatch_consumed",

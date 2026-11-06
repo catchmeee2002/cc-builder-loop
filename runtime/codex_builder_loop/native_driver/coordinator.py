@@ -2272,7 +2272,7 @@ class NativeCoordinator(ResultSemantics):
         self, action: dict[str, Any], role: str, context: dict[str, Any]
     ) -> dict[str, Any]:
         _instructions, sandbox = self._role_config(role)
-        return {"type": "readOnly"} if sandbox == "read-only" or action.get("action") == "tester_observe" else {"type": "dangerFullAccess"}
+        return {"type": "readOnly"} if sandbox == "read-only" else {"type": "dangerFullAccess"}
 
     def _start_reviewer_thread_compaction(
         self, action_id: str

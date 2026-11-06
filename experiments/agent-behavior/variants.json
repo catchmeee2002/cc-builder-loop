@@ -87,7 +87,7 @@
       ],
       "instruction_source": {
         "path": "agents/tester.toml",
-        "sha256": "105cb5fb6b7a24b249ad166174a182a236b365dd8bd5e8500ca1ab7b3d5034cb",
+        "sha256": "1c99de41334ce6a89c147711c746d428687adaf14c564652fc679c1119fcdfdf",
         "revision": "WORKTREE"
       }
     },

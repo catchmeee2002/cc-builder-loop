@@ -186,6 +186,17 @@ def parser() -> argparse.ArgumentParser:
     reconsider_review.add_argument("--allow-runtime-transition", action="store_true")
     reconsider_review.add_argument("--refresh-prerequisites", action="store_true")
 
+    retry_observation = commands.add_parser("retry-tester-observation")
+    retry_observation.add_argument("--repo", default=".")
+    retry_observation.add_argument("--run", required=True)
+    retry_observation.add_argument("--session-id", required=True)
+    retry_observation.add_argument("--action-id", required=True)
+    retry_observation.add_argument("--problem-key", required=True)
+    retry_observation.add_argument("--request-digest", required=True)
+    retry_observation.add_argument("--reason", required=True)
+    retry_observation.add_argument("--driver-runtime-kind", choices=["native", "full_driver_skill"], required=True)
+    retry_observation.add_argument("--allow-runtime-transition", action="store_true")
+
     recover_feedback = commands.add_parser("recover-tester-feedback")
     recover_feedback.add_argument("--repo", default=".")
     recover_feedback.add_argument("--run", required=True)
@@ -1053,6 +1064,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.repo, args.run, session_id=args.session_id, action_id=args.action_id, problem_key=args.problem_key,
                 reason=args.reason, driver_runtime_kind=args.driver_runtime_kind,
                 allow_runtime_transition=args.allow_runtime_transition, refresh_prerequisites=args.refresh_prerequisites)
+        elif args.command == "retry-tester-observation":
+            from .observation_recovery import request_retry
+            payload = request_retry(args.repo, args.run, session_id=args.session_id, action_id=args.action_id,
+                problem_key=args.problem_key, request_digest=args.request_digest, reason=args.reason,
+                driver_runtime_kind=args.driver_runtime_kind, allow_runtime_transition=args.allow_runtime_transition)
         elif args.command == "recover-tester-feedback":
             from .tester_feedback import recover_feedback
             payload = recover_feedback(

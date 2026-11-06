@@ -837,6 +837,7 @@
         },
         "native_transport_generation": {"type": "string", "minLength": 1},
         "timeout_profile_digest": {"$ref": "#/$defs/sha256"},
+        "observation_retry_request_id": {"$ref": "#/$defs/sha256"},
         "last_wire_sequence": {"type": "integer", "minimum": 0},
         "last_wire_event_digest": {"$ref": "#/$defs/sha256"},
         "side_effect_observation_digest": {"$ref": "#/$defs/sha256"},
