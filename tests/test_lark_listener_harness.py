@@ -54,3 +54,26 @@ class HarnessTests(unittest.TestCase):
             self.assertTrue((destination / 'state.json').exists())
         finally:
             s.close()
+
+    def test_command_timeout_captures_live_process_before_kill(self):
+        s = Sandbox()
+        self.addCleanup(s.close)
+        s.entry.write_text('import time; time.sleep(30)\n')
+        with self.assertRaises(AssertionError) as caught:
+            s.command('start', timeout=.1)
+        destination = Path(str(caught.exception).split('diagnostics=', 1)[1])
+        self.addCleanup(lambda: shutil.rmtree(destination))
+        snapshot = json.loads((destination / 'snapshot.json').read_text())
+        rows = [row for row in snapshot['processes'] if str(s.entry) in row['cmdline']]
+        self.assertEqual(len(rows), 1)
+        self.assertIn('wchan', rows[0])
+        self.assertIsNotNone(s.processes[-1].returncode)
+
+    def test_command_timeout_still_reaps_when_snapshot_write_fails(self):
+        s = Sandbox()
+        self.addCleanup(s.close)
+        s.entry.write_text('import time; time.sleep(30)\n')
+        with patch.object(s, 'diagnostics', side_effect=OSError('disk full')):
+            with self.assertRaisesRegex(AssertionError, 'diagnostics=unavailable'):
+                s.command('start', timeout=.1)
+        self.assertIsNotNone(s.processes[-1].returncode)

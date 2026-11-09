@@ -336,9 +336,15 @@ class Sandbox:
         try:
             out, err = proc.communicate(timeout=timeout)
         except subprocess.TimeoutExpired:
-            proc.kill()
-            out, err = proc.communicate()
-            raise AssertionError(f'{operation} did not return within {timeout}s; stdout={out!r}, stderr={err!r}')
+            # Capture the live wait before killing the process that explains it.
+            try:
+                destination = self.diagnostics()
+            except OSError as exc:
+                destination = f'unavailable ({type(exc).__name__})'
+            finally:
+                proc.kill()
+                out, err = proc.communicate()
+            raise AssertionError(f'{operation} did not return within {timeout}s; stdout={out!r}, stderr={err!r}; diagnostics={destination}')
         if proc.returncode != expected:
             raise AssertionError(f'{operation}: expected exit {expected}, got {proc.returncode}; stdout={out!r}, stderr={err!r}')
         try:
