@@ -447,6 +447,16 @@ class Sandbox:
                     row[name] = (Path('/proc') / str(ident['pid']) / name).read_text()
                 except OSError as exc:
                     row[name] = type(exc).__name__
+            # Bind a blocked fsync/open to its actual private descriptor target.
+            row['fds'] = {}
+            try:
+                for fd in (Path('/proc') / str(ident['pid']) / 'fd').iterdir():
+                    try:
+                        row['fds'][fd.name] = os.readlink(fd)
+                    except OSError:
+                        pass
+            except OSError:
+                pass
             snapshot['processes'].append(row)
         for source, name in ((self.state / 'state.json', 'state.json'),
                              (self.state / 'worker.log', 'worker.log'),
