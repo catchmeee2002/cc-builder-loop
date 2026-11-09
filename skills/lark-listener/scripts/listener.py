@@ -233,7 +233,8 @@ Results distinguish started, healthy, queued and received; none means business d
         r=json.load(sys.stdin)
         if not isinstance(r,dict):raise ListenerError('REQUEST_OBJECT_REQUIRED')
         required(r,'subscription_id')
-        store=Store(args.state_dir)
+        # Bound foreground lock contention; the worker keeps its durable transaction.
+        store=Store(args.state_dir, lock_timeout=2)
         with store.transaction() as data: exists=r['subscription_id'] in data['subscriptions']
         if exists and args.command=='start':worker.collect_expired(store,r['subscription_id'])
         result=worker.status(store,r['subscription_id']) if args.command=='status' else globals()[args.command](store,r)

@@ -33,7 +33,8 @@ def alive(p):
     return bool(p and process_start(p.get('pid')) == p.get('starttime') and p.get('starttime'))
 
 class Store:
-    def __init__(self, root):
+    def __init__(self, root, *, lock_timeout=None):
+        self.lock_timeout = lock_timeout
         self.root = Path(root).absolute()
         if self.root.is_symlink():
             raise ListenerError('STATE_SYMLINK')
@@ -59,7 +60,19 @@ class Store:
     def transaction(self):
         fd = self.open_private(self.lock, os.O_RDWR | os.O_CREAT)
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX)
+            if self.lock_timeout is None:
+                fcntl.flock(fd, fcntl.LOCK_EX)
+            else:
+                deadline = time.monotonic() + self.lock_timeout
+                while True:
+                    try:
+                        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        break
+                    except BlockingIOError:
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            raise ListenerError('STATE_BUSY', 'DEGRADED')
+                        time.sleep(min(.05, remaining))
             if self.path.exists() or self.path.is_symlink():
                 readfd = self.open_private(self.path, os.O_RDONLY)
                 with os.fdopen(readfd) as f:
