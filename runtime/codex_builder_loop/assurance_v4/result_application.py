@@ -438,7 +438,15 @@ def apply(
     except (AssuranceError, ContractError, OSError) as exc:
         if application_failure(read_ledger(repo, run_id)) is None:
             record_application_failure(repo, run_id, action_id, identity, "application", exc)
-        raise
+        # A failed application is a recoverable transaction, not a verdict on
+        # the mission. Preserve its artifact, effects and original diagnostic.
+        raise AssuranceError(str(exc), code=getattr(exc, "code", "DISPATCH_APPLICATION_IO_ERROR"),
+                             status="NEEDS_USER", details={
+                                 "original_status": getattr(exc, "status", "NEEDS_USER"),
+                                 **(copy.deepcopy(exc.details) if isinstance(getattr(exc, "details", None), Mapping)
+                                    else {"cause": copy.deepcopy(getattr(exc, "details", None))}),
+                                 "recovery": "inspect status recovery; resume the accepted result with apply-dispatch-result",
+                             }) from exc
     finally:
         _active_application.reset(token)
     return core.status(repo, run_id)
@@ -730,13 +738,7 @@ class _Application(ResultSemantics):
         except (AssuranceError, ContractError, ResultApplicationError, OSError) as exc:
             record_application_failure(self.repo, self.run_id, self.action_id,
                                        intent["application"]["binding_digest"], name, exc)
-            if getattr(exc, "status", "NEEDS_USER") == "FATAL":
-                raise
-            raise AssuranceError(str(exc), code=getattr(exc, "code", "DISPATCH_APPLICATION_IO_ERROR"),
-                                 status="NEEDS_USER", details={
-                                     **copy.deepcopy(getattr(exc, "details", {})), "effect": name,
-                                     "recovery": "inspect status recovery; resume the accepted result with apply-dispatch-result",
-                                 }) from exc
+            raise
         with locked(self.repo):
             ledger = read_ledger(self.repo, self.run_id)
             intent = ledger["dispatch_intent"]
@@ -851,3 +853,88 @@ class _Application(ResultSemantics):
                 code="DISPATCH_APPLICATION_ACTION_UNSUPPORTED", status="NEEDS_USER",
             )
 
+
+
+def recover(repo_value, run_value, *, session_id, action_id, result_digest, reason,
+            driver_runtime_kind, allow_runtime_transition=False):
+    """Reopen a zero-effect evidence application, retaining its immutable result.
+
+    This does not approve evidence or retry a role. The normal application
+    transaction must still validate and consume the original artifact.
+    """
+    repo, run_id = core.resolve_repo(repo_value), core.ensure_run_id(run_value)
+    def reject(message):
+        raise AssuranceError(message, code="RESULT_APPLICATION_RECOVERY_UNSAFE", status="NEEDS_USER")
+    if not isinstance(reason, str) or not reason.strip():
+        reject("recovery requires a reason")
+    with locked(repo):
+        ledger = read_ledger(repo, run_id)
+        core._require_driver_runtime_owner(ledger, driver_runtime_kind)
+        if ledger.get("owner_session_id") != session_id:
+            reject("recovery requires the original owner session")
+        previous = [e['details'] for e in ledger['events']
+                    if e['kind'] == 'result_application_recovered' and e['details']['action_id'] == action_id]
+        if previous:
+            if previous[-1]['result_digest'] != result_digest or previous[-1]['reason'] != reason.strip():
+                reject("recovery replay differs from its original request")
+            return core.status(repo, run_id)
+        intent = ledger.get('dispatch_intent')
+        if (ledger['phase'] not in {'active', 'failed'} or not isinstance(intent, dict)
+                or intent.get('action_id') != action_id or intent.get('state') != 'completed'
+                or intent.get('result_digest') != result_digest):
+            reject("recovery does not bind the completed original dispatch")
+        application = intent.get('application')
+        diagnostic = application_failure(ledger)
+        if (not isinstance(application, dict) or application.get('effects') != []
+                or application.get('integration') is not None or not diagnostic
+                or not diagnostic.get('effect', '').startswith('evidence:')):
+            reject("recovery requires a diagnosed evidence application with zero effects")
+        blockers = set(core.recovery_transaction_blockers(ledger)) - {'dispatch_intent', 'driver_failure'}
+        if blockers or ledger.get('hold'):
+            reject("other transactions remain pending: " + ', '.join(sorted(blockers)))
+        transport = (ledger.get('driver_runtime') or {}).get('native_transport')
+        if transport and (transport.get('state') != 'cleaned' or transport.get('process_identity', {}).get('process_group_gone') is not True):
+            reject("native transport cleanup is not proven")
+        failure = ledger.get('driver_failure')
+        if ledger['phase'] == 'failed':
+            if (not isinstance(failure, dict) or failure.get('state') != 'terminal'
+                    or failure.get('recovery') != 'none'
+                    or failure.get('code') != diagnostic.get('code')
+                    or failure.get('dispatch') != core._driver_failure_dispatch(ledger)):
+                reject("terminal failure is not this evidence application")
+            expected = copy.deepcopy(failure['observation'])
+            actual = core._driver_failure_observation(repo, ledger)
+            # The only intended lifecycle change since the captured failure.
+            actual['ledger_phase'] = expected['ledger_phase']
+            if actual != expected or expected.get('candidate_dirty_paths'):
+                reject("Git inputs changed since the original failure")
+        elif failure is not None:
+            reject("another driver failure remains pending")
+        if core.dirty_paths(repo):
+            reject("target worktree is not clean")
+        source = ledger['facets']['execution'].get('tester_source')
+        if isinstance(source, dict):
+            source_manifest = core._candidate_worktree_manifest(Path(source['worktree']))
+            if source_manifest.get('head') != source.get('head') or source_manifest.get('dirty_paths'):
+                reject("Tester source changed since the accepted result")
+        validate_application(ledger, intent)
+        read_result(intent)
+        before = copy.deepcopy(application)
+        core._transition_recovery_runtime(ledger, repo, allow_runtime_transition=allow_runtime_transition,
+            reason=reason.strip(), action_id=action_id, binding=before['binding_digest'],
+            error_prefix='RESULT_APPLICATION_RECOVERY')
+        # Only the runtime component of the binding may change. No projection or
+        # worktree observation is adopted here; validate them again unchanged.
+        application['binding_digest'] = binding(ledger, intent)
+        validate_application(ledger, intent)
+        append_event(ledger, 'result_application_recovered', {
+            'action_id': action_id, 'result_digest': result_digest, 'reason': reason.strip(),
+            'owner_session_id': session_id, 'previous_phase': ledger['phase'],
+            'previous_driver_failure': copy.deepcopy(failure),
+            'previous_application': before, 'binding_digest': application['binding_digest'],
+            'diagnostic': diagnostic,
+        })
+        ledger['driver_failure'] = None
+        ledger['phase'] = 'active'
+        core.save_ledger(repo, ledger)
+    return core.status(repo, run_id)

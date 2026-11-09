@@ -48,8 +48,10 @@ python3 experiments/assurance-v4-replay/runner.py
   `native-driver resume --reason`，且 runtime、role/thread、action 与 prompt digest 均未漂移时，才能在
   同一 thread 建立新 generation。不得重置旧 generation 的 attempt；执行器变化先按
   [恢复边界](docs/architecture.md#恢复边界)核对适用入口，不以普通 resume 隐式迁移。
-- run 创建后的未处理 FATAL 必须先经 `record-driver-failure` 写入 ledger，再恢复 finalize/deployment
-  副作用；环境安全后才进入 `failed`。failed 不 resume、不 supersede、不 abandon，cleanup 只接受与
+- 已接受角色结果的应用错误保留原 artifact、应用事务及诊断，不升级为整个 run 的终态；修复后续接原应用。
+  历史误终止的零副作用 evidence 应用只经 `recover-result-application` 核对原 owner、结果、输入及清理事实恢复。
+- run 创建后的其他未处理 FATAL 必须先经 `record-driver-failure` 写入 ledger，再恢复 finalize/deployment
+  副作用；环境安全后才进入 `failed`。failed 不普通 resume、不 supersede、不 abandon，cleanup 只接受与
   冻结 failure observation 一致的 clean worktree。
 - runtime ledger 是执行事实唯一来源；Skills、hooks 和 agents 不直接改 JSON。
 - 已接受角色结果统一经 `apply-dispatch-result` 应用；root 兼容入口委托同一事务。中断后续接原
@@ -68,7 +70,7 @@ python3 experiments/assurance-v4-replay/runner.py
   Builder checkpoint 因受保护 runtime preparation 被拒时，successor 只能绑定 ledger 唯一 open problem
   记录的 clean candidate，并同时验证未消费 dispatch artifact、冻结 authority、target 与 problem facts；
   不 resume source、不搜索 orphan、不手工改 ledger。
-  `abandon` 只表示用户取消且没有 successor；abandoned、superseded、failed、finalized source 不恢复 continuity。
+  `abandon` 只表示用户取消且没有 successor；abandoned、superseded、finalized source 不恢复 continuity；failed 仅允许上述 evidence 应用恢复。
   legacy v2/v3 保持既有 abandoned-source revision 契约。
 - 已消费的无效 facet-change 请求用 `correct-decision-request` 追加纠正，再重新预检；不覆盖原结果、
   problem 或 ledger。Authority 精确路径扩展需同步扩大未完成 Builder scope 时，用

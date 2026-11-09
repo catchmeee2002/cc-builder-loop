@@ -42,7 +42,7 @@ def _builder_loop_minor(value: Any) -> str | None:
 
 
 SCHEMA_VERSION = 2
-BUILDER_LOOP_VERSION = "0.4.21"
+BUILDER_LOOP_VERSION = "0.4.22"
 BUILDER_LOOP_CURRENT_MINOR = _builder_loop_minor(BUILDER_LOOP_VERSION)
 if BUILDER_LOOP_CURRENT_MINOR is None:
     raise RuntimeError("BUILDER_LOOP_VERSION must be valid SemVer")

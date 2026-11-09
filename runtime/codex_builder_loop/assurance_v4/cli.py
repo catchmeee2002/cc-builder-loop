@@ -186,6 +186,16 @@ def parser() -> argparse.ArgumentParser:
     reconsider_review.add_argument("--allow-runtime-transition", action="store_true")
     reconsider_review.add_argument("--refresh-prerequisites", action="store_true")
 
+    recover_result = commands.add_parser("recover-result-application")
+    recover_result.add_argument("--repo", default=".")
+    recover_result.add_argument("--run", required=True)
+    recover_result.add_argument("--session-id", required=True)
+    recover_result.add_argument("--action-id", required=True)
+    recover_result.add_argument("--result-digest", required=True)
+    recover_result.add_argument("--reason", required=True)
+    recover_result.add_argument("--driver-runtime-kind", choices=["native", "full_driver_skill"], required=True)
+    recover_result.add_argument("--allow-runtime-transition", action="store_true")
+
     retry_observation = commands.add_parser("retry-tester-observation")
     retry_observation.add_argument("--repo", default=".")
     retry_observation.add_argument("--run", required=True)
@@ -1064,6 +1074,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.repo, args.run, session_id=args.session_id, action_id=args.action_id, problem_key=args.problem_key,
                 reason=args.reason, driver_runtime_kind=args.driver_runtime_kind,
                 allow_runtime_transition=args.allow_runtime_transition, refresh_prerequisites=args.refresh_prerequisites)
+        elif args.command == "recover-result-application":
+            from .result_application import recover
+            payload = recover(args.repo, args.run, session_id=args.session_id, action_id=args.action_id,
+                result_digest=args.result_digest, reason=args.reason, driver_runtime_kind=args.driver_runtime_kind,
+                allow_runtime_transition=args.allow_runtime_transition)
         elif args.command == "retry-tester-observation":
             from .observation_recovery import request_retry
             payload = request_retry(args.repo, args.run, session_id=args.session_id, action_id=args.action_id,

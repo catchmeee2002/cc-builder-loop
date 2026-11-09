@@ -61,10 +61,20 @@ Builder、Tester、机器、候选部署、黑盒或 Reviewer 动作；
 recomposition 后局部重验；Builder/Tester-owned 冲突分别续接原 thread 在隔离 staging worktree 修复，
 只有语义、授权、Tester 判据、产品选择或无法证明的 Git 状态才停止。
 
-run 创建后的未处理 Driver `FATAL` 先经 `record-driver-failure` 冻结错误、当前 action/dispatch、ledger
+角色输出先校验再接收；可纠正的输出继续使用原角色的有界纠错。已接受结果的应用异常只阻塞该应用，
+保留不可变 artifact、已完成 effects 和原始错误诊断，以 `NEEDS_USER` 返回；修复消费者后从原事务
+继续，不能把结果消费异常直接升级为整个 run 的失败，也不自动循环重试未知错误。
+
+`recover-result-application` 为历史误终止及 runtime 更新后的零副作用 evidence 应用提供原 owner
+入口：绑定 action/result digest，核对原 producer、语义 digest、应用输入和工作树，确认无其他事务且
+transport 已清理。failed 还须匹配原终止原因、dispatch 和失败时 Git observation。runtime 迁移显式
+授权且限定 clean 兼容版本，旧 failure/application 完整写入追加事件；仅恢复原应用资格，不生成 PASS、
+不修改原角色结果、不重派已完成角色。已有 effects 或 Git/外部副作用不适用该入口，继续使用其原事务。
+
+run 创建后的其他未处理 Driver `FATAL` 先经 `record-driver-failure` 冻结错误、当前 action/dispatch、ledger
 candidate、branch/worktree HEAD 与 dirty observation，再由 `complete-driver-failure` 恢复唯一已持久化
 副作用。finalize intent 优先续接，成功后 run 保持 `finalized` 且 failure 标为 recovered；已部署环境或
-lease 必须先恢复并重新证明安全，之后才进入不可 resume、supersede 或 abandon 的 `failed`。恢复失败
+lease 必须先恢复并重新证明安全，之后才进入不可普通 resume、supersede 或 abandon 的 `failed`。恢复失败
 保留 active/recovering 现场，不伪造 terminal。相同 failure replay 为 no-op，冲突 replay 拒绝。
 
 Full Driver contract 固定 `execution.driver_enforced=true`。该模式下 mutation 即使省略 `action_id` 也
