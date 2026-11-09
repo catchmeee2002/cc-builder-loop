@@ -47,7 +47,7 @@ def identity(pid):
         fields = (p / 'stat').read_text().rsplit(')', 1)[1].split()
         return {'pid': pid, 'starttime': fields[19],
                 'cmdline': (p / 'cmdline').read_bytes().decode().replace('\x00', ' ')}
-    except FileNotFoundError:
+    except (FileNotFoundError, ProcessLookupError):
         return None
 
 kind = pathlib.Path(__file__).name
@@ -158,7 +158,7 @@ with (root / 'peer.lock').open('a') as lock:
                 err = 'warning: resume failed: fixture endpoint unavailable'
     else:
         rc, err = 2, 'fixture: unsupported external operation'
-    trace.update(returncode=rc, stdout=out, stderr=err)
+    trace.update(phase='response_prepared', returncode=rc, stdout=out, stderr=err)
     with log.open('a') as f:
         f.write(json.dumps(trace) + '\n')
         f.flush()
@@ -255,7 +255,7 @@ def proc_identity(pid):
         stat = (p / 'stat').read_text().rsplit(')', 1)[1].split()
         return {'pid': int(pid), 'starttime': stat[19], 'state': stat[0],
                 'cmdline': (p / 'cmdline').read_bytes().decode().replace('\x00', ' ')}
-    except FileNotFoundError:
+    except (FileNotFoundError, ProcessLookupError):
         return None
 
 
@@ -371,7 +371,7 @@ class Sandbox:
             if result:
                 return result
             time.sleep(.025)
-        raise AssertionError('Timed out waiting for ' + description + '; calls=' + text_of(self.calls())[-5000:])
+        raise AssertionError('Timed out waiting for ' + description + '; diagnostics=' + str(self.diagnostics()))
 
     def start(self, **request):
         return self.command('start', request)
@@ -419,20 +419,70 @@ class Sandbox:
     def state_bytes(self):
         return b'\n'.join(p.read_bytes() for p in self.state.rglob('*') if p.is_file())
 
+    def owned_processes(self):
+        # Exact private executable paths, not account, PID alone or basename.
+        executables = {str(self.entry), str(self.skill / 'scripts/worker.py'),
+                       str(self.root / 'lark-peer'), str(self.root / 'codex-peer')}
+        result = []
+        for path in Path('/proc').glob('[0-9]*/cmdline'):
+            try:
+                argv = os.fsdecode(path.read_bytes()).split('\x00')
+                if not executables.intersection(argv):
+                    continue
+                ident = proc_identity(int(path.parent.name))
+                if ident and ident['state'] != 'Z':
+                    result.append(ident)
+            except (FileNotFoundError, ProcessLookupError, PermissionError):
+                pass
+        return result
+
+    def diagnostics(self):
+        # Never wait on peer.lock when diagnosing a possibly stalled peer.
+        destination = Path(tempfile.mkdtemp(prefix='listener-failure-'))
+        snapshot = {'monotonic': time.monotonic(), 'sandbox': str(self.root), 'processes': []}
+        for ident in self.owned_processes():
+            row = dict(ident)
+            for name in ('wchan', 'syscall'):
+                try:
+                    row[name] = (Path('/proc') / str(ident['pid']) / name).read_text()
+                except OSError as exc:
+                    row[name] = type(exc).__name__
+            snapshot['processes'].append(row)
+        for source, name in ((self.state / 'state.json', 'state.json'),
+                             (self.state / 'worker.log', 'worker.log'),
+                             (self.root / 'calls.jsonl', 'calls.jsonl'),
+                             (self.root / 'world.json', 'world.json')):
+            try:
+                (destination / name).write_bytes(source.read_bytes())
+            except OSError as exc:
+                snapshot[name] = type(exc).__name__
+        (destination / 'snapshot.json').write_text(json.dumps(snapshot, indent=2))
+        return destination
+
     def close(self):
-        # Release only this sandbox's network latches, then terminate only
-        # independently verified processes carrying this copied script path.
+        if not self.root.exists():
+            return
         world = self.world()
         if world.get('block'):
             (self.root / (world['block']['name'] + '.release')).touch()
-        identities = [r['parent'] for r in self.calls() if r.get('parent')]
-        for ident in identities:
-            actual = proc_identity(ident['pid'])
-            if actual and actual['starttime'] == ident['starttime'] and str(self.skill) in actual['cmdline']:
-                os.kill(ident['pid'], signal.SIGKILL)
+        deadline = time.monotonic() + 5
+        while True:
+            owned = self.owned_processes()
+            if not owned:
+                break
+            if time.monotonic() >= deadline:
+                # Keep the sandbox if a writer cannot be proven stopped.
+                self.temp._finalizer.detach()
+                raise AssertionError('Owned processes did not exit; diagnostics=' + str(self.diagnostics()))
+            for ident in owned:
+                actual = proc_identity(ident['pid'])
+                if actual and actual['starttime'] == ident['starttime'] and actual['cmdline'] == ident['cmdline']:
+                    try:
+                        os.kill(ident['pid'], signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+            time.sleep(.01)
         for proc in self.processes:
-            if proc.poll() is None:
-                proc.kill()
             proc.communicate(timeout=5)
         self.temp.cleanup()
 
