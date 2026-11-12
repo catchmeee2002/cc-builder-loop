@@ -71,6 +71,12 @@ transport 已清理。failed 还须匹配原终止原因、dispatch 和失败时
 授权且限定 clean 兼容版本，旧 failure/application 完整写入追加事件；仅恢复原应用资格，不生成 PASS、
 不修改原角色结果、不重派已完成角色。已有 effects 或 Git/外部副作用不适用该入口，继续使用其原事务。
 
+已有 checkpoint effect 且重组尚在准备阶段时，结果应用按原重组事务的 incoming candidate 校验，
+仍核对原 action/result、投影、工作树观察和已持久化阶段；消费原结果后由现有 Driver 推进重组。
+原 owner 可在结果应用入口显式绑定原结果、迁移理由及兼容的 clean runtime，续接 active 应用；
+该路径保留原 artifact、effects 和诊断，不重开已完成角色，也不隐式修改冻结语义。
+迁移前必须证明目标及输入未漂移、无竞争事务且 transport 已完成清理。
+
 run 创建后的其他未处理 Driver `FATAL` 先经 `record-driver-failure` 冻结错误、当前 action/dispatch、ledger
 candidate、branch/worktree HEAD 与 dirty observation，再由 `complete-driver-failure` 恢复唯一已持久化
 副作用。finalize intent 优先续接，成功后 run 保持 `finalized` 且 failure 标为 recovered；已部署环境或
@@ -967,8 +973,16 @@ Assurance v4 的 target drift 与 publication refresh 共用唯一 `recompositio
 root；Builder staging、publication、Tester staging、candidate integration 与正式 commit 每步持久化。
 自动阶段中断后根据 ledger 与 staging branch/HEAD 幂等续接；正式 event 已落盘但 intent 尚未清理时只做
 cleanup，不重复提升 Execution version 或退休 Tester source。target 在事务中再次前进时清理派生 staging，
-保留已确认 owner delta 并从最新 target 重启；三次连续推进或未知 residue 才交还用户。`status` 与
-`driver-context` 同时列出同 target 的其他 active/finalizing run，提前暴露 finalize contender，但不把
+保留已确认 owner delta 并从最新 target 重启；三次连续推进或未知 residue 才交还用户。
+
+Tester 的阻塞结果消费时，若原 source 干净且提交仅在其授权范围内，回执绑定尚未集成的 author HEAD
+与原 source 身份。重组从该回执取得草稿输入，将已验明来源的源码与草稿分开物化：只有原已集成源码
+进入 candidate，草稿仅回到原 Tester 工作树；不生成 tests_ready，不关闭待完成 Tester 问题或提升证据。
+草稿冲突仍交给原 Tester 在 staging 工作树处理，解决冲突不完成 author 工作单元。
+两侧正式工作树在任何切换前统一检查，切换中断后
+仅接受事务记录的前后 HEAD。旧 prepared intent 缺少草稿观察时，原 owner 必须显式绑定精确 HEAD，
+核验原注册 worktree/branch/producer、祖先关系及写权限后才可纳入，不能静默采用当前 HEAD。
+`status` 与 `driver-context` 同时列出同 target 的其他 active/finalizing run，提前暴露 finalize contender，但不把
 观察列表升级为 lease 或自动多 Mission merge。
 
 `status.telemetry` 仍只从 ledger event 派生：区分 Agent turn、确定性 gate、recomposition 与 idle/user

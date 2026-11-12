@@ -278,6 +278,11 @@ def parser() -> argparse.ArgumentParser:
     application.add_argument("--generation", type=int)
     application.add_argument("--owner-session-id")
     application.add_argument("--result", help="result JSON; omit to resume the accepted artifact")
+    application.add_argument("--session-id", help="original run owner for explicit application recovery")
+    application.add_argument("--result-digest", help="exact accepted result digest for recovery")
+    application.add_argument("--reason", help="audited application recovery reason")
+    application.add_argument("--allow-runtime-transition", action="store_true")
+    application.add_argument("--tester-source-head", help="owner-verified unfinished Tester HEAD for a legacy prepared recomposition")
 
     context = commands.add_parser("driver-context")
     context.add_argument("--repo", default=".")
@@ -1129,6 +1134,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 driver_runtime_kind=args.driver_runtime_kind, generation=args.generation,
                 owner_session_id=args.owner_session_id,
                 result_value=_json(args.result) if args.result else None,
+                session_id=args.session_id, result_digest=args.result_digest, reason=args.reason,
+                allow_runtime_transition=args.allow_runtime_transition, tester_source_head=args.tester_source_head,
             )
         elif args.command == "apply-root-builder-result":
             payload = core.apply_root_builder_result(

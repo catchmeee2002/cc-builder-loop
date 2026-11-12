@@ -4515,12 +4515,17 @@ def apply_dispatch_result(
     repo_value: str | Path, run_value: str, *, action_id: str,
     driver_runtime_kind: str, generation: int | None = None,
     owner_session_id: str | None = None, result_value: Any | None = None,
+    session_id: str | None = None, result_digest: str | None = None,
+    reason: str | None = None, allow_runtime_transition: bool = False,
+    tester_source_head: str | None = None,
 ) -> dict[str, Any]:
     from .result_application import apply
     return apply(
         repo_value, run_value, action_id=action_id,
         driver_runtime_kind=driver_runtime_kind, generation=generation,
         owner_session_id=owner_session_id, result_value=result_value,
+        session_id=session_id, result_digest=result_digest, reason=reason,
+        allow_runtime_transition=allow_runtime_transition, tester_source_head=tester_source_head,
     )
 
 
@@ -6525,6 +6530,15 @@ def consume_dispatch(
                 code="DISPATCH_CONSUMER_SOURCE_MISMATCH",
                 status="FAIL",
             )
+        tester_draft = None
+        if (intent["role"] == "tester" and intent["action"] in {"tester_author", "tester_fix"}
+            and intent.get("application", {}).get("effects") == ["problems"]):
+            try:
+                tester_draft = _tester_draft_snapshot(repo, ledger)
+            except AssuranceError:
+                # A blocked report must remain consumable even with unfinished,
+                # dirty author work. Only clean bound work is eligible to move.
+                pass
         from .observation_recovery import complete_retry
         complete_retry(ledger, intent)
         append_event(
@@ -6535,6 +6549,7 @@ def consume_dispatch(
                 "result_digest": intent.get("result_digest"),
                 "consumer_source": consumer_source,
                 "application_binding": intent.get("application", {}).get("binding_digest"),
+                **({"tester_draft": tester_draft} if tester_draft else {}),
                 "submitted_result_digest": intent.get("submitted_result_digest"),
                 "owner_session_id": intent.get("owner_session_id"),
                 "generation": intent.get("generation", 1),
@@ -18269,6 +18284,119 @@ def _apply_recomposition_delta(
     return git(worktree, "rev-parse", "HEAD").stdout.strip(), []
 
 
+def _recomposition_candidate_heads(intent: Mapping[str, Any]) -> set[str]:
+    """Git positions owned by the persisted transaction, not arbitrary descendants."""
+    heads = {intent["incoming_candidate_head"]}
+    if intent["state"] == "committing" and isinstance(intent.get("candidate_head"), str):
+        heads.add(intent["candidate_head"])
+    return heads
+
+
+def _tester_draft_snapshot(repo: Path, ledger: Mapping[str, Any]) -> dict[str, str] | None:
+    source = ledger["facets"]["execution"].get("tester_source")
+    if not isinstance(source, dict):
+        return None
+    worktree = Path(source["worktree"])
+    head = git(worktree, "rev-parse", "HEAD").stdout.strip()
+    if (dirty_paths(worktree)
+        or git(worktree, "symbolic-ref", "--short", "HEAD").stdout.strip() != source["branch"]
+        or branch_head(repo, source["branch"]) != head
+        or source["agent"] != ledger["facets"]["execution"]["agents"].get("tester")
+        or git(repo, "merge-base", "--is-ancestor", source["head"], head, check=False).returncode):
+        raise AssuranceError("Tester draft identity or worktree changed",
+                             code="RECOMPOSITION_TESTER_DRIFT", status="NEEDS_USER")
+    if head == source["head"]:
+        return None
+    paths = changed_files(repo, source["head"], head)
+    if any(not _matches(path, ledger["facets"]["authority"]["tester_write"])
+           or (_blob_at(repo, head, path) is not None and _regular_blob_at(repo, head, path) is None)
+           for path in paths):
+        raise AssuranceError("Tester draft exceeds its source authority",
+                             code="RECOMPOSITION_TESTER_AUTHORITY_VIOLATION", status="NEEDS_USER")
+    return {"head": head, "base_head": source["head"], "source_digest": digest(source)}
+
+
+def _bind_recomposition_draft(repo: Path, ledger: dict[str, Any], intent: dict[str, Any],
+                              *, expected_head: str | None = None) -> None:
+    draft = _tester_draft_snapshot(repo, ledger)
+    if expected_head is not None and (draft or {}).get("head") != expected_head:
+        raise AssuranceError("Explicit Tester draft HEAD does not match the registered source",
+                             code="RECOMPOSITION_TESTER_DRIFT", status="NEEDS_USER")
+    if draft is None:
+        return
+    if intent.get("tester_draft") is not None:
+        if intent["tester_draft"] != draft:
+            raise AssuranceError("Tester draft changed after transaction binding",
+                                 code="RECOMPOSITION_TESTER_DRIFT", status="NEEDS_USER")
+        return
+    if expected_head is None:
+        receipts = [e["details"] for e in ledger["events"] if e["kind"] in {"dispatch_consumed", "prerequisites_republished", "target_rematerialized"}
+                    and e["details"].get("tester_draft")]
+        if not receipts or receipts[-1]["tester_draft"] != draft:
+            raise AssuranceError("Tester draft has no matching consumed author observation; original owner must bind its exact HEAD",
+                                 code="RECOMPOSITION_TESTER_DRAFT_UNBOUND", status="NEEDS_USER")
+    intent["tester_draft"] = draft
+
+
+def _validate_recomposition_sources(repo: Path, ledger: Mapping[str, Any], intent: Mapping[str, Any]) -> None:
+    """Check both live sources before either formal worktree can be switched."""
+    candidate = Path(ledger["candidate_worktree"])
+    if (dirty_paths(candidate)
+        or git(candidate, "rev-parse", "HEAD").stdout.strip() not in _recomposition_candidate_heads(intent)):
+        raise AssuranceError("Candidate moved outside the persisted recomposition",
+                             code="RECOMPOSITION_CANDIDATE_DRIFT", status="NEEDS_USER")
+    source = ledger["facets"]["execution"].get("tester_source")
+    if not isinstance(source, dict):
+        return
+    draft = intent.get("tester_draft")
+    before = draft["head"] if draft else source["head"]
+    after = intent.get("tester_draft_head") or intent.get("tester_head")
+    allowed = {before}
+    if intent["state"] == "committing" and after:
+        allowed.add(after)
+    worktree = Path(source["worktree"])
+    if (draft and draft["source_digest"] != digest(source)
+        or dirty_paths(worktree)
+        or git(worktree, "symbolic-ref", "--short", "HEAD").stdout.strip() != source["branch"]
+        or branch_head(repo, source["branch"]) not in allowed
+        or git(worktree, "rev-parse", "HEAD").stdout.strip() not in allowed):
+        raise AssuranceError("Tester source moved outside the persisted recomposition",
+                             code="RECOMPOSITION_TESTER_DRIFT", status="NEEDS_USER")
+
+
+def _validate_recomposition_draft_head(repo: Path, ledger: Mapping[str, Any],
+                                      intent: Mapping[str, Any], head: str) -> None:
+    paths = changed_files(repo, intent["tester_head"], head)
+    if any(not _matches(p, ledger["facets"]["authority"]["tester_write"])
+           or (_blob_at(repo, head, p) is not None and _regular_blob_at(repo, head, p) is None)
+           for p in paths):
+        raise AssuranceError("Draft conflict resolution exceeds Tester authority",
+                             code="RECOMPOSITION_TESTER_AUTHORITY_VIOLATION", status="NEEDS_USER")
+
+
+def _stage_recomposition_draft(repo: Path, ledger: dict[str, Any], intent: dict[str, Any]) -> bool:
+    draft = intent.get("tester_draft")
+    if not draft:
+        return True
+    worktree = Path(intent["tester_worktree"])
+    source_base = intent.get("tester_draft_source_base") or draft["base_head"]
+    source_head = intent.get("tester_draft_source_head") or draft["head"]
+    head, conflicts = _apply_recomposition_delta(
+        repo, worktree=worktree, staging_base=intent["tester_head"],
+        source_base=source_base, source_head=source_head,
+        paths=changed_files(repo, source_base, source_head),
+        patch_path=Path(intent["staging_root"]) / "tester-draft.patch",
+        message="test(assurance): [cr_id_skip] Preserve unfinished Tester work")
+    if conflicts:
+        intent.update(state="waiting_tester", conflict_owner="tester", conflict_paths=conflicts)
+        append_event(ledger, "recomposition_conflict", {"intent_id": intent["intent_id"],
+                     "owner": "tester", "paths": conflicts})
+        save_ledger(repo, ledger)
+        return False
+    intent["tester_draft_head"] = head
+    return True
+
+
 def _begin_recomposition(
     repo: Path,
     ledger: dict[str, Any],
@@ -18336,6 +18464,7 @@ def _begin_recomposition(
             source.get("base_head") or ledger["target_start_head"]
         )
         intent["source_tester_head"] = source["head"]
+    _bind_recomposition_draft(repo, ledger, intent)
     ledger["recomposition_intent"] = intent
     append_event(
         ledger,
@@ -18363,6 +18492,7 @@ def _clear_recomposition_stage_fields(intent: dict[str, Any]) -> None:
         "tester_branch",
         "tester_worktree",
         "tester_head",
+        "tester_draft_head",
         "candidate_head",
         "conflict_paths",
         "conflict_owner",
@@ -18393,6 +18523,14 @@ def _restart_recomposition_for_target(
             status="NEEDS_USER",
             details={"intent_id": intent["intent_id"], "target_head": live_target},
         )
+    if intent.get("tester_draft") and intent.get("tester_head"):
+        draft_head = intent.get("tester_draft_head")
+        if intent["state"] == "waiting_tester":
+            draft_head = git(Path(intent["tester_worktree"]), "rev-parse", "HEAD").stdout.strip()
+        if draft_head:
+            _validate_recomposition_draft_head(repo, ledger, intent, draft_head)
+            intent["tester_draft_source_base"] = intent["tester_head"]
+            intent["tester_draft_source_head"] = draft_head
     builder_head = intent.get("builder_head")
     if isinstance(builder_head, str):
         intent["source_builder_base"] = intent["new_target_head"]
@@ -18506,7 +18644,7 @@ def _recomposition_target_tester_manifest(
     ledger: Mapping[str, Any],
     intent: Mapping[str, Any],
 ) -> dict[str, str]:
-    if intent.get("kind") != "target_rematerialization":
+    if intent["old_target_head"] == intent["new_target_head"]:
         return {}
     authority = ledger["facets"]["authority"]
     paths = sorted(
@@ -18686,11 +18824,12 @@ def _commit_recomposition(repo: Path, ledger: dict[str, Any], intent: dict[str, 
         _record_evidence_reuse(ledger)
         save_ledger(repo, ledger)
         return
+    _validate_recomposition_sources(repo, ledger, intent)
     execution = ledger["facets"]["execution"]
     candidate_head = str(intent["candidate_head"])
     candidate_worktree = Path(ledger["candidate_worktree"])
     live_candidate = git(candidate_worktree, "rev-parse", "HEAD").stdout.strip()
-    if live_candidate not in {intent["incoming_candidate_head"], candidate_head}:
+    if live_candidate not in _recomposition_candidate_heads(intent):
         raise AssuranceError(
             "candidate moved outside the persisted recomposition",
             code="RECOMPOSITION_CANDIDATE_DRIFT",
@@ -18722,14 +18861,16 @@ def _commit_recomposition(repo: Path, ledger: dict[str, Any], intent: dict[str, 
                 status="NEEDS_USER",
             )
         live_tester = git(tester_worktree, "rev-parse", "HEAD").stdout.strip()
-        if live_tester not in {old_source["head"], tester_head}:
+        materialized_head = intent.get("tester_draft_head") or tester_head
+        old_head = (intent.get("tester_draft") or {}).get("head", old_source["head"])
+        if live_tester not in {old_head, materialized_head}:
             raise AssuranceError(
                 "Tester source moved outside the persisted recomposition",
                 code="RECOMPOSITION_TESTER_DRIFT",
                 status="NEEDS_USER",
             )
-        if live_tester != tester_head:
-            reset = git(tester_worktree, "reset", "--hard", tester_head, check=False)
+        if live_tester != materialized_head:
+            reset = git(tester_worktree, "reset", "--hard", materialized_head, check=False)
             if reset.returncode != 0:
                 raise AssuranceError("Tester source CAS failed", code="RECOMPOSITION_TESTER_CAS_FAILED")
         manifest = _recomposition_tester_manifest(
@@ -18810,7 +18951,7 @@ def _commit_recomposition(repo: Path, ledger: dict[str, Any], intent: dict[str, 
     ledger["digests"] = facet_digests(ledger["facets"])
     if ledger["builder_checkpointed"]:
         _close_problems(ledger, "builder", f"recomposition:{candidate_head}")
-    if isinstance(old_source, dict):
+    if isinstance(old_source, dict) and not intent.get("tester_draft"):
         _close_problems(ledger, "tester", f"recomposition:{tester_head}")
     append_event(
         ledger,
@@ -18825,6 +18966,9 @@ def _commit_recomposition(repo: Path, ledger: dict[str, Any], intent: dict[str, 
                 publication.get("generation") if isinstance(publication, dict) else 0
             ),
             "target_restart_count": intent["target_restart_count"],
+            **({"tester_draft": {"head": intent["tester_draft_head"], "base_head": tester_head,
+                                 "source_digest": digest(execution["tester_source"])}}
+               if intent.get("tester_draft_head") else {}),
         },
     )
     _record_evidence_reuse(ledger)
@@ -18840,6 +18984,9 @@ def _advance_recomposition(repo: Path, ledger: dict[str, Any]) -> None:
     if not isinstance(intent, dict):
         raise AssuranceError("recomposition intent is missing", code="RECOMPOSITION_INTENT_MISSING")
     while True:
+        if not any(e["kind"] in {"prerequisites_republished", "target_rematerialized"}
+                   and e["details"].get("intent_id") == intent["intent_id"] for e in ledger["events"]):
+            _validate_recomposition_sources(repo, ledger, intent)
         live_target = branch_head(repo, ledger["target_branch"])
         if live_target != intent["new_target_head"]:
             _restart_recomposition_for_target(repo, ledger, intent, live_target)
@@ -18944,8 +19091,14 @@ def _advance_recomposition(repo: Path, ledger: dict[str, Any]) -> None:
             save_ledger(repo, ledger)
             continue
         if state == "tester_staging":
+            if intent.get("tester_head"):
+                if not _stage_recomposition_draft(repo, ledger, intent):
+                    return
+                intent.update(state="candidate_staging", updated_at=now())
+                save_ledger(repo, ledger)
+                continue
             tester_paths = _recomposition_tester_paths(repo, ledger, intent)
-            if not tester_paths:
+            if not tester_paths and not intent.get("tester_draft"):
                 source = ledger["facets"]["execution"].get("tester_source")
                 if isinstance(source, dict):
                     tester_base = intent.get("publication_head") or intent["new_target_head"]
@@ -19000,7 +19153,7 @@ def _advance_recomposition(repo: Path, ledger: dict[str, Any]) -> None:
                 save_ledger(repo, ledger)
                 return
             intent.update(
-                state="candidate_staging",
+                state="tester_staging",
                 tester_head=head,
                 source_tester_base=tester_base,
                 source_tester_head=head,
@@ -19014,9 +19167,16 @@ def _advance_recomposition(repo: Path, ledger: dict[str, Any]) -> None:
             if conflicts.stdout.strip() or dirty_paths(worktree):
                 return
             head = git(worktree, "rev-parse", "HEAD").stdout.strip()
+            if intent.get("tester_draft") and intent.get("tester_head"):
+                _validate_recomposition_draft_head(repo, ledger, intent, head)
+                intent.update(state="candidate_staging", tester_draft_head=head, updated_at=now())
+                intent.pop("conflict_owner", None)
+                intent.pop("conflict_paths", None)
+                save_ledger(repo, ledger)
+                continue
             tester_base = intent.get("publication_head") or intent["new_target_head"]
             intent.update(
-                state="candidate_staging",
+                state="tester_staging",
                 tester_head=head,
                 source_tester_base=tester_base,
                 source_tester_head=head,
@@ -19127,6 +19287,7 @@ def recompose_candidate(
                 action_id=action_id,
                 owner_session_id=owner_session_id,
             )
+        preserves_draft = bool((ledger.get("recomposition_intent") or {}).get("tester_draft"))
         _advance_recomposition(repo, ledger)
         dispatch_for_progress = root_dispatch or ledger.get("dispatch_intent")
         if isinstance(dispatch_for_progress, Mapping):
@@ -19146,7 +19307,7 @@ def recompose_candidate(
                         }
                     ),
                 )
-            elif dispatch_for_progress.get("role") == "tester":
+            elif dispatch_for_progress.get("role") == "tester" and not preserves_draft:
                 _mark_work_unit_completed(
                     ledger,
                     intent=dispatch_for_progress,

@@ -1207,6 +1207,18 @@
         "source_builder_head": {"$ref": "#/$defs/commit"},
         "source_tester_base": {"$ref": "#/$defs/commit"},
         "source_tester_head": {"$ref": "#/$defs/commit"},
+        "tester_draft": {
+          "type": "object", "additionalProperties": false,
+          "required": ["head", "base_head", "source_digest"],
+          "properties": {
+            "head": {"$ref": "#/$defs/commit"},
+            "base_head": {"$ref": "#/$defs/commit"},
+            "source_digest": {"$ref": "#/$defs/sha256"}
+          }
+        },
+        "tester_draft_head": {"$ref": "#/$defs/commit"},
+        "tester_draft_source_base": {"$ref": "#/$defs/commit"},
+        "tester_draft_source_head": {"$ref": "#/$defs/commit"},
         "publication_generation": {"type": "integer", "minimum": 0},
         "staging_root": {"type": "string", "minLength": 1},
         "builder_branch": {"type": "string", "minLength": 1},

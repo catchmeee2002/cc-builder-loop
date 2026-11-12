@@ -157,7 +157,19 @@ def validate_application(ledger: Mapping[str, Any], intent: Mapping[str, Any]) -
     if effects - {"problems"}:
         execution = ledger["facets"]["execution"]
         manifest = core._candidate_manifest_for_ledger(ledger)
-        if not isinstance(manifest, Mapping) or manifest["head"] != execution.get("candidate_head"):
+        expected = {execution.get("candidate_head")}
+        recomposition = ledger.get("recomposition_intent")
+        if (effects == {"checkpoint"} and intent["action"] in core.BUILDER_CHECKPOINT_ACTIONS
+            and isinstance(recomposition, Mapping) and recomposition.get("state") == "prepared"
+            and recomposition.get("old_candidate_head") == execution.get("candidate_head")
+            and recomposition.get("new_target_head") == ledger["target_start_head"]
+            and recomposition.get("source_builder_head") == recomposition.get("incoming_candidate_head")
+            and any(e["kind"] == "recomposition_started"
+                    and e["details"].get("intent_id") == recomposition.get("intent_id")
+                    and e["details"].get("incoming_candidate_head") == recomposition.get("incoming_candidate_head")
+                    for e in ledger["events"])):
+            expected = core._recomposition_candidate_heads(recomposition)
+        if not isinstance(manifest, Mapping) or manifest["head"] not in expected:
             raise AssuranceError("candidate differs from its applied Git fact",
                                  code="DISPATCH_APPLICATION_WORKTREE_DRIFT", status="NEEDS_USER")
         source = execution.get("tester_source")
@@ -346,15 +358,83 @@ def integrate_git(
     return intent["after"]
 
 
+def _resume_application_runtime(repo, ledger, intent, *, session_id, result_digest, reason,
+                                allow_runtime_transition, tester_source_head):
+    """Migrate the owner-bound pending application, never reopen its effects."""
+    def reject(message):
+        raise AssuranceError(message, code="DISPATCH_APPLICATION_RECOVERY_UNSAFE", status="NEEDS_USER")
+    if (not allow_runtime_transition or session_id != ledger.get("owner_session_id")
+        or not isinstance(reason, str) or not reason.strip()
+        or result_digest != intent.get("result_digest")
+        or intent.get("state") != "completed" or not isinstance(intent.get("application"), dict)):
+        reject("Explicit original owner, result digest, reason and runtime transition are required")
+    validate_application(ledger, intent)
+    read_result(intent)
+    blockers = set(core.recovery_transaction_blockers(ledger)) - {"dispatch_intent", "recomposition_intent"}
+    if blockers or ledger.get("hold") or ledger.get("driver_failure"):
+        reject("Other transactions or lifecycle decisions remain pending: " + ', '.join(sorted(blockers)))
+    if core.dirty_paths(repo):
+        reject("Target worktree is not clean")
+    if core.branch_head(repo, ledger["target_branch"]) != ledger["target_start_head"]:
+        reject("Target moved since the accepted application")
+    transport = (ledger.get("driver_runtime") or {}).get("native_transport")
+    if transport and (transport.get("state") != "cleaned"
+                      or transport.get("process_identity", {}).get("process_group_gone") is not True):
+        reject("Native transport cleanup is not proven")
+    recomposition = ledger.get("recomposition_intent")
+    before = copy.deepcopy(intent["application"])
+    previous_recomposition = copy.deepcopy(recomposition)
+    if recomposition:
+        if (recomposition.get("state") != "prepared"
+            or intent["action"] not in core.BUILDER_CHECKPOINT_ACTIONS
+            or intent["application"]["effects"] != ["checkpoint"]):
+            reject("Only the original prepared checkpoint transaction can be migrated here")
+        core._bind_recomposition_draft(repo, ledger, recomposition, expected_head=tester_source_head)
+        core._validate_recomposition_sources(repo, ledger, recomposition)
+    else:
+        if tester_source_head is not None:
+            reject("Tester draft binding requires the original recomposition intent")
+        source = ledger["facets"]["execution"].get("tester_source")
+        if isinstance(source, dict):
+            core._assert_tester_source_exact(repo, source)
+    previous_runtime = copy.deepcopy(ledger["runtime_identity"])
+    core._transition_recovery_runtime(ledger, repo, allow_runtime_transition=True,
+        reason=reason.strip(), action_id=intent["action_id"], binding=before["binding_digest"],
+        error_prefix="DISPATCH_APPLICATION_RECOVERY")
+    if previous_runtime == ledger["runtime_identity"] and previous_recomposition == recomposition:
+        return
+    intent["application"]["binding_digest"] = binding(ledger, intent)
+    # Only the owner-verified draft input and runtime changed. Original artifacts,
+    # Git observations and completed effects are retained verbatim.
+    intent["application"]["projection_digest"] = projection_digest(ledger, intent)
+    validate_application(ledger, intent)
+    append_event(ledger, "dispatch_application_resumed", {
+        "action_id": intent["action_id"], "result_digest": result_digest,
+        "owner_session_id": session_id, "reason": reason.strip(),
+        "previous_application": before, "previous_recomposition": previous_recomposition,
+        "tester_source_head": tester_source_head,
+    })
+    core.save_ledger(repo, ledger)
+
+
 def apply(
     repo_value: str | Path, run_value: str, *, action_id: str,
     driver_runtime_kind: str, generation: int | None = None,
     owner_session_id: str | None = None, result_value: Any = None,
+    session_id: str | None = None, result_digest: str | None = None,
+    reason: str | None = None, allow_runtime_transition: bool = False,
+    tester_source_head: str | None = None,
 ) -> dict[str, Any]:
     repo, run_id = core.resolve_repo(repo_value), core.ensure_run_id(run_value)
     with locked(repo):
         ledger = read_ledger(repo, run_id)
         core._require_driver_runtime_owner(ledger, driver_runtime_kind)
+        recovery = any(value is not None for value in (session_id, result_digest, reason, tester_source_head)) or allow_runtime_transition
+        if recovery and (session_id != ledger.get("owner_session_id") or not result_digest
+                         or not reason or not reason.strip() or not allow_runtime_transition
+                         or result_value is not None):
+            raise AssuranceError("Recovery must bind the original owner and persisted result explicitly",
+                                 code="DISPATCH_APPLICATION_RECOVERY_UNSAFE", status="NEEDS_USER")
         intent = ledger.get("dispatch_intent")
         if not isinstance(intent, dict) or intent.get("action_id") != action_id:
             receipts = [
@@ -367,6 +447,7 @@ def apply(
                 raise AssuranceError("dispatch action is stale", code="DRIVER_ACTION_STALE", status="FAIL")
             receipt = receipts[-1]
             if (receipt.get("owner_session_id") != owner_session_id
+                or (recovery and receipt.get("result_digest") != result_digest)
                 or (generation is not None and receipt.get("generation") != generation)
                 or (result_value is not None and digest(result_value) not in {
                     receipt.get("result_digest"), receipt.get("submitted_result_digest")
@@ -375,19 +456,24 @@ def apply(
             return core.status(repo, run_id)
         if ledger["phase"] != "active":
             raise AssuranceError("run is not active", code="ASSURANCE_RUN_NOT_ACTIVE", status="NEEDS_USER")
-        compatibility = core.runtime_compatibility(ledger)
-        if compatibility["state"] != "current":
-            raise AssuranceError(
-                "active run must use its original runtime",
-                code="RUNTIME_IDENTITY_MUTATION_INCOMPATIBLE", status="NEEDS_USER",
-                details={"runtime_compatibility": compatibility},
-            )
         if intent.get("owner_mode") == "root_session":
             core._assert_builder_owner(ledger, owner_session_id=owner_session_id)
         elif owner_session_id is not None:
             raise AssuranceError("thread dispatch does not accept a root owner", code="BUILDER_OWNER_SESSION_MISMATCH", status="FAIL")
         if generation is not None and generation != intent.get("generation", 1):
             raise AssuranceError("dispatch generation changed", code="DISPATCH_APPLICATION_GENERATION_MISMATCH", status="FAIL")
+        if recovery:
+            _resume_application_runtime(repo, ledger, intent, session_id=session_id,
+                result_digest=result_digest, reason=reason, allow_runtime_transition=allow_runtime_transition,
+                tester_source_head=tester_source_head)
+        from ..core import capture_runtime_identity
+        compatibility = core.runtime_compatibility(ledger)
+        if compatibility["state"] != "current" or capture_runtime_identity() != ledger["runtime_identity"]:
+            raise AssuranceError(
+                "active run must use its original runtime",
+                code="RUNTIME_IDENTITY_MUTATION_INCOMPATIBLE", status="NEEDS_USER",
+                details={"runtime_compatibility": compatibility},
+            )
         selected_generation = intent.get("generation", 1)
         from .driver_contract import AGENT_ACTION_CAPABILITIES
         capability = AGENT_ACTION_CAPABILITIES.get(intent["action"])
