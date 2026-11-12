@@ -75,7 +75,9 @@ transport 已清理。failed 还须匹配原终止原因、dispatch 和失败时
 仍核对原 action/result、投影、工作树观察和已持久化阶段；消费原结果后由现有 Driver 推进重组。
 原 owner 可在结果应用入口显式绑定原结果、迁移理由及兼容的 clean runtime，续接 active 应用；
 该路径保留原 artifact、effects 和诊断，不重开已完成角色，也不隐式修改冻结语义。
-迁移前必须证明目标及输入未漂移、无竞争事务且 transport 已完成清理。
+迁移前必须证明目标及输入未漂移、无竞争事务且 transport 已完成清理。目标工作树可保留冻结的
+dirty intake，但全部授权文件须仍为普通文件且哈希吻合；任何额外 dirty 或授权输入缺失均拒绝。
+校验只读，不清理、提交或 stash 目标输入。
 
 run 创建后的其他未处理 Driver `FATAL` 先经 `record-driver-failure` 冻结错误、当前 action/dispatch、ledger
 candidate、branch/worktree HEAD 与 dirty observation，再由 `complete-driver-failure` 恢复唯一已持久化

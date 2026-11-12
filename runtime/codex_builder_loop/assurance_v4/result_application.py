@@ -373,8 +373,10 @@ def _resume_application_runtime(repo, ledger, intent, *, session_id, result_dige
     blockers = set(core.recovery_transaction_blockers(ledger)) - {"dispatch_intent", "recomposition_intent"}
     if blockers or ledger.get("hold") or ledger.get("driver_failure"):
         reject("Other transactions or lifecycle decisions remain pending: " + ', '.join(sorted(blockers)))
-    if core.dirty_paths(repo):
-        reject("Target worktree is not clean")
+    intake = core._validate_dirty_intake(repo, ledger["facets"])
+    authorized_paths = {path for path, _source, _sha256 in intake}
+    if set(core.dirty_paths(repo)) - authorized_paths:
+        reject("Target worktree has changes outside frozen dirty intake")
     if core.branch_head(repo, ledger["target_branch"]) != ledger["target_start_head"]:
         reject("Target moved since the accepted application")
     transport = (ledger.get("driver_runtime") or {}).get("native_transport")

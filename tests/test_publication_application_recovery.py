@@ -250,6 +250,12 @@ class PublicationApplicationRecoveryTest(unittest.TestCase):
         self.assertFalse((f.candidate / 'tests/partial.py').exists())
 
     def test_real_old_runtime_failure_migrates_only_with_exact_owner_inputs(self):
+        self.assert_old_runtime_recovery()
+
+    def test_old_runtime_recovery_preserves_frozen_dirty_intake(self):
+        self.assert_old_runtime_recovery(dirty_intake=True)
+
+    def assert_old_runtime_recovery(self, *, dirty_intake=False):
         # Produce the incident with unmodified 0.4.22, not a hand-edited modern ledger.
         old_revision = '863c55ef2e68ee59218b3c92e220a0170d2795a7'
         with tempfile.TemporaryDirectory(prefix='publication-old-runtime-') as raw:
@@ -264,6 +270,14 @@ from tests.helpers import prerequisite_recovery as helpers
 from harness import commit_all
 from runtime.codex_builder_loop.assurance_v4 import core
 from runtime.codex_builder_loop.assurance_v4.store import read_ledger
+if sys.argv[2] == 'dirty':
+    original_start = core.start
+    def start_with_intake(repo, run_id, owner, contract, **kwargs):
+        path = Path(repo) / 'src/authorized_input.py'
+        path.write_text('AUTHORIZED_INPUT = True\n')
+        contract['authority']['dirty_intake'] = [{'path': 'src/authorized_input.py', 'sha256': core._file_sha256(path)}]
+        return original_start(repo, run_id, owner, contract, **kwargs)
+    core.start = start_with_intake
 f = helpers.PrerequisiteFixture()
 f.setUp(root_session=True, initial_files=['src/public_a.py', 'src/public_b.py'])
 core.scan_doc_references(f.repo, f.run_id)
@@ -293,13 +307,17 @@ ledger = read_ledger(f.repo, f.run_id)
 print(json.dumps({'repo': str(f.repo), 'run': f.run_id, 'action': f.action['action_id'],
     'digest': ledger['dispatch_intent']['result_digest'], 'partial': partial}))
 """
-            completed = subprocess.run([sys.executable, '-c', program, str(old)],
+            completed = subprocess.run([sys.executable, '-c', program, str(old), 'dirty' if dirty_intake else 'clean'],
                 cwd=raw, env={**os.environ, 'PYTHONDONTWRITEBYTECODE': '1'}, capture_output=True, text=True, timeout=60)
             self.assertEqual(completed.returncode, 0, completed.stderr)
             info = json.loads(completed.stdout.splitlines()[-1])
             repo = Path(info['repo'])
             self.addCleanup(cleanup_repo, repo)
             before = read_ledger(repo, info['run'])
+            target_status = git(repo, 'status', '--porcelain=v1')
+            target_head = git(repo, 'rev-parse', 'HEAD')
+            intake_path = repo / 'src/authorized_input.py'
+            intake_bytes = intake_path.read_bytes() if dirty_intake else None
             self.assertEqual(before['runtime_identity']['builder_loop_version'], '0.4.22')
             self.assertEqual(before['dispatch_intent']['application']['effects'], ['checkpoint'])
             self.assertNotIn('tester_draft', before['recomposition_intent'])
@@ -326,6 +344,21 @@ print(json.dumps({'repo': str(f.repo), 'run': f.run_id, 'action': f.action['acti
                 with self.assertRaises(core.AssuranceError):
                     core.apply_dispatch_result(repo, info['run'], **kwargs, **{**recovery, 'tester_source_head': None})
                 self.assertEqual(read_ledger(repo, info['run']), before)
+                if dirty_intake:
+                    for mutation in ('changed', 'missing', 'symlink', 'extra'):
+                        with self.subTest(target_mutation=mutation):
+                            if mutation == 'changed': intake_path.write_text('CHANGED = True\n')
+                            elif mutation == 'missing': intake_path.unlink()
+                            elif mutation == 'symlink':
+                                intake_path.unlink()
+                                intake_path.symlink_to('calc.py')
+                            else: (repo / 'src/unauthorized.py').write_text('EXTRA = True\n')
+                            with self.assertRaises(core.AssuranceError):
+                                core.apply_dispatch_result(repo, info['run'], **kwargs, **recovery)
+                            self.assertEqual(read_ledger(repo, info['run']), before)
+                            if intake_path.is_symlink(): intake_path.unlink()
+                            intake_path.write_bytes(intake_bytes)
+                            (repo / 'src/unauthorized.py').unlink(missing_ok=True)
                 from runtime.codex_builder_loop.assurance_v4 import cli
                 argv = ['--experimental-v4', 'apply-dispatch-result', '--repo', str(repo), '--run', info['run']]
                 for key, value in {**kwargs, **recovery}.items():
@@ -350,6 +383,10 @@ print(json.dumps({'repo': str(f.repo), 'run': f.run_id, 'action': f.action['acti
             self.assertEqual(after['facets']['execution']['agents'], before['facets']['execution']['agents'])
             self.assertEqual(sum(e['kind'] == 'dispatch_application_resumed' for e in after['events']), 1)
             self.assertNotIn('tester', after['evidence'])
+            self.assertEqual(git(repo, 'status', '--porcelain=v1'), target_status)
+            self.assertEqual(git(repo, 'rev-parse', 'HEAD'), target_head)
+            if dirty_intake:
+                self.assertEqual(intake_path.read_bytes(), intake_bytes)
 
 
 if __name__ == '__main__': unittest.main()
