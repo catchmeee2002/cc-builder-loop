@@ -3411,7 +3411,7 @@ def _transition_recovery_runtime(ledger, repo, *, allow_runtime_transition, reas
     if current_runtime_identity != previous_runtime_identity:
         if not allow_runtime_transition:
             raise AssuranceError(
-                "Tester correction authorization cannot change the frozen runtime identity",
+                "Recovery cannot change the frozen runtime identity",
                 code=f"{error_prefix}_RUNTIME_IDENTITY_MISMATCH",
                 status="NEEDS_USER",
                 details={
@@ -3424,7 +3424,7 @@ def _transition_recovery_runtime(ledger, repo, *, allow_runtime_transition, reas
             or current_runtime_identity.get("adapter_dirty") is not False
         ):
             raise AssuranceError(
-                "Tester correction runtime transition requires a captured clean runtime",
+                "Recovery runtime transition requires a captured clean runtime",
                 code=f"{error_prefix}_RUNTIME_TRANSITION_UNSAFE",
                 status="NEEDS_USER",
                 details={"actual_runtime_identity": current_runtime_identity},
@@ -3448,7 +3448,7 @@ def _transition_recovery_runtime(ledger, repo, *, allow_runtime_transition, reas
         }
         if comparable_current != comparable_previous:
             raise AssuranceError(
-                "Tester correction runtime support changed beyond the approved runtime commit",
+                "Recovery runtime support changed beyond the approved runtime commit",
                 code=f"{error_prefix}_RUNTIME_SUPPORT_DRIFT",
                 status="NEEDS_USER",
                 details={
@@ -6948,6 +6948,10 @@ def resolve_external_problem(
     *,
     problem_key: str,
     reason: str,
+    expected_candidate_head: str | None = None,
+    owner_session_id: str | None = None,
+    driver_runtime_kind: str | None = None,
+    allow_runtime_transition: bool = False,
 ) -> dict[str, Any]:
     """Record one authorized recovery decision without manufacturing evidence."""
 
@@ -7001,7 +7005,39 @@ def resolve_external_problem(
                 details={"key": key, "owner": problem.get("owner")},
             )
         current_candidate = ledger["facets"]["execution"].get("candidate_head")
-        if problem.get("candidate_head") != current_candidate:
+        # A new environment decision may bind the current candidate without
+        # rewriting the original report or reusing any verification evidence.
+        if allow_runtime_transition and expected_candidate_head is None:
+            raise AssuranceError("runtime transition requires an explicit current candidate",
+                                 code="EXTERNAL_PROBLEM_CANDIDATE_REQUIRED", status="FAIL")
+        if expected_candidate_head is not None:
+            if owner_session_id != ledger.get("owner_session_id"):
+                raise AssuranceError("external recovery requires the original run owner",
+                                     code="EXTERNAL_PROBLEM_OWNER_MISMATCH", status="FAIL")
+            _require_driver_runtime_owner(ledger, driver_runtime_kind)
+            candidate = Path(ledger["candidate_worktree"])
+            if (expected_candidate_head != current_candidate
+                    or git(candidate, "rev-parse", "HEAD").stdout.strip() != current_candidate
+                    or git(repo, "rev-parse", "refs/heads/" + ledger["candidate_branch"]).stdout.strip() != current_candidate
+                    or dirty_paths(candidate)):
+                raise AssuranceError("external recovery requires the exact clean checkpointed candidate",
+                                     code="EXTERNAL_PROBLEM_CANDIDATE_DRIFT", status="FAIL")
+            pending = [name for name in (
+                "dispatch_intent", "recomposition_intent", "supersede_intent", "abandon_intent",
+                "finalize_intent", "context_rotation_intent", "tester_replacement_intent",
+                "reviewer_replacement_intent", "native_host_transition", "hold",
+            ) if ledger.get(name) is not None]
+            transport = ledger.get("driver_runtime", {}).get("native_transport")
+            if isinstance(transport, dict) and (
+                transport.get("state") != "cleaned"
+                or transport.get("process_identity", {}).get("process_group_gone") is not True
+            ):
+                pending.append("native_transport")
+            if pending:
+                raise AssuranceError("external recovery cannot cross a pending transaction",
+                                     code="EXTERNAL_PROBLEM_TRANSITION_PENDING", status="FAIL",
+                                     details={"pending": pending})
+        if problem.get("candidate_head") != current_candidate and expected_candidate_head is None:
             raise AssuranceError(
                 "external problem no longer binds the current candidate",
                 code="EXTERNAL_PROBLEM_STALE",
@@ -7056,6 +7092,13 @@ def resolve_external_problem(
                 status="FAIL",
                 details={"key": key},
             )
+        if expected_candidate_head is not None:
+            from .problems import problem_identity
+            _transition_recovery_runtime(
+                ledger, repo, allow_runtime_transition=allow_runtime_transition,
+                reason=normalized_reason, action_id="external-problem:" + key,
+                binding=digest({"problem": problem_identity(problem), "candidate_head": current_candidate}),
+                error_prefix="EXTERNAL_PROBLEM")
         machine_record = ledger.get("evidence", {}).get("machine")
         machine_record_digest = (
             digest(machine_record) if isinstance(machine_record, dict) else None
@@ -7070,6 +7113,8 @@ def resolve_external_problem(
                 "key": key,
                 "reason": normalized_reason,
                 "candidate_head": current_candidate,
+                **({"problem_candidate_head": problem.get("candidate_head")}
+                   if expected_candidate_head is not None else {}),
                 "machine_state": evidence_state(ledger, "machine"),
                 "machine_evidence_digest": machine_record_digest,
             },

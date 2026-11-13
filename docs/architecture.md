@@ -996,11 +996,16 @@ preflight 次数、warning 和前三大耗时。它不保存第二份计时状�
 新的外部环境 probe；确认环境恢复后，只能调用
 `resolve-external-problem --problem-key <key> --reason <reason>`。Core 在 repo lock 内校验 active phase、
 唯一 key、owner、problem candidate 与当前 candidate 一致，精确关闭一条 problem 并追加唯一
-`external_problem_resolved` event；相同 replay 为 no-op，冲突 reason、重复 event、旧 candidate、非外部
-owner 或 terminal run 都拒绝。该事务不改 Git ref、candidate、target 或 evidence；Driver 只允许同一
-candidate 重新执行原 machine gate，不能把旧失败 evidence 转成 PASS，也不能重新派 Builder。这遵循
-“显式授权，默认隔离”和“每个事实只有一个家”：授权决定留在 ledger event，环境恢复由新 probe 观察，
-通过结论仍只能来自重跑后的 machine evidence。
+`external_problem_resolved` event。若正式检查点或重组已推进 candidate，原 owner 可在重新确认外部环境后，
+用 `--expected-candidate-head`、`--owner-session-id` 和 `--driver-runtime-kind` 显式绑定当前候选。
+Core 校验候选 HEAD/ref 与检查点一致且干净、无未完成 dispatch/生命周期事务、transport 已清理；
+原问题的 candidate 与 producer 保持不变，解除事件绑定当前 candidate 并保留原问题 candidate。
+默认旧 candidate 仍拒绝；相同 replay 为 no-op，冲突 reason、重复 event、错误身份、候选漂移、非外部
+owner 或 terminal run 都拒绝。升级冻结运行器时必须同时显式给出 `--allow-runtime-transition`，复用
+现有 clean runtime/support 校验和迁移事件，不引入第二套恢复状态。
+该事务不改 Git ref、candidate、target 或 evidence；解除只允许 Driver 继续原来的未完成 gate，不能把
+旧失败 evidence 转成 PASS。遵循“显式授权，默认隔离”和“每个事实只有一个家”：原报告保留历史输入，
+新的环境决定绑定当前输入，通过结论仍由后续独立验证产生。
 
 机器 preflight 与完整 machine gate 在删除临时验证 worktree 前，将完整 stdout/stderr、命令、退出码、
 超时和进程清理事实写入 run 的内容寻址制品。ledger 与角色输入保留有界尾部摘要及制品引用；失败
