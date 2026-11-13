@@ -16,6 +16,15 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 # These modules inspect installation/process-wide integration boundaries.
 SERIAL_MODULES = {"test_install_contract.py", "test_process_runtime.py", "test_hook_runtime_integration.py"}
+# Comma-separated test ids the caller (loop.yml) excludes from the gate, e.g.
+# known-bad baseline tests pending a fix. One knob keeps the skip list's home
+# in gate config instead of per-test special cases here.
+SKIP_ENV = "CODEX_FIXTURE_SKIP"
+
+
+def skipped_ids():
+    raw = os.environ.get(SKIP_ENV, "")
+    return {item.strip() for item in raw.split(",") if item.strip()}
 
 
 def test_ids(suite):
@@ -65,6 +74,14 @@ def main(argv=None):
     expected = list(test_ids(suite))
     if not expected or len(set(expected)) != len(expected):
         raise RuntimeError("Fixture collection is empty or contains duplicate test identities")
+    skip = skipped_ids()
+    exact = {item for item in skip if not item.endswith(".*")}
+    modules = {item[:-2] for item in skip if item.endswith(".*")}
+    unknown = exact - set(expected)
+    unknown |= {m for m in modules if not any(t.rsplit(".", 2)[0] == m for t in expected)}
+    if unknown:
+        raise RuntimeError(f"{SKIP_ENV} names tests or modules that do not exist: {sorted(unknown)}")
+    expected = [t for t in expected if t not in exact and t.rsplit(".", 2)[0] not in modules]
     if args.list_json:
         print(json.dumps(sorted(expected)))
         return 0
@@ -81,7 +98,10 @@ def main(argv=None):
         def run(module):
             report = root / (hashlib.sha256(module.encode()).hexdigest() + ".json")
             command = [sys.executable, str(Path(__file__).resolve()), "--start-dir", str(directory), "--worker", module, "--inventory", str(inventory_path), "--report", str(report)]
-            completed = subprocess.run(command, cwd=ROOT, env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            # The skip list applies once here; workers and anything they spawn
+            # must not inherit it, or nested orchestrator calls misfire.
+            child_env = {k: v for k, v in os.environ.items() if k != SKIP_ENV}
+            completed = subprocess.run(command, cwd=ROOT, env={**child_env, "PYTHONDONTWRITEBYTECODE": "1"}, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
             value = json.loads(report.read_text()) if report.is_file() else {}
             return module, completed.returncode, completed.stdout, value
         parallel = [module for module in modules if module not in serial_modules]

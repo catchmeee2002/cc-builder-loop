@@ -12,7 +12,12 @@ import transport
 DONE = {'received', 'echo', 'skipped'}
 
 def version(m):
-    return digest({k: m.get(k) for k in ('content', 'deleted', 'update_time', 'resources')})
+    # Feishu backfills update_time asynchronously after send (backfilled value == create_time);
+    # a read-back before backfill must still fingerprint like the settled, unedited message.
+    fields = {k: m.get(k) for k in ('content', 'deleted', 'update_time', 'resources')}
+    if fields['update_time'] is None:
+        fields['update_time'] = m.get('create_time')
+    return digest(fields)
 
 def ingest(data, s, m, bootstrap=False):
     if not m.get('message_id') or m.get('chat_id') != s['chat_id']:
