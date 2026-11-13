@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.4.27 — 2026-11-13
+
+- 修正 Planner 同 run 决策入口：使用已有 `validate-decision`，不再叠加跨 run successor 准入校验；保留原问题处置及精确 delta 门禁。
+- 空产品选择允许原 owner 显式记录用户确认的同 facet 精确 delta，并支持受限运行器迁移；原报告保留，记录选择不修改契约、不关闭问题或授予 PASS。
+
 ## 0.4.26 — 2026-11-13
 
 - 增加原 Tester author 框架问题的受限复核：绑定原报告、owner、线程、候选、契约和草稿，原 Tester 明确维持或撤回；复核本身不关闭问题或授予验收通过。

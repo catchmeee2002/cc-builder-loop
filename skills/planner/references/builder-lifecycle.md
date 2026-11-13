@@ -56,12 +56,20 @@ publication 路径、dirty intake 等专用事务变化按真实边界规划 suc
   未变化内容重新讲一遍。旧 problem 缺少 `decision_request` 时允许从当前完整 contract 和用户明确选择
   补出一次精确 delta，但不得靠猜测扩大变化。
 - 从 ledger 当前 `facets` 生成唯一完整 replacement contract。Mission 修订同时填入绑定当前 lineage 的
-  `execution.revision_transition`；Authority/Assurance 之外的 facet 必须逐字节语义不变。
-- 先执行普通 `validate --repo <repo> --contract -`，再执行：
+  `execution.revision_transition`；未选中的语义 facet 保持不变。Mission 修订的 execution 仅允许该
+  transition 变化；Authority 的关联 scope 变化须由 preview 明确允许。
+- 同 run replacement 直接执行专用只读校验（包含完整契约结构及当前决策绑定校验）：
 
   `codex-builder-loop assurance --experimental-v4 validate-decision --repo <repo> --run <run> --session-id <session-id> --problem-key <key> --action-id <action-id> --facet <facet> --facet-digest <digest> --contract -`
 
-- 只有两次都返回 `status=READY` 才在方案正文放入唯一完整 `assurance-v4-contract` marker，并额外放入一个
+- 普通 `validate --repo` 用于新 run 准入；带 `mission.supersedes` 时检查跨 run successor，不能作为同 run
+  replacement 的前置门禁。同 run 保持 `execution.prior_problem_dispositions` 原值，不添加跨 run 处置。
+- 当前已消费的 `product_choice` 请求为空 delta 时，由原 owner 经 `correct-decision-request
+  --record-product-choice` 将用户确认的选择记录为同 facet、非空精确 delta 的 `facet_change`；普通
+  `correct-decision-request` 仍只修正无效 delta 的路径。随后重新读取 `driver-next` 和当前绑定进行校验。
+  记录选择不修改契约或关闭问题；不得覆盖原报告或猜测产品选择。运行器升级须显式附加
+  `--allow-runtime-transition`，并满足原 owner、候选不变、事务及 transport 已清理的条件。
+- `validate-decision` 返回 `status=READY` 后才在方案正文放入唯一完整 `assurance-v4-contract` marker，并额外放入一个
   只含交接身份、不是第二份 contract 的 marker：
 
 ~~~~markdown

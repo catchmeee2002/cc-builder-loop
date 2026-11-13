@@ -312,3 +312,181 @@ class DecisionRecoveryTest(unittest.TestCase):
         self.assertEqual(after['evidence']['machine'], before['evidence']['machine'])
         self.assertIn('machine', preview['invalidated_evidence'])
         self.assertEqual(core.evidence_state(after, 'machine'), 'stale')
+
+    def empty_product_choice(self):
+        problem = self.problem()
+        problem['decision_request'] = {'kind': 'product_choice', 'facet': 'mission',
+            'changes': [], 'question': 'Choose the revised objective.'}
+        self.record(problem)
+        before = read_ledger(self.repo, self.run)
+        action = driver.next_action(self.repo, self.run)
+        request = {'kind': 'facet_change', 'facet': 'mission',
+            'changes': [{'pointer': '/objective', 'operation': 'replace', 'value': 'Explicit selected objective'}],
+            'question': 'User selected the revised objective.'}
+        args = dict(session_id='decision-session', problem_key='authority-gap',
+            action_id=action['action_id'], request_digest=digest(problem['decision_request']),
+            facet_digest=before['digests']['mission'], request_value=request,
+            reason='User explicitly selected this bounded product behavior.',
+            driver_runtime_kind='native', record_product_choice=True)
+        return before, args
+
+    def test_product_choice_cli_then_same_run_mission_revision(self):
+        import json
+        from harness import run_cli
+        before, args = self.empty_product_choice()
+        request_path = self.repo / 'choice.json'
+        request_path.write_text(json.dumps(args['request_value']))
+        cli_args = []
+        for key, value in args.items():
+            if key == 'request_value':
+                cli_args += ['--request', str(request_path)]
+            elif key == 'record_product_choice':
+                cli_args += ['--record-product-choice']
+            else:
+                cli_args += ['--' + key.replace('_', '-'), value]
+        result = run_cli('assurance', '--experimental-v4', 'correct-decision-request',
+            '--repo', self.repo, '--run', self.run, *cli_args)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        after = read_ledger(self.repo, self.run)
+        for key in ('facets', 'problems', 'evidence'):
+            self.assertEqual(after[key], before[key])
+        core.correct_decision_request(self.repo, self.run, **args)
+        self.assertEqual(read_ledger(self.repo, self.run), after)
+        action = driver.next_action(self.repo, self.run)
+        self.assertNotEqual(action['action_id'], args['action_id'])
+        self.assertEqual(action['problem']['decision_request'], args['request_value'])
+        replacement = copy.deepcopy(after['facets'])
+        replacement['mission'].update(revision=2, objective='Explicit selected objective', supersedes={
+            'run_id': self.run, 'revision': 1, 'mission_digest': after['digests']['mission'],
+            'candidate_head': after['facets']['execution']['candidate_head']})
+        replacement['execution']['revision_transition'] = {'category': 'mission_change',
+            'predecessor_pressure_digest': core.status(self.repo, self.run)['lineage']['pressure_digest'],
+            'architecture_review': None}
+        preview_args = dict(session_id='decision-session', problem_key='authority-gap',
+            action_id=action['action_id'], facet='mission', facet_digest=after['digests']['mission'],
+            replacement_contract=replacement)
+        preview = driver.validate_decision(self.repo, self.run, **preview_args)
+        self.assertEqual(preview['apply']['command'], 'revise-mission')
+        with self.assertRaises(core.AssuranceError) as rejected:
+            core.validate(replacement, self.repo)
+        self.assertEqual(rejected.exception.code, 'REVISION_CONTINUITY_REQUIRED')
+        core.revise_mission(self.repo, self.run, replacement['mission'], replacement['execution']['revision_transition'],
+            resolve_plan_problem_key='authority-gap', decision_action_id=action['action_id'],
+            expected_facet_digest=after['digests']['mission'], owner_session_id='decision-session')
+        revised = read_ledger(self.repo, self.run)
+        self.assertEqual(revised['facets'], replacement)
+        self.assertEqual(revised['problems'][0]['status'], 'resolved')
+        self.assertEqual(revised['facets']['execution']['agents'], before['facets']['execution']['agents'])
+
+    def test_product_choice_rejects_implicit_or_stale_or_cross_facet_changes(self):
+        before, args = self.empty_product_choice()
+        bad_request = {**args['request_value'], 'facet': 'authority'}
+        for changes in ({'record_product_choice': False}, {'session_id': 'other'},
+                        {'action_id': '0'*64}, {'request_digest': '0'*64},
+                        {'facet_digest': '0'*64}, {'request_value': bad_request},
+                        {'request_value': {**args['request_value'], 'changes': []}}):
+            with self.subTest(changes=changes), self.assertRaises(core.AssuranceError):
+                core.correct_decision_request(self.repo, self.run, **{**args, **changes})
+            self.assertEqual(read_ledger(self.repo, self.run), before)
+        from pathlib import Path
+        residue = Path(before['candidate_worktree']) / 'unknown.txt'
+        residue.write_text('unapproved')
+        with self.assertRaises(core.AssuranceError):
+            core.correct_decision_request(self.repo, self.run, **args)
+        residue.unlink()
+        self.assertEqual(read_ledger(self.repo, self.run), before)
+
+    def test_product_choice_runtime_transition_is_explicit_and_atomic(self):
+        from unittest.mock import patch
+        from runtime.codex_builder_loop.core import capture_runtime_identity
+        before, args = self.empty_product_choice()
+        current = capture_runtime_identity()
+        current.update(adapter_dirty=False, adapter_commit='f'*40)
+        with patch('runtime.codex_builder_loop.core.capture_runtime_identity', return_value=current):
+            with self.assertRaises(core.AssuranceError) as rejected:
+                core.correct_decision_request(self.repo, self.run, **args)
+            self.assertEqual(rejected.exception.code, 'DECISION_CORRECTION_RUNTIME_IDENTITY_MISMATCH')
+            self.assertEqual(read_ledger(self.repo, self.run), before)
+            core.correct_decision_request(self.repo, self.run, **args, allow_runtime_transition=True)
+        after = read_ledger(self.repo, self.run)
+        self.assertEqual(after['runtime_identity'], current)
+        self.assertEqual(after['facets'], before['facets'])
+        self.assertEqual(after['problems'], before['problems'])
+        self.assertEqual(sum(e['kind'] == 'runtime_identity_transitioned' for e in after['events']), 1)
+
+    def test_unmodified_0426_product_choice_cli_migration(self):
+        import contextlib
+        import importlib.util
+        import io
+        import json
+        import os
+        from pathlib import Path
+        import subprocess
+        import sys
+        import tempfile
+        from unittest.mock import patch
+        from harness import ROOT
+        from runtime.codex_builder_loop import core as runtime_core
+        from runtime.codex_builder_loop.assurance_v4 import cli
+        with tempfile.TemporaryDirectory(prefix='decision-old-runtime-') as raw:
+            old = Path(raw) / 'runtime'
+            subprocess.run(['git', 'clone', '--quiet', '--shared', '--no-checkout', str(ROOT), str(old)], check=True)
+            subprocess.run(['git', '-C', str(old), 'checkout', '--quiet', '--detach',
+                '4a09716e86443babdc43e0055610f12223aaa0c7'], check=True)
+            program = """
+import importlib.util,json,sys
+sys.path[:0]=[sys.argv[1],sys.argv[1]+'/tests']
+spec=importlib.util.spec_from_file_location('choice_fixture',sys.argv[2])
+m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
+t=m.DecisionRecoveryTest();t.setUp()
+before,args=t.empty_product_choice()
+print(json.dumps({'repo':str(t.repo),'run':t.run,'args':args}))
+"""
+            result = subprocess.run([sys.executable, '-c', program, str(old), str(Path(__file__).resolve())],
+                cwd=raw, env={**os.environ, 'PYTHONDONTWRITEBYTECODE': '1'}, capture_output=True, text=True, timeout=180)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            info = json.loads(result.stdout.splitlines()[-1]); repo = Path(info['repo'])
+            self.addCleanup(cleanup_repo, repo)
+            before = read_ledger(repo, info['run'])
+            self.assertEqual(before['runtime_identity']['builder_loop_version'], '0.4.26')
+            request_path = Path(raw) / 'request.json'
+            request_path.write_text(json.dumps(info['args']['request_value']))
+            argv = ['--experimental-v4', 'correct-decision-request', '--repo', str(repo), '--run', info['run']]
+            for key, value in info['args'].items():
+                if key == 'request_value': argv += ['--request', str(request_path)]
+                elif key == 'record_product_choice': argv += ['--record-product-choice']
+                else: argv += ['--'+key.replace('_','-'), value]
+            identity = dict(runtime_core.capture_runtime_identity(), adapter_dirty=False)
+            with patch.object(runtime_core, 'capture_runtime_identity', return_value=identity):
+                with contextlib.redirect_stdout(io.StringIO()) as output:
+                    rc = cli.main(argv)
+                self.assertEqual(rc, 1, output.getvalue())
+                self.assertEqual(read_ledger(repo, info['run']), before)
+                with contextlib.redirect_stdout(io.StringIO()) as output:
+                    rc = cli.main(argv + ['--allow-runtime-transition'])
+                self.assertEqual(rc, 0, output.getvalue())
+            after = read_ledger(repo, info['run'])
+            for key in ('facets', 'evidence', 'problems'):
+                self.assertEqual(after[key], before[key])
+            self.assertEqual(after['runtime_identity'], identity)
+            action = driver.next_action(repo, info['run'])
+            self.assertEqual(action['problem']['decision_request'], info['args']['request_value'])
+            self.assertEqual(action['action'], 'contract_decision')
+
+    def test_product_choice_rejects_live_transport_and_nonempty_proposals(self):
+        from unittest.mock import patch
+        before, args = self.empty_product_choice()
+        live = copy.deepcopy(before)
+        live['driver_runtime']['native_transport'] = {'state': 'running', 'process_identity': {'process_group_gone': False}}
+        with patch.object(core, 'read_ledger', return_value=live):
+            with self.assertRaises(core.AssuranceError) as rejected:
+                core.correct_decision_request(self.repo, self.run, **args)
+            self.assertEqual(rejected.exception.code, 'DECISION_TRANSACTION_PENDING')
+        self.assertEqual(read_ledger(self.repo, self.run), before)
+        core.correct_decision_request(self.repo, self.run, **args)
+        after = read_ledger(self.repo, self.run)
+        current = driver.next_action(self.repo, self.run)
+        with self.assertRaises(core.AssuranceError):
+            core.correct_decision_request(self.repo, self.run, **{**args,
+                'action_id': current['action_id'], 'request_digest': digest(args['request_value'])})
+        self.assertEqual(read_ledger(self.repo, self.run), after)

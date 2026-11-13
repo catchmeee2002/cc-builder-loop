@@ -949,6 +949,12 @@ problem、action、原请求和 facet；只允许修正同 facet、同操作与�
 有效请求改写及并发事务拒绝。纠正不更新 facet、不关闭 problem、不产生授权，符合原则二、七的事实
 保留和事务身份约束。
 
+空 delta 的 `product_choice` 通过同一事务的显式 `--record-product-choice` 记录为同 facet 的非空
+`facet_change`。它只保存用户选择的提案，后续仍须专用 decision 预检与正式 facet 事务；不能改写已有
+非空选择。可选运行器迁移复用既有身份与 runtime support 校验，要求原 owner、候选及 target HEAD
+不变、无未完成事务且 transport 已清理。原报告、角色、证据和冻结 facet 均保留，不新增 ledger 状态。
+同 run replacement 直接用 `validate-decision`；新 run 的 `validate --repo` 继续执行 successor 准入。
+
 用户批准的 plan decision 以 `decision_request` 展示相对 facet 的精确 delta。Planner 仍生成唯一完整
 replacement contract；只读 `validate-decision` 绑定 active run、同 session、problem key、Driver action、
 base facet digest，并拒绝未展示的额外 facet 变化。一般决定使用 `update-facet` 或 `revise-mission`；

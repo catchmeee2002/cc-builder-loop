@@ -12501,8 +12501,10 @@ def correct_decision_request(
     problem_key: str, action_id: str, request_digest: str,
     facet_digest: str, request_value: Any, reason: str,
     driver_runtime_kind: str,
+    record_product_choice: bool = False,
+    allow_runtime_transition: bool = False,
 ) -> dict[str, Any]:
-    """Append a correction to an invalid proposal, never an approval or facet write."""
+    """Record a proposal correction or explicit product choice, never a facet write."""
     from .decision_requests import effective_problem, validate_request
     from .driver import next_action
     repo, run_id = resolve_repo(repo_value), ensure_run_id(run_value)
@@ -12516,6 +12518,8 @@ def correct_decision_request(
         binding = {"session_id": session_id, "problem_key": problem_key,
                    "action_id": action_id, "request_digest": request_digest,
                    "facet_digest": facet_digest, "request": request_value, "reason": reason.strip()}
+        if record_product_choice:
+            binding["record_product_choice"] = True
         binding_digest = digest(binding)
         for event in ledger.get("events", []):
             if event.get("kind") == "decision_request_corrected" and event["details"].get("binding_digest") == binding_digest:
@@ -12538,24 +12542,46 @@ def correct_decision_request(
         old = effective_problem(ledger, original).get("decision_request")
         if not isinstance(old, Mapping) or digest(old) != request_digest or ledger["digests"].get(old.get("facet")) != facet_digest:
             raise AssuranceError("decision request or facet changed", code="DECISION_CORRECTION_STALE", status="FAIL")
-        if old.get("kind") != "facet_change":
+        if record_product_choice:
+            if old.get("kind") != "product_choice" or old.get("changes") != []:
+                raise AssuranceError("only an unresolved empty product choice can be recorded", code="DECISION_CORRECTION_INVALID", status="FAIL")
+        elif old.get("kind") != "facet_change":
             raise AssuranceError("only invalid facet proposals can be corrected", code="DECISION_CORRECTION_INVALID", status="FAIL")
-        try:
-            validate_request(ledger["facets"], old)
-        except AssuranceError:
-            pass
-        else:
-            raise AssuranceError("valid proposals require a new product decision", code="DECISION_CORRECTION_NOT_REQUIRED", status="FAIL")
+        if not record_product_choice:
+            try:
+                validate_request(ledger["facets"], old)
+            except AssuranceError:
+                pass
+            else:
+                raise AssuranceError("valid proposals require a new product decision", code="DECISION_CORRECTION_NOT_REQUIRED", status="FAIL")
         report = validate_problem_report({"schema_version": 1, "problems": [{
             "key": problem_key, "summary": original["summary"], "details": original["details"],
             "owner": "plan", "decision_request": request_value}]})
         new = report["problems"][0]["decision_request"]
-        # This interface repairs addresses, not requested operations or values.
+        # Default mode repairs addresses; explicit product choice records a new proposal.
         without_pointer = lambda r: [{k: v for k, v in c.items() if k != "pointer"} for c in r.get("changes", [])]
-        if (new.get("kind") != old.get("kind") or new.get("facet") != old.get("facet")
-                or without_pointer(new) != without_pointer(old)):
+        if (new.get("facet") != old.get("facet")
+                or (record_product_choice and new.get("kind") != "facet_change")
+                or (not record_product_choice and (new.get("kind") != old.get("kind")
+                    or without_pointer(new) != without_pointer(old)))):
             raise AssuranceError("correction changed the requested delta", code="DECISION_CORRECTION_DELTA_CHANGED", status="FAIL")
         validate_request(ledger["facets"], new)
+        if record_product_choice or allow_runtime_transition:
+            if recovery_transaction_blockers(ledger):
+                raise AssuranceError("decision has unfinished recovery", code="DECISION_TRANSACTION_PENDING", status="FAIL")
+            transport = (ledger.get("driver_runtime") or {}).get("native_transport")
+            if isinstance(transport, dict) and (transport.get("state") != "cleaned"
+                    or transport.get("process_identity", {}).get("process_group_gone") is not True):
+                raise AssuranceError("decision transport is not cleaned", code="DECISION_TRANSACTION_PENDING", status="FAIL")
+            candidate = ledger["candidate_worktree"]
+            head = ledger["facets"]["execution"]["candidate_head"]
+            if (git(candidate, "rev-parse", "HEAD").stdout.strip() != head or dirty_paths(candidate)
+                    or branch_head(repo, ledger["candidate_branch"]) != head
+                    or branch_head(repo, ledger["target_branch"]) != ledger["target_start_head"]):
+                raise AssuranceError("decision candidate or target drifted", code="DECISION_CORRECTION_STALE", status="FAIL")
+            _transition_recovery_runtime(ledger, repo, allow_runtime_transition=allow_runtime_transition,
+                reason=reason.strip(), action_id=action_id, binding=binding_digest,
+                error_prefix="DECISION_CORRECTION")
         append_event(ledger, "decision_request_corrected", {
             **binding, "binding_digest": binding_digest,
             "problem_identity": problem_identity(original), "original_request_digest": digest(old),

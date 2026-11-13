@@ -79,8 +79,10 @@ def parser() -> argparse.ArgumentParser:
     validate_decision.add_argument("--reason", help="Public execution clarification; never candidate implementation details")
 
     correction = commands.add_parser("correct-decision-request",
-        help="Append a pointer-only correction to an invalid consumed facet proposal; does not grant authority")
+        help="Correct proposal pointers or explicitly record an empty product choice; does not apply a facet")
     correction.add_argument("--repo", default=".")
+    correction.add_argument("--record-product-choice", action="store_true", help="Record the user-selected exact delta for an empty same-facet product choice")
+    correction.add_argument("--allow-runtime-transition", action="store_true")
     for field in ("run", "session-id", "problem-key", "action-id", "request-digest", "facet-digest", "request", "reason"):
         correction.add_argument("--" + field, required=True)
     correction.add_argument("--driver-runtime-kind", choices=["native", "full_driver_skill"], required=True)
@@ -958,7 +960,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 session_id=args.session_id, problem_key=args.problem_key, action_id=args.action_id,
                 request_digest=args.request_digest, facet_digest=args.facet_digest,
                 request_value=_json(args.request), reason=args.reason,
-                driver_runtime_kind=args.driver_runtime_kind)
+                driver_runtime_kind=args.driver_runtime_kind,
+                record_product_choice=args.record_product_choice,
+                allow_runtime_transition=args.allow_runtime_transition)
         elif args.command == "apply-authority-decision":
             payload = core.apply_authority_decision(args.repo, args.run,
                 session_id=args.session_id, problem_key=args.problem_key, action_id=args.action_id,
