@@ -2205,6 +2205,12 @@ class NativeCoordinator(ResultSemantics):
                 "proof_spec": "must_be_null",
                 "problem_report": "object_only_when_findings_blocked_or_target_change_required_else_null",
             }
+        if action in {"tester_author", "tester_fix"}:
+            return {
+                "evidence_report": "required_on_tests_ready_or_tester_problem_disposition_else_null",
+                "proof_spec": "must_be_null",
+                "problem_report": "required_non_empty_when_blocked_else_null",
+            }
         if action == "tester_machine_diagnose":
             return {
                 "evidence_report": "must_be_null",
@@ -2222,8 +2228,10 @@ class NativeCoordinator(ResultSemantics):
         value = copy.deepcopy(result)
         if isinstance(value.get("problem_report"), dict) and action != "tester_proof_diagnose":
             report = value.get("evidence_report")
-            if not (action in {"reviewer_preflight", "reviewer_final"} and isinstance(report, dict)
-                    and report.get("status") == "fail" and (report.get("details", {}).get("observation_dispositions") or report.get("details", {}).get("review_problem_dispositions"))):
+            if not ((action in {"tester_author", "tester_fix"} and isinstance(report, dict)
+                     and report.get("status") == "fail" and report.get("details", {}).get("tester_problem_dispositions"))
+                    or (action in {"reviewer_preflight", "reviewer_final"} and isinstance(report, dict)
+                    and report.get("status") == "fail" and (report.get("details", {}).get("observation_dispositions") or report.get("details", {}).get("review_problem_dispositions")))):
                 value["evidence_report"] = None
             value["proof_spec"] = None
             return value

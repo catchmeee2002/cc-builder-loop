@@ -821,7 +821,7 @@
               "uniqueItems": true,
               "items": {"enum": [
                 "checkpoint", "problems", "recompose", "integration", "proof", "blackbox", "observations",
-                "evidence:tester", "evidence:blackbox", "evidence:reviewer_preflight",
+                "tester_reconsideration", "evidence:tester", "evidence:blackbox", "evidence:reviewer_preflight",
                 "evidence:reviewer", "evidence:doc_review"
               ]}
             }

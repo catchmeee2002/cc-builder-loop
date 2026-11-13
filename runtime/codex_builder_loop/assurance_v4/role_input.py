@@ -33,6 +33,7 @@ AUTHOR_FIELDS = (
     "work_unit_id", "work_unit", "problem_report_schema", "evidence_report_schema",
     "result_field_contract", "test_identity_contract", "author_result_contract",
     "role_phase_instructions", "tester_correction_instructions", "tester_rechecks",
+    "tester_reconsideration", "author_input_access",
 )
 
 
@@ -325,6 +326,20 @@ def build_role_input(context: Mapping[str, Any], action: Mapping[str, Any], role
                     "This request does not authorize PASS or any evidence rewrite."
                 ),
             }
+    if role == "tester" and action["action"] in AUTHOR_ACTIONS:
+        from .models import _schema
+        payload["evidence_report_schema"] = _schema("assurance-v4-evidence.schema.json")
+        payload["problem_report_schema"] = _schema("codex-problem-report.schema.json")
+        payload["author_input_access"] = {
+            "repo": context.get("repo_root"), "run": context.get("run_id"), "action_id": action["action_id"],
+            "instruction": "If context is incomplete or compacted, use the installed Builder-loop CLI: assurance --experimental-v4 role-context --repo <repo> --run <run> --action-id <action_id> --pointer <JSON pointer>. For a reconsideration, first read /tester_reconsideration. Read /contract/mission/acceptance_cases one index at a time, /contract/mission/interfaces, and /evidence_report_schema in bounded sections. Empty pointer returns the entire role-safe input; redirect it to a temporary file and read bounded sections rather than printing a large response. Do not infer missing input from historical truncation markers. Do not read internal driver-context as author input.",
+        }
+        request = context.get("tester_reconsideration")
+        if request:
+            payload["tester_reconsideration"] = {
+                **_pick(request, ("request_id", "problem_key", "reason")),
+                "result_contract": "Re-evaluate your own bound blocker in this original Tester thread using current complete role input. Return exactly one evidence_report.details.tester_problem_dispositions with request_id, problem_key, decision=withdrawn|upheld, and concrete reason. Keep normal Tester evidence fields source_head/files. Upholding requires result=blocked, evidence status=fail/details.result=fail and the same builder_loop problem. Withdrawing requires either complete tests_ready with normal passing author evidence, or another concrete blocker with failed author evidence. Only your explicit withdrawal resolves this blocker; this request grants no PASS and changes no acceptance or ownership. Do not execute the candidate to compensate for absent published prerequisites.",
+            }
     if role == "tester" and action["action"] == "tester_fix":
         authorization = action.get("tester_correction_authorization")
         if isinstance(authorization, Mapping) and isinstance(authorization.get("author_instructions"), str):
@@ -339,7 +354,7 @@ def build_role_input(context: Mapping[str, Any], action: Mapping[str, Any], role
     return project_role_input(payload)
 
 
-def role_context(repo: Any, run_id: str, action_id: str) -> dict[str, Any]:
+def role_context(repo: Any, run_id: str, action_id: str, pointer: str = "") -> dict[str, Any]:
     """Read the current role input, rejecting a stale/non-role action (no mutation)."""
     from . import core, driver
     from .driver_contract import AGENT_ACTION_CAPABILITIES
@@ -350,7 +365,19 @@ def role_context(repo: Any, run_id: str, action_id: str) -> dict[str, Any]:
     if action.get("action_id") != action_id or capability is None:
         raise core.AssuranceError("role input requires the current role action",
                                   code="ROLE_INPUT_ACTION_MISMATCH", status="FAIL")
-    return build_role_input(context, action, capability.role)
+    payload = build_role_input(context, action, capability.role)
+    if not pointer:
+        return payload
+    if not pointer.startswith("/"):
+        raise core.AssuranceError("pointer must be an RFC 6901 JSON pointer", code="ROLE_INPUT_POINTER_INVALID")
+    value = payload
+    try:
+        for part in pointer[1:].split("/"):
+            key = part.replace("~1", "/").replace("~0", "~")
+            value = value[int(key)] if isinstance(value, list) else value[key]
+    except (KeyError, IndexError, ValueError, TypeError) as exc:
+        raise core.AssuranceError("role input pointer does not exist", code="ROLE_INPUT_POINTER_INVALID") from exc
+    return {"action_id": action_id, "pointer": pointer, "input_digest": digest(payload), "value": value}
 
 
 def project_retry_feedback(pending: Mapping[str, Any]) -> dict[str, Any]:

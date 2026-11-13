@@ -16,6 +16,8 @@ def snapshot(ledger):
             'tester_replacement_intent', 'reviewer_replacement_intent', 'candidate_residue_intent')
     value = {key: copy.deepcopy(ledger.get(key)) for key in keys}
     value['review_reconsideration'] = copy.deepcopy(active_request(ledger))
+    if active_request(ledger, 'tester'):
+        value['tester_reconsideration'] = copy.deepcopy(active_request(ledger, 'tester'))
     return digest(value)
 
 

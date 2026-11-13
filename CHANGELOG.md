@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.4.26 — 2026-11-13
+
+- 增加原 Tester author 框架问题的受限复核：绑定原报告、owner、线程、候选、契约和草稿，原 Tester 明确维持或撤回；复核本身不关闭问题或授予验收通过。
+- 角色输入支持按 JSON pointer 分段重取，补齐公开 evidence/problem schema，保留独立 author 的输入隔离边界。
+
 ## 0.4.25 — 2026-11-13
 
 - 外部环境恢复允许原 owner 显式绑定当前已检查点候选，解除 blocked 后正式检查点/重组导致的旧 candidate 阻塞；保留原报告来源，不复用验收证据。

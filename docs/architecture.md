@@ -1039,6 +1039,17 @@ Reviewer 必须在统一结果事务中明确撤回或维持该问题；撤回�
 仍独立生效。维持后停止，新的复核须有新的显式处置，不以自动循环替代判断。历史报告、复核理由
 和处置均保留来源，重放不会制造额外通过证据。输入、线程、候选或必要门禁漂移时拒绝恢复。
 
+### 原 Tester author 的受限复核
+
+原 run owner 可对已消费、由当前 Tester author 报告的框架问题发起一次原线程复核。复用报告制品、
+producer、候选和契约绑定校验，并核验原 Tester 草稿与已消费观察相符；请求保留原问题、源码和证据，
+不授予通过。Driver 派生原 author 动作，Tester 明确维持或撤回报告；撤回与新发现可同次提交，只有正常
+完成 author 门禁才允许集成测试。处置在既有结果应用事务中留回执，崩溃重放不重复关闭问题或集成。
+
+角色输入可通过当前 action 的 `role-context --pointer` 按 JSON 路径分段读取；完整输出也可重定向后
+分段阅读。读取保持角色可见边界和当前 action 校验，不向独立 author 暴露内部 driver context。
+压缩历史或显示截断不能单独证明持久化输入缺失；恢复先重新取得真实输入，再由原角色复核。
+
 ## Legacy v2/v3 证据与失效
 
 ledger v2 为每类 evidence 记录 `observed_head`、`accepted_head`、输入 digest、scope 和 provenance。

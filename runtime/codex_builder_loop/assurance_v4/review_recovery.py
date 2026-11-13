@@ -1,4 +1,4 @@
-"""Bound, single-review reconsideration; only the original reviewer can withdraw a report."""
+"""Bound report reconsideration; only the original role can withdraw its report."""
 from __future__ import annotations
 
 import copy
@@ -22,6 +22,14 @@ def prerequisites(ledger, action):
 def snapshot(ledger, action):
     from .core import evidence_state, doc_reference_scan_state
     execution = ledger['facets']['execution']
+    if action in {'tester_author', 'tester_fix'}:
+        return {
+            'candidate_head': execution.get('candidate_head'),
+            'facets': copy.deepcopy(ledger['digests']),
+            'tester': copy.deepcopy(execution['agents'].get('tester')),
+            'tester_source': copy.deepcopy(execution.get('tester_source')),
+            'publication': copy.deepcopy(ledger.get('publication')),
+        }
     return {
         'candidate_head': execution.get('candidate_head'),
         'facets': copy.deepcopy(ledger['digests']),
@@ -34,11 +42,12 @@ def snapshot(ledger, action):
     }
 
 
-def active_request(ledger):
+def active_request(ledger, role="reviewer"):
+    prefix = "tester" if role == "tester" else "review"
     completed = {e['details']['request_id'] for e in ledger.get('events', [])
-                 if e['kind'] == 'review_problem_reconsidered'}
+                 if e['kind'] == prefix + '_problem_reconsidered'}
     requests = [e['details'] for e in ledger.get('events', [])
-                if e['kind'] == 'review_problem_reconsideration_requested'
+                if e['kind'] == prefix + '_problem_reconsideration_requested'
                 and e['details']['request_id'] not in completed]
     if not requests:
         return None
@@ -61,6 +70,10 @@ def validate_current(ledger, request, *, allow_refresh_pending=False):
             value.pop('doc_reference_scan_state', None)
             value.pop('doc_reference_scan_digest', None)
             value['prerequisites'].pop('preflight', None)
+    if request.get('role') == 'tester':
+        if len(problems) != 1 or compared != expected:
+            raise AssuranceError('author reconsideration inputs drifted', code='REVIEW_RECONSIDERATION_STALE', status='NEEDS_USER')
+        return problems[0]
     ready = (all(g['state'] == 'pass' for g in current['prerequisites'].values())
              and current['doc_reference_scan_state'] in {'pass', 'not_required'})
     refreshable = (request.get('refresh_prerequisites') and allow_refresh_pending
@@ -73,9 +86,10 @@ def validate_current(ledger, request, *, allow_refresh_pending=False):
 
 
 def request_reconsideration(repo_value, run_value, *, session_id, action_id, problem_key, reason,
-                            driver_runtime_kind, allow_runtime_transition=False, refresh_prerequisites=False):
+                            driver_runtime_kind, allow_runtime_transition=False, refresh_prerequisites=False, role="reviewer"):
     from . import core
     from .driver import next_action
+    prefix = "tester" if role == "tester" else "review"
     repo, run_id = core.resolve_repo(repo_value), core.ensure_run_id(run_value)
     if not isinstance(reason, str) or not reason.strip():
         raise core.AssuranceError('review reconsideration needs a reason', code='REVIEW_RECONSIDERATION_REASON_REQUIRED')
@@ -85,7 +99,7 @@ def request_reconsideration(repo_value, run_value, *, session_id, action_id, pro
         if ledger.get("owner_session_id") != session_id:
             raise core.AssuranceError("reconsideration requires the run owner", code="REVIEW_RECONSIDERATION_OWNER_MISMATCH")
         matches = [e['details'] for e in ledger['events']
-                   if e['kind'] == 'review_problem_reconsideration_requested'
+                   if e['kind'] == prefix + '_problem_reconsideration_requested'
                    and e['details']['decision_action_id'] == action_id]
         if matches:
             if len(matches) != 1 or matches[0]['problem_key'] != problem_key or matches[0]['reason'] != reason.strip() or bool(matches[0].get('refresh_prerequisites')) != refresh_prerequisites:
@@ -99,9 +113,14 @@ def request_reconsideration(repo_value, run_value, *, session_id, action_id, pro
         core._assert_no_candidate_residue_intent(ledger)
         if core.recovery_transaction_blockers(ledger) or ledger.get('hold'):
             raise core.AssuranceError('reconsideration has pending transactions', code='REVIEW_RECONSIDERATION_PENDING')
+        if role == 'tester':
+            transport = (ledger.get('driver_runtime') or {}).get('native_transport')
+            if isinstance(transport, dict) and (transport.get('state') != 'cleaned'
+                    or transport.get('process_identity', {}).get('process_group_gone') is not True):
+                raise core.AssuranceError('original transport is still live', code='REVIEW_RECONSIDERATION_PENDING')
         problem = current['problem']
-        reviewer = ledger['facets']['execution']['agents'].get('reviewer')
-        if (problem.get('producer') != {'role': 'reviewer', **(reviewer or {})}
+        reviewer = ledger['facets']['execution']['agents'].get(role)
+        if (problem.get('producer') != {'role': role, **(reviewer or {})}
             or not reviewer or problem.get('inherited_from') or problem.get('observation_request')
             or problem.get('candidate_head') != ledger['facets']['execution'].get('candidate_head')):
             raise core.AssuranceError('only the current original Reviewer report can be reconsidered', code='REVIEW_RECONSIDERATION_PRODUCER_INVALID')
@@ -128,14 +147,22 @@ def request_reconsideration(repo_value, run_value, *, session_id, action_id, pro
         prepared = [e['details'] for e in ledger['events'] if e['kind'] == 'dispatch_prepared'
                     and e['details'].get('action_id') == binding['action_id']]
         consumed = [e for e in ledger['events'] if e['kind'] == 'dispatch_consumed' and e['details'].get('action_id') == binding['action_id']]
-        if not prepared or not consumed or prepared[-1].get('action') not in {'reviewer_preflight', 'reviewer_final'}:
+        if not prepared or not consumed or prepared[-1].get('action') not in ({'tester_author', 'tester_fix'} if role == 'tester' else {'reviewer_preflight', 'reviewer_final'}):
             raise core.AssuranceError('review result is not consumed', code='REVIEW_RECONSIDERATION_REPORT_UNBOUND')
-        if active_request(ledger) is not None:
+        if active_request(ledger) is not None or active_request(ledger, 'tester') is not None:
             raise core.AssuranceError('another reconsideration is pending', code='REVIEW_RECONSIDERATION_PENDING')
         action = prepared[-1]['action']
         request = {'session_id': session_id, 'decision_action_id': action_id, 'problem_key': problem_key,
                    'problem_identity': identity, 'report_binding': copy.deepcopy(binding),
                    'action': action, 'reason': reason.strip(), 'snapshot': snapshot(ledger, action)}
+        if role == 'tester':
+            request['role'] = role
+            source = ledger['facets']['execution'].get('tester_source')
+            if not source:
+                raise core.AssuranceError('Tester source missing', code='REVIEW_RECONSIDERATION_PRODUCER_INVALID')
+            draft_binding = {}
+            core._bind_recomposition_draft(repo, ledger, draft_binding)
+            request["tester_draft"] = draft_binding.get("tester_draft")
         if refresh_prerequisites:
             request['refresh_prerequisites'] = True
         validate_current(ledger, request, allow_refresh_pending=True)
@@ -149,7 +176,7 @@ def request_reconsideration(repo_value, run_value, *, session_id, action_id, pro
                                          error_prefix='REVIEW_RECONSIDERATION')
         request['runtime_identity'] = copy.deepcopy(ledger['runtime_identity'])
         request['request_id'] = digest(request)
-        append_event(ledger, 'review_problem_reconsideration_requested', request)
+        append_event(ledger, prefix + '_problem_reconsideration_requested', request)
         core.save_ledger(repo, ledger)
     return core.status(repo, run_id)
 
@@ -215,3 +242,63 @@ def apply_disposition(ledger, report):
         'request_id': request['request_id'], 'problem_identity': request['problem_identity'],
         'action_id': pending['action_id'], 'result_digest': pending['result_digest'],
         'disposition': copy.deepcopy(disposition), 'producer': copy.deepcopy(report['producer'])})
+
+
+def validate_tester_result(ledger, result):
+    """A fresh author result, not the maintainer, decides the original blocker."""
+    from .models import ContractError
+    request = active_request(ledger, 'tester')
+    report = result.get('evidence_report') or {}
+    values = report.get('details', {}).get('tester_problem_dispositions', [])
+    if request is None and not values:
+        return
+    pending = ledger.get('dispatch_intent') or {}
+    problem = validate_current(ledger, request) if request else None
+    if (not request or len(values) != 1
+        or values[0].get('request_id') != request['request_id']
+        or values[0].get('problem_key') != request['problem_key']
+        or values[0].get('decision') not in {'withdrawn', 'upheld'}
+        or not values[0].get('reason', '').strip()
+        or report.get('kind') != 'tester' or report.get('producer') != problem['producer']
+        or pending.get('role') != 'tester' or pending.get('action') != request['action']
+        or pending.get('thread_id') != problem['producer']['thread_id']):
+        raise ContractError('original Tester must explicitly reconsider the bound problem',
+                            code='EVIDENCE_REPORT_INVALID')
+    problems = (result.get('problem_report') or {}).get('problems', [])
+    if values[0]['decision'] == 'upheld':
+        valid = (result['result'] == 'blocked' and report.get('status') == 'fail'
+                 and any(p['key'] == request['problem_key'] and p['owner'] == 'builder_loop' for p in problems))
+    else:
+        valid = (not any(p['key'] == request['problem_key'] for p in problems)
+                 and ((problems and report.get('status') == 'fail')
+                      or (not problems and result['result'] == 'tests_ready' and report.get('status') == 'pass')))
+    if not valid:
+        raise ContractError('Tester disposition conflicts with author result', code='EVIDENCE_REPORT_INVALID')
+
+
+def apply_tester_disposition(repo, run_id):
+    """Atomic receipt inside the existing result-application transaction; no passing evidence."""
+    from . import core
+    from .result_application import read_result
+    with locked(repo):
+        ledger = read_ledger(repo, run_id)
+        pending = ledger.get('dispatch_intent') or {}
+        result = read_result(pending)
+        values = (result.get('evidence_report') or {}).get('details', {}).get('tester_problem_dispositions', [])
+        request = active_request(ledger, 'tester')
+        if request is None:
+            if not values or any(e['kind'] == 'tester_problem_reconsidered'
+                and e['details']['action_id'] == pending.get('action_id')
+                and e['details']['result_digest'] == pending.get('result_digest')
+                and e['details']['disposition'] == values[0] for e in ledger['events']):
+                return
+            raise core.AssuranceError('unbound Tester disposition', code='EVIDENCE_REPORT_INVALID')
+        validate_tester_result(ledger, result)
+        problem = validate_current(ledger, request)
+        if values[0]['decision'] == 'withdrawn':
+            problem.update(status='resolved', resolution='tester-reconsideration:' + request['request_id'], resolved_at=core.now())
+        append_event(ledger, 'tester_problem_reconsidered', {
+            'request_id': request['request_id'], 'problem_identity': request['problem_identity'],
+            'action_id': pending['action_id'], 'result_digest': pending['result_digest'],
+            'disposition': copy.deepcopy(values[0]), 'producer': copy.deepcopy(problem['producer'])})
+        core.save_ledger(repo, ledger)

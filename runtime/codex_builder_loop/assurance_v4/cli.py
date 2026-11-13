@@ -175,6 +175,12 @@ def parser() -> argparse.ArgumentParser:
     host.add_argument("--observation", required=True)
     host.add_argument("--allow-runtime-transition", action="store_true")
 
+    reconsider_tester = commands.add_parser("reconsider-tester-problem")
+    reconsider_tester.add_argument("--repo", default=".")
+    for field in ("run", "session-id", "action-id", "problem-key", "reason"):
+        reconsider_tester.add_argument("--" + field, required=True)
+    reconsider_tester.add_argument("--driver-runtime-kind", choices=["native", "full_driver_skill"], required=True)
+    reconsider_tester.add_argument("--allow-runtime-transition", action="store_true")
     reconsider_review = commands.add_parser("reconsider-review-problem")
     reconsider_review.add_argument("--repo", default=".")
     reconsider_review.add_argument("--run", required=True)
@@ -296,6 +302,7 @@ def parser() -> argparse.ArgumentParser:
     role_context.add_argument("--repo", default=".")
     role_context.add_argument("--run", required=True)
     role_context.add_argument("--action-id", required=True)
+    role_context.add_argument("--pointer", default="")
 
     checkpoint = commands.add_parser("checkpoint-builder")
     checkpoint.add_argument("--repo", default=".")
@@ -1077,6 +1084,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             payload = authorize(args.repo, args.run, session_id=args.session_id, action_id=args.action_id,
                 reason=args.reason, observation=load_json_source(args.observation, stdin_text=sys.stdin.read() if args.observation == "-" else None),
                 allow_runtime_transition=args.allow_runtime_transition)
+        elif args.command == "reconsider-tester-problem":
+            from .review_recovery import request_reconsideration
+            payload = request_reconsideration(args.repo, args.run, session_id=args.session_id,
+                action_id=args.action_id, problem_key=args.problem_key, reason=args.reason,
+                driver_runtime_kind=args.driver_runtime_kind,
+                allow_runtime_transition=args.allow_runtime_transition, role="tester")
         elif args.command == "reconsider-review-problem":
             from .review_recovery import request_reconsideration
             payload = request_reconsideration(
@@ -1157,7 +1170,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             payload = core.driver_context(args.repo, args.run)
         elif args.command == "role-context":
             from .role_input import role_context
-            payload = role_context(args.repo, args.run, args.action_id)
+            payload = role_context(args.repo, args.run, args.action_id, args.pointer)
         elif args.command == "checkpoint-builder":
             _guard_dispatch(args, {"builder_implement", "builder_fix", "checkpoint_builder"})
             payload = core.checkpoint_builder(

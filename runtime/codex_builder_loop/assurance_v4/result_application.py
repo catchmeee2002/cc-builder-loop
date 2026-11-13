@@ -213,6 +213,8 @@ def assert_applied(ledger: Mapping[str, Any], intent: Mapping[str, Any]) -> None
         }.get(intent["action"])
         if required is None:
             raise AssuranceError("unsupported result application", code="DISPATCH_APPLICATION_ACTION_UNSUPPORTED", status="NEEDS_USER")
+    if (result.get("evidence_report") or {}).get("details", {}).get("tester_problem_dispositions"):
+        required.add("tester_reconsideration")
     if not required.issubset(intent["application"]["effects"]):
         raise AssuranceError(
             "accepted result has unapplied effects", code="DISPATCH_RESULT_NOT_APPLIED", status="FAIL",
@@ -866,6 +868,10 @@ class _Application(ResultSemantics):
                         result, proof_failure=context.get("proof_failure"),
                         proof_runners=context["facets"]["assurance"].get("proof_runners", []),
                     )
+        if role == "tester" and (context.get("tester_reconsideration") or
+                (result.get("evidence_report") or {}).get("details", {}).get("tester_problem_dispositions")):
+            from .review_recovery import apply_tester_disposition
+            self.effect("tester_reconsideration", lambda: apply_tester_disposition(self.repo, self.run_id))
         if role == "reviewer" and context.get("review_reconsideration"):
             report = result.get("evidence_report")
             if not isinstance(report, dict) or not report.get("details", {}).get("review_problem_dispositions"):

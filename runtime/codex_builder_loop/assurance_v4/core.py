@@ -664,6 +664,8 @@ def canonical_context_projection(
         "work_unit_progress": _canonical_progress_projection(ledger),
         "role_observations": observations,
         "review_reconsideration": _strip_context_identity(active_request(ledger)),
+        **({"tester_reconsideration": _strip_context_identity(active_request(ledger, "tester"))}
+           if active_request(ledger, "tester") else {}),
     }
 
 
@@ -4328,6 +4330,9 @@ def complete_dispatch(
                 },
             )
         result = validate_action_result(result, intent["action"])
+        if intent.get("role") == "tester" and intent.get("state") != "completed":
+            from .review_recovery import validate_tester_result
+            validate_tester_result(ledger, result)
         if intent.get("role") == "reviewer" and intent.get("state") != "completed":
             from .review_recovery import validate_result
             validate_result(ledger, result)
@@ -12388,6 +12393,7 @@ def driver_context(repo_value: str | Path, run_value: str) -> dict[str, Any]:
         "evidence_origin": _driver_evidence_origin(ledger, evidence),
         "evidence_gates": evidence_gate_view(ledger),
         "review_reconsideration": active_request(ledger),
+        "tester_reconsideration": active_request(ledger, "tester"),
         "publication": copy.deepcopy(ledger.get("publication")),
         "problems": effective_problems(ledger),
         "inherited_problem_review": inherited_review_input(ledger),

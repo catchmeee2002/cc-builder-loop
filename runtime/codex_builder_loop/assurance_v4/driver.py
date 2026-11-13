@@ -1276,6 +1276,15 @@ def next_action(
                                 observation_retry_request_id=retry['request_id'], agent=execution['agents']['tester'],
                                 tester_source=execution['tester_source'], candidate_worktree=ledger['candidate_worktree'])
             from .review_recovery import active_request, validate_current
+            author_request = active_request(ledger, "tester")
+            if author_request and author_request['problem_key'] == problem['key']:
+                try:
+                    validate_current(ledger, author_request)
+                except AssuranceError as exc:
+                    return decision("NEEDS_USER", "builder_loop_problem_decision", exc.code, problem=problem)
+                return decision("CONTINUE", author_request['action'], "tester_problem_reconsideration",
+                                problem=problem, agent=ledger['facets']['execution']['agents']['tester'],
+                                tester_source=ledger['facets']['execution']['tester_source'])
             request = active_request(ledger)
             if request and request['problem_key'] == problem['key']:
                 try:
