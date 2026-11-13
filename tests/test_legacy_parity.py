@@ -44,6 +44,16 @@ def test_method_exists(test_id: str) -> bool:
 
 
 class LegacyParityContractTest(unittest.TestCase):
+    def test_native_orchestration_has_reviewable_dispositions(self):
+        rows = load_corpus()["native_orchestration_parity"]
+        self.assertGreaterEqual(len(rows), 9)
+        for row in rows:
+            self.assertIn(row["status"], {"covered", "optimized", "retired"})
+            self.assertTrue(row["rationale"])
+            self.assertTrue(row["test_ids"])
+            for test_id in row["test_ids"]:
+                self.assertTrue(test_method_exists(test_id), test_id)
+
     def test_planner_loading_migration_keeps_explicit_dispositions(self) -> None:
         rows = load_corpus()["planner_loading_parity"]
         self.assertEqual([r["status"] for r in rows], ["retired", "covered", "covered"])

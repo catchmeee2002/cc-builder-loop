@@ -354,29 +354,39 @@ def build_role_input(context: Mapping[str, Any], action: Mapping[str, Any], role
     return project_role_input(payload)
 
 
-def role_context(repo: Any, run_id: str, action_id: str, pointer: str = "") -> dict[str, Any]:
+def role_context(repo: Any, run_id: str, action_id: str, pointer: str = "", *, index: bool = False) -> dict[str, Any]:
     """Read the current role input, rejecting a stale/non-role action (no mutation)."""
     from . import core, driver
     from .driver_contract import AGENT_ACTION_CAPABILITIES
 
     context = core.driver_context(repo, run_id)
-    action = driver.next_action(repo, run_id)
+    from . import operations
+    action = (operations.find(repo, run_id, action_id=action_id)
+              if operations.is_native(context) else driver.next_action(repo, run_id))
     capability = AGENT_ACTION_CAPABILITIES.get(action.get("action"))
     if action.get("action_id") != action_id or capability is None:
         raise core.AssuranceError("role input requires the current role action",
                                   code="ROLE_INPUT_ACTION_MISMATCH", status="FAIL")
-    payload = build_role_input(context, action, capability.role)
-    if not pointer:
+    if operations.is_native(context):
+        from pathlib import Path
+        from .role_payload import RoleInputBuilder
+        payload = RoleInputBuilder(Path(__file__).resolve().parents[3], run_id).build(action, capability.role, context)
+    else:
+        payload = build_role_input(context, action, capability.role)
+    if not pointer and not index:
         return payload
-    if not pointer.startswith("/"):
+    if pointer and not pointer.startswith("/"):
         raise core.AssuranceError("pointer must be an RFC 6901 JSON pointer", code="ROLE_INPUT_POINTER_INVALID")
     value = payload
     try:
-        for part in pointer[1:].split("/"):
+        for part in (pointer[1:].split("/") if pointer else []):
             key = part.replace("~1", "/").replace("~0", "~")
             value = value[int(key)] if isinstance(value, list) else value[key]
     except (KeyError, IndexError, ValueError, TypeError) as exc:
         raise core.AssuranceError("role input pointer does not exist", code="ROLE_INPUT_POINTER_INVALID") from exc
+    if index:
+        value = {"type": type(value).__name__, **({"keys": sorted(value)} if isinstance(value, dict) else
+                 {"length": len(value)} if isinstance(value, (list, str)) else {})}
     return {"action_id": action_id, "pointer": pointer, "input_digest": digest(payload), "value": value}
 
 

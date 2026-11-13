@@ -36,7 +36,7 @@ class SessionIdentityTest(unittest.TestCase):
 
     def invoke(self, args, env, core=None):
         output = StringIO()
-        with patch.dict(os.environ, env, clear=True), patch.object(cli, "CorePort", return_value=core), redirect_stdout(output):
+        with patch.dict(os.environ, {**env, "CODEX_BUILDER_LOOP_ENABLE_LEGACY_START": "1"}, clear=True), patch.object(cli, "CorePort", return_value=core), redirect_stdout(output):
             rc = cli.main(args)
         return rc, json.loads(output.getvalue().splitlines()[-1])
 
@@ -98,3 +98,29 @@ class SessionIdentityTest(unittest.TestCase):
         rc, payload = self.invoke(["status", "--repo", str(ROOT), "--run", "original"], {}, core)
         self.assertEqual(rc, 0)
         self.assertEqual(payload["status"], "READY")
+
+
+class NativeAgentIdentityTest(unittest.TestCase):
+    def test_missing_owner_rejects_before_reading_contract(self):
+        from runtime.codex_builder_loop import native_agent
+        output = StringIO()
+        with patch.dict(os.environ, {}, clear=True), redirect_stdout(output), \
+             patch.object(native_agent, "load_json_source") as source, \
+             patch.object(native_agent.core, "start") as start:
+            rc = native_agent.main(["start", "--run", "identity", "--contract", "absent.json"])
+        self.assertEqual(rc, 1)
+        self.assertEqual(json.loads(output.getvalue())["code"], "NATIVE_SESSION_IDENTITY_MISSING")
+        source.assert_not_called()
+        start.assert_not_called()
+
+    def test_new_run_binds_real_host_owner(self):
+        from runtime.codex_builder_loop import native_agent
+        output = StringIO()
+        with patch.dict(os.environ, {"CODEX_THREAD_ID": "host-thread"}, clear=True), redirect_stdout(output), \
+             patch.object(native_agent, "load_json_source", return_value={}), \
+             patch.object(native_agent, "builder_runtime_mode", return_value="root_session"), \
+             patch.object(native_agent.core, "start", return_value={"status": "ACTIVE"}) as start:
+            rc = native_agent.main(["start", "--run", "identity", "--contract", "unused"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(start.call_args.args[2], "host-thread")
+        self.assertEqual(start.call_args.kwargs["driver_runtime"]["orchestration"], "native_agent")

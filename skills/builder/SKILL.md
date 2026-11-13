@@ -1,103 +1,58 @@
 ---
 name: builder
-description: 执行已接受的 Builder-loop 实验方案，把同 session 紧邻的 BUILDER_HANDOFF_READY + 原生 Implement the plan.，或用户显式 $builder，桥接到 Full Driver v4。默认由 Native Driver 编排 Builder/Tester/Reviewer thread、独立 proof、机器验证、blackbox 和安全 finalize；普通实施请求、原生 Plan 或缺少已验证 contract 时不要使用。
+description: 执行已接受并验证的 Builder-loop 实验方案。Codex 主 Agent 原生协调 Builder、Tester、Reviewer；runtime 只负责角色调用适配、独立判据和事务。普通原生计划或缺少已验证 contract 时不使用。
 ---
 
 # Builder 实验入口
 
-这是 Full Driver v4 的授权桥，不是 legacy v2/v3 Builder。Native Driver 是 Full Driver 的原生承载，
-不是第四个组件；不得调用公共 legacy `start`，不得恢复旧 Builder Skill 的第二套循环说明。
+主 Agent 负责理解任务、安排角色、澄清和正常迭代。判据与事务由 runtime 验证，不能用 Agent 自述代替。
+不得调用公共 legacy `start`，不得手改 ledger。
 
-## 授权
+## 授权与启动
 
-只接受一种入口：
+只接受用户显式 `$builder` 且同一聊天中已有接受并验证的实验方案，或同 session 紧邻的
+`BUILDER_HANDOFF_READY` 后在 Default mode 提交的原生 `Implement the plan.`。普通原生计划不隐式切换路线。
 
-- 用户当前 turn 显式调用 `$builder`，且同一聊天中存在已接受、已验证的 Builder-loop 实验方案；或
-- 同 session 紧邻上一轮由 `$planner` 的 Builder 路线输出 `BUILDER_HANDOFF_READY`，当前已在 Default
-  mode，用户使用 Codex 原生 `Implement the plan.`／“实施计划”动作，期间没有插入消息或修订方案。
+创建 run 前完成身份、方案和准入核对：
 
-标记缺失、非紧邻、session 变化、仍在 Plan mode、来自 Codex 原生 Plan、contract 被修改或普通文字
-“实现一下”都不构成授权。一次动作最多启动一个 run。
+1. 读项目 AGENTS、设计哲学和文档政策。从方案取唯一 `assurance-v4-contract`；不得重写为另一份计划。
+2. 通过 `assurance --experimental-v4 validate --repo <repo> --contract -` 重新验证，要求顶层和 admission 均 READY。
+3. 用 `native-driver session-identity` 读取宿主身份；不得设置 `CODEX_THREAD_ID`、借用历史身份或让用户填写身份。
+4. 有 `assurance-v4-decision` 时，绑定原 run/problem/facet 执行 `validate-decision` 及其返回的原子修订入口，
+   不新开 run。产品选择回答先通过正式入口记为精确 delta；不得把回答当成已应用变更。
+5. 新任务用 `native-agent start --repo <repo> --run <run> --contract -`。一次授权最多创建一个 run。
+   原样报告 `BUILDER_LOOP_RUN_ID:<run>`。Builder 默认使用当前主 session；仅冻结方案明确指定 `native_thread` 时调用独立 Builder thread。
 
-## 启动 Native Driver
+已有任务按冻结 runtime 和原控制器继续；不能用新入口接管旧任务。`full-driver-v4-experiment` 只属于
+冻结旧版本，不作为新任务的自动回退。宿主能力不足时保留已接受方案和现场，不能降低独立判据。
 
-1. 读取项目 `AGENTS.md`、设计哲学和文档政策。
-2. 从已接受方案提取唯一 `assurance-v4-contract` marker；缺失、重复或 JSON 外还有第二份 contract 时停止。
-3. 再次把 contract 原样通过 stdin 交给
-   `codex-builder-loop assurance --experimental-v4 validate --contract -`；只有 `status=READY` 才继续。
-4. 调用 `codex-builder-loop native-driver session-identity`，只接受 `status=READY`，原样使用返回的
-   `session_id`；不得从聊天、旧 ledger 或历史文件推断当前调用者，不设置或覆盖 `CODEX_THREAD_ID`。
-   身份缺失或不匹配时保留已接受方案，待宿主身份恢复后继续，不请求用户手填身份。
-   若方案含唯一 `assurance-v4-decision` marker，
-   这是同 run contract decision，不得生成新 run：
-   - marker 必须只含 schema_version/run_id/problem_key/action_id/facet/facet_digest，且当前
-     `driver-next` 仍是同一 `contract_decision`；
-   - 用 marker、当前 session_id 和完整 contract 重跑 `validate-decision`。任何 stale、session mismatch、
-     隐藏 delta 或不受支持事务都停止，不能回退为 `start`；
-   - `apply.command=update-facet` 时，从完整 contract 取对应 Authority/Assurance facet，带返回的精确
-     authorization flags、`--resolve-plan-problem-key`、`--decision-action-id`、
-     `--expected-facet-digest` 与 `--session-id` 原子更新；`apply.command=revise-mission` 时从完整 contract
-     取 Mission 与 `execution.revision_transition`，同样携带全部 decision binding；
-   - 更新成功后执行
-     `codex-builder-loop native-driver resume --repo <repo> --run <run-id>`，并继续等待原 run 终态。
-5. 没有 decision marker 时才生成唯一小写连字符 run id，把 contract 原样通过 stdin交给：
+## 原生协调
 
-   `codex-builder-loop native-driver start --repo <repo> --run <run-id> --contract -`
+- `native-agent status` 提供真实证据、问题、角色和事务，以及可执行操作。它不替你选择工作。
+- 根据任务和事实选择操作，用 `native-agent inspect --action <operation>` 获取输入绑定，再调用
+  `native-agent invoke --action <operation> --expected-operation-id <id>`。这些命令均带 `--repo` 和 `--run`。
+  多个合法操作由你安排；输入变化后重新核对，不能照抄过期凭据。
+- Builder 操作返回 `BUILDER_HANDOFF` 后，在候选 worktree 实现并提交；通过
+  `assurance --experimental-v4 apply-root-builder-result` 绑定 action 和 owner 提交结果。
+  已接收结果不得重写；应用中断续接原 artifact，不能再次实现或重派角色。
+- Tester/Reviewer 调用使用独立身份；普通后续工作续接原 thread。调用层只执行本次选择的角色操作，
+  不循环决定下一个角色。测试问题回原 Tester，实现问题由 Builder 修，审查回原 Reviewer。
+- 角色输入只从 `role-context` 获取。消息是通知；角色不得以主 Agent 的转述、候选实现或预期结果代替
+  冻结输入。大输入用 `--index`、`--pointer` 分段读取并核对 input digest；压缩后重新获取。
+- 机器验证、proof、blackbox 和最终审查必须保留；缺失或过期证据不能通过口头解释跳过。
+  `READY` 只表示命令成功或条件成立，不表示业务交付完成。
+- 普通实现、测试纠错、输入重新获取和通信恢复由你持续处理。只有目标、授权、验收强度改变、明确
+  执行额度耗尽，或无法保持安全边界时才交给用户决定；框架缺少路径不得伪装成新的产品选择。
+- 通信额度耗尽后，只有显式恢复授权才可在原操作调用中增加 `--renew-reason`；普通继续不携带该参数。
+- 对未知执行结果先核对原 thread/turn 和事务，不直接重发。恢复只使用状态指向的持久化事务与正式入口。
+  不手改 ledger、不清理授权 dirty 输入、不默默替换角色或控制器。
+- 外部副作用始终绑定授权目标、probe 和可恢复 intent；结束前释放 lease 并证明恢复。
+- 全部判据齐备后显式执行 finalize，携带合规 commit message；finalize 成功才汇报交付。
+  用户要求暂停时使用正式 hold，恢复绑定同一 hold，暂停不是完成。
 
-6. 如果 contract 的 `execution.builder_runtime.mode=root_session`，Native Driver 返回
-   `status=BUILDER_HANDOFF` 时，当前主 session 必须逐 action 执行 Builder：
-   - 以 handoff 中的 `builder_owner.session_id` 调用 `prepare-builder --owner-mode root_session`；
-   - 根据 `dispatch_state` 恢复单一 action：`unprepared` 才调用
-     `begin-dispatch --owner-session-id`；`in_flight` 续接同一 action；`completed` 读取已绑定的
-     result artifact，不重做实现，也不重新 begin；
-   - 新结果通过唯一的
-     `assurance apply-root-builder-result --run <run-id> --action-id <action-id> --owner-session-id <session-id>`
-     提交；该入口按结果类型完成 `complete-dispatch`、`checkpoint-builder` /
-     `record-problems` / `recompose-candidate` 和 `consume-dispatch`，并可在中断后省略
-     `--result` 重放已持久化 artifact。不得在提交门面之外手工交错这些 mutation，也不得在事务完成前
-     重新读取 `driver-next`；
-   - 不调用 `thread/start`、不创建 Builder App Server thread，也不把 root session 映射成 thread；
-   - 完成当前 Builder action 后调用 `native-driver resume`，把 Tester/Reviewer 和后续 gate 交回
-     Native Driver。Builder 中断、dirty side effect 或 owner 漂移不得切换到 `native_thread`。
-   `execution.builder_runtime.mode=native_thread` 时继续执行现有 Native Driver Builder/Tester/Reviewer
-   thread 路径；新 contract 仅在用户主动指定独立 Native thread 时使用该模式。
+## 收尾
 
-新 v4 contract 的角色 dispatch 必须绑定当前 `work_unit_id`（proof、blackbox 等不产生角色进度的
-动作除外）。完成事实只能由 Core 根据候选提交、Tester source manifest 或正式 Reviewer evidence
-确认；Agent 自报和完整 transcript 都不是 checkpoint。重建上下文只接受 canonical projection，
-工作单元变化必须重新规划。`rehydrate_dispatch` / `rotate_context` 仅在对应 Core intent 已持久化后
-创建新 thread；每个工作单元最多自动重建一次。
-
-7. 新 run 看到 `event=native_driver_run_started` 后，或同 run decision 更新成功后，立即输出
-   `BUILDER_LOOP_RUN_ID:<run-id>`，持续等待 Native
-   Driver 到 `FINALIZED`、`FAILED` 或 `NEEDS_USER`。普通 revision、修复、Agent follow-up、target rematerialize
-   和 finalize recovery 不交还用户。run 创建后若仅遇到 App Server disconnect/overload，用
-   `native-driver resume --repo <repo> --run <run-id>` 自动续接；同一 transport signature 连续三次才按
-   continuity failure 停止，不能改走另一控制器。Reviewer 只有在 compaction capability 不可用，且
-   exhausted turn 确认无输出、无副作用并仍是 thread 尾部时，才允许建立新的 Reviewer replacement
-   intent；replacement 创建新 thread、退休旧身份并重新获取 Reviewer evidence。Tester 不因空输出
-   exhausted dispatch 自动 replacement。用户随后显式授权继续同一 dispatch 时，只能使用
-   `native-driver resume --repo <repo> --run <run-id> --reason <用户决定>` 建立新 generation；Core 必须
-   证明 runtime identity、role/thread、action 与 prompt digest 未漂移，旧 generation 的 attempt 不得
-   重置。runtime 已变化时先停止普通 resume，按
-   [恢复边界](../../docs/architecture.md#恢复边界)核对受限迁移入口；不满足时才规划 successor。
-   未处理 FATAL 必须已由 Native Driver 写成
-   `driver_failure` 并完成副作用恢复；若恢复仍需用户，保留 recovering 现场，不用 abandon 覆盖。
-7. 只有 Native Driver 在创建 run 前返回 `NATIVE_DRIVER_CODEX_UNAVAILABLE`、
-   `NATIVE_DRIVER_PROTOCOL_UNAVAILABLE` 或 `NATIVE_DRIVER_PROTOCOL_INCOMPATIBLE`，才完整读取相邻
-   `../full-driver-v4-experiment/SKILL.md` 并由现有 Full Driver 承载同一 contract。run 一旦创建，禁止
-   切换承载或让两个控制器同时 mutation。
-
-legacy v2/v3 既有 ledger 的诊断、恢复或 cleanup 仍直接使用对应 CLI，不通过本实验入口创建 revision。
-
-## 终态复盘
-
-Native Driver 或 Full Driver 到达 `FINALIZED`、`NEEDS_USER`、`FATAL`、continuity failure 或 abandon
-后，都只加载同一份
-[交付后事故归属](references/post-delivery-retrospective.md)。复盘不重新打开 delivery gate，也不改写
-finalized target 或原失败事实。`FINALIZED` 只有在复盘确认无事故，或事故已完成查重与授权分流后，
-才输出 `FULL_DRIVER_V4_RESULT: finalized`；其他终态保留原状态和诊断，不用成功标记覆盖。
-最终用户消息逐字包含 `retrospective-status.required_user_block`；完整 `required_block` 只留在结构化
-审计结果，不复制到用户消息。
-
-运行返回 HELD 时保留现场并停止自动推进；只有用户明确要求继续，才绑定当前 hold identity 与 reason 执行 release。Reviewer 只审查，候选完整性检查失败时不得接受审查结果。
+遇到 FINALIZED、NEEDS_USER、FATAL、continuity failure 或 abandon 后，读取
+[交付后事故归属](references/post-delivery-retrospective.md)。保留原始事实和失败事实，不用成功标记覆盖阻塞。
+只有 finalized 且复盘完成才输出 `FULL_DRIVER_V4_RESULT: finalized`；保留该结果 marker 的消费兼容。
+最终消息包含 `retrospective-status.required_user_block`；完整审计块不复制给用户。

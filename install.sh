@@ -21,7 +21,6 @@ LINK_SOURCES=(
   "$REPO_DIR/scripts/codex-builder-loop.py"
   "$REPO_DIR/policies/doc-policy.md"
   "$REPO_DIR/skills/file-github-issue"
-  "$REPO_DIR/skills/full-driver-v4-experiment"
   "$REPO_DIR/agents/builder.toml"
 )
 LINK_TARGETS=(
@@ -33,24 +32,28 @@ LINK_TARGETS=(
   "$LOCAL_BIN/codex-builder-loop"
   "$DOC_POLICY"
   "$SKILLS_HOME/file-github-issue"
-  "$SKILLS_HOME/full-driver-v4-experiment"
   "$CODEX_HOME/agents/builder.toml"
 )
 LINK_PREEXISTED=()
-RETIRED_LINK="$SKILLS_HOME/builder-loop-planner"
-RETIRED_SOURCE="$REPO_DIR/skills/builder-loop-planner"
-RETIRED_RAW=""
-RETIRED_REMOVED=0
-# The old source directory may already be absent after an upgrade.
-if [ -L "$RETIRED_LINK" ]; then
-  if [ "$(readlink -m -- "$RETIRED_LINK")" = "$(readlink -m -- "$RETIRED_SOURCE")" ]; then
-    RETIRED_RAW="$(readlink -- "$RETIRED_LINK")"
-  else
-    echo "leaving foreign retired skill symlink: $RETIRED_LINK" >&2
+RETIRED_LINKS=("$SKILLS_HOME/builder-loop-planner" "$SKILLS_HOME/full-driver-v4-experiment")
+RETIRED_SOURCES=("$REPO_DIR/skills/builder-loop-planner" "$REPO_DIR/skills/full-driver-v4-experiment")
+RETIRED_RAWS=()
+RETIRED_REMOVED=()
+for index in "${!RETIRED_LINKS[@]}"; do
+  retired_link="${RETIRED_LINKS[$index]}"
+  retired_source="${RETIRED_SOURCES[$index]}"
+  RETIRED_RAWS+=("")
+  RETIRED_REMOVED+=(0)
+  if [ -L "$retired_link" ]; then
+    if [ "$(readlink -m -- "$retired_link")" = "$(readlink -m -- "$retired_source")" ]; then
+      RETIRED_RAWS[$index]="$(readlink -- "$retired_link")"
+    else
+      echo "leaving foreign retired skill symlink: $retired_link" >&2
+    fi
+  elif [ -e "$retired_link" ]; then
+    echo "leaving non-symlink retired skill: $retired_link" >&2
   fi
-elif [ -e "$RETIRED_LINK" ]; then
-  echo "leaving non-symlink retired skill: $RETIRED_LINK" >&2
-fi
+done
 
 preflight_link() {
   local source="$1"
@@ -194,9 +197,11 @@ rollback_new_links() {
       fi
     fi
   done
-  if [ "$RETIRED_REMOVED" -eq 1 ] && [ ! -e "$RETIRED_LINK" ] && [ ! -L "$RETIRED_LINK" ]; then
-    ln -s -- "$RETIRED_RAW" "$RETIRED_LINK"
-  fi
+  for index in "${!RETIRED_LINKS[@]}"; do
+    if [ "${RETIRED_REMOVED[$index]}" -eq 1 ] && [ ! -e "${RETIRED_LINKS[$index]}" ] && [ ! -L "${RETIRED_LINKS[$index]}" ]; then
+      ln -s -- "${RETIRED_RAWS[$index]}" "${RETIRED_LINKS[$index]}"
+    fi
+  done
   exit "$status"
 }
 trap rollback_new_links ERR
@@ -226,14 +231,16 @@ if (
 PY
 
 # Retire only the exact link seen during preflight; restore it if config commit fails.
-if [ -n "$RETIRED_RAW" ]; then
-  if [ ! -L "$RETIRED_LINK" ] || [ "$(readlink -- "$RETIRED_LINK")" != "$RETIRED_RAW" ]; then
-    echo "retired skill link changed during install" >&2
-    false
+for index in "${!RETIRED_LINKS[@]}"; do
+  if [ -n "${RETIRED_RAWS[$index]}" ]; then
+    if [ ! -L "${RETIRED_LINKS[$index]}" ] || [ "$(readlink -- "${RETIRED_LINKS[$index]}")" != "${RETIRED_RAWS[$index]}" ]; then
+      echo "retired skill link changed during install" >&2
+      false
+    fi
+    rm -- "${RETIRED_LINKS[$index]}"
+    RETIRED_REMOVED[$index]=1
   fi
-  rm -- "$RETIRED_LINK"
-  RETIRED_REMOVED=1
-fi
+done
 
 python3 "$REPO_DIR/scripts/codex-builder-loop-config.py" install \
   --hooks-file "$HOOKS_FILE" \

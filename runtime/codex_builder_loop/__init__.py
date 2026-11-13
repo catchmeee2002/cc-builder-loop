@@ -15,6 +15,10 @@ def main(*args, **kwargs):
         from .assurance_v4.cli import main as assurance_main
 
         return assurance_main(effective[1:])
+    if effective[:1] == ["native-agent"]:
+        from .native_agent import main as native_agent_main
+
+        return native_agent_main(effective[1:])
     if effective[:1] == ["native-driver"]:
         from .native_driver.cli import main as native_driver_main
 

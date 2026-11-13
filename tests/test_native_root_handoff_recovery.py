@@ -69,7 +69,8 @@ class Transport:
 
 
 class RootHandoffEntryTest(unittest.TestCase):
-    @patch.dict(os.environ, {"CODEX_THREAD_ID": "root-session"})
+    @patch.dict(os.environ, {"CODEX_THREAD_ID": "root-session",
+                              "CODEX_BUILDER_LOOP_ENABLE_LEGACY_START": "1"})
     def exercise(self, command, error_code, *, fail_before_handoff=False):
         old_action = {"action": "tester_author", "action_id": "a" * 64,
                       "reason": "tester_source_missing"}
@@ -243,7 +244,8 @@ class RootHandoffLedgerTest(unittest.TestCase):
         self.transports.append(platform)
         return platform
 
-    @patch.dict(os.environ, {"CODEX_THREAD_ID": "root-session"})
+    @patch.dict(os.environ, {"CODEX_THREAD_ID": "root-session",
+                              "CODEX_BUILDER_LOOP_ENABLE_LEGACY_START": "1"})
     def invoke(self, command="resume", *extra, contract=None):
         from datetime import datetime, timedelta, timezone
         output = StringIO()

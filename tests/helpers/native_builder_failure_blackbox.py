@@ -24,6 +24,7 @@ def run(argv: Sequence[str | Path], *, cwd: Path | None = None) -> subprocess.Co
         [str(item) for item in argv],
         cwd=str(cwd) if cwd is not None else None,
         env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1",
+             "CODEX_BUILDER_LOOP_ENABLE_LEGACY_START": "1",
              "CODEX_THREAD_ID": "native-builder-failure-blackbox-session"},
         text=True,
         stdout=subprocess.PIPE,

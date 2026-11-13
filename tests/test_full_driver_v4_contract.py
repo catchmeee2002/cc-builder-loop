@@ -712,8 +712,8 @@ class FullDriverV4ContractTest(unittest.TestCase):
             installed = run_process(["bash", ROOT / "install.sh"], cwd=ROOT, env=env)
             self.assertEqual(installed.returncode, 0, installed.stderr)
             link = home / ".agents" / "skills" / "full-driver-v4-experiment"
-            self.assertTrue(link.is_symlink(), link)
-            self.assertEqual(link.resolve(), SKILL.parent.resolve())
+            self.assertFalse(link.exists(), link)
+            self.assertFalse(link.is_symlink(), link)
 
     def test_experimental_builder_plan_open_without_public_cli_or_legacy_start(self) -> None:
         top_help = run_process([sys.executable, CLI, "--help"])
@@ -746,8 +746,8 @@ class FullDriverV4ContractTest(unittest.TestCase):
         builder = (ROOT / "skills" / "builder" / "SKILL.md").read_text()
         planner = builder_planner_instructions()
         self.assertIn("full-driver-v4-experiment", builder)
-        self.assertIn("native-driver start", builder)
-        self.assertIn("native-driver resume", builder)
+        self.assertIn("native-agent start", builder)
+        self.assertIn("native-agent invoke", builder)
         self.assertIn("validate-decision", builder)
         self.assertIn("创建 run 前", builder)
         self.assertIn("assurance-v4-contract", planner)

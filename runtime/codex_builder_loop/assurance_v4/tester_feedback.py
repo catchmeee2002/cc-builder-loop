@@ -100,7 +100,8 @@ def apply_withdrawals(ledger, report):
 def recover_feedback(repo_value, run_value, *, session_id, action_id, problem_key, reason,
                      driver_runtime_kind, allow_runtime_transition=False):
     """Migrate a stopped foreign-feedback run without changing problems or quotas."""
-    from . import core, driver
+    from . import core
+    from .operation_binding import current as bound_operation
     from .models import digest
     from .problems import problem_identity
     from .store import locked, read_ledger, append_event
@@ -118,7 +119,7 @@ def recover_feedback(repo_value, run_value, *, session_id, action_id, problem_ke
             if len(previous) != 1 or previous[0]['problem_key'] != problem_key or previous[0]['reason'] != reason.strip():
                 raise core.AssuranceError('Recovery replay differs', code='TESTER_FEEDBACK_REPLAY_MISMATCH')
             return core.status(repo, run_id)
-        current = driver.next_action(repo, run_id, _ledger=ledger)
+        current = bound_operation(repo, run_id, action_id=action_id, _ledger=ledger)
         if ledger['phase'] != 'active' or current.get('action_id') != action_id:
             raise core.AssuranceError('Recovery action is stale', code='TESTER_FEEDBACK_STALE')
         if core.recovery_transaction_blockers(ledger) or ledger.get('hold'):
@@ -171,3 +172,30 @@ def validate_disputes(ledger, report):
             or any(item['request_digest'] not in requests for item in results)):
         raise ContractError('Dispute must bind unchanged Tester source and current recheck references',
                             code='TESTER_RECHECK_DISPUTE_INVALID')
+
+
+def pending_review(ledger):
+    """Return original Reviewer feedback that cannot yet enter Tester authoring."""
+    from .problems import effective_problems, problem_identity
+    for problem in effective_problems(ledger):
+        if (problem.get('status') != 'open' or problem.get('owner') != 'tester'
+                or problem.get('inherited_from') or problem.get('observation_request')
+                or (problem.get('producer') or {}).get('role') != 'reviewer'):
+            continue
+        disagreement = disputed(ledger, problem)
+        if collaborative_correction_allowed(ledger) and not disagreement:
+            continue
+        if public_recheck(ledger['facets'], problem) is not None and not disagreement:
+            continue
+        original = next(p for p in ledger['problems'] if p.get('key') == problem['key']
+                        and p.get('producer') == problem.get('producer')
+                        and p.get('candidate_head') == problem.get('candidate_head'))
+        followups = {e['details']['action_id'] for e in ledger.get('events', [])
+                     if e['kind'] == 'dispatch_prepared' and e.get('at', '') > original['recorded_at']
+                     and e['details'].get('action') in {'reviewer_preflight', 'reviewer_final'}}
+        count = sum(e['kind'] == 'dispatch_consumed' and e['details'].get('action_id') in followups
+                    for e in ledger.get('events', []))
+        return {'problem': problem, 'problem_identity': problem_identity(original),
+                'reason': 'tester_recheck_disputed' if disagreement else 'tester_recheck_references_required',
+                'followups': count}
+    return None

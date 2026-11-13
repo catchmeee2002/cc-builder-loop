@@ -256,10 +256,7 @@ class SessionStartAuthorizationNeutralityTest(unittest.TestCase):
             planner = (home / ".agents/skills/planner/references/builder-contract.md").read_text()
             native_planner = (home / ".agents/skills/planner/SKILL.md").read_text()
             builder = (home / ".agents/skills/builder/SKILL.md").read_text()
-            full_driver_manifest = (
-                home
-                / ".agents/skills/full-driver-v4-experiment/agents/openai.yaml"
-            ).read_text()
+            self.assertFalse((home / ".agents/skills/full-driver-v4-experiment").exists())
             managed_agents = managed_block(installed_agents)
             self.assertIn(compact(MARKER), compact(planner))
             self.assertIn("assurance-v4-contract", planner)
@@ -267,12 +264,9 @@ class SessionStartAuthorizationNeutralityTest(unittest.TestCase):
             self.assertIn("native_codex", native_planner)
             self.assertIn("BUILDER_HANDOFF_READY", native_planner)
             self.assertIn("full-driver-v4-experiment", builder)
-            self.assertIn("native-driver start", builder)
+            self.assertIn("native-agent start", builder)
             self.assertIn("native-driver session-identity", builder)
             self.assertNotIn("从 SessionStart developer context 原样取得", builder)
-            self.assertIn(
-                "allow_implicit_invocation:false", compact(full_driver_manifest)
-            )
             self.assertIn("Builder-loop 实验", managed_agents)
             self.assertIn("request_user_input", managed_agents)
             self.assertIn("Implement the plan.", managed_agents)
@@ -292,7 +286,6 @@ class SessionStartAuthorizationNeutralityTest(unittest.TestCase):
                     ".agents/skills/planner",
                     ".agents/skills/builder",
                     ".agents/skills/file-github-issue",
-                    ".agents/skills/full-driver-v4-experiment",
                     ".codex/AGENTS.md",
                     ".codex/agents/builder.toml",
                     ".codex/agents/reviewer.toml",

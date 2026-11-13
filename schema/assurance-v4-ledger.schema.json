@@ -358,6 +358,7 @@
         "kind": {"enum": ["native", "full_driver_skill"]},
         "protocol_version": {"const": 1},
         "transport": {"enum": ["codex_app_server", "native_tools", "root_session"]},
+        "orchestration": {"const": "native_agent"},
         "runtime_version": {"type": "string", "minLength": 1},
         "protocol_schema_digest": {"$ref": "#/$defs/sha256"},
         "protocol_canary_digest": {

@@ -120,6 +120,9 @@ class NativeDriverCoreContractTest(unittest.TestCase):
         self.assertEqual(Path(port.command[1]).resolve(), CLI.resolve())
 
     def setUp(self) -> None:
+        legacy = patch.dict(os.environ, {"CODEX_BUILDER_LOOP_ENABLE_LEGACY_START": "1"})
+        legacy.start()
+        self.addCleanup(legacy.stop)
         self.repo = init_repo()
         self.tmp = tempfile.TemporaryDirectory(prefix="native-driver-v1-")
         self.artifacts = Path(self.tmp.name)
@@ -3875,6 +3878,7 @@ class NativeDriverCoreContractTest(unittest.TestCase):
                 self.calls.append(command)
                 if command == "driver-context":
                     return {
+                        "candidate_worktree": "/fixture/candidate",
                         "driver_runtime": {"kind": "native", "protocol_version": 1},
                         "facets": {
                             "execution": {
@@ -3950,7 +3954,7 @@ class NativeDriverCoreContractTest(unittest.TestCase):
         self.assertNotIn("record-driver-failure", fake_core.calls)
         self.assertEqual(
             fake_core.calls,
-            ["driver-context", "driver-next", "driver-context", "retry-dispatch"],
+            ["driver-context", "driver-context", "driver-context", "retry-dispatch"],
         )
         payload = json.loads(output.getvalue().splitlines()[-1])
         self.assertEqual(payload["status"], "ACTIVE")

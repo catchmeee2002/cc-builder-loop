@@ -17,9 +17,6 @@ class InstallContractTest(unittest.TestCase):
         return {
             home / ".agents" / "skills" / "planner": ROOT / "skills" / "planner",
             home / ".agents" / "skills" / "builder": ROOT / "skills" / "builder",
-            home / ".agents" / "skills" / "full-driver-v4-experiment": ROOT
-            / "skills"
-            / "full-driver-v4-experiment",
             home / ".codex" / "agents" / "builder.toml": ROOT / "agents" / "builder.toml",
             home / ".agents" / "skills" / "file-github-issue": ROOT
             / "skills"
@@ -163,6 +160,22 @@ class InstallContractTest(unittest.TestCase):
             hooks = json.loads((home / ".codex" / "hooks.json").read_text())
             self.assertNotIn("builder-loop.py", json.dumps(hooks))
 
+    def test_upgrade_retires_only_owned_full_driver_skill(self):
+        for owned in (True, False):
+            with self.subTest(owned=owned), tempfile.TemporaryDirectory(prefix="retire-driver-") as raw:
+                home = Path(raw)
+                link = home / ".agents/skills/full-driver-v4-experiment"
+                link.parent.mkdir(parents=True)
+                target = ROOT / "skills/full-driver-v4-experiment" if owned else home / "foreign-driver"
+                if not owned:
+                    target.mkdir()
+                link.symlink_to(target)
+                result = run_process(["bash", ROOT / "install.sh"], cwd=ROOT, env=self.environment(home))
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(link.is_symlink(), not owned)
+                if not owned:
+                    self.assertEqual(link.resolve(), target.resolve())
+
     def test_uninstall_preserves_foreign_full_driver_skill_takeover(self) -> None:
         with tempfile.TemporaryDirectory(prefix="full-driver-takeover-") as raw_home:
             home = Path(raw_home)
@@ -173,7 +186,7 @@ class InstallContractTest(unittest.TestCase):
             skill_link = home / ".agents" / "skills" / "full-driver-v4-experiment"
             foreign_skill = home / "foreign-full-driver"
             foreign_skill.mkdir()
-            skill_link.unlink()
+            skill_link.unlink(missing_ok=True)
             skill_link.symlink_to(foreign_skill)
 
             uninstalled = run_process(["bash", ROOT / "uninstall.sh"], cwd=ROOT, env=env)

@@ -414,7 +414,7 @@ class DecisionRecoveryTest(unittest.TestCase):
         self.assertEqual(after['problems'], before['problems'])
         self.assertEqual(sum(e['kind'] == 'runtime_identity_transitioned' for e in after['events']), 1)
 
-    def test_unmodified_0426_product_choice_cli_migration(self):
+    def test_unmodified_0426_product_choice_requires_frozen_runtime(self):
         import contextlib
         import importlib.util
         import io
@@ -464,14 +464,8 @@ print(json.dumps({'repo':str(t.repo),'run':t.run,'args':args}))
                 self.assertEqual(read_ledger(repo, info['run']), before)
                 with contextlib.redirect_stdout(io.StringIO()) as output:
                     rc = cli.main(argv + ['--allow-runtime-transition'])
-                self.assertEqual(rc, 0, output.getvalue())
-            after = read_ledger(repo, info['run'])
-            for key in ('facets', 'evidence', 'problems'):
-                self.assertEqual(after[key], before[key])
-            self.assertEqual(after['runtime_identity'], identity)
-            action = driver.next_action(repo, info['run'])
-            self.assertEqual(action['problem']['decision_request'], info['args']['request_value'])
-            self.assertEqual(action['action'], 'contract_decision')
+                self.assertNotEqual(rc, 0, output.getvalue())
+                self.assertEqual(read_ledger(repo, info['run']), before)
 
     def test_product_choice_rejects_live_transport_and_nonempty_proposals(self):
         from unittest.mock import patch

@@ -14,6 +14,6 @@
   不重复授权。
 - 显式 `$builder` 继续作为手工入口。缺少就绪标记、不是紧邻下一轮、仍在 Plan mode、contract 未验证
   或来自 Codex 原生 Plan 时，不得把普通实施请求隐式转成 Builder-loop。
-- `$builder` 只桥接 Full Driver v4 实验；legacy v2/v3 新 run 和未带 `--experimental-v4` 的 Assurance
-  入口继续关闭。Full Driver 内部 Skill 不作为用户额外学习入口，也不得被普通请求隐式调用。
+- `$builder` 只桥接原生协调的 Assurance v4 实验；legacy v2/v3 新 run 和未带 `--experimental-v4` 的 Assurance
+  入口继续关闭。冻结旧版本的 Full Driver Skill 不作为新任务回退，也不得被普通请求隐式调用。
 <!-- END cc-builder-loop-codex -->

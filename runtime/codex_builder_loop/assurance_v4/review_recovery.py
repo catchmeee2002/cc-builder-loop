@@ -88,7 +88,7 @@ def validate_current(ledger, request, *, allow_refresh_pending=False):
 def request_reconsideration(repo_value, run_value, *, session_id, action_id, problem_key, reason,
                             driver_runtime_kind, allow_runtime_transition=False, refresh_prerequisites=False, role="reviewer"):
     from . import core
-    from .driver import next_action
+    from .operation_binding import current as next_action
     prefix = "tester" if role == "tester" else "review"
     repo, run_id = core.resolve_repo(repo_value), core.ensure_run_id(run_value)
     if not isinstance(reason, str) or not reason.strip():
@@ -105,7 +105,7 @@ def request_reconsideration(repo_value, run_value, *, session_id, action_id, pro
             if len(matches) != 1 or matches[0]['problem_key'] != problem_key or matches[0]['reason'] != reason.strip() or bool(matches[0].get('refresh_prerequisites')) != refresh_prerequisites:
                 raise core.AssuranceError('reconsideration replay differs', code='REVIEW_RECONSIDERATION_CONFLICT')
             return core.status(repo, run_id)
-        current = next_action(repo, run_id, _ledger=ledger)
+        current = next_action(repo, run_id, action_id=action_id, _ledger=ledger)
         if (ledger['phase'] != 'active' or current.get('action_id') != action_id
             or current.get('action') != 'builder_loop_problem_decision'
             or current.get('problem', {}).get('key') != problem_key):

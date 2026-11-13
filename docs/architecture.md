@@ -30,18 +30,23 @@ legacy v2/v3 新 run 与无实验标志的 v4 CLI 保持关闭；面向用户的
 新实现位于独立 `assurance_v4` package，不导入或原地改写 legacy `core.py`：
 
 ```text
-          Full Driver v4 behavior contract
-                         │
-              Native Driver (default)
-                  │              │
-         Codex App Server    Full Driver Skill fallback
-                  └──── driver advice ────┐
-                                         ▼
-                                Assurance Core v4
- Mission ─ Authority ─ Assurance Policy ─ Execution Manifest
-                         │
- candidate/evidence binding ─ machine ─ role source ─ target CAS
+Codex 主 Agent：理解、安排角色、协作澄清、正常迭代
+    ├─ native-agent：显式选择单个操作，不运行调度循环
+    ├─ 宿主适配：角色调用、消息、身份、生命周期、通信恢复
+    └─ Assurance Core：授权、证据依赖、Git / 外部副作用、完成门禁
 ```
+
+`operations` 根据调用者选择的操作验证其前置条件；多个合法操作可以同时被列出，排序不构成调度指令。
+输入凭据绑定实际任务输入，不绑定无关的更新时间或传输计数。开始角色执行仍必须登记唯一副作用事务，
+完成结果仍通过幂等应用事务进入候选和证据。普通角色调用不自动执行下一角色或 finalize。
+
+角色输入由 `role_payload` 构建，发送与 `role-context` 同源。原生投递只携带输入摘要、键索引和正式读取
+入口；角色按 JSON pointer 有界读取，完整输入的 digest 可校验。初始 author 输入仍经过公开输入过滤。
+适配层不能自行扩大角色可见范围，也不能用输入重新获取覆盖已接收结果。
+
+冻结旧任务继续使用原版本的 `driver` 和 coordinator；`operation_binding` 只负责识别冻结运行方式，
+不允许同一任务切换控制器。新任务的正常调用不进入旧协调循环。以下旧 Driver 路由说明只用于维护
+冻结旧版本；共享的证据、来源、授权和事务约束仍适用于原生协调。
 
 四个事实面独立计算 canonical digest。Mission 只包含目标、行为、接口、验收场景和信任边界；
 Authority 只定义 target、角色写范围和 dirty intake；Assurance Policy 定义所需判据及机器命令；

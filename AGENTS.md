@@ -2,10 +2,11 @@
 
 - `skills/`：通用 Agent 工作流（Planner、GitHub Issue 记录、指定飞书话题监听）及 Builder 专用入口；
   `skills/lark-listener/` 独立自取，使用时读取其 SKILL.md，不由仓库安装器注册。详细契约引用 schema 或脚本帮助。
-- `agents/`：Native Driver 共用的 Builder、Tester 与 Reviewer role 配置。
+- `agents/`：Builder、Tester 与 Reviewer 的角色约束。
 - `runtime/`：legacy v2/v3 的确定性计划、workspace snapshot、Git 收尾、验证、ownership、evidence
-  和诊断实现；`runtime/codex_builder_loop/assurance_v4/` 是 v4 Core 与 Driver 派生层，
-  `runtime/codex_builder_loop/native_driver/` 是 App Server transport 和 Full Driver 原生协调器；
+  和诊断实现；`runtime/codex_builder_loop/assurance_v4/` 是 v4 判据事务、操作准入与冻结旧 Driver 派生层，
+  `runtime/codex_builder_loop/native_agent.py` 是原生 Agent 的单操作入口；
+  `runtime/codex_builder_loop/native_driver/` 保留宿主适配与冻结旧任务协调器；
   `dev_worktree.py` 只治理本仓原生开发 worktree，不进入 run ledger。
 - `scripts/codex-builder-loop.py`：runtime 的稳定 CLI 入口；`codex-builder-loop-config.py` 负责
   安装/卸载时跨 hooks 与 AGENTS 的事务更新。
@@ -39,20 +40,20 @@ python3 experiments/assurance-v4-replay/runner.py
 # Workflows
 
 - 先定义或修改 CLI/schema 契约，再改 runtime、Skills 和 fixtures。
-- v4 的 Mission、Authority、Assurance、Execution 分别计算 digest；Core 只记录交付与外部 turn 恢复
-  事实，`driver.py` 才能决定下一步角色动作。dispatch intent 只绑定正在发生的单一副作用，不能缓存
-  后续动作、correction loop 或第二份 evidence。
-- Native Driver 默认承载 Full Driver；App Server capability 失败只能在创建 run 前回退现有 Full
-  Driver Skill。run 创建后按 `driver_runtime.kind` 单写，禁止接管或双控制器 mutation。
+- v4 的 Mission、Authority、Assurance、Execution 分别计算 digest。新任务由原生 Agent 选择操作；
+  `operations` 校验操作前置条件，不能以全局唯一下一步替代事务准入。宿主适配不决定业务下一步。
+- 新任务使用 `native-agent`，冻结旧任务使用原版本运行器；不自动迁移、不双控制器 mutation。
+  不把旧任务的 `driver-next` / `native-driver resume` 路由用于原生协调任务。
+- 角色输入只能由 `role_payload` / `role-context` 构建与读取；消息只通知，不复制另一份事实。
 - Native transport 三次重试耗尽后必须持久化 `exhausted` dispatch；只有用户显式提供
-  `native-driver resume --reason`，且 runtime、role/thread、action 与 prompt digest 均未漂移时，才能在
+  `native-agent invoke --renew-reason`，且 runtime、role/thread、action 与 prompt digest 均未漂移时，才能在
   同一 thread 建立新 generation。不得重置旧 generation 的 attempt；执行器变化先按
   [恢复边界](docs/architecture.md#恢复边界)核对适用入口，不以普通 resume 隐式迁移。
 - 已接受角色结果的应用错误保留原 artifact、应用事务及诊断，不升级为整个 run 的终态；修复后续接原应用。
   历史误终止的零副作用 evidence 应用只经 `recover-result-application` 核对原 owner、结果、输入及清理事实恢复。
-- run 创建后的其他未处理 FATAL 必须先经 `record-driver-failure` 写入 ledger，再恢复 finalize/deployment
-  副作用；环境安全后才进入 `failed`。failed 不普通 resume、不 supersede、不 abandon，cleanup 只接受与
-  冻结 failure observation 一致的 clean worktree。
+- 通信或结果应用失败保留原角色与事务，由主 Agent 选择正式恢复操作，不自动封为整个 run 的失败。
+  确需终止时先经 `record-driver-failure` 持久化事实，恢复 finalize/deployment 副作用后才进入 `failed`。
+  failed 不普通续接、不 supersede、不 abandon；cleanup 只接受与冻结 failure observation 一致的 clean worktree。
 - runtime ledger 是执行事实唯一来源；Skills、hooks 和 agents 不直接改 JSON。
 - 已接受角色结果统一经 `apply-dispatch-result` 应用；root 兼容入口委托同一事务。中断后续接原
   artifact，先完成应用再重新派生动作；不得覆盖原 dispatch projection 或重派已完成角色。
@@ -94,7 +95,7 @@ python3 experiments/assurance-v4-replay/runner.py
 - 外部环境只允许 ledger 中一个 run 持有 lease；同 run Revision 或显式 supersedes 转移必须重新 probe，
   不继承旧角色/evidence。finalize、abandon 和 cleanup 前必须释放 lease 并确认恢复。
 - finalize intent 写入后冻结 run mutation；恢复时重新核对全部 gate，再同步 target 和 cleanup。
-- no-progress/architecture-review 只能在用户确认后用 `resume --reason` 解除；不得重置 attempt 上限。
+- no-progress/architecture-review 只能经绑定原问题或额度的正式授权入口解除；不得重置 attempt 上限。
 - 诊断先用只读 `doctor`；`recover` 只重放 persisted intent，`cleanup` 只处理未漂移的 terminal
   worktree，未知 orphan 不 adopt、不删除。
 - 交付后工程事故只能归属 current project、builder-loop 或 external platform；跨边界因果链必须拆成
@@ -115,7 +116,7 @@ python3 experiments/assurance-v4-replay/runner.py
   Agent 自述或重跑日志直接变成 evidence。
 - open problem owner 必须穷举：builder/tester 回原角色，plan/external_platform/builder_loop/
   current_project 进入各自 NEEDS_USER decision；后四类不得默认回落到 builder_fix。
-  仅 Core 验证的公开前置文件补齐可按 Driver 返回的 CONTINUE 续接原 Builder；严格使用已绑定
+  仅 Core 验证的公开前置文件补齐可经操作准入续接原 Builder；严格使用已绑定
   dispatch，保留三次补齐额度，未知问题不得套用该例外。
 - Tester/Reviewer 报出需要修复或决定的问题后，先经 `record-problems` 逐条写入 ledger；Assurance v4
   successor 用 source ledger 的逐条 disposition 连续交接，legacy v2/v3 继续由 abandon 封存问题清单并由

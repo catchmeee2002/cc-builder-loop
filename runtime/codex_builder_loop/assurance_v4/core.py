@@ -2870,9 +2870,12 @@ def begin_dispatch(
                 code="DISPATCH_ALREADY_PENDING",
                 status="NEEDS_USER",
             )
-        from .driver import next_action
-
-        current = next_action(repo, run_id)
+        from . import operations
+        if operations.is_native(ledger):
+            current = operations.admit(repo, ledger, action)
+        else:
+            from .driver import next_action
+            current = next_action(repo, run_id)
         if current.get("action_id") != action_id or current.get("action") != action:
             raise AssuranceError("driver action is stale", code="DRIVER_ACTION_STALE", status="FAIL")
         current_unit = _validate_dispatch_work_unit(
@@ -3410,6 +3413,12 @@ def _transition_recovery_runtime(ledger, repo, *, allow_runtime_transition, reas
 
     current_runtime_identity = capture_runtime_identity()
     previous_runtime_identity = copy.deepcopy(ledger["runtime_identity"])
+    from ..core import _builder_loop_minor
+    if ((ledger.get("driver_runtime") or {}).get("orchestration") != "native_agent"
+            and _builder_loop_minor(previous_runtime_identity.get("builder_loop_version")) !=
+                _builder_loop_minor(current_runtime_identity.get("builder_loop_version"))):
+        raise AssuranceError("Legacy runs must use their frozen runtime; orchestration migration is not supported",
+                             code="FROZEN_RUNTIME_REQUIRED", status="NEEDS_USER")
     if current_runtime_identity != previous_runtime_identity:
         if not allow_runtime_transition:
             raise AssuranceError(
@@ -3528,9 +3537,9 @@ def authorize_tester_correction(
                 )
             return status(repo, run_id)
 
-        from .driver import next_action
+        from .operation_binding import current as next_action
 
-        current = next_action(repo, run_id, _ledger=ledger)
+        current = next_action(repo, run_id, action_id=action_id, _ledger=ledger)
         if (
             current.get("status") != "NEEDS_USER"
             or current.get("action") != "architecture_review"
@@ -3574,6 +3583,7 @@ def authorize_tester_correction(
         )
         save_ledger(repo, ledger)
     return status(repo, run_id)
+
 
 
 def bind_dispatch_turn(
@@ -4549,8 +4559,12 @@ def apply_root_builder_result(
         repo, run_id, action_id=action_id, driver_runtime_kind="native",
         owner_session_id=owner_session_id, result_value=result_value,
     )
-    from .driver import next_action
-    result["next_action"] = next_action(repo, run_id)
+    from . import operations
+    if operations.is_native(ledger):
+        result["operations"] = operations.status(repo, run_id)
+    else:
+        from .driver import next_action
+        result["next_action"] = next_action(repo, run_id)
     return result
 
 
@@ -8309,9 +8323,14 @@ def retrospective_status(repo_value: str | Path, session_id: str) -> dict[str, A
         if exhaustion is not None:
             exhausted_dispatches[run_id] = exhaustion
         try:
-            from .driver import next_action
-
-            decision = next_action(repo, run_id)
+            from . import operations
+            if operations.is_native(ledger):
+                choices = operations.status(repo, run_id)
+                decision = {"status": "CONTINUE" if choices["available_operations"] else "NEEDS_USER",
+                            "action": "native_agent", "reason": "native_operations"}
+            else:
+                from .driver import next_action
+                decision = next_action(repo, run_id)
         except (AssuranceError, ContractError, StoreError) as exc:
             terminal_facts[run_id] = {
                 "terminal_status": "fatal",
@@ -12473,9 +12492,9 @@ def _assert_plan_decision_mutation_binding(
                 "provided": expected_facet_digest,
             },
         )
-    from .driver import next_action
+    from .operation_binding import current as next_action
 
-    current = next_action(repo, str(ledger["run_id"]))
+    current = next_action(repo, str(ledger["run_id"]), action_id=decision_action_id)
     problem = current.get("problem")
     if (
         current.get("status") != "NEEDS_USER"
@@ -12496,6 +12515,7 @@ def _assert_plan_decision_mutation_binding(
         )
 
 
+
 def correct_decision_request(
     repo_value: str | Path, run_value: str, *, session_id: str,
     problem_key: str, action_id: str, request_digest: str,
@@ -12506,7 +12526,7 @@ def correct_decision_request(
 ) -> dict[str, Any]:
     """Record a proposal correction or explicit product choice, never a facet write."""
     from .decision_requests import effective_problem, validate_request
-    from .driver import next_action
+    from .operation_binding import current as next_action
     repo, run_id = resolve_repo(repo_value), ensure_run_id(run_value)
     with locked(repo):
         ledger = read_ledger(repo, run_id)
@@ -12532,7 +12552,7 @@ def correct_decision_request(
                 blockers.append(field)
         if blockers or ledger.get("hold"):
             raise AssuranceError("correction conflicts with a pending transaction", code="DECISION_TRANSACTION_PENDING", status="FAIL", details={"transactions": blockers})
-        current = next_action(repo, run_id, _ledger=ledger)
+        current = next_action(repo, run_id, action_id=action_id, _ledger=ledger)
         if current.get("action") != "contract_decision" or current.get("action_id") != action_id:
             raise AssuranceError("decision action changed", code="DECISION_ACTION_STALE", status="FAIL")
         matches = [p for p in ledger.get("problems", []) if p.get("key") == problem_key and p.get("status") == "open" and p.get("owner") == "plan"]
@@ -12591,6 +12611,7 @@ def correct_decision_request(
     return status(repo, run_id)
 
 
+
 def apply_engineering_correction(
     repo_value: str | Path,
     run_value: str,
@@ -12610,9 +12631,10 @@ def apply_engineering_correction(
             )
         _assert_no_candidate_residue_intent(ledger)
         _require_driver_runtime_owner(ledger, driver_runtime_kind)
-        from .driver import engineering_correction_preview, next_action
+        from .decisions import engineering_correction_preview
+        from .operation_binding import current as next_action
 
-        current = next_action(repo, run_id, _ledger=ledger)
+        current = next_action(repo, run_id, action_id=action_id, _ledger=ledger)
         problem = current.get("problem")
         if (
             current.get("status") != "CONTINUE"
@@ -12687,6 +12709,7 @@ def apply_engineering_correction(
     return status(repo, run_id)
 
 
+
 def apply_authority_decision(
     repo_value: str | Path, run_value: str, *, session_id: str, problem_key: str,
     action_id: str, facet_digest: str, replacement_contract: Any,
@@ -12694,7 +12717,7 @@ def apply_authority_decision(
     allow_runtime_transition: bool = False, reason: str | None = None,
 ) -> dict[str, Any]:
     """Apply bound Builder authority and derive a project repair without closing its report."""
-    from .driver import validate_decision
+    from .decisions import validate_decision
     repo, run_id = resolve_repo(repo_value), ensure_run_id(run_value)
     binding = {"session_id": session_id, "problem_key": problem_key, "action_id": action_id,
                "facet_digest": facet_digest, "replacement_digest": replacement_digest}
@@ -12782,7 +12805,7 @@ def update_facet(
         )
         if decision_reason is not None:
             # Revalidate the full bound decision under the mutation lock.
-            from .driver import validate_decision
+            from .decisions import validate_decision
             if not all((resolve_plan_problem_key, decision_action_id, expected_facet_digest, owner_session_id)):
                 raise AssuranceError("retained decision requires all owner/action/facet bindings",
                                      code="DECISION_MUTATION_BINDING_INCOMPLETE", status="FAIL")
@@ -14956,9 +14979,9 @@ def begin_tester_replacement(
                 status="FAIL",
             )
         _assert_tester_replacement_available(ledger)
-        from .driver import next_action
+        from .operation_binding import current as next_action
 
-        current = next_action(repo, run_id)
+        current = next_action(repo, run_id, action_id=action_id)
         if current.get("action") != "replace_tester" or current.get("action_id") != action_id:
             raise AssuranceError(
                 "Tester replacement action is stale",
@@ -15058,6 +15081,7 @@ def begin_tester_replacement(
             repo, ledger["tester_replacement_intent"]
         )
     return status(repo, run_id)
+
 
 
 def bind_tester_replacement(
@@ -18102,8 +18126,8 @@ def recollect_machine_failure(repo_value: str | Path, run_value: str, *, session
         blockers = recovery_transaction_blockers(ledger)
         if blockers or ledger.get("hold"):
             raise AssuranceError("recollection conflicts with a pending transaction", code="MACHINE_RECOLLECTION_PENDING")
-        from .driver import next_action
-        current = next_action(repo, run_id, _ledger=ledger)
+        from .operation_binding import current as next_action
+        current = next_action(repo, run_id, action_id=action_id, _ledger=ledger)
         problems = [p for p in ledger.get("problems", []) if p.get("key") == problem_key
                     and p.get("status") == "open" and p.get("owner") == "builder_loop"]
         failure = current_machine_failure(ledger)
@@ -18153,6 +18177,7 @@ def recollect_machine_failure(repo_value: str | Path, run_value: str, *, session
         })
         save_ledger(repo, ledger)
     return status(repo, run_id)
+
 
 
 def _intent_owned_path(intent: Mapping[str, Any], value: str) -> Path:

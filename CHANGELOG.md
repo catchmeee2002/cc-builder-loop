@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.5.0 — 2026-11-13
+
+- 新任务改由 Codex 主 Agent 选择操作，新增 `native-agent start/status/inspect/invoke`；Core 按真实输入验证操作准入，不再把全局唯一下一步作为正常调度入口。
+- 角色调用、宿主身份、通信恢复与清理从旧循环协调器分离；保留原 thread、已接受结果和持久化事务的连续性，支持显式单操作恢复。
+- 统一角色输入构建与 `role-context` 分段读取，投递携带摘要和读取入口；移除依赖巨型 prompt 传递完整冻结事实的正常路径。
+- 保留独立 Tester、proof、机器、黑盒、Reviewer、授权、重复失败限制和 Git/外部环境事务；补充原生操作下的修订、结果重放及组合恢复验证。
+- 新任务关闭旧协调器启动入口，安装器退役本仓 Full Driver Skill 链接。旧 run 保持冻结运行器，不提供跨编排架构迁移。
+
 ## 0.4.27 — 2026-11-13
 
 - 修正 Planner 同 run 决策入口：使用已有 `validate-decision`，不再叠加跨 run successor 准入校验；保留原问题处置及精确 delta 门禁。

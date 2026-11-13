@@ -47,7 +47,7 @@ def validate_current(ledger, request):
 def request_retry(repo_value, run_value, *, session_id, action_id, problem_key,
                   request_digest, reason, driver_runtime_kind, allow_runtime_transition=False):
     from . import core
-    from .driver import next_action
+    from .operation_binding import current as next_action
     repo, run_id = core.resolve_repo(repo_value), core.ensure_run_id(run_value)
     if not isinstance(reason, str) or not reason.strip():
         raise core.AssuranceError('retry needs a reason', code='OBSERVATION_RETRY_REASON_REQUIRED')
@@ -64,7 +64,7 @@ def request_retry(repo_value, run_value, *, session_id, action_id, problem_key,
                     or replay[0]['reason'] != reason.strip()):
                 raise core.AssuranceError('retry replay differs', code='OBSERVATION_RETRY_CONFLICT')
             return core.status(repo, run_id)
-        current = next_action(repo, run_id, _ledger=ledger)
+        current = next_action(repo, run_id, action_id=action_id, _ledger=ledger)
         if (ledger['phase'] != 'active' or current.get('action_id') != action_id
                 or current.get('action') != 'builder_loop_problem_decision'
                 or current.get('problem', {}).get('key') != problem_key):

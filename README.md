@@ -13,13 +13,12 @@ v2/v3 ledger 保留原位，只继续支持诊断、恢复、finalize 与安全 
 该入口明确标为实验功能。Full Driver v4 仍需完成历史高频 Revision 回放、至少两个非本仓项目五次
 真实交付且零非语义 Revision，才可去掉实验标识；用户不需要直接学习 v4 CLI 或 Core 命令。
 
-维护分支已新增新旧隔离的 Assurance Core v4 和 Native Driver：四个 contract facet 分别绑定 digest，
-candidate/evidence、独立角色来源、机器验证、target rematerialization 和 finalize CAS 由 Core 负责；
-Native Driver 通过本地 Codex App Server 持续消费 Core 的 missing/stale gate，创建并续接
-Builder、Tester、Reviewer thread。现有 Full Driver Skill 只作为 run 创建前的兼容回退和行为参照；
-面向用户的唯一入口仍是 Plan 选项和 `$builder`，不新增 Native Driver 使用命令。
-角色结果已返回但交付步骤尚未完成时，恢复会继续应用同一结果；状态输出提供对应恢复入口和前提。
-升级后新任务使用新 runtime，已有 active run 保留原 runtime checkout 继续处理。
+新任务由 Codex 主 Agent 原生协调。宿主适配只执行被明确选择的角色调用、消息与通信恢复；
+Assurance Core 负责授权、独立角色来源、证据依赖、Git 和外部副作用事务。Core 返回可执行操作及其
+前置条件，不强制一条唯一的角色调度路线。用户入口仍是 Plan 选项和 `$builder`。
+
+已有 active run 继续使用冻结的原 runtime checkout 和原控制器；新入口不提供旧任务迁移，也不把
+旧 ledger 改写为新架构。升级安装前须保留旧 checkout 的可执行路径。新任务不能自动回退机械 Driver。
 
 部署型 Revision 若现场 probe 确认授权目标已经运行同一候选制品，会跳过重复 deploy；当前 Revision 的
 blackbox 仍重新执行，结束时再次确认环境未漂移。计划授权保留环境时，同 run Revision 可续接唯一
@@ -32,7 +31,7 @@ identity 和 evidence 不会因制品相同而自动继承，终态前仍必须�
 /plan <需求>
 ├─ Planner + Codex 原生执行 → 普通计划 → 原生“实施计划”
 └─ Builder-loop 实验
-   └─ Planner → Builder adapter → 原生“实施计划” / $builder → Native Driver 承载 Full Driver v4
+   └─ Planner → Builder adapter → 原生“实施计划” / $builder → Codex 原生协调 + Assurance Core
 ```
 
 路线未确定时，全局托管规则会在调查前通过选项卡询问；无答案就停止，用户已明确选择时沿用。选择原生路线时加载 `$planner`，只输出
@@ -40,9 +39,8 @@ identity 和 evidence 不会因制品相同而自动继承，终态前仍必须�
 Codex 原生能力执行。选择 Builder-loop 实验时，`$planner` 按需读取内部契约指导，
 基于同一份语义计划冻结并验证 v4 四事实面 contract，验证通过后输出一次性就绪标记。只有存在该标记时，
 同 session 紧邻的原生“实施计划”才进入 Builder；显式 `$builder` 仍需已接受且验证的 Builder
-contract。Builder Skill 只做授权桥接；Native
-Driver 负责 Builder、Tester、proof、机器验证、blackbox、Reviewer 和 Git 收尾。Codex App Server
-在创建 run 前不兼容时，才透明回退到现有 Full Driver Skill；run 创建后禁止更换控制器。
+contract。Builder Skill 提供最小执行纪律：主 Agent 选择工作，`native-agent` 每次只处理一个显式操作，
+Core 校验其实际前置条件。角色调用、结果登记、事务恢复与最终通过仍须有可核对的事实。
 
 Assurance v4 contract 可显式选择 `assurance.profile=compact`。它只适用于 revision-one、1–3 个 behavior、
 单一 machine/blackbox 命令、无发布/dirty intake/外部目标的本地任务，并仍保留 Tester、proof、machine、
@@ -58,7 +56,7 @@ dispatch renewal 或资格漂移后，同一 ledger 派生为 effective full pro
 ## 可独立使用的 Skills
 
 `skills/planner/`、`skills/file-github-issue/` 和 `skills/lark-listener/` 服务通用 Agent 工作流；
-`skills/builder/` 与 `skills/full-driver-v4-experiment/` 服务 Builder-loop 交付。
+`skills/builder/` 服务原生协调的 Builder-loop 交付。`skills/full-driver-v4-experiment/` 仅保留冻结旧版本契约，安装器不再注册它。
 飞书话题监听直接取用完整的 [`skills/lark-listener/`](skills/lark-listener/SKILL.md) 目录，
 按其中说明运行；它不依赖 Builder run，也不由本仓安装器自动安装或启动。
 
@@ -87,7 +85,7 @@ dispatch renewal 或资格漂移后，同一 ledger 派生为 effective full pro
   不提供实现 diff。Tester、Reviewer 首次创建都显式使用 `fork_turns="none"`，只接收完成冻结角色
   所需的最小 brief，从而切断父线程 conversation fork；本项目不提供 filesystem ACL，也不提供
   platform attestation 或 context manifest。Git/artifact 基线与写隔离继续由 runtime 机械执行。
-- Native Driver 从 App Server 生命周期事件绑定 Builder、Tester、Reviewer 的真实 thread/turn；后续
+- 角色适配从 App Server 生命周期事件绑定 Tester、Reviewer 的真实 thread/turn；后续
   iteration 续接原 thread，不重新创建、清空角色历史或以同名新 agent 冒充原上下文。发起外部 turn
   前先把单一 dispatch intent 写入 Core ledger，进程恢复时重连同一 turn，不保存“下一步做什么”。
 - 要求 `tester` gate 的非 L1 run 必须持久化 Tester author `tests_ready` 及其 integration，再由同一
@@ -306,11 +304,17 @@ bash scripts/verify-all.sh
 
 设计原则见 [docs/design-philosophy.md](docs/design-philosophy.md)，运行架构见 [docs/architecture.md](docs/architecture.md)，环境限制见 [docs/known-issues.md](docs/known-issues.md)。
 
+### 冻结旧任务
+
+升级不会接管已有 Driver run。升级前按每个 run 记录的 adapter commit 保留干净的独立检出，
+原 owner 通过该检出中的 `scripts/codex-builder-loop.py` 继续旧任务。不要将安装软链或主干更新当作
+旧任务运行器更新；不对旧任务使用新入口或跨产品架构的 `--allow-runtime-transition`。
+新任务使用安装后的 `native-agent`。旧检出须保留到相应任务结束，不共享工作树、不修改 ledger。
+
 ### 当前会话身份
 
-在 Codex 会话内使用 `native-driver session-identity` 查询当前身份。Native Driver 启动自动读取
-宿主注入的 `CODEX_THREAD_ID`，不依赖 SessionStart 聊天消息；`start --session-id` 是可选的一致性
-断言，不能代替缺失的宿主身份。普通终端仅传入手填 ID 不再满足启动条件。
+在 Codex 会话内使用 `native-driver session-identity` 查询当前身份。`native-agent start` 自动读取
+宿主注入的 `CODEX_THREAD_ID`，不依赖 SessionStart 聊天消息；不能以手填 ID 代替宿主身份。
 
 root-session run 只能由同一宿主 thread 续接。缺失、非法或不匹配的身份会在启动副作用前拒绝；
 错误调用者的续接不会修改原 run。`status` 和 `doctor` 仍可只读诊断。不要手工覆盖身份环境变量；
@@ -319,11 +323,11 @@ root-session run 只能由同一宿主 thread 续接。缺失、非法或不匹�
 方案 `validate` 的 READY 只表示方案准入；启动入口还会核验当前身份和适用的运行条件。
 身份修复后可继续已接受的方案，无需重新规划或请求逐任务身份例外。
 
-### 暂停与恢复自动推进
+### 暂停与恢复
 
 需要检查现场时，使用 `native-driver hold --repo <repo> --run <run> --session-id <owner> --reason <reason>`。
 `--when ready` 可提前要求门禁完成后等待；默认在下一个安全事务边界暂停。
-返回 `HELD` 后，使用 `native-driver release --repo <repo> --run <run> --session-id <owner> --hold-id <id> --reason <reason>` 解除暂停，再续接原 Driver。
+返回 `HELD` 后，使用 `native-driver release --repo <repo> --run <run> --session-id <owner> --hold-id <id> --reason <reason>` 解除暂停，再由主 Agent 选择操作。
 释放不会跳过目标漂移检查和验收，也不取消正在恢复的事务。
 
 Reviewer 只负责审查，沿用现有执行环境；审查前后检查候选内容、索引与 HEAD，发现改动便拒收结果。该检查不提供操作系统级写入隔离，启动不要求额外沙箱能力。
@@ -333,10 +337,10 @@ proof 可引用冻结的 runner，由 runtime 生成命令；旧命令输入继�
 
 明确的 workspace routing 入口超时会在原 run 和角色 thread 内有界重试，并保留已完成的 Builder 工作。
 三次失败后停止并保留现场；先用 `native-driver doctor` 查看原因，确认平台恢复后可显式执行
-`native-driver resume --repo <repo> --run <run> --reason "<恢复原因>"`。输入或角色身份漂移时仍拒绝恢复；
+`native-agent invoke --repo <repo> --run <run> --action <原操作> --expected-operation-id <原凭据> --renew-reason "<恢复原因>"`。输入或角色身份漂移时仍拒绝恢复；
 已 failed 的旧 run 不适用这一入口。
 
 冻结策略允许自动非语义恢复时，已授权的公开前置文件即使全部未完成，也可由原 Builder 在原 run 补齐。
 首次 checkpoint 受阻后最多三个补齐回合；部分补齐、重启或无关提交不重置额度，完成前不启动 Tester。
-权限、规格或身份无法确认时仍保留现场并停止。自动契约修正被拒绝时，Driver 会展示具体原因和相关字段，
+权限、规格或身份无法确认时仍保留现场并停止。自动契约修正被拒绝时，Core 会展示具体原因和相关字段，
 供用户核对真正需要决定的变化；拒绝不会改变契约或验收证据。

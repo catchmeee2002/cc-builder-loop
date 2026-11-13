@@ -3526,5 +3526,83 @@
         "tests.test_planner_demand_loading.PlannerDemandLoadingTest.test_upgrade_preserves_foreign_link_and_ordinary_file"
       ]
     }
+  ],
+  "native_orchestration_parity": [
+    {
+      "behavior": "operation selection",
+      "status": "optimized",
+      "rationale": "Native Agent selects among legal operations; Core validates dependencies without a mandatory global next step.",
+      "test_ids": [
+        "tests.test_native_operations.NativeOperationTest.test_independent_authoring_is_not_single_driver_choice",
+        "tests.test_native_operations.NativeOperationTest.test_missing_evidence_cannot_be_bypassed_by_selecting_finalize"
+      ]
+    },
+    {
+      "behavior": "role input",
+      "status": "optimized",
+      "rationale": "One canonical role payload; bounded pointer retrieval replaces repeated full-prompt copies.",
+      "test_ids": [
+        "tests.test_native_operations.NativeOperationTest.test_bounded_prompt_and_role_context_share_complete_input"
+      ]
+    },
+    {
+      "behavior": "proof result recovery",
+      "status": "covered",
+      "rationale": "Original Tester repairs proof after persisted failure; accepted application is replayed without rerunning recorded proof.",
+      "test_ids": [
+        "tests.test_native_recovery_composition.NativeProofRecoveryTest.test_proof_failure_application_replay_and_original_tester_correction"
+      ]
+    },
+    {
+      "behavior": "publication and external recovery",
+      "status": "covered",
+      "rationale": "Blocked Builder checkpoint, publication refresh and explicit external resolution retain original Tester draft and identity.",
+      "test_ids": [
+        "tests.test_native_recovery_composition.NativeRecoveryCompositionTest.test_blocked_checkpoint_external_resolution_preserves_same_tester_draft"
+      ]
+    },
+    {
+      "behavior": "same-run product revision",
+      "status": "covered",
+      "rationale": "Product answer records exact delta and revises original run without the legacy scheduler.",
+      "test_ids": [
+        "tests.test_native_operations.NativeOperationTest.test_product_answer_revises_same_run_without_scheduler"
+      ]
+    },
+    {
+      "behavior": "execution budgets",
+      "status": "covered",
+      "rationale": "Repeated failure stops normal execution while retaining checkpoint and explicit environment recovery.",
+      "test_ids": [
+        "tests.test_native_operations.NativeOperationTest.test_repeated_failure_blocks_execution_but_preserves_checkpoint",
+        "tests.test_native_operations.NativeOperationTest.test_external_resolution_grants_one_real_verification_attempt"
+      ]
+    },
+    {
+      "behavior": "host transaction recovery",
+      "status": "covered",
+      "rationale": "Persisted rehydration keeps its identity; unknown spawn cannot be treated as a new role turn.",
+      "test_ids": [
+        "tests.test_native_operations.NativeOperationTest.test_persisted_host_recovery_cannot_be_bypassed_by_role_dispatch"
+      ]
+    },
+    {
+      "behavior": "legacy run migration",
+      "status": "retired",
+      "rationale": "Accepted release boundary keeps existing runs on their frozen runtime; new entry rejects them.",
+      "test_ids": [
+        "tests.test_native_operations.NativeOperationTest.test_legacy_run_is_not_silently_migrated",
+        "tests.test_external_checkpoint_recovery.ExternalCheckpointRecoveryTest.test_unmodified_0424_run_requires_its_frozen_runtime",
+        "tests.test_publication_application_recovery.PublicationApplicationRecoveryTest.test_rejected_old_runtime_migration_preserves_frozen_dirty_intake"
+      ]
+    },
+    {
+      "behavior": "monolithic coordinator dependency",
+      "status": "retired",
+      "rationale": "New entry depends on role transport and host facts, never on the frozen run-until-done coordinator.",
+      "test_ids": [
+        "tests.test_native_operations.NativeOperationTest.test_native_entry_does_not_import_frozen_coordinator"
+      ]
+    }
   ]
 }

@@ -171,7 +171,7 @@ class TesterReconsiderationTest(unittest.TestCase):
         self.assertEqual(after['evidence'],before['evidence'])
         self.assertEqual(after['problems'],before['problems'])
 
-    def test_unmodified_0425_blocked_author_migrates_without_rewriting_source(self):
+    def test_unmodified_0425_blocked_author_remains_on_frozen_runtime(self):
         import contextlib
         import io
         import os
@@ -207,14 +207,9 @@ print(json.dumps({'repo':str(t.f.repo),'run':t.f.run_id,'action_id':t.decision['
             with patch.object(runtime_core,'capture_runtime_identity',return_value=identity):
                 with contextlib.redirect_stdout(io.StringIO()) as output:
                     rc=cli.main(argv)
-                self.assertEqual(rc,0,output.getvalue())
-            after=read_ledger(repo,info['run'])
-            self.assertEqual(after['facets'],before['facets']);self.assertEqual(after['problems'],before['problems'])
-            self.assertEqual(after['evidence'],before['evidence'])
+                self.assertNotEqual(rc,0,output.getvalue())
+            self.assertEqual(read_ledger(repo,info['run']),before)
             self.assertEqual(git(Path(info['source']),'rev-parse','HEAD'),info['head'])
-            action=driver.next_action(repo,info['run'])
-            self.assertEqual(action['action'],'tester_author')
-            self.assertEqual(action['agent']['thread_id'],'tester-thread')
 
     def test_upheld_report_can_truthfully_have_no_authored_tests(self):
         self.assertEqual(self.request().returncode,0)

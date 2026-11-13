@@ -140,7 +140,7 @@ class ExternalCheckpointRecoveryTest(unittest.TestCase):
         self.assertEqual(after['facets'], ledger['facets'])
         self.assertEqual(after['evidence'], ledger['evidence'])
 
-    def test_unmodified_0424_run_recovers_via_new_cli(self):
+    def test_unmodified_0424_run_requires_its_frozen_runtime(self):
         with tempfile.TemporaryDirectory(prefix='external-old-runtime-') as raw:
             old = Path(raw) / 'runtime'
             subprocess.run(['git', 'clone', '--quiet', '--shared', '--no-checkout', str(ROOT), str(old)], check=True)
@@ -177,14 +177,9 @@ print(json.dumps({'repo': str(f.repo), 'run': f.run_id, 'head': f.head}))
                 for _ in range(2):
                     with contextlib.redirect_stdout(io.StringIO()) as output:
                         rc = cli.main(argv)
-                    self.assertEqual(rc, 0, output.getvalue())
-            after = read_ledger(repo, info['run'])
-            self.assertEqual(after['runtime_identity'], identity)
-            self.assertEqual(after['facets'], before['facets'])
-            self.assertEqual(after['evidence'], before['evidence'])
-            self.assertEqual(len([e for e in after['events'] if e['kind'] == 'external_problem_resolved']), 1)
-            core.scan_doc_references(repo, info['run'])
-            self.assertEqual(driver.next_action(repo, info['run'])['action'], 'tester_author')
+                    self.assertNotEqual(rc, 0, output.getvalue())
+                    self.assertEqual(read_ledger(repo, info['run']), before)
+
 
 
 if __name__ == '__main__':

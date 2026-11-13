@@ -249,13 +249,13 @@ class PublicationApplicationRecoveryTest(unittest.TestCase):
         self.assertTrue((f.tester / 'tests/partial.py').is_file())
         self.assertFalse((f.candidate / 'tests/partial.py').exists())
 
-    def test_real_old_runtime_failure_migrates_only_with_exact_owner_inputs(self):
-        self.assert_old_runtime_recovery()
+    def test_old_result_application_requires_frozen_runtime(self):
+        self.assert_old_runtime_preserved()
 
-    def test_old_runtime_recovery_preserves_frozen_dirty_intake(self):
-        self.assert_old_runtime_recovery(dirty_intake=True)
+    def test_rejected_old_runtime_migration_preserves_frozen_dirty_intake(self):
+        self.assert_old_runtime_preserved(dirty_intake=True)
 
-    def assert_old_runtime_recovery(self, *, dirty_intake=False):
+    def assert_old_runtime_preserved(self, *, dirty_intake=False):
         # Produce the incident with unmodified 0.4.22, not a hand-edited modern ledger.
         old_revision = '863c55ef2e68ee59218b3c92e220a0170d2795a7'
         with tempfile.TemporaryDirectory(prefix='publication-old-runtime-') as raw:
@@ -369,20 +369,8 @@ print(json.dumps({'repo': str(f.repo), 'run': f.run_id, 'action': f.action['acti
                     output = io.StringIO()
                     with contextlib.redirect_stdout(output):
                         code = cli.main(argv)
-                    self.assertEqual(code, 0, output.getvalue())
-                migrated = read_ledger(repo, info['run'])
-                self.assertIsNone(migrated['dispatch_intent'])
-                self.assertEqual(migrated['recomposition_intent']['tester_draft']['head'], info['partial'])
-                core.recompose_candidate(repo, info['run'])
-                after = read_ledger(repo, info['run'])
-            self.assertIsNone(after['recomposition_intent'])
-            tester = Path(after['facets']['execution']['tester_source']['worktree'])
-            self.assertTrue((tester / 'tests/partial.py').is_file())
-            self.assertFalse((Path(after['candidate_worktree']) / 'tests/partial.py').exists())
-            self.assertEqual(after['events'][:len(before['events'])], before['events'])
-            self.assertEqual(after['facets']['execution']['agents'], before['facets']['execution']['agents'])
-            self.assertEqual(sum(e['kind'] == 'dispatch_application_resumed' for e in after['events']), 1)
-            self.assertNotIn('tester', after['evidence'])
+                    self.assertNotEqual(code, 0, output.getvalue())
+                    self.assertEqual(read_ledger(repo, info['run']), before)
             self.assertEqual(git(repo, 'status', '--porcelain=v1'), target_status)
             self.assertEqual(git(repo, 'rev-parse', 'HEAD'), target_head)
             if dirty_intake:

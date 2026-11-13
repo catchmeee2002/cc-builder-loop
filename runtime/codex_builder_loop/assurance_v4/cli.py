@@ -8,6 +8,7 @@ from typing import Any, Sequence
 
 from . import core
 from . import driver
+from . import decisions
 from . import release
 from .driver_contract import actions_for_preparation
 from .models import ContractError, digest, load_json_source
@@ -112,6 +113,15 @@ def parser() -> argparse.ArgumentParser:
     start.add_argument("--driver-protocol-canary-digest")
     start.add_argument("--driver-native-transport")
     start.add_argument("--driver-root-session-identity")
+
+    start.add_argument("--orchestration", choices=["native_agent"])
+
+    for command_name in ("operation", "operations"):
+        command = commands.add_parser(command_name)
+        command.add_argument("--repo", default=".")
+        command.add_argument("--run", required=True)
+        if command_name == "operation":
+            command.add_argument("--action", required=True)
 
     status = commands.add_parser("status")
     status.add_argument("--repo", default=".")
@@ -305,6 +315,7 @@ def parser() -> argparse.ArgumentParser:
     role_context.add_argument("--run", required=True)
     role_context.add_argument("--action-id", required=True)
     role_context.add_argument("--pointer", default="")
+    role_context.add_argument("--index", action="store_true")
 
     checkpoint = commands.add_parser("checkpoint-builder")
     checkpoint.add_argument("--repo", default=".")
@@ -907,6 +918,14 @@ def _json(path: str) -> Any:
 
 def _guard_dispatch(args: argparse.Namespace, accepted: set[str]) -> None:
     action_id = getattr(args, "action_id", None)
+    from . import operations
+    from .store import read_ledger, resolve_repo
+    ledger = read_ledger(resolve_repo(args.repo), args.run)
+    if operations.is_native(ledger):
+        if getattr(args, "driver_runtime_kind", None) != "native":
+            raise core.AssuranceError("operation owner differs", code="DRIVER_RUNTIME_OWNER_MISMATCH")
+        operations.find(args.repo, args.run, action_id=action_id, accepted=accepted, ledger=ledger)
+        return
     current = driver.next_action(args.repo, args.run)
     expected_kind = current.get("driver_runtime_kind")
     provided_kind = getattr(args, "driver_runtime_kind", None)
@@ -941,10 +960,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "Assurance Core v4 requires the explicit experimental flag during maintenance",
                 code="ASSURANCE_V4_EXPERIMENTAL_REQUIRED",
             )
-        if args.command == "validate":
+        if args.command in {"operation", "operations"}:
+            from . import operations
+            payload = (operations.operation(args.repo, args.run, args.action)
+                       if args.command == "operation" else operations.status(args.repo, args.run))
+        elif args.command == "validate":
             payload = core.validate(_json(args.contract), args.repo)
         elif args.command == "validate-decision":
-            payload = driver.validate_decision(
+            payload = decisions.validate_decision(
                 args.repo,
                 args.run,
                 session_id=args.session_id,
@@ -1027,6 +1050,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                             "driver root session identity must be valid JSON",
                             code="DRIVER_ROOT_SESSION_IDENTITY_INVALID",
                         ) from exc
+            if args.orchestration:
+                if runtime is None:
+                    raise core.AssuranceError("native runtime binding required", code="DRIVER_RUNTIME_INCOMPLETE")
+                runtime["orchestration"] = args.orchestration
             payload = core.start(
                 args.repo,
                 args.run,
@@ -1174,7 +1201,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             payload = core.driver_context(args.repo, args.run)
         elif args.command == "role-context":
             from .role_input import role_context
-            payload = role_context(args.repo, args.run, args.action_id, args.pointer)
+            payload = role_context(args.repo, args.run, args.action_id, args.pointer, index=args.index)
         elif args.command == "checkpoint-builder":
             _guard_dispatch(args, {"builder_implement", "builder_fix", "checkpoint_builder"})
             payload = core.checkpoint_builder(
@@ -1417,6 +1444,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             _guard_dispatch(args, {"recover_finalize"})
             payload = core.recover_finalize(args.repo, args.run)
         elif args.command == "driver-next":
+            from . import operations
+            from .store import read_ledger, resolve_repo
+            if operations.is_native(read_ledger(resolve_repo(args.repo), args.run)):
+                raise core.AssuranceError("native Agent selects operations; use native-agent status/inspect",
+                                          code="NATIVE_AGENT_OPERATION_REQUIRED", status="FAIL")
             payload = core.candidate_residue_recovery_action(args.repo, args.run)
             if payload is None:
                 payload = driver.next_action(args.repo, args.run)

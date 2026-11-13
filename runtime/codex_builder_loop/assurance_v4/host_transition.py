@@ -32,7 +32,7 @@ def current_grant(ledger):
 def authorize(repo_value, run_value, *, session_id, action_id, reason, observation,
               allow_runtime_transition=False):
     from . import core
-    from .driver import next_action
+    from .operation_binding import current as next_action
     repo, run_id = core.resolve_repo(repo_value), core.ensure_run_id(run_value)
     def refuse(message, suffix):
         raise core.AssuranceError(message, code='NATIVE_HOST_TRANSITION_' + suffix, status='NEEDS_USER')
@@ -53,7 +53,7 @@ def authorize(repo_value, run_value, *, session_id, action_id, reason, observati
         if (previous and previous['action_id'] == action_id and previous['reason'] == reason.strip()
                 and previous['observation_digest'] == digest(observation)):
             return {'status': 'READY', 'code': 'NATIVE_HOST_TRANSITION_AUTHORIZED', 'request_id': previous['request_id'], 'run_id': run_id}
-        action = next_action(repo, run_id, _ledger=ledger)
+        action = next_action(repo, run_id, action_id=action_id, _ledger=ledger)
         if (action.get('action_id') != action_id or action.get('status') != 'CONTINUE'
                 or action.get('action') not in {'tester_author', 'tester_fix', 'tester_blackbox', 'reviewer_preflight', 'reviewer_final', 'builder_implement', 'builder_fix'}):
             refuse('Migration must bind the current next role turn', 'ACTION_STALE')

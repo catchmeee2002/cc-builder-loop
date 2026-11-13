@@ -286,7 +286,7 @@ def recovery_view(ledger: Mapping[str, Any]) -> dict[str, Any] | None:
         validate_application(ledger, intent)
         read_result(intent)
         if "application" not in intent:
-            from .driver import _dispatch_action
+            from .dispatch_facts import dispatch_action as _dispatch_action
             _dispatch_action(ledger, str(ledger["run_id"]), intent)
     except (AssuranceError, OSError, ValueError) as exc:
         return {**view, "state": "needs_user", "code": getattr(exc, "code", "DISPATCH_RESULT_ARTIFACT_INVALID")}
@@ -498,7 +498,7 @@ def apply(
             raise AssuranceError("result artifact changed", code="DISPATCH_RESULT_ARTIFACT_DRIFT", status="NEEDS_USER")
         if "application" not in intent:
             # Validate the original projection before claiming any application.
-            from .driver import _dispatch_action
+            from .dispatch_facts import dispatch_action as _dispatch_action
             _dispatch_action(ledger, run_id, intent)
             intent["application"] = {
                 "binding_digest": binding(ledger, intent),
