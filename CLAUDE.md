@@ -12,7 +12,7 @@
 
 | 产品线 | 宿主 | 分支 |
 |---|---|---|
-| CC 版（本文件描述的这一条） | Claude Code | `cc/main`（仓库默认分支，自 V7.4 线性演进） |
+| CC 版（本文件描述的这一条） | Claude Code | `cc/main`（仓库默认分支） |
 | Codex 版 | Codex | `codex/main` |
 
 - 两条线都是在役产品，谁也不是谁的旧版或上游。
@@ -39,8 +39,8 @@
 
 ```bash
 pip install -r requirements-dev.txt                         # 判据依赖，含 pytest-xdist
-python3 -m pytest -p no:html -p no:cacheprovider -q -n 16 tests   # 全量测试（串行要 17 分钟）；本机 pytest-html 损坏见 docs/known-issues.md
-./install.sh                                                # 软链 + 注册 10 条 hook（幂等，会清旧版断链）
+python3 -m pytest -p no:html -p no:cacheprovider -q -n 16 tests   # 全量测试；本机 pytest-html 损坏见 docs/known-issues.md
+./install.sh                                                # 软链 + 注册 HOOK_SPEC 定义的 hooks（幂等，会清旧版断链）
 bl doctor                                                   # hook / 软链 / 孤儿 session 诊断
 ```
 
@@ -53,17 +53,15 @@ bl doctor                                                   # hook / 软链 / �
 - 改 hook 注册（事件 / matcher / timeout）→ 只改 `runtime/builder_loop/hookspec.py::HOOK_SPEC`；install.sh、`bl doctor`、`bl start` 都从它派生，改完重跑 `./install.sh`。
 - 改 hook 输入字段假设 → 先用真实会话探针确认（临时 hook 把 stdin 落盘），CC 版本不同字段会变。
 - 改 agent 输出契约（`BUILDER_LOOP_RESULT`）→ 同时改 `hooks.py` 的 `*_RESULT_FORMAT`、`agents/*.md`、`schema/agent-result.schema.json`。
-- 本仓自身用 V8 交付（`.claude/loop.yml` 已配）；dogfood 需新开 session 让 skills 重新发现。
+- 本仓自身用 builder-loop 交付（`.claude/loop.yml` 已配）；dogfood 需新开 session 让 skills 重新发现。
 
 ## Common Pitfalls
 
 - hook stdin 的 `cwd` 跟随 Bash 最后 `cd` 的目录，不能用它定位仓库——一律走 session 绑定。
-- git init 模板带 commit-msg 门禁：fixture 仓库要 `rm -rf .git/hooks` 或用合规 message。
 - worktree 在仓库同级目录；pass_cmd / proof_runner 里的相对路径以 worktree 为根，主仓的 venv 用 `{main_repo}` 引。
 - hook matcher 不是身份门禁：`agent_type` 为空的内部 agent 也会被 `tester|reviewer` 放进来，handler 内必须复核。
 - 改角色结果登记时两种环境都要覆盖：`SubagentHandback` 只在 auto 权限模式下开启——有它时只认 handback（最后一条消息常是收尾句；投递前由 PreToolUse 校验，不合规就 deny），没有时 SubagentStop 解析最后一条消息兜底。本机要探针 handback 就用 `claude -p --permission-mode auto`。
-- readiness 靠事件时间戳的字符串比较判先后（微秒精度、UTC）；构造测试数据时别手写秒级时间戳。
-- pytest 把 `test*` 开头的模块级函数都当用例收集：测试辅助函数别叫 `tester_xxx`。
+- 测试写法纪律（辅助函数命名 / 事件时间戳 / fixture git 操作）见 `tests/CLAUDE.md`。
 
 ## Collaboration
 
