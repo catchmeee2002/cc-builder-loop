@@ -20,6 +20,10 @@ Claude Code 负责理解、实现和协调；builder-loop 只固定完成条件�
 通过，runtime 只比较真实观察与冻结预期，不能把 `returncode == 0`、Agent 自述或事后改写报告冒充
 通用成功语义。
 
+独立性、证据有效性与判据充分性是不同维度。独立 Tester 不自动保证测试深度，真实输入 digest 不自动
+保证观察边界正确；baseline-red / mutation 只证明测试对指定反例具有鉴别力，不证明测试 oracle 足以代表
+目标行为。语义充分性不能从通过数量或 mutation 数量推导。
+
 Evidence 绑定的是产生结论的真实输入 digest，不是碰巧承载这些输入的全局 HEAD。只有冻结 scope 内的输入完全不变时，机器或黑盒证据才能跨 HEAD 复用；Reviewer 和文档审查始终面对完整 integrated HEAD。rebase 之后 Reviewer 的复审对象是漂入的变更与候选的交互；候选 patch 未变不构成沿用上一轮审查结论的依据。
 
 Revision 或 run 身份本身也不是外部环境失效条件。若当前 probe 重新证明授权目标仍承载同一制品，
