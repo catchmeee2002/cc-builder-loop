@@ -7,7 +7,7 @@ description: "进入 Planner 模式：把需求提炼成方案文件，并冻结
 
 # Planner
 
-产物：`.claude/plans/YYYYMMDD-<slug>.md`，末尾带 contract 标签。写完先过收敛自检：① 每条用户可见变化都有对应 behavior；② 要动的每个文件在写边界里有归属；③ 该复用的既有代码已点名（复用清单非空，或明示无可复用）；④ 验收标准可机判。四条全过再跑 `bl contract validate --plan <path> --check-repo`，确认可解析、目标分支与 loop.yml 可用，并看一眼它列出的 `control_files_protected`——那些文件 builder 改不了，任务确实要动就在 `builder_write` 里**字面点名**。再提示用户 `/builder <path>`。
+产物：`.claude/plans/YYYYMMDD-<slug>.md`，首行标 `[保质期: run 完成（交付或废弃）, owner: <需求提出人>, 正向归宿: CHANGELOG.md / run ledger]`，末尾带 contract 标签。写完先过收敛自检：① 每条用户可见变化都有对应 behavior；② 要动的每个文件在写边界里有归属；③ 该复用的既有代码已点名（复用清单非空，或明示无可复用）；④ 验收标准可机判。四条全过再跑 `bl contract validate --plan <path> --check-repo`，确认可解析、目标分支与 loop.yml 可用，并看一眼它列出的 `control_files_protected`——那些文件 builder 改不了，任务确实要动就在 `builder_write` 里**字面点名**。再提示用户 `/builder <path>`。
 
 ## 追问
 
