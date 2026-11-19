@@ -7,11 +7,11 @@ description: "进入 Planner 模式：把需求提炼成方案文件，并冻结
 
 # Planner
 
-产物：`.claude/plans/YYYYMMDD-<slug>.md`，末尾带 contract 标签。写完跑 `bl contract validate --plan <path> --check-repo`，确认可解析、目标分支与 loop.yml 可用，并看一眼它列出的 `control_files_protected`——那些文件 builder 改不了，任务确实要动就在 `builder_write` 里**字面点名**。再提示用户 `/builder <path>`。
+产物：`.claude/plans/YYYYMMDD-<slug>.md`，末尾带 contract 标签。写完先过收敛自检：① 每条用户可见变化都有对应 behavior；② 要动的每个文件在写边界里有归属；③ 该复用的既有代码已点名（复用清单非空，或明示无可复用）；④ 验收标准可机判。四条全过再跑 `bl contract validate --plan <path> --check-repo`，确认可解析、目标分支与 loop.yml 可用，并看一眼它列出的 `control_files_protected`——那些文件 builder 改不了，任务确实要动就在 `builder_write` 里**字面点名**。再提示用户 `/builder <path>`。
 
 ## 追问
 
-先复述理解，再按**后果**定级：可逆且局部 → 一轮问清就写；不可逆或影响面宽 → 先 5 分钟地形扫描（模块边界、已有抽象、受影响文件），再每轮一个问题（选择题优先）。
+先复述理解，再按**后果**定级：可逆且局部 → 一轮问清就写；不可逆或影响面宽 → 先 5 分钟地形扫描（模块边界、已有抽象、受影响文件；扫不动就拉 Explore subagent 并行），再每轮一个问题（选择题优先）。
 
 **下限维度**（任何档位都要问清，不可砍）：
 
@@ -35,6 +35,7 @@ tester 在 run 起点的冻结基线上**盲写测试，看不到实现**。它�
 - 每条 behavior 都要能直接写成测试：`given / when / then` 写具体值域与可观察结果，别写「功能正常」。
 - `boundaries`（边界条件）和 `invariants`（不应被破坏的既有行为）写全——这是测试厚度的来源。
 - 新接口的签名写进 `interfaces`（`路径::函数(参数:类型) -> 返回`），tester 据此 import。
+- 被测行为依赖的**既有**接口也写进 `interfaces`——tester 据此 import，builder 不得另造等价物。
 - 外部依赖怎么 mock 写进 `mock_strategy`。
 
 **删除 / 移除类任务**：behavior 写成「X 不再存在 / 调用 X 得到 Y 错误」，tester 会据此删掉旧测试并写负向测试。旧测试归 tester，不要为了让 builder 能删它而把测试路径划进 `builder_write`。「旧测试文件被删除」不写成 behavior：它不是可观察行为，proof 也构造不出反例；tester 删除旧测试、integrate 把删除带进候选、machine 全量通过，已经保证了这一点。
@@ -43,7 +44,7 @@ tester 在 run 起点的冻结基线上**盲写测试，看不到实现**。它�
 
 ## 方案文件结构
 
-背景与目标（含一行「追问范围」，抄取舍声明）/ 功能行为规格（= behaviors 展开）/ 约束与边界 / 方案设计 / 风险与退路 / 文件地图 / 执行任务列表（每步注明服务哪条 behavior）/ 验收标准 / contract。各段一句话能说清就一句话。
+背景与目标（含一行「追问范围」，抄取舍声明）/ 功能行为规格（= behaviors 展开）/ 约束与边界 / 方案设计 / 复用清单（`路径::函数` 与用途；方案依赖的既有接口在此声明）/ 风险与退路 / 文件地图 / 执行任务列表（每步注明服务哪条 behavior）/ 验收标准 / contract。各段一句话能说清就一句话。
 
 ## contract 标签
 
