@@ -68,7 +68,7 @@ builder 与 tester 各看各的 worktree，未提交改动互不可见；删除�
 |---|---|---|
 | machine | 三面 digest、候选输入 | 候选输入或 contract 变化 |
 | tester | tester 分支上测试文件的 `{path, blob}`（删除记 null）、mission digest | tester 再次提交、mission 变 |
-| proof | 候选输入、tester 文件 blob、behavior ids、proof_spec digest、assurance digest | 候选输入或测试变化、补了 patch、proof_runner 变化 |
+| proof | 候选输入、tester 文件 blob、behavior ids、proof_spec digest、assurance digest、proof 判定规则标识 | 候选输入或测试变化、补了 patch、proof_runner 变化、判定规则升级 |
 | reviewer | 候选 **HEAD**、三面 digest、machine / tester / proof 各自 `{status, dependency_digest, state}` | 候选变化、任一前置证据变化或失效 |
 
 「候选输入」由 `evidence.candidate_facet()` 给出，是 machine / proof 真正读得到的候选内容，不是碰巧承载它的 HEAD（原则一）：
@@ -90,9 +90,9 @@ reviewer evidence 照常随候选 HEAD 作废（原则一）；brief 的 `target
 
 命令来自冻结的 `assurance.proof_runner`（loop.yml 声明）：环境依赖因此进入证据输入，tester 不再把机器侧 venv 的绝对路径藏进 argv。`shlex` 拆分、不过 shell，只展开 `{main_repo}`。tester 的 proof_spec 每组只有 `kind / behavior_ids[1] / test_ids / timeout / patch_file? / reviewed_boundaries?`。mutation 组的 patch 以文件交：tester 用 `git diff > <临时目录>/x.patch` 生成，结果行里只给绝对路径 `patch_file`，runtime 交卷时读取原始字节，换成 ledger 里的 `patch`（ledger 只存字节）。只给 inline `patch` 正文 → `PROOF_SPEC_INVALID`：模型转述长 patch 会丢空白上下文行、字符走样，patch 因此一律走文件传递原始字节（原则四）。`patch_file` 须是绝对路径、UTF-8、≤256 KiB，realpath 不能落在候选 / tester worktree / 主仓之内；test id 以 `-` 开头拒绝，文件部分必须是 tester 拥有且存在于 tester 分支的路径；framework=pytest 时文件部分必须是 `.py`，否则 `PROOF_SPEC_INVALID`（`suggested_owner=contract`，runner 由 loop.yml 冻结，tester 修不了）。
 
-pytest 框架下结论取自 junit xml：候选阶段要求 rc==0 且每个声明 id 都匹配到用例并全部 passed（skipped / xfail / 未执行都不算）；反例阶段要求 rc==1、全场无 `<error>`、声明 id 里至少一个 `<failure>`。判据只取 junit 的结构位，不看失败信息的文本：`<error>` 是 setup / teardown / collection 出错，测试没跑起来，没有鉴别力；`<failure>` 是 call 阶段失败，测试跑到了且被破坏的实现让它红了，`KeyError`、解包错与 `AssertionError` 同等算数（原则四；#114 与 #255 是同一判据两个方向的误判）。`<error>` 查全场而非只查声明 id——collection 错误可能挂在别的 node 上。代价是「patch 破坏得太狠、测试在函数体内 import 失败」会算作反例成立，由 `TEST_MUTATION_INVALID` 的 patch 约束与 reviewer 兜底。id 映射用 classname 后缀匹配（monorepo 子目录自带 ini 时 rootdir 会变），不带 `[` 的 id 匹配全部参数实例。generic 框架只看退出码，只能做 mutation。
+pytest 框架下结论取自 junit xml：候选阶段要求 rc==0 且每个声明 id 都匹配到用例并全部 passed（skipped / xfail / 未执行都不算）；反例阶段要求 rc==1、全场无 `<error>`、且**声明的每个 test_id 匹配到的全部用例都是 `<failure>`**——green / mixed（参数实例只红一部分）/ missing 都不算证明。`test_ids` 是证据名单，不是该 behavior 的全部相关测试名单：只检查现役行为的守卫测试不列入，仍由 machine 全量运行（#370，原则一）。判据只取 junit 的结构位，不看失败信息的文本：`<error>` 是 setup / teardown / collection 出错，测试没跑起来，没有鉴别力；`<failure>` 是 call 阶段失败，测试跑到了且被破坏的实现让它红了，`KeyError`、解包错与 `AssertionError` 同等算数（原则四；#114 与 #255 是同一判据两个方向的误判）。`<error>` 查全场而非只查声明 id——collection 错误可能挂在别的 node 上。代价是「patch 破坏得太狠、测试在函数体内 import 失败」会算作反例成立，由 `TEST_MUTATION_INVALID` 的 patch 约束与 reviewer 兜底。id 映射用 classname 后缀匹配（monorepo 子目录自带 ini 时 rootdir 会变），不带 `[` 的 id 匹配全部参数实例。generic 框架只看退出码，只能做 mutation，且没有逐用例结果——强证明组因此只许一个证据 test_id，否则无法逐条证明（`PROOF_SPEC_INVALID`）。
 
-每个 behavior 的 proof 下限写在 contract（缺省 strong）；`reviewed-boundaries` 必须在该 behavior 上显式放行。反例阶段另记 `counterexample.per_id`：每条声明 id 是 `red`（自己在 call 阶段失败过）/ `green`（跑了没红）/ `missing`（没跑到）。通过条件不变（组内有一条红即可），但 green / missing 的那些没有被证明有鉴别力——reviewer 的 brief 会点名它们，用来发现「断言条件在本设计下恒真」的空壳边界（#285，原则一）。
+每个 behavior 的 proof 下限写在 contract（缺省 strong）；`reviewed-boundaries` 必须在该 behavior 上显式放行。反例阶段另记 `counterexample.per_id`：每条声明 id 是 `red`（它匹配到的全部用例都在 call 阶段失败）/ `mixed`（只有部分参数实例失败）/ `green`（跑了没红）/ `missing`（没跑到）。**只有全部声明 id 都是 red 才 PASS**，其余一律 FAIL 并列出未全红 id（#370）。判定规则标识 `proof_rule=every-declared-case-red@1` 进入 proof 的输入投影，旧规则下形成的 PASS 因此自动 stale 并重跑，不能冒充新规则结论（原则一）。
 
 mutation patch 分两处检查，检查对象都是 ledger 实收的那份字节（`normalized_patch` 是两处共用的唯一规范化）：
 

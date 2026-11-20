@@ -2,6 +2,16 @@
 
 > 本文件记 **CC 版**产品线（分支 `cc/main`）。Codex 版见 `codex/main` 分支。
 
+## proof 只接收可鉴别测试，文本观察面与长期测试纪律（#370 #371 #296 #374，2026-11-20）
+
+- **行为变更：proof 逐条判红（#370）**：`proof_spec.test_ids` 明确为证据名单，baseline-red / mutation 组里每个 test_id 匹配到的全部用例（含参数实例）都必须在反例下 failure 才 PASS；green / mixed / missing 一律 FAIL，details 带 `undiscriminated`。此前组内任一条红即可，恒真断言能搭便车进入 PASS，只能靠 reviewer 提醒兜底。
+- **generic 强证明组限一个证据 test_id（#370）**：generic 只有整条命令退出码，多条 id 无法逐条证明，交卷与 proof 入口即 `PROOF_SPEC_INVALID`。
+- **判定规则进入 evidence 输入投影（#370）**：`proof_rule=every-declared-case-red@1` 计入 proof dependency digest，旧规则下的 PASS 自动 stale，必须按新规则重跑；machine / tester 不连带失效。
+- **退役 reviewer 的未鉴别补偿（#370）**：新规则下 PASS 不可能带未鉴别声明，brief 不再输出 `undiscriminated` 提醒与清单；reviewer 的语义审查不变。
+- **brief 携带 tester 证据名单与锚句规则（#296 #370）**：tester brief 写明 `test_ids` 只列证明用测试、反引号才是字面锚句；角色首次注入与续接重取同一份。
+- **planner 冻结 CLI 观察面（#371）**：CLI 输出作字面锚句时必须写明顶层 `--help` / 子命令 `--help` / 完整输出 / 源码字符串。
+- **长期测试不得锁 run 时点（#374 #317）**：tester 与 reviewer brief 明确不得依赖本次 run 的 SHA、当前日期或 CHANGELOG 顶部顺序。
+
 ## finalize 同步所有 on-target worktree（#372，2026-11-20）
 
 - **行为变更：finalize 同步所有 checkout 目标分支的 worktree（#372）**：此前 `_sync_checkout` 只看主仓，主仓 detached 或 checkout 其他分支时 linked worktree 的 index/工作区停在旧基线，`git status` 显示整批反向 staged（engineering-knowledge 213 文件、jiaofu-agent 31 文件两处真实现场）。现在 `_on_target_worktrees` 枚举 `git worktree list`，CAS 后对每个 on-target worktree 做 read-tree 同步；recover 复用同一路径。locked 且目录已缺失的 worktree（porcelain 只给 `locked`、不给 `prunable`）被跳过。

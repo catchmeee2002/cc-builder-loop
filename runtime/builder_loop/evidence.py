@@ -27,6 +27,11 @@ from .errors import negative
 from .jsonutil import digest
 from .ledger import EVIDENCE_KINDS, events_of, log_event, now_iso, run_dir
 
+# proof 的判定规则标识：进入 proof 的输入投影，旧规则产生的 PASS 因此自动 stale（#370，原则一）。
+# 规则改了就把版本号 +1；它只描述「怎样判」，不描述「用什么跑」。
+PROOF_RULE_KEY = "proof_rule"
+PROOF_RULE = "every-declared-case-red@1"
+
 STATE_MISSING = "missing"
 STATE_PASS = "pass"
 STATE_FAIL = "fail"
@@ -140,6 +145,8 @@ def projection(ledger: dict[str, Any], kind: str, repo_root: Path) -> dict[str, 
             "behaviors": sorted(b["id"] for b in c["mission"]["behaviors"]),
             "proof_spec": digest(ledger.get("proof_spec")),
             "assurance": facets["assurance"],
+            # 判定规则也是输入：旧规则下形成的 PASS 不能冒充新规则的结论（#370，原则一）
+            PROOF_RULE_KEY: PROOF_RULE,
         }
     if kind == "reviewer":
         prereq = {}

@@ -41,7 +41,7 @@
               "type": "string",
               "pattern": "^[^-]"
             },
-            "description": "pytest：node id（path::name / path::Class::name / 只给 path = 整个文件），文件必须在 tester_write 内且存在于 tester 分支；不带 [ 时匹配全部参数实例。不支持 -k。"
+            "description": "pytest：node id（path::name / path::Class::name / 只给 path = 整个文件），文件必须在 tester_write 内且存在于 tester 分支；不带 [ 时匹配全部参数实例。不支持 -k。这是证据名单：baseline-red / mutation 组里每条 test_id 匹配到的全部用例都必须在反例下失败，否则证明失败；只检查现役行为的守卫测试不列入。generic 强证明组恰好 1 个 test_id。"
           },
           "timeout": {
             "type": "integer",

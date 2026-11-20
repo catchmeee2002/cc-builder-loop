@@ -1,10 +1,10 @@
-"""B1: proof 记录每条声明 test_id 在反例下是否变红（per_id: red/green/missing），
-供 reviewer 识别从未变红的搭便车断言（B2/B3 见 test_reviewer_checklist_discrimination.py
-与 test_reviewer_brief_discrimination.py）。
+"""B1: proof 记录每条声明 test_id 在反例下是否变红（per_id），作为机械鉴别判据的数据源。
 
-单条 kind=mutation 的 group 覆盖 B1 全部场景：
-- 纯函数 discrimination(cases, test_ids) 的 red/green/missing 值域（对照 test_proof_hooks.py::_case 的构造风格）
-- 端到端：同一 mutation 组两条 test_id，一条被 patch 破坏（red）、一条无关（green）——这正是 B1 given 描述的场景
+判据本身（每个声明 id 匹配到的全部用例都必须 red）在 test_proof_every_declared_case_red.py，
+这里只覆盖 per_id 的记录形态：
+
+- 纯函数 discrimination(cases, test_ids) 的值域（对照 test_proof_hooks.py::_case 的构造风格）
+- 端到端：同一 mutation 组两条 test_id，一条被 patch 破坏、一条无关——per_id 逐条记录
 - 端到端：baseline-red 组同样记录 per_id
 - 端到端：reviewed-boundaries 组的 counterexample 不含 per_id 键
 - 端到端：generic proof_runner（无 junit）时 per_id 为空字典 {}
@@ -53,7 +53,9 @@ def test_discrimination_maps_outcomes_to_red_green_missing():
     }
 
 
-# ---------------------------------------------------------------- 端到端：mutation 组内一红一绿（B1 given 场景）
+# ---------------------------------------------------------------- 端到端：mutation 组内一红一绿 → FAIL
+# （B1 收紧后，组内「一条红」不再足以证明整组：green 的 id 必须让 proof FAIL，
+#   断言细节见 test_proof_every_declared_case_red.py；这里只核对 per_id 仍被记录）
 
 
 def test_mutation_group_records_red_and_green_per_id(started, cli, hook):
@@ -71,11 +73,11 @@ def test_mutation_group_records_red_and_green_per_id(started, cli, hook):
     assert r["code"] == 0, r
     cli("integrate", "--session", "S1")
     assert cli("machine", "--session", "S1")["result"] == "PASS"
-    # mutation_patch 只把 mul 的实现改坏，add() 不受影响 —— 这正是"一条被破坏、一条无关"
+    # mutation_patch 只把 mul 的实现改坏，add() 不受影响 —— 一条被破坏、一条无关
     r = role_turn(hook, "tester", "T1", make_tester_result("mutation", mutation_patch(wt), test_ids=ids))
     assert r["code"] == 0, r
-    res = cli("proof", "--session", "S1")
-    assert res["result"] == "PASS", res
+    res = cli("proof", "--session", "S1", expect=1)
+    assert res["result"] == "FAIL", res
     per_id = res["groups"][0]["counterexample"]["per_id"]
     assert per_id == {"tests/test_mul.py::test_mul": "red", "tests/test_mul.py::test_add_unchanged": "green"}
 

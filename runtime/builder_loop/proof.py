@@ -6,10 +6,14 @@ tester 只给 test_ids，runtime 拼 argv（#229）。pytest 框架下结果取�
 两段式：tester 首轮在冻结基线上盲写测试，那时看不到实现，mutation 组的 patch 可以缺省；
 集成之后读隔离解除，由 readiness 引导续接同一 tester 补 patch。
 
-执行顺序：① 所有 group 在候选（clean）上逐 id 全部 passed（skipped / xfail / 缺失都不算）→
+依次：① 所有 group 在候选（clean）上逐 id 全部 passed（skipped / xfail / 缺失都不算）→
 ② baseline-red：run 起点 + tester 文件上必须在 call 阶段失败 → ③ mutation：候选上打 patch（只能破坏
 builder 拥有的已有普通文件）后必须在 call 阶段失败，执行前后比对 diff 防篡改 →
 ④ reviewed-boundaries：四类 id 并集恰好等于 test_ids，且该 behavior 在 contract 里显式放行了最弱 kind。
+
+②③ 的通过条件是「声明的每个 test_id 及其参数实例都在 call 阶段失败」：test_ids 是证据名单，
+不是该 behavior 的全部相关测试名单（#370，原则一）。只检查现役行为的守卫测试不列入，仍由 machine 全量运行。
+generic 没有逐用例结果，强证明组因此只许一个证据 test_id。
 """
 
 from __future__ import annotations
@@ -210,6 +214,13 @@ def check_structure(spec: Any, lg: dict[str, Any], repo_root: Path, *, worktree_
         if framework == "generic" and kind == KIND_BASELINE:
             raise _spec_error("generic proof_runner 只看退出码，无法区分断言失败与启动错误，不能用 baseline-red")
         tids = g.get("test_ids")
+        if framework == "generic" and kind != KIND_REVIEWED:
+            # generic 只有整条命令的退出码，没有逐用例结果：多条 id（含 0 个）无法逐条证明各自有鉴别力（#370）。
+            # 先于通用非空检查，空数组也给出这条可执行的修复路径，而不是笼统的「非空数组」
+            n = len(tids) if isinstance(tids, list) else 0
+            if n != 1 or not all(isinstance(x, str) and x.strip() for x in tids):
+                raise _spec_error(f"{where}: generic 强证明组必须恰好声明 1 个证据 test_id（当前 {n} 个）。"
+                                  "generic 只有整条命令的退出码，无法逐条证明；拆成多个组，或让这一组只留一个能抓住该实现的用例", group=i, behavior=bid)
         if not isinstance(tids, list) or not tids or not all(isinstance(x, str) and x.strip() for x in tids):
             raise _spec_error(f"{where}.test_ids 必须是非空字符串数组")
         for t in tids:
@@ -370,17 +381,33 @@ def judge_candidate(framework: str, rc: int, cases: list[dict[str, str]], test_i
 
 
 def discrimination(cases: list[dict[str, str]], test_ids: list[str]) -> dict[str, str]:
-    """反例下每条声明 id 的鉴别力：red = 它自己在 call 阶段失败过；green = 跑了但没红；missing = 没跑到。
-    组内只要有一条红就算证明成立，所以 green / missing 的那些是搭了便车——可能断言的条件在本设计下恒真（#285）。
-    只看 junit 的结构位，与 classify_counterexample 同源；generic 框架没有 junit，调用方不记这一项。"""
+    """反例下每条声明 id 的鉴别力：red = 它匹配到的全部用例都在 call 阶段失败；mixed = 只有部分参数实例失败；
+    green = 全跑了但没红；missing = 没跑到。
+    声明的每条都必须 red 才算这一组有鉴别力（#370）：green / mixed / missing 都没有被证明有鉴别力，
+    不能搭同组其它测试的便车。只看 junit 的结构位，与 classify_counterexample 同源；
+    generic 框架没有 junit，调用方不记这一项。"""
     out: dict[str, str] = {}
     for t in test_ids:
         matched = match_cases(t, cases)
         if not matched:
             out[t] = "missing"
+            continue
+        failed = sum(1 for c in matched if c["outcome"] == "failure")
+        if failed == len(matched):
+            out[t] = "red"
+        elif failed:
+            out[t] = "mixed"
         else:
-            out[t] = "red" if any(c["outcome"] == "failure" for c in matched) else "green"
+            out[t] = "green"
     return out
+
+
+def undiscriminated(per_id: dict[str, str]) -> list[str]:
+    """反例下没有全部变红的声明 id（green / mixed / missing）。proof 的 PASS 不认它们（#370）。"""
+    return sorted(t for t, v in per_id.items() if v != "red")
+
+
+UNDISCRIMINATED_MESSAGE = "proof_spec 只列用于证明的测试，以下 test_id 在反例下没有全部变红"
 
 
 def classify_counterexample(framework: str, rc: int, cases: list[dict[str, str]], test_ids: list[str]) -> str:
@@ -525,9 +552,14 @@ def run_proof(ledger_path: Path, repo_root: Path, spec_override: dict[str, Any] 
                 with worktree.temp_worktree(repo_root, lg["repo"]["target_start_head"], tmp_dir, f"baseline-g{i}", overlay=overlay) as tw:
                     rc, out, cases, log = execute(tw, g, "baseline", i)
                 cls = classify_counterexample(framework, rc, cases, g["test_ids"])
-                groups_out[i]["counterexample"] = {"kind": KIND_BASELINE, "returncode": rc, "classification": cls, "log": str(log), "per_id": (discrimination(cases, g["test_ids"]) if framework == "pytest" else {})}
+                per_id = discrimination(cases, g["test_ids"]) if framework == "pytest" else {}
+                groups_out[i]["counterexample"] = {"kind": KIND_BASELINE, "returncode": rc, "classification": cls, "log": str(log), "per_id": per_id}
+                not_red = undiscriminated(per_id)
                 if cls != "assertion-failure":
-                    raise _Failure("TEST_BASELINE_RED_NOT_PROVEN", "起点 + 你的测试没有在 call 阶段失败（pass=测试没约束行为；error=测试根本没跑起来，多半是依赖了起点上不存在的接口导致收集失败，请改用 mutation）", i, bid, classification=cls, returncode=rc, log=str(log), tail=out[-3000:])
+                    # error / pass：先报「测试没跑起来 / 没约束行为」。带上 per_id 与未全红 id，全 green 时也能直接看到是哪几条
+                    raise _Failure("TEST_BASELINE_RED_NOT_PROVEN", "起点 + 你的测试没有在 call 阶段失败（pass=测试没约束行为；error=测试根本没跑起来，多半是依赖了起点上不存在的接口导致收集失败，请改用 mutation）", i, bid, classification=cls, returncode=rc, per_id=per_id, undiscriminated=not_red, log=str(log), tail=out[-3000:])
+                if not_red:
+                    raise _Failure("TEST_BASELINE_RED_NOT_PROVEN", f"{UNDISCRIMINATED_MESSAGE}：{', '.join(not_red)}", i, bid, classification=cls, returncode=rc, per_id=per_id, undiscriminated=not_red, log=str(log), tail=out[-3000:])
                 continue
             ppaths = patch_paths(g["patch"])
             for p in ppaths:
@@ -551,9 +583,14 @@ def run_proof(ledger_path: Path, repo_root: Path, spec_override: dict[str, Any] 
                 if after != before or gitx.head(tw) != cand["head"] or extra:
                     raise _Failure("TEST_MUTATION_INVALID", "执行期间 mutation 现场被改动", i, bid, extra_paths=extra)
             cls = classify_counterexample(framework, rc, cases, g["test_ids"])
-            groups_out[i]["counterexample"] = {"kind": KIND_MUTATION, "returncode": rc, "classification": cls, "log": str(log), "patch_sha256": sha256_bytes(g["patch"].encode()), "patch_paths": ppaths, "per_id": (discrimination(cases, g["test_ids"]) if framework == "pytest" else {})}
+            per_id = discrimination(cases, g["test_ids"]) if framework == "pytest" else {}
+            groups_out[i]["counterexample"] = {"kind": KIND_MUTATION, "returncode": rc, "classification": cls, "log": str(log), "patch_sha256": sha256_bytes(g["patch"].encode()), "patch_paths": ppaths, "per_id": per_id}
+            not_red = undiscriminated(per_id)
             if cls != "assertion-failure":
-                raise _Failure("TEST_MUTATION_SURVIVED", "破坏实现后测试没有在 call 阶段失败（pass=测试没约束该行为；error=测试根本没跑起来，收集或 setup 阶段就出错）", i, bid, classification=cls, returncode=rc, log=str(log), tail=out[-3000:])
+                # error / pass：先报「测试没跑起来 / 没约束行为」。带上 per_id 与未全红 id
+                raise _Failure("TEST_MUTATION_SURVIVED", "破坏实现后测试没有在 call 阶段失败（pass=测试没约束该行为；error=测试根本没跑起来，收集或 setup 阶段就出错）", i, bid, classification=cls, returncode=rc, per_id=per_id, undiscriminated=not_red, log=str(log), tail=out[-3000:])
+            if not_red:
+                raise _Failure("TEST_MUTATION_SURVIVED", f"{UNDISCRIMINATED_MESSAGE}：{', '.join(not_red)}", i, bid, classification=cls, returncode=rc, per_id=per_id, undiscriminated=not_red, log=str(log), tail=out[-3000:])
     except _Failure as exc:
         failure = exc
     finally:

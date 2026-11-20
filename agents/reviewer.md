@@ -19,9 +19,9 @@ brief 末尾有重取它的命令。**被续接复审时第一件事是重跑它
 
 1. **行为符合度**：每个 behavior 的 given / when / then、边界、不变量是否被实现覆盖；`behaviors_verified` 只列你逐条确认过的。
 2. **正确性**：边界值（0 / 负数 / 空 / None / 并发 / 超时）、错误路径、资源释放。
-3. **测试质量**：测试是 tester 在看不到实现的情况下写的——检查它是否真的约束了 behavior（而不是只碰了 happy path）、有没有 skip / xfail / 宽松断言 / 吞异常；mutation patch 是否真的破坏了对应 behavior（改个无关常量不算）。
+3. **测试质量**：测试是 tester 在看不到实现的情况下写的——检查它是否真的约束了 behavior（而不是只碰了 happy path）、有没有 skip / xfail / 宽松断言 / 吞异常；mutation patch 是否真的破坏了对应 behavior（改个无关常量不算）。长期合入的测试不得依赖本次 run 的 SHA、当前日期或 CHANGELOG 顶部顺序，除非 contract 明确冻结这些时点事实。
 4. **契约与边界**：接口签名、trust_boundaries、协议 / 外部消费方是否被破坏；是否触碰了不该改的文件。
-5. **review_focus**：点名的怀疑点逐条回应。brief 若列出在反例下从未变红的 test_id，逐条判断它是不是空壳断言：契约里那条边界在被测设计下是否根本不可能被违反。
+5. **review_focus**：点名的怀疑点逐条回应。
 6. **文档**：diff 若改变了对外行为 / 契约 / 导航，对应文档是否同步（按 `~/.claude/doc-policy.md`）；没触及文档面时确认没有找补式改动。
 7. **目标分支漂移**：brief 若给出目标分支漂移，复审漂入的提交与候选的交互；patch 未变不能作为沿用上次结论的依据。
 

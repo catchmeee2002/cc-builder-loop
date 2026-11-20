@@ -17,7 +17,7 @@ description: "builder-loop 机制说明与接入向导：判据驱动的交付�
    bl integrate（把 tester 的测试按路径叠进候选）◀──────────┘
    → bl machine（pass_cmd）
    → 续接 tester 补 mutation patch（此时实现已可读）
-   → bl proof（候选逐用例全绿 + baseline-red / mutation / reviewed-boundaries）
+   → bl proof（候选逐用例全绿；baseline-red / mutation 组里每条声明测试都必须在反例下变红）
    → reviewer（findings 带 owner：builder / tester / contract）
    → bl finalize（commit-tree + update-ref CAS 写回目标分支，删两个 worktree）
    → bl retro signals → bl retro record（复盘硬闸门，之后 session 才解绑）
@@ -34,7 +34,7 @@ Stop hook：run 未终态 → 拦住并给出 `next_action`；等待用户（Ask
 | `bl checkpoint --role builder\|tester [--dry-run] [-m]` | 按角色提交各自 worktree 的改动；越界拒绝并列路径；`--dry-run` 只分类 | 0 / 1 |
 | `bl integrate` | tester 分支的测试按路径叠进候选（幂等） | 0 / 1 |
 | `bl machine` | 在候选 worktree 顺序跑 pass_cmd | 0 PASS / 1 FAIL / 2 FATAL / 3 上限或无进展 |
-| `bl proof` | 证明测试有鉴别力 | 0 / 1 / 3 |
+| `bl proof` | 证明 tester 声明的每条测试都有鉴别力（候选全绿；反例下逐条变红） | 0 / 1 / 3 |
 | `bl preflight` | 在 run 起点跑一遍 pass_cmd，标出本来就红的 stage（后台跑，只记 event 不动判据） | 0 |
 | `bl brief --role tester\|reviewer [--json]` | 角色视角的当前事实与待办；角色自取，是它的唯一来源 | 0 |
 | `bl resume --reason R` | 用户授权后解除上限 / 无进展 / proof 反复失败（blocker 之后必须有过用户输入） | 0 / 1 / 3 |
@@ -62,7 +62,7 @@ pass_cmd:                      # 顺序执行，任一非 0 即 FAIL；至少 1 
     timeout: 300
 max_iterations: 5              # machine 失败上限（通过的重验不计）；到达即停，续跑需用户授权
 proof_runner:                  # proof 用的测试命令前缀；runtime 在后面拼 test id
-  framework: pytest            # pytest（读 junit 逐用例判定）| generic（只看退出码，只能做 mutation）
+  framework: pytest            # pytest（读 junit 逐用例判定）| generic（只看退出码，只能做 mutation，每组恰好 1 个证据 test_id）
   cmd: "{main_repo}/.venv/bin/python -m pytest"   # 缺省 python3 -m pytest；{main_repo} 展开为主仓路径
 evidence_neutral_paths:        # 可选，缺省为空 = 候选任何改动都让 machine / proof 失效
   - docs/**                    # 判据读不到的路径；只改它们不重跑 machine / proof（reviewer 照常复审）

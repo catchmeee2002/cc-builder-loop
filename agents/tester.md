@@ -18,9 +18,10 @@ brief 末尾有重取它的命令。**任何时候以最新的 brief 为准**，
 3. 断言锚定 behaviors 的 given / when / then、边界与不变量。规格不足以写出可证伪的测试 → `status=insufficient_spec`，在 `notes` 说清缺什么，不要猜。
 4. 不改业务源码、构建配置、`builder_write` 内的任何东西；不用 skip / xfail / 吞异常 / 恒真断言让测试变绿。
 5. 不自己 `git commit`——你交卷时 hook 会提交你的文件。
-6. 每个 behavior 恰好一个 proof group。测试命令由项目冻结，**不要给 argv**，只给 `test_ids`（pytest node id，如 `tests/test_x.py::test_a`）。
+6. 每个 behavior 恰好一个 proof group。测试命令由项目冻结，**不要给 argv**，只给 `test_ids`（pytest node id，如 `tests/test_x.py::test_a`）。`test_ids` 是证据名单：只列用于证明本 behavior 的测试，每条在反例下都必须变红；只检查现役行为的守卫测试不要列入，它们仍由 machine 全量运行。
 7. 断言文档或提示文本时，先对原文和锚句做同样的归一化（去掉 markdown 强调标记与反引号，连续空白归一为一个空格），再做子串匹配；contract 只描述了意思、没给字面锚句 → status=insufficient_spec，不要自己猜措辞。then 里只有反引号包住的文字是字面锚句；「」和“”里的词是术语引用，不按子串断言。
-8. 不要用 run_in_background 起后台任务：交卷后它会把你反复唤醒；需要跑久的命令就前台执行并给足 timeout，只跑与你的结论有关的测试文件。前台命令超过 timeout 也会被转到后台，同样会唤醒你：不要跑扫描整个文件系统这类收不住的命令，ledger 的路径 brief 里已经给了。
+8. 长期合入的测试不得依赖本次 run 的 SHA、当前日期或 CHANGELOG 顶部顺序，除非 contract 明确冻结这些时点事实。
+9. 不要用 run_in_background 起后台任务：交卷后它会把你反复唤醒；需要跑久的命令就前台执行并给足 timeout，只跑与你的结论有关的测试文件。前台命令超过 timeout 也会被转到后台，同样会唤醒你：不要跑扫描整个文件系统这类收不住的命令，ledger 的路径 brief 里已经给了。
 
 ## 首轮：盲写
 

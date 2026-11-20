@@ -129,6 +129,13 @@ LEDGER_HINT = "要看 evidence 细节就只读这个 ledger，不要在文件系
 GATE_LOAD_RULE = "本机只跑与你这一轮相关的测试文件，不要跑全量测试套件：全量由 machine 跑，与门禁并发会把它挤成假超时。"
 TARGET_DRIFT_HINT = ("目标分支在你上次审查后前进了。patch 未变不构成沿用上次结论的依据：本轮复审漂入的提交与候选的交互——"
                      "候选改过契约的函数是否有了新的调用方、漂入的文档是否引用了候选删改的东西、是否出现了重复实现。")
+# proof_spec.test_ids 是证据名单而不是 behavior 的全部测试名单（#370）：判据要求声明的每条都红
+EVIDENCE_LIST_RULE = ("proof_spec.test_ids 只列用于证明本 behavior 的测试：每条在反例下都必须变红；"
+                      "只检查现役行为的守卫测试不要列入，它们仍由 machine 全量运行。")
+# 字面锚句约定必须进 brief：planner skill 与 tester.md 有约定不等于盲写 tester 收到（#296）
+ANCHOR_RULE = "只有反引号包住的文字是字面锚句；「」和“”里的词是术语引用，不按子串断言。"
+# 长期合入的测试不得把 run 时点钉成永久顺序（#374）
+LONG_LIVED_RULE = "长期合入的测试不得依赖本次 run 的 SHA、当前日期或 CHANGELOG 顶部顺序，除非 contract 明确冻结这些时点事实。"
 
 
 def _patch_id(repo_root: Path, base: str, head: str) -> str:
@@ -160,23 +167,6 @@ def _target_drift(lg: dict[str, Any], repo_root: Path) -> dict[str, Any] | None:
         "intersecting_paths": sorted(mine.intersection(paths)),
         "patch_unchanged": _patch_id(repo_root, frm, reviewed) == _patch_id(repo_root, to, cand),
     }
-
-
-UNDISCRIMINATED_HINT = ("下面这些 test_id 在反例下从未变红：它们没有被证明有鉴别力，可能是断言的条件在本设计下恒真。"
-                        "逐条判断它是真的在约束 behavior，还是搭了同组其它测试的便车。")
-
-
-def _undiscriminated(lg: dict[str, Any]) -> list[dict[str, str]]:
-    """proof 证据里在反例下没红过的声明 id（#285）。只读 evidence，不另算一份事实（原则二）；
-    旧 evidence 没有 per_id 就当没有这类信息。reviewed-boundaries 组不跑反例，不在此列。"""
-    groups = ((lg["evidence"].get("proof") or {}).get("details") or {}).get("groups", [])
-    out: list[dict[str, str]] = []
-    for g in groups:
-        ce = g.get("counterexample") or {}
-        for tid, verdict in (ce.get("per_id") or {}).items():
-            if verdict != "red":
-                out.append({"behavior_id": g.get("behavior_id", ""), "test_id": tid, "counterexample": verdict})
-    return out
 
 
 def _reviewer_todo(lg: dict[str, Any]) -> list[dict[str, Any]]:
@@ -272,7 +262,6 @@ def build(lg: dict[str, Any], repo_root: Path, role: str) -> dict[str, Any]:
         out["test_command"] = (s.get("proof_runner") or {}).get("cmd") or None
         out["todo"] = _reviewer_todo(lg)
         out["doc_reference_hints"] = _doc_reference_hints(lg)
-        out["undiscriminated"] = _undiscriminated(lg)
         drift = _target_drift(lg, repo_root)
         if drift:
             out["target_drift"] = drift
@@ -328,6 +317,9 @@ def render(brief: dict[str, Any]) -> str:
             f"protected（谁都不能动）: {brief['protected_paths']}",
             f"测试命令由项目冻结，不需要你给 argv：{runner.get('cmd')}（framework={runner.get('framework')}）；proof_spec 每组只给 test_ids（pytest node id，如 tests/test_x.py::test_a）",
             RESULT_RULE,
+            EVIDENCE_LIST_RULE,
+            ANCHOR_RULE,
+            LONG_LIVED_RULE,
             brief["read_rule"] + "。",
             # 盲写阶段跑不了自己的测试，node id 拼错、断言与真实数据结构不符都要等这一步才暴露（#266）
             "你交卷后测试会被集成进候选，由 machine 全量跑一遍；那时失败的如果是你的测试，这条失败会回到 tester 手上。"
@@ -343,6 +335,7 @@ def render(brief: dict[str, Any]) -> str:
             f"审查范围: 在候选 worktree 内 `git diff {brief['diff_range']}`",
             f"前置 evidence: {brief['evidence']}",
             f"review_focus: {brief['review_focus']}",
+            LONG_LIVED_RULE,
             *([f"{REVIEWER_TEST_HINT} `{brief['test_command']}` 加上测试文件路径，只跑与本次改动相关的文件"]
               if brief.get("test_command") else []),
             *_render_doc_hints(brief["doc_reference_hints"]),
@@ -351,10 +344,6 @@ def render(brief: dict[str, Any]) -> str:
             "只读审查，不修改任何文件。",
         ]
 
-    if brief.get("undiscriminated"):
-        lines.append(UNDISCRIMINATED_HINT)
-        for u in brief["undiscriminated"]:
-            lines.append(f"  - {u['behavior_id']}: {u['test_id']}（反例下 {u['counterexample']}）")
     lines.append("等你做的事（这就是全部；这里没有的事不做）:")
     if brief["todo"]:
         for t in brief["todo"]:

@@ -613,6 +613,4 @@ def test_b11_reviewer_md_checklist_has_target_drift_guidance():
 
     normalized = normalize(section)
     assert "brief 若给出目标分支漂移，复审漂入的提交与候选的交互；patch 未变不能作为沿用上次结论的依据。" in normalized
-    # 原有条目仍在
     assert "mutation patch 是否真的破坏了对应 behavior" in normalized
-    assert "从未变红的 test_id" in normalized
