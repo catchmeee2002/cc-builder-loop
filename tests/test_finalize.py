@@ -167,6 +167,8 @@ def test_dirty_overlap_blocks_finalize(started, cli, hook):
     (repo.root / "src" / "foo.py").write_text("# local edit\n")
     err = cli("finalize", "--session", "S1", "-m", "feat(x): [cr_id_skip] X", expect=1)
     assert err["code"] == "DIRTY_OVERLAP" and err["details"]["paths"] == ["src/foo.py"]
+    blob = json.dumps(err, ensure_ascii=False)
+    assert str(repo.root) in blob or str(repo.root.resolve()) in blob, blob  # #372：文案带出 worktree 路径
     (repo.root / "other.txt").write_text("unrelated\n")
     git(repo.root, "checkout", "--", "src/foo.py")
     assert _finalize(cli)["terminal"] == "finalized" and (repo.root / "other.txt").exists()

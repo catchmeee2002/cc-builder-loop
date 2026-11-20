@@ -5,7 +5,7 @@ B2：授权锚点仍是「当前 mission revision 下 gate 首次全过」；新
 B3：无用户回答的 hold 期间 Stop 放行 / finalize 报 HOLD_ACTIVE / checkpoint 回到 machine / release 恢复。
 B4：SKILL.md、hooks.py、architecture.md、README.md、cli help 的契约文本。
 B5：retro 新增 S-hold 信号（count / reasons）与未覆盖时的 RETRO_COVERAGE。
-B6：版本号 8.2.2 与 CHANGELOG 顶部新节（含 hold 与 #368）。
+B6：版本号 8.2.2 与 CHANGELOG 的 hold/#368 新节。
 
 断言文档文本前按 contract 的规则归一化：去掉 markdown 强调标记与反引号，连续空白归一为一个空格。
 """
@@ -390,11 +390,14 @@ def test_b6_changelog_top_section_covers_hold_and_368():
     text = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
     headings = re.findall(r"(?m)^## (.+)$", text)
     assert headings
-    new = headings[0]
-    assert "hold" in new.lower(), new
+    # 本次交付新增了 hold/#368 一节；之后的交付会继续在顶部加节，所以只要求这一节
+    # 存在且含 #368，不把「它永远是第一条」钉死（否则每次新版本都会假红）。
+    section = next((h for h in headings if "hold" in h.lower()), None)
+    assert section is not None, headings
 
-    start = text.index("## " + new)
-    end = text.index("## " + headings[1]) if len(headings) > 1 else len(text)
+    idx = headings.index(section)
+    start = text.index("## " + section)
+    end = text.index("## " + headings[idx + 1]) if idx + 1 < len(headings) else len(text)
     assert "#368" in text[start:end]
 
 

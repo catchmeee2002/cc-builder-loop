@@ -24,12 +24,24 @@ def _changed_paths(repo_root: Path, lg: dict[str, Any]) -> list[str]:
     return gitx.changed_paths(repo_root, lg["repo"]["target_start_head"], lg["candidate"]["head"])
 
 
-def _checkout_on_target(repo_root: Path, target: str) -> bool:
-    return gitx.current_branch(repo_root) == target
+def _on_target_worktrees(repo_root: Path, target: str) -> list[Path]:
+    """所有 checkout 了目标分支的 worktree（含主仓）；prunable / detached 不算。
+    finalize 的同步与 dirty 保护都以这个集合为真实输入，不能只看主仓（#372）。"""
+    ref = f"refs/heads/{target}"
+    out: list[Path] = []
+    for entry in gitx.worktree_list(repo_root):
+        if entry.get("branch") != ref or "prunable" in entry:
+            continue
+        wt = Path(entry["worktree"])
+        # locked 且目录已不存在时 porcelain 只给 locked、不给 prunable；cwd 不存在会让后续 git 调用抛错
+        if not wt.is_dir():
+            continue
+        out.append(wt)
+    return out
 
 
-def _dirty_overlap(repo_root: Path, changed: list[str]) -> list[str]:
-    dirty = {p for _, p in gitx.status_porcelain(repo_root)}
+def _dirty_overlap(wt: Path, changed: list[str]) -> list[str]:
+    dirty = {p for _, p in gitx.status_porcelain(wt)}
     return sorted(dirty.intersection(changed))
 
 
@@ -69,14 +81,26 @@ def _unaddressed_findings(lg: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _sync_checkout(repo_root: Path, lg: dict[str, Any], old: str, new: str) -> dict[str, Any] | None:
-    """目标分支若被主仓 checkout，用 read-tree -u -m 同步工作区；失败尝试回滚 ref。"""
-    if not _checkout_on_target(repo_root, lg["repo"]["target_branch"]):
+    """所有 checkout 了目标分支的 worktree 用 read-tree -u -m 同步；
+    任一失败则反向回滚已同步者并回滚 ref。没有 on-target worktree 时返回 None。"""
+    target = lg["repo"]["target_branch"]
+    targets = _on_target_worktrees(repo_root, target)
+    if not targets:
         return None
-    r = gitx.read_tree_um(repo_root, old, new)
-    if r.ok:
-        return {"synced": True}
-    rb = gitx.update_ref_cas(repo_root, f"refs/heads/{lg['repo']['target_branch']}", old, new)
-    return {"synced": False, "stderr": r.stderr[-2000:], "ref_rolled_back": rb.ok}
+    synced: list[Path] = []
+    for wt in targets:
+        r = gitx.read_tree_um(wt, old, new)
+        if r.ok:
+            synced.append(wt)
+            continue
+        rollbacks = []
+        for done in reversed(synced):
+            back = gitx.read_tree_um(done, new, old)
+            rollbacks.append({"worktree": str(done), "ok": back.ok})
+        rb = gitx.update_ref_cas(repo_root, f"refs/heads/{target}", old, new)
+        return {"synced": False, "stderr": r.stderr[-2000:], "ref_rolled_back": rb.ok,
+                "failed_worktree": str(wt), "worktree_rollbacks": rollbacks}
+    return {"synced": True}
 
 
 def recover(ledger_path: Path, repo_root: Path, lg: dict[str, Any]) -> dict[str, Any]:
@@ -105,7 +129,9 @@ def _sync_failed(ledger_path: Path, lg: dict[str, Any], sync: dict[str, Any]) ->
         else:
             lg2["terminal"] = {"status": "finalize_failed", "final_head": lg2["finalize_intent"]["final_head"], "reason": "checkout sync failed and ref rollback failed", "at": ledger_mod.now_iso()}
             status = "finalize_failed"
-    raise negative("FINALIZE_CHECKOUT_SYNC_FAILED", "目标分支 ref 已更新但工作区同步失败", ref_rolled_back=sync.get("ref_rolled_back"), status=status, stderr=sync.get("stderr"))
+    raise negative("FINALIZE_CHECKOUT_SYNC_FAILED", "目标分支 ref 已更新但工作区同步失败",
+                   ref_rolled_back=sync.get("ref_rolled_back"), status=status, stderr=sync.get("stderr"),
+                   failed_worktree=sync.get("failed_worktree"), worktree_rollbacks=sync.get("worktree_rollbacks"))
 
 
 def finalize(ledger_path: Path, repo_root: Path, message: str | None, *, run_commit_hook: bool = False) -> dict[str, Any]:
@@ -132,10 +158,14 @@ def finalize(ledger_path: Path, repo_root: Path, message: str | None, *, run_com
     changed = _changed_paths(repo_root, lg)
     if not changed:
         raise negative("NO_CHANGES", "candidate 与目标分支没有差异")
-    if _checkout_on_target(repo_root, target):
-        overlap = _dirty_overlap(repo_root, changed)
-        if overlap:
-            raise negative("DIRTY_OVERLAP", "主仓工作区的未提交改动与本次变更路径重叠，先处理主仓 dirty", paths=overlap)
+    overlaps = []
+    for wt in _on_target_worktrees(repo_root, target):
+        hit = _dirty_overlap(wt, changed)
+        if hit:
+            overlaps.append({"worktree": str(wt), "paths": hit})
+    if overlaps:
+        raise negative("DIRTY_OVERLAP", "目标分支 checkout 的 worktree 有未提交改动与本次变更路径重叠，先处理 dirty",
+                       worktrees=overlaps, paths=sorted({p for o in overlaps for p in o["paths"]}))
 
     final_head = _make_final_commit(repo_root, lg, message or _default_message(lg), run_commit_hook, ledger_path.parent)
     with ledger_mod.mutate(ledger_path) as lg2:

@@ -2,6 +2,11 @@
 
 > 本文件记 **CC 版**产品线（分支 `cc/main`）。Codex 版见 `codex/main` 分支。
 
+## finalize 同步所有 on-target worktree（#372，2026-11-20）
+
+- **行为变更：finalize 同步所有 checkout 目标分支的 worktree（#372）**：此前 `_sync_checkout` 只看主仓，主仓 detached 或 checkout 其他分支时 linked worktree 的 index/工作区停在旧基线，`git status` 显示整批反向 staged（engineering-knowledge 213 文件、jiaofu-agent 31 文件两处真实现场）。现在 `_on_target_worktrees` 枚举 `git worktree list`，CAS 后对每个 on-target worktree 做 read-tree 同步；recover 复用同一路径。locked 且目录已缺失的 worktree（porcelain 只给 `locked`、不给 `prunable`）被跳过。
+- **`DIRTY_OVERLAP` 覆盖所有 on-target worktree（#372）**：dirty 保护从只查主仓改为对每个 on-target worktree 检查，`details.worktrees` 逐 worktree 列出重叠路径，`details.paths` 保留并集。同步失败时 `FINALIZE_CHECKOUT_SYNC_FAILED` 给出 `failed_worktree` 与逐 worktree 的反向回滚结果。
+
 ## hold 不再要求用户授权、复盘可见 hold（#368，2026-11-20）
 
 - **行为变更：`bl hold` 不再要求用户问答（#368）**：等集成方放行属于正常工程活动，此前每次都要先弹 AskUserQuestion 授权，选项卡还挡住已到达的集成回复。现在四门全过后直接 `bl hold --reason` 结束回合，对方回复原生唤醒后续接。判据不减：`HOLD_NOT_READY`（当前 mission revision 下 gate 必须全过过一次）、`HOLD_ACTIVE`、finalize 只认四项 fresh pass、`bl resume` 的真人授权全部保留；`--reason` 仍必填，builder 必须在当轮回复里说明已暂缓、在等什么。集成方与跨会话消息仍不记 `user_input`。

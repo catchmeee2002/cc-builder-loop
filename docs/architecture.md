@@ -45,7 +45,7 @@ proof 只能证明"测试能抓住偏离当前实现"，证明不了"当前实�
 | `machine` | pass_cmd 三态、超时、执行后 worktree 变更检测、失败签名、`tester_files_mentioned`、基线预跑 `preflight` |
 | `evidence` | tester 文件与 integrate 需求的 git 派生、投影、`state()`、`role_running()` / `gate_running()`、blockers（授权窗口）、`readiness()` |
 | `proof` | spec 结构校验、`build_argv`、junit 解析与 id 映射、候选 / 反例判定、四步执行、失败签名 |
-| `finalize` | 前置检查、commit-tree（可选 `--run-commit-hook`）、intent、CAS、checkout 同步、恢复、rebase |
+| `finalize` | 前置检查、commit-tree（可选 `--run-commit-hook`）、intent、CAS、所有 on-target worktree 的 checkout 同步、恢复、rebase |
 | `retro` | 确定性信号派生（只读 ledger）、复盘记录校验、cleanup |
 | `hooks` | 六个 handler、结果标记解析、tester 读隔离与角色写边界、心跳续租；注入的上下文 = `brief.render()` |
 | `brief` | 角色视角事实的**唯一来源**：写边界、候选可读性、待办；结构化 + 文本两种形态，`bl brief` 与 SubagentStart 同源；reviewer 另带文档引用线索（`doc_reference_hints`，现算调 `doc-lint.sh`，≤4 秒，失败降级为 `error`，不落盘） |
@@ -166,7 +166,7 @@ finalize / abandon / finalize_failed 之后 session 不解绑；`start` 遇到�
 | reviewer 未过 | finding 的 owner 决定去向：builder 修 / 回 tester / `REVIEW_CONTRACT` 交还用户 |
 | 目标分支前进 | finalize → TARGET_DRIFT；`bl rebase` 先动候选，漂移触及 tester 文件时再动 tester 分支；成功后 evidence 自然 stale，tester evidence 只在重叠文件内容变了时 stale |
 | tester 分支落后且漂移触及它的文件 | integrate → `INTEGRATE_TESTER_BASE_STALE`（negative，details.paths），不提交；readiness 给 `rebase`（tester 冲突时给 `resume_tester`） |
-| 主仓 dirty 与变更路径重叠 | finalize → DIRTY_OVERLAP，不写回 |
+| on-target worktree（任一 checkout 了目标分支的 worktree，含主仓）dirty 与变更路径重叠 | finalize → DIRTY_OVERLAP（details 按 worktree 列重叠路径），不写回 |
 | finalize CAS 后中断 | ledger 留 `finalize_intent`；再次 finalize 按目标分支当前 HEAD 恢复 |
 | commit hook 改写 tree | `--run-commit-hook` 模式下 FINAL_COMMIT_TREE_MISMATCH，目标分支不动 |
 | abandon | 终态 abandoned，worktree 与分支保留；复盘后 `bl cleanup` 回收 clean 且 HEAD 未漂移的 |
