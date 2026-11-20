@@ -41,7 +41,7 @@ DEFAULT_TIMEOUT = 300
 PYTEST_NO_TESTS_COLLECTED = 5
 MAX_TIMEOUT = 1800
 PATCH_FILE_MAX_BYTES = 256 * 1024
-TESTER_OWNED_FAILURES = ("TEST_BASELINE_RED_NOT_PROVEN", "TEST_MUTATION_SURVIVED", "TEST_MUTATION_INVALID", "TEST_MUTATION_PATCH_MISSING", "TEST_PROOF_NOT_EXECUTED")
+TESTER_OWNED_FAILURES = ("TEST_BASELINE_RED_NOT_PROVEN", "TEST_MUTATION_SURVIVED", "TEST_MUTATION_INVALID", "TEST_MUTATION_PATCH_MISSING", "TEST_PROOF_NOT_EXECUTED", "TEST_PROOF_GROUP_TIMEOUT")
 # patch 路径被这几类原因拒绝时，是 contract 没把要破坏的行为所在文件交给 builder：tester 改 patch 解决不了（#286）
 CONTRACT_REJECTIONS = ("protected", "outside_authority", "control_file")
 ISOLATION_HINT = ("全量 machine 在同一候选上通过、单独跑声明的用例却失败：先查测试隔离（导入顺序、fixture 替换模块）；"
@@ -427,7 +427,10 @@ def classify_counterexample(framework: str, rc: int, cases: list[dict[str, str]]
     return "error"
 
 
-def _run(cwd: Path, argv: list[str], timeout: int, log_path: Path, env: dict[str, str]) -> tuple[int, str]:
+def _run(cwd: Path, argv: list[str], timeout: int, log_path: Path, env: dict[str, str]) -> tuple[int, str, bool]:
+    """返回 (returncode, 完整日志, 是否被 runtime 按 timeout 终止)。
+    timeout 是 runtime 观察到的执行事实，不能与 runner 自己返回 124 混为一谈（#320，原则一）。"""
+    timed_out = False
     with open(log_path, "wb") as log:
         log.write(("$ " + " ".join(shlex.quote(a) for a in argv) + "\n").encode())
         log.flush()
@@ -435,18 +438,38 @@ def _run(cwd: Path, argv: list[str], timeout: int, log_path: Path, env: dict[str
             proc = subprocess.run(argv, cwd=str(cwd), stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, timeout=timeout, env=env)
             rc = proc.returncode
         except subprocess.TimeoutExpired:
+            timed_out = True
             rc = 124
             log.write(f"\n[TIMEOUT] 超过 {timeout}s\n".encode())
         except FileNotFoundError as exc:
             rc = 127
             log.write(f"\n[NOT FOUND] {exc}\n".encode())
-    return rc, log_path.read_bytes().decode("utf-8", "replace")
+    return rc, log_path.read_bytes().decode("utf-8", "replace"), timed_out
+
+
+def _log_excerpt(log_path: Any, limit: int = 24000) -> str:
+    """重复失败签名读完整日志的尾部窗口：这只是 runtime 内部的归一化输入，不是对外输出的第二事实视图（#365）。
+    日志读不到时退回空串——签名退化为按 code / behavior / returncode 区分，不伪造内容。"""
+    if not log_path:
+        return ""
+    try:
+        return Path(str(log_path)).read_bytes().decode("utf-8", "replace")[-limit:]
+    except OSError:
+        return ""
 
 
 class _Failure(Exception):
     def __init__(self, code: str, message: str, group: int, behavior: str, **details: Any):
         super().__init__(message)
         self.code, self.message, self.group, self.behavior, self.details = code, message, group, behavior, details
+
+
+def _group_timeout(phase: str, i: int, bid: str, g: dict[str, Any], rc: int, log: Path) -> _Failure:
+    """runtime 按 proof_spec 组 timeout 终止执行：参数由 tester 冻结，归 tester 处理（#320）。
+    超时是没观察到结果，不是观察到失败（原则一）：因此不落到 runner 故障，也不进入鉴别力判定。"""
+    return _Failure("TEST_PROOF_GROUP_TIMEOUT",
+                    f"{phase} 阶段在组 timeout {g['timeout']}s 内没有跑完：这是 proof_spec 里的超时参数，不是 runner 故障",
+                    i, bid, phase=phase, timeout=g["timeout"], returncode=rc, log=str(log))
 
 
 def _restore_worktree(wt: Path) -> tuple[list[str], list[str]]:
@@ -507,12 +530,12 @@ def run_proof(ledger_path: Path, repo_root: Path, spec_override: dict[str, Any] 
     groups_out: list[dict[str, Any]] = []
     failure: _Failure | None = None
 
-    def execute(where: Path, g: dict[str, Any], tag: str, i: int) -> tuple[int, str, list[dict[str, str]], Path]:
+    def execute(where: Path, g: dict[str, Any], tag: str, i: int) -> tuple[int, str, list[dict[str, str]], Path, bool]:
         junit = tmp_dir / f"junit-{attempt}-g{i}-{tag}.xml"
         junit.unlink(missing_ok=True)
         log = log_dir / f"proof-{attempt}-g{i}-{tag}.log"
-        rc, out = _run(where, build_argv(runner, g["test_ids"], junit, repo_root), g["timeout"], log, env)
-        return rc, out, (parse_junit(junit) if framework == "pytest" else []), log
+        rc, out, timed_out = _run(where, build_argv(runner, g["test_ids"], junit, repo_root), g["timeout"], log, env)
+        return rc, out, (parse_junit(junit) if framework == "pytest" else []), log, timed_out
 
     gate = evidence.gate_lock(lg, evidence.GATE_PROOF)  # 全套测试要跑好几轮，执行期间对外可见（#242）
     gate.__enter__()
@@ -526,20 +549,23 @@ def run_proof(ledger_path: Path, repo_root: Path, spec_override: dict[str, Any] 
         # ① 候选：逐 id 全部 passed
         for i, g in enumerate(spec["groups"]):
             bid = g["behavior_ids"][0]
-            rc, out, cases, log = execute(wt, g, "candidate", i)
+            rc, out, cases, log, timed_out = execute(wt, g, "candidate", i)
             tracked, untracked = _restore_worktree(wt)
+            if timed_out:
+                # 组超时是 tester 冻结的参数到期，不是「runner 起不来」，也不是测试没鉴别力（#320）
+                raise _group_timeout("candidate", i, bid, g, rc, log)
             if framework == "pytest" and rc != 0 and not cases:
                 # 一条 junit 记录都没有 = runner 根本没跑起来（收集错误也会写进 junit）。不是实现的锅（#241）
                 raise _Failure("TEST_PROOF_RUNNER_FAILED", f"proof_runner 没能产出测试结果：`{runner['cmd']}` 退出码 {rc}", i, bid,
-                               returncode=rc, log=str(log), tail=out[-3000:], cmd=runner["cmd"])
+                               returncode=rc, log=str(log), cmd=runner["cmd"])
             verdict = judge_candidate(framework, rc, cases, g["test_ids"])
             groups_out.append({"behavior_id": bid, "kind": g["kind"], "candidate": {"returncode": rc, "per_id": verdict["per_id"], "log": str(log), "residue_cleaned": untracked}})
             if tracked:
-                raise _Failure("PROOF_WORKTREE_MUTATED", "测试命令修改了候选中的 tracked 文件", i, bid, paths=tracked[:50], tail=out[-3000:])
+                raise _Failure("PROOF_WORKTREE_MUTATED", "测试命令修改了候选中的 tracked 文件", i, bid, paths=tracked[:50], log=str(log))
             if not verdict["ok"]:
                 not_run = [t for t, v in verdict["per_id"].items() if v in ("missing", "skipped")]
                 code = "TEST_PROOF_NOT_EXECUTED" if (rc == 0 and not_run) else "TEST_PROOF_CANDIDATE_FAILED"
-                raise _Failure(code, verdict["reason"] or "测试在候选实现上未通过", i, bid, returncode=rc, per_id=verdict["per_id"], log=str(log), tail=out[-3000:])
+                raise _Failure(code, verdict["reason"] or "测试在候选实现上未通过", i, bid, returncode=rc, per_id=verdict["per_id"], log=str(log))
 
         # ②③④ 反例
         for i, g in enumerate(spec["groups"]):
@@ -550,16 +576,18 @@ def run_proof(ledger_path: Path, repo_root: Path, spec_override: dict[str, Any] 
             if g["kind"] == KIND_BASELINE:
                 overlay = (cand["head"], files["present"], files["deleted"])
                 with worktree.temp_worktree(repo_root, lg["repo"]["target_start_head"], tmp_dir, f"baseline-g{i}", overlay=overlay) as tw:
-                    rc, out, cases, log = execute(tw, g, "baseline", i)
+                    rc, out, cases, log, timed_out = execute(tw, g, "baseline", i)
+                if timed_out:
+                    raise _group_timeout("baseline", i, bid, g, rc, log)
                 cls = classify_counterexample(framework, rc, cases, g["test_ids"])
                 per_id = discrimination(cases, g["test_ids"]) if framework == "pytest" else {}
                 groups_out[i]["counterexample"] = {"kind": KIND_BASELINE, "returncode": rc, "classification": cls, "log": str(log), "per_id": per_id}
                 not_red = undiscriminated(per_id)
                 if cls != "assertion-failure":
                     # error / pass：先报「测试没跑起来 / 没约束行为」。带上 per_id 与未全红 id，全 green 时也能直接看到是哪几条
-                    raise _Failure("TEST_BASELINE_RED_NOT_PROVEN", "起点 + 你的测试没有在 call 阶段失败（pass=测试没约束行为；error=测试根本没跑起来，多半是依赖了起点上不存在的接口导致收集失败，请改用 mutation）", i, bid, classification=cls, returncode=rc, per_id=per_id, undiscriminated=not_red, log=str(log), tail=out[-3000:])
+                    raise _Failure("TEST_BASELINE_RED_NOT_PROVEN", "起点 + 你的测试没有在 call 阶段失败（pass=测试没约束行为；error=测试根本没跑起来，多半是依赖了起点上不存在的接口导致收集失败，请改用 mutation）", i, bid, classification=cls, returncode=rc, per_id=per_id, undiscriminated=not_red, log=str(log))
                 if not_red:
-                    raise _Failure("TEST_BASELINE_RED_NOT_PROVEN", f"{UNDISCRIMINATED_MESSAGE}：{', '.join(not_red)}", i, bid, classification=cls, returncode=rc, per_id=per_id, undiscriminated=not_red, log=str(log), tail=out[-3000:])
+                    raise _Failure("TEST_BASELINE_RED_NOT_PROVEN", f"{UNDISCRIMINATED_MESSAGE}：{', '.join(not_red)}", i, bid, classification=cls, returncode=rc, per_id=per_id, undiscriminated=not_red, log=str(log))
                 continue
             ppaths = patch_paths(g["patch"])
             for p in ppaths:
@@ -577,20 +605,22 @@ def run_proof(ledger_path: Path, repo_root: Path, spec_override: dict[str, Any] 
                 if changed != ppaths:
                     raise _Failure("TEST_MUTATION_INVALID", "patch 实际改动路径与声明不符", i, bid, declared=ppaths, actual=changed)
                 before = gitx.git(tw, "diff", "--binary", "--full-index").stdout
-                rc, out, cases, log = execute(tw, g, "mutation", i)
+                rc, out, cases, log, timed_out = execute(tw, g, "mutation", i)
                 after = gitx.git(tw, "diff", "--binary", "--full-index").stdout
                 extra = [p for _, p in gitx.status_porcelain(tw) if p not in changed and not _ignorable(p)]
                 if after != before or gitx.head(tw) != cand["head"] or extra:
                     raise _Failure("TEST_MUTATION_INVALID", "执行期间 mutation 现场被改动", i, bid, extra_paths=extra)
+            if timed_out:
+                raise _group_timeout("mutation", i, bid, g, rc, log)
             cls = classify_counterexample(framework, rc, cases, g["test_ids"])
             per_id = discrimination(cases, g["test_ids"]) if framework == "pytest" else {}
             groups_out[i]["counterexample"] = {"kind": KIND_MUTATION, "returncode": rc, "classification": cls, "log": str(log), "patch_sha256": sha256_bytes(g["patch"].encode()), "patch_paths": ppaths, "per_id": per_id}
             not_red = undiscriminated(per_id)
             if cls != "assertion-failure":
                 # error / pass：先报「测试没跑起来 / 没约束行为」。带上 per_id 与未全红 id
-                raise _Failure("TEST_MUTATION_SURVIVED", "破坏实现后测试没有在 call 阶段失败（pass=测试没约束该行为；error=测试根本没跑起来，收集或 setup 阶段就出错）", i, bid, classification=cls, returncode=rc, per_id=per_id, undiscriminated=not_red, log=str(log), tail=out[-3000:])
+                raise _Failure("TEST_MUTATION_SURVIVED", "破坏实现后测试没有在 call 阶段失败（pass=测试没约束该行为；error=测试根本没跑起来，收集或 setup 阶段就出错）", i, bid, classification=cls, returncode=rc, per_id=per_id, undiscriminated=not_red, log=str(log))
             if not_red:
-                raise _Failure("TEST_MUTATION_SURVIVED", f"{UNDISCRIMINATED_MESSAGE}：{', '.join(not_red)}", i, bid, classification=cls, returncode=rc, per_id=per_id, undiscriminated=not_red, log=str(log), tail=out[-3000:])
+                raise _Failure("TEST_MUTATION_SURVIVED", f"{UNDISCRIMINATED_MESSAGE}：{', '.join(not_red)}", i, bid, classification=cls, returncode=rc, per_id=per_id, undiscriminated=not_red, log=str(log))
     except _Failure as exc:
         failure = exc
     finally:
@@ -610,9 +640,9 @@ def run_proof(ledger_path: Path, repo_root: Path, spec_override: dict[str, Any] 
                         changed_inputs=changed, head_at_start=cand["head"], head_now=head_now, attempt=attempt)
 
     if failure:
-        tail = str(failure.details.get("tail", ""))
-        sig = failure_signature(f"{failure.code}\n{failure.behavior}\n{failure.details.get('classification', '')}\n{tail}", f"proof-{failure.code}", int(failure.details.get("returncode", -1) or -1))
-        fdetails = {k: v for k, v in failure.details.items() if k != "tail"}
+        sig_text = _log_excerpt(failure.details.get("log"))
+        sig = failure_signature(f"{failure.code}\n{failure.behavior}\n{failure.details.get('classification', '')}\n{sig_text}", f"proof-{failure.code}", int(failure.details.get("returncode", -1) or -1))
+        fdetails = dict(failure.details)
         fdetails["suggested_owner"] = OWNER_BY_FAILURE.get(failure.code, "builder")
         if failure.code == "TEST_PROOF_CANDIDATE_FAILED" and machine_passed:
             # 全量 machine 在同一候选上通过、单跑声明的用例却失败：最可能是测试依赖了全量顺序（#313）。
@@ -629,7 +659,7 @@ def run_proof(ledger_path: Path, repo_root: Path, spec_override: dict[str, Any] 
         if voided is not None:
             raise voided
         repeats = sum(1 for f in lg2["failures"]["proof"] if f["signature"] == sig)
-        return {"result": "FAIL", "attempt": attempt, "failure": {"code": failure.code, "message": failure.message, "group": failure.group, "behavior": failure.behavior, "signature": sig, "repeat_count": repeats, **fdetails, "tail": tail[-1500:]}, "groups": groups_out, "readiness": readiness}
+        return {"result": "FAIL", "attempt": attempt, "failure": {"code": failure.code, "message": failure.message, "group": failure.group, "behavior": failure.behavior, "signature": sig, "repeat_count": repeats, **fdetails}, "groups": groups_out, "readiness": readiness}
 
     voided = None
     with ledger_mod.mutate(ledger_path) as lg2:

@@ -30,6 +30,11 @@ def derive_signals(lg: dict[str, Any]) -> list[dict[str, Any]]:
         sigs = [f.get("signature") for f in machine_fails]
         worst = max((sigs.count(s) for s in set(sigs) if s), default=0)
         out.append(_signal("S-machine-failures", f"machine 失败 {len(machine_fails)} 次（共跑 {lg['counters']['machine_iter']} 次）", count=len(machine_fails), max_same_signature=worst, stages=sorted({str(f.get('stage')) for f in machine_fails})))
+    retries = ev("machine_retry")
+    if retries:
+        out.append(_signal("S-machine-retry", f"builder 显式重试 machine {len(retries)} 次", count=len(retries),
+                           reasons=[str(e.get("reason", ""))[:160] for e in retries][:5],
+                           previous_signatures=sorted({str(e.get("previous_signature")) for e in retries})))
     proof_fails = lg["failures"]["proof"]
     if proof_fails:
         out.append(_signal("S-proof-failures", f"proof 失败 {len(proof_fails)} 次", codes=[f["code"] for f in proof_fails]))

@@ -85,7 +85,10 @@ def build_parser() -> argparse.ArgumentParser:
     r2.add_argument("--no-incident", action="store_true")
     sp = sub.add_parser("cleanup", help="回收已复盘的 abandoned run 的 worktree")
     sp.add_argument("--run")
-    sp = sub.add_parser("machine"); add_locators(sp)
+    sp = sub.add_parser("machine")
+    add_locators(sp)
+    sp.add_argument("--retry", action="store_true", help="同一输入上显式重跑一次：必须先有 fresh machine 失败，且用 --reason 记录判断（#278）")
+    sp.add_argument("--reason", help="--retry 的原因；重试是一次被记录的判断，不证明失败确为环境/flake")
     sp = sub.add_parser("preflight", help="在 run 起点跑一遍 pass_cmd，看哪些 stage 本来就红（后台跑）"); add_locators(sp)
     sp = sub.add_parser("brief", help="角色视角的当前事实与待办（tester / reviewer 自取，唯一来源）"); add_locators(sp)
     sp.add_argument("--role", required=True, choices=["tester", "reviewer"])
@@ -170,7 +173,13 @@ def dispatch(args: argparse.Namespace) -> tuple[Any, int]:
         from .machine import run_machine
 
         lp, root = _locate(args)
-        out = run_machine(lp, root)
+        retry_reason = None
+        if getattr(args, "reason", None) is not None and not args.retry:
+            # 带 --reason 不带 --retry 是用法错误：不能把普通重跑悄悄变成一次「有理由的」重试
+            raise Problem("MACHINE_RETRY_FLAG_MISSING", "--reason 只在 --retry 时使用", exit_code=EXIT_FATAL)
+        if args.retry:
+            retry_reason = args.reason or ""
+        out = run_machine(lp, root, retry_reason=retry_reason)
         code = EXIT_OK if out["result"] == "PASS" else 1
         if out["readiness"]["blockers"]:
             code = 3

@@ -173,13 +173,27 @@ def _annotate_baseline(failed: dict[str, Any], ledger: dict[str, Any]) -> None:
         failed["baseline"] = "这一段在 run 起点上超时了，可能是资源争抢（有别的全量测试或重负载在跑），不能据此判定失败出在起点；需要时在本机空闲时重跑 `bl preflight`"
 
 
-def run_machine(ledger_path: Path, repo_root: Path) -> dict[str, Any]:
+def _retry_fact(lg: dict[str, Any], repo_root: Path, reason: str) -> dict[str, Any]:
+    """显式重试绑定的当前事实：上一失败签名 + 当前候选 + machine 依赖投影。不判断失败是否与候选无关（#278，原则三）。"""
+    rec = lg["evidence"].get("machine") or {}
+    mfail = (rec.get("details") or {}).get("failure") or {}
+    return {"reason": reason, "previous_signature": mfail.get("signature"), "previous_stage": mfail.get("stage"),
+            "candidate_head": lg["candidate"].get("head"), "dependency_digest": evidence.dependency_digest(lg, "machine", repo_root)}
+
+
+def run_machine(ledger_path: Path, repo_root: Path, retry_reason: str | None = None) -> dict[str, Any]:
     lg = ledger_mod.load(ledger_path)
     if ledger_mod.is_terminal(lg):
         raise fatal("RUN_TERMINAL", "run 已到终态", terminal=lg["terminal"])
     cand = lg["candidate"]
     if not cand.get("head") or not cand.get("checkpoints"):
         raise fatal("CANDIDATE_NOT_CHECKPOINTED", "候选还没有 checkpoint，先 `checkpoint --role builder`")
+    if retry_reason is not None and not retry_reason.strip():
+        raise fatal("MACHINE_RETRY_REASON_MISSING", "`bl machine --retry` 必须带非空的 --reason：重试是一次被记录的判断，不是重跑碰运气")
+    if retry_reason is not None and evidence.state(lg, "machine", repo_root) != evidence.STATE_FAIL:
+        # 只给「当前输入上确实有失败」的重试留出口：否则它会变成绕过证据有效性的通用重跑键
+        raise fatal("MACHINE_RETRY_NO_FAILURE", "当前输入上没有 fresh machine 失败，--retry 没有作用；直接跑 `bl machine`",
+                    state=evidence.state(lg, "machine", repo_root))
     blocked = evidence.machine_blocked(lg, repo_root)
     if blocked:
         # 上限是真的停止点：越过它需要一次被记录的用户决定（bl resume），不是再跑一次
@@ -207,6 +221,10 @@ def run_machine(ledger_path: Path, repo_root: Path) -> dict[str, Any]:
     results: list[dict[str, Any]] = []
     failed: dict[str, Any] | None = None
     with evidence.gate_lock(lg, evidence.GATE_MACHINE), private_pycache(env, run_dir):
+        if retry_reason is not None:
+            # 拿到锁之后再记：GATE_BUSY 时命令根本没执行，审计不能包含一次没发生的重试（原则一）
+            with ledger_mod.mutate(ledger_path) as lg_retry:
+                ledger_mod.log_event(lg_retry, "machine_retry", **_retry_fact(lg, repo_root, retry_reason.strip()))
         for stage in stages:
             log_path = log_dir / f"iter-{it}-{stage['stage']}.log"
             rc, text, timed_out = _run_stage(wt, stage, log_path, env)
@@ -214,13 +232,14 @@ def run_machine(ledger_path: Path, repo_root: Path) -> dict[str, Any]:
             results.append(entry)
             if rc != 0:
                 mentioned = _tester_paths_in(lg, repo_root, cand["head"], text)
-                failed = dict(entry, signature=failure_signature(text, stage["stage"], rc), tail=text[-4000:], tester_files_mentioned=mentioned)
+                # 完整日志已经落盘（entry.log）；失败签名读同一份文本，不再对外复制一份截断视图（#365）
+                failed = dict(entry, signature=failure_signature(text, stage["stage"], rc), tester_files_mentioned=mentioned)
                 break
 
     mutated = worktree.residue(wt)
     head_after = gitx.head(wt)
     if mutated or head_after != cand["head"]:
-        failed = failed or {"stage": None, "returncode": None, "log": None, "timed_out": False, "signature": None, "tail": ""}
+        failed = failed or {"stage": None, "returncode": None, "log": None, "timed_out": False, "signature": None}
         failed["worktree_mutated"] = {"paths": mutated[:50], "head_after": head_after}
 
     status = "fail" if failed else "pass"
@@ -240,7 +259,7 @@ def run_machine(ledger_path: Path, repo_root: Path) -> dict[str, Any]:
             lg2["counters"]["machine_iter"] = it
             details: dict[str, Any] = {"iter": it, "stages": results}
             if failed:
-                details["failure"] = {k: v for k, v in failed.items() if k != "tail"}
+                details["failure"] = dict(failed)
                 lg2["failures"]["machine"].append({"iter": it, "stage": failed.get("stage"), "signature": failed.get("signature"), "log": failed.get("log"), "at": ledger_mod.now_iso()})
             evidence.record(lg2, "machine", status, details, repo_root)
             readiness = evidence.readiness(lg2, repo_root)

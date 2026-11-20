@@ -91,9 +91,13 @@ def _tester_todo(lg: dict[str, Any], repo_root: Path) -> list[dict[str, Any]]:
 
     mach = lg["evidence"].get("machine") or {}
     mfail = (mach.get("details") or {}).get("failure") or {}
-    if mach.get("status") == "fail" and mfail.get("tester_files_mentioned") \
+    # 旧候选上的失败不能继续当当前工作依据：builder 修好并 checkpoint 之后，那条 evidence 已经 stale（#321，原则一）。
+    # freshness 只问 evidence.state，不在这里另存一份状态（原则二）
+    if mach.get("status") == "fail" and evidence.state(lg, "machine", repo_root) == evidence.STATE_FAIL \
+            and mfail.get("tester_files_mentioned") \
             and evidence.last_role_result_at(lg, "tester") <= mach.get("at", ""):
         todo.append({"what": "check_machine_failure", "files": mfail["tester_files_mentioned"], "log": mfail.get("log"),
+                     "candidate_head": mach.get("candidate_head"),
                      "why": "machine 失败的日志里出现了你的测试文件；是测试本身写错就改，不是就在 notes 里说明"})
 
     findings = ((lg["evidence"].get("reviewer") or {}).get("details") or {}).get("findings", [])

@@ -2,6 +2,13 @@
 
 > 本文件记 **CC 版**产品线（分支 `cc/main`）。Codex 版见 `codex/main` 分支。
 
+## 失败事实绑定当前输入、诊断只读完整日志、超时归路与显式重试（#321 #365 #320 #278，2026-11-21）
+
+- **行为变更：machine / proof 失败输出不再带 `tail`（#365）**：截断副本让 builder 把局部片段当成全部失败模块（漏掉的失败被误判为下一轮新增回归）。失败结果只给指向本次完整日志的 `failure.log`；重复失败签名改由 runtime 内部读日志计算，不伪造第二事实视图。
+- **tester 只收到当前输入上的 machine 失败（#321）**：`check_machine_failure` 待办改为要求 `evidence.state("machine") == fail`，builder checkpoint / integrate / contract revise 让旧 evidence stale 后不再投递；fresh 待办附带 `candidate_head`。
+- **proof 组超时单独分类（#320）**：candidate / baseline / mutation 任一阶段被组 `timeout` 终止 → `TEST_PROOF_GROUP_TIMEOUT`，`suggested_owner=tester`，details 带 `phase` / `group` / `behavior` / `timeout` / `returncode` / 完整日志；runner 自己返回 124 不算组超时，真正的 runner 启动失败仍是 `TEST_PROOF_RUNNER_FAILED / contract`。超时不进入红/绿与鉴别力判定。
+- **`bl machine --retry --reason R`（#278）**：同一输入上显式重跑一次，执行前记 `machine_retry` event（原因、上一失败签名与 stage、当时 HEAD、machine dependency digest），复盘信号 `S-machine-retry`；要求当前有 fresh 失败，不重置计数、不改旧 evidence、不绕过上限或用户授权，runtime 不按路径自动判断失败相关性。
+
 ## proof 只接收可鉴别测试，文本观察面与长期测试纪律（#370 #371 #296 #374，2026-11-20）
 
 - **行为变更：proof 逐条判红（#370）**：`proof_spec.test_ids` 明确为证据名单，baseline-red / mutation 组里每个 test_id 匹配到的全部用例（含参数实例）都必须在反例下 failure 才 PASS；green / mixed / missing 一律 FAIL，details 带 `undiscriminated`。此前组内任一条红即可，恒真断言能搭便车进入 PASS，只能靠 reviewer 提醒兜底。

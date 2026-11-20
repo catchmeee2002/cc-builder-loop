@@ -94,8 +94,13 @@ def test_boundary_candidate_failed_owner_builder_without_isolation_hint_when_mac
 def test_invariant_tester_owned_failures_and_runner_owner_unchanged(repo, cli, hook):
     from builder_loop.proof import OWNER_BY_FAILURE, TESTER_OWNED_FAILURES
 
-    assert set(TESTER_OWNED_FAILURES) == {
+    # 归 tester 的失败码是等值锁：本契约按 B3 只新增了 TEST_PROOF_GROUP_TIMEOUT，既有五点一个不少，
+    # 也不许再有别的码被顺手塞进来（否则这条不变量就失去了「不得新增」的保护）
+    legacy = {
         "TEST_BASELINE_RED_NOT_PROVEN", "TEST_MUTATION_SURVIVED", "TEST_MUTATION_INVALID",
         "TEST_MUTATION_PATCH_MISSING", "TEST_PROOF_NOT_EXECUTED",
     }
+    assert set(TESTER_OWNED_FAILURES) == legacy | {"TEST_PROOF_GROUP_TIMEOUT"}
     assert OWNER_BY_FAILURE["TEST_PROOF_RUNNER_FAILED"] == "contract"
+    for code in TESTER_OWNED_FAILURES:
+        assert OWNER_BY_FAILURE[code] == "tester"

@@ -33,7 +33,7 @@ Stop hook：run 未终态 → 拦住并给出 `next_action`；等待用户（Ask
 | `bl status` | readiness（四项状态 + next_action + blockers）、dirty、agents、谁在跑 | 0 |
 | `bl checkpoint --role builder\|tester [--dry-run] [-m]` | 按角色提交各自 worktree 的改动；越界拒绝并列路径；`--dry-run` 只分类 | 0 / 1 |
 | `bl integrate` | tester 分支的测试按路径叠进候选（幂等） | 0 / 1 |
-| `bl machine` | 在候选 worktree 顺序跑 pass_cmd | 0 PASS / 1 FAIL / 2 FATAL / 3 上限或无进展 |
+| `bl machine [--retry --reason R]` | 在候选 worktree 顺序跑 pass_cmd；`--retry` 在同一输入上显式重跑一次（需当前有 fresh 失败，原因记入 ledger 的 `machine_retry`） | 0 PASS / 1 FAIL / 2 FATAL / 3 上限或无进展 |
 | `bl proof` | 证明 tester 声明的每条测试都有鉴别力（候选全绿；反例下逐条变红） | 0 / 1 / 3 |
 | `bl preflight` | 在 run 起点跑一遍 pass_cmd，标出本来就红的 stage（后台跑，只记 event 不动判据） | 0 |
 | `bl brief --role tester\|reviewer [--json]` | 角色视角的当前事实与待办；角色自取，是它的唯一来源 | 0 |
