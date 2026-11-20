@@ -301,12 +301,12 @@ def resume(ledger_path: Path, repo_root: Path, reason: str) -> dict[str, Any]:
 
 
 def hold(ledger_path: Path, repo_root: Path, reason: str, *, release: bool = False) -> dict[str, Any]:
-    """按用户决定暂缓合入（多会话顺序发版：合入时机由发版顺序决定，不由 gate 决定，#291）。
+    """按外部条件暂缓合入（多会话顺序发版：合入时机由发版顺序决定，不由 gate 决定，#291）。
     本 run 的 gate 全过过一次就能 hold，不要求此刻全绿：rebase 之后、重验之前集成方要的正是「先别重验」（#299）。
-    hold 不削弱判据——finalize 仍只认四项 fresh pass。授权：锚点（当前 mission revision 下 gate 首次全过）之后要有一次
-    AskUserQuestion 的回答，release 不作废它；release 不需要授权，它只是回到正常流程。"""
+    hold 不削弱判据——finalize 仍只认四项 fresh pass。等外部协作放行属于正常工程活动，不要求用户先回答（#368）：
+    hold 是一份可审计的暂缓声明，--reason 记录等什么；release 只是回到正常流程。"""
     if not release and not reason.strip():
-        raise fatal("REASON_REQUIRED", "hold 必须给出 --reason（用户为什么要等、等什么）")
+        raise fatal("REASON_REQUIRED", "hold 必须给出 --reason（等什么、为什么暂缓合入）")
     with ledger_mod.mutate(ledger_path) as lg:
         if ledger_mod.is_terminal(lg):
             raise fatal("RUN_TERMINAL", "run 已到终态", terminal=lg["terminal"])
@@ -321,8 +321,6 @@ def hold(ledger_path: Path, repo_root: Path, reason: str, *, release: bool = Fal
             if since is None:
                 raise negative("HOLD_NOT_READY", "当前 mission revision 下 gate 还没有全部通过过；hold 用于 gate 全过之后按外部顺序延后合入",
                                next_action=evidence.readiness(lg, repo_root)["next_action"])
-            if not any(e["at"] >= since and e.get("source") == "AskUserQuestion" for e in ledger_mod.events_of(lg, "user_input")):
-                raise needs_user("USER_DECISION_REQUIRED", "当前 mission revision 下 gate 首次全过之后还没有用户就合入时机的回答；先用 AskUserQuestion 让用户决定是否暂缓合入")
             ledger_mod.log_event(lg, "hold", reason=reason)
         readiness = evidence.readiness(lg, repo_root)
     return {"hold": evidence.hold_state(lg), "readiness": readiness}

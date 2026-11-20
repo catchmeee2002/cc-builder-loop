@@ -8,8 +8,8 @@ B8：skills/planner/SKILL.md「文本类任务」段含字面锚句「字面锚�
 有的归一化规则仍在。
 
 B9：skills/builder/SKILL.md 的 next_action 表 finalize 行含字面锚句
-「release 不会作废用户已经给过的回答；只有 mission 修订之后才要重新问」，且不再含
-「（或上次 release）之后用户已经就合入时机回答过」；held 行内容不变。
+「正常等待集成放行不必问用户」，held 行含「已暂缓合入，Stop 放行，直接结束这一轮」；全文不再含
+「已按用户决定暂缓合入」与「release 不会作废用户已经给过的回答」；held 行仍给出 `bl hold --release`。
 """
 
 from __future__ import annotations
@@ -75,11 +75,13 @@ def test_invariant_tester_md_normalization_rule_kept():
 # ---------------------------------------------------------------- B9
 
 
-B9_NEW_ANCHOR = "release 不会作废用户已经给过的回答；只有 mission 修订之后才要重新问"
-B9_OLD_PHRASE = "（或上次 release）之后用户已经就合入时机回答过"
+B9_NEW_ANCHOR = "正常等待集成放行不必问用户"
+B9_HELD_ANCHOR = "已暂缓合入，Stop 放行，直接结束这一轮"
+B9_REMOVED_OLD_HELD = "已按用户决定暂缓合入"
+B9_REMOVED_RELEASE_PHRASE = "release 不会作废用户已经给过的回答"
 
 
-def test_builder_skill_finalize_row_has_new_hold_reuse_anchor():
+def test_builder_skill_finalize_row_has_new_hold_wait_anchor():
     text = (ROOT / "skills" / "builder" / "SKILL.md").read_text(encoding="utf-8")
     idx = text.index("| `finalize` |")
     end = text.index("\n", idx)
@@ -87,15 +89,16 @@ def test_builder_skill_finalize_row_has_new_hold_reuse_anchor():
     assert B9_NEW_ANCHOR in row, row
 
 
-def test_boundary_builder_skill_old_release_phrase_removed():
+def test_boundary_builder_skill_drops_old_hold_wording():
     text = (ROOT / "skills" / "builder" / "SKILL.md").read_text(encoding="utf-8")
-    assert B9_OLD_PHRASE not in text
+    assert B9_REMOVED_OLD_HELD not in text
+    assert B9_REMOVED_RELEASE_PHRASE not in text
 
 
-def test_invariant_builder_skill_held_row_unchanged():
+def test_invariant_builder_skill_held_row_has_new_anchor_and_release_command():
     text = (ROOT / "skills" / "builder" / "SKILL.md").read_text(encoding="utf-8")
     idx = text.index("| `held` |")
     end = text.index("\n", idx)
     row = text[idx:end]
-    assert "已按用户决定暂缓合入，Stop 放行，直接结束这一轮（期间不必重验）" in row
+    assert B9_HELD_ANCHOR in row, row
     assert "`bl hold --release`" in row

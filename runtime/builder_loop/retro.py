@@ -69,6 +69,11 @@ def derive_signals(lg: dict[str, Any]) -> list[dict[str, Any]]:
     rebases = [cp for cp in lg["candidate"]["checkpoints"] if cp.get("role") == "rebase"]
     if rebases:
         out.append(_signal("S-rebase", f"目标分支前进，候选 rebase {len(rebases)} 次"))
+    holds = ev("hold")
+    if holds:
+        out.append(_signal("S-hold", f"按外部条件暂缓合入 {len(holds)} 次", count=len(holds),
+                           reasons=[e.get("reason", "")[:160] for e in holds][:5],
+                           released=len(ev("hold_release"))))
     stalls = ev("stall_escape")
     if stalls:
         out.append(_signal("S-stall-escape", f"Stop hook 因连续无进展放行 {len(stalls)} 次"))

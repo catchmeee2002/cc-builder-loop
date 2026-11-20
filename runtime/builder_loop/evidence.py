@@ -186,7 +186,7 @@ def record(ledger: dict[str, Any], kind: str, status: str, details: dict[str, An
     if status == "pass" and not _gates_passed(ledger, rev):
         required = ledger["contract"]["assurance"]["required"]
         if all(state(ledger, k, repo_root) == STATE_PASS for k in required):
-            # hold 的授权锚点要用「本 mission revision 下 gate 首次全过」：之后的 rebase 会让 evidence 重记，
+            # hold 的锚点用「本 mission revision 下 gate 首次全过」：之后的 rebase 会让 evidence 重记，
             # 最后一次记录的时刻不再代表它；mission 修订后要在新目标下重新全过（#299）
             log_event(ledger, "gates_passed", revision=rev)
     return rec
@@ -407,7 +407,7 @@ AWAITING_ACTIONS = (ACTION_AWAITING_TESTER, ACTION_AWAITING_REVIEWER, ACTION_AWA
 
 
 def hold_state(ledger: dict[str, Any]) -> dict[str, Any] | None:
-    """用户授权的「按外部顺序延后合入」（#291）。从 hold / hold_release 事件派生，不落 ledger 字段（原则五）。
+    """按外部顺序延后合入的声明（#291）。从 hold / hold_release 事件派生，不落 ledger 字段（原则五）。
     生效期间、只要候选在 hold 之后没再变，readiness 就是 held（证据 stale 也一样：集成方要的就是「先别重验」，#299）；
     finalize 仍只认四项 fresh pass。"""
     evs = events_of(ledger, "hold", "hold_release")
@@ -417,9 +417,9 @@ def hold_state(ledger: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def hold_anchor(ledger: dict[str, Any], repo_root: Path) -> str | None:
-    """hold 的授权锚点 = 当前 mission revision 下 gate 首次全过；这个 revision 下从未全过 → None（#299）。
-    release 与 rebase 都不重置锚点：用户就「等外部放行」做的决定跨 release 有效，同一个外部条件不必一问再问；
-    只有 mission 修订（目标变了）才要在新目标下重新全过、重新问。"""
+    """hold 的锚点 = 当前 mission revision 下 gate 首次全过；这个 revision 下从未全过 → None（#299）。
+    release 与 rebase 都不重置锚点：同一 revision 内只要全过过就能再 hold。hold 不再要求用户回答（#368）：
+    等外部协作放行属于正常工程活动；只有 mission 修订（目标变了）才要在新目标下重新全过。"""
     first = _gates_passed(ledger, _mission_revision(ledger))
     if first:
         return first[0]["at"]

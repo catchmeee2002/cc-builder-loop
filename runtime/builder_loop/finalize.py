@@ -117,7 +117,7 @@ def finalize(ledger_path: Path, repo_root: Path, message: str | None, *, run_com
 
     readiness = evidence.readiness(lg, repo_root)
     if readiness["next_action"] == evidence.ACTION_HELD:
-        raise negative("HOLD_ACTIVE", "run 处于用户授权的 hold：外部条件满足后先 `bl hold --release`", hold=evidence.hold_state(lg))
+        raise negative("HOLD_ACTIVE", "run 处于 hold（等外部协作放行）：外部条件满足后先 `bl hold --release`", hold=evidence.hold_state(lg))
     if readiness["next_action"] != evidence.ACTION_FINALIZE:
         raise negative("EVIDENCE_NOT_READY", "四项 evidence 尚未全部 fresh pass", readiness=readiness)
     cand = lg["candidate"]

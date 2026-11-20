@@ -1,6 +1,6 @@
-"""B5：`bl contract revise` 把 mission revision 往上推之后，旧 revision 下的 AskUserQuestion 回答
-不再算数。新 revision 下 gate 还没全部通过过 → HOLD_NOT_READY；通过了但还没有新的 AskUserQuestion
-回答 → USER_DECISION_REQUIRED。旧 run 里 gates_passed 事件没有 revision 字段时按 revision 1 处理。
+"""B5：`bl contract revise` 把 mission revision 往上推之后，旧 revision 下 gate 全过的记录不再算数。
+新 revision 下 gate 还没全部通过过 → HOLD_NOT_READY；重新全过之后不需要任何用户回答即可 hold
+（hold 不再要求用户问答）。旧 run 里 gates_passed 事件没有 revision 字段时按 revision 1 处理。
 
 用不需要 tester 的轻量 contract（assurance.required=[machine, reviewer]）避免每次重验都要走一遍
 tester 的两段式流程。
@@ -31,35 +31,30 @@ def _lite_ready_to_finalize(repo, cli, hook, session: str = "S1", plan_name: str
     return {"worktree": wt, "ledger": Path(out["ledger"])}
 
 
-def test_hold_boundary_after_mission_revision_requires_fresh_gate_pass_and_new_answer(repo, cli, hook):
+def test_hold_boundary_after_mission_revision_requires_fresh_gate_pass_but_no_new_answer(repo, cli, hook):
     ctx = _lite_ready_to_finalize(repo, cli, hook)
     wt = ctx["worktree"]
-    _answer_askuserquestion(hook)
 
     c2 = contract_with(**{"assurance.required": ["machine", "reviewer"], "mission.revision": 2})
     write_plan(repo.root, c2, "lite-rev2.md")
     revised = cli("contract", "revise", "--session", "S1", "--plan", str(repo.root / "lite-rev2.md"), "--authorize")
     assert "MISSION_REVISION" in revised["changes"]
 
-    # 新 revision 下 gate 还没全过：HOLD_NOT_READY（即便 revision 1 时已经回答过 AskUserQuestion）
+    # 新 revision 下 gate 还没全过：HOLD_NOT_READY（即便 revision 1 时 gate 全过过）
     out = cli("hold", "--session", "S1", "--reason", "x", expect=1)
     assert out["code"] == "HOLD_NOT_READY"
 
-    # 重新把 gate 在新 revision 下跑绿，仍然没有补新的 AskUserQuestion
+    # 重新把 gate 在新 revision 下跑绿：不需要任何用户回答即可 hold
     (wt / "src" / "extra.py").write_text("# v2\n")
     cli("checkpoint", "--session", "S1", "--role", "builder")
     assert cli("machine", "--session", "S1")["result"] == "PASS"
     reviewer_pass(hook, agent_id="R2")
     assert cli("status", "--session", "S1")["readiness"]["next_action"] == "finalize"
 
-    out2 = cli("hold", "--session", "S1", "--reason", "y", expect=3)
-    assert out2["code"] == "USER_DECISION_REQUIRED"
-
-    # 新 revision 下补一次回答才行
-    _answer_askuserquestion(hook)
-    out3 = cli("hold", "--session", "S1", "--reason", "y")
-    assert out3.get("ok", True) is not False
+    out2 = cli("hold", "--session", "S1", "--reason", "等第二批")
+    assert out2.get("ok", True) is not False
     assert L.load(ctx["ledger"])["events"][-1]["kind"] == "hold"
+    assert cli("status", "--session", "S1")["readiness"]["next_action"] == "held"
 
 
 def test_boundary_legacy_gates_passed_event_without_revision_field_treated_as_revision_1(repo, cli, hook):

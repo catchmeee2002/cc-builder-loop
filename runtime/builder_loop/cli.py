@@ -74,7 +74,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("integrate", help="把 tester 分支的测试按路径叠进候选"); add_locators(sp)
     sp = sub.add_parser("resume", help="用户授权后解除迭代上限 / 无进展 blocker"); add_locators(sp)
     sp.add_argument("--reason", required=True)
-    sp = sub.add_parser("hold", help="gate 全过后按用户决定暂缓 finalize；--release 解除"); add_locators(sp)
+    sp = sub.add_parser("hold", help="gate 全过后按外部条件暂缓 finalize；--release 解除"); add_locators(sp)
     sp.add_argument("--reason", default="")
     sp.add_argument("--release", action="store_true")
     rt = sub.add_parser("retro", help="终态复盘"); add_locators(rt)

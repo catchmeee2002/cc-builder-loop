@@ -2,6 +2,11 @@
 
 > 本文件记 **CC 版**产品线（分支 `cc/main`）。Codex 版见 `codex/main` 分支。
 
+## hold 不再要求用户授权、复盘可见 hold（#368，2026-11-20）
+
+- **行为变更：`bl hold` 不再要求用户问答（#368）**：等集成方放行属于正常工程活动，此前每次都要先弹 AskUserQuestion 授权，选项卡还挡住已到达的集成回复。现在四门全过后直接 `bl hold --reason` 结束回合，对方回复原生唤醒后续接。判据不减：`HOLD_NOT_READY`（当前 mission revision 下 gate 必须全过过一次）、`HOLD_ACTIVE`、finalize 只认四项 fresh pass、`bl resume` 的真人授权全部保留；`--reason` 仍必填，builder 必须在当轮回复里说明已暂缓、在等什么。集成方与跨会话消息仍不记 `user_input`。
+- **复盘新增 `S-hold` 信号（#368）**：从 `hold` / `hold_release` 事件派生 `count` / `reasons` / `released`，不落 ledger 字段；使用过 hold 的 run，复盘必须覆盖这条信号。
+
 ## 候选完整性、角色事实补全与 hold 授权锚点（#312 #290 #252 #313 #299 #308 #288 #296，2026-09-27）
 
 - **reviewer 这一轮里候选的 git 状态变了，结论记 fail（#312）**：SubagentStart 在 reviewer 的 `role_start` 里记候选指纹（HEAD、index、status、dirty 内容摘要），登记结论时再取一次，index / 工作区有变化（不论谁改的）就记 fail，`details.candidate_changed` 列出路径，记 `role_candidate_changed`，retro 信号 `S-role-candidate-changed`。此前 reviewer 在候选里 `git --work-tree=<tmp> checkout` 改了 index，没有任何守卫察觉。取指纹失败只降级，不比对。

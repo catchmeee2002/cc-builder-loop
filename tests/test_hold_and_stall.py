@@ -51,29 +51,6 @@ def test_hold_succeeds_after_gate_pass_and_user_answer(started, cli, hook):
     assert isinstance(st["hold"]["at"], str) and st["hold"]["at"]
 
 
-def test_hold_boundary_no_answer_at_all(started, cli, hook):
-    _ready_to_finalize(started, cli, hook)
-    n_events = len(L.load(started["ledger"])["events"])
-    out = cli("hold", "--session", "S1", "--reason", "等 #228 发版", expect=3)
-    assert out["code"] == "USER_DECISION_REQUIRED"
-    assert len(L.load(started["ledger"])["events"]) == n_events
-
-
-def test_hold_boundary_answer_predates_last_evidence(started, cli, hook):
-    # 回答早于最后一项 evidence 的 at：不算数
-    _answer_askuserquestion(hook)
-    _ready_to_finalize(started, cli, hook)
-    out = cli("hold", "--session", "S1", "--reason", "太早了", expect=3)
-    assert out["code"] == "USER_DECISION_REQUIRED"
-
-
-def test_hold_boundary_task_notification_is_not_an_answer(started, cli, hook):
-    _ready_to_finalize(started, cli, hook)
-    hook("UserPromptSubmit", {"session_id": "S1", "prompt": "<task-notification>…</task-notification>"})
-    out = cli("hold", "--session", "S1", "--reason", "x", expect=3)
-    assert out["code"] == "USER_DECISION_REQUIRED"
-
-
 def test_hold_boundary_next_action_not_finalize(started, cli, hook):
     # 刚 start，next_action 还是 spawn_tester
     assert cli("status", "--session", "S1")["readiness"]["next_action"] != "finalize"

@@ -493,8 +493,10 @@ def test_b8_boundary_task_notification_is_not_an_answer(repo, cli, hook):
     assert len(events_after) == n_events_before
     assert not [e for e in events_after if e["kind"] == "user_input"]
 
-    out = cli("hold", "--session", "S1", "--reason", "x", expect=3)
-    assert out["code"] == "USER_DECISION_REQUIRED"
+    # hold 不再要求用户回答：task-notification 之后直接 hold 也成立
+    cli("hold", "--session", "S1", "--reason", "x")
+    assert L.load(started["ledger"])["events"][-1]["kind"] == "hold"
+    assert cli("status", "--session", "S1")["readiness"]["next_action"] == "held"
 
 
 # ================================================================== B9
