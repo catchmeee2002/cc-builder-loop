@@ -27,8 +27,51 @@ def bl_bin() -> str:
 
 
 def resolve_repo_root(repo_arg: str | None) -> Path:
+    """选仓：用户给出的路径就是输入身份，linked worktree 保持它自己的 toplevel（#364，原则二）。
+
+    此前无条件回主仓，共用 .git 的另一条产品线会被读成主仓的 loop.yml 与分支；选择这条路径的
+    命令（start / contract validate --check-repo / runs / doctor / cleanup）必须看到用户选的那个仓。
+    """
     base = Path(repo_arg).resolve() if repo_arg else Path.cwd()
-    return gitx.main_repo_root(gitx.toplevel(base))
+    return gitx.toplevel(base)
+
+
+def resolve_run_repo_root(repo_arg: str | None) -> Path:
+    """已有 run 的事务根：runtime 建的 candidate / tester worktree 仍回到它的主仓。
+
+    run 的 ledger、worktree 与分支都由主仓的 .git 承载；角色在自己的 worktree 里执行 bl 时，
+    选仓不是它的意图，回到主仓才是（原则二：每个事实只有一个家）。
+    """
+    return gitx.main_repo_root(resolve_repo_root(repo_arg))
+
+
+def run_roots(repo_arg: str | None) -> list[Path]:
+    """定位一个**已有的 run** 时依次尝试的根：选仓本身，再是它的主仓。
+
+    linked worktree 里开出来的 run 记在它自己的 runs 目录；runtime 建的 candidate / tester
+    worktree 属于主仓的 run。两者都可解析，结果由实际存在的 ledger 决定，不靠猜。
+    """
+    exact = resolve_repo_root(repo_arg)
+    main = resolve_run_repo_root(repo_arg)
+    return [exact] if main == exact else [exact, main]
+
+
+def run_ledger_roots(repo_arg: str | None) -> list[Path]:
+    """按 run_id 找 ledger 时依次尝试的根：选仓、主仓，再是同一 `.git` 下其余 worktree。
+
+    candidate / tester worktree 只看得见共用 `.git` 的主仓；run 若是从另一个 linked worktree
+    开的，它的 ledger 既不在角色 worktree 也不在主仓里（#364）。worktree 列表是确定的 git 事实，
+    逐个探测比让角色拿不到 brief 更好；不新增 ledger 字段，也不改 session 指针。
+    """
+    roots = run_roots(repo_arg)
+    for ent in gitx.worktree_list(roots[0]):
+        path = ent.get("worktree")
+        if not path:
+            continue
+        cand = Path(path).resolve()
+        if cand not in roots:
+            roots.append(cand)
+    return roots
 
 
 def _run_id(slug: str) -> str:
@@ -145,7 +188,8 @@ def status(ledger_path: Path, repo_root: Path) -> dict[str, Any]:
         "tester": None if not tester else {**tester, "files": evidence.tester_files(lg, repo_root)},
         "agents": lg["agents"],
         "running": {role: evidence.role_running(lg, role) for role in ("tester", "reviewer")},
-        "preflight": {"baseline_red": machine.baseline_red(lg), "baseline_timed_out": machine.baseline_timed_out(lg)},  # None = 没跑过
+        "preflight": {"baseline_red": machine.baseline_red(lg), "baseline_timed_out": machine.baseline_timed_out(lg),
+                      "baseline_signaled": machine.baseline_signaled(lg)},  # None = 没跑过
         "counters": lg["counters"],
         "waiting_for_user": lg.get("waiting_for_user"),
         "hold": evidence.hold_state(lg),

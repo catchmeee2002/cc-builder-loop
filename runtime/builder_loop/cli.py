@@ -20,39 +20,58 @@ def _emit(obj: Any) -> None:
 
 def _locate(args: argparse.Namespace) -> tuple[Path, Path]:
     """返回 (ledger_path, repo_root)。优先 --run，其次 --session。"""
-    from .run import resolve_repo_root
+    from .run import run_roots
 
     if getattr(args, "run", None):
-        repo_root = resolve_repo_root(args.repo)
-        return ledger_mod.find_ledger_by_run(repo_root, args.run), repo_root
+        return _locate_run(args.repo, args.run)
     if getattr(args, "session", None):
         bound = ledger_mod.lookup_session(args.session)
         if not bound:
             raise Problem("SESSION_UNBOUND", "该 session 没有绑定 run", exit_code=EXIT_FATAL)
         return bound["ledger_path"], bound["repo_root"]
-    repo_root = resolve_repo_root(args.repo)
-    runs = [r for r in ledger_mod.list_runs(repo_root) if not r["terminal"]]
-    if len(runs) == 1:
-        return Path(runs[0]["ledger_path"]), repo_root
-    raise Problem("RUN_AMBIGUOUS", "请用 --run 或 --session 指定 run", details={"active_runs": runs}, exit_code=EXIT_FATAL)
+    roots = run_roots(args.repo)
+    for root in roots:
+        runs = [r for r in ledger_mod.list_runs(root) if not r["terminal"]]
+        if len(runs) == 1:
+            return Path(runs[0]["ledger_path"]), root
+        if len(runs) > 1:
+            raise Problem("RUN_AMBIGUOUS", "请用 --run 或 --session 指定 run", details={"active_runs": runs}, exit_code=EXIT_FATAL)
+    raise Problem("RUN_AMBIGUOUS", "请用 --run 或 --session 指定 run", details={"active_runs": [], "searched": [str(r) for r in roots]}, exit_code=EXIT_FATAL)
+
+
+def _locate_run(repo_arg: str | None, run_id: str) -> tuple[Path, Path]:
+    """--run 的 ledger 可能在选仓自己的 runs 目录、共用 .git 的主仓，或另一个 linked worktree；
+    只认实际存在的那份（#364）。判定复用 ledger.find_ledger_by_run，不另写一份。"""
+    from .run import run_ledger_roots
+
+    roots = run_ledger_roots(repo_arg)
+    for root in roots:
+        try:
+            return ledger_mod.find_ledger_by_run(root, run_id), root
+        except Problem:
+            continue
+    raise Problem("RUN_NOT_FOUND", f"run {run_id} 不存在", details={"run_id": run_id, "searched": [str(r) for r in roots]}, exit_code=EXIT_FATAL)
 
 
 def _locate_any(args: argparse.Namespace) -> tuple[Path, Path]:
     """同 _locate，但无定位参数时允许落到「终态且未复盘」的唯一 run（复盘 / 会话丢失后的补救）。"""
-    from .run import resolve_repo_root
+    from .run import run_roots
 
     if getattr(args, "run", None) or getattr(args, "session", None):
         return _locate(args)
-    repo_root = resolve_repo_root(args.repo)
-    pending = [r for r in ledger_mod.list_runs(repo_root) if r.get("retro_pending")]
-    if len(pending) == 1:
-        return Path(pending[0]["ledger_path"]), repo_root
-    raise Problem("RUN_AMBIGUOUS", "请用 --run 或 --session 指定要复盘的 run", details={"retro_pending": pending}, exit_code=EXIT_FATAL)
+    roots = run_roots(args.repo)
+    for root in roots:
+        pending = [r for r in ledger_mod.list_runs(root) if r.get("retro_pending")]
+        if len(pending) == 1:
+            return Path(pending[0]["ledger_path"]), root
+        if len(pending) > 1:
+            raise Problem("RUN_AMBIGUOUS", "请用 --run 或 --session 指定要复盘的 run", details={"retro_pending": pending}, exit_code=EXIT_FATAL)
+    raise Problem("RUN_AMBIGUOUS", "请用 --run 或 --session 指定要复盘的 run", details={"retro_pending": []}, exit_code=EXIT_FATAL)
 
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="bl", description="builder-loop V8 runtime")
-    p.add_argument("--repo", help="仓库路径（默认当前目录所在主仓）")
+    p.add_argument("--repo", help="仓库路径（默认当前目录）：linked worktree 按它自己解析，不回退主仓；已有 run 定位会再查主仓")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     def add_locators(sp: argparse.ArgumentParser, *, nested: bool = False) -> None:

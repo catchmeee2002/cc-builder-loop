@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Any
 
 from . import contract as contract_mod
-from . import evidence, gitx, ledger as ledger_mod, worktree
+from . import evidence, gitx, ledger as ledger_mod, process, worktree
 from .errors import Problem, fatal, needs_user, negative
 from .jsonutil import digest, sha256_bytes
 from .machine import failure_signature, private_pycache
@@ -435,15 +435,14 @@ def _run(cwd: Path, argv: list[str], timeout: int, log_path: Path, env: dict[str
         log.write(("$ " + " ".join(shlex.quote(a) for a in argv) + "\n").encode())
         log.flush()
         try:
-            proc = subprocess.run(argv, cwd=str(cwd), stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, timeout=timeout, env=env)
-            rc = proc.returncode
-        except subprocess.TimeoutExpired:
-            timed_out = True
-            rc = 124
-            log.write(f"\n[TIMEOUT] 超过 {timeout}s\n".encode())
+            # 进程创建 / 超时 / 整组回收共用门禁执行边界（#363）：preflight、machine 与此处同一实现
+            rc, timed_out = process.run(argv, cwd=cwd, env=env, timeout=timeout, stdout=log)
         except FileNotFoundError as exc:
             rc = 127
             log.write(f"\n[NOT FOUND] {exc}\n".encode())
+        if timed_out:
+            rc = 124
+            log.write(f"\n[TIMEOUT] 超过 {timeout}s\n".encode())
     return rc, log_path.read_bytes().decode("utf-8", "replace"), timed_out
 
 

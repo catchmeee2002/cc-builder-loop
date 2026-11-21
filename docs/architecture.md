@@ -37,12 +37,13 @@ proof 只能证明"测试能抓住偏离当前实现"，证明不了"当前实�
 
 | 模块 | 职责 |
 |---|---|
-| `config` | `.claude/loop.yml` → `pass_cmd[] / max_iterations / proof_runner / worktree.root`；PyYAML 缺席时用内置子集解析。`start` 读主仓工作区；`contract revise` 读候选 HEAD 里已提交的那份（run 内的判据参数只有一个家，就是随交付合入的那份，#282），候选里没有被跟踪的 loop.yml 时才退回主仓工作区 |
+| `config` | `.claude/loop.yml` → `pass_cmd[] / max_iterations / proof_runner / worktree.root`；PyYAML 缺席时用内置子集解析。`start` 读选仓（run 的 `repo.root`，linked worktree 就是它自己）的工作区；`contract revise` 读候选 HEAD 里已提交的那份（run 内的判据参数只有一个家，就是随交付合入的那份，#282），候选里没有被跟踪的 loop.yml 时才退回同一工作区 |
 | `contract` | 标签提取、校验、三面 digest、`classify_change`、glob 匹配；**`write_rejection()` 是路径归属与保护的唯一判定入口**（checkpoint / PreToolUse / mutation patch 共用） |
 | `ledger` | schema @2 校验、mutate、events、session 指针（读后回核 owner）、`peek`（不校验 schema，给 doctor / runs / abandon 处理旧版 ledger） |
 | `worktree` | 每个 run 的 `builder/` 与 `tester/` 两个 worktree（创建失败回滚）、临时 worktree（支持叠加与删除）、身份 / clean 断言 |
-| `run` | start / status / checkpoint（分角色、`--dry-run`）/ integrate / resume / hold（`--reason` / `--release`）/ abandon / contract validate\|revise |
-| `machine` | pass_cmd 三态、超时、执行后 worktree 变更检测、失败签名、`tester_files_mentioned`、基线预跑 `preflight` |
+| `run` | start / status / checkpoint（分角色、`--dry-run`）/ integrate / resume / hold（`--reason` / `--release`）/ abandon / contract validate\|revise。仓库解析两个入口：`resolve_repo_root()` 保留用户选的 linked worktree（start / validate / runs / doctor / cleanup），`run_roots()` 在定位已有 run 时依次试选仓与主仓 |
+| `machine` | pass_cmd 三态、超时、信号终止（无效观察）、执行后 worktree 变更检测、失败签名、`tester_files_mentioned`、基线预跑 `preflight` |
+| `process` | 门禁命令的执行边界：一次调用独占一个进程组，超时或直接进程被信号带走时先整组回收再返回（#363） |
 | `evidence` | tester 文件与 integrate 需求的 git 派生、投影、`state()`、`role_running()` / `gate_running()`、blockers（授权窗口）、`readiness()` |
 | `proof` | spec 结构校验、`build_argv`、junit 解析与 id 映射、候选 / 反例判定、四步执行、失败签名 |
 | `finalize` | 前置检查、commit-tree（可选 `--run-commit-hook`）、intent、CAS、所有 on-target worktree 的 checkout 同步、恢复、rebase |
@@ -106,6 +107,10 @@ proof 入口不做可应用性预检：交卷后 builder 又改了实现导致�
 
 machine / preflight / proof 的子进程都拿到本次调用独占、结束即删的 `PYTHONPYCACHEPREFIX`（run 目录 `tmp/` 下），不读工作树里的 `__pycache__`：那里的字节码不在任何 digest 里，保持字节数的变异在同一秒内 apply/revert 后会被 CPython 当成新鲜的（原则一）。每次调用新建，因为 proof 的临时 worktree 路径跨调用复用；工作树里的缓存不删（原则三）。
 
+**进程边界**（#363）：stage 与 proof runner 一律经 `process.run()` 以 `start_new_session=True` 启动，一次调用独占一个进程组。runtime 超时，或直接进程被信号带走时，先 `killpg` 整组再返回——判定与清理在同一次调用里闭环，残留的孙进程不会再与下一次 machine 抢 CPU。清理范围只有本次调用自己建出的进程组：不按进程名、命令行或其他 run 的 pid 查杀；进程正常退出时不额外清理（有意后台化的子孙归命令自己）。子孙主动 `setsid` 逃出进程组不受此约束，这与既有敌手模型一致。
+
+**仓库身份**（#364）：`--repo` 给的路径就是输入身份。`resolve_repo_root()` 只取该路径的 `git rev-parse --show-toplevel`，共用 `.git` 的 linked worktree 不再被静默改写回主仓——start / contract validate --check-repo / runs / doctor / cleanup 因此读的是用户选的那条产品线的分支与 `loop.yml`。定位**已有 run** 时用 `run_roots()`：先试选仓自己的 runs 目录，再试它的主仓（runtime 建的 candidate / tester worktree 属于主仓的 run），以实际存在的 ledger 为准，`RUN_NOT_FOUND` 的 details 列出搜索过的根。
+
 ## readiness → next_action
 
 terminal →（无 retrospective `retro`，否则 `done`）；有 blocker → `needs_user`；tester 需要干活且没在跑 → `spawn_tester` / `resume_tester`（**先于** builder 的 `checkpoint`：tester 后台并行，越早放出去越好）；builder 无 checkpoint → `checkpoint`；tester 在跑 → `awaiting_tester`；需要 integrate → `integrate`；machine 未过：machine 门禁正在执行 → `awaiting_gate`，fail 且失败日志里出现归 tester 的路径且 tester 尚未答复 → `resume_tester`，否则 `machine`；proof 未过：tester 在跑 → `awaiting_tester`，proof 门禁正在执行 → `awaiting_gate`，缺 mutation patch 且 tester 在首次 integrate 后还没答复过 → `resume_tester`，fail 且 owner=tester 且 tester 尚未答复 → `resume_tester`，否则 `proof`；reviewer 未过：在跑 → `awaiting_reviewer`，fail 且有 owner=tester 的 blocking/major 且 tester 尚未答复 → `resume_tester`，否则 spawn / resume；reviewer 已过但**又被续接在跑** → `awaiting_reviewer`；全过 → `finalize`。门禁在跑是 machine / proof 分支自己的输入条件：下一步取决于它的新结论，所以不按旧结论催（#279）；与门禁结论无关的动作（integrate、awaiting_tester、reviewer 阶段）照常给出；只有 preflight 在跑时照常给 `machine` / `proof`——它们会自动排队等 preflight。
@@ -159,6 +164,8 @@ finalize / abandon / finalize_failed 之后 session 不解绑；`start` 遇到�
 | machine 同一输入上显式重试（#278） | `bl machine --retry --reason R`：先要求当前是 fresh machine FAIL、原因为非空，并先记 `machine_retry` event（原因、上一失败签名与 stage、当时候选 HEAD、machine `dependency_digest`），再照常执行；retro 信号 `S-machine-retry`。不重置计数、不改旧 evidence、不绕过上限/无进展 blocker；runtime 不按路径判断失败是否与候选无关 |
 | pass_cmd 改了候选文件 | `failure.worktree_mutated`，视为 FAIL |
 | machine 执行期间输入投影变化（builder 并发 checkpoint / integrate、contract revise 改了 facets） | `MACHINE_INPUT_CHANGED`（negative，exit 1）：本次观察作废，不写 evidence、不追加 failures、不占 `machine_iter`，只记一条 `machine_input_changed` event，`changed_inputs` 列出变了的投影键。判据是 `evidence.input_changes`（起跑与收尾两份 ledger 的投影比较），而非 git HEAD——pass_cmd 自己 commit 造成的 HEAD 变化仍走 `worktree_mutated` |
+| machine stage 的直接进程被信号终止（负 returncode，#297） | `MACHINE_STAGE_SIGNALED`（negative，exit 1）：runtime 观察不到谁发的信号（外部会话、命令自身或崩溃），因此不构成候选失败——不写 evidence、不追加 failures、不占 `machine_iter`，只记一条 `machine_stage_signaled` event（stage、returncode、signal、candidate_head、dependency_digest）。日志保留；输入不变时直接重跑，信号作废本身不会生成 PASS。与输入投影变化同时发生时以 `MACHINE_INPUT_CHANGED` 为准 |
+| preflight stage 的直接进程被信号终止 | 该 stage 不算基线红（基线红只认正的 returncode），结果 `INCONCLUSIVE`，输出 `baseline_signaled`；超时的 `baseline_timed_out` 同理 |
 | proof 执行期间输入投影变化（checkpoint / integrate / tester 交卷换了 proof_spec / contract revise） | `PROOF_INPUT_CHANGED`（negative，exit 1）：与 machine 同一判据，同样不写 evidence、不追加 failures，记 `proof_input_changed` event（含 `attempt`），重跑的 attempt 不变 |
 | contract 声明的 `assurance.machine_stages` 在 loop.yml 里缺失 | `MACHINE_STAGE_MISSING`（fatal，exit 2），`bl start` / `contract revise` 经 `freeze_assurance` 拒绝，`validate --check-repo` 列为 problem；run 还没创建，无现场代价。loop.yml 未纳入版本控制，可能被别的 session 改写，这是唯一挡住「stage 静默丢失」的地方 |
 | `bl start` 时主仓停在目标分支且有未提交的 tracked 改动 | 候选从目标分支 HEAD 建立，这些改动不在基线里：start 输出 `target_uncommitted`（最多 50 条，只报告不拦截、不落盘） |

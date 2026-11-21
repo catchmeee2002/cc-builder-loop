@@ -2,6 +2,13 @@
 
 > 本文件记 **CC 版**产品线（分支 `cc/main`）。Codex 版见 `codex/main` 分支。
 
+## 仓库身份、进程组边界与信号终止（#364 #363 #297，2026-11-21）
+
+- **行为变更：`--repo` 不再把 linked worktree 改写成主仓（#364）**：`resolve_repo_root()` 只返回所选路径的 toplevel，`start` / `contract validate --check-repo` / `runs` / `doctor` / `cleanup` 因此读到用户选的那条产品线的分支与 `loop.yml`，不再静默套用共用 `.git` 的主仓配置。定位已有 run 用 `run_roots()`：先试选仓自己的 runs 目录，再试主仓（runtime 建的 candidate / tester worktree 属于后者），以实际存在的 ledger 为准，`RUN_NOT_FOUND` 的 details 列出搜索过的根。
+- **门禁命令独占进程组，超时先整组回收再返回（#363）**：preflight / machine / proof 统一经 `process.run()` 以 `start_new_session=True` 启动，runtime 超时或直接进程被信号带走时 `killpg` 整组再返回。残留孙进程不再与下一次 machine 抢 CPU 把它挤成假超时；清理只针对本次调用自己建出的进程组，不按进程名或 pid 广泛查杀，命令正常退出时也不额外清理。
+- **machine 的信号终止是无效观察（#297）**：stage 的直接进程因任意信号终止（负 returncode）时返回 `MACHINE_STAGE_SIGNALED`，只记 `machine_stage_signaled` event（stage / returncode / signal / candidate_head / dependency_digest），不写 evidence、不追加 failures、不占 `machine_iter`——runtime 不声称能判断信号来自外部会话还是命令自身，因此不能记成候选失败。日志保留，输入不变直接重跑；信号作废本身不会生成 PASS，交付仍需 fresh PASS。
+- **preflight 不再把信号终止算基线红**：基线红只认正的 returncode，信号终止的 stage 记为 `baseline_signaled`、结果 `INCONCLUSIVE`，与超时的 `baseline_timed_out` 同构。
+
 ## 失败事实绑定当前输入、诊断只读完整日志、超时归路与显式重试（#321 #365 #320 #278，2026-11-21）
 
 - **行为变更：machine / proof 失败输出不再带 `tail`（#365）**：截断副本让 builder 把局部片段当成全部失败模块（漏掉的失败被误判为下一轮新增回归）。失败结果只给指向本次完整日志的 `failure.log`；重复失败签名改由 runtime 内部读日志计算，不伪造第二事实视图。

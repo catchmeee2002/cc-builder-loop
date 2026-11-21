@@ -9,14 +9,14 @@ from __future__ import annotations
 import os
 import re
 import shutil
-import subprocess
+import signal
 import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
 from . import contract as contract_mod
-from . import evidence, gitx, ledger as ledger_mod, worktree
+from . import evidence, gitx, ledger as ledger_mod, process, worktree
 from .errors import fatal, needs_user, negative
 from .jsonutil import dumps, sha256_bytes
 
@@ -59,23 +59,28 @@ def failure_signature(text: str, stage: str, returncode: int) -> str:
 def _run_stage(cwd: Path, stage: dict[str, Any], log_path: Path, env: dict[str, str]) -> tuple[int, str, bool]:
     timed_out = False
     with open(log_path, "wb") as log:
-        try:
-            proc = subprocess.run(
-                ["bash", "-c", stage["cmd"]],
-                cwd=str(cwd),
-                stdout=log,
-                stderr=subprocess.STDOUT,
-                stdin=subprocess.DEVNULL,
-                timeout=stage["timeout"],
-                env=env,
-            )
-            rc = proc.returncode
-        except subprocess.TimeoutExpired:
-            timed_out = True
+        # 进程创建 / 超时 / 整组回收都在 process.run 里闭环（#363）：bash 的子孙不会在超时后继续跑
+        rc, timed_out = process.run(["bash", "-c", stage["cmd"]], cwd=cwd, env=env, timeout=stage["timeout"], stdout=log)
+        if timed_out:
             rc = 124
             log.write(f"\n[TIMEOUT] stage={stage['stage']} 超过 {stage['timeout']}s\n".encode())
     text = log_path.read_bytes().decode("utf-8", "replace")
     return rc, text, timed_out
+
+
+def stage_signal(returncode: Any) -> str | None:
+    """直接进程被信号终止时返回规范信号名；普通退出码返回 None。
+
+    runtime 只观察到「被信号带走」，观察不到谁发的（外部会话 / 命令自身）——所以这里不给归因，
+    只给事实（#297，原则一）。
+    """
+    if not isinstance(returncode, int) or returncode >= 0:
+        return None
+    signum = -returncode
+    try:
+        return signal.Signals(signum).name
+    except ValueError:
+        return f"signal {signum}"
 
 
 def commands_digest(stages: list[dict[str, Any]]) -> str:
@@ -112,9 +117,11 @@ def run_preflight(ledger_path: Path, repo_root: Path) -> dict[str, Any]:
 
     red = [r["stage"] for r in results if _is_red(r)]
     timed = [r["stage"] for r in results if r["timed_out"]]
+    signaled = [r["stage"] for r in results if _is_signaled(r)]
     with ledger_mod.mutate(ledger_path) as lg2:
         ledger_mod.log_event(lg2, "preflight", stages=results, commands_digest=commands_digest(stages), baseline_red=red)
-    return {"result": "RED" if red else ("INCONCLUSIVE" if timed else "GREEN"), "baseline_red": red, "baseline_timed_out": timed, "stages": results,
+    return {"result": "RED" if red else ("INCONCLUSIVE" if timed or signaled else "GREEN"), "baseline_red": red, "baseline_timed_out": timed,
+            "baseline_signaled": signaled, "stages": results,
             "note": "基线上就失败的 stage 与候选无关：要么改 .claude/loop.yml 后 `bl contract revise --authorize`，要么本次任务本就要修好它"}
 
 
@@ -134,7 +141,14 @@ def _tester_paths_in(ledger: dict[str, Any], repo_root: Path, candidate_head: st
 
 
 def _is_red(stage: dict[str, Any]) -> bool:
-    return stage.get("returncode") not in (0, None) and not stage.get("timed_out")
+    """普通非零退出才是红。超时与信号终止都是「没观察到结果」，不能算观察到失败（原则一）。"""
+    rc = stage.get("returncode")
+    return isinstance(rc, int) and rc > 0 and not stage.get("timed_out")
+
+
+def _is_signaled(stage: dict[str, Any]) -> bool:
+    """直接进程被信号带走（负 returncode）。来源不可辨，因此只作为「这次没观察到」归类（#297）。"""
+    return not stage.get("timed_out") and stage_signal(stage.get("returncode")) is not None
 
 
 def _latest_preflight(ledger: dict[str, Any]) -> dict[str, Any] | None:
@@ -156,6 +170,12 @@ def baseline_timed_out(ledger: dict[str, Any]) -> list[str] | None:
     """同一次基线预跑里超时的 stage。超时是没观察到结果，不是观察到失败（原则一）：常见于资源争抢。"""
     ev = _latest_preflight(ledger)
     return None if ev is None else [s["stage"] for s in ev.get("stages", []) if s.get("timed_out")]
+
+
+def baseline_signaled(ledger: dict[str, Any]) -> list[str] | None:
+    """同一次基线预跑里被信号终止的 stage。来源不可辨，同样只是没观察到结果（#297）。"""
+    ev = _latest_preflight(ledger)
+    return None if ev is None else [s["stage"] for s in ev.get("stages", []) if _is_signaled(s)]
 
 
 def _annotate_baseline(failed: dict[str, Any], ledger: dict[str, Any]) -> None:
@@ -220,6 +240,7 @@ def run_machine(ledger_path: Path, repo_root: Path, retry_reason: str | None = N
 
     results: list[dict[str, Any]] = []
     failed: dict[str, Any] | None = None
+    signaled: dict[str, Any] | None = None
     with evidence.gate_lock(lg, evidence.GATE_MACHINE), private_pycache(env, run_dir):
         if retry_reason is not None:
             # 拿到锁之后再记：GATE_BUSY 时命令根本没执行，审计不能包含一次没发生的重试（原则一）
@@ -231,20 +252,27 @@ def run_machine(ledger_path: Path, repo_root: Path, retry_reason: str | None = N
             entry = {"stage": stage["stage"], "returncode": rc, "log": str(log_path), "timed_out": timed_out}
             results.append(entry)
             if rc != 0:
+                sig_name = stage_signal(rc)
+                if sig_name:
+                    # 直接进程被信号带走：runtime 分不清是外部会话还是命令自身，不能冒充候选失败（#297，原则一）
+                    signaled = dict(entry, signal=sig_name)
+                    break
                 mentioned = _tester_paths_in(lg, repo_root, cand["head"], text)
                 # 完整日志已经落盘（entry.log）；失败签名读同一份文本，不再对外复制一份截断视图（#365）
                 failed = dict(entry, signature=failure_signature(text, stage["stage"], rc), tester_files_mentioned=mentioned)
                 break
 
-    mutated = worktree.residue(wt)
-    head_after = gitx.head(wt)
-    if mutated or head_after != cand["head"]:
-        failed = failed or {"stage": None, "returncode": None, "log": None, "timed_out": False, "signature": None}
-        failed["worktree_mutated"] = {"paths": mutated[:50], "head_after": head_after}
+    if signaled is None:
+        mutated = worktree.residue(wt)
+        head_after = gitx.head(wt)
+        if mutated or head_after != cand["head"]:
+            failed = failed or {"stage": None, "returncode": None, "log": None, "timed_out": False, "signature": None}
+            failed["worktree_mutated"] = {"paths": mutated[:50], "head_after": head_after}
 
     status = "fail" if failed else "pass"
     head_now: str | None = None
     changed: list[str] = []
+    signaled_now: dict[str, Any] | None = None
     with ledger_mod.mutate(ledger_path) as lg2:
         changed = evidence.input_changes(lg, lg2, "machine", repo_root)
         if changed:
@@ -253,6 +281,12 @@ def run_machine(ledger_path: Path, repo_root: Path, retry_reason: str | None = N
             # 只作废这一次：不写 evidence / failures / machine_iter，只留一条 event
             head_now = lg2["candidate"]["head"]
             ledger_mod.log_event(lg2, "machine_input_changed", head_at_start=cand["head"], head_now=head_now, iter=it, changed_inputs=changed)
+        elif signaled is not None:
+            # 信号终止同样不是可归因的观察：只留审计事实，不写 evidence / failures / machine_iter（#297，原则一）
+            signaled_now = signaled
+            ledger_mod.log_event(lg2, "machine_stage_signaled", stage=signaled["stage"], returncode=signaled["returncode"],
+                                 signal=signaled["signal"], candidate_head=cand["head"], iter=it,
+                                 dependency_digest=evidence.dependency_digest(lg, "machine", repo_root))
         else:
             if failed and failed.get("stage"):
                 _annotate_baseline(failed, lg2)  # 收尾时的 ledger：排队 / 执行期间 preflight 写下的新结论要算数（#270）
@@ -265,6 +299,11 @@ def run_machine(ledger_path: Path, repo_root: Path, retry_reason: str | None = N
             readiness = evidence.readiness(lg2, repo_root)
     if head_now is not None:
         raise negative("MACHINE_INPUT_CHANGED", "machine 执行期间输入变化（checkpoint / integrate / contract revise），本次观察作废：不记 evidence、不计失败、不占迭代；在新输入上直接重跑 `bl machine`", head_at_start=cand["head"], head_now=head_now, changed_inputs=changed, stages=results)
+    if signaled_now is not None:
+        raise negative("MACHINE_STAGE_SIGNALED",
+                       f"stage {signaled_now['stage']} 的直接进程被 {signaled_now['signal']} 终止（returncode {signaled_now['returncode']}）："
+                       "runtime 无法判断信号来自外部会话还是命令自身，这不构成候选失败。日志保留；输入不变时直接重跑 `bl machine`",
+                       stages=results, **{k: signaled_now[k] for k in ("stage", "returncode", "signal", "log")})
 
     out: dict[str, Any] = {"result": "PASS" if status == "pass" else "FAIL", "iter": it, "stages": results, "readiness": readiness}
     if failed:
