@@ -262,22 +262,24 @@ def run_machine(ledger_path: Path, repo_root: Path, retry_reason: str | None = N
                 failed = dict(entry, signature=failure_signature(text, stage["stage"], rc), tester_files_mentioned=mentioned)
                 break
 
+    wt_changed: dict[str, Any] | None = None
     if signaled is None:
         mutated = worktree.residue(wt)
         head_after = gitx.head(wt)
         if mutated or head_after != cand["head"]:
-            failed = failed or {"stage": None, "returncode": None, "log": None, "timed_out": False, "signature": None}
-            failed["worktree_mutated"] = {"paths": mutated[:50], "head_after": head_after}
+            # 收尾只观察到「工作树变了」，观察不到谁写的（builder、pass_cmd 或其他）：来源不可辨的观察不归因给候选（#378，原则一）
+            wt_changed = {"paths": mutated[:50], "head_at_start": cand["head"], "head_after": head_after}
 
     status = "fail" if failed else "pass"
     head_now: str | None = None
     changed: list[str] = []
     signaled_now: dict[str, Any] | None = None
+    worktree_changed_now: dict[str, Any] | None = None
     with ledger_mod.mutate(ledger_path) as lg2:
         changed = evidence.input_changes(lg, lg2, "machine", repo_root)
         if changed:
             # 观察期间 bl 自己登记的输入变了（checkpoint / integrate / contract revise）：这次 stage 结果对应不到任何确定输入，
-            # 既不是 pass 也不是 fail（原则一）。判据是输入投影而非 git HEAD——pass_cmd 自己 commit 仍走 worktree_mutated。
+            # 既不是 pass 也不是 fail（原则一）。判据是输入投影而非 git HEAD；未登记进 ledger 的工作树改动走 machine_worktree_changed。
             # 只作废这一次：不写 evidence / failures / machine_iter，只留一条 event
             head_now = lg2["candidate"]["head"]
             ledger_mod.log_event(lg2, "machine_input_changed", head_at_start=cand["head"], head_now=head_now, iter=it, changed_inputs=changed)
@@ -286,6 +288,12 @@ def run_machine(ledger_path: Path, repo_root: Path, retry_reason: str | None = N
             signaled_now = signaled
             ledger_mod.log_event(lg2, "machine_stage_signaled", stage=signaled["stage"], returncode=signaled["returncode"],
                                  signal=signaled["signal"], candidate_head=cand["head"], iter=it,
+                                 dependency_digest=evidence.dependency_digest(lg, "machine", repo_root))
+        elif wt_changed is not None:
+            # 收尾看到候选工作树被改动，写入者不可辨（#378）：与信号同构，只作废这次观察，不记候选失败、不占迭代
+            worktree_changed_now = wt_changed
+            ledger_mod.log_event(lg2, "machine_worktree_changed", paths=wt_changed["paths"], head_at_start=wt_changed["head_at_start"],
+                                 head_after=wt_changed["head_after"], candidate_head=cand["head"], iter=it,
                                  dependency_digest=evidence.dependency_digest(lg, "machine", repo_root))
         else:
             if failed and failed.get("stage"):
@@ -304,6 +312,11 @@ def run_machine(ledger_path: Path, repo_root: Path, retry_reason: str | None = N
                        f"stage {signaled_now['stage']} 的直接进程被 {signaled_now['signal']} 终止（returncode {signaled_now['returncode']}）："
                        "runtime 无法判断信号来自外部会话还是命令自身，这不构成候选失败。日志保留；输入不变时直接重跑 `bl machine`",
                        stages=results, **{k: signaled_now[k] for k in ("stage", "returncode", "signal", "log")})
+    if worktree_changed_now is not None:
+        raise negative("MACHINE_WORKTREE_CHANGED",
+                       "machine 执行期间候选工作树被改动（未提交改动或 HEAD 变化）：runtime 无法判断写入来自 builder、pass_cmd 还是其他，"
+                       "这不构成候选失败。现场与日志保留；处理掉改动或 checkpoint 吸收后在确定的输入上直接重跑 `bl machine`",
+                       stages=results, **{k: worktree_changed_now[k] for k in ("paths", "head_at_start", "head_after")})
 
     out: dict[str, Any] = {"result": "PASS" if status == "pass" else "FAIL", "iter": it, "stages": results, "readiness": readiness}
     if failed:

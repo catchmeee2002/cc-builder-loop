@@ -63,14 +63,21 @@ def test_iteration_limit_is_a_real_stop_and_needs_user_authorization(repo, cli, 
     assert [a["reason"] for a in L.load(ledger)["authorizations"]] == ["用户：已定位根因，再给 3 次"]
 
 
-def test_machine_worktree_mutation_detected(repo, cli):
+def test_machine_worktree_mutation_invalidates_observation(repo, cli):
+    """stage 改了候选工作树 → 本次观察作废，不写 evidence / failures / machine_iter。"""
     (repo.root / ".claude" / "loop.yml").write_text("pass_cmd:\n  - stage: mut\n    cmd: \"echo x >> src/foo.py\"\n    timeout: 5\n")
     repo.commit_all()
-    wt, _ = _start_lite(repo, cli)
+    wt, lp = _start_lite(repo, cli)
     implement_mul(wt)
     cli("checkpoint", "--session", "S1", "--role", "builder")
+    before = L.load(lp)
     res = cli("machine", "--session", "S1", expect=1)
-    assert res["failure"]["worktree_mutated"]["paths"] == ["src/foo.py"]
+    assert res.get("code") == "MACHINE_WORKTREE_CHANGED", res
+    assert res["details"]["paths"] == ["src/foo.py"]
+    after = L.load(lp)
+    assert after["evidence"]["machine"] == before["evidence"]["machine"]
+    assert after["failures"]["machine"] == before["failures"]["machine"]
+    assert after["counters"]["machine_iter"] == before["counters"]["machine_iter"]
 
 
 def test_evidence_stale_on_candidate_change(repo, cli):

@@ -74,23 +74,27 @@ def test_b2_real_failure_still_fail(repo, cli):
     assert after["counters"]["machine_iter"] == before["counters"]["machine_iter"] + 1
 
 
-def test_b3_direct_git_commit_is_fail_not_invalidated(repo, cli):
+def test_b3_direct_git_commit_is_worktree_change_not_input_change(repo, cli):
+    """pass_cmd 自己 commit：ledger 输入投影没变，收尾按 HEAD 差异判成工作树变化（不是候选 FAIL）。"""
     wt, lp = _start_lite(repo, cli)
     cmd = ("echo '# c' > src/direct.py && git add -A && "
            "git -c core.hooksPath=/dev/null -c user.email=t@t -c user.name=t commit -q -m 'chore(x): [cr_id_skip] Direct'")
     _set_stages(lp, cmd)
     before = L.load(lp)
     res = cli("machine", "--session", "S1", expect=1)
-    assert res.get("code") != "MACHINE_INPUT_CHANGED"
-    assert res["result"] == "FAIL"
-    assert res["failure"]["worktree_mutated"]["head_after"] == git(wt, "rev-parse", "HEAD")
+    assert res.get("code") == "MACHINE_WORKTREE_CHANGED", res
+    d = res["details"]
+    assert d["head_at_start"] == before["candidate"]["head"]
+    assert d["head_after"] == git(wt, "rev-parse", "HEAD")
+    assert d["head_after"] != d["head_at_start"]
+    # runtime 不 reset HEAD、不改写 ledger
     assert L.load(lp)["candidate"]["head"] == before["candidate"]["head"]
-    assert len(L.load(lp)["failures"]["machine"]) == len(before["failures"]["machine"]) + 1
+    assert not L.events_of(L.load(lp), "machine_input_changed")
 
 
-def test_b3_tracked_file_edit_is_fail(repo, cli):
-    wt, lp = _start_lite(repo, cli)
+def test_b3_tracked_file_edit_is_worktree_change(repo, cli):
+    _wt, lp = _start_lite(repo, cli)
     _set_stages(lp, "echo x >> src/foo.py")
     res = cli("machine", "--session", "S1", expect=1)
-    assert res.get("code") != "MACHINE_INPUT_CHANGED"
-    assert res["result"] == "FAIL" and "src/foo.py" in res["failure"]["worktree_mutated"]["paths"]
+    assert res.get("code") == "MACHINE_WORKTREE_CHANGED", res
+    assert res["details"]["paths"] == ["src/foo.py"], res

@@ -86,15 +86,19 @@ def test_b2_rerun_after_facets_invalidation_passes(repo, cli):
     assert cli("machine", "--session", "S1")["result"] == "PASS"
 
 
-def test_b2_stage_git_commit_still_fail_not_invalidated(repo, cli):
+def test_b2_stage_git_commit_is_worktree_change_not_input_change(repo, cli):
+    """区别两条判据：ledger 输入投影没变（不是 MACHINE_INPUT_CHANGED），收尾按 HEAD 差异作废观察。"""
     wt, lp = _start_lite(repo, cli)
     cmd = ("echo '# c' > src/direct.py && git add -A && "
            "git -c core.hooksPath=/dev/null -c user.email=t@t -c user.name=t commit -q -m 'chore(x): [cr_id_skip] Direct'")
     _set_stages(lp, cmd)
+    before = L.load(lp)
     res = cli("machine", "--session", "S1", expect=1)
+    assert res.get("code") == "MACHINE_WORKTREE_CHANGED", res
     assert res.get("code") != "MACHINE_INPUT_CHANGED"
-    assert res["result"] == "FAIL"
-    assert res["failure"]["worktree_mutated"]["head_after"] == git(wt, "rev-parse", "HEAD")
+    assert res["details"]["head_after"] == git(wt, "rev-parse", "HEAD")
+    assert res["details"]["head_at_start"] == before["candidate"]["head"]
+    assert not L.events_of(L.load(lp), "machine_input_changed")
 
 
 def test_b2_input_changes_machine_kind(repo, cli):

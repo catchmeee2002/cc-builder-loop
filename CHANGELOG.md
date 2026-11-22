@@ -2,6 +2,12 @@
 
 > 本文件记 **CC 版**产品线（分支 `cc/main`）。Codex 版见 `codex/main` 分支。
 
+## machine 观察期间候选工作树变化一律作废（#378，2026-11-22）
+
+- **行为变更：`pass_cmd` 自改候选不再记 FAIL（#378）**：machine 收尾检测到候选工作树有 tracked 修改、未忽略的 untracked 文件或 HEAD 变化时，写入者不可辨（builder、`pass_cmd` 或其他），因此不再写 `failure.worktree_mutated` 并计一次失败。这类观察与信号终止同构：返回 `MACHINE_WORKTREE_CHANGED`（exit 1），不写 evidence、不追加 `failures.machine`、不占 `machine_iter`，只记一条 `machine_worktree_changed` event（paths / head_at_start / head_after / candidate_head / iter / dependency_digest）。
+- **作废不代偿、不清理**：runtime 不自动重试、不 reset、不清理 dirty；builder 核对 `paths` 后把属于自己的改动 checkpoint 吸收、把无意改动恢复掉，再在确定的输入上直接重跑 `bl machine`，无需 `bl resume` 或 `--retry`。
+- **优先级**：ledger 输入投影同时变化仍是 `MACHINE_INPUT_CHANGED`，stage 直接进程被信号终止仍是 `MACHINE_STAGE_SIGNALED`；工作树变化优先于普通 PASS / 正 returncode FAIL / runtime timeout。候选未变化时三类现存分类不变。
+
 ## 仓库身份、进程组边界与信号终止（#364 #363 #297，2026-11-21）
 
 - **行为变更：`--repo` 不再把 linked worktree 改写成主仓（#364）**：`resolve_repo_root()` 只返回所选路径的 toplevel，`start` / `contract validate --check-repo` / `runs` / `doctor` / `cleanup` 因此读到用户选的那条产品线的分支与 `loop.yml`，不再静默套用共用 `.git` 的主仓配置。定位已有 run 用 `run_roots()`：先试选仓自己的 runs 目录，再试主仓（runtime 建的 candidate / tester worktree 属于后者），以实际存在的 ledger 为准，`RUN_NOT_FOUND` 的 details 列出搜索过的根。
