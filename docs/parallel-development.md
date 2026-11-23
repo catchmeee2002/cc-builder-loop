@@ -2,7 +2,7 @@
 
 本文适用于本机 `jiaofu-agent/app`、`engineering-knowledge/app`、`engineering-identity/app` 及其开发 worktree 中的 Claude Code 和 Codex 会话。开发、集成、发布和收尾前必须读取本文，再读取目标仓库的指令入口与发布约定。
 
-共享流程正文由 `cc-builder-loop` 仓库的 `docs/parallel-development.md` 唯一维护并纳入 Git；本机 `/srv/vehicle-ai-service/docs/parallel-development.md` 以软链指向该正文，其他仓库只保留入口和本仓发布细节，不复制正文。修改正文后在该仓库提交、推送。共享入口缺失或不可读时，先恢复软链，不从旧副本推测规则。已有会话需明确重新读取；新会话从各仓库入口加载。
+共享流程正文由 `cc-builder-loop` 仓库 `cc/main` 分支的 `docs/parallel-development.md` 唯一维护并纳入 Git；本机 `/srv/vehicle-ai-service/docs/parallel-development.md` 以软链指向该文件的检出目录，其他仓库只保留入口和本仓发布细节，不复制正文。修改正文后在该仓库提交、推送。共享入口缺失或不可读时，先恢复软链，不从旧副本推测规则。已有会话需明确重新读取；新会话从各仓库入口加载。
 
 单个改动可按用户选择使用 Planner + Codex 原生执行或 Builder-loop 实验；不得将普通实施请求隐式切到 Builder-loop。Claude Code 按其用户选择及对应 Skill 执行。两条路线均遵守本文的隔离、登记、集成与验收要求。
 
