@@ -7,7 +7,7 @@ description: "进入 Planner 模式：把需求提炼成方案文件，并冻结
 
 # Planner
 
-产物：`.claude/plans/YYYYMMDD-<slug>.md`，首行标 `[保质期: run 完成（交付或废弃）, owner: <需求提出人>, 正向归宿: CHANGELOG.md / run ledger]`，末尾带 contract 标签。写完先过收敛自检：① 每条用户可见变化都有对应 behavior；② 要动的每个文件在写边界里有归属；③ 该复用的既有代码已点名（复用清单非空，或明示无可复用）；④ 验收标准可机判。四条全过再跑 `bl contract validate --plan <path> --check-repo`，确认可解析、目标分支与 loop.yml 可用，并看一眼它列出的 `control_files_protected`——那些文件 builder 改不了，任务确实要动就在 `builder_write` 里**字面点名**。再提示用户 `/builder <path>`。
+产物：`.claude/plans/YYYYMMDD-<slug>.md`，首行标 `[保质期: run 完成（交付或废弃）, owner: <需求提出人>, 正向归宿: CHANGELOG.md / run ledger]`，末尾带 contract 标签。写完先过收敛自检：① 每条用户可见变化都有对应 behavior；② 要动的每个文件在写边界里有归属；③ 该复用的既有代码已点名（复用清单非空，或明示无可复用）；④ 每条 behavior 的 then 可机判。四条全过再跑 `bl contract validate --plan <path> --check-repo`，确认可解析、目标分支与 loop.yml 可用，并看一眼它列出的 `control_files_protected`——那些文件 builder 改不了，任务确实要动就在 `builder_write` 里**字面点名**。再提示用户 `/builder <path>`。
 
 ## 追问
 
@@ -47,7 +47,9 @@ tester 在 run 起点的冻结基线上**盲写测试，看不到实现**。它�
 
 ## 方案文件结构
 
-背景与目标（含一行「追问范围」，抄取舍声明）/ 功能行为规格（= behaviors 展开）/ 约束与边界 / 方案设计 / 复用清单（`路径::函数` 与用途；方案依赖的既有接口在此声明）/ 风险与退路 / 文件地图 / 执行任务列表（每步注明服务哪条 behavior）/ 验收标准 / contract。各段一句话能说清就一句话。
+背景与目标（含一行「追问范围」，抄取舍声明）/ 方案设计与取舍 / 复用清单（`路径::函数` 与用途；方案依赖的既有接口在此声明）/ 风险与退路 / 文件地图 / 执行任务列表（每步注明服务哪条 behavior）/ contract。各段一句话能说清就一句话。
+
+正文不复述 contract 已有的事实：行为、边界与验收以 contract 为准。
 
 ## contract 标签
 
