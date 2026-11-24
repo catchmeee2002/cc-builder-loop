@@ -2,6 +2,12 @@
 
 > 本文件记 **CC 版**产品线（分支 `cc/main`）。Codex 版见 `codex/main` 分支。
 
+## 环境没就绪不再被记成判据结果（#377 #383 #394 #381，2026-11-24）
+
+- **行为变更：stage 可声明环境就绪探针 `ready_cmd`（#377 #383）**：loop.yml 的 `pass_cmd[]` 新增可选 `ready_cmd`，随 `machine_commands` 冻结并计入 preflight 的配对 digest。探针非 0 或超时时 `cmd` 不跑：preflight 记 `INCONCLUSIVE` + `baseline_unready`（不进 `baseline_red`）；machine 报 `MACHINE_STAGE_UNREADY`（exit 1），不写 evidence、不计失败、不占 `machine_iter`。未写该键时 `Stage.to_json()` 与升级前逐字节一致。
+- **行为变更：proof_runner 冒烟超时单独归类（#394）**：对空目录收集超过 120s 时报「冒烟超时」而不是「proof_runner 起不来」，hint 说明多为 `uv run --with-requirements` 首次下载依赖、再跑一次通常即可。
+- **行为变更：preflight 建不出快照不再抛硬错（#381）**：快照 worktree 创建失败（如仓库父目录不可写）时返回 `INCONCLUSIVE` 并带 `snapshot_error`，不产生 `baseline_red`。
+
 ## tester 的拒绝条件提前到 brief / 交卷 / readiness（#380 #265 #397 #305 #398，2026-11-24）
 
 - **行为变更：tester brief 直接写明 framework 约束（#380 #265）**：`proof_kinds_allowed` 改由 `proof.kinds_allowed` 给出（唯一来源）；generic 下只剩 `mutation`（proof 下限为 reviewed-boundaries 时多一项），pytest 下保持 `baseline-red` / `mutation`。渲染文本在 runner 命令行后追加一句：generic 为「只许 mutation；每组恰好 1 个 test_id；不能用 baseline-red」，pytest 为「test_ids 的文件部分必须是 `.py`」与 `insufficient_spec` 的出口。盲写 tester 不再靠交卷被拒来试错。

@@ -41,6 +41,7 @@ pass_cmd:
   - stage: test
     cmd: python3 -m pytest -q tests
     timeout: 300
+    # ready_cmd: command -v tsx   # 可选；环境就绪探针，非 0 时判据不跑、也不算候选失败
 max_iterations: 5
 proof_runner:                 # 可选；proof 用的测试命令前缀，缺省 python3 -m pytest
   framework: pytest

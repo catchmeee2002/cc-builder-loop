@@ -200,7 +200,14 @@
               "stage",
               "cmd",
               "timeout"
-            ]
+            ],
+            "properties": {
+              "ready_cmd": {
+                "type": "string",
+                "minLength": 1,
+                "description": "环境就绪探针；非 0 或超时时判据不算失败，只算没观察到"
+              }
+            }
           }
         },
         "max_iterations": {

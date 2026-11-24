@@ -11,6 +11,11 @@ pass_cmd:
     stage:   { type: string,  required: true, examples: [lint, typecheck, test, build] }
     cmd:     { type: string,  required: true }
     timeout: { type: integer, default: 300, unit: seconds }
+    ready_cmd:
+      # 可选的环境就绪探针（如 `command -v tsx`）。非 0 或超时 = 环境没准备好：
+      # preflight 记 `unready`（不算基线红），machine 报 MACHINE_STAGE_UNREADY 且不计失败、不占迭代。
+      type: string
+      required: false
 
 max_iterations:
   # machine 尝试次数上限；到达且未 PASS → runtime 拒绝再跑，续跑需要用户授权（bl resume）。

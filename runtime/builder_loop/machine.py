@@ -17,7 +17,7 @@ from typing import Any, Iterator
 
 from . import contract as contract_mod
 from . import evidence, gitx, ledger as ledger_mod, process, worktree
-from .errors import fatal, needs_user, negative
+from .errors import Problem, fatal, needs_user, negative
 from .jsonutil import dumps, sha256_bytes
 
 NO_PROGRESS_REPEATS = 3
@@ -84,7 +84,15 @@ def stage_signal(returncode: Any) -> str | None:
 
 
 def commands_digest(stages: list[dict[str, Any]]) -> str:
-    return sha256_bytes(dumps([[s["stage"], s["cmd"]] for s in stages]).encode())[:16]
+    """preflight 事件与当前 machine_commands 的配对键。ready_cmd 决定基线怎么分类，必须计入（#377）；
+    没写 ready_cmd 的 stage 仍按两元素计算，既有事件照常对得上。"""
+    items = []
+    for s in stages:
+        item = [s["stage"], s["cmd"]]
+        if s.get("ready_cmd"):
+            item.append(s["ready_cmd"])
+        items.append(item)
+    return sha256_bytes(dumps(items).encode())[:16]
 
 
 def run_preflight(ledger_path: Path, repo_root: Path) -> dict[str, Any]:
@@ -106,22 +114,39 @@ def run_preflight(ledger_path: Path, repo_root: Path) -> dict[str, Any]:
     env.update({"BUILDER_LOOP_RUN_ID": lg["run_id"], "BUILDER_LOOP_MAIN_REPO": str(repo_root), "BUILDER_LOOP_PREFLIGHT": "1"})
 
     results: list[dict[str, Any]] = []
-    with evidence.gate_lock(lg, evidence.GATE_PREFLIGHT), private_pycache(env, ledger_path.parent):
-        base = Path(lg["repo"]["root"]).parent / f".bl-preflight-{lg['run_id']}"
-        with worktree.temp_worktree(repo_root, lg["repo"]["target_start_head"], base.parent, base.name) as wt:
-            env["BUILDER_LOOP_CANDIDATE"] = str(wt)
-            for stage in stages:
-                log_path = log_dir / f"preflight-{stage['stage']}.log"
-                rc, _text, timed_out = _run_stage(wt, stage, log_path, env)
-                results.append({"stage": stage["stage"], "returncode": rc, "timed_out": timed_out, "log": str(log_path)})
+    snapshot_error: str | None = None
+    base = Path(lg["repo"]["root"]).parent / f".bl-preflight-{lg['run_id']}"
+    try:
+        with evidence.gate_lock(lg, evidence.GATE_PREFLIGHT), private_pycache(env, ledger_path.parent):
+            with worktree.temp_worktree(repo_root, lg["repo"]["target_start_head"], base.parent, base.name) as wt:
+                env["BUILDER_LOOP_CANDIDATE"] = str(wt)
+                for stage in stages:
+                    probe = ready_probe(wt, stage, log_dir / f"preflight-{stage['stage']}-ready.log", env)
+                    if probe is not None and not probe["ready"]:
+                        results.append(probe)
+                        continue
+                    log_path = log_dir / f"preflight-{stage['stage']}.log"
+                    rc, _text, timed_out = _run_stage(wt, stage, log_path, env)
+                    results.append({"stage": stage["stage"], "returncode": rc, "timed_out": timed_out, "log": str(log_path)})
+    except Problem as exc:
+        # 快照 worktree 建不出来（父目录不可写等）也是「没观察到」，不是基线红（#381，原则一）
+        if exc.code != "GIT_COMMAND_FAILED":
+            raise
+        snapshot_error = exc.message
+        # git worktree add 失败可能已建了一半目录：不留残骸（下一次 preflight 会复用这个名字）
+        shutil.rmtree(base, ignore_errors=True)
+        gitx.git(repo_root, "worktree", "prune", check=False)
 
     red = [r["stage"] for r in results if _is_red(r)]
-    timed = [r["stage"] for r in results if r["timed_out"]]
+    timed = [r["stage"] for r in results if r["timed_out"] and not r.get("unready")]
     signaled = [r["stage"] for r in results if _is_signaled(r)]
+    unready = [r["stage"] for r in results if r.get("unready")]
     with ledger_mod.mutate(ledger_path) as lg2:
-        ledger_mod.log_event(lg2, "preflight", stages=results, commands_digest=commands_digest(stages), baseline_red=red)
-    return {"result": "RED" if red else ("INCONCLUSIVE" if timed or signaled else "GREEN"), "baseline_red": red, "baseline_timed_out": timed,
-            "baseline_signaled": signaled, "stages": results,
+        ledger_mod.log_event(lg2, "preflight", stages=results, commands_digest=commands_digest(stages), baseline_red=red,
+                             baseline_unready=unready, snapshot_error=snapshot_error)
+    return {"result": "RED" if red else ("INCONCLUSIVE" if timed or signaled or unready or snapshot_error else "GREEN"),
+            "baseline_red": red, "baseline_timed_out": timed,
+            "baseline_signaled": signaled, "baseline_unready": unready, "snapshot_error": snapshot_error, "stages": results,
             "note": "基线上就失败的 stage 与候选无关：要么改 .claude/loop.yml 后 `bl contract revise --authorize`，要么本次任务本就要修好它"}
 
 
@@ -140,14 +165,35 @@ def _tester_paths_in(ledger: dict[str, Any], repo_root: Path, candidate_head: st
     return sorted(p for p in owned if p in text)
 
 
+def ready_probe(cwd: Path, stage: dict[str, Any], log_path: Path, env: dict[str, str]) -> dict[str, Any] | None:
+    """环境就绪探针。stage 未声明 ready_cmd → None（视为就绪）。
+
+    探针不看 stage 的输出、不解析日志文本，只看它自己的退出码：环境没准备好时 `cmd` 根本没跑，
+    这一次就没有「判据结果」可观察（原则一、四，#377 #383）。
+    """
+    cmd = stage.get("ready_cmd")
+    if not cmd:
+        return None
+    probe = {"stage": f"{stage['stage']}-ready", "cmd": cmd, "timeout": stage["timeout"]}
+    rc, _text, timed_out = _run_stage(cwd, probe, log_path, env)
+    return {"stage": stage["stage"], "unready": True, "ready_cmd": cmd, "returncode": rc, "timed_out": timed_out,
+            "log": str(log_path), "ready": rc == 0 and not timed_out}
+
+
 def _is_red(stage: dict[str, Any]) -> bool:
-    """普通非零退出才是红。超时与信号终止都是「没观察到结果」，不能算观察到失败（原则一）。"""
+    """普通非零退出才是红。超时与信号终止都是「没观察到结果」，不能算观察到失败（原则一）。
+    unready 的 returncode 来自探针，`cmd` 没跑过，同样没有判据结果（#377）。"""
+    if stage.get("unready"):
+        return False
     rc = stage.get("returncode")
     return isinstance(rc, int) and rc > 0 and not stage.get("timed_out")
 
 
 def _is_signaled(stage: dict[str, Any]) -> bool:
-    """直接进程被信号带走（负 returncode）。来源不可辨，因此只作为「这次没观察到」归类（#297）。"""
+    """直接进程被信号带走（负 returncode）。来源不可辨，因此只作为「这次没观察到」归类（#297）。
+    unready 条目的 returncode 属于探针，`cmd` 没跑过，不能记成 stage 被信号终止（#377）。"""
+    if stage.get("unready"):
+        return False
     return not stage.get("timed_out") and stage_signal(stage.get("returncode")) is not None
 
 
@@ -167,15 +213,23 @@ def baseline_red(ledger: dict[str, Any]) -> list[str] | None:
 
 
 def baseline_timed_out(ledger: dict[str, Any]) -> list[str] | None:
-    """同一次基线预跑里超时的 stage。超时是没观察到结果，不是观察到失败（原则一）：常见于资源争抢。"""
+    """同一次基线预跑里超时的 stage。超时是没观察到结果，不是观察到失败（原则一）：常见于资源争抢。
+    unready 条目的超时属于探针（`cmd` 没跑过），只归 `baseline_unready`（#377）。"""
     ev = _latest_preflight(ledger)
-    return None if ev is None else [s["stage"] for s in ev.get("stages", []) if s.get("timed_out")]
+    return None if ev is None else [s["stage"] for s in ev.get("stages", []) if s.get("timed_out") and not s.get("unready")]
 
 
 def baseline_signaled(ledger: dict[str, Any]) -> list[str] | None:
     """同一次基线预跑里被信号终止的 stage。来源不可辨，同样只是没观察到结果（#297）。"""
     ev = _latest_preflight(ledger)
     return None if ev is None else [s["stage"] for s in ev.get("stages", []) if _is_signaled(s)]
+
+
+def baseline_unready(ledger: dict[str, Any]) -> list[str] | None:
+    """同一次基线预跑里环境就绪探针没过的 stage：`cmd` 没跑过，基线红无从谈起（#377 #383）。
+    从 stages[] 派生而不读 event 的 baseline_unready 字段（原则二）。"""
+    ev = _latest_preflight(ledger)
+    return None if ev is None else [s["stage"] for s in ev.get("stages", []) if s.get("unready")]
 
 
 def _annotate_baseline(failed: dict[str, Any], ledger: dict[str, Any]) -> None:
@@ -241,12 +295,18 @@ def run_machine(ledger_path: Path, repo_root: Path, retry_reason: str | None = N
     results: list[dict[str, Any]] = []
     failed: dict[str, Any] | None = None
     signaled: dict[str, Any] | None = None
+    unready: dict[str, Any] | None = None
     with evidence.gate_lock(lg, evidence.GATE_MACHINE), private_pycache(env, run_dir):
         if retry_reason is not None:
             # 拿到锁之后再记：GATE_BUSY 时命令根本没执行，审计不能包含一次没发生的重试（原则一）
             with ledger_mod.mutate(ledger_path) as lg_retry:
                 ledger_mod.log_event(lg_retry, "machine_retry", **_retry_fact(lg, repo_root, retry_reason.strip()))
         for stage in stages:
+            probe = ready_probe(wt, stage, log_dir / f"iter-{it}-{stage['stage']}-ready.log", env)
+            if probe is not None and not probe["ready"]:
+                # 环境没就绪：cmd 没跑，这次没有判据结果可归因给候选（#377 #383，原则一）
+                unready = probe
+                break
             log_path = log_dir / f"iter-{it}-{stage['stage']}.log"
             rc, text, timed_out = _run_stage(wt, stage, log_path, env)
             entry = {"stage": stage["stage"], "returncode": rc, "log": str(log_path), "timed_out": timed_out}
@@ -263,7 +323,7 @@ def run_machine(ledger_path: Path, repo_root: Path, retry_reason: str | None = N
                 break
 
     wt_changed: dict[str, Any] | None = None
-    if signaled is None:
+    if signaled is None and unready is None:
         mutated = worktree.residue(wt)
         head_after = gitx.head(wt)
         if mutated or head_after != cand["head"]:
@@ -274,6 +334,7 @@ def run_machine(ledger_path: Path, repo_root: Path, retry_reason: str | None = N
     head_now: str | None = None
     changed: list[str] = []
     signaled_now: dict[str, Any] | None = None
+    unready_now: dict[str, Any] | None = None
     worktree_changed_now: dict[str, Any] | None = None
     with ledger_mod.mutate(ledger_path) as lg2:
         changed = evidence.input_changes(lg, lg2, "machine", repo_root)
@@ -283,6 +344,13 @@ def run_machine(ledger_path: Path, repo_root: Path, retry_reason: str | None = N
             # 只作废这一次：不写 evidence / failures / machine_iter，只留一条 event
             head_now = lg2["candidate"]["head"]
             ledger_mod.log_event(lg2, "machine_input_changed", head_at_start=cand["head"], head_now=head_now, iter=it, changed_inputs=changed)
+        elif unready is not None:
+            # 环境没就绪同样不是可归因的观察：只留审计事实，不写 evidence / failures / machine_iter（#377 #383，原则一）
+            unready_now = unready
+            ledger_mod.log_event(lg2, "machine_stage_unready", stage=unready["stage"], ready_cmd=unready["ready_cmd"],
+                                 returncode=unready["returncode"], timed_out=unready["timed_out"], log=unready["log"],
+                                 candidate_head=cand["head"], iter=it,
+                                 dependency_digest=evidence.dependency_digest(lg, "machine", repo_root))
         elif signaled is not None:
             # 信号终止同样不是可归因的观察：只留审计事实，不写 evidence / failures / machine_iter（#297，原则一）
             signaled_now = signaled
@@ -312,6 +380,13 @@ def run_machine(ledger_path: Path, repo_root: Path, retry_reason: str | None = N
                        f"stage {signaled_now['stage']} 的直接进程被 {signaled_now['signal']} 终止（returncode {signaled_now['returncode']}）："
                        "runtime 无法判断信号来自外部会话还是命令自身，这不构成候选失败。日志保留；输入不变时直接重跑 `bl machine`",
                        stages=results, **{k: signaled_now[k] for k in ("stage", "returncode", "signal", "log")})
+    if unready_now is not None:
+        raise negative("MACHINE_STAGE_UNREADY",
+                       f"stage {unready_now['stage']} 的环境就绪探针 `{unready_now['ready_cmd']}` 没通过"
+                       f"（returncode {unready_now['returncode']}{'，超时' if unready_now['timed_out'] else ''}）："
+                       f"环境没准备好，判据命令没跑，这不构成候选失败。日志保留在 {unready_now['log']}；装好环境后直接重跑 `bl machine`，"
+                       "或删掉该 stage 的 ready_cmd 恢复旧行为",
+                       stages=results, **{k: unready_now[k] for k in ("stage", "ready_cmd", "returncode", "timed_out", "log")})
     if worktree_changed_now is not None:
         raise negative("MACHINE_WORKTREE_CHANGED",
                        "machine 执行期间候选工作树被改动（未提交改动或 HEAD 变化）：runtime 无法判断写入来自 builder、pass_cmd 还是其他，"

@@ -413,6 +413,13 @@ def smoke_runner(runner: dict[str, str], repo_root: Path) -> None:
         try:
             proc = subprocess.run([*argv, "--collect-only", "-q", "-p", "no:cacheprovider", empty], cwd=str(repo_root),
                                   capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL)
+        except subprocess.TimeoutExpired:
+            # 120s 不够不说明 runner 坏了：`uv run --with-requirements` 首次要下载整棵依赖（#394）
+            raise negative("PROOF_RUNNER_UNAVAILABLE",
+                           f"冒烟超时：`{runner['cmd']}` 对空目录收集超过 120s（可能仍在下载依赖）",
+                           cmd=runner["cmd"], timeout=120,
+                           hint="依赖首次下载可能超过 120s（如 `uv run --with-requirements` 要装几十个包）：网络就绪后再跑一次通常即可；"
+                                "仍超时就缩短 cmd 的依赖面或预热环境") from None
         except (OSError, subprocess.SubprocessError) as exc:
             raise negative("PROOF_RUNNER_UNAVAILABLE", f"proof_runner 起不来: {exc}", cmd=runner["cmd"]) from None
     if proc.returncode != PYTEST_NO_TESTS_COLLECTED:

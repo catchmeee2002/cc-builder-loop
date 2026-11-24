@@ -31,9 +31,14 @@ class Stage:
     stage: str
     cmd: str
     timeout: int = DEFAULT_STAGE_TIMEOUT
+    # 环境就绪探针：非 0 / 超时说明环境没准备好，此时不跑 cmd，也不把结果记成判据（原则一，#377 #383）
+    ready_cmd: str | None = None
 
     def to_json(self) -> dict[str, Any]:
-        return {"stage": self.stage, "cmd": self.cmd, "timeout": self.timeout}
+        out: dict[str, Any] = {"stage": self.stage, "cmd": self.cmd, "timeout": self.timeout}
+        if self.ready_cmd is not None:  # 不写该键时输出与旧格式逐字相同，既有 digest 不漂
+            out["ready_cmd"] = self.ready_cmd
+        return out
 
 
 @dataclass
@@ -292,7 +297,11 @@ def _parse_loop_config(raw: bytes, path: str) -> LoopConfig:
         timeout = item.get("timeout", DEFAULT_STAGE_TIMEOUT)
         if not isinstance(timeout, int) or timeout <= 0:
             raise fatal("CONFIG_PASS_CMD_INVALID", f"pass_cmd[{idx}].timeout 必须是正整数", item=item)
-        stages.append(Stage(stage=str(item["stage"]), cmd=str(item["cmd"]), timeout=timeout))
+        ready_cmd = item.get("ready_cmd")
+        if ready_cmd is not None and (not isinstance(ready_cmd, str) or not ready_cmd.strip()):
+            raise fatal("CONFIG_PASS_CMD_INVALID", f"pass_cmd[{idx}].ready_cmd 必须是非空字符串", item=item)
+        stages.append(Stage(stage=str(item["stage"]), cmd=str(item["cmd"]), timeout=timeout,
+                            ready_cmd=ready_cmd.strip() if ready_cmd is not None else None))
 
     max_iter = data.get("max_iterations", DEFAULT_MAX_ITERATIONS)
     if not isinstance(max_iter, int) or max_iter <= 0:
