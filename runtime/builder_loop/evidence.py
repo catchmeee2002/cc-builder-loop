@@ -23,7 +23,7 @@ from typing import Any, Iterator
 
 from . import contract as contract_mod
 from . import gitx
-from .errors import negative
+from .errors import Problem, negative
 from .jsonutil import digest
 from .ledger import EVIDENCE_KINDS, events_of, log_event, now_iso, run_dir
 
@@ -455,6 +455,21 @@ def _first_integrate_at(ledger: dict[str, Any]) -> str:
     return stamps[0] if stamps else ""
 
 
+def _last_candidate_change(ledger: dict[str, Any]) -> str:
+    return max((cp["at"] for cp in ledger["candidate"]["checkpoints"]), default="")
+
+
+def _stale_patches(ledger: dict[str, Any], repo_root: Path) -> bool:
+    """已交付的 mutation patch 是否已打不到当前候选（#305 #398）。只在 readiness 的 proof 分支问：
+    它每次起 git 子进程，而 readiness 被 Stop hook 频繁调用。"""
+    from .proof import stale_patch_groups  # proof 反向依赖本模块，只能延迟导入
+
+    try:
+        return bool(stale_patch_groups(ledger, repo_root))
+    except Problem:
+        return False
+
+
 def implementation_readable_by_tester(ledger: dict[str, Any]) -> bool:
     """首次 integrate 之后 tester 的读隔离解除（它要读候选才能写 mutation patch）。"""
     return bool(_first_integrate_at(ledger))
@@ -525,6 +540,11 @@ def readiness(ledger: dict[str, Any], repo_root: Path) -> dict[str, Any]:
             action = ACTION_AWAITING_GATE  # 同 machine：proof 在跑，等它的新结论（#279）
         elif missing_patch(ledger) and last_role_result_at(ledger, "tester") <= _first_integrate_at(ledger):
             # 两段式：tester 首轮盲写时给不出 mutation patch；集成后实现可读了，续接它补上
+            action = ACTION_RESUME_TESTER
+        elif (tester_known and implementation_readable_by_tester(ledger) and _stale_patches(ledger, repo_root)
+              and last_role_result_at(ledger, "tester") <= _last_candidate_change(ledger)):
+            # 已交付的 patch 打不到当前候选（builder 改了实现或 rebase 之后）：现在就能判定，不必等 proof
+            # 报 TEST_MUTATION_INVALID 再整轮重跑（#305 #398）。tester 已就当前候选答复过就不再催，避免死循环
             action = ACTION_RESUME_TESTER
         elif states["proof"] == STATE_FAIL and owner == "tester" and not replied:
             action = ACTION_RESUME_TESTER

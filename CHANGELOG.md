@@ -2,6 +2,12 @@
 
 > 本文件记 **CC 版**产品线（分支 `cc/main`）。Codex 版见 `codex/main` 分支。
 
+## tester 的拒绝条件提前到 brief / 交卷 / readiness（#380 #265 #397 #305 #398，2026-11-24）
+
+- **行为变更：tester brief 直接写明 framework 约束（#380 #265）**：`proof_kinds_allowed` 改由 `proof.kinds_allowed` 给出（唯一来源）；generic 下只剩 `mutation`（proof 下限为 reviewed-boundaries 时多一项），pytest 下保持 `baseline-red` / `mutation`。渲染文本在 runner 命令行后追加一句：generic 为「只许 mutation；每组恰好 1 个 test_id；不能用 baseline-red」，pytest 为「test_ids 的文件部分必须是 `.py`」与 `insufficient_spec` 的出口。盲写 tester 不再靠交卷被拒来试错。
+- **行为变更：交卷时校验 pytest node id 的符号真实存在（#397）**：`check_structure` 在 pytest 分支用 `ast` 静态解析 test_ids 引用的文件（交卷读 tester worktree，proof 入口读 tester head），核对 `file::func` / `file::Class::method` 存在；拼错时 `PROOF_SPEC_INVALID`，details 带 `test_ids_missing`。参数化 id 只看第一个 `[` 之前；源文件解析失败、类声明了基类时找不到的方法一律放行，留给 proof 的 `missing` 兜底。不起 Python 环境，不跑 pytest。
+- **行为变更：patch 打不上时 readiness 提前指向 `resume_tester`（#305 #398）**：machine 已过、proof 未过时，若 `stale_patch_groups` 判定已交付的 mutation patch 打不到当前候选 HEAD，且 tester 在最近一次候选变化后没答复过，`next_action` 直接给 `resume_tester`（brief 里对应 `stale_mutation_patch` 待办），不再等 `bl proof` 报 `TEST_MUTATION_INVALID` 才整轮返工。tester 已就当前候选答复过则落回既有 proof 分支，避免死循环。
+
 ## generic mutation 的反例现场与候选同源，runner 起不来不再记成失败证据（#375 #376，2026-11-24）
 
 - **行为变更：generic 的 mutation 组先跑一次对照（#375）**：框架为 `generic` 时，每个 mutation 组在打 patch 之前先在同一个现场跑一次；非 0 就报 `TEST_PROOF_RUNNER_FAILED`（`phase=control`，`suggested_owner=contract`），不再产出 `assertion-failure`。runner 起不来（命令不存在、依赖缺失）因此不可能被当成「测试红了」，`bl proof` 不再假通过。对照超时归 `TEST_PROOF_GROUP_TIMEOUT`（`phase=control`）。pytest 路径不变。这一档证明的是「命令能跑起来，且被 patch 从成功变失败」，不是断言级；generic 的强证明只到这一档。

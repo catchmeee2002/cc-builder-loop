@@ -20,7 +20,7 @@ from . import contract as contract_mod
 from . import evidence, gitx
 from .jsonutil import dumps
 from .ledger import events_of, ledger_path
-from .proof import stale_patch_groups
+from .proof import kinds_allowed, stale_patch_groups
 from .run import bl_bin
 
 TESTER_RESULT_FORMAT = (
@@ -236,8 +236,9 @@ def build(lg: dict[str, Any], repo_root: Path, role: str) -> dict[str, Any]:
                 entry[key] = b[key]
         if role == "tester":
             floor = b.get("proof", contract_mod.PROOF_FLOOR_STRONG)
-            entry["proof_kinds_allowed"] = (["baseline-red", "mutation", "reviewed-boundaries"]
-                                            if floor == contract_mod.PROOF_FLOOR_REVIEWED else ["baseline-red", "mutation"])
+            # 允许的 kind 由 proof.kinds_allowed 一处给出（#380 #265）：盲写 tester 看不到 runtime，
+            # 只能在 brief 里读到这条约束，否则要交卷被拒才知道 generic 不能用 baseline-red
+            entry["proof_kinds_allowed"] = kinds_allowed((s.get("proof_runner") or {}).get("framework", "pytest"), floor)
         out["behaviors"].append(entry)
 
     if role == "tester":
@@ -320,6 +321,9 @@ def render(brief: dict[str, Any]) -> str:
             f"写边界 tester_write: {brief['write_paths']}；{brief['write_rule']}",
             f"protected（谁都不能动）: {brief['protected_paths']}",
             f"测试命令由项目冻结，不需要你给 argv：{runner.get('cmd')}（framework={runner.get('framework')}）；proof_spec 每组只给 test_ids（pytest node id，如 tests/test_x.py::test_a）",
+            ("generic 只许 mutation；每组恰好 1 个 test_id；不能用 baseline-red"
+             if runner.get("framework", "pytest") != "pytest" else
+             "pytest 下 test_ids 的文件部分必须是 .py；测试语言与 framework 不符时交 status=insufficient_spec"),
             RESULT_RULE,
             EVIDENCE_LIST_RULE,
             ANCHOR_RULE,

@@ -18,6 +18,7 @@ generic 没有逐用例结果，强证明组因此只许一个证据 test_id。
 
 from __future__ import annotations
 
+import ast
 import os
 import re
 import shlex
@@ -52,6 +53,16 @@ OWNER_BY_FAILURE = {**{c: "tester" for c in TESTER_OWNED_FAILURES}, "TEST_PROOF_
 
 def _spec_error(msg: str, **details: Any) -> Problem:
     return Problem("PROOF_SPEC_INVALID", msg, details=details, exit_code=1)
+
+
+def kinds_allowed(framework: str, floor: str) -> list[str]:
+    """该 framework 与 proof 下限下可选的 proof kind。唯一来源：brief 与 check_structure 都引用它，
+    不各抄一份（#380 #265，原则二）。generic 只有整条命令的退出码，既分不清断言失败与启动错误，
+    也没有逐用例结果，所以只能 mutation。"""
+    out = [KIND_BASELINE, KIND_MUTATION] if framework == "pytest" else [KIND_MUTATION]
+    if floor == contract_mod.PROOF_FLOOR_REVIEWED:
+        out.append(KIND_REVIEWED)
+    return out
 
 
 # ---------------------------------------------------------------- spec 校验（tester 交卷时做；候选可读后另加 patch 预检）
@@ -183,6 +194,83 @@ def _precheck_patches(spec: dict[str, Any], lg: dict[str, Any], repo_root: Path)
                               group=i, behavior=bid, stderr=stderr[-2000:], candidate_head=head)
 
 
+def _module_symbols(body: list[ast.stmt]) -> dict[str, Any] | None:
+    """源文件的符号树：名字 → {children, has_bases, opaque}。只认顶层函数 / 类 / 赋值 / import。
+    `opaque` 表示这个符号的子符号未知（导入来的、赋值别名）：里面找不到不代表不存在。
+    `from x import *` 让整个模块的符号表不可知，返回 None。"""
+    out: dict[str, Any] = {}
+    for ch in body:
+        if isinstance(ch, ast.ClassDef):
+            children = _module_symbols(ch.body)
+            if children is None:
+                return None
+            out[ch.name] = {"children": children,
+                            "has_bases": any(ast.unparse(b) != "object" for b in ch.bases),
+                            "opaque": False}
+        elif isinstance(ch, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            out[ch.name] = {"children": {}, "has_bases": False, "opaque": False}
+        elif isinstance(ch, ast.Assign):
+            for t in ch.targets:
+                if isinstance(t, ast.Name):
+                    out[t.id] = {"children": {}, "has_bases": False, "opaque": True}
+        elif isinstance(ch, ast.AnnAssign) and isinstance(ch.target, ast.Name):
+            out[ch.target.id] = {"children": {}, "has_bases": False, "opaque": True}
+        elif isinstance(ch, (ast.Import, ast.ImportFrom)):
+            if isinstance(ch, ast.ImportFrom) and any(al.name == "*" for al in ch.names):
+                return None
+            for al in ch.names:
+                out[al.asname or al.name.split(".")[0]] = {"children": {}, "has_bases": False, "opaque": True}
+    return out
+
+
+def _pytest_id_missing(symbols: dict[str, Any], parts: list[str]) -> bool:
+    """`Class::method` 这类路径在符号树里是否缺。父节点未知（opaque）或类声明了基类时，缺的那一段可能来自别处，不判缺。"""
+    cur, unknown, inheriting = symbols, False, False
+    for i, seg in enumerate(parts):
+        node = cur.get(seg)
+        if node is None:
+            return not (unknown or (inheriting and i == len(parts) - 1))
+        cur, unknown, inheriting = node["children"], bool(node.get("opaque")), bool(node.get("has_bases"))
+    return False
+
+
+def _node_id_missing(source: str | None, parts: list[str]) -> bool:
+    """源文件读不到、解析不了、或有 `from x import *` 就不判缺：那是别处的失败，不能在这里冒充（#397）。"""
+    if source is None:
+        return False
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError):
+        return False
+    symbols = _module_symbols(tree.body)
+    if symbols is None:
+        return False
+    return _pytest_id_missing(symbols, parts)
+
+
+def _source_of(lg: dict[str, Any], repo_root: Path, path: str, worktree_files: bool) -> str | None:
+    if worktree_files:
+        wt = (lg.get("tester") or {}).get("worktree")
+        if not wt:
+            return None
+        try:
+            return (Path(wt) / path).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return None
+    head = (lg.get("tester") or {}).get("head")
+    if not head:
+        return None
+    res = gitx.git(repo_root, "show", f"{head}:{path}", check=False)
+    return res.stdout if res.ok else None
+
+
+def _node_id_parts(test_id: str) -> tuple[str, list[str]]:
+    """pytest node id → (文件, 符号路径)。参数化 id 里可能含 `::`（#310），所以只取第一个 `[` 之前。"""
+    path, _, rest = test_id.partition("::")
+    rest = rest.split("[", 1)[0]
+    return path, [p for p in rest.split("::") if p]
+
+
 def check_structure(spec: Any, lg: dict[str, Any], repo_root: Path, *, worktree_files: bool = False) -> dict[str, Any]:
     """不依赖候选内容的校验：交卷与 proof 入口都做。"""
     if not isinstance(spec, dict) or not isinstance(spec.get("groups"), list) or not spec["groups"]:
@@ -194,6 +282,7 @@ def check_structure(spec: Any, lg: dict[str, Any], repo_root: Path, *, worktree_
     auth = c["authority"]
     tester_head = (lg.get("tester") or {}).get("head")
     seen: list[str] = []
+    sources: dict[str, str | None] = {}  # 同一文件只读一次
 
     for i, g in enumerate(spec["groups"]):
         where = f"groups[{i}]"
@@ -211,8 +300,12 @@ def check_structure(spec: Any, lg: dict[str, Any], repo_root: Path, *, worktree_
         seen.append(bid)
         if kind == KIND_REVIEWED and floors[bid] != contract_mod.PROOF_FLOOR_REVIEWED:
             raise _spec_error(f"behavior {bid} 在 contract 里没有放行 reviewed-boundaries，只能用 baseline-red 或 mutation")
-        if framework == "generic" and kind == KIND_BASELINE:
-            raise _spec_error("generic proof_runner 只看退出码，无法区分断言失败与启动错误，不能用 baseline-red")
+        allowed_here = kinds_allowed(framework, floors[bid])
+        if kind not in allowed_here:
+            if kind == KIND_BASELINE:
+                raise _spec_error("generic proof_runner 只看退出码，无法区分断言失败与启动错误，不能用 baseline-red")
+            raise _spec_error(f"{where}.kind={kind} 在 framework={framework}、proof 下限 {floors[bid]} 下不可用："
+                              f"只允许 {allowed_here}", allowed=allowed_here)
         tids = g.get("test_ids")
         if framework == "generic" and kind != KIND_REVIEWED:
             # generic 只有整条命令的退出码，没有逐用例结果：多条 id（含 0 个）无法逐条证明各自有鉴别力（#370）。
@@ -248,6 +341,19 @@ def check_structure(spec: Any, lg: dict[str, Any], repo_root: Path, *, worktree_
                     raise _spec_error(f"{where}.test_ids 的文件部分必须是 tester_write 内的路径: {f}")
                 if f not in existing:
                     raise _spec_error(f"{where}.test_ids 引用的文件在你的 worktree 里不存在: {f}")
+            missing_ids: list[str] = []
+            for t in tids:
+                f, parts = _node_id_parts(t)
+                if not parts or f not in existing:
+                    continue
+                if f not in sources:
+                    sources[f] = _source_of(lg, repo_root, f, worktree_files)
+                if _node_id_missing(sources[f], parts):
+                    missing_ids.append(t)
+            if missing_ids:
+                # 拼错的 node id 不必等到 proof 阶段才以 missing 的形式暴露（#397）
+                raise _spec_error(f"{where}.test_ids 指向的测试函数 / 类在文件里不存在：{', '.join(missing_ids)}",
+                                  test_ids_missing=missing_ids, group=i, behavior=bid)
         if kind == KIND_MUTATION and (g.get("patch") or "").strip():
             if not isinstance(g["patch"], str) or not patch_paths(g["patch"]):
                 raise _spec_error(f"{where}.patch 无法识别改动路径（需要 `diff --git a/x b/x` 头）")
