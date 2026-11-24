@@ -45,6 +45,8 @@ max_iterations: 5
 proof_runner:                 # 可选；proof 用的测试命令前缀，缺省 python3 -m pytest
   framework: pytest
   cmd: "{main_repo}/.venv/bin/python -m pytest"
+  # link_paths:                 # 可选；链接进反例现场的依赖目录（不在 git 里，如 node_modules）
+  #   - node_modules
 ```
 
 `.claude/builder-loop/` 加进 `.gitignore`。pass_cmd 与 proof 都在 worktree 内执行，必须能在新 checkout 里跑通；venv 在主仓就用 `{main_repo}` 引过去。

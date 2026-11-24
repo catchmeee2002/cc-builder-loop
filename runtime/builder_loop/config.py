@@ -22,6 +22,8 @@ PROOF_FRAMEWORKS = ("pytest", "generic")
 # proof 的测试命令由项目声明、start 时冻结进 assurance 面：环境依赖因此进入 evidence 的输入投影，
 # tester 不再自己写 argv（#229：否则只能把机器侧 venv 的绝对路径藏进 argv）。
 DEFAULT_PROOF_RUNNER = {"framework": "pytest", "cmd": "python3 -m pytest"}
+# 会被链接进反例现场的路径：relative to repo root, must stay inside it
+LINK_PATHS_FIELD = "link_paths"
 
 
 @dataclass
@@ -41,7 +43,7 @@ class LoopConfig:
     pass_cmd: list[Stage] = field(default_factory=list)
     max_iterations: int = DEFAULT_MAX_ITERATIONS
     worktree_root: str | None = None
-    proof_runner: dict[str, str] = field(default_factory=lambda: dict(DEFAULT_PROOF_RUNNER))
+    proof_runner: dict[str, Any] = field(default_factory=lambda: dict(DEFAULT_PROOF_RUNNER))
     evidence_neutral_paths: list[str] = field(default_factory=list)
 
     def to_json(self) -> dict[str, Any]:
@@ -232,6 +234,29 @@ def load_yaml_text(text: str) -> Any:
 # ---------------------------------------------------------------- loop.yml
 
 
+def _parse_link_paths(raw: Any) -> list[str]:
+    """proof_runner.link_paths：仓库内相对路径数组（正斜杠）。校验靠输入条件，不靠事后特判（原则四）。"""
+    if not isinstance(raw, list) or not all(isinstance(p, str) for p in raw):
+        raise fatal("CONFIG_PROOF_RUNNER_INVALID",
+                    "proof_runner.link_paths 必须是字符串数组（相对仓库根的路径，如 node_modules）", value=raw)
+    out: list[str] = []
+    for item in raw:
+        text = item.strip().replace("\\", "/")
+        if not text:
+            raise fatal("CONFIG_PROOF_RUNNER_INVALID", "proof_runner.link_paths 不能有空串", value=raw)
+        if text.startswith("/") or re.match(r"^[A-Za-z]:", text):
+            raise fatal("CONFIG_PROOF_RUNNER_INVALID", f"proof_runner.link_paths 必须是相对仓库根的路径: {item}", value=raw)
+        parts = [p for p in text.split("/") if p not in ("", ".")]
+        if not parts:
+            raise fatal("CONFIG_PROOF_RUNNER_INVALID", f"proof_runner.link_paths 不能指向仓库根: {item}", value=raw)
+        if ".." in parts:
+            raise fatal("CONFIG_PROOF_RUNNER_INVALID", f"proof_runner.link_paths 不能含 `..` 段: {item}", value=raw)
+        if parts[0] == ".git":
+            raise fatal("CONFIG_PROOF_RUNNER_INVALID", f"proof_runner.link_paths 不能指向 .git: {item}", value=raw)
+        out.append("/".join(parts))
+    return out
+
+
 def load_loop_config(repo_root: Path) -> LoopConfig:
     path = repo_root / LOOP_YML
     if not path.is_file():
@@ -290,6 +315,9 @@ def _parse_loop_config(raw: bytes, path: str) -> LoopConfig:
         if not isinstance(cmd, str) or not cmd.strip():
             raise fatal("CONFIG_PROOF_RUNNER_INVALID", "proof_runner.cmd 不能为空（generic 必须显式给出）")
         runner = {"framework": framework, "cmd": cmd.strip()}
+        raw_links = raw_runner.get(LINK_PATHS_FIELD)
+        if raw_links is not None:
+            runner[LINK_PATHS_FIELD] = _parse_link_paths(raw_links)
 
     # 对判据中性的路径：pass_cmd / proof_runner 读不到它们，改它们不让 machine / proof 失效。
     # 是项目事实（这个仓库的判据读什么），不是单次任务事实，所以只在 loop.yml 声明（原则二）。

@@ -64,6 +64,8 @@ max_iterations: 5              # machine 失败上限（通过的重验不计）
 proof_runner:                  # proof 用的测试命令前缀；runtime 在后面拼 test id
   framework: pytest            # pytest（读 junit 逐用例判定）| generic（只看退出码，只能做 mutation，每组恰好 1 个证据 test_id）
   cmd: "{main_repo}/.venv/bin/python -m pytest"   # 缺省 python3 -m pytest；{main_repo} 展开为主仓路径
+  link_paths:                  # 可选：链接进反例现场的仓库内相对路径，让反例现场与候选依赖同源
+    - node_modules             # generic 依赖安装产物（如 node_modules）时写在这里；候选里不存在会报 TEST_PROOF_RUNNER_FAILED
 evidence_neutral_paths:        # 可选，缺省为空 = 候选任何改动都让 machine / proof 失效
   - docs/**                    # 判据读不到的路径；只改它们不重跑 machine / proof（reviewer 照常复审）
 worktree:

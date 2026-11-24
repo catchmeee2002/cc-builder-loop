@@ -38,6 +38,18 @@ proof_runner:
       - "{main_repo}/.venv/bin/python -m pytest"
       - "uv run --no-project --with-requirements requirements.txt --with pytest python -m pytest"
       - "go test {tests} -count=1"
+  link_paths:
+    # 可选。链接进 baseline / mutation 反例现场的仓库内相对路径（数组）。
+    # 依赖安装产物（node_modules / .venv / vendor 等）不在 git 里，反例现场只有 checkout 内容；
+    # 声明后 runtime 从候选 worktree 软链过去，让反例现场与候选输入同源。
+    # 链接不复制、不安装、不清理目标；声明的路径在候选里不存在时报 TEST_PROOF_RUNNER_FAILED（phase=link）。
+    type: array
+    default: []
+    items:
+      type: string
+    examples:
+      - [node_modules]
+      - [".venv"]
 
 worktree:
   root:

@@ -471,6 +471,22 @@ def _group_timeout(phase: str, i: int, bid: str, g: dict[str, Any], rc: int, log
                     i, bid, phase=phase, timeout=g["timeout"], returncode=rc, log=str(log))
 
 
+def _link_paths(src_root: Path, dst_root: Path, paths: list[str]) -> None:
+    """把候选里的声明路径链接进反例现场，让两处输入同源（#376，原则一）。
+    只建链接：不复制、不安装、不清理链接目标——依赖目录归声明方负责。"""
+    for rel in paths:
+        dst = dst_root / rel
+        if dst.exists() or dst.is_symlink():
+            continue  # git 里跟踪的内容优先，不覆盖
+        src = src_root / rel
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        dst.symlink_to(src, target_is_directory=src.is_dir())
+
+
+def _missing_link_paths(src_root: Path, paths: list[str]) -> list[str]:
+    return [rel for rel in paths if not (src_root / rel).exists()]
+
+
 def _restore_worktree(wt: Path) -> tuple[list[str], list[str]]:
     """返回 (被修改的 tracked 路径, 被清理的 untracked 路径)。"""
     entries = gitx.status_porcelain(wt)
@@ -485,6 +501,13 @@ def _restore_worktree(wt: Path) -> tuple[list[str], list[str]]:
 
 def _ignorable(path: str) -> bool:
     return path.startswith((".pytest_cache", "__pycache__")) or "/__pycache__/" in path or path.endswith(".pyc")
+
+
+def _under_link(path: str, link_paths: list[str]) -> bool:
+    """链接本身不算现场被改动：目录型 .gitignore 规则不忽略符号链接（#376）。
+    只认精确路径——git 对符号链接只报 `?? node_modules` 一条，不会展开链接内部；
+    声明的路径若其实是被跟踪的真实目录，其内部新写的文件仍算现场改动。"""
+    return path in link_paths
 
 
 # ---------------------------------------------------------------- 主流程
@@ -516,6 +539,7 @@ def run_proof(ledger_path: Path, repo_root: Path, spec_override: dict[str, Any] 
     worktree.assert_candidate_clean(wt)
     runner = lg["contract"]["assurance"].get("proof_runner") or {"framework": "pytest", "cmd": "python3 -m pytest"}
     framework = runner.get("framework", "pytest")
+    link_paths = list(runner.get("link_paths") or [])
     auth = lg["contract"]["authority"]
 
     run_dir = ledger_path.parent
@@ -544,6 +568,15 @@ def run_proof(ledger_path: Path, repo_root: Path, spec_override: dict[str, Any] 
         for i, g in enumerate(spec["groups"]):
             if g["kind"] == KIND_MUTATION and not (g.get("patch") or "").strip():
                 raise _Failure("TEST_MUTATION_PATCH_MISSING", "mutation 组缺 patch：集成后已可读候选，请续接 tester 补一段只破坏该 behavior 的 unified diff", i, g["behavior_ids"][0])
+
+        if link_paths and any(g["kind"] in (KIND_BASELINE, KIND_MUTATION) for g in spec["groups"]):
+            # 声明的路径必须真的在候选里：借不到就说明声明写错了，归 contract（#376）
+            missing = _missing_link_paths(wt, link_paths)
+            if missing:
+                gi, g = next((i, g) for i, g in enumerate(spec["groups"]) if g["kind"] in (KIND_BASELINE, KIND_MUTATION))
+                raise _Failure("TEST_PROOF_RUNNER_FAILED",
+                               "proof_runner.link_paths 声明的路径在候选 worktree 里不存在，反例现场无法与候选同源",
+                               gi, g["behavior_ids"][0], phase="link", missing=missing, link_paths=link_paths)
 
         # ① 候选：逐 id 全部 passed
         for i, g in enumerate(spec["groups"]):
@@ -575,6 +608,7 @@ def run_proof(ledger_path: Path, repo_root: Path, spec_override: dict[str, Any] 
             if g["kind"] == KIND_BASELINE:
                 overlay = (cand["head"], files["present"], files["deleted"])
                 with worktree.temp_worktree(repo_root, lg["repo"]["target_start_head"], tmp_dir, f"baseline-g{i}", overlay=overlay) as tw:
+                    _link_paths(wt, tw, link_paths)
                     rc, out, cases, log, timed_out = execute(tw, g, "baseline", i)
                 if timed_out:
                     raise _group_timeout("baseline", i, bid, g, rc, log)
@@ -596,17 +630,31 @@ def run_proof(ledger_path: Path, repo_root: Path, spec_override: dict[str, Any] 
                 if gitx.blob_mode(repo_root, cand["head"], p) not in ("100644", "100755"):
                     raise _Failure("TEST_MUTATION_INVALID", f"patch 触及候选上不存在的普通文件 {p}", i, bid, path=p)
             with worktree.temp_worktree(repo_root, cand["head"], tmp_dir, f"mutation-g{i}") as tw:
+                _link_paths(wt, tw, link_paths)
+                if framework != "pytest":
+                    # 对照实验（#375）：同一现场先不打 patch 跑一次。命令起不来时非 0，那是零观察，
+                    # 不能落到 assertion-failure——只比较成败翻转，不解读输出（原则一、四）
+                    c_rc, c_out, c_cases, c_log, c_timed_out = execute(tw, g, "control", i)
+                    if c_timed_out:
+                        raise _group_timeout("control", i, bid, g, c_rc, c_log)
+                    _restore_worktree(tw)
+                    _link_paths(wt, tw, link_paths)  # clean -fd 会把链接当未跟踪文件删掉，补回来
+                    if c_rc != 0:
+                        raise _Failure("TEST_PROOF_RUNNER_FAILED",
+                                       f"mutation 现场在打 patch 前就跑不过（退出码 {c_rc}）：runner 起不来或依赖缺失，"
+                                       "这次的「破坏后失败」证明不了任何事",
+                                       i, bid, phase="control", returncode=c_rc, log=str(c_log), cmd=runner["cmd"])
                 text = normalized_patch(g["patch"])
                 ap = gitx.git(tw, "apply", "--whitespace=nowarn", "-", check=False, input_text=text)
                 if not ap.ok:
                     raise _Failure("TEST_MUTATION_INVALID", "mutation patch 无法应用到候选", i, bid, stderr=ap.stderr[-2000:])
-                changed = sorted(p for _, p in gitx.status_porcelain(tw))
+                changed = sorted(p for _, p in gitx.status_porcelain(tw) if not _under_link(p, link_paths))
                 if changed != ppaths:
                     raise _Failure("TEST_MUTATION_INVALID", "patch 实际改动路径与声明不符", i, bid, declared=ppaths, actual=changed)
                 before = gitx.git(tw, "diff", "--binary", "--full-index").stdout
                 rc, out, cases, log, timed_out = execute(tw, g, "mutation", i)
                 after = gitx.git(tw, "diff", "--binary", "--full-index").stdout
-                extra = [p for _, p in gitx.status_porcelain(tw) if p not in changed and not _ignorable(p)]
+                extra = [p for _, p in gitx.status_porcelain(tw) if p not in changed and not _ignorable(p) and not _under_link(p, link_paths)]
                 if after != before or gitx.head(tw) != cand["head"] or extra:
                     raise _Failure("TEST_MUTATION_INVALID", "执行期间 mutation 现场被改动", i, bid, extra_paths=extra)
             if timed_out:

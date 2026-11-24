@@ -2,6 +2,11 @@
 
 > 本文件记 **CC 版**产品线（分支 `cc/main`）。Codex 版见 `codex/main` 分支。
 
+## generic mutation 的反例现场与候选同源，runner 起不来不再记成失败证据（#375 #376，2026-11-24）
+
+- **行为变更：generic 的 mutation 组先跑一次对照（#375）**：框架为 `generic` 时，每个 mutation 组在打 patch 之前先在同一个现场跑一次；非 0 就报 `TEST_PROOF_RUNNER_FAILED`（`phase=control`，`suggested_owner=contract`），不再产出 `assertion-failure`。runner 起不来（命令不存在、依赖缺失）因此不可能被当成「测试红了」，`bl proof` 不再假通过。对照超时归 `TEST_PROOF_GROUP_TIMEOUT`（`phase=control`）。pytest 路径不变。这一档证明的是「命令能跑起来，且被 patch 从成功变失败」，不是断言级；generic 的强证明只到这一档。
+- **行为变更：`proof_runner.link_paths` 让反例现场拿到候选依赖（#376）**：loop.yml 的 `proof_runner` 新增可选 `link_paths`（仓库内相对路径数组，如 `["node_modules"]`）。建 baseline / mutation 临时现场时，这些路径从候选 worktree 软链过去，两处输入因此同源；链接路径不算「现场被改动」，git 已跟踪的位置不覆盖。声明的路径在候选里不存在时报 `TEST_PROOF_RUNNER_FAILED`（`phase=link`）。未声明时不建任何链接，冻结的 `proof_runner` 与升级前逐字节一致。
+
 ## machine 观察期间候选工作树变化一律作废（#378，2026-11-22）
 
 - **行为变更：`pass_cmd` 自改候选不再记 FAIL（#378）**：machine 收尾检测到候选工作树有 tracked 修改、未忽略的 untracked 文件或 HEAD 变化时，写入者不可辨（builder、`pass_cmd` 或其他），因此不再写 `failure.worktree_mutated` 并计一次失败。这类观察与信号终止同构：返回 `MACHINE_WORKTREE_CHANGED`（exit 1），不写 evidence、不追加 `failures.machine`、不占 `machine_iter`，只记一条 `machine_worktree_changed` event（paths / head_at_start / head_after / candidate_head / iter / dependency_digest）。

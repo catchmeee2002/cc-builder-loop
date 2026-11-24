@@ -219,6 +219,14 @@
             },
             "cmd": {
               "type": "string"
+            },
+            "link_paths": {
+              "type": "array",
+              "description": "链接进反例现场的仓库内相对路径（如 node_modules），让反例现场与候选输入同源；由 start 从 loop.yml 冻结",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
             }
           }
         },
