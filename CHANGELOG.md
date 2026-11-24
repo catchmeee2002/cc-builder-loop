@@ -2,6 +2,13 @@
 
 > 本文件记 **CC 版**产品线（分支 `cc/main`）。Codex 版见 `codex/main` 分支。
 
+## 角色的观察纪律写进 brief 与 agent 定义（#268 #315 #399 #317，2026-11-24）
+
+- **reviewer 不得无观察放行（#268）**：工具调用没拿到输出时先重试或换命令，仍拿不到就缩小 `behaviors_verified` 或判 `blocked`，不得以其他 gate 的结论或自述代替自己的观察。句子同时进 reviewer brief 与 `agents/reviewer.md`。
+- **review_focus 覆盖 tester 产物（#315）**：review_focus 点名的约束覆盖整个候选 diff，包括 tester 集成进来的测试与夹具。
+- **守卫测试交卷前自检回退（#399）**：不列入 `proof_spec` 的守卫测试，交卷前须确认「把它声称锁住的那行改回去会变红」；reviewer 对守卫类 finding 复审时要求附回退实验结果。
+- **reviewed-boundaries 不拿历史快照比对（#317）**：`positive` / `boundary` / `invariant` 测试不得拿某次 run 的 `git show <sha>` 快照做比对，原样搬迁类 behavior 只写合入后仍然成立的检查。
+
 ## 环境没就绪不再被记成判据结果（#377 #383 #394 #381，2026-11-24）
 
 - **行为变更：stage 可声明环境就绪探针 `ready_cmd`（#377 #383）**：loop.yml 的 `pass_cmd[]` 新增可选 `ready_cmd`，随 `machine_commands` 冻结并计入 preflight 的配对 digest。探针非 0 或超时时 `cmd` 不跑：preflight 记 `INCONCLUSIVE` + `baseline_unready`（不进 `baseline_red`）；machine 报 `MACHINE_STAGE_UNREADY`（exit 1），不写 evidence、不计失败、不占 `machine_iter`。未写该键时 `Stage.to_json()` 与升级前逐字节一致。

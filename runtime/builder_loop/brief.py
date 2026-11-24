@@ -140,6 +140,18 @@ EVIDENCE_LIST_RULE = ("proof_spec.test_ids 只列用于证明本 behavior 的测
 ANCHOR_RULE = "只有反引号包住的文字是字面锚句；「」和“”里的词是术语引用，不按子串断言。"
 # 长期合入的测试不得把 run 时点钉成永久顺序（#374）
 LONG_LIVED_RULE = "长期合入的测试不得依赖本次 run 的 SHA、当前日期或 CHANGELOG 顶部顺序，除非 contract 明确冻结这些时点事实。"
+# reviewer 拿不到工具输出时不许用自述或其他 gate 的结论顶替自己的观察（#268，原则一）
+REVIEWER_OBSERVATION_RULE = ("工具调用没有拿到输出时，先重试或换命令；仍拿不到就缩小 behaviors_verified 或判 blocked，"
+                             "不得以其他 gate 的结论或自述代替自己的观察。")
+# review_focus 是对整个候选 diff 的约束，tester 集成进来的测试与夹具同样在覆盖范围内（#315）
+REVIEW_FOCUS_SCOPE_RULE = "review_focus 点名的约束覆盖整个候选 diff，包括 tester 集成进来的测试与夹具，不只是实现文件。"
+# 不进 evidence 的守卫测试没有判据覆盖它的鉴别力，只能靠交卷前自检回退后是否变红（#399，原则一）
+GUARD_SELFCHECK_RULE = ("不列入 proof_spec 的守卫测试，交卷前必须自检：把它声称锁住的那行改回去，它应当变红；"
+                        "同一组守卫不得共用会让它们走进同一条分支的素材。")
+GUARD_FINDING_RULE = "对守卫类测试的 finding 复审时，要求附回退实验结果：把目标修复回退后该测试是否变红。"
+# 拿 run 的历史快照做边界测试，合入后随任何正常改动永久变红（#317）
+SNAPSHOT_RULE = ("reviewed-boundaries 的 positive / boundary / invariant 测试不得拿某次 run 的历史快照（git show <sha>）做比对；"
+                 "原样搬迁类 behavior 只写合入后仍然成立的检查。")
 
 
 def _patch_id(repo_root: Path, base: str, head: str) -> str:
@@ -328,6 +340,8 @@ def render(brief: dict[str, Any]) -> str:
             EVIDENCE_LIST_RULE,
             ANCHOR_RULE,
             LONG_LIVED_RULE,
+            GUARD_SELFCHECK_RULE,
+            SNAPSHOT_RULE,
             brief["read_rule"] + "。",
             # 盲写阶段跑不了自己的测试，node id 拼错、断言与真实数据结构不符都要等这一步才暴露（#266）
             "你交卷后测试会被集成进候选，由 machine 全量跑一遍；那时失败的如果是你的测试，这条失败会回到 tester 手上。"
@@ -343,7 +357,10 @@ def render(brief: dict[str, Any]) -> str:
             f"审查范围: 在候选 worktree 内 `git diff {brief['diff_range']}`",
             f"前置 evidence: {brief['evidence']}",
             f"review_focus: {brief['review_focus']}",
+            REVIEW_FOCUS_SCOPE_RULE,
             LONG_LIVED_RULE,
+            REVIEWER_OBSERVATION_RULE,
+            GUARD_FINDING_RULE,
             *([f"{REVIEWER_TEST_HINT} `{brief['test_command']}` 加上测试文件路径，只跑与本次改动相关的文件"]
               if brief.get("test_command") else []),
             *_render_doc_hints(brief["doc_reference_hints"]),
