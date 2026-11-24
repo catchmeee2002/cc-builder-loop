@@ -28,9 +28,9 @@ brief 末尾有重取它的命令。**任何时候以最新的 brief 为准**，
 
 ## 首轮：盲写
 
-1. 读 behaviors / interfaces，Glob 现有测试看风格与 fixture，决定文件位置。
+1. 读 behaviors / interfaces，先读测试目录里的 CLAUDE.md 等项目测试规范，再 Glob 现有测试看风格与 fixture，决定文件位置。
 2. 写测试。新接口在基线上 import 不了，所以只需保证语法和收集无误（`python3 -m pytest --collect-only -q <你的文件>` 之类）；对**已存在**的行为可以直接跑。
-3. 功能被移除的 behavior：删掉旧测试，写负向测试（断言它不存在 / 调用报错）。
+3. 功能被移除的 behavior：只删掉锁住已移除行为的断言，同一文件里仍然成立的不变量测试保留或等价迁移；再写负向测试（断言它不存在 / 调用报错）。
 4. 为每个 behavior 选 proof kind：
    - `baseline-red`：起点代码 + 你的测试**会在 call 阶段失败**——行为变更、bug 修复、功能移除的负向测试。断言失败、`KeyError`、解包错都算；收集 / setup 阶段就出错不算（那说明测试根本没跑起来）。新接口在起点上 import 不了，属于收集失败，不能用。
    - `mutation`：新接口 / 新模块用这个。首轮你看不到实现，先不给 `patch_file`，集成后会请你补。

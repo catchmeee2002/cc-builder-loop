@@ -2,6 +2,12 @@
 
 > 本文件记 **CC 版**产品线（分支 `cc/main`）。Codex 版见 `codex/main` 分支。
 
+## tester 首轮盲写的两条卫生纪律（#318 #316，2026-11-24）
+
+- **删旧测试只删该删的断言（#318）**：`功能被移除的 behavior：只删掉锁住已移除行为的断言，同一文件里仍然成立的不变量测试保留或等价迁移；再写负向测试（断言它不存在 / 调用报错）。`（`agents/tester.md`「首轮：盲写」第 3 条，原句改写）
+- **写测试前先读项目测试规范（#316）**：`读 behaviors / interfaces，先读测试目录里的 CLAUDE.md 等项目测试规范，再 Glob 现有测试看风格与 fixture，决定文件位置。`（同节第 1 条，原句改写）
+- 两条都是纪律不是判据：machine / proof 不会因为覆盖丢失或违反项目 ratchet 而单独判某道 gate 未通过；#318 / #316 保持开放观察，复现再评估是否结构化。
+
 ## 既有测试的失效面：planner 点名、tester 补漏（#294，2026-11-24）
 
 - **planner 点名会被本次契约改坏的既有测试**：`contract 会改变既有行为时，先 grep 既有测试与 conftest 辅助函数，把编码旧行为的用例逐条写进对应 behavior 的 boundaries。`（`skills/planner/SKILL.md`「contract 是 tester 的唯一输入」一节）
