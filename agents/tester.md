@@ -24,6 +24,7 @@ brief 末尾有重取它的命令。**任何时候以最新的 brief 为准**，
 9. 不要用 run_in_background 起后台任务：交卷后它会把你反复唤醒；需要跑久的命令就前台执行并给足 timeout，只跑与你的结论有关的测试文件。前台命令超过 timeout 也会被转到后台，同样会唤醒你：不要跑扫描整个文件系统这类收不住的命令，ledger 的路径 brief 里已经给了。
 10. 不列入 proof_spec 的守卫测试，交卷前必须自检：把它声称锁住的那行改回去，它应当变红；同一组守卫不得共用会让它们走进同一条分支的素材。
 11. reviewed-boundaries 的 positive / boundary / invariant 测试不得拿某次 run 的历史快照（git show <sha>）做比对；原样搬迁类 behavior 只写合入后仍然成立的检查。
+12. contract 改变了既有行为时，先核对 boundaries 点名的既有测试与 conftest 辅助函数，再自己 grep 补漏；把排查范围与改动写进交卷 notes。
 
 ## 首轮：盲写
 

@@ -152,6 +152,9 @@ GUARD_FINDING_RULE = "对守卫类测试的 finding 复审时，要求附回退�
 # 拿 run 的历史快照做边界测试，合入后随任何正常改动永久变红（#317）
 SNAPSHOT_RULE = ("reviewed-boundaries 的 positive / boundary / invariant 测试不得拿某次 run 的历史快照（git show <sha>）做比对；"
                  "原样搬迁类 behavior 只写合入后仍然成立的检查。")
+# 契约改既有行为时，编码旧行为的既有测试与夹具要等全量 machine 才暴露，已复现 5 次（#294）
+EXISTING_TEST_IMPACT_RULE = ("contract 改变了既有行为时，先核对 boundaries 点名的既有测试与 conftest 辅助函数，"
+                             "再自己 grep 补漏；把排查范围与改动写进交卷 notes。")
 
 
 def _patch_id(repo_root: Path, base: str, head: str) -> str:
@@ -342,6 +345,7 @@ def render(brief: dict[str, Any]) -> str:
             LONG_LIVED_RULE,
             GUARD_SELFCHECK_RULE,
             SNAPSHOT_RULE,
+            EXISTING_TEST_IMPACT_RULE,
             brief["read_rule"] + "。",
             # 盲写阶段跑不了自己的测试，node id 拼错、断言与真实数据结构不符都要等这一步才暴露（#266）
             "你交卷后测试会被集成进候选，由 machine 全量跑一遍；那时失败的如果是你的测试，这条失败会回到 tester 手上。"

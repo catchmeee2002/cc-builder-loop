@@ -2,6 +2,12 @@
 
 > 本文件记 **CC 版**产品线（分支 `cc/main`）。Codex 版见 `codex/main` 分支。
 
+## 既有测试的失效面：planner 点名、tester 补漏（#294，2026-11-24）
+
+- **planner 点名会被本次契约改坏的既有测试**：`contract 会改变既有行为时，先 grep 既有测试与 conftest 辅助函数，把编码旧行为的用例逐条写进对应 behavior 的 boundaries。`（`skills/planner/SKILL.md`「contract 是 tester 的唯一输入」一节）
+- **tester 据清单补漏并交代范围**：`contract 改变了既有行为时，先核对 boundaries 点名的既有测试与 conftest 辅助函数，再自己 grep 补漏；把排查范围与改动写进交卷 notes。`（`agents/tester.md` 硬约束第 12 条，同时进 tester 的 `bl brief` 渲染文本）
+- 这是纪律不是判据：runtime 不会因为漏改既有测试而单独判某道 gate 未通过，仍由 machine 全量兜住；#294 保持开放观察一轮。
+
 ## 角色的观察纪律写进 brief 与 agent 定义（#268 #315 #399 #317，2026-11-24）
 
 - **reviewer 不得无观察放行（#268）**：工具调用没拿到输出时先重试或换命令，仍拿不到就缩小 `behaviors_verified` 或判 `blocked`，不得以其他 gate 的结论或自述代替自己的观察。句子同时进 reviewer brief 与 `agents/reviewer.md`。
