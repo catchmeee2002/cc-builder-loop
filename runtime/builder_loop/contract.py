@@ -47,15 +47,39 @@ CHANGE_NEUTRAL = "NEUTRAL"
 # ---------------------------------------------------------------- 标签提取
 
 
+def _line_of(text: str, pos: int) -> int:
+    return text.count("\n", 0, pos) + 1
+
+
 def extract_tag(text: str, name: str) -> str | None:
-    """`<!-- name -->` … `<!-- /name -->` 之间的内容；恰好一处才合法。"""
-    pattern = re.compile(rf"<!--\s*{re.escape(name)}\s*-->(.*?)<!--\s*/{re.escape(name)}\s*-->", re.DOTALL)
-    matches = pattern.findall(text)
-    if not matches:
+    """`<!-- name -->` … `<!-- /name -->` 之间的内容；恰好一对且开在前才合法。
+
+    标签形态先在这里判定完再取内容：配对不合法时不进入调用方的 JSON 解析，
+    否则孤儿开标签会让解析区间横跨正文，报出的错指向 contract JSON 而非标签本身。
+    """
+    open_pat = re.compile(rf"<!--\s*{re.escape(name)}\s*-->")
+    close_pat = re.compile(rf"<!--\s*/{re.escape(name)}\s*-->")
+    opens = list(open_pat.finditer(text))
+    closes = list(close_pat.finditer(text))
+    if not opens and not closes:
         return None
-    if len(matches) > 1:
-        raise fatal("CONTRACT_DUPLICATE", f"plan 中出现多处 <!-- {name} --> 标签", count=len(matches))
-    return matches[0]
+    if len(opens) == len(closes) == 1 and opens[0].start() < closes[0].start():
+        return text[opens[0].end():closes[0].start()]
+    open_lines = [_line_of(text, m.start()) for m in opens]
+    close_lines = [_line_of(text, m.start()) for m in closes]
+    alternating = (
+        len(opens) == len(closes) >= 2
+        and all(o.start() < c.start() for o, c in zip(opens, closes))
+        and all(c.start() < o.start() for c, o in zip(closes, opens[1:]))
+    )
+    if alternating:
+        raise fatal("CONTRACT_DUPLICATE", f"plan 中出现多处 <!-- {name} --> 标签", count=len(opens))
+    raise fatal(
+        "CONTRACT_TAG_UNBALANCED",
+        f"<!-- {name} --> 标签不配对：开标签在 1 起始的第 {open_lines} 行，闭标签在第 {close_lines} 行",
+        open_lines=open_lines,
+        close_lines=close_lines,
+    )
 
 
 def _strip_fence(body: str) -> str:

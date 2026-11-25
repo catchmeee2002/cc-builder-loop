@@ -2,6 +2,12 @@
 
 > 本文件记 **CC 版**产品线（分支 `cc/main`）。Codex 版见 `codex/main` 分支。
 
+## contract 标签配对在入口严格校验（#402，2026-11-25）
+
+- **孤儿 / 错序标签不再落到 JSON 解析错误**：`contract.extract_tag` 先分别统计开标签与闭标签，只有「恰好一开一闭、开在前」才取内容；其余形态报新错误码 `CONTRACT_TAG_UNBALANCED`，`details.open_lines` / `close_lines` 给出每处标签的 1 起始行号。以前 plan 正文里多写一个开标签，正则会把正文连同 JSON 一起吃进 body，报出 `CONTRACT_PARSE` 把人引去查 JSON。
+- **`bl contract validate` / `bl start` / `bl contract revise` 同时生效**：三者共用 `parse_contract_file`，判定只在 `extract_tag` 一处（原则二、四）。
+- 不变：零标签仍报 `CONTRACT_MISSING`，多对按序交替仍报 `CONTRACT_DUPLICATE`（`details.count` 不变），合法单对的解析结果逐字段一致。
+
 ## plan 正文不再复述 contract（2026-11-25）
 
 - **删掉三段 contract 复述**：`skills/planner/SKILL.md`「方案文件结构」不再要求写「功能行为规格」「约束与边界」「验收标准」——行为的权威是 `behaviors`，边界与不可碰的权威是 `trust_boundaries` / `authority`，验收的权威是 behavior 的 `then` 与 `pass_cmd`（原则二：不维护旁路副本）。
