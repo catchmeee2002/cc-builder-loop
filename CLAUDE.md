@@ -30,7 +30,7 @@
 | `agents/{tester,reviewer}.md` | 角色 subagent 定义；运行时上下文由 SubagentStart hook 注入，文件本身只写硬约束 |
 | `skills/{builder,planner,builder-loop,file-issue}` | 开发、规划、机制说明与缺陷归档入口 |
 | `skills/integration-dispatch` | 集成会话准备与派活入口：复用或新建会话、核对模型、交付任务背景并等用户确认 |
-| `schema/` | contract / proof-spec / agent-result / ledger 的 JSON schema（文档级，runtime 用手写校验） |
+| `schema/` | proof-spec / agent-result / ledger 的 JSON schema（文档级，runtime 用手写校验）；contract 字段表在 contract.py，用 `bl contract fields` 查看 |
 | `tests/` | pytest；`conftest.py` 提供临时 git 仓（`repo`）、CLI（`cli`）、hook（`hook`）三个基础 fixture，`started` 组合它们 |
 | `docs/architecture.md` | 工程推导：模块边界、evidence 投影、hook 接线、失败路径 |
 | `docs/known-issues.md` | 环境问题与临时诊断记录（带保质期） |

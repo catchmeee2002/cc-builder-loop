@@ -2,6 +2,14 @@
 
 > 本文件记 **CC 版**产品线（分支 `cc/main`）。Codex 版见 `codex/main` 分支。
 
+## contract 字段表成为字段定义的唯一来源（#403 #251，2026-11-25）
+
+- **字段表**：`contract.FIELD_TABLE` 一处定义每个字段的路径、类型、读者（tester / reviewer / runtime）、来源（planner 写 / start 冻结）与说明；`validate_contract` 的允许键与 `bl contract fields` 的输出都从它派生，SKILL 与文档只指路，不再各写一份字段清单（原则二）。
+- **未知字段在入口拒绝**：字段表之外的键报 `CONTRACT_INVALID`，`details.path` 给出点路径，`details.suggestion` 给出最接近的合法字段；此前 `assurance.reviewFocus` 这类拼错被静默接受并丢失。`bl start` / `bl contract validate` / `bl contract revise` 经同一校验自动生效（原则四）。
+- **新增 `bl contract fields`**：planner 写 contract 前查哪些字段 tester 看得到——`assurance.review_focus` 的 readers 只有 reviewer，tester 需要守住的约束必须写进 `behaviors[].boundaries` / `invariants`（#403、#251 同一断口：约束写到了 tester 收不到的地方）。
+- **删除 `schema/contract.schema.json`**：全仓无消费者、与 runtime 校验靠人手同步，留着只会漂移；其余三个 schema 文件不动。
+- **planner SKILL**：「contract 是 tester 的唯一输入」一节加一句指路；「方案文件结构」的复用清单改为既有接口以 contract 的 `interfaces` 为准，不再有「在正文声明」的第二处。
+
 ## contract 标签配对在入口严格校验（#402，2026-11-25）
 
 - **孤儿 / 错序标签不再落到 JSON 解析错误**：`contract.extract_tag` 先分别统计开标签与闭标签，只有「恰好一开一闭、开在前」才取内容；其余形态报新错误码 `CONTRACT_TAG_UNBALANCED`，`details.open_lines` / `close_lines` 给出每处标签的 1 起始行号。以前 plan 正文里多写一个开标签，正则会把正文连同 JSON 一起吃进 body，报出 `CONTRACT_PARSE` 把人引去查 JSON。

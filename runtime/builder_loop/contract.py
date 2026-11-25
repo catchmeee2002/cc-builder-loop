@@ -7,6 +7,7 @@ mission 变 → revision+1 且需用户确认；authority 扩大、assurance 降
 
 from __future__ import annotations
 
+import difflib
 import json
 import re
 from pathlib import Path
@@ -34,6 +35,82 @@ CONTROL_BASENAMES = (
     "pytest.ini", "pyproject.toml", "setup.cfg", "tox.ini", "noxfile.py", "conftest.py", "Makefile",
     "package.json", "go.mod", "Cargo.toml", "BUILD", "BUILD.bazel", "WORKSPACE", "loop.yml",
 )
+
+# contract 字段的唯一来源：validate_contract 的允许键、`bl contract fields` 的输出、
+# SKILL 与文档的指路都从这张表派生（原则二）。readers 是 brief 实际渲染该字段的角色——
+# 只有含 tester 的字段 tester 才看得到，需要它守住的约束必须写在这些字段里。
+# source=frozen 表示由 start 从 loop.yml 冻结，planner 不写。
+FIELD_TABLE: tuple[dict[str, Any], ...] = (
+    {"path": "schema", "type": "string", "readers": ["runtime"], "source": "planner",
+     "description": f"固定为 {CONTRACT_SCHEMA}"},
+    {"path": "mission", "type": "object", "readers": ["runtime"], "source": "planner",
+     "description": "语义面：目标、行为、接口、约束"},
+    {"path": "mission.revision", "type": "integer", "readers": ["tester", "reviewer"], "source": "planner",
+     "description": "mission 修订号；改 mission 面时 +1 且需用户确认"},
+    {"path": "mission.slug", "type": "string", "readers": ["runtime"], "source": "planner",
+     "description": "小写字母/数字/连字符，2–49 字符"},
+    {"path": "mission.objective", "type": "string", "readers": ["tester", "reviewer"], "source": "planner",
+     "description": "一句话目标"},
+    {"path": "mission.behaviors", "type": "array<object>", "readers": ["tester", "reviewer"], "source": "planner",
+     "description": "非空；每条是可盲测的 given / when / then"},
+    {"path": "mission.behaviors[].id", "type": "string", "readers": ["tester", "reviewer"], "source": "planner",
+     "description": "behavior 标识，run 内唯一"},
+    {"path": "mission.behaviors[].given", "type": "string", "readers": ["tester", "reviewer"], "source": "planner",
+     "description": "前置条件，写具体值域"},
+    {"path": "mission.behaviors[].when", "type": "string", "readers": ["tester", "reviewer"], "source": "planner",
+     "description": "触发的调用或操作"},
+    {"path": "mission.behaviors[].then", "type": "string", "readers": ["tester", "reviewer"], "source": "planner",
+     "description": "可观察结果，必须可机判"},
+    {"path": "mission.behaviors[].boundaries", "type": "array<string>", "readers": ["tester", "reviewer"], "source": "planner",
+     "description": "边界条件；tester 盲写测试的厚度来源，tester 需要守住的约束写在这里"},
+    {"path": "mission.behaviors[].invariants", "type": "array<string>", "readers": ["tester", "reviewer"], "source": "planner",
+     "description": "不应被破坏的既有行为；tester 需要守住的约束写在这里"},
+    {"path": "mission.behaviors[].proof", "type": "string", "readers": ["tester"], "source": "planner",
+     "description": "proof 下限：strong（缺省）或 reviewed-boundaries"},
+    {"path": "mission.interfaces", "type": "array<string>", "readers": ["tester", "reviewer"], "source": "planner",
+     "description": "tester 据此 import 的唯一接口来源，含被测行为依赖的既有接口"},
+    {"path": "mission.acceptance_cases", "type": "array", "readers": [], "source": "planner",
+     "description": "blackbox 留位，首版不消费"},
+    {"path": "mission.trust_boundaries", "type": "array<string>", "readers": ["tester", "reviewer"], "source": "planner",
+     "description": "不能碰什么、必须兼容什么"},
+    {"path": "mission.mock_strategy", "type": "object", "readers": ["tester", "reviewer"], "source": "planner",
+     "description": "依赖名 → mock 方式"},
+    {"path": "authority", "type": "object", "readers": ["runtime"], "source": "planner",
+     "description": "写边界面"},
+    {"path": "authority.target_branch", "type": "string|null", "readers": ["runtime"], "source": "planner",
+     "description": "省略或 null = start 时的当前分支"},
+    {"path": "authority.builder_write", "type": "array<string>", "readers": ["runtime"], "source": "planner",
+     "description": "非空；builder 可写的路径 glob"},
+    {"path": "authority.tester_write", "type": "array<string>", "readers": ["tester", "runtime"], "source": "planner",
+     "description": "tester 可写的路径 glob；required 含 tester 时不能为空"},
+    {"path": "authority.protected_paths", "type": "array<string>", "readers": ["tester", "runtime"], "source": "planner",
+     "description": "谁都不能动的路径"},
+    {"path": "authority.control_basenames", "type": "array<string>", "readers": ["runtime"], "source": "frozen",
+     "description": "控制面文件名规则；builder 靠 glob 顺带命中不算授权"},
+    {"path": "assurance", "type": "object", "readers": ["runtime"], "source": "planner",
+     "description": "判据面"},
+    {"path": "assurance.required", "type": "array<string>", "readers": ["runtime"], "source": "planner",
+     "description": "必须包含 machine；proof 依赖 tester"},
+    {"path": "assurance.proof_kinds", "type": "array<string>", "readers": ["runtime"], "source": "planner",
+     "description": "baseline-red / mutation / reviewed-boundaries 的子集"},
+    {"path": "assurance.review_focus", "type": "array<string>", "readers": ["reviewer"], "source": "planner",
+     "description": "只给 reviewer 的审查重点；tester 看不到此字段，需要 tester 守住的约束不要写在这里"},
+    {"path": "assurance.machine_stages", "type": "array<string>", "readers": ["runtime"], "source": "planner",
+     "description": "方案依赖的 loop.yml stage 名（只写名字）"},
+    {"path": "assurance.machine_commands", "type": "array", "readers": ["runtime"], "source": "frozen",
+     "description": "由 start 从 loop.yml 冻结"},
+    {"path": "assurance.max_iterations", "type": "integer", "readers": ["runtime"], "source": "frozen",
+     "description": "由 start 从 loop.yml 冻结"},
+    {"path": "assurance.proof_runner", "type": "object", "readers": ["tester", "reviewer", "runtime"], "source": "frozen",
+     "description": "由 start 从 loop.yml 冻结：framework / cmd / link_paths"},
+    {"path": "assurance.evidence_neutral_paths", "type": "array<string>", "readers": ["runtime"], "source": "frozen",
+     "description": "对判据中性的路径 glob；由 start 从 loop.yml 冻结"},
+)
+
+
+def field_table() -> list[dict[str, Any]]:
+    return [dict(f, readers=list(f["readers"])) for f in FIELD_TABLE]
+
 
 OWNER_BUILDER = "builder"
 OWNER_TESTER = "tester"
@@ -117,6 +194,38 @@ def _require(obj: dict[str, Any], key: str, typ: type, where: str) -> Any:
     return obj[key]
 
 
+def _children(prefix: str) -> dict[str, str]:
+    """prefix 下一层的合法键 → 该键的完整点路径（behavior 带实际下标）。"""
+    template = re.sub(r"\[\d+\]", "[]", prefix)
+    out: dict[str, str] = {}
+    for f in FIELD_TABLE:
+        p = f["path"]
+        if template:
+            if not p.startswith(template + "."):
+                continue
+            rest = p[len(template) + 1:]
+        else:
+            rest = p
+        head = rest.split(".", 1)[0]
+        key = head[:-2] if head.endswith("[]") else head
+        out[key] = (prefix + "." + key) if prefix else key
+    return out
+
+
+def _check_unknown_keys(obj: dict[str, Any], prefix: str) -> None:
+    children = _children(prefix)
+    for k in obj:
+        if k in children:
+            continue
+        near = difflib.get_close_matches(k, list(children), n=1, cutoff=0.6)
+        suggestion = children[near[0]] if near else None
+        path = (prefix + "." + k) if prefix else k
+        message = f"contract 里出现未知字段 {path}"
+        if suggestion:
+            message += f"；是否想写 {suggestion}？"
+        raise fatal("CONTRACT_INVALID", message, path=path, suggestion=suggestion)
+
+
 def validate_contract(contract: dict[str, Any]) -> None:
     if not isinstance(contract, dict):
         raise fatal("CONTRACT_INVALID", "contract 必须是 JSON 对象")
@@ -124,6 +233,17 @@ def validate_contract(contract: dict[str, Any]) -> None:
         raise fatal("CONTRACT_INVALID", f"schema 必须是 {CONTRACT_SCHEMA}", got=contract.get("schema"))
     for facet in FACETS:
         _require(contract, facet, dict, "contract")
+
+    # 字段表之外的键在入口就拒（原则四）：拼错的字段不会静默丢失
+    _check_unknown_keys(contract, "")
+    for facet in FACETS:
+        _check_unknown_keys(contract[facet], facet)
+    # behaviors 的类型由后面的既有校验负责（错误码与消息保持原样）；这里只扫字典元素的键
+    behaviors_raw = contract["mission"].get("behaviors")
+    if isinstance(behaviors_raw, list):
+        for i, b in enumerate(behaviors_raw):
+            if isinstance(b, dict):
+                _check_unknown_keys(b, f"mission.behaviors[{i}]")
 
     m = contract["mission"]
     revision = _require(m, "revision", int, "mission")

@@ -38,6 +38,7 @@ tester 在 run 起点的冻结基线上**盲写测试，看不到实现**。它�
 - 被测行为依赖的**既有**接口也写进 `interfaces`——tester 据此 import，builder 不得另造等价物。
 - 外部依赖怎么 mock 写进 `mock_strategy`。
 - `contract 会改变既有行为时，先 grep 既有测试与 conftest 辅助函数，把编码旧行为的用例逐条写进对应 behavior 的 boundaries。`
+- 写 contract 前先跑 `bl contract fields`：只有 readers 含 tester 的字段，tester 才看得到；需要它守住的约束必须写进这些字段。
 
 **删除 / 移除类任务**：behavior 写成「X 不再存在 / 调用 X 得到 Y 错误」，tester 会据此删掉旧测试并写负向测试。旧测试归 tester，不要为了让 builder 能删它而把测试路径划进 `builder_write`。「旧测试文件被删除」不写成 behavior：它不是可观察行为，proof 也构造不出反例；tester 删除旧测试、integrate 把删除带进候选、machine 全量通过，已经保证了这一点。
 
@@ -47,7 +48,7 @@ tester 在 run 起点的冻结基线上**盲写测试，看不到实现**。它�
 
 ## 方案文件结构
 
-背景与目标（含一行「追问范围」，抄取舍声明）/ 方案设计与取舍 / 复用清单（`路径::函数` 与用途；方案依赖的既有接口在此声明）/ 风险与退路 / 文件地图 / 执行任务列表（每步注明服务哪条 behavior）/ contract。各段一句话能说清就一句话。
+背景与目标（含一行「追问范围」，抄取舍声明）/ 方案设计与取舍 / 复用清单（`路径::函数` 与用途；tester 要 import 的既有接口以 contract 的 interfaces 为准）/ 风险与退路 / 文件地图 / 执行任务列表（每步注明服务哪条 behavior）/ contract。各段一句话能说清就一句话。
 
 正文不复述 contract 已有的事实：行为、边界与验收以 contract 为准。
 

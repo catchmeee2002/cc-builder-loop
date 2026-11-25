@@ -133,6 +133,7 @@ def build_parser() -> argparse.ArgumentParser:
     cts = ct.add_subparsers(dest="contract_cmd", required=True)
     c1 = cts.add_parser("validate"); c1.add_argument("--plan", required=True); add_locators(c1, nested=True)
     c1.add_argument("--check-repo", action="store_true", help="同时对照仓库现状：目标分支、loop.yml、会被保护的控制面文件")
+    cts.add_parser("fields", help="列出 contract 字段：路径、类型、读者、来源、说明")
     c2 = cts.add_parser("revise"); c2.add_argument("--plan", required=True); c2.add_argument("--authorize", action="store_true"); add_locators(c2, nested=True)
 
     hk = sub.add_parser("hook", help="stdin 读 CC hook JSON")
@@ -242,6 +243,10 @@ def dispatch(args: argparse.Namespace) -> tuple[Any, int]:
         payload = json.loads(Path(args.payload_file).read_text(encoding="utf-8"))
         return record_role_result(lp, root, args.kind, args.agent_id, payload, via=VIA_CLI), EXIT_OK
     if cmd == "contract":
+        if args.contract_cmd == "fields":
+            from . import contract as contract_mod
+
+            return {"fields": contract_mod.field_table()}, EXIT_OK
         if args.contract_cmd == "validate":
             root = run_mod.resolve_repo_root(args.repo) if args.check_repo else None
             return run_mod.contract_validate(Path(args.plan).resolve(), root), EXIT_OK
