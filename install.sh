@@ -34,6 +34,7 @@ links = {
     home / "skills" / "planner": repo / "skills" / "planner",
     home / "skills" / "builder-loop": repo / "skills" / "builder-loop",
     home / "skills" / "file-issue": repo / "skills" / "file-issue",
+    home / "skills" / "integration-dispatch": repo / "skills" / "integration-dispatch",
     home / "bin" / "bl": repo / "bin" / "bl",
     home / "doc-policy.md": repo / "docs" / "doc-policy.md",
 }

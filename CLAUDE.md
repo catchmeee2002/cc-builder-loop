@@ -28,7 +28,8 @@
 | `hooks/bl-hook.sh` | 唯一 hook 入口；纯 bash 快速路径——session 没绑定 run 就不起 python |
 | `bin/bl` | CLI 入口（install 软链到 `~/.claude/bin/bl`） |
 | `agents/{tester,reviewer}.md` | 角色 subagent 定义；运行时上下文由 SubagentStart hook 注入，文件本身只写硬约束 |
-| `skills/builder` `skills/planner` `skills/builder-loop` | `/builder` `/planner` 入口与机制说明 + 接入向导 |
+| `skills/{builder,planner,builder-loop,file-issue}` | 开发、规划、机制说明与缺陷归档入口 |
+| `skills/integration-dispatch` | 集成会话准备与派活入口：复用或新建会话、核对模型、交付任务背景并等用户确认 |
 | `schema/` | contract / proof-spec / agent-result / ledger 的 JSON schema（文档级，runtime 用手写校验） |
 | `tests/` | pytest；`conftest.py` 提供临时 git 仓（`repo`）、CLI（`cli`）、hook（`hook`）三个基础 fixture，`started` 组合它们 |
 | `docs/architecture.md` | 工程推导：模块边界、evidence 投影、hook 接线、失败路径 |
