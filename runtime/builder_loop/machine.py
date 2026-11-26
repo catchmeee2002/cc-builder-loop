@@ -124,6 +124,8 @@ def run_preflight(ledger_path: Path, repo_root: Path) -> dict[str, Any]:
         with evidence.gate_lock(lg, evidence.GATE_PREFLIGHT), private_pycache(env, ledger_path.parent):
             with worktree.temp_worktree(repo_root, lg["repo"]["target_start_head"], base.parent, base.name) as wt:
                 env["BUILDER_LOOP_CANDIDATE"] = str(wt)
+                # 快照 worktree 同样是全新检出：依赖按 ledger 的声明从源树链接过来，否则 ready_cmd 恒不满足（#383）
+                worktree.prepare_links(lg, wt)
                 for stage in stages:
                     probe = ready_probe(wt, stage, log_dir / f"preflight-{stage['stage']}-ready.log", env, repo_root)
                     if probe is not None and not probe["ready"]:
@@ -279,7 +281,7 @@ def run_machine(ledger_path: Path, repo_root: Path, retry_reason: str | None = N
         raise needs_user("MACHINE_BLOCKED", "已触发迭代上限或无进展；用 AskUserQuestion 让用户决定，继续则 `bl resume --reason`", blockers=blocked)
     wt = Path(cand["worktree"])
     worktree.assert_candidate_identity(wt, cand["branch"], cand["head"])
-    worktree.assert_candidate_clean(wt)
+    worktree.assert_candidate_clean(wt, worktree.link_ignores(lg))
 
     stages = lg["contract"]["assurance"].get("machine_commands") or []
     if not stages:
@@ -329,7 +331,7 @@ def run_machine(ledger_path: Path, repo_root: Path, retry_reason: str | None = N
 
     wt_changed: dict[str, Any] | None = None
     if signaled is None and unready is None:
-        mutated = worktree.residue(wt)
+        mutated = worktree.residue(wt, worktree.link_ignores(lg))
         head_after = gitx.head(wt)
         if mutated or head_after != cand["head"]:
             # 收尾只观察到「工作树变了」，观察不到谁写的（builder、pass_cmd 或其他）：来源不可辨的观察不归因给候选（#378，原则一）

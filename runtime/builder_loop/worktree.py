@@ -15,7 +15,7 @@ from __future__ import annotations
 import shutil
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Iterator, Sequence
 
 from . import gitx
 from .errors import fatal
@@ -46,14 +46,68 @@ def _add(repo_root: Path, path: Path, branch: str, head: str) -> None:
     gitx.git(repo_root, "worktree", "add", "-b", branch, str(path), head)
 
 
-def create_run_worktrees(repo_root: Path, run_id: str, head: str, root_override: str | None, *, with_tester: bool) -> dict[str, dict[str, str]]:
+# ---------------------------------------------------------------- 依赖链接（#383）
+
+
+def link_paths(src_root: Path, dst_root: Path, paths: list[str]) -> list[str]:
+    """把声明路径从源树链接进目标 worktree，返回实际建立的相对路径。
+
+    只建符号链接：不复制、不安装、不清理链接目标——依赖目录归声明方负责（与 proof 现场链接同一语义）。
+    git 已跟踪的同名内容优先，不覆盖。
+    """
+    made: list[str] = []
+    for rel in paths:
+        dst = dst_root / rel
+        if dst.exists() or dst.is_symlink():
+            continue
+        src = src_root / rel
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        dst.symlink_to(src, target_is_directory=src.is_dir())
+        made.append(rel)
+    return made
+
+
+def missing_link_paths(src_root: Path, paths: list[str]) -> list[str]:
+    return [rel for rel in paths if not (src_root / rel).exists()]
+
+
+def under_link(path: str, links: list[str]) -> bool:
+    """链接本身不算现场被改动：目录型 .gitignore 规则不忽略符号链接写出的 untracked 条目。
+
+    只认精确路径——git 对符号链接只报一条 `?? <path>`，不展开链接内部；声明的路径若其实是被
+    跟踪的真实目录，其内部新写的文件仍算现场改动。
+    """
+    return path in links
+
+
+def link_ignores(ledger: dict[str, Any]) -> list[str]:
+    """本 run 声明的依赖链接路径；旧 ledger 没有该键时为空（行为与升级前一致）。"""
+    cfg = ledger.get("loop_config") or {}
+    return list(cfg.get("worktree_link_paths") or [])
+
+
+def prepare_links(ledger: dict[str, Any], dst_root: Path) -> list[str]:
+    """按 ledger 里的声明把依赖链接进 dst_root。源缺失由调用方在 start 时先拒绝。"""
+    links = link_ignores(ledger)
+    if not links:
+        return []
+    root = Path(ledger["repo"]["root"])
+    source = (ledger.get("loop_config") or {}).get("worktree_link_source")
+    return link_paths(root / source if source else root, dst_root, links)
+
+
+def create_run_worktrees(repo_root: Path, run_id: str, head: str, root_override: str | None, *, with_tester: bool,
+                         link_paths_: list[str] | None = None, link_source: str | None = None) -> dict[str, dict[str, str]]:
     """建候选（以及可选的 tester）worktree；第二个失败时回滚第一个，不留孤儿。"""
     root = run_root(repo_root, root_override, run_id)
+    src_root = repo_root / link_source if link_source else repo_root
     created: dict[str, dict[str, str]] = {}
     try:
         for kind in (("candidate", "tester") if with_tester else ("candidate",)):
             path, branch = root / ROLE_DIRS[kind], branch_name(run_id, kind)
             _add(repo_root, path, branch, head)
+            if link_paths_:
+                link_paths(src_root, path, link_paths_)
             created[kind] = {"worktree": str(path), "branch": branch}
     except BaseException:
         for info in created.values():
@@ -125,13 +179,18 @@ def temp_worktree(repo_root: Path, head: str, base_dir: Path, name: str, overlay
         gitx.git(repo_root, "worktree", "prune", check=False)
 
 
-def residue(path: Path) -> list[str]:
-    """未提交改动（tracked 修改 + 未忽略的 untracked）。"""
-    return [p for _, p in gitx.status_porcelain(path)]
+def residue(path: Path, ignore: Sequence[str] = ()) -> list[str]:
+    """未提交改动（tracked 修改 + 未忽略的 untracked）。
+
+    `ignore` 是 run 起点声明的依赖链接：由 runtime 建、不是写入者的改动（#383）。只放行**真的是
+    符号链接**的那几条——声明了同名但被 git 跟踪的真实目录时，它内部的新文件仍算改动。
+    """
+    declared = set(ignore)
+    return [p for _, p in gitx.status_porcelain(path) if not (p in declared and (path / p).is_symlink())]
 
 
-def assert_clean(path: Path, label: str = "候选") -> None:
-    dirty = residue(path)
+def assert_clean(path: Path, label: str = "候选", ignore: Sequence[str] = ()) -> None:
+    dirty = residue(path, ignore)
     if dirty:
         raise fatal("WORKTREE_DIRTY", f"{label} worktree 有未提交改动，先 checkpoint", paths=dirty[:50], worktree=str(path))
 
@@ -149,8 +208,8 @@ def assert_identity(path: Path, branch: str, expected_head: str | None, label: s
 
 
 # 旧名字保留给 machine / proof / finalize 调用点
-def assert_candidate_clean(path: Path) -> None:
-    assert_clean(path, "候选")
+def assert_candidate_clean(path: Path, ignore: Sequence[str] = ()) -> None:
+    assert_clean(path, "候选", ignore)
 
 
 def assert_candidate_identity(path: Path, branch: str, expected_head: str | None) -> str:

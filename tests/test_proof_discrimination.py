@@ -143,6 +143,8 @@ def test_generic_framework_counterexample_per_id_is_empty_dict(repo, cli, hook):
         "proof_runner:\n  framework: generic\n  cmd: \"bash\"\n"
     )
     write_plan(repo.root, CONTRACT)
+    # loop.yml 现在从目标提交冻结（B1）：先提交再 start
+    repo.commit_all("chore(fixture): [cr_id_skip] Generic loop config")
     out = cli("start", "--plan", str(repo.root / "plan.md"), "--session", "S1")
     wt, twt = Path(out["worktree"]), Path(out["tester_worktree"])
     hook("SubagentStart", {"session_id": "S1", "agent_id": "T1", "agent_type": "tester"})

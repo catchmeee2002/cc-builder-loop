@@ -203,7 +203,7 @@ def cleanup(repo_root: Path, run_id: str | None = None) -> dict[str, Any]:
             if _caller_within(wt):
                 entry["kept"].append({"worktree": str(wt), "reason": "调用者当前位于该目录内"})
                 continue
-            dirty = worktree.residue(wt)
+            dirty = worktree.residue(wt, worktree.link_ignores(lg))
             head = gitx.head(wt)
             if dirty or head != info.get("head"):
                 entry["kept"].append({"worktree": str(wt), "reason": "有未提交改动" if dirty else "HEAD 与 ledger 不一致"})

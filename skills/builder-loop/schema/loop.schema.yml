@@ -61,6 +61,21 @@ worktree:
     # worktree 根目录；相对路径以项目根解析。默认仓库同级 ../builder-loop-worktrees/<repo>。
     type: string
     default: ""
+  link_paths:
+    # 可选。run 起点把依赖从 link_source 链接进候选 / tester / preflight 现场的仓库内相对路径（数组）。
+    # 只建符号链接，不复制、不安装；链接由 runtime 建，不算「现场改动」（machine / checkpoint 不报 dirty）。
+    # 源里不存在该路径时 `bl start` 报 WORKTREE_LINK_SOURCE_MISSING，不留 worktree / 分支 / ledger。
+    type: array
+    default: []
+    items:
+      type: string
+    examples:
+      - [node_modules]
+      - [".venv"]
+  link_source:
+    # 可选。依赖源目录，仓库内相对路径；默认 "." 即仓库根。
+    type: string
+    default: "."
 
 # 示例（最小可用配置）
 # pass_cmd:

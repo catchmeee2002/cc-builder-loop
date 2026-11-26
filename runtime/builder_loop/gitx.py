@@ -7,7 +7,7 @@ import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 from .errors import fatal
 
@@ -103,6 +103,45 @@ def is_ancestor(cwd: Path | str, ancestor: str, descendant: str) -> bool:
     return git(cwd, "merge-base", "--is-ancestor", ancestor, descendant, check=False).returncode == 0
 
 
+def remotes(cwd: Path | str) -> list[str]:
+    r = git(cwd, "remote", check=False)
+    return [line.strip() for line in r.stdout.splitlines() if line.strip()] if r.ok else []
+
+
+def upstream_ref(cwd: Path | str, branch: str) -> str | None:
+    """分支配置的上游 ref（如 origin/main）。没配置、或上游指向本地分支时 None。
+
+    用 `refs/heads/<b>@{upstream}` 的限定形式：不依赖 cwd 当前检出的是哪条分支。
+    """
+    r = git(cwd, "rev-parse", "--abbrev-ref", "--symbolic-full-name",
+            f"refs/heads/{branch}@{{upstream}}", check=False)
+    if not r.ok:
+        return None
+    ref = r.stdout.strip()
+    if not ref or "/" not in ref:
+        return None
+    return None if ref.split("/", 1)[0] == "." else ref
+
+
+def remote_branch_head(cwd: Path | str, ref: str | None) -> str | None:
+    """远程跟踪 ref 指向的提交；从未 fetch 过时为 None（没看到 ≠ 一致）。"""
+    if not ref:
+        return None
+    r = git(cwd, "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}", check=False)
+    return r.stdout.strip() if r.ok and r.stdout.strip() else None
+
+
+def relation(cwd: Path | str, local: str, remote: str) -> str:
+    """两个提交的关系：in_sync / behind（本地落后）/ ahead（本地在上游之上）/ diverged。"""
+    if local == remote:
+        return "in_sync"
+    if is_ancestor(cwd, local, remote):
+        return "behind"
+    if is_ancestor(cwd, remote, local):
+        return "ahead"
+    return "diverged"
+
+
 def rebase_in_progress(wt: Path) -> bool:
     """wt 里有没完成的 rebase（冲突等人解）。worktree 不存在时为 False。"""
     if not wt.is_dir():
@@ -139,16 +178,26 @@ def status_porcelain(cwd: Path | str) -> list[tuple[str, str]]:
     return out
 
 
-def is_clean(cwd: Path | str) -> bool:
-    return not status_porcelain(cwd)
+def is_clean(cwd: Path | str, ignore: Sequence[str] = ()) -> bool:
+    """没有未提交改动。`ignore` 是 run 起点声明的依赖链接（#383）：只放行**真的是符号链接**的那几条，
+    与 `worktree.residue` 同一判据——否则声明了链接的项目在这里恒判为脏。"""
+    declared = set(ignore)
+    return not [e for e in status_porcelain(cwd)
+                if not (e[1] in declared and (Path(cwd) / e[1]).is_symlink())]
 
 
-def worktree_fingerprint(cwd: Path | str) -> dict[str, Any]:
+def worktree_fingerprint(cwd: Path | str, ignore: Sequence[str] = ()) -> dict[str, Any]:
     """worktree 的 git 状态指纹（#312）：HEAD、index（`ls-files -s` 的 sha256）、status（'XY path'，已排序，不含 ignored），
-    外加 dirty 路径的内容摘要 worktree——起点已 dirty 的文件被再次改写时 status 不变，靠它看出来。"""
+    外加 dirty 路径的内容摘要 worktree——起点已 dirty 的文件被再次改写时 status 不变，靠它看出来。
+
+    `ignore` 是 run 起点声明的依赖链接：由 runtime 建、不是角色的改动（#383）。只放行真的是符号
+    链接的那几条，同名但被跟踪的真实目录其内部改动仍进指纹。缺省为空时输出逐字节不变。
+    """
     head = git(cwd, "rev-parse", "HEAD").stdout.strip()
     index = hashlib.sha256(git(cwd, "ls-files", "-s", "-z").stdout.encode()).hexdigest()
-    entries = sorted(status_porcelain(cwd), key=lambda e: e[1])
+    declared = set(ignore)
+    entries = sorted((e for e in status_porcelain(cwd)
+                      if not (e[1] in declared and (Path(cwd) / e[1]).is_symlink())), key=lambda e: e[1])
     h = hashlib.sha256()
     for _, p in entries:
         f = Path(cwd) / p

@@ -122,6 +122,8 @@ def _generic_run(repo, cli, hook):
         "proof_runner:\n  framework: generic\n  cmd: \"bash\"\n"
     )
     write_plan(repo.root, contract_with())
+    # loop.yml 现在从目标提交冻结（B1）：先提交再 start
+    repo.commit_all("chore(fixture): [cr_id_skip] Generic loop config")
     out = cli("start", "--plan", str(repo.root / "plan.md"), "--session", "S1")
     return Path(out["worktree"]), Path(out["tester_worktree"])
 

@@ -58,9 +58,12 @@ class LoopConfig:
     worktree_root: str | None = None
     proof_runner: dict[str, Any] = field(default_factory=lambda: dict(DEFAULT_PROOF_RUNNER))
     evidence_neutral_paths: list[str] = field(default_factory=list)
+    # 依赖准备：run 起点把这些路径从 link_source 链接进候选 / tester / preflight 现场（#383）
+    worktree_link_paths: list[str] = field(default_factory=list)
+    worktree_link_source: str | None = None
 
     def to_json(self) -> dict[str, Any]:
-        return {
+        out: dict[str, Any] = {
             "path": self.path,
             "sha256": self.sha256,
             "pass_cmd": [s.to_json() for s in self.pass_cmd],
@@ -69,6 +72,13 @@ class LoopConfig:
             "proof_runner": self.proof_runner,
             "evidence_neutral_paths": self.evidence_neutral_paths,
         }
+        # 未声明时不写键：既有项目的 loop_config JSON 逐字节不变（与 Stage.to_json 同一约定）。
+        # link_source 单独声明没有意义，与 link_paths 绑定写，避免只声明它时也改了 JSON 形状。
+        if self.worktree_link_paths:
+            out["worktree_link_paths"] = self.worktree_link_paths
+            if self.worktree_link_source is not None:
+                out["worktree_link_source"] = self.worktree_link_source
+        return out
 
 
 # ---------------------------------------------------------------- YAML 子集
@@ -247,27 +257,49 @@ def load_yaml_text(text: str) -> Any:
 # ---------------------------------------------------------------- loop.yml
 
 
-def _parse_link_paths(raw: Any) -> list[str]:
-    """proof_runner.link_paths：仓库内相对路径数组（正斜杠）。校验靠输入条件，不靠事后特判（原则四）。"""
+def _parse_link_paths(raw: Any, field_name: str = "proof_runner.link_paths",
+                      error_code: str = "CONFIG_PROOF_RUNNER_INVALID") -> list[str]:
+    """链接路径：仓库内相对路径数组（正斜杠）。校验靠输入条件，不靠事后特判（原则四）。
+
+    proof 的现场链接与 run 起点的依赖准备共用这一个校验（原则二：一个判定只有一个实现）。
+    """
     if not isinstance(raw, list) or not all(isinstance(p, str) for p in raw):
-        raise fatal("CONFIG_PROOF_RUNNER_INVALID",
-                    "proof_runner.link_paths 必须是字符串数组（相对仓库根的路径，如 node_modules）", value=raw)
+        raise fatal(error_code,
+                    f"{field_name} 必须是字符串数组（相对仓库根的路径，如 node_modules）", value=raw)
     out: list[str] = []
     for item in raw:
         text = item.strip().replace("\\", "/")
         if not text:
-            raise fatal("CONFIG_PROOF_RUNNER_INVALID", "proof_runner.link_paths 不能有空串", value=raw)
+            raise fatal(error_code, f"{field_name} 不能有空串", value=raw)
         if text.startswith("/") or re.match(r"^[A-Za-z]:", text):
-            raise fatal("CONFIG_PROOF_RUNNER_INVALID", f"proof_runner.link_paths 必须是相对仓库根的路径: {item}", value=raw)
+            raise fatal(error_code, f"{field_name} 必须是相对仓库根的路径: {item}", value=raw)
         parts = [p for p in text.split("/") if p not in ("", ".")]
         if not parts:
-            raise fatal("CONFIG_PROOF_RUNNER_INVALID", f"proof_runner.link_paths 不能指向仓库根: {item}", value=raw)
+            raise fatal(error_code, f"{field_name} 不能指向仓库根: {item}", value=raw)
         if ".." in parts:
-            raise fatal("CONFIG_PROOF_RUNNER_INVALID", f"proof_runner.link_paths 不能含 `..` 段: {item}", value=raw)
+            raise fatal(error_code, f"{field_name} 不能含 `..` 段: {item}", value=raw)
         if parts[0] == ".git":
-            raise fatal("CONFIG_PROOF_RUNNER_INVALID", f"proof_runner.link_paths 不能指向 .git: {item}", value=raw)
+            raise fatal(error_code, f"{field_name} 不能指向 .git: {item}", value=raw)
         out.append("/".join(parts))
     return out
+
+
+def _parse_link_source(raw: Any) -> str:
+    """worktree.link_source：依赖源目录，相对仓库根（默认 "." 即仓库根本身）。"""
+    field_name = "worktree.link_source"
+    if not isinstance(raw, str) or not raw.strip():
+        raise fatal("CONFIG_WORKTREE_LINK_INVALID", f"{field_name} 必须是非空字符串（相对仓库根的路径）", value=raw)
+    text = raw.strip().replace("\\", "/")
+    if text.startswith("/") or re.match(r"^[A-Za-z]:", text):
+        raise fatal("CONFIG_WORKTREE_LINK_INVALID", f"{field_name} 必须是相对仓库根的路径: {raw}", value=raw)
+    parts = [p for p in text.split("/") if p not in ("", ".")]
+    if not parts:
+        return "."
+    if ".." in parts:
+        raise fatal("CONFIG_WORKTREE_LINK_INVALID", f"{field_name} 不能含 `..` 段: {raw}", value=raw)
+    if parts[0] == ".git":
+        raise fatal("CONFIG_WORKTREE_LINK_INVALID", f"{field_name} 不能指向 .git: {raw}", value=raw)
+    return "/".join(parts)
 
 
 def load_loop_config(repo_root: Path) -> LoopConfig:
@@ -283,7 +315,11 @@ def load_loop_config_at(repo_root: Path, commit: str) -> LoopConfig | None:
 
     if not gitx.ls_tree_blobs(repo_root, commit, [LOOP_YML.as_posix()]):
         return None
-    r = subprocess.run(["git", "cat-file", "blob", f"{commit}:{LOOP_YML.as_posix()}"], cwd=str(repo_root), capture_output=True, check=True)
+    r = subprocess.run(["git", "cat-file", "blob", f"{commit}:{LOOP_YML.as_posix()}"], cwd=str(repo_root), capture_output=True, check=False)
+    if r.returncode != 0:
+        # 树里有这个路径却读不出来：不能让调用方静默回退到工作区那份
+        raise fatal("CONFIG_UNREADABLE", f"无法读取 {commit[:12]}:{LOOP_YML.as_posix()}",
+                    path=f"{commit[:12]}:{LOOP_YML.as_posix()}", stderr=r.stderr.decode("utf-8", "replace")[-500:])
     return _parse_loop_config(r.stdout, f"{commit[:12]}:{LOOP_YML.as_posix()}")
 
 
@@ -316,9 +352,16 @@ def _parse_loop_config(raw: bytes, path: str) -> LoopConfig:
         raise fatal("CONFIG_MAX_ITERATIONS_INVALID", "max_iterations 必须是正整数", value=max_iter)
 
     worktree_root = None
+    worktree_link_paths: list[str] = []
+    worktree_link_source: str | None = None
     wt = data.get("worktree")
     if isinstance(wt, dict) and wt.get("root"):
         worktree_root = str(wt["root"])
+    if isinstance(wt, dict) and wt.get(LINK_PATHS_FIELD) is not None:
+        worktree_link_paths = _parse_link_paths(wt[LINK_PATHS_FIELD], f"worktree.{LINK_PATHS_FIELD}",
+                                                    "CONFIG_WORKTREE_LINK_INVALID")
+    if isinstance(wt, dict) and wt.get("link_source") is not None:
+        worktree_link_source = _parse_link_source(wt["link_source"])
 
     runner = dict(DEFAULT_PROOF_RUNNER)
     raw_runner = data.get("proof_runner")
@@ -355,4 +398,6 @@ def _parse_loop_config(raw: bytes, path: str) -> LoopConfig:
         max_iterations=max_iter,
         worktree_root=worktree_root,
         evidence_neutral_paths=neutral,
+        worktree_link_paths=worktree_link_paths,
+        worktree_link_source=worktree_link_source,
     )

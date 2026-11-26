@@ -30,6 +30,8 @@ def _start_generic(repo, cli, contract: dict | None = None) -> dict:
         'proof_runner:\n  framework: generic\n  cmd: "bash"\n'
     )
     write_plan(repo.root, contract or contract_with())
+    # loop.yml 现在从目标提交冻结（B1）：先提交再 start，否则读到的是起点那份默认配置
+    repo.commit_all("chore(fixture): [cr_id_skip] Loop config")
     return cli("start", "--plan", str(repo.root / "plan.md"), "--session", "S1")
 
 
@@ -45,6 +47,8 @@ def _start_pytest(repo, cli, contract: dict | None = None) -> dict:
         f"proof_runner:\n  framework: pytest\n  cmd: \"{PROOF_RUNNER_CMD}\"\n"
     )
     write_plan(repo.root, contract or contract_with())
+    # loop.yml 现在从目标提交冻结（B1）：先提交再 start，否则读到的是起点那份默认配置
+    repo.commit_all("chore(fixture): [cr_id_skip] Loop config")
     return cli("start", "--plan", str(repo.root / "plan.md"), "--session", "S1")
 
 

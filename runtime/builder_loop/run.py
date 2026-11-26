@@ -9,9 +9,10 @@ from pathlib import Path
 from typing import Any
 
 from . import __version__
+from . import baseline
 from . import contract as contract_mod
 from . import doctor, evidence, gitx, ledger as ledger_mod, machine, proof, worktree
-from .config import load_loop_config, load_loop_config_at
+from .config import LOOP_YML, load_loop_config, load_loop_config_at
 from .errors import Problem, fatal, needs_user, negative
 
 ROLE_BUILDER = "builder"
@@ -96,7 +97,8 @@ def runtime_identity() -> dict[str, Any]:
 # ---------------------------------------------------------------- start
 
 
-def start(repo_root: Path, plan_path: Path, session_id: str, target_branch: str | None = None) -> dict[str, Any]:
+def start(repo_root: Path, plan_path: Path, session_id: str, target_branch: str | None = None,
+          allow_stale_target: bool = False) -> dict[str, Any]:
     bound = ledger_mod.lookup_session(session_id)
     if bound:
         if not ledger_mod.is_terminal(bound["ledger"]):
@@ -110,25 +112,56 @@ def start(repo_root: Path, plan_path: Path, session_id: str, target_branch: str 
         raise needs_user("HOOKS_OUTDATED", "hook 注册不完整（只 pull 没重跑 install.sh？）：用户重跑 install.sh 后再 start",
                          missing=missing, install=str(Path(__file__).resolve().parents[2] / "install.sh"))
 
-    loop_config = load_loop_config(repo_root)
     contract = contract_mod.parse_contract_file(plan_path)
     branch = target_branch or contract["authority"].get("target_branch") or gitx.current_branch(repo_root)
     if not branch:
         raise fatal("TARGET_BRANCH_UNKNOWN", "无法确定目标分支（detached HEAD 且 contract 未指定 target_branch）")
     if not gitx.branch_exists(repo_root, branch):
-        raise fatal("TARGET_BRANCH_MISSING", f"目标分支不存在: {branch}", branch=branch)
+        raise fatal("TARGET_BRANCH_MISSING", f"目标分支不存在: {branch}", branch=branch,
+                    upstream_exists=gitx.remote_branch_head(repo_root, f"origin/{branch}") is not None)
     contract["authority"]["target_branch"] = branch
+
+    # 基线：落后或分叉于上游时拒绝，不静默采用旧 ref（#385）。校验先于建 worktree / ledger（原则三）
+    baseline_facts = baseline.require_target_baseline(repo_root, branch, allow_stale=allow_stale_target, context="start")
+    target_head = baseline_facts["local_head"]
+
+    # 判据参数取目标分支提交里的那份，与 `contract revise` 读候选 HEAD 同源（#411，原则二）
+    committed_cfg = load_loop_config_at(repo_root, target_head)
+    if committed_cfg is not None:
+        loop_config = committed_cfg
+        try:
+            wt_cfg = load_loop_config(repo_root)
+        except Problem:
+            wt_cfg = None  # 工作区那份不可用只影响「能否比对」，不影响本次冻结
+        config_source = {"from": f"{target_head[:12]}:{LOOP_YML.as_posix()}",
+                         "worktree_differs": wt_cfg is not None and wt_cfg.sha256 != committed_cfg.sha256}
+    else:
+        # 项目不把 loop.yml 纳入版本控制：退回工作区那份（与 revise 的回退对称）
+        loop_config = load_loop_config(repo_root)
+        config_source = {"from": "worktree", "worktree_differs": False}
+
     frozen = contract_mod.freeze_assurance(contract, loop_config)
     if "proof" in frozen["assurance"]["required"]:
         proof.smoke_runner(frozen["assurance"]["proof_runner"], repo_root)  # 冻结之前确认判据跑得起来（#241）
 
-    target_head = gitx.branch_head(repo_root, branch)
+    # 依赖源在起点上必须可寻址：它是启动前就能判定的输入条件，不等 ready_cmd 恒不满足才暴露（#383）
+    link_source = loop_config.worktree_link_source
+    src_root = repo_root / link_source if link_source else repo_root
+    if loop_config.worktree_link_paths:
+        absent = worktree.missing_link_paths(src_root, loop_config.worktree_link_paths)
+        if absent:
+            raise fatal("WORKTREE_LINK_SOURCE_MISSING",
+                        f"worktree.link_paths 声明的路径在依赖源里不存在: {', '.join(absent)}；"
+                        "先准备好依赖，或改 .claude/loop.yml 的 worktree.link_source",
+                        paths=absent, source=str(src_root))
+
     # 候选从目标分支 HEAD 建立，主仓工作区的未提交改动不在基线里：只报告，不拦截、不落盘（原则三、五）
     uncommitted = sorted({p for xy, p in gitx.status_porcelain(repo_root) if xy != "??"})[:50] if gitx.current_branch(repo_root) == branch else []
     run_id = _run_id(frozen["mission"]["slug"])
     lpath = ledger_mod.ledger_path(repo_root, run_id)
     with_tester = "tester" in frozen["assurance"]["required"]
-    wts = worktree.create_run_worktrees(repo_root, run_id, target_head, loop_config.worktree_root, with_tester=with_tester)
+    wts = worktree.create_run_worktrees(repo_root, run_id, target_head, loop_config.worktree_root, with_tester=with_tester,
+                                        link_paths_=loop_config.worktree_link_paths, link_source=link_source)
 
     tester = None
     if with_tester:
@@ -137,7 +170,8 @@ def start(repo_root: Path, plan_path: Path, session_id: str, target_branch: str 
         run_id=run_id,
         runtime_identity=runtime_identity(),
         session={"owner_session_id": session_id},
-        repo={"root": str(repo_root), "target_branch": branch, "target_start_head": target_head},
+        repo={"root": str(repo_root), "target_branch": branch, "target_start_head": target_head,
+              "target_baseline": baseline_facts, "loop_config_source": config_source},
         candidate={**wts["candidate"], "head": target_head, "checkpoints": []},
         tester=tester,
         contract=contract_mod.contract_record(frozen, plan_path),
@@ -148,6 +182,11 @@ def start(repo_root: Path, plan_path: Path, session_id: str, target_branch: str 
     except BaseException:
         worktree.remove_run_worktrees(repo_root, lg, delete_branches=True)
         raise
+    if baseline_facts.get("acknowledged"):
+        with ledger_mod.mutate(lpath) as lg2:
+            ledger_mod.log_event(lg2, "target_baseline_acknowledged", relation=baseline_facts["relation"],
+                                 local_head=baseline_facts["local_head"], remote_head=baseline_facts["remote_head"],
+                                 upstream_ref=baseline_facts["upstream_ref"])
     ledger_mod.bind_session(session_id, repo_root, run_id)
     return {
         "run_id": run_id,
@@ -157,6 +196,9 @@ def start(repo_root: Path, plan_path: Path, session_id: str, target_branch: str 
         "candidate_branch": wts["candidate"]["branch"],
         "target_branch": branch,
         "target_start_head": target_head,
+        "target_baseline": baseline_facts,
+        "loop_config_source": config_source,
+        "prepared_links": loop_config.worktree_link_paths,
         "target_uncommitted": uncommitted,
         "contract_digests": lg["contract"]["digests"],
         "readiness": evidence.readiness(lg, repo_root),
@@ -170,7 +212,7 @@ def status(ledger_path: Path, repo_root: Path) -> dict[str, Any]:
     lg = ledger_mod.load(ledger_path)
     cand = lg["candidate"]
     wt = Path(cand["worktree"]) if cand.get("worktree") else None
-    dirty = worktree.residue(wt) if wt and wt.is_dir() else []
+    dirty = worktree.residue(wt, worktree.link_ignores(lg)) if wt and wt.is_dir() else []
     tester = lg.get("tester")
     # 续接的 agent 收不到 SubagentStart 注入的上下文，而 SendMessage 的正文在它那边无从验真。
     # 所以消息只当门铃：内容一律让角色自己 `bl brief` 取（#243）
@@ -244,7 +286,7 @@ def checkpoint(ledger_path: Path, repo_root: Path, role: str, message: str | Non
     wt, branch, head, label = _role_worktree(lg, role)
     worktree.assert_identity(wt, branch, head, label)
 
-    paths = worktree.residue(wt)
+    paths = worktree.residue(wt, worktree.link_ignores(lg))
     accepted, rejected = _classify_paths(lg, role, paths)
     if dry_run:
         return {"dry_run": True, "role": role, "would_commit": accepted, "rejected": rejected, "hint": REJECT_HINT if rejected else None}
@@ -299,7 +341,7 @@ def integrate(ledger_path: Path, repo_root: Path) -> dict[str, Any]:
     cand = lg["candidate"]
     wt = Path(cand["worktree"])
     worktree.assert_identity(wt, cand["branch"], cand["head"], "候选")
-    worktree.assert_clean(wt, "候选")
+    worktree.assert_clean(wt, "候选", worktree.link_ignores(lg))
     files = evidence.tester_files(lg, repo_root)
     if files["present"]:
         gitx.git(wt, "checkout", t["head"], "--", *files["present"])
@@ -419,7 +461,12 @@ def _repo_checks(c: dict[str, Any], repo_root: Path) -> dict[str, Any]:
     if not branch or not gitx.branch_exists(repo_root, branch):
         problems.append(f"目标分支不存在或无法确定: {branch}")
     try:
-        cfg = load_loop_config(repo_root)
+        # 与 start 同源：规划期看到的判据参数就是将来冻结的那份（#411）
+        cfg = None
+        if branch and gitx.branch_exists(repo_root, branch):
+            cfg = load_loop_config_at(repo_root, gitx.branch_head(repo_root, branch))
+        if cfg is None:
+            cfg = load_loop_config(repo_root)
         runner = cfg.proof_runner
         contract_mod.check_machine_stages(c, cfg)
     except Problem as exc:

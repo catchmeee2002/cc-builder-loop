@@ -2,6 +2,14 @@
 
 > 本文件记 **CC 版**产品线（分支 `cc/main`）。Codex 版见 `codex/main` 分支。
 
+## run 起点冻结真实基线：目标提交、上游一致性、依赖来源（#385 #411 #383，2026-11-26）
+
+- **目标分支与上游一致性（#385）**：新增 `baseline.require_target_baseline`，在 `start` / `rebase` / `finalize` 三处判定。本地 `refs/heads/<target>` 落后（`behind`）或分叉（`diverged`）于上游时拒绝，错误码 `TARGET_NOT_IN_SYNC`（start 同 `fatal`、另两处 negative，`details` 带 `relation` / `local_head` / `remote_head` / `upstream_ref`）。修的是三个出口的同一根因：此前 start 静默取本地 ref、rebase 说「目标分支未前进」空转、finalize 带着落后基线写回。基线仍是本地 ref——finalize 的 CAS、rebase 的 onto、checkout 同步都指向它，上游只做准入；runtime 不执行 fetch，未 fetch 过报 `unverified`、无 remote 报 `local_only`，两者放行并带 `warning`。新增 `bl start --allow-stale-target`（只承认开工，不改变 finalize 的写回条件）；`recover()` 有意不校验。
+- **冻结的 loop.yml 取自目标分支提交（#411）**：`start` 改用 `load_loop_config_at(repo_root, target_head)`，与 `contract revise` 读候选 HEAD 对称；目标提交没跟踪时才退回工作区。`assurance.machine_commands` 因此就是随交付合入的那份，`ready_cmd` 不会再被调用工作树的旧副本吃掉。不一致不报错，`start` 输出 `loop_config_source`（`from` / `worktree_differs`），ledger 记 `repo.loop_config_source`。`contract validate --check-repo` 与 start 同源。
+- **run 起点准备依赖（#383）**：loop.yml 新增 `worktree.link_paths` / `worktree.link_source`（仓库内相对路径，缺省源是仓库根）。建候选 / tester worktree 与 preflight 快照时把声明路径软链过去，走 `worktree.link_paths()`（proof 的现场链接与它共用同一个实现）。源缺失在 `start` 就报 `WORKTREE_LINK_SOURCE_MISSING`，不留 worktree / 分支 / ledger。
+- **链接不算现场改动**：`worktree.residue` / `assert_clean` / `gitx.worktree_fingerprint` 新增 `ignore` 参数，machine 入口、machine 收尾（`MACHINE_WORKTREE_CHANGED`）、checkpoint、integrate、proof、finalize、cleanup 都排除声明路径；`proof._restore_worktree` 的 `git clean` 加 `-e <rel>`，多组反例之间候选不再丢依赖。不声明时不改变任何既有形状。
+- **行为变更**：工作的 `pass_cmd` / `proof_runner` / `worktree.root` 从此以目标提交为准，工作区里未提交的修改不再影响 run；这是接入期最容易误判的一条，`worktree_differs` 就是为此显式暴露。
+
 ## 契约面一致性收敛：`{main_repo}` 展开、不可读 root、`--repo` 位置（#391 #404 #413，2026-11-26）
 
 - **pass_cmd 也展开 `{main_repo}`（#391）**：此前只有 `proof_runner.cmd` 展开，`machine` 把 `cmd` 原样交给 `bash -c`；而 README / SKILL / CLAUDE.md 三处都写了 pass_cmd 可用它，照文档配置要等 machine 门禁才以 `exit 127` 暴露。现在展开收敛到 `config.expand_main_repo()` 一处，machine（含 `ready_cmd`）、preflight 与 proof 都调它（原则二、八）。

@@ -23,7 +23,7 @@ from typing import Any
 
 from . import brief as brief_mod
 from . import contract as contract_mod
-from . import evidence, gitx, ledger as ledger_mod
+from . import evidence, gitx, ledger as ledger_mod, worktree
 from .errors import Problem
 from .jsonutil import canonical_json, dumps, sha256_bytes
 from .run import ROLE_TESTER, checkpoint
@@ -191,7 +191,7 @@ def record_role_result(ledger_path: Path, repo_root: Path, role: str, agent_id: 
 def _candidate_fingerprint(lg: dict[str, Any]) -> dict[str, Any] | None:
     """候选 worktree 的 git 状态指纹；取不到（worktree 不在、git 出错）就降级为 None，不拖垮 hook（#312）。"""
     try:
-        return gitx.worktree_fingerprint(lg["candidate"]["worktree"])
+        return gitx.worktree_fingerprint(lg["candidate"]["worktree"], worktree.link_ignores(lg))
     except Exception:  # noqa: BLE001 — 指纹只是旁证，不能让 SubagentStart / 登记失败
         return None
 
@@ -439,7 +439,7 @@ def _already_recorded(lg: dict[str, Any], role: str, agent_id: str | None, sha: 
     results = [e for e in _turn_events(lg, role, agent_id) if e["kind"] == "role_result"]
     if not results or results[-1].get("payload_sha256") != sha:
         return False
-    return role != "tester" or gitx.is_clean(lg["tester"]["worktree"])
+    return role != "tester" or gitx.is_clean(lg["tester"]["worktree"], worktree.link_ignores(lg))
 
 
 def handle_subagent_stop(ev: dict[str, Any], bound: dict[str, Any]) -> HookReturn:

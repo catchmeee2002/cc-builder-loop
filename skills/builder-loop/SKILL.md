@@ -70,7 +70,12 @@ evidence_neutral_paths:        # 可选，缺省为空 = 候选任何改动都�
   - docs/**                    # 判据读不到的路径；只改它们不重跑 machine / proof（reviewer 照常复审）
 worktree:
   root: ../builder-loop-worktrees/<repo>          # 可选，默认仓库同级目录
+  link_paths:                  # 可选：run 起点把依赖从源目录链接进候选 / tester / preflight 现场
+    - node_modules             # 只建符号链接，不复制不安装；链接不算「现场改动」，不会让 machine 报 dirty
+  link_source: .               # 可选：依赖源目录，仓库内相对路径，缺省即仓库根本身
 ```
+
+`worktree.link_paths` 与 `proof_runner.link_paths` 是同一套校验、两个端点：前者在 run 起点把依赖带给候选，后者在 proof 时把候选的依赖带给反例现场。前者声明的源在 start 时不存在直接报 `WORKTREE_LINK_SOURCE_MISSING`；它不进 assurance 面（改变它影响的是 `ready_cmd` 能否通过，不会伪造判据）。
 
 pass_cmd 与 proof 都在 worktree 内执行，命令必须能在一个新 checkout 里跑通：venv 在主仓就用 `{main_repo}` 引过去；依赖不在清单里就把 `uv run --with-requirements … python -m pytest` 之类写进 `proof_runner.cmd`。它会被冻结进 contract 的 assurance 面，run 中途改动需要用户授权。`.claude/builder-loop/` 需在 `.gitignore`。
 

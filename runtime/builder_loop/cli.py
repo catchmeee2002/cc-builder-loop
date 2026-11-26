@@ -96,6 +96,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--plan", required=True)
     sp.add_argument("--session", required=True)
     sp.add_argument("--target", help="目标分支（默认 contract.authority.target_branch 或当前分支）")
+    sp.add_argument("--allow-stale-target", action="store_true",
+                    help="目标分支落后/分叉于上游时仍然开工（承认旧基线；不影响 finalize 的写回条件）")
 
     sp = sub.add_parser("status"); add_locators(sp)
     sp = sub.add_parser("checkpoint"); add_locators(sp)
@@ -162,7 +164,8 @@ def dispatch(args: argparse.Namespace) -> tuple[Any, int]:
     cmd = args.cmd
     if cmd == "start":
         repo_root = run_mod.resolve_repo_root(args.repo)
-        return run_mod.start(repo_root, Path(args.plan).resolve(), args.session, args.target), EXIT_OK
+        return run_mod.start(repo_root, Path(args.plan).resolve(), args.session, args.target,
+                             allow_stale_target=args.allow_stale_target), EXIT_OK
     if cmd == "status":
         lp, root = _locate(args)
         return run_mod.status(lp, root), EXIT_OK

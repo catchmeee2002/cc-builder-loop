@@ -37,10 +37,10 @@ proof 只能证明"测试能抓住偏离当前实现"，证明不了"当前实�
 
 | 模块 | 职责 |
 |---|---|
-| `config` | `.claude/loop.yml` → `pass_cmd[] / max_iterations / proof_runner / worktree.root`；PyYAML 缺席时用内置子集解析。`start` 读选仓（run 的 `repo.root`，linked worktree 就是它自己）的工作区；`contract revise` 读候选 HEAD 里已提交的那份（run 内的判据参数只有一个家，就是随交付合入的那份，#282），候选里没有被跟踪的 loop.yml 时才退回同一工作区；`{main_repo}` 只有 `expand_main_repo()` 一处展开实现，machine 与 proof 都调它（#391，原则二） |
+| `config` | `.claude/loop.yml` → `pass_cmd[] / max_iterations / proof_runner / worktree.root`；PyYAML 缺席时用内置子集解析。`start` 读目标分支 HEAD 里已提交的那份（#411：与 `contract revise` 读候选 HEAD 对称，冻结的判据参数就是随交付合入的那份），目标提交没有跟踪 loop.yml 时才退回工作区；两者不一致不报错但 start 输出 `loop_config_source.worktree_differs`，ledger 记 `repo.loop_config_source`；`{main_repo}` 只有 `expand_main_repo()` 一处展开实现，machine 与 proof 都调它（#391，原则二） |
 | `contract` | 标签提取、校验（允许键来自 `FIELD_TABLE`，未知字段入口拒绝）、三面 digest、`classify_change`、glob 匹配；**`write_rejection()` 是路径归属与保护的唯一判定入口**（checkpoint / PreToolUse / mutation patch 共用） |
 | `ledger` | schema @2 校验、mutate、events、session 指针（读后回核 owner）、`peek`（不校验 schema，给 doctor / runs / abandon 处理旧版 ledger） |
-| `worktree` | 每个 run 的 `builder/` 与 `tester/` 两个 worktree（创建失败回滚）、临时 worktree（支持叠加与删除）、身份 / clean 断言 |
+| `worktree` | 每个 run 的 `builder/` 与 `tester/` 两个 worktree（创建失败回滚）、临时 worktree（支持叠加与删除）、身份 / clean 断言。依赖准备（#383）：`worktree.link_paths` 声明的路径在建 worktree 与 preflight 快照时从 `worktree.link_source`（默认仓库根）软链接过去，只建链接、不复制不安装；`residue` / `assert_clean` / `worktree_fingerprint` 的 `ignore` 参数把这些链接排除在「现场改动」之外（链接由 runtime 建，不是写入者的改动），`prepare_links` 从 ledger 的 `loop_config` 读声明，run 内不重读 loop.yml |
 | `run` | start / status / checkpoint（分角色、`--dry-run`）/ integrate / resume / hold（`--reason` / `--release`）/ abandon / contract validate\|revise。仓库解析两个入口：`resolve_repo_root()` 保留用户选的 linked worktree（start / validate / runs / doctor / cleanup），`run_roots()` 在定位已有 run 时依次试选仓与主仓 |
 | `machine` | pass_cmd 三态、超时、信号终止（无效观察）、执行后 worktree 变更检测、失败签名、`tester_files_mentioned`、基线预跑 `preflight`；stage `cmd` 与 `ready_cmd` 执行前都经 `expand_main_repo` 展开 `{main_repo}`（与 proof 同源） |
 | `process` | 门禁命令的执行边界：一次调用独占一个进程组，超时或直接进程被信号带走时先整组回收再返回（#363） |
@@ -176,6 +176,7 @@ finalize / abandon / finalize_failed 之后 session 不解绑；`start` 遇到�
 | proof 失败 | `TEST_PROOF_CANDIDATE_FAILED` / `TEST_PROOF_NOT_EXECUTED` / `TEST_BASELINE_RED_NOT_PROVEN` / `TEST_MUTATION_SURVIVED` / `TEST_MUTATION_INVALID` / `TEST_MUTATION_PATCH_MISSING` / `PROOF_WORKTREE_MUTATED`；`suggested_owner` 指向 builder 或 tester；`TEST_PROOF_CANDIDATE_FAILED` 发生时 machine evidence 对当前候选是 fresh pass → 归 tester 并带 `isolation_hint`（全量过、单跑失败，多半是测试隔离，#313；只看 machine 状态，不解析日志）。失败输出只给完整日志 `log`，不再附 `tail`（#365） |
 | reviewer 未过 | finding 的 owner 决定去向：builder 修 / 回 tester / `REVIEW_CONTRACT` 交还用户 |
 | 目标分支前进 | finalize → TARGET_DRIFT；`bl rebase` 先动候选，漂移触及 tester 文件时再动 tester 分支；成功后 evidence 自然 stale，tester evidence 只在重叠文件内容变了时 stale |
+| 目标分支与上游不一致（#385） | 基线仍是本地 `refs/heads/<target>`（finalize 的 CAS 目标、rebase 的 onto、checkout 同步的起点都指向它），上游只参与准入：`baseline.require_target_baseline` 在 `start` / `rebase` / `finalize` 三处判定，落后（`behind`）或分叉（`diverged`）时拒绝，错误码 `TARGET_NOT_IN_SYNC`（start 用 fatal，另两处 negative，details 带 `relation` / `local_head` / `remote_head` / `upstream_ref`）。runtime 不执行 fetch：上游 ref 从未 fetch 过时报 `unverified`、无 remote 时报 `local_only`，两者都放行并带 `warning`。`ahead`（本地在上游之上）放行。`bl start --allow-stale-target` 只承认开工基线，不改变 finalize 的写回条件；`recover()` 有意不校验——它在完成/回滚一次已写下 intent 的本地 ref 事务，引入外部条件会把半截状态卡死 |
 | tester 分支落后且漂移触及它的文件 | integrate → `INTEGRATE_TESTER_BASE_STALE`（negative，details.paths），不提交；readiness 给 `rebase`（tester 冲突时给 `resume_tester`） |
 | on-target worktree（任一 checkout 了目标分支的 worktree，含主仓）dirty 与变更路径重叠 | finalize → DIRTY_OVERLAP（details 按 worktree 列重叠路径），不写回 |
 | finalize CAS 后中断 | ledger 留 `finalize_intent`；再次 finalize 按目标分支当前 HEAD 恢复 |

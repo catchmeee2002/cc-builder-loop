@@ -48,7 +48,16 @@ proof_runner:                 # 可选；proof 用的测试命令前缀，缺省
   cmd: "{main_repo}/.venv/bin/python -m pytest"
   # link_paths:                 # 可选；链接进反例现场的依赖目录（不在 git 里，如 node_modules）
   #   - node_modules
+worktree:                     # 可选
+  root: ../builder-loop-worktrees
+  link_paths:                 # 可选；run 起点把依赖从源目录链接进候选 / tester / preflight 现场
+    - node_modules            # 只建符号链接，不复制不安装；链接不算「现场改动」
+  link_source: .              # 可选；依赖源目录，相对仓库根，缺省即仓库根本身
 ```
+
+`.claude/loop.yml` 必须在目标分支里被跟踪：`bl start` 冻结的是**目标分支提交里**的那份，与 `bl contract revise` 读候选 HEAD 对称。工作区里未提交的改动不会生效，只在 `bl start` 输出的 `loop_config_source.worktree_differs` 里报告。
+
+`bl start` 还要求目标分支与它的上游一致（`origin/<branch>`）：落后或分叉时拒绝开工，先 `git fetch` 并把本地分支快进/合并到上游；确认要以旧基线开工时加 `--allow-stale-target`。仓库没有配置 remote 时退回本地 ref 并给出警告。
 
 `.claude/builder-loop/` 加进 `.gitignore`。pass_cmd 与 proof 都在 worktree 内执行，必须能在新 checkout 里跑通；venv 在主仓就用 `{main_repo}` 引过去。
 

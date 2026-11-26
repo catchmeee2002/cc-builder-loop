@@ -10,6 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from . import baseline
 from . import contract as contract_mod
 from . import evidence, gitx, ledger as ledger_mod, worktree
 from .errors import fatal, negative
@@ -157,9 +158,11 @@ def finalize(ledger_path: Path, repo_root: Path, message: str | None, *, run_com
     cand = lg["candidate"]
     wt = Path(cand["worktree"])
     worktree.assert_candidate_identity(wt, cand["branch"], cand["head"])
-    worktree.assert_candidate_clean(wt)
+    worktree.assert_candidate_clean(wt, worktree.link_ignores(lg))
 
     target = lg["repo"]["target_branch"]
+    # 写回条件与开工条件不同：承认过旧基线的 run 也不许带着落后基线写回（#385）
+    baseline.require_target_baseline(repo_root, target, negative_exit=True, context="finalize")
     live = gitx.branch_head(repo_root, target)
     if live != lg["repo"]["target_start_head"]:
         raise negative("TARGET_DRIFT", f"目标分支 {target} 已前进，先 `bl rebase` 再重验", live=live, target_start_head=lg["repo"]["target_start_head"])
@@ -212,13 +215,15 @@ def rebase_candidate(ledger_path: Path, repo_root: Path) -> dict[str, Any]:
         onto = resumed  # 冲突解完、`git rebase --continue` 之后：采纳的是当初起的那次 rebase，不是此刻的目标分支（原则七）
     elif not gitx.rebase_in_progress(wt):
         worktree.assert_candidate_identity(wt, cand["branch"], cand["head"])
+        # 上游已前进而本地 ref 没动时，下面那句 `live == target_start_head` 会误报「未前进」并空转（#385）
+        baseline.require_target_baseline(repo_root, target, negative_exit=True, context="rebase")
         if live == lg["repo"]["target_start_head"]:
             tester = sync_tester_rebase(ledger_path, repo_root, start=True)
             out: dict[str, Any] = {"rebased": False, "reason": "目标分支未前进", "conflicts": [], "tester_rebase": tester}
             if tester["status"] != "not_needed":
                 out["readiness"] = evidence.readiness(ledger_mod.load(ledger_path), repo_root)
             return out
-        worktree.assert_candidate_clean(wt)
+        worktree.assert_candidate_clean(wt, worktree.link_ignores(lg))
         r = gitx.git(wt, "rebase", live, check=False)
         if not r.ok:
             if not gitx.rebase_in_progress(wt):
@@ -296,7 +301,7 @@ def _resumed_candidate_rebase(lg: dict[str, Any], repo_root: Path, wt: Path) -> 
     cand = lg["candidate"]
     onto = _resumed_rebase(lg, repo_root, wt, "candidate_rebase", cand["branch"], cand["head"])
     if onto:
-        worktree.assert_candidate_clean(wt)
+        worktree.assert_candidate_clean(wt, worktree.link_ignores(lg))
     return onto
 
 
@@ -323,7 +328,7 @@ def sync_tester_rebase(ledger_path: Path, repo_root: Path, *, start: bool) -> di
         return _adopt_tester_rebase(ledger_path, onto, t["head"], cur)
     if not start:
         return {"status": "pending", "paths": overlap}
-    if evidence.role_running(lg, "tester") or not gitx.is_clean(wt):
+    if evidence.role_running(lg, "tester") or not gitx.is_clean(wt, worktree.link_ignores(lg)):
         return {"status": "deferred", "paths": overlap, "hint": "tester 在跑或它的 worktree 有未提交改动；它交卷后再运行 `bl rebase`"}
     worktree.assert_identity(wt, t["branch"], t["head"], "tester")
     r = gitx.git(wt, "-c", "core.editor=true", "rebase", onto, check=False)
