@@ -1,7 +1,7 @@
 """finalize：把已审 candidate tree 以单个提交写回目标分支（expected-old CAS）。
 
 顺序：前置检查 → commit-tree（或临时 worktree 跑 commit hook 后比对 tree）→ 落盘 finalize_intent
-→ update-ref CAS → 同步目标 checkout → 删候选 worktree/分支 → 终态。
+→ update-ref CAS → 同步目标 checkout → 终态（worktree 与分支留给 bl cleanup，#369 #390）。
 失败按"ref 是否回滚成功"决定 phase；中断后再次 finalize 会沿 intent 恢复。
 """
 
@@ -62,15 +62,23 @@ def _make_final_commit(repo_root: Path, lg: dict[str, Any], message: str, run_co
 
 def _complete(ledger_path: Path, repo_root: Path, lg: dict[str, Any], final_head: str) -> dict[str, Any]:
     target = lg["repo"]["target_branch"]
-    removed = worktree.remove_run_worktrees(repo_root, lg, delete_branches=True)
+    # 不回收 worktree（#369 #390）：调用者通常正站在候选目录里，删掉它会让 CC 的 Bash 工具在命令末尾
+    # 追加的 `pwd -P` 失败，把成功的 finalize 显示成 exit 1，下一条命令还会被拒。现场清理不是 Git 事务的
+    # 一部分，留给 `bl cleanup`（它要求已复盘、clean、HEAD 未漂移，并跳过调用者所在的目录）。
     with ledger_mod.mutate(ledger_path) as lg2:
         lg2["finalize_intent"] = None
         lg2["terminal"] = {"status": "finalized", "final_head": final_head, "reason": None, "at": ledger_mod.now_iso()}
     # session 保持绑定：复盘记录写进 ledger 之前 Stop hook 会拦住（复盘硬闸门）
-    return {"final_head": final_head, "target_branch": target, "cleanup": removed, "terminal": "finalized", "next": "retro",
+    return {"final_head": final_head, "target_branch": target, "cleanup": _deferred_cleanup(lg), "terminal": "finalized", "next": "retro",
             "unaddressed_findings": _unaddressed_findings(lg),
             # 角色残留的后台任务不影响判据，不拦 finalize（原则三），但要在收尾时让 builder 看见并 TaskStop（#308）
             "role_background_tasks": evidence.role_background_tasks(ledger_mod.load(ledger_path))}
+
+
+def _deferred_cleanup(lg: dict[str, Any]) -> dict[str, Any]:
+    """finalize 不做现场清理，把待回收的 worktree 与回收命令交给调用方。"""
+    wts = [str(lg[key]["worktree"]) for key in ("candidate", "tester") if lg.get(key) and lg[key].get("worktree")]
+    return {"deferred": True, "command": f"bl cleanup --run {lg['run_id']}", "worktrees": wts}
 
 
 def _unaddressed_findings(lg: dict[str, Any]) -> list[dict[str, Any]]:

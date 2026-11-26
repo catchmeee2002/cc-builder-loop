@@ -62,8 +62,8 @@ def test_linked_worktree_synced_when_main_detached(started, cli, hook):
     assert out["terminal"] == "finalized"
     _assert_synced(linked, out["final_head"], cand_tree)
     assert git(repo.root, "rev-parse", target) == out["final_head"]
-    # candidate 生命周期照常：候选 + tester worktree 被清理
-    assert not started["worktree"].exists() and not started["tester_worktree"].exists()
+    # finalize 只做 Git 事务：候选 + tester worktree 与分支留给 bl cleanup
+    assert started["worktree"].is_dir() and started["tester_worktree"].is_dir()
 
 
 def test_linked_worktree_synced_when_main_on_other_branch(started, cli, hook):
@@ -77,7 +77,7 @@ def test_linked_worktree_synced_when_main_on_other_branch(started, cli, hook):
     assert out["terminal"] == "finalized"
     _assert_synced(linked, out["final_head"], cand_tree)
     assert git(repo.root, "rev-parse", target) == out["final_head"]
-    assert not started["worktree"].exists() and not started["tester_worktree"].exists()
+    assert started["worktree"].is_dir() and started["tester_worktree"].is_dir()
 
 
 # ---------------------------------------------------------------- B2

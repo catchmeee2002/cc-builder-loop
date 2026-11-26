@@ -2,6 +2,14 @@
 
 > 本文件记 **CC 版**产品线（分支 `cc/main`）。Codex 版见 `codex/main` 分支。
 
+## finalize 不再回收 worktree，回收统一交给 bl cleanup（#369 #390，2026-11-26）
+
+- **finalize 只做 Git 事务**：合入成功后不再删除候选与 tester 的 worktree 和分支。此前调用者通常正站在候选目录里，目录被删后 Claude Code 的 Bash 工具在命令末尾追加的 `pwd -P` 失败，把成功的 finalize（`ok:true` / `terminal:finalized`）显示成 exit 1，下一条命令还会因工作目录不存在被拒（8 次现场、4 个业务仓）。
+- **回收职责归 `bl cleanup`**：它本来就要求「已终态 + 已复盘 + 工作树 clean + HEAD 与 ledger 一致」，本次把适用范围从 abandoned 明确到全部终态 run（含 finalized），并新增一条跳过：调用者当前位于待回收目录内时保留并说明原因。
+- **finalize 输出**：`cleanup` 键改为 `{deferred: true, command: "bl cleanup --run <run_id>", worktrees: [...]}`，直接给出回收命令。
+- **可发现性**：新增 `retro.reclaimable_runs()`，`bl doctor --repo` 输出 `repo.reclaimable_runs`（不计入 `problems`——留着目录不是缺陷）；builder SKILL 的复盘一节补一条指路。
+- **原则**：现场清理不属于 Git 事务（改输入条件，不检测调用者 cwd 也不叮嘱 agent 先 cd）；可回收性完全由 ledger 终态、复盘记录与目录是否存在派生，不新增字段（原则五）。
+
 ## contract 字段表成为字段定义的唯一来源（#403 #251，2026-11-25）
 
 - **字段表**：`contract.FIELD_TABLE` 一处定义每个字段的路径、类型、读者（tester / reviewer / runtime）、来源（planner 写 / start 冻结）与说明；`validate_contract` 的允许键与 `bl contract fields` 的输出都从它派生，SKILL 与文档只指路，不再各写一份字段清单（原则二）。

@@ -7,6 +7,7 @@ run 到终态后 session 不解绑，`retrospective` 写进 ledger 之前 Stop h
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -151,9 +152,34 @@ def record(ledger_path: Path, payload: dict[str, Any] | None, *, no_incident: bo
 # ---------------------------------------------------------------- cleanup
 
 
+def _caller_within(path: Path) -> bool:
+    """调用者进程的 cwd 是否在这个目录里（含子目录）。取不到 cwd 时按不在其中处理。"""
+    try:
+        cwd = Path(os.getcwd()).resolve()
+        target = Path(path).resolve()
+    except OSError:
+        return False
+    return cwd == target or target in cwd.parents
+
+
+def reclaimable_runs(repo_root: Path) -> list[str]:
+    """已终态、已复盘、且 worktree 目录还在的 run：`bl cleanup` 的候选。只读 ledger 与文件系统。"""
+    out: list[str] = []
+    for item in ledger_mod.list_runs(repo_root):
+        if item.get("legacy") or item.get("unreadable") or not item.get("terminal"):
+            continue
+        lg = ledger_mod.load(Path(item["ledger_path"]))
+        if ledger_mod.needs_retro(lg):
+            continue
+        alive = [k for k in ("candidate", "tester") if lg.get(k) and lg[k].get("worktree") and Path(lg[k]["worktree"]).exists()]
+        if alive:
+            out.append(lg["run_id"])
+    return sorted(out)
+
+
 def cleanup(repo_root: Path, run_id: str | None = None) -> dict[str, Any]:
-    """回收 abandoned / finalize_failed 且已复盘的 run 留下的 worktree 与分支。
-    只删 clean 且 HEAD 与 ledger 记录一致的；其余原样保留并说明原因。"""
+    """回收已复盘的终态 run（abandoned / finalized / finalize_failed）留下的 worktree 与分支。
+    只删 clean、HEAD 与 ledger 记录一致、且调用者当前不在其中的；其余原样保留并说明原因。"""
     results: list[dict[str, Any]] = []
     for item in ledger_mod.list_runs(repo_root):
         if run_id and item["run_id"] != run_id:
@@ -172,6 +198,9 @@ def cleanup(repo_root: Path, run_id: str | None = None) -> dict[str, Any]:
             if not info or not info.get("worktree") or not Path(info["worktree"]).exists():
                 continue
             wt = Path(info["worktree"])
+            if _caller_within(wt):
+                entry["kept"].append({"worktree": str(wt), "reason": "调用者当前位于该目录内"})
+                continue
             dirty = worktree.residue(wt)
             head = gitx.head(wt)
             if dirty or head != info.get("head"):

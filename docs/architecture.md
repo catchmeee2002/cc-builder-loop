@@ -17,7 +17,7 @@ Claude Code 原生                        builder-loop runtime（bl）
    ├─ Agent(reviewer) ────SubagentStart▶ 记下审查起点的候选 HEAD；注入 diff 范围与前置 evidence
    │      └──SubagentHandback / SubagentStop▶ reviewer evidence（findings 带 owner）
    ├─ Stop hook ◀─────────────────────── 未终态 → exit 2 + next_action；等用户 / 等在跑的 agent → 放行
-   │                 ──────finalize────▶ commit-tree + update-ref CAS → 删两个 worktree → terminal
+   │                 ──────finalize────▶ commit-tree + update-ref CAS → terminal（worktree 留给 bl cleanup）
    └─ Stop hook ◀─────────────────────── 终态未复盘 → exit 2
                      ──────retro record▶ 复盘入 ledger → session 解绑
 ```
@@ -180,7 +180,7 @@ finalize / abandon / finalize_failed 之后 session 不解绑；`start` 遇到�
 | on-target worktree（任一 checkout 了目标分支的 worktree，含主仓）dirty 与变更路径重叠 | finalize → DIRTY_OVERLAP（details 按 worktree 列重叠路径），不写回 |
 | finalize CAS 后中断 | ledger 留 `finalize_intent`；再次 finalize 按目标分支当前 HEAD 恢复 |
 | commit hook 改写 tree | `--run-commit-hook` 模式下 FINAL_COMMIT_TREE_MISMATCH，目标分支不动 |
-| abandon | 终态 abandoned，worktree 与分支保留；复盘后 `bl cleanup` 回收 clean 且 HEAD 未漂移的 |
+| abandon | 终态 abandoned，worktree 与分支保留；复盘后 `bl cleanup` 回收 clean、HEAD 未漂移且调用者不在其中的 |
 | 旧版 ledger（@1）| hook 对它静默；`bl runs` / `doctor` 能列出，`bl abandon --run` 能结束它 |
 
 ## 演进方向

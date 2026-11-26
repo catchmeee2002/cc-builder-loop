@@ -31,8 +31,9 @@ def test_full_loop_finalize_cas_then_retro_gate(started, cli, hook, tmp_path):
     assert git(repo.root, "rev-parse", "HEAD") == out["final_head"] and git(repo.root, "rev-parse", "HEAD^{tree}") == cand_tree
     assert git(repo.root, "rev-parse", "HEAD^") == before  # 单亲提交，候选里的 checkpoint / integrate 提交不进目标分支
     assert git(repo.root, "status", "--porcelain") == "" and "def mul" in (repo.root / "src" / "foo.py").read_text()
-    assert not started["worktree"].exists() and not started["tester_worktree"].exists() and not started["worktree"].parent.exists()
-    assert git(repo.root, "branch", "--list", "builder-loop/*") == ""
+    # finalize 只做 Git 事务：worktree 与分支留给 bl cleanup
+    assert started["worktree"].is_dir() and started["tester_worktree"].is_dir()
+    assert git(repo.root, "branch", "--list", "builder-loop/*") != ""
 
     # 复盘硬闸门：session 仍绑定，Stop 拦住，也不能开下一个 run
     assert L.lookup_session("S1") is not None

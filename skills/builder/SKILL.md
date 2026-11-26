@@ -62,6 +62,7 @@ finalize 或 abandon 之后 run 还没完：复盘记录写进 ledger 之前 Sto
 3. 有要立项的 → AskUserQuestion 多选让用户勾，勾中的用 `file-issue` skill 逐个立项拿到 URL；用户不想立的记 `declined_by_user: true`。
 4. 写 JSON 后 `bl retro record --file <json>`；没有信号也没有观察到问题时 `bl retro record --no-incident`。
 5. 值得长期记住的平台行为 / 隐式约定，按 `~/.claude/doc-policy.md` 先判归属：接手的纯人工团队也需要知道的，是项目文档缺口，走 `business_issue` / `builder_loop_issue` 立项；只关乎 AI 协作、无法工程固化的，才一句话建议用户 `/memory`。
+6. finalize 不回收 worktree：复盘后在候选目录之外执行 `bl cleanup --run <run_id>` 回收。
 
 ## 4. 汇报
 

@@ -102,7 +102,7 @@ def build_parser() -> argparse.ArgumentParser:
     r2 = rts.add_parser("record"); add_locators(r2, nested=True)
     r2.add_argument("--file")
     r2.add_argument("--no-incident", action="store_true")
-    sp = sub.add_parser("cleanup", help="回收已复盘的 abandoned run 的 worktree")
+    sp = sub.add_parser("cleanup", help="回收已复盘的终态 run（abandoned / finalized）的 worktree")
     sp.add_argument("--run")
     sp = sub.add_parser("machine")
     add_locators(sp)

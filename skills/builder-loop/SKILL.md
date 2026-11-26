@@ -19,7 +19,7 @@ description: "builder-loop 机制说明与接入向导：判据驱动的交付�
    → 续接 tester 补 mutation patch（此时实现已可读）
    → bl proof（候选逐用例全绿；baseline-red / mutation 组里每条声明测试都必须在反例下变红）
    → reviewer（findings 带 owner：builder / tester / contract）
-   → bl finalize（commit-tree + update-ref CAS 写回目标分支，删两个 worktree）
+   → bl finalize（commit-tree + update-ref CAS 写回目标分支；worktree 与分支留给 bl cleanup）
    → bl retro signals → bl retro record（复盘硬闸门，之后 session 才解绑）
 ```
 
@@ -43,7 +43,7 @@ Stop hook：run 未终态 → 拦住并给出 `next_action`；等待用户（Ask
 | `bl contract validate --plan P [--check-repo]` / `revise --plan P [--authorize]` / `fields` | 校验 / 同 run 改 contract / 列出字段与读者 | 0 / 1 / 3 需授权 |
 | `bl abandon --reason R` | 终止，保留 worktree；仍需复盘 | 0 |
 | `bl retro signals` / `bl retro record --file F \| --no-incident` | 终态复盘 | 0 / 1 |
-| `bl cleanup [--run R]` | 回收已复盘的 abandoned run 的 worktree（clean 且 HEAD 未漂移才删） | 0 |
+| `bl cleanup [--run R]` | 回收已复盘的终态 run（abandoned / finalized）的 worktree（clean、HEAD 未漂移、调用者不在其中才删） | 0 |
 | `bl evidence show` / `bl runs` / `bl doctor` | 诊断 | 0 |
 
 定位 run：`--session <id>` 或 `--run <run_id>`（写在子命令前后都行）；仓库只有一个活跃 run 时可省略。

@@ -133,7 +133,10 @@ def doctor(repo_arg: str | None) -> dict[str, Any]:
 
         try:
             root = resolve_repo_root(repo_arg)
-            report["repo"] = {"root": str(root), "runs": ledger_mod.list_runs(root), "proof_runner": _check_proof_runner(root)}
+            from . import retro as retro_mod
+
+            report["repo"] = {"root": str(root), "runs": ledger_mod.list_runs(root), "proof_runner": _check_proof_runner(root),
+                              "reclaimable_runs": retro_mod.reclaimable_runs(root)}
         except Exception as exc:  # noqa: BLE001
             report["repo"] = {"error": str(exc)}
     problems = []
