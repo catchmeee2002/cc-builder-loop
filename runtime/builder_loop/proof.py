@@ -82,10 +82,22 @@ def patch_paths(patch: str) -> list[str]:
     return sorted(set(paths))
 
 
+def guard_items(g: dict[str, Any]) -> list[dict[str, Any]]:
+    """group 声明的守卫条目（#399）。守卫不进 test_ids，但要证明它锁住的东西：patch 打上后它必须变红。"""
+    return [gd for gd in (g.get("guards") or []) if isinstance(gd, dict)]
+
+
 def missing_patch_groups(spec: dict[str, Any] | None) -> list[str]:
     if not spec:
         return []
-    return [g["behavior_ids"][0] for g in spec.get("groups", []) if g.get("kind") == KIND_MUTATION and not (g.get("patch") or "").strip()]
+    out: list[str] = []
+    for g in spec.get("groups", []):
+        missing = g.get("kind") == KIND_MUTATION and not (g.get("patch") or "").strip()
+        if not missing:
+            missing = any(not (gd.get("patch") or "").strip() for gd in guard_items(g))
+        if missing and g["behavior_ids"][0] not in out:
+            out.append(g["behavior_ids"][0])
+    return out
 
 
 def normalized_patch(patch: str) -> str:
@@ -111,20 +123,40 @@ def resolve_patch_files(spec: Any, lg: dict[str, Any], repo_root: Path) -> Any:
     roots = [Path(repo_root)] + [Path(x["worktree"]) for x in (lg.get("candidate"), lg.get("tester")) if x and x.get("worktree")]
     out = {**spec, "groups": []}
     for i, g in enumerate(spec["groups"]):
-        if not isinstance(g, dict) or ("patch_file" not in g and not (g.get("patch") or "").strip()):
+        if not isinstance(g, dict):
             out["groups"].append(g)
             continue
         where = f"groups[{i}]"
-        if "patch_file" not in g:
-            raise _spec_error(f"{where}.patch 不再接受 patch 正文：用 git diff 把 patch 重定向到你 worktree 之外的文件，"
-                              "把它的绝对路径填进 patch_file（runtime 读原始字节，避免转述走样）", group=i)
-        if "patch" in g:
-            raise _spec_error(f"{where} 不能同时给 patch 和 patch_file：只给 patch_file", group=i)
-        if g.get("kind") != KIND_MUTATION:
-            raise _spec_error(f"{where}.patch_file 只用于 mutation 组", group=i)
-        g2 = {k: v for k, v in g.items() if k != "patch_file"}
-        g2["patch"] = _read_patch_file(g["patch_file"], roots, where)
+        g2 = dict(g)
+        if isinstance(g.get("guards"), list):
+            g2["guards"] = [_resolve_guard(gd, roots, f"{where}.guards[{k}]", group=i) for k, gd in enumerate(g["guards"])]
+        if "patch_file" in g or (g.get("patch") or "").strip():
+            if "patch_file" not in g:
+                raise _spec_error(f"{where}.patch 不再接受 patch 正文：用 git diff 把 patch 重定向到你 worktree 之外的文件，"
+                                  "把它的绝对路径填进 patch_file（runtime 读原始字节，避免转述走样）", group=i)
+            if "patch" in g:
+                raise _spec_error(f"{where} 不能同时给 patch 和 patch_file：只给 patch_file", group=i)
+            if g.get("kind") != KIND_MUTATION:
+                raise _spec_error(f"{where}.patch_file 只用于 mutation 组", group=i)
+            g2.pop("patch_file", None)
+            g2["patch"] = _read_patch_file(g["patch_file"], roots, where)
         out["groups"].append(g2)
+    return out
+
+
+def _resolve_guard(gd: Any, roots: list[Path], where: str, *, group: int) -> Any:
+    """守卫的 patch 与 mutation 组同一入口读字节（#399）：两处各读一份就有两套走样规则。"""
+    if not isinstance(gd, dict):
+        return gd  # 结构错误留给 check_structure 报
+    if "patch_file" not in gd:
+        if (gd.get("patch") or "").strip():
+            raise _spec_error(f"{where}.patch 不再接受 patch 正文：用 git diff 把 patch 重定向到你 worktree 之外的文件，"
+                              "把它的绝对路径填进 patch_file（runtime 读原始字节，避免转述走样）", group=group)
+        return gd  # 首轮盲写允许省略
+    if "patch" in gd:
+        raise _spec_error(f"{where} 不能同时给 patch 和 patch_file：只给 patch_file", group=group)
+    out = {k: v for k, v in gd.items() if k != "patch_file"}
+    out["patch"] = _read_patch_file(gd["patch_file"], roots, where)
     return out
 
 
@@ -162,37 +194,45 @@ def patch_applies(repo_root: Path, head: str, patch: str) -> tuple[bool, str]:
 
 
 def stale_patch_groups(lg: dict[str, Any], repo_root: Path) -> list[str]:
-    """ledger 里已有 patch、但打不到当前候选 HEAD 上的 mutation 组（#305：rebase 或 builder 改实现之后）。"""
+    """ledger 里已有 patch、但打不到当前候选 HEAD 上的组（#305：rebase 或 builder 改实现之后）。
+    守卫的 patch 同理：它们的上下文同样绑在候选 HEAD 上（#399）。"""
     head = (lg.get("candidate") or {}).get("head")
     if not head:
         return []
-    out = []
+    out: list[str] = []
     for g in (lg.get("proof_spec") or {}).get("groups", []):
-        if g.get("kind") == KIND_MUTATION and (g.get("patch") or "").strip():
+        patches = [g["patch"]] if g.get("kind") == KIND_MUTATION and (g.get("patch") or "").strip() else []
+        patches += [gd["patch"] for gd in guard_items(g) if (gd.get("patch") or "").strip()]
+        for patch in patches:
             try:
-                ok = patch_applies(repo_root, head, g["patch"])[0]
+                ok = patch_applies(repo_root, head, patch)[0]
             except Problem:
                 ok = False  # patch 头本身不合法（如重命名）也是要重新生成
             if not ok:
-                out.append(g["behavior_ids"][0])
+                if g["behavior_ids"][0] not in out:
+                    out.append(g["behavior_ids"][0])
+                break
     return out
 
 
 def _precheck_patches(spec: dict[str, Any], lg: dict[str, Any], repo_root: Path) -> None:
     """在交卷那一刻的候选 head 上判 patch 能否打上。
-    之后 builder 再改实现导致对不上，由 proof ③ 段报 TEST_MUTATION_INVALID（owner=tester），所以 proof 入口不做这一步。"""
+    之后 builder 再改实现导致对不上，由 proof 反例段报 TEST_MUTATION_INVALID（owner=tester），所以 proof 入口不做这一步。"""
     head = lg["candidate"]["head"]
     for i, g in enumerate(spec["groups"]):
-        if g.get("kind") != KIND_MUTATION or not (g.get("patch") or "").strip():
-            continue
         where, bid = f"groups[{i}]", g["behavior_ids"][0]
-        for p in patch_paths(g["patch"]):
-            if gitx.blob_mode(repo_root, head, p) not in ("100644", "100755"):
-                raise _spec_error(f"{where}.patch 触及候选上不存在的普通文件 {p}", group=i, behavior=bid, path=p, candidate_head=head)
-        ok, stderr = patch_applies(repo_root, head, g["patch"])
-        if not ok:
-            raise _spec_error(f"{where}.patch 无法应用到候选 {head[:12]}：{stderr.strip()[-1500:]}",
-                              group=i, behavior=bid, stderr=stderr[-2000:], candidate_head=head)
+        targets = []
+        if g.get("kind") == KIND_MUTATION and (g.get("patch") or "").strip():
+            targets.append((where, g["patch"]))
+        targets += [(f"{where}.guards[{k}]", gd["patch"]) for k, gd in enumerate(guard_items(g)) if (gd.get("patch") or "").strip()]
+        for gw, patch in targets:
+            for p in patch_paths(patch):
+                if gitx.blob_mode(repo_root, head, p) not in ("100644", "100755"):
+                    raise _spec_error(f"{gw}.patch 触及候选上不存在的普通文件 {p}", group=i, behavior=bid, path=p, candidate_head=head)
+            ok, stderr = patch_applies(repo_root, head, patch)
+            if not ok:
+                raise _spec_error(f"{gw}.patch 无法应用到候选 {head[:12]}：{stderr.strip()[-1500:]}",
+                                  group=i, behavior=bid, stderr=stderr[-2000:], candidate_head=head)
 
 
 def _module_symbols(body: list[ast.stmt]) -> dict[str, Any] | None:
@@ -270,6 +310,77 @@ def _node_id_parts(test_id: str) -> tuple[str, list[str]]:
     path, _, rest = test_id.partition("::")
     rest = rest.split("[", 1)[0]
     return path, [p for p in rest.split("::") if p]
+
+
+def _check_patch_owner(patch: Any, where: str, *, group: int, behavior: str, auth: dict[str, Any]) -> None:
+    """patch 只能改 builder 拥有的文件。mutation 组与守卫共用同一个判定（#399，原则二）。"""
+    if not isinstance(patch, str) or not patch_paths(patch):
+        raise _spec_error(f"{where}.patch 无法识别改动路径（需要 `diff --git a/x b/x` 头）")
+    for p in patch_paths(patch):
+        reason = contract_mod.write_rejection(auth, contract_mod.OWNER_BUILDER, p)
+        if reason:
+            if reason in CONTRACT_REJECTIONS:
+                raise _spec_error(f"{where}.patch 只能改 builder 拥有的文件：{p} → {reason}。这不是你能改的：contract 没把这个行为所在的文件交给 builder——"
+                                  "改交 status=insufficient_spec，在 notes 里写明需要把该文件列进 builder_write（并由 reviewer 看住零改动）",
+                                  behavior=behavior, path=p, reason=reason, suggested_owner="contract")
+            raise _spec_error(f"{where}.patch 只能改 builder 拥有的文件：{p} → {reason}", behavior=behavior, path=p, reason=reason)
+
+
+def _check_guards(guards: Any, *, where: str, group: int, behavior: str, evidence_ids: list[str],
+                  framework: str, auth: dict[str, Any], lg: dict[str, Any], repo_root: Path,
+                  sources: dict[str, str | None], worktree_files: bool, tester_head: str | None) -> None:
+    """守卫的形状校验（#399）：test_ids 与证据名单同规则，patch 与 mutation 组同规则。
+    守卫不进 test_ids：所以也不允许与证据 id 重叠，否则「证据名单」与「守卫」的语义就混了（原则一）。"""
+    if not isinstance(guards, list):
+        raise _spec_error(f"{where}.guards 必须是数组", group=group, behavior=behavior)
+    for k, gd in enumerate(guards):
+        gw = f"{where}.guards[{k}]"
+        if not isinstance(gd, dict):
+            raise _spec_error(f"{gw} 必须是对象", group=group, behavior=behavior)
+        tids = gd.get("test_ids")
+        if framework == "generic":
+            n = len(tids) if isinstance(tids, list) else 0
+            if n != 1 or not all(isinstance(x, str) and x.strip() for x in tids):
+                raise _spec_error(f"{gw}: generic 下守卫也必须恰好声明 1 个 test_id（当前 {n} 个）", group=group, behavior=behavior)
+        if not isinstance(tids, list) or not tids or not all(isinstance(x, str) and x.strip() for x in tids):
+            raise _spec_error(f"{gw}.test_ids 必须是非空字符串数组", group=group, behavior=behavior)
+        for t in tids:
+            if t.startswith("-"):
+                raise _spec_error(f"{gw}.test_ids 不能以 '-' 开头（会被当成命令行选项）", test_id=t)
+        overlap = sorted(set(tids) & set(evidence_ids))
+        if overlap:
+            raise _spec_error(f"{gw}.test_ids 不能与所在组的 test_ids 重复（守卫不是证据）：{', '.join(overlap)}",
+                              group=group, behavior=behavior)
+        if framework == "pytest":
+            files = sorted({t.split("::", 1)[0] for t in tids})
+            foreign = [f for f in files if not f.endswith(".py")]
+            if foreign:
+                raise _spec_error(f"{gw}.test_ids 不是 Python 测试文件，但 proof_runner.framework=pytest：{', '.join(foreign)}",
+                                  files=foreign, framework=framework, suggested_owner="contract")
+            if worktree_files:
+                twt = Path((lg.get("tester") or {}).get("worktree") or "")
+                existing = {f: True for f in files if (twt / f).is_file()}
+            else:
+                existing = gitx.ls_tree_blobs(repo_root, tester_head, files) if tester_head else {}
+            for f in files:
+                if contract_mod.path_owner(auth, f) != contract_mod.OWNER_TESTER:
+                    raise _spec_error(f"{gw}.test_ids 的文件部分必须是 tester_write 内的路径: {f}")
+                if f not in existing:
+                    raise _spec_error(f"{gw}.test_ids 引用的文件在你的 worktree 里不存在: {f}")
+            missing_ids: list[str] = []
+            for t in tids:
+                f, parts = _node_id_parts(t)
+                if not parts or f not in existing:
+                    continue
+                if f not in sources:
+                    sources[f] = _source_of(lg, repo_root, f, worktree_files)
+                if _node_id_missing(sources[f], parts):
+                    missing_ids.append(t)
+            if missing_ids:
+                raise _spec_error(f"{gw}.test_ids 指向的测试函数 / 类在文件里不存在：{', '.join(missing_ids)}",
+                                  test_ids_missing=missing_ids, group=group, behavior=behavior)
+        if (gd.get("patch") or "").strip():
+            _check_patch_owner(gd["patch"], gw, group=group, behavior=behavior, auth=auth)
 
 
 def check_structure(spec: Any, lg: dict[str, Any], repo_root: Path, *, worktree_files: bool = False) -> dict[str, Any]:
@@ -356,16 +467,11 @@ def check_structure(spec: Any, lg: dict[str, Any], repo_root: Path, *, worktree_
                 raise _spec_error(f"{where}.test_ids 指向的测试函数 / 类在文件里不存在：{', '.join(missing_ids)}",
                                   test_ids_missing=missing_ids, group=i, behavior=bid)
         if kind == KIND_MUTATION and (g.get("patch") or "").strip():
-            if not isinstance(g["patch"], str) or not patch_paths(g["patch"]):
-                raise _spec_error(f"{where}.patch 无法识别改动路径（需要 `diff --git a/x b/x` 头）")
-            for p in patch_paths(g["patch"]):
-                reason = contract_mod.write_rejection(auth, contract_mod.OWNER_BUILDER, p)
-                if reason:
-                    if reason in CONTRACT_REJECTIONS:
-                        raise _spec_error(f"{where}.patch 只能改 builder 拥有的文件：{p} → {reason}。这不是你能改的：contract 没把这个行为所在的文件交给 builder——"
-                                          "改交 status=insufficient_spec，在 notes 里写明需要把该文件列进 builder_write（并由 reviewer 看住零改动）",
-                                          behavior=bid, path=p, reason=reason, suggested_owner="contract")
-                    raise _spec_error(f"{where}.patch 只能改 builder 拥有的文件：{p} → {reason}", behavior=bid, path=p, reason=reason)
+            _check_patch_owner(g["patch"], where, group=i, behavior=bid, auth=auth)
+        if g.get("guards") is not None:
+            _check_guards(g["guards"], where=where, group=i, behavior=bid, evidence_ids=tids, framework=framework,
+                          auth=auth, lg=lg, repo_root=repo_root, sources=sources,
+                          worktree_files=worktree_files, tester_head=tester_head)
         if kind == KIND_REVIEWED:
             rb = g.get("reviewed_boundaries")
             if not isinstance(rb, dict):
@@ -653,6 +759,7 @@ def run_proof(ledger_path: Path, repo_root: Path, spec_override: dict[str, Any] 
     env.update({"BUILDER_LOOP_RUN_ID": lg["run_id"], "BUILDER_LOOP_PROOF": "1", "BUILDER_LOOP_MAIN_REPO": str(repo_root)})
     files = evidence.tester_files(lg, repo_root)
     groups_out: list[dict[str, Any]] = []
+    guard_candidate: dict[tuple[int, int], dict[str, Any]] = {}
     failure: _Failure | None = None
 
     def execute(where: Path, g: dict[str, Any], tag: str, i: int) -> tuple[int, str, list[dict[str, str]], Path, bool]:
@@ -662,6 +769,66 @@ def run_proof(ledger_path: Path, repo_root: Path, spec_override: dict[str, Any] 
         rc, out, timed_out = _run(where, build_argv(runner, g["test_ids"], junit, repo_root), g["timeout"], log, env)
         return rc, out, (parse_junit(junit) if framework == "pytest" else []), log, timed_out
 
+    def counterexample_mutation(g: dict[str, Any], i: int, bid: str, patch: str, test_ids: list[str],
+                                tag: str, guard: int | None, store: dict[str, Any], phase: str) -> None:
+        """打上 patch 后，声明的 id 必须在 call 阶段全部失败。mutation 组与守卫共用这一段（#399，原则二）：
+        两者要证明的是同一件事——这条测试确实锁住了被破坏的那行。
+        store：mutation 组写 `store["counterexample"]`，守卫写进它自己的条目；失败也先写现场再抛（既有行为）。"""
+        detail: dict[str, Any] = {} if guard is None else {"guard": guard}
+        sub = {"test_ids": test_ids, "timeout": g["timeout"]}
+        control_phase = "control" if guard is None else f"guard{guard}-control"
+        ppaths = patch_paths(patch)
+        for p in ppaths:
+            reason = contract_mod.write_rejection(auth, contract_mod.OWNER_BUILDER, p)
+            if reason:
+                raise _Failure("TEST_MUTATION_INVALID", f"patch 只能改 builder 拥有的文件：{p} → {reason}", i, bid, path=p, reason=reason, **detail)
+            if gitx.blob_mode(repo_root, cand["head"], p) not in ("100644", "100755"):
+                raise _Failure("TEST_MUTATION_INVALID", f"patch 触及候选上不存在的普通文件 {p}", i, bid, path=p, **detail)
+        with worktree.temp_worktree(repo_root, cand["head"], tmp_dir, f"{tag}-g{i}") as tw:
+            worktree.link_paths(wt, tw, link_paths)
+            if framework != "pytest":
+                # 对照实验（#375）：同一现场先不打 patch 跑一次。命令起不来时非 0，那是零观察，
+                # 不能落到 assertion-failure——只比较成败翻转，不解读输出（原则一、四）
+                c_rc, c_out, c_cases, c_log, c_timed_out = execute(tw, sub, f"{tag}-control", i)
+                if c_timed_out:
+                    raise _group_timeout(control_phase, i, bid, sub, c_rc, c_log)
+                _restore_worktree(tw, link_paths)
+                worktree.link_paths(wt, tw, link_paths)  # clean -fd 会把链接当未跟踪文件删掉，补回来
+                if c_rc != 0:
+                    raise _Failure("TEST_PROOF_RUNNER_FAILED",
+                                   f"mutation 现场在打 patch 前就跑不过（退出码 {c_rc}）：runner 起不来或依赖缺失，"
+                                   "这次的「破坏后失败」证明不了任何事",
+                                   i, bid, phase=control_phase, returncode=c_rc, log=str(c_log), cmd=runner["cmd"], **detail)
+            text = normalized_patch(patch)
+            ap = gitx.git(tw, "apply", "--whitespace=nowarn", "-", check=False, input_text=text)
+            if not ap.ok:
+                raise _Failure("TEST_MUTATION_INVALID", "mutation patch 无法应用到候选", i, bid, stderr=ap.stderr[-2000:], **detail)
+            changed = sorted(p for _, p in gitx.status_porcelain(tw) if not worktree.under_link(p, link_paths))
+            if changed != ppaths:
+                raise _Failure("TEST_MUTATION_INVALID", "patch 实际改动路径与声明不符", i, bid, declared=ppaths, actual=changed, **detail)
+            before = gitx.git(tw, "diff", "--binary", "--full-index").stdout
+            rc, out, cases, log, timed_out = execute(tw, sub, tag, i)
+            after = gitx.git(tw, "diff", "--binary", "--full-index").stdout
+            extra = [p for _, p in gitx.status_porcelain(tw) if p not in changed and not _ignorable(p) and not worktree.under_link(p, link_paths)]
+            if after != before or gitx.head(tw) != cand["head"] or extra:
+                raise _Failure("TEST_MUTATION_INVALID", "执行期间 mutation 现场被改动", i, bid, extra_paths=extra, **detail)
+        if timed_out:
+            raise _group_timeout(phase, i, bid, sub, rc, log)
+        cls = classify_counterexample(framework, rc, cases, test_ids)
+        per_id = discrimination(cases, test_ids) if framework == "pytest" else {}
+        record = {"kind": KIND_MUTATION, "returncode": rc, "classification": cls, "log": str(log),
+                  "patch_sha256": sha256_bytes(patch.encode()), "patch_paths": ppaths, "per_id": per_id}
+        if guard is None:
+            store["counterexample"] = record
+        else:
+            store.update(record)
+        not_red = undiscriminated(per_id)
+        if cls != "assertion-failure":
+            # error / pass：先报「测试没跑起来 / 没约束行为」。带上 per_id 与未全红 id
+            raise _Failure("TEST_MUTATION_SURVIVED", "破坏实现后测试没有在 call 阶段失败（pass=测试没约束该行为；error=测试根本没跑起来，收集或 setup 阶段就出错）", i, bid, classification=cls, returncode=rc, per_id=per_id, undiscriminated=not_red, log=str(log), **detail)
+        if not_red:
+            raise _Failure("TEST_MUTATION_SURVIVED", f"{UNDISCRIMINATED_MESSAGE}：{', '.join(not_red)}", i, bid, classification=cls, returncode=rc, per_id=per_id, undiscriminated=not_red, log=str(log), **detail)
+
     gate = evidence.gate_lock(lg, evidence.GATE_PROOF)  # 全套测试要跑好几轮，执行期间对外可见（#242）
     gate.__enter__()
     pycache = private_pycache(env, run_dir)
@@ -670,8 +837,13 @@ def run_proof(ledger_path: Path, repo_root: Path, spec_override: dict[str, Any] 
         for i, g in enumerate(spec["groups"]):
             if g["kind"] == KIND_MUTATION and not (g.get("patch") or "").strip():
                 raise _Failure("TEST_MUTATION_PATCH_MISSING", "mutation 组缺 patch：集成后已可读候选，请续接 tester 补一段只破坏该 behavior 的 unified diff", i, g["behavior_ids"][0])
+            for k, gd in enumerate(guard_items(g)):
+                if not (gd.get("patch") or "").strip():
+                    raise _Failure("TEST_MUTATION_PATCH_MISSING",
+                                   "守卫缺 patch：守卫的鉴别力也要证明——补一段只破坏它声称锁住的那处的 unified diff，把它填进该守卫的 patch_file",
+                                   i, g["behavior_ids"][0], guard=k)
 
-        if link_paths and any(g["kind"] in (KIND_BASELINE, KIND_MUTATION) for g in spec["groups"]):
+        if link_paths and any(g["kind"] in (KIND_BASELINE, KIND_MUTATION) or guard_items(g) for g in spec["groups"]):
             # 声明的路径必须真的在候选里：借不到就说明声明写错了，归 contract（#376）
             missing = worktree.missing_link_paths(wt, link_paths)
             if missing:
@@ -700,10 +872,35 @@ def run_proof(ledger_path: Path, repo_root: Path, spec_override: dict[str, Any] 
                 not_run = [t for t, v in verdict["per_id"].items() if v in ("missing", "skipped")]
                 code = "TEST_PROOF_NOT_EXECUTED" if (rc == 0 and not_run) else "TEST_PROOF_CANDIDATE_FAILED"
                 raise _Failure(code, verdict["reason"] or "测试在候选实现上未通过", i, bid, returncode=rc, per_id=verdict["per_id"], log=str(log))
+            # 守卫也要先在候选上全绿：打上 patch 后变红，才说明它锁住的正是这处代码（#399）
+            for k, gd in enumerate(guard_items(g)):
+                gsub = {"test_ids": gd["test_ids"], "timeout": g["timeout"]}
+                grc, gout, gcases, glog, gtimed_out = execute(wt, gsub, f"guard{k}-candidate", i)
+                gtracked, gun = _restore_worktree(wt, worktree.link_ignores(lg))
+                if gtimed_out:
+                    raise _group_timeout(f"guard{k}-candidate", i, bid, gsub, grc, glog)
+                if framework == "pytest" and grc != 0 and not gcases:
+                    raise _Failure("TEST_PROOF_RUNNER_FAILED", f"proof_runner 没能产出测试结果：`{runner['cmd']}` 退出码 {grc}", i, bid,
+                                   returncode=grc, log=str(glog), cmd=runner["cmd"], guard=k)
+                gverdict = judge_candidate(framework, grc, gcases, gd["test_ids"])
+                guard_candidate[(i, k)] = {"returncode": grc, "per_id": gverdict["per_id"], "residue_cleaned": gun}
+                if gtracked:
+                    raise _Failure("PROOF_WORKTREE_MUTATED", "测试命令修改了候选中的 tracked 文件", i, bid, paths=gtracked[:50], log=str(glog), guard=k)
+                if not gverdict["ok"]:
+                    gnot_run = [t for t, v in gverdict["per_id"].items() if v in ("missing", "skipped")]
+                    gcode = "TEST_PROOF_NOT_EXECUTED" if (grc == 0 and gnot_run) else "TEST_PROOF_CANDIDATE_FAILED"
+                    raise _Failure(gcode, gverdict["reason"] or "守卫测试在候选实现上未通过", i, bid, returncode=grc, per_id=gverdict["per_id"], log=str(glog), guard=k)
 
         # ②③④ 反例
         for i, g in enumerate(spec["groups"]):
             bid = g["behavior_ids"][0]
+            guards_out = []
+            for k, gd in enumerate(guard_items(g)):
+                entry: dict[str, Any] = {"candidate": guard_candidate.get((i, k), {})}
+                counterexample_mutation(g, i, bid, gd["patch"], list(gd["test_ids"]), f"guard{k}", k, entry, f"guard{k}")
+                guards_out.append(entry)
+            if guards_out:
+                groups_out[i]["guards"] = guards_out
             if g["kind"] == KIND_REVIEWED:
                 groups_out[i]["counterexample"] = {"kind": KIND_REVIEWED, "outcome": "reviewed"}
                 continue
@@ -724,52 +921,7 @@ def run_proof(ledger_path: Path, repo_root: Path, spec_override: dict[str, Any] 
                 if not_red:
                     raise _Failure("TEST_BASELINE_RED_NOT_PROVEN", f"{UNDISCRIMINATED_MESSAGE}：{', '.join(not_red)}", i, bid, classification=cls, returncode=rc, per_id=per_id, undiscriminated=not_red, log=str(log))
                 continue
-            ppaths = patch_paths(g["patch"])
-            for p in ppaths:
-                reason = contract_mod.write_rejection(auth, contract_mod.OWNER_BUILDER, p)
-                if reason:
-                    raise _Failure("TEST_MUTATION_INVALID", f"patch 只能改 builder 拥有的文件：{p} → {reason}", i, bid, path=p, reason=reason)
-                if gitx.blob_mode(repo_root, cand["head"], p) not in ("100644", "100755"):
-                    raise _Failure("TEST_MUTATION_INVALID", f"patch 触及候选上不存在的普通文件 {p}", i, bid, path=p)
-            with worktree.temp_worktree(repo_root, cand["head"], tmp_dir, f"mutation-g{i}") as tw:
-                worktree.link_paths(wt, tw, link_paths)
-                if framework != "pytest":
-                    # 对照实验（#375）：同一现场先不打 patch 跑一次。命令起不来时非 0，那是零观察，
-                    # 不能落到 assertion-failure——只比较成败翻转，不解读输出（原则一、四）
-                    c_rc, c_out, c_cases, c_log, c_timed_out = execute(tw, g, "control", i)
-                    if c_timed_out:
-                        raise _group_timeout("control", i, bid, g, c_rc, c_log)
-                    _restore_worktree(tw, link_paths)
-                    worktree.link_paths(wt, tw, link_paths)  # clean -fd 会把链接当未跟踪文件删掉，补回来
-                    if c_rc != 0:
-                        raise _Failure("TEST_PROOF_RUNNER_FAILED",
-                                       f"mutation 现场在打 patch 前就跑不过（退出码 {c_rc}）：runner 起不来或依赖缺失，"
-                                       "这次的「破坏后失败」证明不了任何事",
-                                       i, bid, phase="control", returncode=c_rc, log=str(c_log), cmd=runner["cmd"])
-                text = normalized_patch(g["patch"])
-                ap = gitx.git(tw, "apply", "--whitespace=nowarn", "-", check=False, input_text=text)
-                if not ap.ok:
-                    raise _Failure("TEST_MUTATION_INVALID", "mutation patch 无法应用到候选", i, bid, stderr=ap.stderr[-2000:])
-                changed = sorted(p for _, p in gitx.status_porcelain(tw) if not worktree.under_link(p, link_paths))
-                if changed != ppaths:
-                    raise _Failure("TEST_MUTATION_INVALID", "patch 实际改动路径与声明不符", i, bid, declared=ppaths, actual=changed)
-                before = gitx.git(tw, "diff", "--binary", "--full-index").stdout
-                rc, out, cases, log, timed_out = execute(tw, g, "mutation", i)
-                after = gitx.git(tw, "diff", "--binary", "--full-index").stdout
-                extra = [p for _, p in gitx.status_porcelain(tw) if p not in changed and not _ignorable(p) and not worktree.under_link(p, link_paths)]
-                if after != before or gitx.head(tw) != cand["head"] or extra:
-                    raise _Failure("TEST_MUTATION_INVALID", "执行期间 mutation 现场被改动", i, bid, extra_paths=extra)
-            if timed_out:
-                raise _group_timeout("mutation", i, bid, g, rc, log)
-            cls = classify_counterexample(framework, rc, cases, g["test_ids"])
-            per_id = discrimination(cases, g["test_ids"]) if framework == "pytest" else {}
-            groups_out[i]["counterexample"] = {"kind": KIND_MUTATION, "returncode": rc, "classification": cls, "log": str(log), "patch_sha256": sha256_bytes(g["patch"].encode()), "patch_paths": ppaths, "per_id": per_id}
-            not_red = undiscriminated(per_id)
-            if cls != "assertion-failure":
-                # error / pass：先报「测试没跑起来 / 没约束行为」。带上 per_id 与未全红 id
-                raise _Failure("TEST_MUTATION_SURVIVED", "破坏实现后测试没有在 call 阶段失败（pass=测试没约束该行为；error=测试根本没跑起来，收集或 setup 阶段就出错）", i, bid, classification=cls, returncode=rc, per_id=per_id, undiscriminated=not_red, log=str(log))
-            if not_red:
-                raise _Failure("TEST_MUTATION_SURVIVED", f"{UNDISCRIMINATED_MESSAGE}：{', '.join(not_red)}", i, bid, classification=cls, returncode=rc, per_id=per_id, undiscriminated=not_red, log=str(log))
+            counterexample_mutation(g, i, bid, g["patch"], list(g["test_ids"]), "mutation", None, groups_out[i], "mutation")
     except _Failure as exc:
         failure = exc
     finally:

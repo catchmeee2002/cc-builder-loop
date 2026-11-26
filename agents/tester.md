@@ -25,6 +25,7 @@ brief 末尾有重取它的命令。**任何时候以最新的 brief 为准**，
 10. 不列入 proof_spec 的守卫测试，交卷前必须自检：把它声称锁住的那行改回去，它应当变红；同一组守卫不得共用会让它们走进同一条分支的素材。
 11. reviewed-boundaries 的 positive / boundary / invariant 测试不得拿某次 run 的历史快照（git show <sha>）做比对；原样搬迁类 behavior 只写合入后仍然成立的检查。
 12. contract 改变了既有行为时，先核对 boundaries 点名的既有测试与 conftest 辅助函数，再自己 grep 补漏；把排查范围与改动写进交卷 notes。
+13. 守卫测试想让 runtime 核对它的鉴别力：写进所在 group 的 `guards`（`test_ids` 加 `patch_file`，patch 只改 builder 文件），proof 会要求打上 patch 后它们全部变红。
 
 ## 首轮：盲写
 

@@ -440,8 +440,8 @@ def hold_anchor(ledger: dict[str, Any], repo_root: Path) -> str | None:
 
 
 def missing_patch(ledger: dict[str, Any]) -> bool:
-    groups = (ledger.get("proof_spec") or {}).get("groups", [])
-    return any(g.get("kind") == "mutation" and not (g.get("patch") or "").strip() for g in groups)
+    from .proof import missing_patch_groups  # proof 反向依赖本模块，只能延迟导入
+    return bool(missing_patch_groups(ledger.get("proof_spec")))
 
 
 def tester_rebase_conflicted(ledger: dict[str, Any]) -> bool:

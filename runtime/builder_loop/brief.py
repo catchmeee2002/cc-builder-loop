@@ -20,7 +20,7 @@ from . import contract as contract_mod
 from . import evidence, gitx
 from .jsonutil import dumps
 from .ledger import events_of, ledger_path
-from .proof import kinds_allowed, stale_patch_groups
+from .proof import kinds_allowed, missing_patch_groups, stale_patch_groups
 from .run import bl_bin
 
 TESTER_RESULT_FORMAT = (
@@ -64,10 +64,10 @@ def _tester_todo(lg: dict[str, Any], repo_root: Path) -> list[dict[str, Any]]:
         todo.append({"what": "write_tests", "why": f"你交的 evidence 已失效（mission 现在是 revision {rev}，或测试文件被改过）：重新对着下面的 behaviors 交一遍"})
 
     if evidence.missing_patch(lg) and evidence.implementation_readable_by_tester(lg):
-        groups = [g["behavior_ids"][0] for g in (lg.get("proof_spec") or {}).get("groups", [])
-                  if g.get("kind") == "mutation" and not (g.get("patch") or "").strip()]
+        groups = missing_patch_groups(lg.get("proof_spec"))
         todo.append({"what": "add_mutation_patch", "behaviors": groups,
-                     "why": "这些 mutation 组还缺 patch：候选实现现在可读了，补一段只破坏该 behavior 的 unified diff，然后把完整 proof_spec 重新交一遍。"
+                     "why": "这些 behavior 还有缺 patch 的：mutation 组缺补一段只破坏该 behavior 的 unified diff；守卫缺就补一段只破坏它声称锁住的那处的 diff（填进该守卫的 `patch_file`）。"
+                            "候选实现现在可读了，补好后把完整 proof_spec 重新交一遍。"
                             + PATCH_HOWTO,
                      "candidate_branch": lg["candidate"]["branch"]})
     if evidence.implementation_readable_by_tester(lg):
@@ -75,7 +75,7 @@ def _tester_todo(lg: dict[str, Any], repo_root: Path) -> list[dict[str, Any]]:
         if stale:
             # rebase 或 builder 改实现之后，旧 patch 的上下文对不上了：原样重交必被拒（#305）
             todo.append({"what": "stale_mutation_patch", "behaviors": stale, "candidate_head": lg["candidate"]["head"],
-                         "why": "这些 mutation 组的 patch 已打不到当前候选 HEAD 上（上下文变了）：对着当前候选重新生成，再把完整 proof_spec 重新交一遍。"
+                         "why": "这些 behavior 的 patch 已打不到当前候选 HEAD 上（上下文变了）：mutation 组与守卫各自对着当前候选重新生成，再把完整 proof_spec 重新交一遍。"
                                 + PATCH_HOWTO,
                          "candidate_branch": lg["candidate"]["branch"]})
 
@@ -149,6 +149,9 @@ REVIEW_FOCUS_SCOPE_RULE = "review_focus 点名的约束覆盖整个候选 diff�
 GUARD_SELFCHECK_RULE = ("不列入 proof_spec 的守卫测试，交卷前必须自检：把它声称锁住的那行改回去，它应当变红；"
                         "同一组守卫不得共用会让它们走进同一条分支的素材。")
 GUARD_FINDING_RULE = "对守卫类测试的 finding 复审时，要求附回退实验结果：把目标修复回退后该测试是否变红。"
+# 守卫的鉴别力现在能由 runtime 核对（#399）：声明就有判据，不声明仍靠上面的自检
+GUARD_DECLARE_RULE = ("守卫测试想让 runtime 核对它的鉴别力：写进所在 group 的 `guards`（`test_ids` 加 `patch_file`，"
+                      "patch 只改 builder 文件），proof 会要求打上 patch 后它们全部变红。")
 # 拿 run 的历史快照做边界测试，合入后随任何正常改动永久变红（#317）
 SNAPSHOT_RULE = ("reviewed-boundaries 的 positive / boundary / invariant 测试不得拿某次 run 的历史快照（git show <sha>）做比对；"
                  "原样搬迁类 behavior 只写合入后仍然成立的检查。")
@@ -350,6 +353,7 @@ def render(brief: dict[str, Any]) -> str:
             ANCHOR_RULE,
             LONG_LIVED_RULE,
             GUARD_SELFCHECK_RULE,
+            GUARD_DECLARE_RULE,
             SNAPSHOT_RULE,
             EXISTING_TEST_IMPACT_RULE,
             brief["read_rule"] + "。",

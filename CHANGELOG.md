@@ -2,6 +2,13 @@
 
 > 本文件记 **CC 版**产品线（分支 `cc/main`）。Codex 版见 `codex/main` 分支。
 
+## 守卫鉴别力可声明、终态 TaskStop 记账、被隔离会话切入候选（#399 #361 #407 #237，2026-11-27）
+
+- **守卫的鉴别力进入判据（#399）**：proof_spec 的 group 新增可选 `guards: [{test_ids, patch_file?}]`。runtime 先在候选上要求守卫全绿，再在独立现场打上守卫自己的 patch，要求它声明的每条 id 都进入 `assertion-failure`；与 mutation 组共用同一个执行函数，失败沿用 `TEST_MUTATION_*`（`suggested_owner=tester`，`details.guard` 给出下标），不新增失败码、不改 `proof_rule`。守卫与所在组的 `test_ids` 不得重叠（守卫不是证据，#370 语义不变）；缺 patch 与打不上的 patch 进 `missing_patch_groups` / `stale_patch_groups`，续接待办把它们一起列出。tester 的 brief 与 `agents/tester.md` 新增一条声明通道的说明（`GUARD_DECLARE_RULE`），既有的自检纪律原文不变。不声明守卫的项目逐字段行为不变。
+- **终态后的 TaskStop 也记账（#361 #407）**：`finalize` / `abandon` 的输出才第一次列出角色残留后台任务，builder 照 SKILL 去 `TaskStop` 时 run 已终态，`handle_pre_tool_use` 早退，停机意图写不进 ledger，那些条目于是永远留在 `role_background_tasks` 与 retro 的 `S-role-background` 里。现在终态（含复盘期）的主会话 TaskStop 同样记 `role_background_stopped`；不探测进程存活（task id 不是 pid）、不新增 bl 侧停机入口，SKILL 的处置指引按设计不变。
+- **被 CC 隔离的会话可以切入候选（#237）**：run 进行中 `EnterWorktree` 不再一律 deny——`tool_input.path` 的 realpath 等于 ledger 里候选 worktree 时放行，其余（`name` 新建、别的路径、tester worktree、主仓）照旧拒绝。探针（CC 2.1.280）确认：会话被隔离进自己的 worktree 后写候选被拒；`EnterWorktree({path: <候选>})` 成功，之后写候选放行。这是被隔离会话唯一受支持的写候选通道；新建 worktree 仍拒——它的 base ref 与 runtime 用的 HEAD 不一致。
+- **版本断言不再钉死发版号（#374 同族）**：`tests/test_hold_without_user_authorization.py` 里断言 `__version__ == "8.2.2"` 的用例改为 semver 格式断言——8.3.0 发版后 cc/main 的全量测试因此重新变绿。
+
 ## run 起点冻结真实基线：目标提交、上游一致性、依赖来源（#385 #411 #383，2026-11-26）
 
 - **目标分支与上游一致性（#385）**：新增 `baseline.require_target_baseline`，在 `start` / `rebase` / `finalize` 三处判定。本地 `refs/heads/<target>` 落后（`behind`）或分叉（`diverged`）于上游时拒绝，错误码 `TARGET_NOT_IN_SYNC`（start 同 `fatal`、另两处 negative，`details` 带 `relation` / `local_head` / `remote_head` / `upstream_ref`）。修的是三个出口的同一根因：此前 start 静默取本地 ref、rebase 说「目标分支未前进」空转、finalize 带着落后基线写回。基线仍是本地 ref——finalize 的 CAS、rebase 的 onto、checkout 同步都指向它，上游只做准入；runtime 不执行 fetch，未 fetch 过报 `unverified`、无 remote 报 `local_only`，两者放行并带 `warning`。新增 `bl start --allow-stale-target`（只承认开工，不改变 finalize 的写回条件）；`recover()` 有意不校验。

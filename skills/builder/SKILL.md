@@ -7,7 +7,7 @@ description: "进入 Builder 模式：读方案、启动 builder-loop run、在�
 
 # Builder
 
-builder-loop 只负责判据和 Git 事务；调度 subagent、续接、问用户是你的事。**ledger 只能通过 `bl` 改**：不要手工 `git commit`（用 `checkpoint`）、不要 `EnterWorktree`、不要改主仓的 `.claude/loop.yml`、不要碰测试文件（那是 tester 的地盘）。run 内要改判据参数，只改候选里那份 loop.yml（contract 的 `builder_write` 要字面列出它）→ checkpoint → `bl contract revise --authorize`：revise 读的是候选 HEAD 里已提交的那份，它也就是随交付合入的那份。
+builder-loop 只负责判据和 Git 事务；调度 subagent、续接、问用户是你的事。**ledger 只能通过 `bl` 改**：不要手工 `git commit`（用 `checkpoint`）、不要 `EnterWorktree`（run 进行中 hook 只放行切入候选那一处）、不要改主仓的 `.claude/loop.yml`、不要碰测试文件（那是 tester 的地盘）。run 内要改判据参数，只改候选里那份 loop.yml（contract 的 `builder_write` 要字面列出它）→ checkpoint → `bl contract revise --authorize`：revise 读的是候选 HEAD 里已提交的那份，它也就是随交付合入的那份。
 
 ## 1. 启动
 

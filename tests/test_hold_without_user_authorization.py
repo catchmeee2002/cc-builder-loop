@@ -5,7 +5,7 @@ B2：授权锚点仍是「当前 mission revision 下 gate 首次全过」；新
 B3：无用户回答的 hold 期间 Stop 放行 / finalize 报 HOLD_ACTIVE / checkpoint 回到 machine / release 恢复。
 B4：SKILL.md、hooks.py、architecture.md、README.md、cli help 的契约文本。
 B5：retro 新增 S-hold 信号（count / reasons）与未覆盖时的 RETRO_COVERAGE。
-B6：版本号 8.2.2 与 CHANGELOG 的 hold/#368 新节。
+B6：版本号是 semver 格式（不再钉死具体发版号）与 CHANGELOG 的 hold/#368 新节。
 
 断言文档文本前按 contract 的规则归一化：去掉 markdown 强调标记与反引号，连续空白归一为一个空格。
 """
@@ -380,10 +380,13 @@ def test_b5_boundary_uncovered_hold_signal_blocks_retro(started, cli, hook):
 # ---------------------------------------------------------------- B6
 
 
-def test_b6_version_is_8_2_2():
+def test_b6_version_matches_semver_format():
     import builder_loop
+    import builder_loop.hooks  # noqa: F401  确保包内子模块已加载，版本被改成非 semver 时这里能看出退化
 
-    assert builder_loop.__version__ == "8.2.2"
+    version = builder_loop.__version__
+    assert isinstance(version, str)
+    assert re.fullmatch(r"\d+\.\d+\.\d+", version), version
 
 
 def test_b6_changelog_top_section_covers_hold_and_368():

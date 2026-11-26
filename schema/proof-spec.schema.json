@@ -57,6 +57,35 @@
             "type": "string",
             "description": "只出现在 ledger 与 `bl proof --spec-file`（调试）里：runtime 从 patch_file 读到的字节。tester 结果行里给非空 patch 会被 PROOF_SPEC_INVALID 拒绝"
           },
+          "guards": {
+            "type": "array",
+            "description": "守卫测试的鉴别力声明（#399）：每条给 test_ids 与 patch_file。它们不进证据名单；proof 先在候选上要求它们全绿，再在独立现场打上 patch 要求它们全部在 call 阶段变红，否则 TEST_MUTATION_SURVIVED。patch 规则与 mutation 组相同（只改 builder 拥有的文件，首轮可省略、集成交卷时补齐）。",
+            "items": {
+              "type": "object",
+              "required": [
+                "test_ids"
+              ],
+              "properties": {
+                "test_ids": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "type": "string",
+                    "pattern": "^[^-]"
+                  },
+                  "description": "守卫用例的 node id，规则与组 test_ids 相同，但不能与本组的 test_ids 重叠。"
+                },
+                "patch_file": {
+                  "type": "string",
+                  "description": "让该守卫变红的 patch 文件绝对路径，规则与组级 patch_file 相同。"
+                },
+                "patch": {
+                  "type": "string",
+                  "description": "只出现在 ledger 里：runtime 从 patch_file 读到的字节。"
+                }
+              }
+            }
+          },
           "reviewed_boundaries": {
             "type": "object",
             "description": "reviewed-boundaries 必填：四类并集 == test_ids",

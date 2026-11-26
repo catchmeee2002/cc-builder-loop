@@ -58,7 +58,7 @@ BLIND_WRITE_ITEM_5 = (
     "改好后重新调用即可，被拒的那份不会送到 Builder。"
 )
 
-# 「硬约束」整节的既有原文：条目数与各条原文都不应被本次改写触碰（含第 12 条既有锚句）。
+# 「硬约束」整节的既有原文：既有各条原文都不应被本次改写触碰（含第 12 条既有锚句）；B12 在末尾新增第 13 条。
 HARD_CONSTRAINTS_EXPECTED = """## 硬约束
 
 1. 首轮只工作在 run 起点的基线上：不碰候选 worktree、候选分支、`git log --all`（hook 会拦，别绕）；首次集成之后才可读候选。
@@ -73,6 +73,7 @@ HARD_CONSTRAINTS_EXPECTED = """## 硬约束
 10. 不列入 proof_spec 的守卫测试，交卷前必须自检：把它声称锁住的那行改回去，它应当变红；同一组守卫不得共用会让它们走进同一条分支的素材。
 11. reviewed-boundaries 的 positive / boundary / invariant 测试不得拿某次 run 的历史快照（git show <sha>）做比对；原样搬迁类 behavior 只写合入后仍然成立的检查。
 12. contract 改变了既有行为时，先核对 boundaries 点名的既有测试与 conftest 辅助函数，再自己 grep 补漏；把排查范围与改动写进交卷 notes。
+13. 守卫测试想让 runtime 核对它的鉴别力：写进所在 group 的 `guards`（`test_ids` 加 `patch_file`，patch 只改 builder 文件），proof 会要求打上 patch 后它们全部变红。
 """
 
 # B2 不变量：tester brief 渲染中既有规则句（EVIDENCE_LIST_RULE / ANCHOR_RULE / LONG_LIVED_RULE /
@@ -196,9 +197,9 @@ def test_b1_invariant_blind_write_section_item_count_unchanged():
 
 
 def test_b1_invariant_hard_constraints_section_unchanged():
-    """「硬约束」一节的条目数与既有各条原文不变（含第 12 条既有锚句）。"""
+    """「硬约束」一节的既有各条原文不变（含第 12 条既有锚句）；B12 新增的第 13 条也在末尾。"""
     section = _section(TESTER_MD.read_text(encoding="utf-8"), "## 硬约束")
-    assert len(_numbered_items(section)) == 12
+    assert len(_numbered_items(section)) == 13
     assert _normalize(section) == _normalize(HARD_CONSTRAINTS_EXPECTED)
 
 
