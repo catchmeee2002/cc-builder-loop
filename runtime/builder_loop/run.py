@@ -99,6 +99,13 @@ def runtime_identity() -> dict[str, Any]:
 
 def start(repo_root: Path, plan_path: Path, session_id: str, target_branch: str | None = None,
           allow_stale_target: bool = False) -> dict[str, Any]:
+    # 从 linked worktree 启动：ledger / worktree 会落到分身，主仓看不见（#237）。主路径是先 ExitWorktree 回主仓根；
+    # 在入口把「从哪启动」这个输入条件管住，不在 hook 的 EnterWorktree 上开白名单兜底（原则四）
+    main_root = gitx.main_repo_root(repo_root)
+    if main_root != repo_root:
+        raise fatal("START_IN_LINKED_WORKTREE",
+                    f"当前在 linked worktree 中启动（{repo_root}）：先 `ExitWorktree --action keep` 回到主仓根 {main_root}，再 `bl start`",
+                    worktree=str(repo_root), main_repo=str(main_root))
     bound = ledger_mod.lookup_session(session_id)
     if bound:
         if not ledger_mod.is_terminal(bound["ledger"]):

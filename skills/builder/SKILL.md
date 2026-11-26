@@ -7,12 +7,12 @@ description: "进入 Builder 模式：读方案、启动 builder-loop run、在�
 
 # Builder
 
-builder-loop 只负责判据和 Git 事务；调度 subagent、续接、问用户是你的事。**ledger 只能通过 `bl` 改**：不要手工 `git commit`（用 `checkpoint`）、不要 `EnterWorktree`（run 进行中 hook 只放行切入候选那一处）、不要改主仓的 `.claude/loop.yml`、不要碰测试文件（那是 tester 的地盘）。run 内要改判据参数，只改候选里那份 loop.yml（contract 的 `builder_write` 要字面列出它）→ checkpoint → `bl contract revise --authorize`：revise 读的是候选 HEAD 里已提交的那份，它也就是随交付合入的那份。
+builder-loop 只负责判据和 Git 事务；调度 subagent、续接、问用户是你的事。**ledger 只能通过 `bl` 改**：不要手工 `git commit`（用 `checkpoint`）、不要 `EnterWorktree`、不要改主仓的 `.claude/loop.yml`、不要碰测试文件（那是 tester 的地盘）。run 内要改判据参数，只改候选里那份 loop.yml（contract 的 `builder_write` 要字面列出它）→ checkpoint → `bl contract revise --authorize`：revise 读的是候选 HEAD 里已提交的那份，它也就是随交付合入的那份。
 
 ## 1. 启动
 
 1. Read 方案文件。没有 `<!-- builder-loop-contract -->` 标签 → AskUserQuestion：「用 /planner 补 contract」/「不走 loop，直接实现」。后者按普通任务做，完成后 spawn 一次 reviewer 即可。
-2. `bl start --plan <plan> --session ${CLAUDE_SESSION_ID}` → 记下 `run_id`、`worktree`（候选，你的工作目录）。输出的 `target_uncommitted` 非空 = 主仓有未提交的 tracked 改动，它们不在候选基线里；本任务依赖它们就 abandon，让用户先提交。`TARGET_NOT_IN_SYNC`（exit 2）= 目标分支落后或分叉于上游（`details.relation` 是 `behind` 还是 `diverged`）：先 `git fetch` 并把本地目标分支快进/合并到 `details.upstream_ref`，再 start；确认要以本地旧基线开工时加 `--allow-stale-target`（只承认开工，finalize 仍要求与上游一致）。`MACHINE_STAGE_MISSING` = 方案依赖的 stage 不在 loop.yml，补回后再 start。`WORKTREE_LINK_SOURCE_MISSING` = `worktree.link_paths` 声明的依赖在 `details.source` 里不存在，先准备好依赖。`HOOKS_OUTDATED`（exit 3）= hook 注册不完整（多半是只 pull 没重跑 install.sh），开 run 会让角色续接全部失效：把 `details.missing` 告诉用户，请用户重跑 `details.install` 后再 start。`loop_config_source.worktree_differs` 为真说明工作区那份 loop.yml 与目标提交里的不同：run 用的是目标提交里的那份。
+2. 若当前已在某个 worktree 中，先 `ExitWorktree --action keep` 回到主仓根目录，再执行 `bl start`（在 linked worktree 里启动会以 `START_IN_LINKED_WORKTREE` 拒绝）。`bl start --plan <plan> --session ${CLAUDE_SESSION_ID}` → 记下 `run_id`、`worktree`（候选，你的工作目录）。输出的 `target_uncommitted` 非空 = 主仓有未提交的 tracked 改动，它们不在候选基线里；本任务依赖它们就 abandon，让用户先提交。`TARGET_NOT_IN_SYNC`（exit 2）= 目标分支落后或分叉于上游（`details.relation` 是 `behind` 还是 `diverged`）：先 `git fetch` 并把本地目标分支快进/合并到 `details.upstream_ref`，再 start；确认要以本地旧基线开工时加 `--allow-stale-target`（只承认开工，finalize 仍要求与上游一致）。`MACHINE_STAGE_MISSING` = 方案依赖的 stage 不在 loop.yml，补回后再 start。`WORKTREE_LINK_SOURCE_MISSING` = `worktree.link_paths` 声明的依赖在 `details.source` 里不存在，先准备好依赖。`HOOKS_OUTDATED`（exit 3）= hook 注册不完整（多半是只 pull 没重跑 install.sh），开 run 会让角色续接全部失效：把 `details.missing` 告诉用户，请用户重跑 `details.install` 后再 start。`loop_config_source.worktree_differs` 为真说明工作区那份 loop.yml 与目标提交里的不同：run 用的是目标提交里的那份。
 3. **立刻放出 tester**：`Agent(subagent_type: "tester", prompt: "builder-loop run <run_id>，按注入的 brief 写测试")`。subagent 在后台跑，交卷时任务通知会唤醒你（Agent 工具若有 `run_in_background` 参数就设为 true）。它在另一个 worktree 的冻结基线上盲写测试，看不到你的实现——所以不用等它，马上开始写实现。
 4. **顺手后台跑一次基线预检**：`bl preflight --session ${CLAUDE_SESSION_ID}`（Bash `run_in_background`）。它在 run 起点上把 pass_cmd 跑一遍，告诉你哪些 stage**本来就红**，省得之后对着与你无关的失败白查。跑的时候你照常写实现。preflight、machine、proof 运行期间，不要在本机另起全量测试或长时间占用 CPU / IO 的后台任务：它们会把门禁挤成假超时。这条纪律只约束你手工起的测试命令和其他重负载任务：`bl machine` / `bl proof` 遇到 preflight 在跑会自动排队等它跑完，`next_action` 给出它们时照常后台跑。
 5. 之后你的 Write / Edit / Bash 都在候选 `worktree` 下；主仓只读。
@@ -41,7 +41,7 @@ builder-loop 只负责判据和 Git 事务；调度 subagent、续接、问用�
 
 任何 `bl` 命令 exit 3 = 需要用户决定。Stop hook 在 run 未完成时会把你拉回来，属正常，按 stderr 提示继续。
 
-**角色的后台残留**：status 的 role_background_tasks 非空时，逐个用 TaskStop 停掉这些角色后台任务；续接角色一律用 agent_id 作为 SendMessage 的 to。前者是角色前台命令超时后被转到后台留下的，交卷后结束时会把角色再唤醒；后者是 runtime 区分「续接」与「唤醒」的唯一依据，用别的名字续接会被当成唤醒、结论不登记。
+**角色的后台残留**：续接角色一律用 agent_id 作为 SendMessage 的 to——这是 runtime 区分「续接」与「唤醒」的唯一依据，用别的名字续接会被当成唤醒、结论不登记。status 的 `role_background_tasks` 只是信息性提示，无需处理：那是角色前台命令超时后被转到后台留下的，唤醒轮次的结论本就不登记，CC 会自己回收。
 
 **reviewer 判给 tester 的 minor**：已作为可选待办 `consider_minor_findings` 进了 tester 的 brief，不影响 readiness（只有 minor 时照常 finalize）。要不要续接 tester 去改由你决定：改了测试，reviewer 要复审。
 

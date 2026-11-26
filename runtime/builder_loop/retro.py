@@ -11,7 +11,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from . import evidence, gitx, ledger as ledger_mod, worktree
+from . import gitx, ledger as ledger_mod, worktree
 from .errors import fatal, negative
 
 ROUTES = ("business_issue", "builder_loop_issue", "not_incident")
@@ -62,9 +62,6 @@ def derive_signals(lg: dict[str, Any]) -> list[dict[str, Any]]:
     wakes = ev("role_wake")
     if wakes:
         out.append(_signal("S-role-wake", f"角色交卷后被残留后台任务再唤醒 {len(wakes)} 次（唤醒轮次的结论未登记）", count=len(wakes), roles=sorted({e["role"] for e in wakes})))
-    leftover = evidence.role_background_tasks(lg)
-    if leftover:
-        out.append(_signal("S-role-background", f"角色留下 {len(leftover)} 个还没被 TaskStop 停掉的后台任务", tasks=leftover))
     tampered = ev("role_candidate_changed")
     if tampered:
         out.append(_signal("S-role-candidate-changed", f"角色这一轮里候选 worktree 的 git 状态变了 {len(tampered)} 次（结论记为 fail）",

@@ -2,6 +2,12 @@
 
 > 本文件记 **CC 版**产品线（分支 `cc/main`）。Codex 版见 `codex/main` 分支。
 
+## 退役进入 worktree 的绕路、后台任务账本降级为提示（#237 #416，2026-11-27）
+
+- **从 linked worktree 启动 run 直接拒绝（#237）**：`bl start` 在入口比对 `gitx.main_repo_root(repo_root)` 与 `repo_root`，不等即 `START_IN_LINKED_WORKTREE`（fatal，exit 2），不留 run 目录、worktree 与 session 绑定。主路径写明：已在某个 worktree 中就先用 `ExitWorktree --action keep` 回主仓根再 `bl start`。
+- **退役「切入候选」白名单（#237）**：上一版为被 CC 隔离的会话放行 `EnterWorktree({path: <候选>})`，是一条没充分验证的绕路。现在 run 进行中 `EnterWorktree` 一律 deny，统一走上面的主路径；`_same_path` 随之删除。
+- **后台任务账本降级为信息性提示（#416）**：`role_background_tasks` 不再派生 retro 信号 `S-role-background`、不再进 Stop 拉回消息、SKILL 不再要求 builder 逐个 `TaskStop` 销账。原因是 CC 没有查询后台任务死活的接口，死任务的 `TaskStop` 在 `validateInput` 阶段即被拒、hook 不触发，硬信号会永久误报；而唤醒轮次的结论本就不登记，判据不受影响。`role_background` / `role_background_stopped` 事件、`bl status` 与 finalize / abandon 输出的信息字段、`S-role-wake` 信号均保留。
+
 ## 守卫鉴别力可声明、终态 TaskStop 记账、被隔离会话切入候选（#399 #361 #407 #237，2026-11-27）
 
 - **守卫的鉴别力进入判据（#399）**：proof_spec 的 group 新增可选 `guards: [{test_ids, patch_file?}]`。runtime 先在候选上要求守卫全绿，再在独立现场打上守卫自己的 patch，要求它声明的每条 id 都进入 `assertion-failure`；与 mutation 组共用同一个执行函数，失败沿用 `TEST_MUTATION_*`（`suggested_owner=tester`，`details.guard` 给出下标），不新增失败码、不改 `proof_rule`。守卫与所在组的 `test_ids` 不得重叠（守卫不是证据，#370 语义不变）；缺 patch 与打不上的 patch 进 `missing_patch_groups` / `stale_patch_groups`，续接待办把它们一起列出。tester 的 brief 与 `agents/tester.md` 新增一条声明通道的说明（`GUARD_DECLARE_RULE`），既有的自检纪律原文不变。不声明守卫的项目逐字段行为不变。

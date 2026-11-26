@@ -72,7 +72,7 @@ def _complete(ledger_path: Path, repo_root: Path, lg: dict[str, Any], final_head
     # session 保持绑定：复盘记录写进 ledger 之前 Stop hook 会拦住（复盘硬闸门）
     return {"final_head": final_head, "target_branch": target, "cleanup": _deferred_cleanup(lg), "terminal": "finalized", "next": "retro",
             "unaddressed_findings": _unaddressed_findings(lg),
-            # 角色残留的后台任务不影响判据，不拦 finalize（原则三），但要在收尾时让 builder 看见并 TaskStop（#308）
+            # 角色残留的后台任务不影响判据，不拦 finalize（原则三）；只作为信息性提示列出（#308 #416）
             "role_background_tasks": evidence.role_background_tasks(ledger_mod.load(ledger_path))}
 
 

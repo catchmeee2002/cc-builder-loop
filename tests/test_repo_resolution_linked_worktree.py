@@ -1,11 +1,10 @@
-"""B1：`--repo` 指向用户创建的 linked worktree 时，选仓根保持该 worktree 的 toplevel。
+"""`--repo` 指向用户创建的 linked worktree 时，选仓根保持该 worktree 的 toplevel。
 
-起点（基线）代码把所有路径都 `main_repo_root(toplevel(...))` 回收到主仓，于是 linked worktree
-自己的分支、loop.yml 与 run 命名空间全部被主仓顶替。下面这些用例在基线上都在 call 阶段失败
-（baseline-red）。
-
-不变量的守卫（不列入 proof_spec）：主仓解析不变、显式 --target 优先级不变、已有 run 从
-candidate/tester worktree 用 --run 定位仍回到该 run 的主仓 ledger。
+本 run 的 B2 把「从 linked worktree 开工」改成硬拒（START_IN_LINKED_WORKTREE，见
+`tests/test_start_linked_worktree_rejected.py`）：linked worktree 不再是自己 run 的命名空间，
+所以原来锁住「start 用 linked 的分支 / loop.yml / runs 目录」的用例已随行为移除而删除。
+剩下来的都是仍然成立的选仓行为：runs / doctor / cleanup / contract validate 仍读用户选的
+linked worktree；把 candidate / tester worktree 的 `--run` 定位回该 run 的主仓 ledger。
 """
 
 from __future__ import annotations
@@ -64,41 +63,6 @@ def test_resolve_repo_root_keeps_linked_worktree_toplevel(repo):
     assert resolve_repo_root(str(linked)) == linked
 
 
-def test_start_from_linked_worktree_uses_its_root_branch_and_config(repo):
-    linked = _linked_worktree(repo)
-    linked_head = git(linked, "rev-parse", "HEAD")
-
-    out = _dispatch(linked, "start", "--plan", str(repo.root / "plan.md"), "--session", "S1")
-
-    lg = L.load(Path(out["ledger"]))
-    assert lg["repo"]["root"] == str(linked)
-    assert lg["repo"]["target_branch"] == "release"
-    assert lg["repo"]["target_start_head"] == linked_head
-    assert lg["loop_config"]["proof_runner"]["cmd"] == LINKED_PROOF_CMD
-    assert lg["loop_config"]["pass_cmd"][0]["timeout"] == LINKED_STAGE_TIMEOUT
-    assert lg["loop_config"]["max_iterations"] == LINKED_MAX_ITERATIONS
-    assert out["target_branch"] == "release"
-
-
-def test_run_started_from_linked_worktree_is_located_from_its_own_worktrees(repo):
-    """组合用例：从 linked worktree start 出的 run，再从它自己的 candidate / tester worktree
-    用 --repo + --run 取 status / brief，仍必须回到该 run 的 ledger（reviewer finding，B1）。"""
-    linked = _linked_worktree(repo)
-    out = _dispatch(linked, "start", "--plan", str(repo.root / "plan.md"), "--session", "S1")
-
-    lg = L.load(Path(out["ledger"]))
-    assert lg["repo"]["root"] == str(linked)  # 起点上就红：run 属于 linked，不属于主仓
-    tester_wt = Path(out["tester_worktree"])
-    assert tester_wt is not None and tester_wt.is_dir()
-    for wt in (Path(out["worktree"]), tester_wt):
-        status = _dispatch(wt, "status", "--run", out["run_id"])
-        assert status["run_id"] == out["run_id"], status
-        assert status["target"]["root"] == str(linked), status["target"]
-        brief = _dispatch(wt, "brief", "--run", out["run_id"], "--role", "tester", "--json")
-        assert brief["run_id"] == out["run_id"], brief
-        assert brief["worktree"] == str(tester_wt.resolve()), brief
-
-
 def test_runs_lists_runs_under_the_pointed_linked_worktree(repo):
     linked = _linked_worktree(repo)
     L.create(L.ledger_path(linked, "manual-run-1"), L.new_ledger(run_id="manual-run-1"))
@@ -148,13 +112,14 @@ def test_guard_main_repo_resolution_unchanged(repo):
     assert resolve_repo_root(str(repo.root)) == repo.root.resolve()
 
 
-def test_guard_explicit_target_still_wins_over_linked_branch(repo):
+def test_guard_explicit_target_does_not_rescue_linked_start(repo):
+    """边界：从 linked worktree 开工时 --target 也救不了——仍是 START_IN_LINKED_WORKTREE。"""
     linked = _linked_worktree(repo)
 
-    out = _dispatch(linked, "start", "--plan", str(repo.root / "plan.md"), "--session", "S1", "--target", "main")
+    out = _dispatch(linked, "start", "--plan", str(repo.root / "plan.md"), "--session", "S1", "--target", "main",
+                    expect=None)
 
-    lg = L.load(Path(out["ledger"]))
-    assert lg["repo"]["target_branch"] == "main"
+    assert out["code"] == "START_IN_LINKED_WORKTREE", out
 
 
 def test_guard_existing_run_located_from_tester_worktree(started):

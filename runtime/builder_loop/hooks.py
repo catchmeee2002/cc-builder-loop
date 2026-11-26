@@ -278,10 +278,6 @@ def handle_stop(ev: dict[str, Any], bound: dict[str, Any]) -> HookReturn:
     msg = f"[builder-loop] run {lg['run_id']} {head}。\nevidence: {readiness['states']}\nnext_action={act}: {hint}\n"
     if readiness["blockers"]:
         msg += f"blockers: {dumps(readiness['blockers'])}\n"
-    leftover = evidence.role_background_tasks(lg)
-    if leftover:
-        msg += ("角色留下了后台任务（交卷后会把它再唤醒）：逐个用 TaskStop 停掉 "
-                + ", ".join(f"{t['task_id']}（{t['role']}）" for t in leftover) + "\n")
     return _block(msg)
 
 
@@ -545,8 +541,7 @@ def handle_pre_tool_use(ev: dict[str, Any], bound: dict[str, Any]) -> HookReturn
                 lg2["waiting_for_user"] = {"since": ledger_mod.now_iso(), "reason": "AskUserQuestion", "tool_use_id": ev.get("tool_use_id")}
             return _silent()
         if tool == "TaskStop":
-            # finalize / abandon 的输出才第一次列出残留任务，builder 照 SKILL 去停时 run 已终态（#361 #407）：
-            # 终态的停工意图同样要记，否则那些条目永远留在 role_background_tasks 与 retro 信号里
+            # 终态的停工意图同样要记：role_background_tasks 信息字段靠 role_background_stopped 抵消（#361 #407）
             return _role_background_stopped(ev, bound)
         return _silent()
     if tool == HANDBACK_TOOL:
@@ -579,24 +574,8 @@ def handle_pre_tool_use(ev: dict[str, Any], bound: dict[str, Any]) -> HookReturn
         # 在 PreToolUse 就登记：任务早已自己结束时 CC 报 No task found，PostToolUse 不来，它会永远显示未停（#308）
         return _role_background_stopped(ev, bound)
     if tool == "EnterWorktree":
-        ti = ev.get("tool_input") or {}
-        cand_wt = (lg.get("candidate") or {}).get("worktree")
-        # 会话被 CC 隔离在自己的 worktree 里时写不了候选（#237）：切进 runtime 管理的候选是唯一受支持的出路。
-        # 只放行「切入已存在的候选」，新建（name）一律拒——新建的 base ref 与 runtime 用的 HEAD 不一致
-        if cand_wt and not ti.get("name") and _same_path(ti.get("path"), cand_wt):
-            return _silent()
-        return _deny(f"run {lg['run_id']} 进行中：worktree 由 runtime 管理（{lg['candidate']['worktree']}），禁止 EnterWorktree。")
+        return _deny(f"run {lg['run_id']} 进行中：worktree 由 runtime 管理（{lg['candidate']['worktree']}），禁止 EnterWorktree；已在某个 worktree 中就先 `ExitWorktree --action keep` 回主仓根再 start。")
     return _silent()
-
-
-def _same_path(a: Any, b: Any) -> bool:
-    """两个路径是否指向同一处（realpath）。缺任一方、或类型不对都不算。"""
-    if not isinstance(a, str) or not isinstance(b, str) or not a or not b:
-        return False
-    try:
-        return os.path.realpath(a) == os.path.realpath(b)
-    except OSError:
-        return False
 
 
 def _user_input(bound: dict[str, Any], source: str) -> HookReturn:

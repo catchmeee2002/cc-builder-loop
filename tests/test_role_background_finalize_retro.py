@@ -1,12 +1,17 @@
-"""B4：finalize / retro signals / Stop 拉回都要能看见「角色留下的未停后台任务」与「角色被唤醒」，
-不能因为唤醒被误当续接而挡住 finalize（呼应 B1：唤醒不冒充续接）。
+"""B3：未停的 role_background 不再派生 retro 硬信号 S-role-background；后台任务账本降级为信息性提示。
 
-覆盖对象：runtime/builder_loop/finalize.py::finalize / run.py::abandon 的输出新增
-role_background_tasks；runtime/builder_loop/retro.py::derive_signals 新增 S-role-background /
-S-role-wake；hooks.py::handle_stop 的拉回消息提及未停任务。
+起点代码在 `retro.derive_signals` 里为未停任务产出 id="S-role-background" 的信号，所以「输出中不存在
+该信号」的断言在起点上 call 阶段失败（baseline-red）。
+
+保留的行为（不变量 / 守卫，不列入 proof_spec）：`role_background` 事件照常记录；`bl status` /
+`finalize` / `abandon` 的 `role_background_tasks` 信息字段照常派生（`evidence.role_background_tasks`
+不删）；`S-role-wake` 仍按既有规则产生。
 """
 
 from __future__ import annotations
+
+from builder_loop import evidence
+from builder_loop import ledger as L
 
 from conftest import drive_to_proof_pass, reviewer_pass
 
@@ -25,13 +30,78 @@ def _signal(sig, sid):
     return next((s for s in sig["signals"] if s["id"] == sid), None)
 
 
-def test_b4_finalize_succeeds_and_lists_unstopped_background_task(started, cli, hook):
-    """given 一个未停的 role_background(bgx1)、另有一次 role_wake（唤醒不冒充续接）/ when
-    `bl finalize` / then 成功（不被阻塞），输出含 role_background_tasks 且列出 bgx1。"""
+def _signal_ids(cli) -> list[str]:
+    return [s["id"] for s in cli("retro", "signals", "--session", "S1")["signals"]]
+
+
+def _tasks(started) -> list[dict]:
+    return evidence.role_background_tasks(L.load(started["ledger"]))
+
+
+# ---------------------------------------------------------------- B3：retro 不再有 S-role-background（baseline-red）
+
+
+def test_b3_abandon_retro_omits_role_background_signal(started, cli, hook):
+    """given 一个未销的 role_background(bgx1)、run 已 abandon / when `bl retro signals` / then
+    输出中不存在 id=S-role-background（即使 role_background_tasks 仍列出 bgx1）。"""
     drive_to_proof_pass(started, cli, hook)
     reviewer_pass(hook, "R1")
     _bg_bash(hook, "reviewer", "R1")
-    _wake(hook, "reviewer", "R1")  # 唤醒：不应把 reviewer 变成"在跑"从而挡住 finalize
+
+    out = cli("abandon", "--session", "S1", "--reason", "测试 retro 不再派生后台信号")
+    assert any(t.get("task_id") == "bgx1" for t in (out.get("role_background_tasks") or [])), out
+
+    assert "S-role-background" not in _signal_ids(cli), _signal_ids(cli)
+
+
+def test_b3_finalize_retro_omits_role_background_signal(started, cli, hook):
+    """走 finalize 这条终态路径同样不产生 S-role-background。"""
+    drive_to_proof_pass(started, cli, hook)
+    reviewer_pass(hook, "R1")
+    _bg_bash(hook, "reviewer", "R1")
+
+    out = cli("finalize", "--session", "S1", "-m", "feat(foo): [cr_id_skip] Add mul")
+    assert out.get("terminal") == "finalized", out
+    assert any(t.get("task_id") == "bgx1" for t in (out.get("role_background_tasks") or [])), out
+
+    assert "S-role-background" not in _signal_ids(cli), _signal_ids(cli)
+
+
+# ---------------------------------------------------------------- 不变量（守卫，不列入 proof_spec）
+
+
+def test_guard_role_background_event_still_recorded_and_surfaced(started, cli, hook):
+    """不变量：role_background 事件与 `bl status` 的 role_background_tasks 信息字段仍正常派生。"""
+    hook("SubagentStart", {"session_id": "S1", "agent_id": "R1", "agent_type": "reviewer"})
+    _bg_bash(hook, "reviewer", "R1")
+
+    evs = [e for e in L.load(started["ledger"])["events"] if e["kind"] == "role_background"]
+    assert len(evs) == 1 and evs[0]["task_id"] == "bgx1", evs
+    tasks = cli("status", "--session", "S1")["role_background_tasks"]
+    assert any(t.get("task_id") == "bgx1" and t.get("role") == "reviewer" for t in tasks), tasks
+    assert _tasks(started) == tasks
+
+
+def test_guard_retro_keeps_role_wake_signal(started, cli, hook):
+    """不变量：S-role-wake（交卷后再唤醒）信号仍按既有规则产生。"""
+    drive_to_proof_pass(started, cli, hook)
+    reviewer_pass(hook, "R1")
+    _bg_bash(hook, "reviewer", "R1")
+    _wake(hook, "reviewer", "R1")
+
+    cli("abandon", "--session", "S1", "--reason", "测试 role_wake 信号保留")
+    sig = cli("retro", "signals", "--session", "S1")
+
+    wake = _signal(sig, "S-role-wake")
+    assert wake is not None, sig["signals"]
+    assert wake["facts"].get("count") == 1, wake
+
+
+def test_guard_finalize_output_lists_role_background_tasks(started, cli, hook):
+    """不变量：finalize 输出的 role_background_tasks 信息字段仍列出未停任务。"""
+    drive_to_proof_pass(started, cli, hook)
+    reviewer_pass(hook, "R1")
+    _bg_bash(hook, "reviewer", "R1")
 
     out = cli("finalize", "--session", "S1", "-m", "feat(foo): [cr_id_skip] Add mul")
     assert out.get("terminal") == "finalized", out
@@ -39,38 +109,8 @@ def test_b4_finalize_succeeds_and_lists_unstopped_background_task(started, cli, 
     assert any(t.get("task_id") == "bgx1" for t in tasks), out
 
 
-def test_b4_retro_signals_include_role_background_and_role_wake(started, cli, hook):
-    """given 同上、run 已 abandon（另一条到终态的路） / when `bl retro signals` / then 含
-    id=S-role-background（facts 里列出 bgx1）与 id=S-role-wake（count=1）。"""
-    drive_to_proof_pass(started, cli, hook)
-    reviewer_pass(hook, "R1")
-    _bg_bash(hook, "reviewer", "R1")
-    _wake(hook, "reviewer", "R1")
-
-    cli("abandon", "--session", "S1", "--reason", "测试 retro 信号")
-    sig = cli("retro", "signals", "--session", "S1")
-
-    bg = _signal(sig, "S-role-background")
-    assert bg is not None, sig["signals"]
-    assert "bgx1" in (bg["facts"].get("task_ids") or bg["facts"].get("tasks") or []) or "bgx1" in str(bg["facts"]), bg
-
-    wake = _signal(sig, "S-role-wake")
-    assert wake is not None, sig["signals"]
-    assert wake["facts"].get("count") == 1, wake
-
-
-def test_b4_boundary_no_background_or_wake_signals_absent_and_empty_list(started, cli, hook):
-    """边界：没有未停任务、也没有唤醒 → 不出现这两个信号，finalize 输出的 role_background_tasks
-    为空列表。"""
-    drive_to_proof_pass(started, cli, hook)
-    reviewer_pass(hook, "R1")
-
-    out = cli("finalize", "--session", "S1", "-m", "feat(foo): [cr_id_skip] Add mul")
-    assert out.get("role_background_tasks") == [], out
-
-
-def test_b4_boundary_abandon_output_also_has_role_background_tasks(started, cli, hook):
-    """边界：abandon 的输出同样含 role_background_tasks（未停的 bgx1 依然列出）。"""
+def test_guard_abandon_output_lists_role_background_tasks(started, cli, hook):
+    """不变量：abandon 的输出同样含 role_background_tasks（未停的 bgx1 依然列出）。"""
     drive_to_proof_pass(started, cli, hook)
     reviewer_pass(hook, "R1")
     _bg_bash(hook, "reviewer", "R1")
@@ -80,19 +120,10 @@ def test_b4_boundary_abandon_output_also_has_role_background_tasks(started, cli,
     assert any(t.get("task_id") == "bgx1" for t in tasks), out
 
 
-def test_b4_stop_pullback_mentions_unstopped_task_and_taskstop(started, cli, hook):
-    """given tester 交卷、候选未集成之前留了一个未停的后台任务 / when 触发 Stop（run 未完成，
-    next_action 需要 builder 动手）/ then 拉回消息（stderr）含 bgx1 与 TaskStop。"""
-    from conftest import implement_mul, make_tester_result, role_turn, write_mul_test
+def test_guard_no_background_tasks_empty_list(started, cli, hook):
+    """不变量：没有未停任务时 finalize 输出的 role_background_tasks 为空列表。"""
+    drive_to_proof_pass(started, cli, hook)
+    reviewer_pass(hook, "R1")
 
-    wt, twt = started["worktree"], started["tester_worktree"]
-    hook("SubagentStart", {"session_id": "S1", "agent_id": "T1", "agent_type": "tester"})
-    implement_mul(wt)
-    cli("checkpoint", "--session", "S1", "--role", "builder")
-    write_mul_test(twt)
-    role_turn(hook, "tester", "T1", make_tester_result("mutation"), start=False)
-    _bg_bash(hook, "tester", "T1")
-
-    r = hook("Stop", {"session_id": "S1", "stop_hook_active": False})
-    assert r["code"] == 2, r
-    assert "bgx1" in r["stderr"] and "TaskStop" in r["stderr"], r["stderr"]
+    out = cli("finalize", "--session", "S1", "-m", "feat(foo): [cr_id_skip] Add mul")
+    assert out.get("role_background_tasks") == [], out

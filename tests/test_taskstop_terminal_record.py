@@ -108,8 +108,9 @@ def test_b1_terminal_second_taskstop_not_double_recorded(started, cli, hook):
     assert len(_stopped(started, "T1")) == 1, _stopped(started, "T1")
 
 
-def test_b1_terminal_only_named_task_stopped_leaves_other_and_signal(started, cli, hook):
-    """边界：ledger 里有 T1、T2 两个未停任务时只停 T1：T2 仍在列表，S-role-background 仍存在。"""
+def test_b1_terminal_only_named_task_stopped_leaves_other_task(started, cli, hook):
+    """边界：ledger 里有 T1、T2 两个未停任务时只停 T1：T2 仍在 role_background_tasks 里；retro
+    不再派生 S-role-background（本 run 把后台账本降级为信息性提示，见 test_role_background_finalize_retro）。"""
     _abandoned_with_task(started, cli, hook, "T1", "T2")
     assert {t["task_id"] for t in _tasks(started)} == {"T1", "T2"}, _tasks(started)
 
@@ -117,7 +118,7 @@ def test_b1_terminal_only_named_task_stopped_leaves_other_and_signal(started, cl
 
     assert {t["task_id"] for t in _tasks(started)} == {"T2"}, _tasks(started)
     assert len(_stopped(started, "T1")) == 1, _stopped(started, "T1")
-    assert "S-role-background" in _signal_ids(cli), _signal_ids(cli)
+    assert "S-role-background" not in _signal_ids(cli), _signal_ids(cli)
 
 
 # ---------------------------------------------------------------- B2：不属于主会话停未停任务的 TaskStop（mutation）
