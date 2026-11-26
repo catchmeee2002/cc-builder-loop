@@ -18,12 +18,12 @@ def _emit(obj: Any) -> None:
     sys.stdout.flush()
 
 
-def _locate(args: argparse.Namespace) -> tuple[Path, Path]:
+def _locate(args: argparse.Namespace, unreadable: list[str] | None = None) -> tuple[Path, Path]:
     """返回 (ledger_path, repo_root)。优先 --run，其次 --session。"""
     from .run import run_roots
 
     if getattr(args, "run", None):
-        return _locate_run(args.repo, args.run)
+        return _locate_run(args.repo, args.run, unreadable)
     if getattr(args, "session", None):
         bound = ledger_mod.lookup_session(args.session)
         if not bound:
@@ -39,18 +39,26 @@ def _locate(args: argparse.Namespace) -> tuple[Path, Path]:
     raise Problem("RUN_AMBIGUOUS", "请用 --run 或 --session 指定 run", details={"active_runs": [], "searched": [str(r) for r in roots]}, exit_code=EXIT_FATAL)
 
 
-def _locate_run(repo_arg: str | None, run_id: str) -> tuple[Path, Path]:
+def _locate_run(repo_arg: str | None, run_id: str, unreadable: list[str] | None = None) -> tuple[Path, Path]:
     """--run 的 ledger 可能在选仓自己的 runs 目录、共用 .git 的主仓，或另一个 linked worktree；
-    只认实际存在的那份（#364）。判定复用 ledger.find_ledger_by_run，不另写一份。"""
+    只认实际存在的那份（#364）。判定复用 ledger.find_ledger_by_run，不另写一份。
+
+    不可读的 root 等价于跳过，但要留下事实（#404，原则一/三）：单个无权限的 release worktree
+    不该让整条 brief 不可用，也不能因为读不到就断言 run 不存在。
+    """
     from .run import run_ledger_roots
 
     roots = run_ledger_roots(repo_arg)
     for root in roots:
         try:
             return ledger_mod.find_ledger_by_run(root, run_id), root
-        except Problem:
+        except Problem as exc:
+            if exc.code == "RUN_UNREADABLE" and unreadable is not None:
+                unreadable.append(str(root))
             continue
-    raise Problem("RUN_NOT_FOUND", f"run {run_id} 不存在", details={"run_id": run_id, "searched": [str(r) for r in roots]}, exit_code=EXIT_FATAL)
+    raise Problem("RUN_NOT_FOUND", f"run {run_id} 不存在",
+                  details={"run_id": run_id, "searched": [str(r) for r in roots],
+                           "unreadable_roots": list(unreadable or [])}, exit_code=EXIT_FATAL)
 
 
 def _locate_any(args: argparse.Namespace) -> tuple[Path, Path]:
@@ -74,11 +82,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--repo", help="仓库路径（默认当前目录）：linked worktree 按它自己解析，不回退主仓；已有 run 定位会再查主仓")
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    def add_locators(sp: argparse.ArgumentParser, *, nested: bool = False) -> None:
+    def add_locators(sp: argparse.ArgumentParser, *, nested: bool = False, session: bool = True) -> None:
         # nested=True 用于二级子命令：SUPPRESS 保证 `bl contract --session X revise` 的值不被子解析器默认值覆盖
         extra = {"default": argparse.SUPPRESS} if nested else {}
         sp.add_argument("--run", help="run id", **extra)
-        sp.add_argument("--session", help="CC session id", **extra)
+        if session:
+            # session=False 用于只认 run 的子命令（cleanup）：接受却不消费的定位参数会静默放宽作用范围
+            sp.add_argument("--session", help="CC session id", **extra)
+        # --repo 是顶层参数；子命令后再写一次也认（#413）：SUPPRESS 保证没写时顶层值不被抹成 None
+        sp.add_argument("--repo", default=argparse.SUPPRESS, help="仓库路径，等同于顶层的 --repo")
 
     sp = sub.add_parser("start", help="从 plan 冻结 contract、创建候选 worktree")
     sp.add_argument("--plan", required=True)
@@ -103,7 +115,7 @@ def build_parser() -> argparse.ArgumentParser:
     r2.add_argument("--file")
     r2.add_argument("--no-incident", action="store_true")
     sp = sub.add_parser("cleanup", help="回收已复盘的终态 run（abandoned / finalized）的 worktree")
-    sp.add_argument("--run")
+    add_locators(sp, session=False)
     sp = sub.add_parser("machine")
     add_locators(sp)
     sp.add_argument("--retry", action="store_true", help="同一输入上显式重跑一次：必须先有 fresh machine 失败，且用 --reason 记录判断（#278）")
@@ -181,8 +193,9 @@ def dispatch(args: argparse.Namespace) -> tuple[Any, int]:
     if cmd == "brief":
         from . import brief as brief_mod
 
-        lp, root = _locate(args)
-        b = brief_mod.build(ledger_mod.load(lp), root, args.role)
+        unreadable: list[str] = []
+        lp, root = _locate(args, unreadable)
+        b = brief_mod.build(ledger_mod.load(lp), root, args.role, unreadable)
         return (b if args.json else brief_mod.render(b)), EXIT_OK
     if cmd == "preflight":
         from .machine import run_preflight

@@ -181,9 +181,11 @@ def cleanup(repo_root: Path, run_id: str | None = None) -> dict[str, Any]:
     """回收已复盘的终态 run（abandoned / finalized / finalize_failed）留下的 worktree 与分支。
     只删 clean、HEAD 与 ledger 记录一致、且调用者当前不在其中的；其余原样保留并说明原因。"""
     results: list[dict[str, Any]] = []
+    matched = False
     for item in ledger_mod.list_runs(repo_root):
         if run_id and item["run_id"] != run_id:
             continue
+        matched = True
         if item.get("legacy") or item.get("unreadable") or not item.get("terminal"):
             if run_id:
                 results.append({"run_id": item["run_id"], "skipped": "不是可清理的终态 run（旧版 / 不可读 / 未结束）"})
@@ -214,4 +216,7 @@ def cleanup(repo_root: Path, run_id: str | None = None) -> dict[str, Any]:
                 pass
         if entry["removed"] or entry["kept"] or run_id:
             results.append(entry)
+    if run_id and not matched:
+        # 点名的 run 不存在时不能静默成功：调用方会以为已经回收（原则一）
+        raise fatal("RUN_NOT_FOUND", f"run {run_id} 不存在", run_id=run_id, repo_root=str(repo_root))
     return {"cleaned": results}

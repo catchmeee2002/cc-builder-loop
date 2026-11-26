@@ -37,12 +37,12 @@ proof 只能证明"测试能抓住偏离当前实现"，证明不了"当前实�
 
 | 模块 | 职责 |
 |---|---|
-| `config` | `.claude/loop.yml` → `pass_cmd[] / max_iterations / proof_runner / worktree.root`；PyYAML 缺席时用内置子集解析。`start` 读选仓（run 的 `repo.root`，linked worktree 就是它自己）的工作区；`contract revise` 读候选 HEAD 里已提交的那份（run 内的判据参数只有一个家，就是随交付合入的那份，#282），候选里没有被跟踪的 loop.yml 时才退回同一工作区 |
+| `config` | `.claude/loop.yml` → `pass_cmd[] / max_iterations / proof_runner / worktree.root`；PyYAML 缺席时用内置子集解析。`start` 读选仓（run 的 `repo.root`，linked worktree 就是它自己）的工作区；`contract revise` 读候选 HEAD 里已提交的那份（run 内的判据参数只有一个家，就是随交付合入的那份，#282），候选里没有被跟踪的 loop.yml 时才退回同一工作区；`{main_repo}` 只有 `expand_main_repo()` 一处展开实现，machine 与 proof 都调它（#391，原则二） |
 | `contract` | 标签提取、校验（允许键来自 `FIELD_TABLE`，未知字段入口拒绝）、三面 digest、`classify_change`、glob 匹配；**`write_rejection()` 是路径归属与保护的唯一判定入口**（checkpoint / PreToolUse / mutation patch 共用） |
 | `ledger` | schema @2 校验、mutate、events、session 指针（读后回核 owner）、`peek`（不校验 schema，给 doctor / runs / abandon 处理旧版 ledger） |
 | `worktree` | 每个 run 的 `builder/` 与 `tester/` 两个 worktree（创建失败回滚）、临时 worktree（支持叠加与删除）、身份 / clean 断言 |
 | `run` | start / status / checkpoint（分角色、`--dry-run`）/ integrate / resume / hold（`--reason` / `--release`）/ abandon / contract validate\|revise。仓库解析两个入口：`resolve_repo_root()` 保留用户选的 linked worktree（start / validate / runs / doctor / cleanup），`run_roots()` 在定位已有 run 时依次试选仓与主仓 |
-| `machine` | pass_cmd 三态、超时、信号终止（无效观察）、执行后 worktree 变更检测、失败签名、`tester_files_mentioned`、基线预跑 `preflight` |
+| `machine` | pass_cmd 三态、超时、信号终止（无效观察）、执行后 worktree 变更检测、失败签名、`tester_files_mentioned`、基线预跑 `preflight`；stage `cmd` 与 `ready_cmd` 执行前都经 `expand_main_repo` 展开 `{main_repo}`（与 proof 同源） |
 | `process` | 门禁命令的执行边界：一次调用独占一个进程组，超时或直接进程被信号带走时先整组回收再返回（#363） |
 | `evidence` | tester 文件与 integrate 需求的 git 派生、投影、`state()`、`role_running()` / `gate_running()`、blockers（授权窗口）、`readiness()` |
 | `proof` | spec 结构校验、`build_argv`、junit 解析与 id 映射、候选 / 反例判定、四步执行、失败签名 |
@@ -109,7 +109,7 @@ machine / preflight / proof 的子进程都拿到本次调用独占、结束即�
 
 **进程边界**（#363）：stage 与 proof runner 一律经 `process.run()` 以 `start_new_session=True` 启动，一次调用独占一个进程组。runtime 超时，或直接进程被信号带走时，先 `killpg` 整组再返回——判定与清理在同一次调用里闭环，残留的孙进程不会再与下一次 machine 抢 CPU。清理范围只有本次调用自己建出的进程组：不按进程名、命令行或其他 run 的 pid 查杀；进程正常退出时不额外清理（有意后台化的子孙归命令自己）。子孙主动 `setsid` 逃出进程组不受此约束，这与既有敌手模型一致。
 
-**仓库身份**（#364）：`--repo` 给的路径就是输入身份。`resolve_repo_root()` 只取该路径的 `git rev-parse --show-toplevel`，共用 `.git` 的 linked worktree 不再被静默改写回主仓——start / contract validate --check-repo / runs / doctor / cleanup 因此读的是用户选的那条产品线的分支与 `loop.yml`。定位**已有 run** 时用 `run_roots()`：先试选仓自己的 runs 目录，再试它的主仓（runtime 建的 candidate / tester worktree 属于主仓的 run），以实际存在的 ledger 为准，`RUN_NOT_FOUND` 的 details 列出搜索过的根。
+**仓库身份**（#364）：`--repo` 给的路径就是输入身份。`resolve_repo_root()` 只取该路径的 `git rev-parse --show-toplevel`，共用 `.git` 的 linked worktree 不再被静默改写回主仓——start / contract validate --check-repo / runs / doctor / cleanup 因此读的是用户选的那条产品线的分支与 `loop.yml`。定位**已有 run** 时用 `run_roots()`：先试选仓自己的 runs 目录，再试它的主仓（runtime 建的 candidate / tester worktree 属于主仓的 run），以实际存在的 ledger 为准，`RUN_NOT_FOUND` 的 details 列出搜索过的根。读不到的根（EACCES）不等价于「这个 run 不存在」（#404，原则一/三）：它被跳过并作为事实报出，`RUN_NOT_FOUND` 的 details 与 brief 的 `unreadable_roots` 各带一份；`list_runs` 对不可读的 run 目录同样只标记 `unreadable`、不中断整个列表。`--repo` 既可写在子命令前也可写在子命令后，两处指向同一个参数（#413）。
 
 ## readiness → next_action
 

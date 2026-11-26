@@ -24,6 +24,14 @@ PROOF_FRAMEWORKS = ("pytest", "generic")
 DEFAULT_PROOF_RUNNER = {"framework": "pytest", "cmd": "python3 -m pytest"}
 # 会被链接进反例现场的路径：relative to repo root, must stay inside it
 LINK_PATHS_FIELD = "link_paths"
+# pass_cmd 与 proof_runner 共用同一个占位符与同一个展开实现（#391，原则二）：
+# 两条命令都在 worktree 里跑，主仓内的解释器只能靠它引进来。
+MAIN_REPO_PLACEHOLDER = "{main_repo}"
+
+
+def expand_main_repo(cmd: str, main_repo: Path) -> str:
+    """把 cmd 里的 {main_repo} 换成主仓绝对路径；没有占位符时原样返回。"""
+    return cmd.replace(MAIN_REPO_PLACEHOLDER, str(main_repo))
 
 
 @dataclass

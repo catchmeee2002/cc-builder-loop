@@ -31,6 +31,7 @@ from typing import Any
 
 from . import contract as contract_mod
 from . import evidence, gitx, ledger as ledger_mod, process, worktree
+from .config import expand_main_repo
 from .errors import Problem, fatal, needs_user, negative
 from .jsonutil import digest, sha256_bytes
 from .machine import failure_signature, private_pycache
@@ -387,7 +388,7 @@ def check_structure(spec: Any, lg: dict[str, Any], repo_root: Path, *, worktree_
 
 
 def build_argv(runner: dict[str, str], test_ids: list[str], junit_path: Path, main_repo: Path) -> list[str]:
-    base = shlex.split(runner["cmd"].replace("{main_repo}", str(main_repo)))
+    base = shlex.split(expand_main_repo(runner["cmd"], main_repo))
     if runner.get("framework", "pytest") == "pytest":
         return base + ["-q", "-p", "no:cacheprovider", f"--junitxml={junit_path}", *test_ids]
     if "{tests}" in base:
@@ -399,7 +400,7 @@ def build_argv(runner: dict[str, str], test_ids: list[str], junit_path: Path, ma
 def smoke_runner(runner: dict[str, str], repo_root: Path) -> None:
     """proof_runner 能不能起来。规划期 / start 时就跑，别等写完实现才在 proof 门禁暴露（#241）。
     此时 run 还不存在，改 loop.yml 不需要 contract revise，也就不必为「修好它」去要一次授权。"""
-    argv = shlex.split(runner["cmd"].replace("{main_repo}", str(repo_root)))
+    argv = shlex.split(expand_main_repo(runner["cmd"], repo_root))
     if not argv:
         raise negative("PROOF_RUNNER_UNAVAILABLE", "proof_runner.cmd 为空", cmd=runner.get("cmd"))
     if not shutil.which(argv[0], path=os.environ.get("PATH")) and not Path(argv[0]).exists():

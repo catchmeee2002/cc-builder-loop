@@ -17,6 +17,7 @@ from typing import Any, Iterator
 
 from . import contract as contract_mod
 from . import evidence, gitx, ledger as ledger_mod, process, worktree
+from .config import expand_main_repo
 from .errors import Problem, fatal, needs_user, negative
 from .jsonutil import dumps, sha256_bytes
 
@@ -56,11 +57,14 @@ def failure_signature(text: str, stage: str, returncode: int) -> str:
     return sha256_bytes(f"{stage}\n{returncode}\n{norm}".encode("utf-8", "replace"))[:16]
 
 
-def _run_stage(cwd: Path, stage: dict[str, Any], log_path: Path, env: dict[str, str]) -> tuple[int, str, bool]:
+def _run_stage(cwd: Path, stage: dict[str, Any], log_path: Path, env: dict[str, str],
+               main_repo: Path) -> tuple[int, str, bool]:
     timed_out = False
     with open(log_path, "wb") as log:
+        # pass_cmd 与 proof_runner 共用同一个 {main_repo} 展开（#391，原则二）
+        cmd = expand_main_repo(stage["cmd"], main_repo)
         # 进程创建 / 超时 / 整组回收都在 process.run 里闭环（#363）：bash 的子孙不会在超时后继续跑
-        rc, timed_out = process.run(["bash", "-c", stage["cmd"]], cwd=cwd, env=env, timeout=stage["timeout"], stdout=log)
+        rc, timed_out = process.run(["bash", "-c", cmd], cwd=cwd, env=env, timeout=stage["timeout"], stdout=log)
         if timed_out:
             rc = 124
             log.write(f"\n[TIMEOUT] stage={stage['stage']} 超过 {stage['timeout']}s\n".encode())
@@ -121,12 +125,12 @@ def run_preflight(ledger_path: Path, repo_root: Path) -> dict[str, Any]:
             with worktree.temp_worktree(repo_root, lg["repo"]["target_start_head"], base.parent, base.name) as wt:
                 env["BUILDER_LOOP_CANDIDATE"] = str(wt)
                 for stage in stages:
-                    probe = ready_probe(wt, stage, log_dir / f"preflight-{stage['stage']}-ready.log", env)
+                    probe = ready_probe(wt, stage, log_dir / f"preflight-{stage['stage']}-ready.log", env, repo_root)
                     if probe is not None and not probe["ready"]:
                         results.append(probe)
                         continue
                     log_path = log_dir / f"preflight-{stage['stage']}.log"
-                    rc, _text, timed_out = _run_stage(wt, stage, log_path, env)
+                    rc, _text, timed_out = _run_stage(wt, stage, log_path, env, repo_root)
                     results.append({"stage": stage["stage"], "returncode": rc, "timed_out": timed_out, "log": str(log_path)})
     except Problem as exc:
         # 快照 worktree 建不出来（父目录不可写等）也是「没观察到」，不是基线红（#381，原则一）
@@ -165,7 +169,8 @@ def _tester_paths_in(ledger: dict[str, Any], repo_root: Path, candidate_head: st
     return sorted(p for p in owned if p in text)
 
 
-def ready_probe(cwd: Path, stage: dict[str, Any], log_path: Path, env: dict[str, str]) -> dict[str, Any] | None:
+def ready_probe(cwd: Path, stage: dict[str, Any], log_path: Path, env: dict[str, str],
+                main_repo: Path) -> dict[str, Any] | None:
     """环境就绪探针。stage 未声明 ready_cmd → None（视为就绪）。
 
     探针不看 stage 的输出、不解析日志文本，只看它自己的退出码：环境没准备好时 `cmd` 根本没跑，
@@ -175,7 +180,7 @@ def ready_probe(cwd: Path, stage: dict[str, Any], log_path: Path, env: dict[str,
     if not cmd:
         return None
     probe = {"stage": f"{stage['stage']}-ready", "cmd": cmd, "timeout": stage["timeout"]}
-    rc, _text, timed_out = _run_stage(cwd, probe, log_path, env)
+    rc, _text, timed_out = _run_stage(cwd, probe, log_path, env, main_repo)
     return {"stage": stage["stage"], "unready": True, "ready_cmd": cmd, "returncode": rc, "timed_out": timed_out,
             "log": str(log_path), "ready": rc == 0 and not timed_out}
 
@@ -302,13 +307,13 @@ def run_machine(ledger_path: Path, repo_root: Path, retry_reason: str | None = N
             with ledger_mod.mutate(ledger_path) as lg_retry:
                 ledger_mod.log_event(lg_retry, "machine_retry", **_retry_fact(lg, repo_root, retry_reason.strip()))
         for stage in stages:
-            probe = ready_probe(wt, stage, log_dir / f"iter-{it}-{stage['stage']}-ready.log", env)
+            probe = ready_probe(wt, stage, log_dir / f"iter-{it}-{stage['stage']}-ready.log", env, repo_root)
             if probe is not None and not probe["ready"]:
                 # 环境没就绪：cmd 没跑，这次没有判据结果可归因给候选（#377 #383，原则一）
                 unready = probe
                 break
             log_path = log_dir / f"iter-{it}-{stage['stage']}.log"
-            rc, text, timed_out = _run_stage(wt, stage, log_path, env)
+            rc, text, timed_out = _run_stage(wt, stage, log_path, env, repo_root)
             entry = {"stage": stage["stage"], "returncode": rc, "log": str(log_path), "timed_out": timed_out}
             results.append(entry)
             if rc != 0:

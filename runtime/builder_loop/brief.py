@@ -230,7 +230,8 @@ def _doc_reference_hints(lg: dict[str, Any]) -> dict[str, Any]:
     return {"hits": [], "error": f"doc-lint 退出码 {proc.returncode}: {(err or out).strip()[:200]}"}
 
 
-def build(lg: dict[str, Any], repo_root: Path, role: str) -> dict[str, Any]:
+def build(lg: dict[str, Any], repo_root: Path, role: str,
+          unreadable_roots: list[str] | None = None) -> dict[str, Any]:
     c = lg["contract"]
     m, a, s = c["mission"], c["authority"], c["assurance"]
     out: dict[str, Any] = {
@@ -244,6 +245,9 @@ def build(lg: dict[str, Any], repo_root: Path, role: str) -> dict[str, Any]:
         # 角色要核对 evidence 细节时的定位信息（#304）：不给它就会去文件系统里 find，在 NFS 上能跑几个小时
         "ledger": str(ledger_path(Path(lg["repo"]["root"]), lg["run_id"])),
     }
+    if unreadable_roots:
+        # 定位时跳过了一些读不到的 root（#404）：这是观察事实，如实给出，不静默吞掉（原则一）
+        out["unreadable_roots"] = list(unreadable_roots)
     for b in m["behaviors"]:
         entry = {k: b[k] for k in ("id", "given", "when", "then")}
         for key in ("boundaries", "invariants"):
@@ -326,6 +330,8 @@ def render(brief: dict[str, Any]) -> str:
         lines.append("Mock 策略: " + dumps(brief["mission"]["mock_strategy"]))
     if brief["mission"].get("trust_boundaries"):
         lines.append("Trust boundaries: " + "; ".join(brief["mission"]["trust_boundaries"]))
+    if brief.get("unreadable_roots"):
+        lines.append("定位 run 时跳过、无法确认的目录（无读权限）: " + "; ".join(brief["unreadable_roots"]))
     lines.append(f"本 run 的 ledger（只读）: {brief['ledger']}。{LEDGER_HINT}")
     lines.append(GATE_LOAD_RULE)
 

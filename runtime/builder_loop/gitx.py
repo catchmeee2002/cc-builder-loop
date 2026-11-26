@@ -32,14 +32,18 @@ def git(cwd: Path | str, *args: str, check: bool = True, input_text: str | None 
     事务记录，不是交付提交。`--no-verify` 拦不住 post-commit / post-checkout / pre-rebase，所以用 hooksPath。
     唯一例外是 `finalize --run-commit-hook`，显式传 hooks=True。env 叠加在当前环境之上（如临时 GIT_INDEX_FILE）。"""
     prefix = () if hooks else NO_HOOKS
-    proc = subprocess.run(
-        ["git", *prefix, *args],
-        cwd=str(cwd),
-        capture_output=True,
-        text=True,
-        input=input_text,
-        env={**os.environ, **env} if env else None,
-    )
+    try:
+        proc = subprocess.run(
+            ["git", *prefix, *args],
+            cwd=str(cwd),
+            capture_output=True,
+            text=True,
+            input=input_text,
+            env={**os.environ, **env} if env else None,
+        )
+    except OSError as exc:
+        # cwd 不存在 / 不可进入：这是用法或环境错误，不能变成裸 traceback（CLI 约定 stdout 恒为 JSON）
+        raise fatal("NOT_A_GIT_REPO", f"无法在 {cwd} 执行 git: {exc}", cwd=str(cwd), args=list(args)) from exc
     result = GitResult(proc.returncode, proc.stdout, proc.stderr)
     if check and not result.ok:
         raise fatal("GIT_COMMAND_FAILED", f"git {' '.join(args)} 失败: {proc.stderr.strip()}", args=list(args), cwd=str(cwd))

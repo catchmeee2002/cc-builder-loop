@@ -2,6 +2,12 @@
 
 > 本文件记 **CC 版**产品线（分支 `cc/main`）。Codex 版见 `codex/main` 分支。
 
+## 契约面一致性收敛：`{main_repo}` 展开、不可读 root、`--repo` 位置（#391 #404 #413，2026-11-26）
+
+- **pass_cmd 也展开 `{main_repo}`（#391）**：此前只有 `proof_runner.cmd` 展开，`machine` 把 `cmd` 原样交给 `bash -c`；而 README / SKILL / CLAUDE.md 三处都写了 pass_cmd 可用它，照文档配置要等 machine 门禁才以 `exit 127` 暴露。现在展开收敛到 `config.expand_main_repo()` 一处，machine（含 `ready_cmd`）、preflight 与 proof 都调它（原则二、八）。
+- **读不到的 root 不再打死定位（#404）**：`find_ledger_by_run` 把 `PermissionError` 转成 `RUN_UNREADABLE`（读不到 ≠ 不存在，原则一），`_locate_run` 跳过该 root 继续找，`RUN_NOT_FOUND` 的 details 与 brief 的 `unreadable_roots` 各带一份事实；`list_runs` 对不可读的 run 目录只标 `unreadable`、不中断列表。一个无权限的发布 worktree 不该让整条 brief 不可用（原则三）。
+- **`--repo` 位置一致（#413）**：`add_locators()` 现在也接受子命令后的 `--repo`（`SUPPRESS` 默认，不覆盖顶层值），`cleanup` 与其他子命令不再有形状差异。根因不是「cleanup 缺 add_locators」——它缺的是 `--repo` 本身，所有子命令此前都只认顶层那一个。
+
 ## finalize 不再回收 worktree，回收统一交给 bl cleanup（#369 #390，2026-11-26）
 
 - **finalize 只做 Git 事务**：合入成功后不再删除候选与 tester 的 worktree 和分支。此前调用者通常正站在候选目录里，目录被删后 Claude Code 的 Bash 工具在命令末尾追加的 `pwd -P` 失败，把成功的 finalize（`ok:true` / `terminal:finalized`）显示成 exit 1，下一条命令还会因工作目录不存在被拒（8 次现场、4 个业务仓）。

@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
-from .errors import fatal
+from .errors import Problem, fatal
 from .jsonutil import atomic_write_json, read_json
 
 LEDGER_SCHEMA = "builder-loop/ledger@2"
@@ -209,7 +209,13 @@ def lookup_session(session_id: str | None) -> dict[str, Any] | None:
 
 def find_ledger_by_run(repo_root: Path, run_id: str) -> Path:
     p = ledger_path(repo_root, run_id)
-    if not p.is_file():
+    try:
+        exists = p.is_file()
+    except OSError as exc:
+        # 读不到 ≠ 不存在（#404，原则一）：调用方据此跳过该 root，并把这条事实报给用户
+        raise Problem("RUN_UNREADABLE", f"无法读取 run {run_id} 的 ledger: {exc}",
+                      details={"run_id": run_id, "root": str(repo_root)}, exit_code=2) from exc
+    if not exists:
         raise fatal("RUN_NOT_FOUND", f"run {run_id} 不存在", run_id=run_id)
     return p
 
@@ -217,11 +223,21 @@ def find_ledger_by_run(repo_root: Path, run_id: str) -> Path:
 def list_runs(repo_root: Path) -> list[dict[str, Any]]:
     base = repo_root / RUNS_SUBDIR
     out: list[dict[str, Any]] = []
-    if not base.is_dir():
+    try:
+        if not base.is_dir():
+            return out
+        entries = sorted(base.iterdir())
+    except OSError:
         return out
-    for d in sorted(base.iterdir()):
+    for d in entries:
         lp = d / "ledger.json"
-        if not lp.is_file():
+        try:
+            exists = lp.is_file()
+        except OSError:
+            # 单个 run 目录不可读不拖垮整个列表（#404，原则三）
+            out.append({"run_id": d.name, "schema": None, "unreadable": True, "terminal": None, "ledger_path": str(lp)})
+            continue
+        if not exists:
             continue
         lg = peek(lp)
         if lg is None:

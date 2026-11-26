@@ -21,7 +21,7 @@ CLEANUP_HELP = "回收已复盘的终态 run（abandoned / finalized）的 workt
 OLD_CLEANUP_HELP = "回收已复盘的 abandoned run 的 worktree"
 
 FLOW_LOOP = "→ bl finalize（commit-tree + update-ref CAS 写回目标分支；worktree 与分支留给 bl cleanup）"
-ROW_LOOP = "| `bl cleanup [--run R]` | 回收已复盘的终态 run（abandoned / finalized）的 worktree（clean、HEAD 未漂移、调用者不在其中才删） | 0 |"
+ROW_LOOP = "| `bl cleanup [--run R] [--repo P]` | 回收已复盘的终态 run（abandoned / finalized）的 worktree（clean、HEAD 未漂移、调用者不在其中才删） | 0 |"
 
 STEP6_BUILDER = "6. finalize 不回收 worktree：复盘后在候选目录之外执行 `bl cleanup --run <run_id>` 回收。"
 
@@ -91,8 +91,9 @@ def test_architecture_flow_and_abandon_row_updated():
     assert _norm(RETRO_ROW_ARCH) in text
 
 
-def test_changelog_new_section_first():
+def test_changelog_new_section_present():
+    """defer-cleanup 的 CHANGELOG 节仍在；不钉它是不是第一节（#374：顶部顺序随每个后续 run 前进）。"""
     text = _read(CHANGELOG)
     headings = re.findall(r"(?m)^## .+$", text)
     assert headings, "CHANGELOG 至少要有一节"
-    assert "#369 #390" in headings[0]
+    assert any("#369 #390" in h for h in headings), headings[:3]
