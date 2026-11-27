@@ -159,6 +159,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def dispatch(args: argparse.Namespace) -> tuple[Any, int]:
+    """进程内与进程外同一形态：dict 结果在这里补 ok，main 不再另补（#266）。"""
+    out, code = _route(args)
+    if isinstance(out, dict) and "ok" not in out:
+        out = {"ok": code in (EXIT_OK, 1), **out}
+    return out, code
+
+
+def _route(args: argparse.Namespace) -> tuple[Any, int]:
     from . import run as run_mod
 
     cmd = args.cmd
@@ -305,7 +313,5 @@ def main(argv: list[str] | None = None) -> int:
     if isinstance(out, str):  # brief 的文本形态：直接给角色看，不套 JSON
         sys.stdout.write(out + "\n")
         return code
-    if isinstance(out, dict) and "ok" not in out:
-        out = {"ok": code in (EXIT_OK, 1), **out}
     _emit(out)
     return code

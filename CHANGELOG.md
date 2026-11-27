@@ -2,6 +2,11 @@
 
 > 本文件记 **CC 版**产品线（分支 `cc/main`）。Codex 版见 `codex/main` 分支。
 
+## `ok` 字段由 dispatch 统一补全（#266，2026-11-27）
+
+- **进程内与进程外输出形态一致**：`ok` 的补全从 `cli.main()` 移进 `cli.dispatch()`，原路由逻辑改名为 `_route`。经 `tests/conftest.py::cli` fixture 进程内调用时，dict 结果同样带 `ok`，不会再出现 contract 写「CLI 输出的 ok 为 true」而 fixture 返回 `KeyError: 'ok'` 的盲写误读。
+- 只作用于 dict 结果：`hook` 子命令的 `(stdout, stderr)` 元组、brief 的文本形态、`Problem.to_json()` 均不受影响；`bl` 的 stdout 与退出码不变。
+
 ## 退役进入 worktree 的绕路、后台任务账本降级为提示（#237 #416，2026-11-27）
 
 - **从 linked worktree 启动 run 直接拒绝（#237）**：`bl start` 在入口比对 `gitx.main_repo_root(repo_root)` 与 `repo_root`，不等即 `START_IN_LINKED_WORKTREE`（fatal，exit 2），不留 run 目录、worktree 与 session 绑定。主路径写明：已在某个 worktree 中就先用 `ExitWorktree --action keep` 回主仓根再 `bl start`。

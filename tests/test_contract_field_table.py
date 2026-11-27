@@ -45,7 +45,7 @@ def _minimal() -> dict:
 
 
 def _run_bl(repo, *args: str) -> subprocess.CompletedProcess:
-    """真实 CLI 进程：`ok` 字段由 cli.main 在写 stdout 时补上，dispatch() 的返回值里没有。"""
+    """真实 CLI 进程：`ok` 字段由 cli.dispatch 统一补全，main 只负责写 stdout。"""
     env = os.environ.copy()
     runtime = str(ROOT / "runtime")
     env["PYTHONPATH"] = runtime + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
