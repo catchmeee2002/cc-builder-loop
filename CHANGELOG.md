@@ -2,6 +2,11 @@
 
 > 本文件记 **CC 版**产品线（分支 `cc/main`）。Codex 版见 `codex/main` 分支。
 
+## `doctor` / `runs` 接受子命令后的 `--repo`（#413，2026-11-27）
+
+- **补上最后两个定位子命令**：`bl doctor --repo <根>` 与 `bl runs --repo <根>` 不再报 `unrecognized arguments`（此前只能写成 `bl --repo <根> doctor`）。两处都用 `default=argparse.SUPPRESS`，子命令没写时顶层的 `--repo` 不被抹成 None。
+- 没有复用 `add_locators()`：它会同时挂 `--run` / `--session`，而这两个子命令只消费 `--repo`，接受却忽略的定位参数会静默放宽作用范围。`contract fields` 与 `hook` 同样不消费 `--repo`，故不挂。
+
 ## `ok` 字段由 dispatch 统一补全（#266，2026-11-27）
 
 - **进程内与进程外输出形态一致**：`ok` 的补全从 `cli.main()` 移进 `cli.dispatch()`，原路由逻辑改名为 `_route`。经 `tests/conftest.py::cli` fixture 进程内调用时，dict 结果同样带 `ok`，不会再出现 contract 写「CLI 输出的 ok 为 true」而 fixture 返回 `KeyError: 'ok'` 的盲写误读。

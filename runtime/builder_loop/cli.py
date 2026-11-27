@@ -153,8 +153,11 @@ def build_parser() -> argparse.ArgumentParser:
     hk = sub.add_parser("hook", help="stdin 读 CC hook JSON")
     hk.add_argument("event")
 
-    sub.add_parser("doctor")
-    sub.add_parser("runs", help="列出本仓 run")
+    # doctor / runs 只消费 --repo，不消费 --run / --session：挂 add_locators 会让接受却不忽略的参数静默放宽（#413）
+    sp = sub.add_parser("doctor")
+    sp.add_argument("--repo", default=argparse.SUPPRESS, help="仓库路径，等同于顶层的 --repo")
+    sp = sub.add_parser("runs", help="列出本仓 run")
+    sp.add_argument("--repo", default=argparse.SUPPRESS, help="仓库路径，等同于顶层的 --repo")
     return p
 
 
