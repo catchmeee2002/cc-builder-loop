@@ -71,6 +71,7 @@ commit 格式 `type(scope): [cr_id_skip] Desc`；finalize 默认绕过 commit ho
 ## References
 
 - 用户入口与安装：[`README.md`](README.md)
+- 跨仓并行开发与集成发版流程：[`docs/parallel-development.md`](docs/parallel-development.md)
 - 版本历史：[`CHANGELOG.md`](CHANGELOG.md)
 - CC 版上一代（V7.4 bash/prompt 版）：tag `v7.4`
 - Codex 版：`codex/main` 分支（Codex Assurance v4）

@@ -38,13 +38,14 @@ Stop hook：run 未终态 → 拦住并给出 `next_action`；等待用户（Ask
 | `bl preflight` | 在 run 起点跑一遍 pass_cmd，标出本来就红的 stage（后台跑，只记 event 不动判据）；超时与信号终止的 stage 记为 `baseline_timed_out` / `baseline_signaled`，声明了 `ready_cmd` 而探针没过的记为 `baseline_unready`（判据没跑，不算红），三者与快照建不出来（`snapshot_error`）都让结果 `INCONCLUSIVE` | 0 |
 | `bl brief --role tester\|reviewer [--json]` | 角色视角的当前事实与待办；角色自取，是它的唯一来源 | 0 |
 | `bl resume --reason R` | 用户授权后解除上限 / 无进展 / proof 反复失败（blocker 之后必须有过用户输入） | 0 / 1 / 3 |
+| `bl hold --reason R [--release]` | gate 全过过一次后按外部条件暂缓合入（等待外部协作不必问用户）；`--release` 解除，目标分支前进了照常 rebase 重验 | 0 / 1 / 2 |
 | `bl finalize [-m] [--run-commit-hook]` | CAS 写回目标分支 | 0 / 1（未就绪 / DRIFT / dirty 重叠） |
 | `bl rebase` | 目标分支前进后把候选 rebase 上去；漂移触及 tester 改过的文件时 tester 分支也跟着 rebase（`tester_rebase.status`，冲突交 tester 解） | 0 / 1 冲突（候选或 tester 任一） |
 | `bl contract validate --plan P [--check-repo]` / `revise --plan P [--authorize]` / `fields` | 校验 / 同 run 改 contract / 列出字段与读者 | 0 / 1 / 3 需授权 |
 | `bl abandon --reason R` | 终止，保留 worktree；仍需复盘 | 0 |
 | `bl retro signals` / `bl retro record --file F \| --no-incident` | 终态复盘 | 0 / 1 |
 | `bl cleanup [--run R] [--repo P]` | 回收已复盘的终态 run（abandoned / finalized）的 worktree（clean、HEAD 未漂移、调用者不在其中才删） | 0 |
-| `bl evidence show` / `bl runs` / `bl doctor` | 诊断 | 0 |
+| `bl evidence show` / `bl runs [--repo P]` / `bl doctor [--repo P]` | 诊断 | 0 |
 
 定位 run：`--session <id>` 或 `--run <run_id>`（写在子命令前后都行）；仓库只有一个活跃 run 时可省略。
 
