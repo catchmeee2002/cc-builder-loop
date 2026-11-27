@@ -53,6 +53,10 @@ worktree:                     # 可选
   link_paths:                 # 可选；run 起点把依赖从源目录链接进候选 / tester / preflight 现场
     - node_modules            # 只建符号链接，不复制不安装；链接不算「现场改动」
   link_source: .              # 可选；依赖源目录，相对仓库根，缺省即仓库根本身
+preflight: always             # 可选；always / on-failure / off。只影响是否建议在 run 起点跑基线预检
+concurrency:                  # 可选；并发预算，缺省全串行（行为与不写这段一致）
+  gates: 1                    # 门禁并发上限；>=2 时 machine / proof 不再排队等 preflight
+  proof_groups: 1             # proof 反例段的并行组数；组多时调高能显著缩短 proof
 ```
 
 `.claude/loop.yml` 必须在目标分支里被跟踪：`bl start` 冻结的是**目标分支提交里**的那份，与 `bl contract revise` 读候选 HEAD 对称。工作区里未提交的改动不会生效，只在 `bl start` 输出的 `loop_config_source.worktree_differs` 里报告。

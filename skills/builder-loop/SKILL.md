@@ -69,6 +69,10 @@ proof_runner:                  # proof 用的测试命令前缀；runtime 在后
     - node_modules             # generic 依赖安装产物（如 node_modules）时写在这里；候选里不存在会报 TEST_PROOF_RUNNER_FAILED
 evidence_neutral_paths:        # 可选，缺省为空 = 候选任何改动都让 machine / proof 失效
   - docs/**                    # 判据读不到的路径；只改它们不重跑 machine / proof（reviewer 照常复审）
+preflight: always              # 可选；always | on-failure | off。只影响是否建议在 run 起点跑基线预检
+concurrency:                   # 可选；并发预算，缺省全串行（与不写这段一致）
+  gates: 1                     # 门禁并发上限；>=2 时 machine / proof 不再排队等 preflight
+  proof_groups: 1              # proof 反例段的并行组数；候选段始终串行
 worktree:
   root: ../builder-loop-worktrees/<repo>          # 可选，默认仓库同级目录
   link_paths:                  # 可选：run 起点把依赖从源目录链接进候选 / tester / preflight 现场

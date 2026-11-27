@@ -282,10 +282,17 @@ def gate_running(ledger: dict[str, Any]) -> str | None:
     return None
 
 
+def _gate_concurrency(ledger: dict[str, Any]) -> int:
+    """loop.yml 的 concurrency.gates（缺省 1）。ledger 的 loop_config 只在用户显式声明时才带这个键，
+    缺省路径因此与引入并发预算之前逐字节一致（#420）。"""
+    return int((((ledger.get("loop_config") or {}).get("concurrency") or {}).get("gates")) or 1)
+
+
 @contextmanager
 def gate_lock(ledger: dict[str, Any], holder: str) -> Iterator[None]:
     """门禁执行期间持有。同一门禁重复启动 → GATE_BUSY；基线预跑在跑就排队等它——
-    两套全量测试并发会把彼此挤成假超时。等待期间本门禁的锁已持有，所以 Stop 看得到它在排队。"""
+    两套全量测试并发会把彼此挤成假超时。等待期间本门禁的锁已持有，所以 Stop 看得到它在排队。
+    concurrency.gates >= 2 = 用户已声明机器有余量：不再等 preflight（#420），默认 1 保持原行为。"""
     p = _gate_path(ledger, holder)
     p.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(str(p), os.O_RDWR | os.O_CREAT, 0o644)
@@ -296,7 +303,7 @@ def gate_lock(ledger: dict[str, Any], holder: str) -> Iterator[None]:
             raise negative("GATE_BUSY", f"`bl {holder}` 已经在这个 run 上执行，等它结束（后台任务完成时你会被唤醒）", holder=holder) from None
         os.ftruncate(fd, 0)
         os.write(fd, str(os.getpid()).encode())
-        if holder != GATE_PREFLIGHT:
+        if holder != GATE_PREFLIGHT and _gate_concurrency(ledger) < 2:
             _wait_released(_gate_path(ledger, GATE_PREFLIGHT))
         yield
     finally:
@@ -480,6 +487,16 @@ def _tester_owned_findings(ledger: dict[str, Any]) -> bool:
     return any(f.get("owner") == "tester" and f.get("severity") in ("blocking", "major") for f in findings)
 
 
+def _machine_failure_blames_tester(ledger: dict[str, Any], states: dict[str, str]) -> bool:
+    """machine 失败且日志里出现归 tester 的路径、tester 尚未答复：tester 正在修它。
+    此时给出 resume_tester 只会重复续接，应该等它交卷（#420；与 machine 分支同一判定，原则二）。"""
+    if states.get("machine") != STATE_FAIL:
+        return False
+    rec = ledger["evidence"].get("machine") or {}
+    mentioned = ((rec.get("details") or {}).get("failure") or {}).get("tester_files_mentioned")
+    return bool(mentioned) and last_role_result_at(ledger, "tester") <= rec.get("at", "")
+
+
 def readiness(ledger: dict[str, Any], repo_root: Path) -> dict[str, Any]:
     required = ledger["contract"]["assurance"]["required"]
     states = {k: (state(ledger, k, repo_root) if k in required else "not_required") for k in EVIDENCE_KINDS}
@@ -490,6 +507,17 @@ def readiness(ledger: dict[str, Any], repo_root: Path) -> dict[str, Any]:
     gate = gate_running(ledger)
     drift = tester_drift_overlap(ledger, repo_root) if "tester" in required else []
     integrate_needed = not drift and "tester" in required and states["tester"] == STATE_PASS and needs_integrate(ledger, repo_root)
+    # tester 补 mutation patch 的真实前置只有「首次 integrate 后候选可读」，与 machine 结论无关（#420）。
+    # 派生一次供 builder 先续接 tester（后台）再跑 machine；machine 已 pass 时归 proof 分支处理，这里不算，
+    # 以免 readiness 被 Stop 频繁调用时多起 git 子进程（_stale_patches 有成本）
+    tester_patch_due = bool(
+        states["machine"] != STATE_PASS
+        and "tester" in required and "proof" in required
+        and states["tester"] == STATE_PASS and not tester_run and tester_known
+        and implementation_readable_by_tester(ledger)
+        and last_role_result_at(ledger, "tester") <= _first_integrate_at(ledger)
+        and (missing_patch(ledger) or _stale_patches(ledger, repo_root))
+    )
 
     def tester_action() -> str:
         if tester_run:
@@ -512,21 +540,21 @@ def readiness(ledger: dict[str, Any], repo_root: Path) -> dict[str, Any]:
         action = tester_action()  # 先把 tester 放出去（后台），builder 再干自己的活
     elif not has_builder_cp:
         action = ACTION_CHECKPOINT
-    elif tester_run:
-        # 首轮并行写测试，或被续接去修测试 / 补 patch：它交卷之前没有别的事可推进
+    elif tester_run and (states["tester"] != STATE_PASS or states["machine"] == STATE_PASS):
+        # 首轮并行写测试，或被续接去修测试：它交卷之前没有别的事可推进。
+        # 例外（#420，B2）：tester 已 pass 而 machine 还没过时，它多半在补 mutation patch——那是与 machine
+        # 相互独立的输入，不该把 builder 压在 waiting 里；此时照常给出 machine，补 patch 与之并行
         action = ACTION_AWAITING_TESTER
     elif integrate_needed:
         action = ACTION_INTEGRATE
     elif states["machine"] != STATE_PASS:
-        rec = ledger["evidence"].get("machine") or {}
-        mentioned = ((rec.get("details") or {}).get("failure") or {}).get("tester_files_mentioned")
         if gate == GATE_MACHINE:
             # machine 在跑（多半是后台 Bash）：下一步取决于它的新结论，别再按旧结论催（#242 #279）
             action = ACTION_AWAITING_GATE
-        elif states["machine"] == STATE_FAIL and "tester" in required and mentioned \
-                and last_role_result_at(ledger, "tester") <= rec.get("at", ""):
+        elif "tester" in required and not tester_run and _machine_failure_blames_tester(ledger, states):
             # 失败日志里出现了归 tester 的路径：builder 改不了 tests/**，这条失败必须有它自己的出口，
-            # 否则只能靠 MISSION_REVISION 绕过（#249）。与下面 proof 的 owner=tester 分支同构
+            # 否则只能靠 MISSION_REVISION 绕过（#249）。与下面 proof 的 owner=tester 分支同构。
+            # tester 已在跑时不再给这个动作（重复续接无意义），按 B2 照常给 machine
             action = ACTION_RESUME_TESTER
         else:
             action = ACTION_MACHINE
@@ -575,4 +603,5 @@ def readiness(ledger: dict[str, Any], repo_root: Path) -> dict[str, Any]:
         action = ACTION_HELD
 
     return {"required": required, "states": states, "next_action": action, "blockers": found,
-            "integrate_needed": integrate_needed, "tester_drift": drift, "gate_running": gate}
+            "integrate_needed": integrate_needed, "tester_drift": drift, "gate_running": gate,
+            "tester_patch_due": tester_patch_due}

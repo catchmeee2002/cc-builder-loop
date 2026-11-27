@@ -237,7 +237,8 @@ def status(ledger_path: Path, repo_root: Path) -> dict[str, Any]:
         "tester": None if not tester else {**tester, "files": evidence.tester_files(lg, repo_root)},
         "agents": lg["agents"],
         "running": {role: evidence.role_running(lg, role) for role in ("tester", "reviewer")},
-        "preflight": {"baseline_red": machine.baseline_red(lg), "baseline_timed_out": machine.baseline_timed_out(lg),
+        "preflight": {"mode": (lg.get("loop_config") or {}).get("preflight") or "always",
+                      "baseline_red": machine.baseline_red(lg), "baseline_timed_out": machine.baseline_timed_out(lg),
                       "baseline_signaled": machine.baseline_signaled(lg),
                       "baseline_unready": machine.baseline_unready(lg)},  # None = 没跑过
         "counters": lg["counters"],

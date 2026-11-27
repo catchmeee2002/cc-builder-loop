@@ -118,6 +118,18 @@ def _check_proof_runner(root: Path) -> dict[str, Any]:
     return {"ok": True, "cmd": runner.get("cmd")}
 
 
+def _check_config(root: Path) -> dict[str, Any]:
+    """可配项的当前生效值与用户是否显式设置过（#420）。让老用户能主动发现 retro 里没被观测到的能力。"""
+    from .config import load_loop_config
+
+    try:
+        cfg = load_loop_config(root)
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"loop.yml 不可用: {exc}"}
+    return {"explicit_keys": list(cfg.explicit_keys),
+            "current": {"preflight": cfg.preflight_mode, "concurrency": dict(cfg.concurrency)}}
+
+
 def doctor(repo_arg: str | None) -> dict[str, Any]:
     git_version = subprocess.run(["git", "--version"], capture_output=True, text=True).stdout.strip()
     report: dict[str, Any] = {
@@ -137,8 +149,10 @@ def doctor(repo_arg: str | None) -> dict[str, Any]:
 
             report["repo"] = {"root": str(root), "runs": ledger_mod.list_runs(root), "proof_runner": _check_proof_runner(root),
                               "reclaimable_runs": retro_mod.reclaimable_runs(root)}
+            report["config"] = _check_config(root)
         except Exception as exc:  # noqa: BLE001
             report["repo"] = {"error": str(exc)}
+            report["config"] = {"error": str(exc)}
     problems = []
     if report["hooks"].get("error") or not report["hooks"]["registered"]:
         problems.append("hooks 未注册（运行 install.sh）")

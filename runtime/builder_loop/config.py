@@ -19,6 +19,12 @@ LOOP_YML = Path(".claude") / "loop.yml"
 DEFAULT_MAX_ITERATIONS = 5
 DEFAULT_STAGE_TIMEOUT = 300
 PROOF_FRAMEWORKS = ("pytest", "generic")
+# preflight 只在 machine 失败时才有诊断价值；always 保住「这段本来就红吗」这个事实，是默认的稳妥选择。
+# 三个模式都只影响「builder 是否被建议跑」，不影响手动 `bl preflight`（情报不是门禁，原则三）。
+PREFLIGHT_MODES = ("always", "on-failure", "off")
+DEFAULT_PREFLIGHT_MODE = "always"
+# 并发预算：默认全串行，行为与引入这一项之前完全一致；用户按机器资源显式调高才生效（原则三、五）。
+DEFAULT_CONCURRENCY = {"gates": 1, "proof_groups": 1}
 # proof 的测试命令由项目声明、start 时冻结进 assurance 面：环境依赖因此进入 evidence 的输入投影，
 # tester 不再自己写 argv（#229：否则只能把机器侧 venv 的绝对路径藏进 argv）。
 DEFAULT_PROOF_RUNNER = {"framework": "pytest", "cmd": "python3 -m pytest"}
@@ -61,6 +67,12 @@ class LoopConfig:
     # 依赖准备：run 起点把这些路径从 link_source 链接进候选 / tester / preflight 现场（#383）
     worktree_link_paths: list[str] = field(default_factory=list)
     worktree_link_source: str | None = None
+    # 以下三项都是执行信息，不进 contract digest（原则四）：run 内改它们不该让既有 evidence 失效
+    preflight_mode: str = DEFAULT_PREFLIGHT_MODE
+    concurrency: dict[str, int] = field(default_factory=lambda: dict(DEFAULT_CONCURRENCY))
+    # 用户真正在 loop.yml 里显式写过的键（含 concurrency 子键）。to_json 与 retro / doctor 据此判断
+    # 「这一项是用户选的还是默认值」，不另存一份事实（原则二）
+    explicit_keys: list[str] = field(default_factory=list)
 
     def to_json(self) -> dict[str, Any]:
         out: dict[str, Any] = {
@@ -78,7 +90,26 @@ class LoopConfig:
             out["worktree_link_paths"] = self.worktree_link_paths
             if self.worktree_link_source is not None:
                 out["worktree_link_source"] = self.worktree_link_source
+        # 同一约定：只写用户显式声明过的项。concurrency 只落显式子键，缺省子键读时回落到 DEFAULT_CONCURRENCY。
+        if "preflight" in self.explicit_keys:
+            out["preflight"] = self.preflight_mode
+        conc = {k.split(".", 1)[1]: self.concurrency[k.split(".", 1)[1]]
+                for k in self.explicit_keys if k.startswith("concurrency.")}
+        if conc:
+            out["concurrency"] = conc
         return out
+
+
+# 可配项元数据：retro / doctor 据此告诉用户还有哪些能力没开（原则五：新能力必须能被已有用户发现）。
+# 只放文案与默认值；「这一项该不该提示」由调用方按本 run 的实际观测判断，不在这里写死。
+CONFIG_HINTS = (
+    {"key": "preflight", "default": DEFAULT_PREFLIGHT_MODE,
+     "summary": "preflight 默认每次 run 起点跑一遍全量；改 on-failure 只在 machine 失败时跑，能省一次全量"},
+    {"key": "concurrency.gates", "default": DEFAULT_CONCURRENCY["gates"],
+     "summary": "门禁并发默认 1（串行）；机器有余量时可调高，让 machine / proof 不再排队等 preflight"},
+    {"key": "concurrency.proof_groups", "default": DEFAULT_CONCURRENCY["proof_groups"],
+     "summary": "proof 反例段默认逐组串行；组数多时调高并发能显著缩短 proof"},
+)
 
 
 # ---------------------------------------------------------------- YAML 子集
@@ -390,6 +421,34 @@ def _parse_loop_config(raw: bytes, path: str) -> LoopConfig:
                         "整个数组为空或字段缺失都合法，表示不豁免任何路径", value=raw_neutral)
         neutral = sorted({p.strip() for p in raw_neutral})
 
+    # 执行信息（原则四）：只影响等待与调度，不影响判据强度，因此不进 assurance 面
+    explicit_keys: list[str] = []
+    raw_preflight = data.get("preflight")
+    preflight_mode = DEFAULT_PREFLIGHT_MODE
+    if raw_preflight is not None:
+        if isinstance(raw_preflight, bool):
+            # YAML 1.1 把 off/on 解析成布尔（PyYAML 这样，内置子集解析不会）：`preflight: off` 要按 off 理解
+            raw_preflight = DEFAULT_PREFLIGHT_MODE if raw_preflight else "off"
+        if raw_preflight not in PREFLIGHT_MODES:
+            raise fatal("CONFIG_PREFLIGHT_INVALID", f"preflight 必须是 {PREFLIGHT_MODES} 之一", value=raw_preflight)
+        preflight_mode = raw_preflight
+        explicit_keys.append("preflight")
+
+    concurrency = dict(DEFAULT_CONCURRENCY)
+    raw_conc = data.get("concurrency")
+    if raw_conc is not None:
+        if not isinstance(raw_conc, dict):
+            raise fatal("CONFIG_CONCURRENCY_INVALID", "concurrency 必须是映射 {gates, proof_groups}", value=raw_conc)
+        for name in ("gates", "proof_groups"):
+            if name not in raw_conc:
+                continue
+            val = raw_conc[name]
+            # bool 是 int 的子类，显式排除，否则 `gates: true` 会被当成 1
+            if not isinstance(val, int) or isinstance(val, bool) or val < 1:
+                raise fatal("CONFIG_CONCURRENCY_INVALID", f"concurrency.{name} 必须是 >=1 的整数", value=val)
+            concurrency[name] = val
+            explicit_keys.append(f"concurrency.{name}")
+
     return LoopConfig(
         proof_runner=runner,
         path=str(LOOP_YML),
@@ -400,4 +459,7 @@ def _parse_loop_config(raw: bytes, path: str) -> LoopConfig:
         evidence_neutral_paths=neutral,
         worktree_link_paths=worktree_link_paths,
         worktree_link_source=worktree_link_source,
+        preflight_mode=preflight_mode,
+        concurrency=concurrency,
+        explicit_keys=explicit_keys,
     )

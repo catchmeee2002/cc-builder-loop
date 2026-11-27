@@ -1,5 +1,5 @@
 # builder-loop 项目层配置 schema — 业务项目在 .claude/loop.yml 里按此填写。
-# runtime 只消费下列字段，其余忽略。
+# 下列字段由 runtime 消费；未列出的键被忽略。
 
 pass_cmd:
   # 通过条件命令数组，按顺序在候选 worktree 内执行；任一非 0 即 FAIL；至少 1 个阶段。
@@ -55,6 +55,35 @@ proof_runner:
     examples:
       - [node_modules]
       - [".venv"]
+
+evidence_neutral_paths:
+  # 可选。判据读不到的路径 glob；只改它们不让 machine / proof 失效（reviewer 照常复审）。缺省为空。
+  type: array
+  default: []
+  items:
+    type: string
+  examples:
+    - ["docs/**", "CHANGELOG.md"]
+
+preflight:
+  # 可选。always：run 起点建议跑一次基线预检；on-failure：只在 machine 失败后跑；off：不跑。
+  # 只影响 builder 是否被建议跑预检，不影响手动 `bl preflight`（情报不是门禁）。
+  type: enum
+  values: [always, on-failure, off]
+  default: always
+
+concurrency:
+  # 可选。并发预算；缺省全串行，行为与不写这段一致。
+  gates:
+    # 门禁并发上限。>=2 表示机器有余量：machine / proof 不再排队等 preflight。
+    type: integer
+    default: 1
+    min: 1
+  proof_groups:
+    # proof 反例段的并行组数；候选段始终串行。组多时调高能缩短 proof。
+    type: integer
+    default: 1
+    min: 1
 
 worktree:
   root:

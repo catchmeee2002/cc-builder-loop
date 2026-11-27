@@ -37,22 +37,22 @@ proof 只能证明"测试能抓住偏离当前实现"，证明不了"当前实�
 
 | 模块 | 职责 |
 |---|---|
-| `config` | `.claude/loop.yml` → `pass_cmd[] / max_iterations / proof_runner / worktree.root`；PyYAML 缺席时用内置子集解析。`start` 读目标分支 HEAD 里已提交的那份（#411：与 `contract revise` 读候选 HEAD 对称，冻结的判据参数就是随交付合入的那份），目标提交没有跟踪 loop.yml 时才退回工作区；两者不一致不报错但 start 输出 `loop_config_source.worktree_differs`，ledger 记 `repo.loop_config_source`；`{main_repo}` 只有 `expand_main_repo()` 一处展开实现，machine 与 proof 都调它（#391，原则二） |
+| `config` | `.claude/loop.yml` → `pass_cmd[] / max_iterations / proof_runner / worktree.root / preflight / concurrency`；PyYAML 缺席时用内置子集解析。`preflight`（`always` / `on-failure` / `off`，缺省 `always`）与 `concurrency`（`gates` / `proof_groups`，缺省均为 1）是执行信息，不进 contract digest——run 内改它们不该让既有 evidence 失效。`to_json()` 只写用户显式声明过的键（与 `worktree.link_paths` 同一约定）：不写时既有项目的 `loop_config` JSON 逐字节不变；`explicit_keys` 记录显式键，供 retro 的 `config_hints` 与 `bl doctor` 判断「这一项是用户选的还是默认值」，不另存状态。`start` 读目标分支 HEAD 里已提交的那份（#411：与 `contract revise` 读候选 HEAD 对称，冻结的判据参数就是随交付合入的那份），目标提交没有跟踪 loop.yml 时才退回工作区；两者不一致不报错但 start 输出 `loop_config_source.worktree_differs`，ledger 记 `repo.loop_config_source`；`{main_repo}` 只有 `expand_main_repo()` 一处展开实现，machine 与 proof 都调它（#391，原则二） |
 | `contract` | 标签提取、校验（允许键来自 `FIELD_TABLE`，未知字段入口拒绝）、三面 digest、`classify_change`、glob 匹配；**`write_rejection()` 是路径归属与保护的唯一判定入口**（checkpoint / PreToolUse / mutation patch 共用） |
 | `ledger` | schema @2 校验、mutate、events、session 指针（读后回核 owner）、`peek`（不校验 schema，给 doctor / runs / abandon 处理旧版 ledger） |
 | `worktree` | 每个 run 的 `builder/` 与 `tester/` 两个 worktree（创建失败回滚）、临时 worktree（支持叠加与删除）、身份 / clean 断言。依赖准备（#383）：`worktree.link_paths` 声明的路径在建 worktree 与 preflight 快照时从 `worktree.link_source`（默认仓库根）软链接过去，只建链接、不复制不安装；`residue` / `assert_clean` / `worktree_fingerprint` 的 `ignore` 参数把这些链接排除在「现场改动」之外（链接由 runtime 建，不是写入者的改动），`prepare_links` 从 ledger 的 `loop_config` 读声明，run 内不重读 loop.yml |
 | `gitx` | git 命令封装：`toplevel` / `main_repo_root`（linked worktree 解析）、`rev_parse` / `tree_of`、`remotes` / `upstream_ref` / `relation`、`is_clean` / `worktree_fingerprint`；内部提交统一带 `-c core.hooksPath=/dev/null` |
 | `run` | start / status / checkpoint（分角色、`--dry-run`）/ integrate / resume / hold（`--reason` / `--release`）/ abandon / contract validate\|revise。仓库解析两个入口：`resolve_repo_root()` 保留用户选的 linked worktree（start / validate / runs / doctor / cleanup），`run_roots()` 在定位已有 run 时依次试选仓与主仓 |
-| `machine` | pass_cmd 三态、超时、信号终止（无效观察）、执行后 worktree 变更检测、失败签名、`tester_files_mentioned`、基线预跑 `preflight`；stage `cmd` 与 `ready_cmd` 执行前都经 `expand_main_repo` 展开 `{main_repo}`（与 proof 同源） |
+| `machine` | pass_cmd 三态、超时、信号终止（无效观察）、执行后 worktree 变更检测、失败签名、`tester_files_mentioned`、基线预跑 `preflight`（每 stage 记 `duration_s`）；stage `cmd` 与 `ready_cmd` 执行前都经 `expand_main_repo` 展开 `{main_repo}`（与 proof 同源） |
 | `process` | 门禁命令的执行边界：一次调用独占一个进程组，超时或直接进程被信号带走时先整组回收再返回（#363） |
 | `evidence` | tester 文件与 integrate 需求的 git 派生、投影、`state()`、`role_running()` / `gate_running()`、blockers（授权窗口）、`readiness()` |
 | `proof` | spec 结构校验、`build_argv`、junit 解析与 id 映射、候选 / 反例判定、四步执行、失败签名 |
 | `baseline` | 目标分支与上游的准入判定：`target_baseline()` 派生本地 HEAD / upstream ref / relation，`require_target_baseline()` 在 start / rebase / finalize 三处拒绝 `behind` / `diverged`；基线始终是本地 `refs/heads/<target>`，上游只参与准入（#385） |
 | `finalize` | 前置检查、commit-tree（可选 `--run-commit-hook`）、intent、CAS、所有 on-target worktree 的 checkout 同步、恢复、rebase |
-| `retro` | 确定性信号派生（只读 ledger）、复盘记录校验、cleanup |
+| `retro` | 确定性信号派生（只读 ledger）、复盘记录校验、cleanup；另派生 `config_hints`（未显式配置且本 run 观察到收益损失的项） |
 | `hooks` | 六个 handler、结果标记解析、tester 读隔离与角色写边界、心跳续租；注入的上下文 = `brief.render()` |
 | `brief` | 角色视角事实的**唯一来源**：写边界、候选可读性、待办；结构化 + 文本两种形态，`bl brief` 与 SubagentStart 同源；reviewer 另带文档引用线索（`doc_reference_hints`，现算调 `doc-lint.sh`，≤4 秒，失败降级为 `error`，不落盘） |
-| `doctor` | 只读诊断；`missing_hooks()` 按 `HOOK_SPEC` 逐项核对 settings.json，doctor 与 `bl start` 共用 |
+| `doctor` | 只读诊断；`missing_hooks()` 按 `HOOK_SPEC` 逐项核对 settings.json，doctor 与 `bl start` 共用；repo 段另给 `config`（`preflight` / `concurrency` 的生效值与 `explicit_keys`），供用户主动发现未开的可配项 |
 | `hookspec` | `HOOK_SPEC`：要注册哪些 hook 的唯一定义，install.sh 按它注册（#309） |
 
 `hooks/bl-hook.sh` 先用纯 bash 从 stdin 抠 `session_id` 并查 session 指针，没有绑定就直接退出、不起 python——PreToolUse 挂在 Read / Bash 上，无绑定 session 的开销必须接近零。
@@ -99,6 +99,8 @@ pytest 框架下结论取自 junit xml：候选阶段要求 rc==0 且每个声�
 
 每个 behavior 的 proof 下限写在 contract（缺省 strong）；`reviewed-boundaries` 必须在该 behavior 上显式放行。反例阶段另记 `counterexample.per_id`：每条声明 id 是 `red`（它匹配到的全部用例都在 call 阶段失败）/ `mixed`（只有部分参数实例失败）/ `green`（跑了没红）/ `missing`（没跑到）。**只有全部声明 id 都是 red 才 PASS**，其余一律 FAIL 并列出未全红 id（#370）。判定规则标识 `proof_rule=every-declared-case-red@1` 进入 proof 的输入投影，旧规则下形成的 PASS 因此自动 stale 并重跑，不能冒充新规则结论（原则一）。
 
+**反例段可并行**（#420）：候选段 ① 共享同一个候选 worktree，**始终串行**；②③④ 每组各用自己的临时 worktree，按 `concurrency.proof_groups`（缺省 1）并发。失败按组下标顺序取第一个报告，与完成顺序无关（原则一）；组超时仍走 `_group_timeout`，不因为并发挤成超时就被记成测试失败。每组另记 `duration_s`（整数秒，≥1），只进 evidence details，不进投影 digest。
+
 mutation patch 分两处检查，检查对象都是 ledger 实收的那份字节（`normalized_patch` 是两处共用的唯一规范化）：
 
 | 时机 | 检查 | 失败 |
@@ -117,7 +119,9 @@ machine / preflight / proof 的子进程都拿到本次调用独占、结束即�
 
 ## readiness → next_action
 
-terminal →（无 retrospective `retro`，否则 `done`）；有 blocker → `needs_user`；tester 需要干活且没在跑 → `spawn_tester` / `resume_tester`（**先于** builder 的 `checkpoint`：tester 后台并行，越早放出去越好）；builder 无 checkpoint → `checkpoint`；tester 在跑 → `awaiting_tester`；需要 integrate → `integrate`；machine 未过：machine 门禁正在执行 → `awaiting_gate`，fail 且失败日志里出现归 tester 的路径且 tester 尚未答复 → `resume_tester`，否则 `machine`；proof 未过：tester 在跑 → `awaiting_tester`，proof 门禁正在执行 → `awaiting_gate`，缺 mutation patch 且 tester 在首次 integrate 后还没答复过 → `resume_tester`，已交付的 patch 打不到当前候选（`stale_patch_groups`，只在这里问）且 tester 在最近一次候选变化后还没答复过 → `resume_tester`（#305 #398），fail 且 owner=tester 且 tester 尚未答复 → `resume_tester`，否则 `proof`；reviewer 未过：在跑 → `awaiting_reviewer`，fail 且有 owner=tester 的 blocking/major 且 tester 尚未答复 → `resume_tester`，否则 spawn / resume；reviewer 已过但**又被续接在跑** → `awaiting_reviewer`；全过 → `finalize`。门禁在跑是 machine / proof 分支自己的输入条件：下一步取决于它的新结论，所以不按旧结论催（#279）；与门禁结论无关的动作（integrate、awaiting_tester、reviewer 阶段）照常给出；只有 preflight 在跑时照常给 `machine` / `proof`——它们会自动排队等 preflight。
+terminal →（无 retrospective `retro`，否则 `done`）；有 blocker → `needs_user`；tester 需要干活且没在跑 → `spawn_tester` / `resume_tester`（**先于** builder 的 `checkpoint`：tester 后台并行，越早放出去越好）；builder 无 checkpoint → `checkpoint`；tester 在跑 → `awaiting_tester`，**但** tester 已 pass 而 machine 未过时除外（它多半在补 mutation patch，那是与 machine 独立的输入，照常给 `machine`）；需要 integrate → `integrate`；machine 未过：machine 门禁正在执行 → `awaiting_gate`，fail 且失败日志里出现归 tester 的路径且 tester 尚未答复 → `resume_tester`，否则 `machine`；proof 未过：tester 在跑 → `awaiting_tester`，proof 门禁正在执行 → `awaiting_gate`，缺 mutation patch 且 tester 在首次 integrate 后还没答复过 → `resume_tester`，已交付的 patch 打不到当前候选（`stale_patch_groups`，只在这里问）且 tester 在最近一次候选变化后还没答复过 → `resume_tester`（#305 #398），fail 且 owner=tester 且 tester 尚未答复 → `resume_tester`，否则 `proof`；reviewer 未过：在跑 → `awaiting_reviewer`，fail 且有 owner=tester 的 blocking/major 且 tester 尚未答复 → `resume_tester`，否则 spawn / resume；reviewer 已过但**又被续接在跑** → `awaiting_reviewer`；全过 → `finalize`。门禁在跑是 machine / proof 分支自己的输入条件：下一步取决于它的新结论，所以不按旧结论催（#279）；与门禁结论无关的动作（integrate、awaiting_tester、reviewer 阶段）照常给出；只有 preflight 在跑时照常给 `machine` / `proof`——它们会自动排队等 preflight（`concurrency.gates >= 2` 时不排队）。
+
+`readiness()` 另返回派生字段 `tester_patch_due`：machine 未过、tester 已 pass 且不在跑、候选可读、缺 patch 或 patch stale、且 tester 在首次 integrate 后还没答复过。builder 见到 `next_action == machine` 且它为真时，先续接 tester 补 patch（后台）再跑 machine，两者并行（#420）。它只是派生提示，不新增 `next_action` 枚举值。
 
 「tester 尚未答复」用事件时间戳比较（ISO 微秒，UTC，字典序即时间序）：答复过而失败依旧时回到 `proof`，让同签名计数生效，避免无限续接。
 
@@ -131,7 +135,7 @@ reviewer 判 pass 时给出的 `owner=tester` 的 finding 不派发（派发会�
 
 **角色是否在跑**不落盘：最近一条生命周期事件是 `role_start`（或要求重发的 `role_malformed`）且 40 分钟租约未过期（`role_wake` 不算在跑）。该 agent 的每次 PreToolUse 续租，只 touch `run_dir/heartbeat-<role>`，不写 ledger。只用于 `awaiting_*`（抑制 Stop 回拉），不给任何 CLI 加闸；agent 失联则租约到期后回到 resume。
 
-**门禁是否在跑**同样不落盘：machine / proof / preflight 执行期间各持有 `run_dir/gate-<holder>.lock` 的 flock（文件里写 pid，本进程自己持有不算）。进程死掉锁自动释放，没有残留状态要清理。同一门禁重复启动 → `GATE_BUSY`；machine / proof 遇到 preflight 在跑会排队等它（两套全量测试并发会把彼此挤成假超时），排队期间自己的锁已持有，所以 Stop 看得到它在等。
+**门禁是否在跑**同样不落盘：machine / proof / preflight 执行期间各持有 `run_dir/gate-<holder>.lock` 的 flock（文件里写 pid，本进程自己持有不算）。进程死掉锁自动释放，没有残留状态要清理。同一门禁重复启动 → `GATE_BUSY`；machine / proof 遇到 preflight 在跑会排队等它（两套全量测试并发会把彼此挤成假超时；`concurrency.gates >= 2` 时不排队——用户已声明机器有余量，#420），排队期间自己的锁已持有，所以 Stop 看得到它在等。
 
 **hold**（#291 #299 #368）：多会话按顺序发版时，合入时机由外部条件决定，不由 gate 决定。`bl hold --reason` 要求当前 mission revision 下 gate 全过过一次（每个 revision 首次全过时记一条 `gates_passed{revision}` 事件；旧事件没有 revision 视作 1），不要求此刻全绿——rebase 之后、重验之前集成方要的正是「先别重验」；hold 不削弱判据，finalize 仍只认四项 fresh pass。hold 不再要求用户回答：等待外部协作放行属于正常工程活动，不升级为用户重规划；`--reason` 仍必填，builder 必须在当轮回复里说明已暂缓、在等什么。集成方、跨会话消息与任务通知都不记 `user_input`，不能用来解除 blocker 或修订 contract。release 与 rebase 都不重置锚点，同一 mission revision 内重新全过后可以再 hold；只有 mission 修订才要在新目标下重新全过。成功后只要候选在 hold 之后没再变，readiness 就给 `held`（证据 stale 也一样；builder 自己 checkpoint 了说明工作已恢复，照常给真实动作，重新全绿后再表现为 held），Stop 放行、`finalize` 报 `HOLD_ACTIVE`。hold 从 `hold` / `hold_release` 事件派生，不落 ledger 字段（原则五），并作为 `S-hold` 进入复盘。`bl hold --release` 不需要授权，只是回到正常流程，目标分支前进了照常 `TARGET_DRIFT` → rebase。
 
@@ -155,7 +159,7 @@ reviewer 判 pass 时给出的 `owner=tester` 的 finding 不派发（派发会�
 
 ## 复盘闸门
 
-finalize / abandon / finalize_failed 之后 session 不解绑；`start` 遇到「已绑定、终态、未复盘」返回 `RETRO_PENDING`。`retro.derive_signals` 只读 ledger（abandon 的现场可能已损坏），信号来自 failures、authorizations、contract.history、checkpoints 与 events；`retro record` 只校验覆盖率与路由字段（issue 路由要 `issue_url` 或 `declined_by_user`，`not_incident` 要理由），判断与立项是执行者和用户的事。events 只记没有别处归属的事实，其余信号从原归属派生（原则二）。
+finalize / abandon / finalize_failed 之后 session 不解绑；`start` 遇到「已绑定、终态、未复盘」返回 `RETRO_PENDING`。`retro signals` 另返回顶层 `config_hints`（#420）：只列「用户未显式配置、且本 run 观测到收益损失」的可配项——有 `preflight` 事件 → 提示 `preflight`；proof evidence 的 groups 数 ≥ 2 → 提示 `concurrency.proof_groups`。它不进 signal 列表、不参与 `retro record` 的覆盖校验；用户配上之后自然为空，不另存「已提醒过」的状态（原则二 / 五）。`retro.derive_signals` 只读 ledger（abandon 的现场可能已损坏），信号来自 failures、authorizations、contract.history、checkpoints 与 events；`retro record` 只校验覆盖率与路由字段（issue 路由要 `issue_url` 或 `declined_by_user`，`not_incident` 要理由），判断与立项是执行者和用户的事。events 只记没有别处归属的事实，其余信号从原归属派生（原则二）。
 
 ## 失败路径
 

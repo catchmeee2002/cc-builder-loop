@@ -11,6 +11,7 @@ import re
 import shutil
 import signal
 import tempfile
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
@@ -99,6 +100,11 @@ def commands_digest(stages: list[dict[str, Any]]) -> str:
     return sha256_bytes(dumps(items).encode())[:16]
 
 
+def _elapsed_since(started: float) -> int:
+    """整数秒且至少为 1：极快的 stage 也不记 0（耗时是观察事实，不进 evidence digest）。"""
+    return max(1, int(time.monotonic() - started))
+
+
 def run_preflight(ledger_path: Path, repo_root: Path) -> dict[str, Any]:
     """在 run 起点的临时 worktree 上把冻结的 pass_cmd 跑一遍：哪些 stage 在基线上本来就红。
 
@@ -127,13 +133,15 @@ def run_preflight(ledger_path: Path, repo_root: Path) -> dict[str, Any]:
                 # 快照 worktree 同样是全新检出：依赖按 ledger 的声明从源树链接过来，否则 ready_cmd 恒不满足（#383）
                 worktree.prepare_links(lg, wt)
                 for stage in stages:
+                    started = time.monotonic()
                     probe = ready_probe(wt, stage, log_dir / f"preflight-{stage['stage']}-ready.log", env, repo_root)
                     if probe is not None and not probe["ready"]:
-                        results.append(probe)
+                        results.append({**probe, "duration_s": _elapsed_since(started)})
                         continue
                     log_path = log_dir / f"preflight-{stage['stage']}.log"
                     rc, _text, timed_out = _run_stage(wt, stage, log_path, env, repo_root)
-                    results.append({"stage": stage["stage"], "returncode": rc, "timed_out": timed_out, "log": str(log_path)})
+                    results.append({"stage": stage["stage"], "returncode": rc, "timed_out": timed_out,
+                                    "log": str(log_path), "duration_s": _elapsed_since(started)})
     except Problem as exc:
         # 快照 worktree 建不出来（父目录不可写等）也是「没观察到」，不是基线红（#381，原则一）
         if exc.code != "GIT_COMMAND_FAILED":

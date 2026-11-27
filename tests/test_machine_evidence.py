@@ -104,10 +104,11 @@ def test_machine_failure_points_at_tester_files(started, cli, hook):
     cli("integrate", "--session", "S1")
     res = cli("machine", "--session", "S1", expect=1)
     assert res["failure"]["tester_files_mentioned"] == ["tests/test_mul.py"]
-    # builder SendMessage 续接 tester → 在跑期间 next_action 是 awaiting，不是 machine
+    # builder SendMessage 续接 tester 去修测试；tester 证据已 pass 且在跑、machine 未过时，
+    # 新语义允许 builder 同时去跑 machine（不再一律 awaiting_tester）
     send_message(hook, "T1")
     hook("SubagentStart", {"session_id": "S1", "agent_id": "T1", "agent_type": "tester"})
-    assert cli("status", "--session", "S1")["readiness"]["next_action"] == "awaiting_tester"
+    assert cli("status", "--session", "S1")["readiness"]["next_action"] == "machine"
     write_mul_test(twt)
     role_turn(hook, "tester", "T1", make_tester_result("mutation"), start=False)
     assert cli("status", "--session", "S1")["readiness"]["next_action"] == "integrate"

@@ -87,6 +87,32 @@ def derive_signals(lg: dict[str, Any]) -> list[dict[str, Any]]:
     return out
 
 
+def config_hints(lg: dict[str, Any]) -> list[dict[str, Any]]:
+    """用户还没显式配置、而本 run 已经观测到收益损失的项（#420，原则五：新能力要能被已有用户发现）。
+
+    只输出「有观测证据」的项：没观测到等锁 / 没多组的项目提示出来只是噪音。
+    explicit 从 ledger 的 loop_config 派生（to_json 只写用户显式声明过的键），用户配上后这里自然为空，
+    不需要另存「已提醒过」的状态（原则二）。不参与 retro record 的信号覆盖校验。
+    """
+    from .config import CONFIG_HINTS
+
+    loop_cfg = lg.get("loop_config") or {}
+    explicit: set[str] = set()
+    if "preflight" in loop_cfg:
+        explicit.add("preflight")
+    explicit |= {f"concurrency.{k}" for k in (loop_cfg.get("concurrency") or {})}
+
+    observed: set[str] = set()
+    if ledger_mod.events_of(lg, "preflight"):
+        observed.add("preflight")
+    groups = (((lg.get("evidence") or {}).get("proof") or {}).get("details") or {}).get("groups") or []
+    if len(groups) >= 2:
+        observed.add("concurrency.proof_groups")
+
+    want = observed - explicit
+    return [{"key": h["key"], "summary": h["summary"]} for h in CONFIG_HINTS if h["key"] in want]
+
+
 def signals(ledger_path: Path) -> dict[str, Any]:
     lg = ledger_mod.load(ledger_path)
     if not ledger_mod.is_terminal(lg):
@@ -95,6 +121,7 @@ def signals(ledger_path: Path) -> dict[str, Any]:
     return {
         "run_id": lg["run_id"], "terminal": lg["terminal"], "runtime_identity": lg.get("runtime_identity"),
         "recorded": bool(lg.get("retrospective")), "signals": sigs,
+        "config_hints": config_hints(lg),
         "how_to_record": {
             "file": {"dispositions": [{"signal_id": "<id>", "route": "|".join(ROUTES), "reason": "not_incident 必填", "issue_url": "issue 路由必填（或 declined_by_user: true）"}], "observations": [{"summary": "信号之外你自己遇到的问题", "route": "同上", "issue_url": ""}]},
             "zero_signals": "没有信号也没有观察到问题时：bl retro record --no-incident",

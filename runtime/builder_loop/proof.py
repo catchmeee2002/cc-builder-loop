@@ -25,7 +25,9 @@ import shlex
 import shutil
 import subprocess
 import tempfile
+import time
 import xml.etree.ElementTree as ET
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -721,6 +723,11 @@ def _ignorable(path: str) -> bool:
 # ---------------------------------------------------------------- 主流程
 
 
+def _elapsed_since(started: float) -> int:
+    """整数秒且至少为 1：极快的组也不记 0（耗时是观察事实，不进 evidence digest）。"""
+    return max(1, int(time.monotonic() - started))
+
+
 def run_proof(ledger_path: Path, repo_root: Path, spec_override: dict[str, Any] | None = None) -> dict[str, Any]:
     lg = ledger_mod.load(ledger_path)
     if ledger_mod.is_terminal(lg):
@@ -829,6 +836,8 @@ def run_proof(ledger_path: Path, repo_root: Path, spec_override: dict[str, Any] 
         if not_red:
             raise _Failure("TEST_MUTATION_SURVIVED", f"{UNDISCRIMINATED_MESSAGE}：{', '.join(not_red)}", i, bid, classification=cls, returncode=rc, per_id=per_id, undiscriminated=not_red, log=str(log), **detail)
 
+    # 反例段的并发上限（缺省 1 = 逐组串行，与引入并发预算之前一致）；候选段始终串行（共享候选 worktree）
+    proof_workers = int((((lg.get("loop_config") or {}).get("concurrency") or {}).get("proof_groups")) or 1)
     gate = evidence.gate_lock(lg, evidence.GATE_PROOF)  # 全套测试要跑好几轮，执行期间对外可见（#242）
     gate.__enter__()
     pycache = private_pycache(env, run_dir)
@@ -855,6 +864,7 @@ def run_proof(ledger_path: Path, repo_root: Path, spec_override: dict[str, Any] 
         # ① 候选：逐 id 全部 passed
         for i, g in enumerate(spec["groups"]):
             bid = g["behavior_ids"][0]
+            started = time.monotonic()
             rc, out, cases, log, timed_out = execute(wt, g, "candidate", i)
             tracked, untracked = _restore_worktree(wt, worktree.link_ignores(lg))
             if timed_out:
@@ -865,7 +875,7 @@ def run_proof(ledger_path: Path, repo_root: Path, spec_override: dict[str, Any] 
                 raise _Failure("TEST_PROOF_RUNNER_FAILED", f"proof_runner 没能产出测试结果：`{runner['cmd']}` 退出码 {rc}", i, bid,
                                returncode=rc, log=str(log), cmd=runner["cmd"])
             verdict = judge_candidate(framework, rc, cases, g["test_ids"])
-            groups_out.append({"behavior_id": bid, "kind": g["kind"], "candidate": {"returncode": rc, "per_id": verdict["per_id"], "log": str(log), "residue_cleaned": untracked}})
+            groups_out.append({"behavior_id": bid, "kind": g["kind"], "candidate": {"returncode": rc, "per_id": verdict["per_id"], "log": str(log), "residue_cleaned": untracked, "duration_s": _elapsed_since(started)}})
             if tracked:
                 raise _Failure("PROOF_WORKTREE_MUTATED", "测试命令修改了候选中的 tracked 文件", i, bid, paths=tracked[:50], log=str(log))
             if not verdict["ok"]:
@@ -891,37 +901,51 @@ def run_proof(ledger_path: Path, repo_root: Path, spec_override: dict[str, Any] 
                     gcode = "TEST_PROOF_NOT_EXECUTED" if (grc == 0 and gnot_run) else "TEST_PROOF_CANDIDATE_FAILED"
                     raise _Failure(gcode, gverdict["reason"] or "守卫测试在候选实现上未通过", i, bid, returncode=grc, per_id=gverdict["per_id"], log=str(glog), guard=k)
 
-        # ②③④ 反例
-        for i, g in enumerate(spec["groups"]):
+        # ②③④ 反例：每组独立 temp_worktree，可并发；候选段①共享候选 worktree，仍串行（#420）
+        def counterexamples(i: int) -> None:
+            g = spec["groups"][i]
             bid = g["behavior_ids"][0]
+            started = time.monotonic()
+            # 直接写回 groups_out[i]：失败时已产生的部分结论（如 counterexample.per_id）也要能看到，与原实现一致
+            target = groups_out[i]
             guards_out = []
             for k, gd in enumerate(guard_items(g)):
                 entry: dict[str, Any] = {"candidate": guard_candidate.get((i, k), {})}
                 counterexample_mutation(g, i, bid, gd["patch"], list(gd["test_ids"]), f"guard{k}", k, entry, f"guard{k}")
                 guards_out.append(entry)
             if guards_out:
-                groups_out[i]["guards"] = guards_out
+                target["guards"] = guards_out
             if g["kind"] == KIND_REVIEWED:
-                groups_out[i]["counterexample"] = {"kind": KIND_REVIEWED, "outcome": "reviewed"}
-                continue
-            if g["kind"] == KIND_BASELINE:
+                target["counterexample"] = {"kind": KIND_REVIEWED, "outcome": "reviewed"}
+            elif g["kind"] == KIND_BASELINE:
                 overlay = (cand["head"], files["present"], files["deleted"])
                 with worktree.temp_worktree(repo_root, lg["repo"]["target_start_head"], tmp_dir, f"baseline-g{i}", overlay=overlay) as tw:
                     worktree.link_paths(wt, tw, link_paths)
-                    rc, out, cases, log, timed_out = execute(tw, g, "baseline", i)
+                    rc, _bout, cases, log, timed_out = execute(tw, g, "baseline", i)
                 if timed_out:
                     raise _group_timeout("baseline", i, bid, g, rc, log)
                 cls = classify_counterexample(framework, rc, cases, g["test_ids"])
                 per_id = discrimination(cases, g["test_ids"]) if framework == "pytest" else {}
-                groups_out[i]["counterexample"] = {"kind": KIND_BASELINE, "returncode": rc, "classification": cls, "log": str(log), "per_id": per_id}
+                target["counterexample"] = {"kind": KIND_BASELINE, "returncode": rc, "classification": cls, "log": str(log), "per_id": per_id}
                 not_red = undiscriminated(per_id)
                 if cls != "assertion-failure":
                     # error / pass：先报「测试没跑起来 / 没约束行为」。带上 per_id 与未全红 id，全 green 时也能直接看到是哪几条
                     raise _Failure("TEST_BASELINE_RED_NOT_PROVEN", "起点 + 你的测试没有在 call 阶段失败（pass=测试没约束行为；error=测试根本没跑起来，多半是依赖了起点上不存在的接口导致收集失败，请改用 mutation）", i, bid, classification=cls, returncode=rc, per_id=per_id, undiscriminated=not_red, log=str(log))
                 if not_red:
                     raise _Failure("TEST_BASELINE_RED_NOT_PROVEN", f"{UNDISCRIMINATED_MESSAGE}：{', '.join(not_red)}", i, bid, classification=cls, returncode=rc, per_id=per_id, undiscriminated=not_red, log=str(log))
-                continue
-            counterexample_mutation(g, i, bid, g["patch"], list(g["test_ids"]), "mutation", None, groups_out[i], "mutation")
+            else:
+                counterexample_mutation(g, i, bid, g["patch"], list(g["test_ids"]), "mutation", None, target, "mutation")
+            target["duration_s"] = _elapsed_since(started)
+
+        if proof_workers <= 1:
+            for i in range(len(spec["groups"])):
+                counterexamples(i)
+        else:
+            with ThreadPoolExecutor(max_workers=proof_workers) as pool:
+                futures = [pool.submit(counterexamples, i) for i in range(len(spec["groups"]))]
+                # 按组下标顺序取结果：报告的最小失败下标与完成顺序无关（原则一）
+                for fut in futures:
+                    fut.result()
     except _Failure as exc:
         failure = exc
     finally:
